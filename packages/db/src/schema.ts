@@ -424,6 +424,8 @@ export const triggers = pgTable('triggers', {
   is_active: boolean('is_active').default(true).notNull(),
   schedule: text('schedule'), // cron expression for scheduled triggers
   agent_employee_id: text('agent_employee_id'),
+  last_fired_at: timestamp('last_fired_at'),
+  fire_count: integer('fire_count').default(0).notNull(),
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 });

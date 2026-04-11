@@ -74,6 +74,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/plan-executor.js');
       return mod.handlePlanExecutor;
     }
+    case 'agent-employee-trigger': {
+      const mod = await import('./handlers/agent-employee-trigger.js');
+      return mod.handleAgentEmployeeTrigger;
+    }
     default:
       return null;
   }
