@@ -38,6 +38,7 @@ import { calendarRoutes } from './routes/calendar.js';
 import { eventRoutes } from './routes/events.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { agentEmployeeRoutes } from './routes/agent-employees.js';
+import { mcpConnectionRoutes } from './routes/mcp-connections.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -47,7 +48,7 @@ app.use('*', cors({
   origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
   credentials: true,
   allowHeaders: ['Content-Type', 'Authorization'],
-  allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
 // Public routes
@@ -89,6 +90,7 @@ app.route('/api/tags', tagRoutes);
 app.route('/api/calendar', calendarRoutes);
 app.route('/api/events', eventRoutes);
 app.route('/api/agent-employees', agentEmployeeRoutes);
+app.route('/api/mcp-connections', mcpConnectionRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
