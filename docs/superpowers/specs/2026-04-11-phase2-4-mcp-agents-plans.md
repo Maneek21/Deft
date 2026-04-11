@@ -16,6 +16,58 @@ Four integrated layers shipped as one cohesive system:
 
 ---
 
+## 1.1 Key Architectural Decisions
+
+### The Deft System Agent — Platform Superintendent
+
+The existing "Deft" agent is NOT an employee. It is the **platform-native superintendent** — the control plane for the entire agentic system. Agent employees are the data plane — they do the work. Deft manages, configures, and oversees everything.
+
+**Deft's unique role:**
+- Build and configure agent employees: "Create me a Marketing agent that monitors Ahrefs weekly"
+- Manage agent operations: "Pause all agents until Monday"
+- Investigate agent behavior: "Why did the PM agent post that message in #engineering?"
+- Report on agent economics: "Which agent is burning the most credits?"
+- Reconfigure employees: "Update the Engineering Lead to also watch Linear"
+- General-purpose workspace queries: everything it does today (search, analyze, report)
+
+**What Deft is NOT:**
+- Not an employee record — no `agent_employees` row, no daily action limit, no trust level override (uses org-level)
+- Not replaceable by an employee — employees never see platform internals or manage other agents
+
+**The agent page** stays as Deft's interface. Users talk to Deft for platform management and general queries. A dropdown/tabs allow switching to specific employees for specialized conversations.
+
+### Agent Employee Conversations — Chat as Source of Truth
+
+Agent employees are workspace citizens. Their messages live where all messages live.
+
+- **DMs with agents** and **@mentions in channels** use the `spaces` + `messages` tables (not agentConversations/agentMessages)
+- Agent reasoning metadata (tool calls, citations, token counts) stored in a new `metadata` jsonb column on the `messages` table
+- **The agent page** is a view layer for employee conversations — it queries messages where the counterpart is an agent employee and renders with rich agent UI (citations, tool calls, plan progress) using `metadata`
+- Chat search finds agent conversations naturally. Activity feeds include agent actions. One notification pipeline.
+- The existing `agentConversations` / `agentMessages` tables remain for the Deft system agent (backward compatible)
+
+### Plan Resumption — Auto-Resume with Review Window
+
+When a plan pauses for a write step approval:
+1. User approves the action
+2. UI shows "Resuming plan in 10s..." with a "Pause" button
+3. If user doesn't pause → plan auto-resumes
+4. If user pauses → stays paused until manual resume
+
+For batch approvals (multiple non-blocking writes): approving the batch auto-resumes immediately.
+
+### MCP Connection Lifecycle — On-Demand with Warm Pool
+
+Neither fully persistent nor fully on-demand:
+- **Connect on first tool call**, keep alive for **5 minutes of inactivity**, then disconnect
+- **Pool by org** — if two employees in the same org use the same MCP server, they share one connection
+- **Max 3 concurrent MCP connections per org** (configurable via env var). Exceeded → queue and wait
+- **Stdio:** spawn process on first call, keep alive 5 minutes, then kill. Pool by command config
+- **Health tracking:** 3 failures in 5 minutes → mark errored, stop attempting for 10 minutes
+- The 5-minute warm window matches tool cache TTL — a typical agent conversation stays fast
+
+---
+
 ## 2. Schema Changes
 
 ### 2.1 Modify: `users` table
@@ -32,6 +84,31 @@ agent_employee_id text        REFERENCES agent_employees(id)   -- links user bac
 Migration: `ALTER TABLE users ALTER COLUMN email DROP NOT NULL; ADD COLUMN is_agent ...`
 
 Unique constraint on email stays but only applies to non-null values (Postgres handles this natively — NULL is never equal to NULL in unique indexes).
+
+### 2.1b Modify: `messages` table
+
+Add column for agent reasoning metadata:
+
+```
+metadata          jsonb                                        -- agent tool calls, citations, tokens, plan refs
+```
+
+Schema for metadata when message is from an agent employee:
+
+```typescript
+interface AgentMessageMetadata {
+  tool_calls?: { tool: string; params: any; result: any; status: string }[];
+  citations?: { type: string; id: string; title: string }[];
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  plan_id?: string;           // if this message relates to a plan
+  agent_employee_id?: string; // which employee produced this message
+  confidence?: 'high' | 'medium' | 'low';
+}
+```
+
+NULL for regular human messages. Only populated when the message author is an agent employee.
 
 ### 2.2 New enum: `mcp_transport`
 
@@ -293,11 +370,19 @@ class MCPClientManager {
 - `sse`: Connect to `server_url` via SSE transport.
 - `streamable-http`: Connect to `server_url` via streamable HTTP transport.
 
+**Connection lifecycle (warm pool):**
+- Connect on first tool call, keep alive for 5 minutes of inactivity, then disconnect
+- Pool connections by org — two employees using the same MCP server share one connection
+- Max 3 concurrent connections per org (configurable via `MCP_MAX_CONNECTIONS_PER_ORG` env var)
+- If max exceeded, queue the tool call and wait for a connection slot (30s timeout)
+- Stdio: spawn process on first call, keep alive 5 minutes, then kill. Pool by command config
+- Health tracking: 3 failures in 5 minutes → mark errored, backoff 10 minutes
+
 **Error handling:**
 - Connection timeout: 10 seconds
 - Tool execution timeout: 30 seconds
 - On failure: retry once silently. If still fails, return `{ error: 'Tool unavailable', retried: true }` — agent continues reasoning without the tool.
-- Auth expiry: if 401 returned and auth_type is 'oauth', attempt token refresh from `auth_config_encrypted`. If refresh fails, mark connection as errored.
+- Auth expiry: if 401 returned and auth_type is 'oauth', attempt token refresh from `auth_config_encrypted`. If refresh fails, mark connection as errored, notify admin via dashboard.
 
 ### 3.2 Integration into agent tool pipeline
 
@@ -399,20 +484,23 @@ if (toolName.startsWith('mcp__')) {
 
 **Three interaction surfaces:**
 
-**A. Agent Page (deep work):**
-- User opens agent page, selects or creates conversation with specific employee
-- Conversation uses that employee's system prompt, tool scopes, trust level
-- Full SSE streaming via `agent.ts` endpoint — same as current agent, but with employee context injected
+**A. DM conversation (deep work):**
+- User clicks agent employee in sidebar DMs → opens a DM space (type='dm')
+- DM space is created on first interaction (like human DMs)
+- Messages stored in `messages` table with `metadata` jsonb for agent reasoning
+- Agent processing: message triggers `agent-employee-mention` worker → runs `agent-runner.ts` with employee's system prompt → posts reply as a message in the DM space with metadata
+- The **agent page** can also show these conversations — it queries DM spaces where the counterpart is an agent employee and renders with rich UI (expanding citations, tool call details from metadata)
+- Full multi-turn context: worker loads last 20 messages from the DM space as conversation history
 - Employee can do multi-turn reasoning, call many tools, produce detailed analysis
 
-**B. @mention in chat (conversational):**
+**B. @mention in channel (conversational):**
 - User types `@ProjectManager` in #engineering channel
 - Background worker picks up mention, routes to `agent-runner.ts` with:
   - `mode: 'background'` (respect trust level for actions)
   - `systemPromptOverride: employee.system_prompt`
   - Conversation history: last 10 messages in thread for context
-- Employee responds in the same thread (natural, like a human teammate)
-- If the task is complex (needs multiple tool calls or produces long output), employee responds with a brief summary + link: "I've put together a detailed analysis — [view full response](/agent?id=xxx)"
+- Employee responds in the same thread as a regular message (with metadata for tool calls/citations)
+- If the task is complex (needs multiple tool calls or produces long output), employee responds with a brief summary + link: "I've put together a detailed analysis — [view in DM](/chat?dm=xxx)"
 
 **C. Task assignment (autonomous work):**
 - User assigns task to employee in /tasks (task.assignee_id = employee.user_id)
@@ -426,6 +514,14 @@ if (toolName.startsWith('mcp__')) {
   5. Update task status to `in_review`
   6. DM the assigner: "I've completed DEFT-42 and moved it to Review. Summary: ..."
 - Each tool call counts toward `max_daily_actions`
+
+**D. Deft system agent (platform superintendent):**
+- Lives on the agent page as the default conversation partner
+- Uses `agentConversations` / `agentMessages` tables (existing system, unchanged)
+- Has all native tools + platform management capabilities
+- Dropdown/tabs on agent page: "Deft (Platform)" | "PM Agent" | "Engineering Lead" | ...
+- Switching to an employee tab shows their DM conversation with rich agent UI
+- Deft gets new platform management tools (see section 4.7)
 
 ### 4.3 Org chart awareness
 
@@ -524,6 +620,34 @@ Minimum viable creation: Step 1 + Step 2 only. Everything else has sensible defa
 **Assignee dropdown:** In task detail, agent employees appear in the assignee dropdown with a bot badge. Assigning triggers the task execution flow.
 
 **Agent Activity widget (dashboard):** Shows actions from all employees in one feed. Filter dropdown to select specific employee.
+
+**Agent page layout:**
+- Default tab: "Deft (Platform)" — existing agent conversations via agentConversations/agentMessages
+- Additional tabs: one per active agent employee — shows their DM conversation rendered with rich agent UI
+- Tab shows unread indicator if employee has new messages
+- Creating a new conversation: dropdown to pick Deft or a specific employee
+
+### 4.7 Deft superintendent tools
+
+New tools added exclusively to the Deft system agent (not available to employees):
+
+```
+manage_agent_employee    — Create, update, pause, resume, or delete an agent employee
+list_agent_employees     — List all employees with status, daily action usage, last active
+get_agent_activity       — Get recent actions for a specific employee or all employees
+manage_mcp_connection    — Add, remove, test, or reconfigure MCP connections
+get_agent_economics      — Token spend, action counts, credit usage per employee
+manage_triggers          — Create, update, or disable triggers for an employee
+```
+
+These tools allow the Deft agent to be the single interface for platform management. Instead of navigating Settings pages, users can say:
+
+- "Create a PM agent called Alex that tracks sprint progress in #engineering"
+- "Show me which agents ran today and how many actions they took"
+- "Connect our company's n8n server at https://n8n.internal/mcp"
+- "The Engineering Lead agent is posting too often, set its daily limit to 20"
+
+The Deft agent uses these tools to call the same API endpoints as the Settings UI — it's a conversational interface to the same CRUD operations.
 
 ---
 
@@ -671,7 +795,22 @@ New event types added to the streaming endpoint:
 { type: 'plan_paused', planId, reason }
 { type: 'plan_completed', planId, summary }
 { type: 'plan_alternative', planId, stepId, original, alternative, reasoning }
+{ type: 'plan_resuming', planId, countdown: 10 }
 ```
+
+### 5.5 Plan resumption flow
+
+When a plan pauses because a write step needs approval:
+
+1. User approves the pending action via approve button
+2. UI shows "Resuming plan in 10s..." countdown with a [Pause] button
+3. If user doesn't pause within 10 seconds → plan auto-resumes from next step
+4. If user clicks Pause → plan stays in `paused` status until manual Resume
+
+For batch approvals (multiple non-blocking writes batched together):
+- Approving the batch auto-resumes immediately (no countdown — user already reviewed everything)
+
+SSE flow: `plan_step_waiting` → user approves → `plan_resuming` (countdown: 10) → `plan_step_started` (next step)
 
 ---
 
