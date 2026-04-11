@@ -22,7 +22,7 @@ import { scheduledRoutes } from './routes/scheduled.js';
 import { reminderRoutes } from './routes/reminders.js';
 import { recapRoutes } from './routes/recap.js';
 import { userStatusRoutes } from './routes/user-status.js';
-import { knowledgeRoutes } from './routes/knowledge.js';
+import { knowledgeRoutes, knowledgeAggRoutes } from './routes/knowledge.js';
 import { bookmarkRoutes } from './routes/bookmarks.js';
 import { groupRoutes } from './routes/groups.js';
 import { emojiRoutes } from './routes/emoji.js';
@@ -36,6 +36,8 @@ import { dailyNoteRoutes } from './routes/daily-notes.js';
 import { tagRoutes } from './routes/tags.js';
 import { calendarRoutes } from './routes/calendar.js';
 import { eventRoutes } from './routes/events.js';
+import { wikiRoutes } from './routes/wiki.js';
+import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -71,6 +73,8 @@ app.route('/api/scheduled-messages', scheduledRoutes);
 app.route('/api/reminders', reminderRoutes);
 app.route('/api/users', userStatusRoutes);
 app.route('/api/spaces', knowledgeRoutes);
+app.route('/api/knowledge', knowledgeAggRoutes);
+app.route('/api/wiki', wikiRoutes);
 app.route('/api/bookmarks', bookmarkRoutes);
 app.route('/api/groups', groupRoutes);
 app.route('/api/emoji', emojiRoutes);
@@ -84,6 +88,7 @@ app.route('/api/daily-notes', dailyNoteRoutes);
 app.route('/api/tags', tagRoutes);
 app.route('/api/calendar', calendarRoutes);
 app.route('/api/events', eventRoutes);
+app.route('/api/agent-employees', agentEmployeeRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 

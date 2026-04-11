@@ -609,6 +609,13 @@ export async function executeActionDirect(
   userId: string,
   conversationId: string | null,
   approvalTier: 'auto' | 'quick' | 'full',
+  options?: {
+    agentEmployeeId?: string;
+    source?: string;
+    mcpConnectionId?: string;
+    planId?: string;
+    planStepId?: string;
+  },
 ): Promise<{ actionId: string; success: boolean; result: any; error?: string }> {
   const [actionRecord] = await db
     .insert(agentActions)
@@ -621,6 +628,11 @@ export async function executeActionDirect(
       approval_tier: approvalTier,
       approval_status: 'approved',
       approved_at: new Date(),
+      ...(options?.agentEmployeeId ? { agent_employee_id: options.agentEmployeeId } : {}),
+      ...(options?.source ? { source: options.source } : {}),
+      ...(options?.mcpConnectionId ? { mcp_connection_id: options.mcpConnectionId } : {}),
+      ...(options?.planId ? { plan_id: options.planId } : {}),
+      ...(options?.planStepId ? { plan_step_id: options.planStepId } : {}),
     })
     .returning();
 
