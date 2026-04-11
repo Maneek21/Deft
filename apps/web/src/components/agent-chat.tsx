@@ -25,12 +25,22 @@ function AgentThinking({ toolStatus }: { toolStatus?: string }) {
   );
 }
 
+type AutoExecutedAction = {
+  id: string;
+  action: string;
+  params: any;
+  success: boolean;
+  result: any;
+  error: string | null;
+};
+
 type AgentMessage = {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
   pending_actions?: (PendingAction & { status?: string; executed_at?: string })[];
+  auto_executed?: AutoExecutedAction[];
   streaming?: boolean;
   thinking?: boolean;
   tool_status?: string; // "Searching messages..."
@@ -151,7 +161,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         const data = await res.json();
         setMessages(data.map((m: any) => ({
           id: m.id, role: m.role, content: m.content,
-          citations: m.citations || [], pending_actions: [],
+          citations: m.citations || [], pending_actions: [], auto_executed: [],
           model: m.model, tokens_in: m.tokens_in, tokens_out: m.tokens_out,
         })));
       }
@@ -248,6 +258,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       let agentText = '';
       let citations: Citation[] = [];
       let pendingActions: PendingAction[] = [];
+      let autoExecutedActions: AutoExecutedAction[] = [];
       let buffer = '';
       let doneModel: string | undefined;
       let doneTokensIn: number | undefined;
@@ -314,6 +325,16 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
               case 'pending_action':
                 pendingActions.push(data);
                 break;
+              case 'action_auto_executed':
+                autoExecutedActions.push({
+                  id: data.id,
+                  action: data.action,
+                  params: data.params,
+                  success: data.success,
+                  result: data.result,
+                  error: data.error,
+                });
+                break;
               case 'error':
                 agentText += `\n\n*Error: ${data.error}*`;
                 break;
@@ -341,7 +362,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         if (last && last.role === 'assistant') {
           updated[updated.length - 1] = {
             ...last, content: agentText, streaming: false,
-            citations, pending_actions: pendingActions, tool_status: undefined,
+            citations, pending_actions: pendingActions, auto_executed: autoExecutedActions, tool_status: undefined,
             follow_ups: followUps,
             model: doneModel,
             tokens_in: doneTokensIn,
@@ -591,6 +612,37 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                       onRejectOne={handleReject}
                     />
                   )
+                )}
+
+                {/* Auto-executed actions */}
+                {msg.auto_executed && msg.auto_executed.length > 0 && (
+                  <div className="space-y-1 mt-1">
+                    {msg.auto_executed.map((a) => (
+                      <div
+                        key={a.id}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12px]"
+                        style={{
+                          background: a.success ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          border: `1px solid ${a.success ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`,
+                        }}
+                      >
+                        <span style={{ color: a.success ? '#22C55E' : '#EF4444' }}>
+                          {a.success ? '\u2713' : '\u2717'}
+                        </span>
+                        <span style={{ color: 'var(--foreground)' }}>
+                          {a.action.replace(/_/g, ' ')}
+                          {a.success && a.result?.identifier ? `: ${a.result.identifier}` : ''}
+                          {a.error ? `: ${a.error}` : ''}
+                        </span>
+                        <span
+                          className="ml-auto text-[10px] px-1.5 py-0.5 rounded"
+                          style={{ background: 'var(--surface-container)', color: 'var(--muted)' }}
+                        >
+                          auto
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
               {msg.role === 'user' && (
