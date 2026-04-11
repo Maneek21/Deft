@@ -29,6 +29,12 @@ const TRUST_TIERS = [
   { value: 'full', label: 'Full-review' },
 ] as const;
 
+const isSelfHosted = process.env.NEXT_PUBLIC_DEFT_SELF_HOSTED === 'true';
+
+const TRANSPORT_OPTIONS = isSelfHosted
+  ? (['sse', 'streamable-http', 'stdio'] as const)
+  : (['sse', 'streamable-http'] as const);
+
 export default function McpConnectionForm({ connection, onClose, onSaved, prefill }: Props) {
   const isEdit = !!connection;
 
@@ -189,7 +195,7 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
               Transport Type
             </label>
             <div className="flex gap-2">
-              {(['sse', 'streamable-http', 'stdio'] as const).map((t) => (
+              {TRANSPORT_OPTIONS.map((t) => (
                 <button
                   key={t}
                   type="button"
