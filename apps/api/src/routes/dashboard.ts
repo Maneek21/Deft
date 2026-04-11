@@ -748,6 +748,7 @@ dashboardRoutes.get('/agent-activity', async (c) => {
       executed_at: agentActions.executed_at,
       created_at: agentActions.created_at,
       error: agentActions.error,
+      agent_employee_id: agentActions.agent_employee_id,
     })
     .from(agentActions)
     .where(

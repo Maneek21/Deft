@@ -86,6 +86,12 @@ type AgentActivity = {
   executed_at: string | null;
   created_at: string;
   error: string | null;
+  agent_employee_id: string | null;
+};
+
+type AgentEmployeeBrief = {
+  id: string;
+  name: string;
 };
 
 type DashboardData = {
@@ -348,6 +354,8 @@ export default function Dashboard3Page() {
   const [prepModal, setPrepModal] = useState<OneOnePrepData | null>(null);
   const [myInsights, setMyInsights] = useState<MyInsightsData | null>(null);
   const [agentActivity, setAgentActivity] = useState<AgentActivity[]>([]);
+  const [agentEmployees, setAgentEmployees] = useState<AgentEmployeeBrief[]>([]);
+  const [employeeFilter, setEmployeeFilter] = useState('all');
 
   useEffect(() => {
     api.get('/api/dashboard').then(async res => {
@@ -361,6 +369,13 @@ export default function Dashboard3Page() {
 
     api.get('/api/dashboard/agent-activity').then(async res => {
       if (res.ok) setAgentActivity(await res.json());
+    }).catch(() => {});
+
+    api.get('/api/agent-employees').then(async res => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.map((e: any) => ({ id: e.id, name: e.name })));
+      }
     }).catch(() => {});
   }, []);
 
@@ -633,12 +648,33 @@ export default function Dashboard3Page() {
           </BentoCard>
 
           {/* Agent Activity card */}
-          <BentoCard title="Agent Activity">
-            {agentActivity.length === 0 ? (
+          <BentoCard title="Agent Activity" headerRight={
+            agentEmployees.length > 0 ? (
+              <select
+                value={employeeFilter}
+                onChange={(e) => setEmployeeFilter(e.target.value)}
+                style={{
+                  fontSize: '11px',
+                  background: 'var(--surface-container)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '4px',
+                  padding: '2px 8px',
+                  color: 'var(--muted)',
+                  outline: 'none',
+                }}
+              >
+                <option value="all">All Agents</option>
+                {agentEmployees.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name}</option>
+                ))}
+              </select>
+            ) : undefined
+          }>
+            {agentActivity.filter(a => employeeFilter === 'all' || a.agent_employee_id === employeeFilter).length === 0 ? (
               <p className="text-[12px]" style={{ color: 'var(--muted)' }}>No recent agent activity</p>
             ) : (
               <div className="space-y-2">
-                {agentActivity.slice(0, 8).map((a) => (
+                {agentActivity.filter(a => employeeFilter === 'all' || a.agent_employee_id === employeeFilter).slice(0, 8).map((a) => (
                   <div key={a.id} className="flex items-start gap-2 text-[12px]">
                     <div
                       className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
