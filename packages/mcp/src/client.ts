@@ -38,6 +38,11 @@ export class MCPClientManager {
   private orgConnectionCount = new Map<string, Set<string>>();
   private toolCache = new ToolCache();
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private onAuthError?: (connectionId: string, error: string) => void;
+
+  setAuthErrorHandler(handler: (connectionId: string, error: string) => void) {
+    this.onAuthError = handler;
+  }
 
   constructor() {
     this.startIdleCleanup();
@@ -211,10 +216,36 @@ export class MCPClientManager {
           durationMs: Date.now() - startTime,
         };
       } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+
+        // Detect auth errors — no retry, immediately mark as errored
+        if (
+          message.includes("401") ||
+          message.includes("Unauthorized") ||
+          message.includes("auth")
+        ) {
+          const entry = this.pool.get(config.connectionId);
+          if (entry) {
+            entry.failureCount = HEALTH_FAILURE_THRESHOLD;
+            entry.firstFailureAt = Date.now();
+            entry.backoffUntil = Date.now() + BACKOFF_DURATION_MS;
+          }
+          this.onAuthError?.(
+            config.connectionId,
+            "Auth token expired — reconnect required"
+          );
+          return {
+            success: false,
+            content: null,
+            error:
+              "MCP connection auth expired. Please reconnect in Settings > Integrations.",
+            durationMs: Date.now() - startTime,
+          };
+        }
+
         if (attempt === 1) {
           this.recordFailure(config.connectionId);
-          const message =
-            error instanceof Error ? error.message : "Unknown error";
           return {
             success: false,
             content: null,
