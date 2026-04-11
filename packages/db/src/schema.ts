@@ -22,6 +22,12 @@ export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full'
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear']);
 export const knowledgeTypeEnum = pgEnum('knowledge_type', ['decision', 'resource', 'action_item', 'note']);
+export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
+export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
+export const mcpTransportEnum = pgEnum('mcp_transport', ['stdio', 'sse', 'streamable-http']);
+export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', ['project_manager', 'engineering_lead', 'executive_assistant', 'custom']);
+export const planStatusEnum = pgEnum('plan_status', ['draft', 'approved', 'executing', 'paused', 'completed', 'failed']);
+export const planStepStatusEnum = pgEnum('plan_step_status', ['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval']);
 
 // ═══ ORGS ═══
 export const orgs = pgTable('orgs', {
@@ -39,8 +45,10 @@ export const orgs = pgTable('orgs', {
 // ═══ USERS ═══
 export const users = pgTable('users', {
   ...id(),
-  email: text('email').notNull().unique(),
+  email: text('email').unique(),
   name: text('name').notNull(),
+  is_agent: boolean('is_agent').default(false).notNull(),
+  agent_employee_id: text('agent_employee_id'),
   avatar_url: text('avatar_url'),
   title: text('title'),
   timezone: text('timezone').default('UTC'),
@@ -50,6 +58,8 @@ export const users = pgTable('users', {
   password_hash: text('password_hash'),
   email_verified: boolean('email_verified').default(false).notNull(),
   last_seen_at: timestamp('last_seen_at'),
+  notification_keywords: text('notification_keywords').array(),
+  show_read_receipts: boolean('show_read_receipts').default(true).notNull(),
   ...timestamps(),
 });
 
@@ -103,6 +113,7 @@ export const spaceMembers = pgTable('space_members', {
   space_id: text('space_id').notNull().references(() => spaces.id),
   user_id: text('user_id').notNull().references(() => users.id),
   is_muted: boolean('is_muted').default(false).notNull(),
+  notification_level: text('notification_level').default('all').notNull(),
   last_read_message_id: text('last_read_message_id'),
   last_read_at: timestamp('last_read_at'),
   joined_at: timestamp('joined_at').defaultNow().notNull(),
@@ -195,6 +206,11 @@ export const tasks = pgTable('tasks', {
   assignee_id: text('assignee_id').references(() => users.id),
   created_by: text('created_by').notNull().references(() => users.id),
   due_date: timestamp('due_date'),
+  start_date: timestamp('start_date'),
+  estimation: text('estimation'),
+  is_template: boolean('is_template').default(false).notNull(),
+  recurrence: text('recurrence'), // 'daily' | 'weekly' | 'biweekly' | 'monthly' | null
+  recurrence_source_id: text('recurrence_source_id'), // links to original recurring task
   sort_order: real('sort_order').default(0).notNull(),
   source_message_id: text('source_message_id').references(() => messages.id),
   parent_task_id: text('parent_task_id'),  // self-reference for subtasks (one level deep)
@@ -256,6 +272,27 @@ export const taskRelationships = pgTable('task_relationships', {
   type: text('type').notNull(), // 'blocks', 'relates_to', 'duplicates'
   ...timestamps(),
 });
+
+// ═══ TASK WATCHERS ═══
+export const taskWatchers = pgTable('task_watchers', {
+  ...id(),
+  task_id: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('task_watcher_unique').on(t.task_id, t.user_id),
+  index('task_watcher_task_idx').on(t.task_id),
+]);
+
+// ═══ TASK ASSIGNEES ═══
+export const taskAssignees = pgTable('task_assignees', {
+  ...id(),
+  task_id: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('task_assignee_unique').on(t.task_id, t.user_id),
+]);
 
 // ═══ NOTIFICATIONS ═══
 export const notifications = pgTable('notifications', {
@@ -326,6 +363,11 @@ export const agentActions = pgTable('agent_actions', {
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
   conversation_id: text('conversation_id').references(() => agentConversations.id),
+  agent_employee_id: text('agent_employee_id'),
+  source: text('source').default('native'),
+  mcp_connection_id: text('mcp_connection_id'),
+  plan_id: text('plan_id'),
+  plan_step_id: text('plan_step_id'),
   action: text('action').notNull(), // 'create_task', 'update_task_status', 'post_message', etc.
   params: jsonb('params').notNull(),
   result: jsonb('result'),
@@ -381,6 +423,7 @@ export const triggers = pgTable('triggers', {
   actions: jsonb('actions').notNull(), // [{ tool, params }]
   is_active: boolean('is_active').default(true).notNull(),
   schedule: text('schedule'), // cron expression for scheduled triggers
+  agent_employee_id: text('agent_employee_id'),
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 });
@@ -824,21 +867,66 @@ export const burnoutAlerts = pgTable('burnout_alerts', {
   index('burnout_alert_user_idx').on(t.user_id),
 ]);
 
+// ═══ NOTE FOLDERS ═══
+export const noteFolders = pgTable('note_folders', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  name: text('name').notNull(),
+  icon: text('icon'),
+  parent_folder_id: text('parent_folder_id'),
+  sort_order: integer('sort_order').default(0).notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('note_folder_user_idx').on(t.user_id),
+]);
+
 // ═══ NOTES ═══
 export const notes = pgTable('notes', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
+  folder_id: text('folder_id').references(() => noteFolders.id),
   title: text('title').default('').notNull(),
   content: text('content'), // TipTap HTML
   icon: text('icon'), // emoji icon for the note
   is_pinned: boolean('is_pinned').default(false).notNull(),
+  is_template: boolean('is_template').default(false).notNull(),
   is_deleted: boolean('is_deleted').default(false).notNull(),
+  version: integer('version').default(1).notNull(),
   ...timestamps(),
 }, (t) => [
   index('note_org_idx').on(t.org_id),
   index('note_user_idx').on(t.user_id),
   index('note_updated_idx').on(t.updated_at),
+  index('note_folder_idx').on(t.folder_id),
+]);
+
+// ═══ NOTE VERSIONS ═══
+export const noteVersions = pgTable('note_versions', {
+  ...id(),
+  note_id: text('note_id').notNull().references(() => notes.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  title: text('title').notNull(),
+  content: text('content'),
+  edited_by: text('edited_by'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('note_versions_note_idx').on(t.note_id),
+  uniqueIndex('note_versions_unique').on(t.note_id, t.version),
+]);
+
+// ═══ NOTE SHARES ═══
+export const noteShares = pgTable('note_shares', {
+  ...id(),
+  note_id: text('note_id').notNull().references(() => notes.id, { onDelete: 'cascade' }),
+  shared_with_user_id: text('shared_with_user_id').notNull().references(() => users.id),
+  permission: text('permission').default('view').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('note_shares_unique').on(t.note_id, t.shared_with_user_id),
+  index('note_shares_user_idx').on(t.shared_with_user_id),
 ]);
 
 // ═══ TAGS ═══
@@ -937,3 +1025,186 @@ export const messageVersions = pgTable('message_versions', {
   content: text('content').notNull(),
   edited_at: timestamp('edited_at').defaultNow().notNull(),
 });
+
+// ═══ WIKI PAGES (LLM Wiki — structured knowledge) ═══
+export const wikiPages = pgTable('wiki_pages', {
+  ...id(),
+  ...orgId(),
+  scope: wikiPageScopeEnum('scope').default('org').notNull(),
+  space_id: text('space_id').references(() => spaces.id),
+  user_id: text('user_id').references(() => users.id),
+  type: wikiPageTypeEnum('type').notNull(),
+  title: text('title').notNull(),
+  slug: text('slug').notNull(),
+  summary: text('summary'),
+  content: text('content').notNull(),
+  confidence: real('confidence').default(1.0).notNull(),
+  version: integer('version').default(1).notNull(),
+  previous_content: text('previous_content'),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('wiki_pages_org_slug').on(t.org_id, t.slug),
+  index('wiki_pages_org_type').on(t.org_id, t.type),
+  index('wiki_pages_org_scope').on(t.org_id, t.scope),
+]);
+
+export const wikiLinks = pgTable('wiki_links', {
+  ...id(),
+  ...orgId(),
+  source_page_id: text('source_page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  target_page_id: text('target_page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  context: text('context'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('wiki_links_unique').on(t.source_page_id, t.target_page_id),
+  index('wiki_links_source').on(t.source_page_id),
+  index('wiki_links_target').on(t.target_page_id),
+]);
+
+export const wikiCitations = pgTable('wiki_citations', {
+  ...id(),
+  page_id: text('page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  source_type: text('source_type').notNull(),
+  source_id: text('source_id').notNull(),
+  excerpt: text('excerpt'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('wiki_citations_page').on(t.page_id),
+]);
+
+export const wikiOpsLog = pgTable('wiki_ops_log', {
+  ...id(),
+  ...orgId(),
+  operation: text('operation').notNull(),
+  page_id: text('page_id').references(() => wikiPages.id),
+  details: jsonb('details'),
+  performed_by: text('performed_by'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+});
+
+// ═══ WIKI PAGE VERSIONS (full history) ═══
+export const wikiPageVersions = pgTable('wiki_page_versions', {
+  ...id(),
+  page_id: text('page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  title: text('title').notNull(),
+  content: text('content').notNull(),
+  summary: text('summary'),
+  edited_by: text('edited_by'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('wiki_page_versions_page').on(t.page_id),
+  uniqueIndex('wiki_page_versions_unique').on(t.page_id, t.version),
+]);
+
+// ═══ MCP CONNECTIONS ═══
+export const mcpConnections = pgTable('mcp_connections', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  slug: text('slug').notNull(),
+  server_url: text('server_url'),
+  transport: mcpTransportEnum('transport').notNull(),
+  stdio_command: text('stdio_command'),
+  stdio_args: jsonb('stdio_args'),
+  auth_type: text('auth_type').notNull().default('none'),
+  auth_config_encrypted: jsonb('auth_config_encrypted'),
+  is_active: boolean('is_active').default(true).notNull(),
+  last_connected_at: timestamp('last_connected_at'),
+  connection_error: text('connection_error'),
+  tools_cache: jsonb('tools_cache'),
+  tools_cached_at: timestamp('tools_cached_at'),
+  default_trust_tier: approvalTierEnum('default_trust_tier').default('full').notNull(),
+  enabled_tools: text('enabled_tools').array(),
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('mcp_conn_org_idx').on(t.org_id),
+  uniqueIndex('mcp_conn_slug_unique').on(t.org_id, t.slug),
+]);
+
+// ═══ MCP TOOL OVERRIDES ═══
+export const mcpToolOverrides = pgTable('mcp_tool_overrides', {
+  ...id(),
+  ...orgId(),
+  mcp_connection_id: text('mcp_connection_id').notNull().references(() => mcpConnections.id, { onDelete: 'cascade' }),
+  tool_name: text('tool_name').notNull(),
+  trust_tier_override: approvalTierEnum('trust_tier_override'),
+  is_disabled: boolean('is_disabled').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('mcp_tool_override_unique').on(t.mcp_connection_id, t.tool_name),
+]);
+
+// ═══ AGENT EMPLOYEES ═══
+export const agentEmployees = pgTable('agent_employees', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  name: text('name').notNull(),
+  slug: text('slug').notNull(),
+  role: agentEmployeeRoleEnum('role').notNull(),
+  avatar_url: text('avatar_url'),
+  system_prompt: text('system_prompt').notNull(),
+  expertise_description: text('expertise_description'),
+  native_tools: text('native_tools').array(),
+  mcp_connection_ids: text('mcp_connection_ids').array(),
+  disabled_tools: text('disabled_tools').array(),
+  space_ids: text('space_ids').array(),
+  project_ids: text('project_ids').array(),
+  trust_level: trustLevelEnum('trust_level').default('conservative').notNull(),
+  max_daily_actions: integer('max_daily_actions').default(50).notNull(),
+  daily_action_count: integer('daily_action_count').default(0).notNull(),
+  daily_action_reset_at: timestamp('daily_action_reset_at'),
+  is_active: boolean('is_active').default(true).notNull(),
+  is_byoa: boolean('is_byoa').default(false).notNull(),
+  byoa_model_info: text('byoa_model_info'),
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_employee_slug_unique').on(t.org_id, t.slug),
+  index('agent_employee_org_idx').on(t.org_id),
+]);
+
+// ═══ AGENT PLANS ═══
+export const agentPlans = pgTable('agent_plans', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  agent_employee_id: text('agent_employee_id'),
+  conversation_id: text('conversation_id'),
+  title: text('title').notNull(),
+  description: text('description'),
+  steps: jsonb('steps').notNull(),
+  status: planStatusEnum('status').default('draft').notNull(),
+  current_step: integer('current_step').default(0).notNull(),
+  context: jsonb('context'),
+  error: text('error'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_plan_org_idx').on(t.org_id),
+  index('agent_plan_employee_idx').on(t.agent_employee_id),
+]);
+
+// ═══ API KEYS ═══
+export const apiKeys = pgTable('api_keys', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id'),
+  name: text('name').notNull(),
+  key_hash: text('key_hash').notNull(),
+  key_prefix: text('key_prefix').notNull(),
+  permissions: text('permissions').array().notNull(),
+  rate_limit_per_minute: integer('rate_limit_per_minute').default(60).notNull(),
+  rate_limit_per_day: integer('rate_limit_per_day').default(10000).notNull(),
+  last_used_at: timestamp('last_used_at'),
+  request_count: integer('request_count').default(0).notNull(),
+  is_active: boolean('is_active').default(true).notNull(),
+  expires_at: timestamp('expires_at'),
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('api_key_org_idx').on(t.org_id),
+  index('api_key_prefix_idx').on(t.key_prefix),
+]);
