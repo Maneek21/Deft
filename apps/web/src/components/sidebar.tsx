@@ -40,6 +40,14 @@ import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
 
+type AgentEmployee = {
+  id: string;
+  name: string;
+  role: string;
+  color: string;
+  status: string;
+};
+
 type Space = {
   id: string;
   name: string;
@@ -83,7 +91,18 @@ function ChatSidebarContent({
   const { user } = useAuth();
   const { unreadCounts, mentionCounts, orgMembers, openDmWith, activeHuddles, joinHuddleBySpace } = useChatContext();
   const pathname = usePathname();
+  const router = useRouter();
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+  const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
+
+  useEffect(() => {
+    api.get('/api/agent-employees').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.filter((e: AgentEmployee) => e.status === 'active'));
+      }
+    });
+  }, []);
 
   const publicSpaces = spaces.filter((s) => s.type === 'public' || s.type === 'private');
   const dmSpaces = spaces.filter((s) => s.type === 'dm' || s.type === 'group_dm');
@@ -258,7 +277,69 @@ function ChatSidebarContent({
           })}
       </div>
 
-      {createSpaceOpen && <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />}
+      {/* Agent Employees */}
+      {agentEmployees.length > 0 && (
+        <div className="px-3 pt-5 pb-1">
+          <div className="flex items-center justify-between px-2 mb-2">
+            <span
+              className="text-[0.6875rem] font-semibold uppercase tracking-[0.05em]"
+              style={{ color: 'var(--outline)' }}
+            >
+              Agent Employees
+            </span>
+          </div>
+          {agentEmployees.map((employee) => {
+            const initial = employee.name.charAt(0).toUpperCase();
+            return (
+              <button
+                key={employee.id}
+                onClick={() => router.push(`/agent?employee=${employee.id}`)}
+                className="w-full text-left px-2 flex items-center gap-2"
+                style={{
+                  height: '32px',
+                  background: 'transparent',
+                  color: 'var(--on-surface-variant)',
+                  fontWeight: 500,
+                  fontSize: '0.8125rem',
+                  borderRadius: 'var(--radius-lg)',
+                }}
+              >
+                <div className="relative flex-shrink-0">
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                    style={{ background: employee.color || 'var(--primary-container)' }}
+                  >
+                    {initial}
+                  </div>
+                  <div
+                    className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
+                    style={{
+                      background: 'var(--status-green)',
+                      border: '2px solid var(--surface-container-low)',
+                    }}
+                  />
+                </div>
+                <span className="truncate flex-1">{employee.name}</span>
+                <span
+                  className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded flex-shrink-0"
+                  style={{
+                    background: 'var(--accent-subtle, rgba(124,107,79,0.12))',
+                    color: 'var(--accent)',
+                    borderRadius: '4px',
+                  }}
+                >
+                  AI
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {createSpaceOpen && typeof document !== 'undefined' && createPortal(
+        <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,
+        document.body
+      )}
     </>
   );
 }
@@ -358,7 +439,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
         })}
       </div>
 
-      {createProjectOpen && (
+      {createProjectOpen && typeof document !== 'undefined' && createPortal(
         <CreateProjectModal
           onClose={() => setCreateProjectOpen(false)}
           onCreated={(p) => {
@@ -366,7 +447,8 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
             setCreateProjectOpen(false);
             router.push(`/tasks?project=${p.id}`);
           }}
-        />
+        />,
+        document.body
       )}
     </>
   );
@@ -567,6 +649,7 @@ export function Sidebar({
   const [savedOpen, setSavedOpen] = useState(false);
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuBtnRef = useRef<HTMLButtonElement>(null);
 
   // Click-outside handler for three-dot menu
   useEffect(() => {
@@ -766,8 +849,9 @@ export function Sidebar({
           </span>
         </button>
 
-        <div className="relative" ref={userMenuRef}>
+        <div ref={userMenuRef}>
           <button
+            ref={userMenuBtnRef}
             className="p-1.5 rounded-md"
             style={{ color: 'var(--outline)' }}
             title="More options"
@@ -775,10 +859,15 @@ export function Sidebar({
           >
             <MoreHorizontal size={15} strokeWidth={1.5} />
           </button>
-          {userMenuOpen && (
+          {userMenuOpen && typeof document !== 'undefined' && createPortal(
             <div
-              className="absolute bottom-full right-0 mb-2 w-48 py-1 rounded-lg z-50"
-              style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)' }}
+              className="fixed w-48 py-1 rounded-lg z-[100]"
+              style={{
+                background: 'var(--surface-container-highest)',
+                boxShadow: 'var(--glass-shadow)',
+                bottom: `${window.innerHeight - (userMenuBtnRef.current?.getBoundingClientRect().top ?? 0) + 8}px`,
+                left: `${(userMenuBtnRef.current?.getBoundingClientRect().right ?? 0) + 8}px`,
+              }}
             >
               {/* Status display / set */}
               {user?.status_emoji ? (
@@ -826,7 +915,8 @@ export function Sidebar({
                 style={{ color: 'var(--status-red)' }}>
                 <LogOut size={14} strokeWidth={1.5} /> Log out
               </button>
-            </div>
+            </div>,
+            document.body
           )}
         </div>
       </div>

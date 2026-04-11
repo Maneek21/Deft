@@ -1,12 +1,27 @@
 'use client';
 
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useTheme } from '@/components/theme-provider';
 import { useAuth } from '@/lib/auth-context';
 import { Sun, Moon } from 'lucide-react';
 
+const settingsSections = [
+  { name: 'General', href: '/settings' },
+  { name: 'Members', href: '/settings/members' },
+  { name: 'Groups', href: '/settings/groups' },
+  { name: 'Tags', href: '/settings/tags' },
+  { name: 'Integrations', href: '/settings/integrations' },
+  { name: 'Agent', href: '/settings/agent' },
+  { name: 'Agent Employees', href: '/settings/agent-employees' },
+  { name: 'MCP Connections', href: '/settings/integrations' },
+  { name: 'API Access', href: '/settings/api-access' },
+];
+
 export default function SettingsPage() {
   const { theme, toggleTheme } = useTheme();
   const { user } = useAuth();
+  const pathname = usePathname();
 
   const themes: { value: 'light' | 'dark'; label: string; icon: React.ReactNode }[] = [
     { value: 'light', label: 'Light', icon: <Sun size={18} strokeWidth={1.5} /> },
@@ -17,6 +32,26 @@ export default function SettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {/* Mobile sub-navigation — only visible below md breakpoint */}
+      <div className="md:hidden flex gap-1 px-4 pt-4 pb-0 overflow-x-auto flex-nowrap">
+        {settingsSections.map((section) => {
+          const active = pathname === section.href;
+          return (
+            <Link
+              key={section.href}
+              href={section.href}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
+              style={{
+                background: active ? 'var(--accent)' : 'var(--surface-container-low)',
+                color: active ? 'white' : 'var(--text-secondary)',
+              }}
+            >
+              {section.name}
+            </Link>
+          );
+        })}
+      </div>
+
       <div className="max-w-2xl mx-auto px-6 py-10">
         <h1
           className="text-2xl font-semibold mb-8"
