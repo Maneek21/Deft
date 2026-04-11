@@ -13,6 +13,7 @@ const CRON_DELAYS: Record<string, number> = {
   'weekly-digest': 604800000,     // 7 days
   'wiki-lint': 86400000,          // 24 hours
   'agent-daily-reset': 86400000,  // 24 hours
+  'agent-heartbeat': 60000,       // 60 seconds
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -25,6 +26,7 @@ const CRON_KEYS: Record<string, string> = {
   'weekly-digest': 'cron:weekly-digest',
   'wiki-lint': 'cron:wiki-lint',
   'agent-daily-reset': 'agent-daily-reset',
+  'agent-heartbeat': 'agent-heartbeat',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -120,6 +122,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');
       return mod.handleAgentDailyReset;
+    }
+    case 'agent-heartbeat': {
+      const mod = await import('./handlers/agent-employee-heartbeat.js');
+      return mod.handleAgentEmployeeHeartbeat;
     }
     default:
       return null;
