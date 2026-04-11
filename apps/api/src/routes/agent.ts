@@ -8,6 +8,7 @@ import {
   agentMessages,
   agentActions,
   agentMemory,
+  agentEmployees,
   connectedAccounts,
   orgs,
   tasks,
@@ -128,7 +129,8 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
   const body = await c.req.json();
-  const { content } = body;
+  const { content, agent_employee_id } = body;
+  const agentEmployeeId = agent_employee_id || undefined;
 
   if (!env.ANTHROPIC_API_KEY) {
     return c.json(
@@ -192,7 +194,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
 
   // MCP tools
   try {
-    const mcpTools = await getMCPToolsForAgent(org?.id ?? user.org_id);
+    const mcpTools = await getMCPToolsForAgent(org?.id ?? user.org_id, agentEmployeeId);
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
     tools = [...tools, ...mcpAnthropicTools];
     mcpTools.forEach(t => {
@@ -204,12 +206,52 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     console.warn('[agent] Failed to load MCP tools:', err instanceof Error ? err.message : err);
   }
 
+  // Load employee context if this is an employee conversation
+  let employeePrompt: string | undefined;
+  let employeeTrustLevel: string | undefined;
+  let employeeNativeTools: string[] | null = null;
+
+  if (agentEmployeeId) {
+    const [emp] = await db.select().from(agentEmployees)
+      .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.is_active, true)))
+      .limit(1);
+    if (emp) {
+      employeeTrustLevel = emp.trust_level;
+      employeeNativeTools = emp.native_tools;
+
+      // Build augmented system prompt
+      employeePrompt = `${emp.system_prompt}
+
+## Your Identity
+You are ${emp.name}, a ${emp.role.replace(/_/g, ' ')} at ${org?.name || 'this organization'}.
+${emp.expertise_description ? `Your expertise: ${emp.expertise_description}` : ''}
+
+## Permissions
+Trust level: ${emp.trust_level}
+Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max_daily_actions} remaining
+
+## Communication Guidelines
+- In DMs: be thorough, provide detailed analysis.
+- When assigned tasks: act autonomously within your scope.
+- Always identify yourself. Never impersonate humans.`;
+    }
+  }
+
   // Superintendent tools — only for Defty, not employee conversations
-  // When employee conversations are added, set agentEmployeeId from the conversation metadata
-  const agentEmployeeId: string | undefined = undefined;
   if (!agentEmployeeId) {
     tools = [...tools, ...SUPERINTENDENT_TOOLS];
     SUPERINTENDENT_ACTION_TOOLS.forEach(t => allActionTools.add(t));
+  }
+
+  // Filter tools by employee's allowed native tools
+  if (agentEmployeeId && employeeNativeTools) {
+    const allowed = new Set(employeeNativeTools);
+    // Keep system tools (create_plan) + employee's allowed tools + MCP tools
+    tools = tools.filter(t =>
+      t.name === 'create_plan' ||
+      t.name.startsWith('mcp__') ||
+      allowed.has(t.name)
+    );
   }
 
   let connectionInfo = '';
@@ -255,10 +297,14 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     console.error('[agent] Failed to load memories:', err);
   }
 
-  const systemPrompt = SYSTEM_PROMPT.replace(
+  let systemPrompt = SYSTEM_PROMPT.replace(
     '{{DATE}}',
     new Date().toISOString().split('T')[0]!,
   ).replace('{{ORG}}', org?.name || 'Unknown') + connectionInfo + memoryContext;
+
+  if (employeePrompt) {
+    systemPrompt = employeePrompt;
+  }
 
   const reasonConfig = getModelConfig('reason');
   const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -350,7 +396,8 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
           if (isAction) {
             const approvalTier = getApprovalTier(tool.name);
 
-            if (shouldAutoExecute(tool.name, trustLevel)) {
+            const effectiveTrustLevel = (employeeTrustLevel || trustLevel) as TrustLevel;
+            if (shouldAutoExecute(tool.name, effectiveTrustLevel)) {
               // Trust level permits auto-execution
               await write({ type: 'tool_start', tool: tool.name });
               const { actionId, success, result, error } = await executeActionDirect(
