@@ -51,6 +51,8 @@ export async function runAgentQuery(params: {
   mode?: 'chat_mention' | 'background';
   /** Override system prompt (for agent employees in future). */
   systemPromptOverride?: string;
+  /** Override trust level (for agent employees with per-employee trust). */
+  trustLevelOverride?: 'conservative' | 'standard' | 'autonomous';
 }): Promise<{
   text: string;
   citations: any[];
@@ -114,7 +116,7 @@ export async function runAgentQuery(params: {
       .from(orgs)
       .where(eq(orgs.id, orgId))
       .limit(1);
-    trustLevel = (org?.trust_level || 'conservative') as TrustLevel;
+    trustLevel = (params.trustLevelOverride || org?.trust_level || 'conservative') as TrustLevel;
   }
 
   let systemPrompt = SYSTEM_PROMPT
