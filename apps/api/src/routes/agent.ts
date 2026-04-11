@@ -474,6 +474,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
                 user.org_id,
                 user.id,
                 convoId,
+                agentEmployeeId,
               );
               allCitations.push(...citations);
               toolCalls.push({ tool: tool.name, params: tool.input, result });

@@ -44,7 +44,21 @@ export async function executeToolCall(
   orgId: string,
   _userId: string,
   conversationId?: string,
+  agentEmployeeId?: string,
 ): Promise<{ result: any; citations: Citation[] }> {
+  // Check daily action limit for agent employees
+  if (agentEmployeeId) {
+    const [emp] = await db.select().from(agentEmployees)
+      .where(eq(agentEmployees.id, agentEmployeeId))
+      .limit(1);
+    if (emp && emp.daily_action_count >= emp.max_daily_actions) {
+      return {
+        result: { error: `Daily action limit reached (${emp.daily_action_count}/${emp.max_daily_actions}). Please ask an admin to increase the limit or wait until tomorrow.` },
+        citations: [],
+      };
+    }
+  }
+
   const citations: Citation[] = [];
 
   // Route MCP tool calls to the MCP client manager

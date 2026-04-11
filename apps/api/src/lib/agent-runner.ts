@@ -53,6 +53,8 @@ export async function runAgentQuery(params: {
   systemPromptOverride?: string;
   /** Override trust level (for agent employees with per-employee trust). */
   trustLevelOverride?: 'conservative' | 'standard' | 'autonomous';
+  /** Agent employee ID for limit enforcement. */
+  agentEmployeeId?: string;
 }): Promise<{
   text: string;
   citations: any[];
@@ -63,7 +65,7 @@ export async function runAgentQuery(params: {
     throw new Error('Anthropic API key not configured');
   }
 
-  const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride } = params;
+  const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride, agentEmployeeId } = params;
 
   // Check connected accounts for dynamic tool availability
   const connections = await db.select({ provider: connectedAccounts.provider })
@@ -272,6 +274,8 @@ export async function runAgentQuery(params: {
           tool.input as any,
           orgId,
           userId,
+          undefined,
+          agentEmployeeId,
         );
         allCitations.push(...citations);
 
