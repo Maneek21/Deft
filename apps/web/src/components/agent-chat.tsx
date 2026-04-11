@@ -191,6 +191,10 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
 
     let convId = activeConversationId;
 
+    // Set streaming flag early — prevents the conversationId effect from
+    // wiping messages when the parent re-renders with the new conversation ID
+    streamingRef.current = true;
+
     // Lazy conversation creation if no conversationId yet
     if (!convId) {
       try {
@@ -204,10 +208,12 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
           window.history.replaceState(null, '', `/agent?id=${convId}`);
           if (onConversationCreated) onConversationCreated(convId!);
         } else {
+          streamingRef.current = false;
           setMessages(prev => [...prev, { role: 'assistant', content: 'Failed to create conversation.' }]);
           return;
         }
       } catch {
+        streamingRef.current = false;
         setMessages(prev => [...prev, { role: 'assistant', content: 'Failed to create conversation.' }]);
         return;
       }
