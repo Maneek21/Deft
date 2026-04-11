@@ -13,6 +13,7 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTIO
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
+import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -78,6 +79,20 @@ export async function runAgentQuery(params: {
   if (connectedProviders.includes('github')) {
     tools = [...tools, ...GITHUB_TOOLS];
     GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
+  }
+
+  // MCP tools
+  try {
+    const mcpTools = await getMCPToolsForAgent(orgId);
+    const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
+    tools = [...tools, ...mcpAnthropicTools];
+    mcpTools.forEach(t => {
+      if (t.approvalTierMapped !== 'auto') {
+        allActionTools.add(t.name);
+      }
+    });
+  } catch (err) {
+    console.warn('[agent-runner] Failed to load MCP tools:', err instanceof Error ? err.message : err);
   }
 
   let connectionInfo = '';

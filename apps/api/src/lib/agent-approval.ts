@@ -25,6 +25,17 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   post_message: 'full',
   create_calendar_event: 'full',
   create_github_issue: 'full',
+
+  // Superintendent tools (Defty only)
+  manage_agent_employee: 'full',
+  list_agent_employees: 'auto',
+  get_agent_activity: 'auto',
+  manage_mcp_connection: 'full',
+  get_agent_economics: 'auto',
+  manage_triggers: 'quick',
+
+  // Plans
+  create_plan: 'auto',
 };
 
 /** Returns true if the action should be auto-executed (no user approval needed). */

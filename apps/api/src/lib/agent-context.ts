@@ -19,7 +19,14 @@ import {
   burnoutAlerts,
   spaceKnowledge,
   connectedAccounts,
+  wikiPages,
+  wikiLinks,
+  wikiCitations,
+  wikiOpsLog,
+  mcpConnections,
 } from '@deft/db/schema';
+import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
+import { mcpClientManager } from '@deft/mcp';
 import { decrypt } from './encryption.js';
 import { env } from './env.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
@@ -37,6 +44,23 @@ export async function executeToolCall(
   conversationId?: string,
 ): Promise<{ result: any; citations: Citation[] }> {
   const citations: Citation[] = [];
+
+  // Route MCP tool calls to the MCP client manager
+  if (toolName.startsWith('mcp__')) {
+    const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
+    const conn = await db.select().from(mcpConnections)
+      .where(and(eq(mcpConnections.org_id, orgId), eq(mcpConnections.slug, connectionSlug)))
+      .limit(1);
+    if (!conn[0]) return { result: { error: `MCP connection '${connectionSlug}' not found` }, citations: [] };
+
+    const config = toConnectionConfig(conn[0]);
+    const mcpResult = await mcpClientManager.executeTool(config, actualToolName, params);
+
+    return {
+      result: mcpResult.success ? mcpResult.content : { error: mcpResult.error },
+      citations: [{ type: 'mcp', id: conn[0].id, title: `${conn[0].name}: ${actualToolName}` }],
+    };
+  }
 
   switch (toolName) {
     case 'search_messages': {
@@ -1534,6 +1558,253 @@ export async function executeToolCall(
       return {
         result: { alerts: result, count: result.length },
         citations: [],
+      };
+    }
+
+    // ─── Wiki Tools ───
+
+    case 'wiki_search': {
+      const { query, type: pageType, scope: pageScope, limit: maxResults = 5 } = params;
+      const conditions: any[] = [
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+      ];
+
+      if (pageType) conditions.push(eq(wikiPages.type, pageType));
+      if (pageScope) conditions.push(eq(wikiPages.scope, pageScope));
+
+      // Full-text search with fallback to ilike
+      conditions.push(
+        sql`search_vector @@ plainto_tsquery('english', ${query})`,
+      );
+
+      const results = await db.select({
+        id: wikiPages.id,
+        title: wikiPages.title,
+        slug: wikiPages.slug,
+        summary: wikiPages.summary,
+        type: wikiPages.type,
+        scope: wikiPages.scope,
+        confidence: wikiPages.confidence,
+        updated_at: wikiPages.updated_at,
+      })
+        .from(wikiPages)
+        .where(and(...conditions))
+        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${query})) DESC`)
+        .limit(Math.min(maxResults, 10));
+
+      // Get linked pages for each result
+      const enriched = await Promise.all(results.map(async (page) => {
+        const links = await db.select({ title: wikiPages.title, slug: wikiPages.slug })
+          .from(wikiLinks)
+          .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
+          .where(eq(wikiLinks.source_page_id, page.id))
+          .limit(5);
+        return { ...page, linked_pages: links };
+      }));
+
+      const citations: Citation[] = results.map(p => ({
+        type: 'wiki',
+        id: p.id,
+        title: p.title,
+      }));
+
+      return { result: { pages: enriched, count: enriched.length }, citations };
+    }
+
+    case 'wiki_read': {
+      const { slug } = params;
+
+      const [page] = await db.select()
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+        .limit(1);
+
+      if (!page) {
+        return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
+      }
+
+      // Get linked pages
+      const linkedPages = await db.select({
+        slug: wikiPages.slug,
+        title: wikiPages.title,
+        type: wikiPages.type,
+        summary: wikiPages.summary,
+      })
+        .from(wikiLinks)
+        .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
+        .where(eq(wikiLinks.source_page_id, page.id));
+
+      // Get backlinks
+      const backlinks = await db.select({
+        slug: wikiPages.slug,
+        title: wikiPages.title,
+        type: wikiPages.type,
+      })
+        .from(wikiLinks)
+        .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
+        .where(eq(wikiLinks.target_page_id, page.id));
+
+      // Get citations
+      const citations = await db.select()
+        .from(wikiCitations)
+        .where(eq(wikiCitations.page_id, page.id))
+        .orderBy(desc(wikiCitations.created_at))
+        .limit(10);
+
+      return {
+        result: {
+          title: page.title,
+          slug: page.slug,
+          type: page.type,
+          scope: page.scope,
+          content: page.content,
+          summary: page.summary,
+          confidence: page.confidence,
+          version: page.version,
+          updated_at: page.updated_at,
+          linked_pages: linkedPages,
+          backlinks,
+          citations,
+        },
+        citations: [{ type: 'wiki', id: page.id, title: page.title }],
+      };
+    }
+
+    case 'wiki_write': {
+      const { slug: existingSlug, title, content, type: pageType, summary, related_slugs } = params;
+
+      if (existingSlug) {
+        // UPDATE existing page
+        const [existing] = await db.select()
+          .from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
+          .limit(1);
+
+        if (!existing) {
+          return { result: { error: `Wiki page "${existingSlug}" not found` }, citations: [] };
+        }
+
+        const updates: Record<string, any> = {};
+        if (title) updates.title = title;
+        if (summary) updates.summary = summary;
+        if (pageType) updates.type = pageType;
+        if (content && content !== existing.content) {
+          updates.content = content;
+          updates.previous_content = existing.content;
+          updates.version = existing.version + 1;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await db.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+        }
+
+        // Update links
+        if (related_slugs && related_slugs.length > 0) {
+          await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
+          const targets = await db.select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+          for (const t of targets) {
+            if (t.id !== existing.id) {
+              await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
+            }
+          }
+        }
+
+        await db.insert(wikiOpsLog).values({
+          org_id: orgId,
+          operation: 'update',
+          page_id: existing.id,
+          details: { updated_fields: Object.keys(updates), by_agent: true },
+          performed_by: _userId,
+        });
+
+        return { result: { success: true, slug: existingSlug, action: 'updated' }, citations: [] };
+      } else {
+        // CREATE new page
+        if (!title || !content || !pageType) {
+          return { result: { error: 'title, content, and type are required to create a wiki page' }, citations: [] };
+        }
+
+        let slug = title.toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, '')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 80);
+
+        // Ensure unique
+        const [dup] = await db.select({ id: wikiPages.id })
+          .from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)))
+          .limit(1);
+        if (dup) slug = `${slug}-${Date.now().toString(36)}`;
+
+        const [page] = await db.insert(wikiPages).values({
+          org_id: orgId,
+          scope: 'org',
+          type: pageType,
+          title,
+          slug,
+          summary: summary || null,
+          content,
+          confidence: 1.0,
+        }).returning();
+
+        // Create links
+        if (related_slugs && related_slugs.length > 0) {
+          const targets = await db.select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+          for (const t of targets) {
+            if (t.id !== page!.id) {
+              await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: page!.id, target_page_id: t.id }).onConflictDoNothing();
+            }
+          }
+        }
+
+        await db.insert(wikiOpsLog).values({
+          org_id: orgId,
+          operation: 'create',
+          page_id: page!.id,
+          details: { title, type: pageType, by_agent: true },
+          performed_by: _userId,
+        });
+
+        return { result: { success: true, slug, action: 'created' }, citations: [] };
+      }
+    }
+
+    case 'wiki_suggest_update': {
+      const { slug, suggested_content, reason } = params as { slug: string; suggested_content: string; reason: string };
+
+      if (!slug || !suggested_content || !reason) {
+        return { result: { error: 'slug, suggested_content, and reason are required' }, citations: [] };
+      }
+
+      // Verify page exists
+      const [page] = await db.select({ id: wikiPages.id, title: wikiPages.title })
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+        .limit(1);
+
+      if (!page) {
+        return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
+      }
+
+      // Log the suggestion in ops log
+      await db.insert(wikiOpsLog).values({
+        org_id: orgId,
+        operation: 'suggest_update',
+        page_id: page.id,
+        details: { suggested_content, reason, by_agent: true },
+        performed_by: _userId,
+      });
+
+      return {
+        result: { success: true, message: `Suggestion logged for "${page.title}". A team member will review it.` },
+        citations: [{ type: 'wiki', id: page.id, title: page.title }],
       };
     }
 

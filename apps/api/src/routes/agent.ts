@@ -21,6 +21,7 @@ import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from '../lib/agent-approval.js';
+import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
 
 export const agentRoutes = new Hono();
 
@@ -187,6 +188,20 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
   if (connectedProviders.includes('github')) {
     tools = [...tools, ...GITHUB_TOOLS];
     GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
+  }
+
+  // MCP tools
+  try {
+    const mcpTools = await getMCPToolsForAgent(org?.id ?? user.org_id);
+    const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
+    tools = [...tools, ...mcpAnthropicTools];
+    mcpTools.forEach(t => {
+      if (t.approvalTierMapped !== 'auto') {
+        allActionTools.add(t.name);
+      }
+    });
+  } catch (err) {
+    console.warn('[agent] Failed to load MCP tools:', err instanceof Error ? err.message : err);
   }
 
   let connectionInfo = '';
