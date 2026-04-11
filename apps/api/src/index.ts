@@ -39,6 +39,8 @@ import { eventRoutes } from './routes/events.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { mcpConnectionRoutes } from './routes/mcp-connections.js';
+import { apiKeyRoutes } from './routes/api-keys.js';
+import { mcpServerRoutes } from './routes/mcp-server.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -54,6 +56,9 @@ app.use('*', cors({
 // Public routes
 app.route('/api/auth', authRoutes);
 app.route('/api/files', fileServingRoutes);
+
+// MCP server — own API key auth, mounted before auth middleware
+app.route('/mcp', mcpServerRoutes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);
@@ -91,6 +96,7 @@ app.route('/api/calendar', calendarRoutes);
 app.route('/api/events', eventRoutes);
 app.route('/api/agent-employees', agentEmployeeRoutes);
 app.route('/api/mcp-connections', mcpConnectionRoutes);
+app.route('/api/api-keys', apiKeyRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
