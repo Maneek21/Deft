@@ -214,7 +214,7 @@ export default function AgentPage() {
         >
           <span
             className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0"
-            style={{ background: employee.color || 'var(--primary-container)' }}
+            style={{ background: 'var(--primary-container)' }}
           >
             {employee.name.charAt(0).toUpperCase()}
           </span>
@@ -232,7 +232,7 @@ export default function AgentPage() {
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <div
             className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white"
-            style={{ background: activeEmployee.color || 'var(--primary-container)' }}
+            style={{ background: 'var(--primary-container)' }}
           >
             {activeEmployee.name.charAt(0).toUpperCase()}
           </div>

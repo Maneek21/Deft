@@ -307,7 +307,7 @@ function ChatSidebarContent({
                 <div className="relative flex-shrink-0">
                   <div
                     className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                    style={{ background: employee.color || 'var(--primary-container)' }}
+                    style={{ background: 'var(--primary-container)' }}
                   >
                     {initial}
                   </div>
