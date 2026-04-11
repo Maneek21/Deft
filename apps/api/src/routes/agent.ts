@@ -18,8 +18,9 @@ import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
-import { executeAction } from '../lib/agent-actions.js';
+import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
+import { shouldAutoExecute, getApprovalTier, type TrustLevel } from '../lib/agent-approval.js';
 
 export const agentRoutes = new Hono();
 
@@ -167,6 +168,8 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     .from(orgs)
     .where(eq(orgs.id, user.org_id))
     .limit(1);
+
+  const trustLevel = (org?.trust_level || 'conservative') as TrustLevel;
 
   // Check connected accounts for dynamic tool availability
   const connections = await db.select({ provider: connectedAccounts.provider })
@@ -322,40 +325,75 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
           const isAction = allActionTools.has(tool.name);
 
           if (isAction) {
-            // Write actions require approval — store and notify client
-            const [actionRecord] = await db
-              .insert(agentActions)
-              .values({
-                org_id: user.org_id,
-                user_id: user.id,
-                conversation_id: convoId,
+            const approvalTier = getApprovalTier(tool.name);
+
+            if (shouldAutoExecute(tool.name, trustLevel)) {
+              // Trust level permits auto-execution
+              await write({ type: 'tool_start', tool: tool.name });
+              const { actionId, success, result, error } = await executeActionDirect(
+                tool.name,
+                tool.input as Record<string, any>,
+                user.org_id,
+                user.id,
+                convoId,
+                approvalTier,
+              );
+
+              await write({
+                type: 'action_auto_executed',
+                id: actionId,
                 action: tool.name,
-                params: tool.input as any,
-                approval_tier: 'quick',
-                approval_status: 'pending',
-              })
-              .returning();
+                params: tool.input,
+                success,
+                result,
+                error,
+              });
 
-            pendingActions.push({
-              id: actionRecord!.id,
-              action: tool.name,
-              params: tool.input,
-            });
-            await write({
-              type: 'pending_action',
-              id: actionRecord!.id,
-              action: tool.name,
-              params: tool.input,
-            });
+              toolResults.push({
+                type: 'tool_result' as const,
+                tool_use_id: tool.id,
+                content: JSON.stringify(
+                  success
+                    ? { status: 'auto_executed', ...result }
+                    : { status: 'auto_execute_failed', error },
+                ),
+              });
+            } else {
+              // Needs user approval
+              const [actionRecord] = await db
+                .insert(agentActions)
+                .values({
+                  org_id: user.org_id,
+                  user_id: user.id,
+                  conversation_id: convoId,
+                  action: tool.name,
+                  params: tool.input as any,
+                  approval_tier: approvalTier,
+                  approval_status: 'pending',
+                })
+                .returning();
 
-            toolResults.push({
-              type: 'tool_result' as const,
-              tool_use_id: tool.id,
-              content: JSON.stringify({
-                status: 'pending_approval',
-                action_id: actionRecord!.id,
-              }),
-            });
+              pendingActions.push({
+                id: actionRecord!.id,
+                action: tool.name,
+                params: tool.input,
+              });
+              await write({
+                type: 'pending_action',
+                id: actionRecord!.id,
+                action: tool.name,
+                params: tool.input,
+              });
+
+              toolResults.push({
+                type: 'tool_result' as const,
+                tool_use_id: tool.id,
+                content: JSON.stringify({
+                  status: 'pending_approval',
+                  action_id: actionRecord!.id,
+                }),
+              });
+            }
           } else {
             // Read-only tools (including remember/recall) — execute immediately
             await write({ type: 'tool_start', tool: tool.name });
