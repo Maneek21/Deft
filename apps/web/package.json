@@ -1,0 +1,40 @@
+{
+  "name": "@deft/web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@deft/shared": "workspace:*",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tailwindcss/postcss": "^4.2.2",
+    "@tiptap/core": "^3.21.0",
+    "@tiptap/extension-link": "^3.21.0",
+    "@tiptap/extension-placeholder": "^3.21.0",
+    "@tiptap/pm": "^3.21.0",
+    "@tiptap/react": "^3.21.0",
+    "@tiptap/starter-kit": "^3.21.0",
+    "lucide-react": "^1.7.0",
+    "next": "^16.2.1",
+    "postcss": "^8.5.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "simple-peer": "^9.11.1",
+    "socket.io-client": "^4.8.3",
+    "swr": "^2.4.1",
+    "tailwindcss": "^4.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/simple-peer": "^9.11.9",
+    "typescript": "^6.0.2"
+  }
+}

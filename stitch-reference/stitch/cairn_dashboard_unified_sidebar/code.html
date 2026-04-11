@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cairn AI - Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              colors: {
+                "on-primary-fixed": "#190064",
+                "on-surface-variant": "#c9c4d5",
+                "inverse-primary": "#5c4bc3",
+                "on-error-container": "#ffdad6",
+                "on-tertiary": "#422d00",
+                "error": "#ffb4ab",
+                "on-tertiary-fixed": "#271900",
+                "on-secondary-fixed": "#1b1540",
+                "on-background": "#e5e1e4",
+                "secondary-container": "#494371",
+                "tertiary": "#f9bd45",
+                "surface-variant": "#353437",
+                "surface-container-high": "#2a2a2c",
+                "on-primary-fixed-variant": "#4430aa",
+                "inverse-on-surface": "#313032",
+                "on-secondary": "#302a56",
+                "background": "#131315",
+                "tertiary-fixed": "#ffdea8",
+                "primary-container": "#9080fa",
+                "surface-container": "#201f22",
+                "on-primary": "#2d0e94",
+                "surface-tint": "#c8bfff",
+                "on-secondary-container": "#bab2e7",
+                "surface-dim": "#131315",
+                "outline-variant": "#474553",
+                "primary": "#c8bfff",
+                "tertiary-container": "#bc8708",
+                "primary-fixed-dim": "#c8bfff",
+                "surface": "#131315",
+                "on-primary-container": "#26008b",
+                "outline": "#928f9f",
+                "error-container": "#93000a",
+                "on-surface": "#e5e1e4",
+                "on-tertiary-container": "#392600",
+                "inverse-surface": "#e5e1e4",
+                "secondary-fixed-dim": "#c8c0f6",
+                "secondary-fixed": "#e5deff",
+                "surface-container-highest": "#353437",
+                "tertiary-fixed-dim": "#f9bd45",
+                "surface-bright": "#39393b",
+                "secondary": "#c8c0f6",
+                "on-secondary-fixed-variant": "#47416e",
+                "surface-container-low": "#1c1b1d",
+                "on-tertiary-fixed-variant": "#5e4200",
+                "primary-fixed": "#e5deff",
+                "on-error": "#690005",
+                "surface-container-lowest": "#0e0e10"
+              },
+              fontFamily: {
+                "headline": ["Inter"],
+                "body": ["Inter"],
+                "label": ["Inter"],
+                "mono": ["JetBrains Mono"]
+              },
+              borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+            },
+          },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-size: 20px;
+        }
+        body {
+            background-color: #131315;
+            color: #e5e1e4;
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        .glass-card {
+            background: rgba(53, 52, 55, 0.4);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(71, 69, 83, 0.1);
+        }
+        .sidebar-active {
+            background-color: #201F22;
+            color: #8B7BF5;
+        }
+    </style>
+</head>
+<body class="overflow-hidden">
+<div class="flex h-screen w-full">
+<!-- SideNavBar Component -->
+<aside class="fixed left-0 top-0 h-full w-64 z-50 bg-[#111113] border-r border-[#474553]/10 flex flex-col p-4 gap-y-2 font-['Inter'] text-[0.875rem] font-medium">
+<!-- Header Section -->
+<div class="flex items-center gap-3 px-2 py-4 mb-4">
+<div class="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">mountain_flag</span>
+</div>
+<div class="flex flex-col">
+<span class="text-md font-bold text-[#EDEDEF] leading-none">Cairn AI</span>
+<span class="text-[0.6875rem] text-[#353437] font-semibold tracking-wider uppercase mt-1">The Quiet Workspace</span>
+</div>
+</div>
+<button class="w-full py-2.5 px-4 mb-4 bg-primary-container text-on-primary-container rounded-md flex items-center justify-center gap-2 hover:opacity-90 transition-all scale-98 active:scale-95">
+<span class="material-symbols-outlined" style="font-variation-settings: 'wght' 600;">add</span>
+<span class="font-semibold">New Session</span>
+</button>
+<!-- Main Navigation -->
+<nav class="flex flex-col gap-1">
+<a class="flex items-center gap-3 px-3 py-2 rounded-md sidebar-active text-[#8B7BF5] transition-all duration-150" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span>Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-md text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150" href="#">
+<span class="material-symbols-outlined">forum</span>
+<span>Chat</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-md text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150" href="#">
+<span class="material-symbols-outlined">assignment</span>
+<span>Tasks</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-md text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150" href="#">
+<span class="material-symbols-outlined">smart_toy</span>
+<span>Agent</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-md text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span>Settings</span>
+</a>
+</nav>
+<!-- Contextual Section -->
+<div class="mt-8 px-2">
+<span class="text-[0.6875rem] font-bold text-[#353437] uppercase tracking-widest px-1">Favorites</span>
+<div class="mt-2 flex flex-col gap-1">
+<a class="flex items-center gap-2 px-1 py-1 text-[0.8125rem] text-on-surface-variant hover:text-[#EDEDEF] transition-colors" href="#">
+<span class="material-symbols-outlined text-[16px]">folder</span> Project Atlas
+                    </a>
+<a class="flex items-center gap-2 px-1 py-1 text-[0.8125rem] text-on-surface-variant hover:text-[#EDEDEF] transition-colors" href="#">
+<span class="material-symbols-outlined text-[16px]">description</span> Q4 Strategy
+                    </a>
+</div>
+</div>
+<div class="mt-6 px-2">
+<span class="text-[0.6875rem] font-bold text-[#353437] uppercase tracking-widest px-1">Recent</span>
+<div class="mt-2 flex flex-col gap-1">
+<a class="flex items-center gap-2 px-1 py-1 text-[0.8125rem] text-on-surface-variant hover:text-[#EDEDEF] transition-colors" href="#">
+<span class="material-symbols-outlined text-[16px]">chat</span> Design Audit
+                    </a>
+</div>
+</div>
+<!-- Footer Section -->
+<div class="mt-auto pt-4 border-t border-[#474553]/10 flex flex-col gap-2">
+<div class="flex items-center justify-between px-3 py-2 rounded-md hover:bg-[#1C1B1D] transition-colors cursor-pointer">
+<div class="flex items-center gap-3">
+<div class="relative">
+<img class="w-8 h-8 rounded-full object-cover" data-alt="professional corporate headshot of a woman with a confident expression in a high-end office environment with soft focus background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCW1Kb2i-rts58zpqebjRyZY0azMelUmERPUJJyWaUOtTQ71_lSS6bEsViGBCbrAxPc4s1aJCLbU5qlXwLz8XpkCx306lne5vKb5iqGyV0RpZloI6lYG0VQPs4k9gkt5rUScWPOMg4J4WPngIxpARgYsl0dhRuAvj6O_ApoJV6DX6LWKUyY9pz6FyFFSgPP-kQalBZ52RvFAE2aIBtb8MkMugbrKQ8Wpgw42QsbVEqTqrhltotvV4EvnUVgyMMT7Lii5F3ZLSLOyukr"/>
+<span class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#111113] rounded-full"></span>
+</div>
+<div class="flex flex-col">
+<span class="text-[0.8125rem] text-[#EDEDEF]">Maneek</span>
+<span class="text-[0.6875rem] text-[#353437]">Online</span>
+</div>
+</div>
+<span class="material-symbols-outlined text-[#353437]">more_vert</span>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 h-full overflow-y-auto bg-[#131315]">
+<!-- TopAppBar Style Header -->
+<header class="h-14 px-8 flex items-center justify-between border-b border-[#474553]/05 sticky top-0 bg-[#131315]/80 backdrop-blur-md z-40">
+<div class="flex items-center gap-2 text-[0.8125rem] text-[#353437] font-medium">
+<span class="hover:text-primary transition-colors cursor-pointer">Dashboard</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-[#EDEDEF]">Overview</span>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative">
+<span class="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-[#353437] text-[18px]">search</span>
+<input class="bg-surface-container-low border-none rounded-md pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary/30 transition-all placeholder:text-[#353437]" placeholder="Search workspace..." type="text"/>
+</div>
+<button class="material-symbols-outlined text-[#353437] hover:text-[#EDEDEF] transition-colors">notifications</button>
+</div>
+</header>
+<div class="p-8 max-w-7xl mx-auto space-y-8">
+<!-- Welcome Section -->
+<section>
+<h1 class="text-[2rem] font-semibold tracking-tight text-[#EDEDEF]">Good morning, Maneek.</h1>
+<p class="text-[#353437] mt-1">Here's what requires your attention today.</p>
+</section>
+<!-- Morning Pulse AI Card -->
+<section class="glass-card rounded-xl p-6 relative overflow-hidden group">
+<div class="absolute top-0 right-0 p-8 opacity-10 pointer-events-none transition-transform group-hover:scale-110">
+<span class="material-symbols-outlined !text-[120px]" style="font-variation-settings: 'wght' 200;">auto_awesome</span>
+</div>
+<div class="relative z-10">
+<div class="flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">colors_spark</span>
+<span class="text-[0.6875rem] font-bold uppercase tracking-[0.1em] text-primary">Morning Pulse</span>
+</div>
+<h2 class="text-xl font-medium mb-4 max-w-2xl leading-snug">You have <span class="text-primary">3 high-priority tasks</span> and a brief gap between 2:00 PM and 4:00 PM today. I've prepared a draft for the Atlas Project proposal based on yesterday's chat.</h2>
+<div class="flex gap-3">
+<button class="px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">description</span> Review Draft
+                            </button>
+<button class="px-4 py-2 bg-surface-container-highest/50 text-[#EDEDEF] hover:bg-surface-container-highest rounded-lg text-sm font-medium transition-colors">
+                                Dismiss
+                            </button>
+</div>
+</div>
+</section>
+<!-- Quick Actions -->
+<section class="flex gap-4">
+<button class="flex items-center gap-3 bg-surface-container-low px-5 py-3 rounded-xl border border-[#474553]/10 hover:border-primary/30 hover:bg-surface-container transition-all group">
+<div class="w-10 h-10 rounded-lg bg-[#201F22] flex items-center justify-center group-hover:bg-primary/10 transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary">edit_square</span>
+</div>
+<div class="text-left">
+<p class="text-[0.8125rem] font-semibold text-[#EDEDEF]">New Draft</p>
+<p class="text-[0.6875rem] text-[#353437]">Write something new</p>
+</div>
+</button>
+<button class="flex items-center gap-3 bg-surface-container-low px-5 py-3 rounded-xl border border-[#474553]/10 hover:border-primary/30 hover:bg-surface-container transition-all group">
+<div class="w-10 h-10 rounded-lg bg-[#201F22] flex items-center justify-center group-hover:bg-primary/10 transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary">task_alt</span>
+</div>
+<div class="text-left">
+<p class="text-[0.8125rem] font-semibold text-[#EDEDEF]">Log Task</p>
+<p class="text-[0.6875rem] text-[#353437]">Track progress</p>
+</div>
+</button>
+<button class="flex items-center gap-3 bg-surface-container-low px-5 py-3 rounded-xl border border-[#474553]/10 hover:border-primary/30 hover:bg-surface-container transition-all group">
+<div class="w-10 h-10 rounded-lg bg-[#201F22] flex items-center justify-center group-hover:bg-primary/10 transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary">calendar_today</span>
+</div>
+<div class="text-left">
+<p class="text-[0.8125rem] font-semibold text-[#EDEDEF]">View Schedule</p>
+<p class="text-[0.6875rem] text-[#353437]">Manage your time</p>
+</div>
+</button>
+</section>
+<!-- Two-Column Grid -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+<!-- Due Today Column -->
+<section class="space-y-4">
+<div class="flex items-center justify-between px-2">
+<h3 class="text-[0.6875rem] font-bold text-[#353437] uppercase tracking-[0.15em]">Due Today</h3>
+<button class="text-primary text-[0.6875rem] font-bold hover:underline">View All</button>
+</div>
+<div class="space-y-3">
+<div class="bg-surface-container-lowest p-4 rounded-xl border border-[#474553]/05 flex items-center gap-4 hover:bg-surface-container transition-colors cursor-pointer group">
+<button class="w-5 h-5 rounded border border-[#353437] flex items-center justify-center group-hover:border-primary transition-colors">
+</button>
+<div class="flex-1">
+<p class="text-sm font-medium text-[#EDEDEF]">Finalize Project Atlas Specs</p>
+<div class="flex items-center gap-3 mt-1">
+<span class="text-[0.6875rem] text-primary flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">schedule</span> 10:00 AM
+                                        </span>
+<span class="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[0.6rem] font-bold uppercase tracking-wider">High</span>
+</div>
+</div>
+</div>
+<div class="bg-surface-container-lowest p-4 rounded-xl border border-[#474553]/05 flex items-center gap-4 hover:bg-surface-container transition-colors cursor-pointer group">
+<button class="w-5 h-5 rounded border border-[#353437] flex items-center justify-center group-hover:border-primary transition-colors">
+</button>
+<div class="flex-1">
+<p class="text-sm font-medium text-[#EDEDEF]">Weekly Sync with Engineering</p>
+<div class="flex items-center gap-3 mt-1">
+<span class="text-[0.6875rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">schedule</span> 1:30 PM
+                                        </span>
+<span class="px-1.5 py-0.5 rounded bg-[#201F22] text-[#353437] text-[0.6rem] font-bold uppercase tracking-wider">Medium</span>
+</div>
+</div>
+</div>
+<div class="bg-surface-container-lowest p-4 rounded-xl border border-[#474553]/05 flex items-center gap-4 hover:bg-surface-container transition-colors cursor-pointer group">
+<button class="w-5 h-5 rounded border border-[#353437] flex items-center justify-center group-hover:border-primary transition-colors">
+</button>
+<div class="flex-1">
+<p class="text-sm font-medium text-[#EDEDEF]">Refresh Design System Documentation</p>
+<div class="flex items-center gap-3 mt-1">
+<span class="text-[0.6875rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">schedule</span> 4:00 PM
+                                        </span>
+<span class="px-1.5 py-0.5 rounded bg-[#201F22] text-[#353437] text-[0.6rem] font-bold uppercase tracking-wider">Low</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Recent Activity Column -->
+<section class="space-y-4">
+<div class="flex items-center justify-between px-2">
+<h3 class="text-[0.6875rem] font-bold text-[#353437] uppercase tracking-[0.15em]">Recent Activity</h3>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors"><span class="material-symbols-outlined text-[18px]">history</span></button>
+</div>
+<div class="bg-surface-container-low rounded-xl p-2">
+<div class="flex flex-col">
+<div class="flex gap-4 p-4 hover:bg-surface-container-high/50 rounded-lg transition-colors group cursor-pointer">
+<div class="w-2 h-2 rounded-full bg-primary mt-1.5"></div>
+<div class="flex-1">
+<p class="text-sm text-[#EDEDEF]">Cairn AI generated <span class="font-semibold">3 summaries</span> from your meetings.</p>
+<p class="text-mono text-[0.6875rem] text-[#353437] mt-1 uppercase tracking-tight">12m ago — AI AGENT</p>
+</div>
+<span class="material-symbols-outlined text-[#353437] opacity-0 group-hover:opacity-100 transition-opacity">arrow_forward</span>
+</div>
+<div class="flex gap-4 p-4 hover:bg-surface-container-high/50 rounded-lg transition-colors group cursor-pointer">
+<div class="w-2 h-2 rounded-full bg-[#474553]/30 mt-1.5"></div>
+<div class="flex-1">
+<p class="text-sm text-[#EDEDEF]">You shared <span class="font-semibold text-primary">"Project_Atlas_Final_Draft"</span> with the team.</p>
+<p class="text-mono text-[0.6875rem] text-[#353437] mt-1 uppercase tracking-tight">2h ago — FILE SYSTEM</p>
+</div>
+<span class="material-symbols-outlined text-[#353437] opacity-0 group-hover:opacity-100 transition-opacity">arrow_forward</span>
+</div>
+<div class="flex gap-4 p-4 hover:bg-surface-container-high/50 rounded-lg transition-colors group cursor-pointer">
+<div class="w-2 h-2 rounded-full bg-[#474553]/30 mt-1.5"></div>
+<div class="flex-1">
+<p class="text-sm text-[#EDEDEF]">New session started: <span class="font-semibold">"Q4 Budget Planning"</span></p>
+<p class="text-mono text-[0.6875rem] text-[#353437] mt-1 uppercase tracking-tight">5h ago — CHAT</p>
+</div>
+<span class="material-symbols-outlined text-[#353437] opacity-0 group-hover:opacity-100 transition-opacity">arrow_forward</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+</main>
+</div>
+</body></html>

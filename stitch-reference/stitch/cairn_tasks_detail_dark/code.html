@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cairn AI — Tasks</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error": "#ffb4ab",
+              "primary-container": "#9080fa",
+              "surface-container": "#201f22",
+              "inverse-on-surface": "#313032",
+              "tertiary-fixed-dim": "#f9bd45",
+              "on-secondary": "#302a56",
+              "inverse-primary": "#5c4bc3",
+              "surface-dim": "#131315",
+              "error-container": "#93000a",
+              "secondary-container": "#494371",
+              "secondary-fixed": "#e5deff",
+              "on-tertiary-fixed": "#271900",
+              "inverse-surface": "#e5e1e4",
+              "on-primary-fixed-variant": "#4430aa",
+              "on-surface": "#e5e1e4",
+              "on-tertiary": "#422d00",
+              "on-secondary-fixed": "#1b1540",
+              "surface-container-low": "#1c1b1d",
+              "on-error": "#690005",
+              "surface-container-high": "#2a2a2c",
+              "tertiary-fixed": "#ffdea8",
+              "secondary-fixed-dim": "#c8c0f6",
+              "primary-fixed-dim": "#c8bfff",
+              "on-secondary-container": "#bab2e7",
+              "secondary": "#c8c0f6",
+              "background": "#131315",
+              "surface-container-highest": "#353437",
+              "on-tertiary-fixed-variant": "#5e4200",
+              "on-primary-fixed": "#190064",
+              "on-primary": "#2d0e94",
+              "surface-container-lowest": "#0e0e10",
+              "on-surface-variant": "#c9c4d5",
+              "surface-variant": "#353437",
+              "on-primary-container": "#26008b",
+              "outline": "#928f9f",
+              "surface-bright": "#39393b",
+              "on-error-container": "#ffdad6",
+              "surface": "#131315",
+              "tertiary": "#f9bd45",
+              "primary-fixed": "#e5deff",
+              "on-tertiary-container": "#392600",
+              "surface-tint": "#c8bfff",
+              "tertiary-container": "#bc8708",
+              "on-secondary-fixed-variant": "#47416e",
+              "outline-variant": "#474553",
+              "on-background": "#e5e1e4",
+              "primary": "#c8bfff"
+            },
+            fontFamily: {
+              "headline": ["Inter"],
+              "body": ["Inter"],
+              "label": ["Inter"],
+              "mono": ["JetBrains Mono"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        font-size: 1.25rem;
+      }
+      body {
+        background-color: #131315;
+        color: #e5e1e4;
+        -webkit-font-smoothing: antialiased;
+      }
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="font-body overflow-hidden">
+<!-- SideNavBar (Shared Component) -->
+<aside class="fixed left-0 top-0 h-full w-[240px] bg-[#111113] dark:bg-[#111113] flex flex-col h-full py-4 px-3 z-50 transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)]">
+<div class="flex items-center gap-3 px-2 mb-8">
+<div class="w-8 h-8 rounded bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">cloud_done</span>
+</div>
+<div>
+<div class="text-lg font-semibold text-[#EDEDEF] tracking-tight">Cairn AI</div>
+<div class="text-[10px] uppercase tracking-widest text-on-surface-variant/50 font-bold">Workspace</div>
+</div>
+</div>
+<button class="mb-6 mx-2 py-2 px-4 bg-primary-container text-on-primary-container font-semibold rounded-lg flex items-center justify-center gap-2 transition-all active:scale-95">
+<span class="material-symbols-outlined text-[18px]">add</span>
+<span class="text-sm">New Command</span>
+</button>
+<nav class="flex-1 space-y-1">
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Dashboard</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined">forum</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Chat</span>
+</div>
+<!-- Active State: Tasks -->
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#8B7BF5] font-semibold transition-all cursor-pointer bg-surface-container-low">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Tasks</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined">smart_toy</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Agent</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Settings</span>
+</div>
+<div class="mt-8 px-3">
+<div class="text-[10px] uppercase tracking-[0.1em] text-on-surface-variant/40 font-bold mb-3 px-1">Projects</div>
+<div class="space-y-2">
+<div class="flex items-center gap-3 text-xs text-on-surface-variant/70 hover:text-on-surface cursor-pointer py-1">
+<span class="w-2 h-2 rounded-full bg-primary/40"></span>
+                        Project Cairn
+                    </div>
+<div class="flex items-center gap-3 text-xs text-on-surface-variant/70 hover:text-on-surface cursor-pointer py-1">
+<span class="w-2 h-2 rounded-full bg-secondary/40"></span>
+                        Obsidian UX
+                    </div>
+</div>
+</div>
+</nav>
+<div class="mt-auto border-t border-white/5 pt-4 px-2 space-y-1">
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined">account_circle</span>
+<span class="text-sm">Profile</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] transition-all cursor-pointer">
+<span class="material-symbols-outlined text-green-500 text-[12px]" style="font-variation-settings: 'FILL' 1;">lens</span>
+<span class="text-sm">Status</span>
+</div>
+</div>
+</aside>
+<!-- TopAppBar (Shared Component) -->
+<header class="fixed top-0 right-0 w-[calc(100%-240px)] h-[48px] bg-transparent backdrop-blur-md border-b border-white/10 z-40 flex items-center justify-between px-6 transition-all">
+<div class="flex items-center gap-2">
+<div class="font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[#EDEDEF]/40 flex items-center gap-2">
+<span>Tasks</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-[#EDEDEF]">Project Cairn</span>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative flex items-center bg-surface-container-low px-3 py-1 rounded border border-white/5">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant/50 mr-2">search</span>
+<input class="bg-transparent border-none outline-none text-xs w-48 focus:ring-0 p-0 text-on-surface" placeholder="Search tasks..." type="text"/>
+<span class="text-[10px] text-on-surface-variant/30 font-mono ml-4">CMD+K</span>
+</div>
+<div class="flex items-center gap-4 text-on-surface-variant/60">
+<span class="material-symbols-outlined cursor-pointer hover:text-[#EDEDEF] transition-colors active:scale-95">filter_list</span>
+<span class="material-symbols-outlined cursor-pointer hover:text-[#EDEDEF] transition-colors active:scale-95">grid_view</span>
+<span class="material-symbols-outlined cursor-pointer hover:text-[#EDEDEF] transition-colors active:scale-95">share</span>
+<div class="w-6 h-6 rounded-full overflow-hidden border border-white/10">
+<img class="w-full h-full object-cover" data-alt="close-up portrait of professional woman with neutral expression in editorial soft lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCXBtnmeQxEeFeQAnJZh0oQPiidKUU3al7dK6lmoaLJvhZHXs3kVSavQsPfbsn8FZDdfg20bOTLbABP6QpXjQGF3ktvvXu4vbyeC_qKh62K5TrLf7Fc-06hwwbeJaBbwcIT-LeAigGiyZIuBdghBO3J-Y2tdChX5sjhkmVgKeT9pyJmu1qkiGuMHF6lRDAOuL2iNc5adkhY7rMj-O1sh5nVrvmn0xmCaaATvCnbwZ7_LipgZEWzCqBpuk-wGXg0IZOmU6jxYxnRA_Kk"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Content Layout -->
+<main class="ml-[240px] pt-[48px] h-screen flex">
+<!-- List View Section -->
+<section class="flex-1 overflow-auto bg-[#131315] relative no-scrollbar">
+<div class="p-8">
+<div class="flex justify-between items-end mb-8">
+<div>
+<h1 class="text-2xl font-semibold tracking-tight text-[#EDEDEF]">Active Sprints</h1>
+<p class="text-sm text-on-surface-variant/60 mt-1">12 tasks remaining in current cycle.</p>
+</div>
+<div class="flex gap-2">
+<button class="bg-surface-container-highest/50 px-3 py-1.5 text-xs font-semibold rounded border border-white/5 hover:bg-surface-container-highest transition-colors">Group by Status</button>
+<button class="bg-surface-container-highest/50 px-3 py-1.5 text-xs font-semibold rounded border border-white/5 hover:bg-surface-container-highest transition-colors">Sort</button>
+</div>
+</div>
+<!-- Table Content -->
+<div class="w-full">
+<!-- Header -->
+<div class="grid grid-cols-12 border-b border-white/5 pb-3 px-4 text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/40">
+<div class="col-span-1">ID</div>
+<div class="col-span-5">Title</div>
+<div class="col-span-2">Status</div>
+<div class="col-span-1 text-center">Priority</div>
+<div class="col-span-2">Assignee</div>
+<div class="col-span-1 text-right">Due</div>
+</div>
+<!-- Rows -->
+<div class="divide-y divide-white/[0.02]">
+<!-- Row Active (Selected) -->
+<div class="grid grid-cols-12 items-center px-4 py-3.5 text-sm transition-all bg-white/[0.03] border-l-2 border-primary group cursor-pointer">
+<div class="col-span-1 font-mono text-xs text-on-surface-variant/50">CAIRN-42</div>
+<div class="col-span-5 font-medium text-on-surface">Refactor neural interface core logic</div>
+<div class="col-span-2 flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-blue-400"></span>
+<span class="text-xs">In Progress</span>
+</div>
+<div class="col-span-1 flex justify-center">
+<span class="material-symbols-outlined text-orange-400 text-lg">signal_cellular_alt</span>
+</div>
+<div class="col-span-2 flex items-center gap-2">
+<img class="w-5 h-5 rounded-full object-cover" data-alt="portrait of a focused professional man in studio lighting with dark background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAOlhi2fm8_xrOh59A9OTjEqU4Wh87B0l2qvjNrK0-uuIQe1rheXVevKyVpym-qd1jp5x6YPZ1LNWgcgIFqSFxvT0Cz2CHbb9kcrpS2UHZWKRTarJHfWE9q6Ot6EKUFP2ne5EbAQAWEwqpu7YJk0ZaIM_PidHjpsAKrFNMtsJ72G_gMh27UGYSOyBJnypMyKnO-4Vytbv3CU9JgIgU7kvGSh1PFYh6bIAZYuoRvLbWZWhwWNp028mjyM3v7KLa2ZZlBjm0ecq6PMag2"/>
+<span class="text-xs text-on-surface-variant">Marcus Thorne</span>
+</div>
+<div class="col-span-1 text-right text-xs text-on-surface-variant/50">Oct 24</div>
+</div>
+<!-- Row Normal -->
+<div class="grid grid-cols-12 items-center px-4 py-3.5 text-sm transition-all hover:bg-white/[0.03] group cursor-pointer border-l-2 border-transparent">
+<div class="col-span-1 font-mono text-xs text-on-surface-variant/50">CAIRN-41</div>
+<div class="col-span-5 font-medium text-on-surface">Implement ghost-border rendering system</div>
+<div class="col-span-2 flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-gray-600"></span>
+<span class="text-xs text-on-surface-variant">Backlog</span>
+</div>
+<div class="col-span-1 flex justify-center">
+<span class="material-symbols-outlined text-on-surface-variant/30 text-lg">signal_cellular_alt_2_bar</span>
+</div>
+<div class="col-span-2 flex items-center gap-2">
+<img class="w-5 h-5 rounded-full object-cover" data-alt="professional woman looking at the camera with a confident smile in an office setting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuChejD5V3IN5ASiFSTUbFml0LRF4wiHHwBA6PAhr-AvOJYfX7HFwozgVGKZX5kuxea3BThJJr1MD8Wl2gKLOjTXhp2GKLlrvY3eEN6lqpmXQ1kCqXqomRgUJYlnHOS4Og7Xq6BF6vAngqSR9ujbJuXFh4i8iarhgOsqkdCqS_Tn-uny8euoiVObatJERpyvKodF1_nqUFu6pkc7lP-1vFQhTBiZOgPmVy2bOEZXqDH7V5KEVB66C22MbPMry_gcPBZI_PpxRLuch3Ep"/>
+<span class="text-xs text-on-surface-variant">Elena Vance</span>
+</div>
+<div class="col-span-1 text-right text-xs text-on-surface-variant/50">Oct 26</div>
+</div>
+<!-- Row Normal -->
+<div class="grid grid-cols-12 items-center px-4 py-3.5 text-sm transition-all hover:bg-white/[0.03] group cursor-pointer border-l-2 border-transparent">
+<div class="col-span-1 font-mono text-xs text-on-surface-variant/50">CAIRN-39</div>
+<div class="col-span-5 font-medium text-on-surface">Security audit for workspace encryption</div>
+<div class="col-span-2 flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-red-400"></span>
+<span class="text-xs">Review Required</span>
+</div>
+<div class="col-span-1 flex justify-center">
+<span class="material-symbols-outlined text-red-500 text-lg">signal_cellular_alt</span>
+</div>
+<div class="col-span-2 flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-surface-container-highest flex items-center justify-center text-[10px]">Un</div>
+<span class="text-xs text-on-surface-variant/40 italic">Unassigned</span>
+</div>
+<div class="col-span-1 text-right text-xs text-on-surface-variant/50">Tomorrow</div>
+</div>
+<!-- Row Normal -->
+<div class="grid grid-cols-12 items-center px-4 py-3.5 text-sm transition-all hover:bg-white/[0.03] group cursor-pointer border-l-2 border-transparent">
+<div class="col-span-1 font-mono text-xs text-on-surface-variant/50">CAIRN-38</div>
+<div class="col-span-5 font-medium text-on-surface">Optimization of glassmorphism shaders</div>
+<div class="col-span-2 flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-green-400"></span>
+<span class="text-xs">Completed</span>
+</div>
+<div class="col-span-1 flex justify-center">
+<span class="material-symbols-outlined text-on-surface-variant/30 text-lg">signal_cellular_alt_1_bar</span>
+</div>
+<div class="col-span-2 flex items-center gap-2">
+<img class="w-5 h-5 rounded-full object-cover" data-alt="professional headshot of a woman with curly hair" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAtQTw4HBw2S5mPF0Hj-Excn_zq-CTl61Ci8jr2PEB5y6vzY-bBjN2CNK8DgRGVEmjXPk9IJ701OXRocI1TllnLATV7cs2q84C6RFuONm-BGDw4Mbh42dPrxULDNyvLpX2bkTmOjiuHbhzYA4FUnCtHs87cOSEIZmXNB488omC3QtcQUZxb1VoG1J-LPO-OhFiKl-RFAeL6VhMfnD-q6DQ5sAH0Eaws8Vlw-4mnqcfmJNHXcGJbQOXj7W0mUbx1AH8nYxAy6mCSisRT"/>
+<span class="text-xs text-on-surface-variant">Sarah Chen</span>
+</div>
+<div class="col-span-1 text-right text-xs text-on-surface-variant/50">Oct 19</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Detail Panel (Right) -->
+<aside class="w-[480px] h-full bg-surface-container-low border-l border-white/5 flex flex-col z-30 shadow-2xl">
+<!-- Header -->
+<div class="p-6 flex items-center justify-between">
+<div class="font-mono text-xs text-on-surface-variant/40 uppercase tracking-widest">CAIRN-42</div>
+<div class="flex items-center gap-2">
+<button class="p-1.5 hover:bg-surface-container-highest rounded transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant/60">open_in_full</span>
+</button>
+<button class="p-1.5 hover:bg-surface-container-highest rounded transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant/60">more_horiz</span>
+</button>
+<button class="p-1.5 hover:bg-surface-container-highest rounded transition-colors ml-2">
+<span class="material-symbols-outlined text-on-surface-variant/60">close</span>
+</button>
+</div>
+</div>
+<!-- Scrollable Content -->
+<div class="flex-1 overflow-auto p-6 space-y-8 no-scrollbar">
+<!-- Editable Title -->
+<textarea class="w-full bg-transparent border-none text-2xl font-semibold tracking-tight p-0 focus:ring-0 resize-none overflow-hidden leading-tight placeholder-on-surface-variant/30" placeholder="Task Title" rows="2">Refactor neural interface core logic</textarea>
+<!-- Metadata Grid -->
+<div class="grid grid-cols-2 gap-y-6 gap-x-4">
+<div class="space-y-1.5">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Status</label>
+<button class="w-full flex items-center justify-between px-3 py-2 bg-surface-container rounded-lg border border-white/5 hover:border-white/10 transition-colors">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-blue-400"></span>
+<span class="text-xs font-medium">In Progress</span>
+</div>
+<span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+</div>
+<div class="space-y-1.5">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Priority</label>
+<button class="w-full flex items-center justify-between px-3 py-2 bg-surface-container rounded-lg border border-white/5 hover:border-white/10 transition-colors">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-orange-400 text-lg">signal_cellular_alt</span>
+<span class="text-xs font-medium">High</span>
+</div>
+<span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+</div>
+<div class="space-y-1.5">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Assignee</label>
+<button class="w-full flex items-center justify-between px-3 py-2 bg-surface-container rounded-lg border border-white/5 hover:border-white/10 transition-colors">
+<div class="flex items-center gap-2">
+<img class="w-5 h-5 rounded-full" data-alt="professional man portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCGWrLWNe-JIfiljT06_TiGkfWRMBxUGvDS_PeeH1qrjRn9gYDwm6sEhnjZKCojR7tkoE0R5wVz_rHH14YbN7ZqEzj418lW13f6bZrGsyh0dSboExRok8_-BJyd6720mqaO2KRirIShvKfmQjuYoWhW7rFwu7x4sSQSnxZVBm-OSBpqQu2JU-Yp0t4IlMnKOSzdFDD8VkEjGAkZcrUFoBna6BlmVAOoxx5a08plXbdi4Enm5taz-_pkbW1goe-zDJhUchKh87lsO5We"/>
+<span class="text-xs font-medium">Marcus Thorne</span>
+</div>
+<span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+</div>
+<div class="space-y-1.5">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Due Date</label>
+<button class="w-full flex items-center justify-between px-3 py-2 bg-surface-container rounded-lg border border-white/5 hover:border-white/10 transition-colors text-on-surface-variant/80">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">calendar_today</span>
+<span class="text-xs font-medium">Oct 24, 2023</span>
+</div>
+</button>
+</div>
+</div>
+<!-- Labels -->
+<div class="space-y-2">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Labels</label>
+<div class="flex flex-wrap gap-2">
+<span class="px-2 py-0.5 bg-primary-container/10 text-primary text-[10px] font-bold rounded border border-primary/20">ENGINEERING</span>
+<span class="px-2 py-0.5 bg-surface-container-highest text-on-surface-variant text-[10px] font-bold rounded border border-white/5">Q4-ROADMAP</span>
+<button class="px-2 py-0.5 border border-dashed border-white/10 text-on-surface-variant/40 text-[10px] rounded hover:border-white/20 transition-colors">+ Add</button>
+</div>
+</div>
+<!-- Description -->
+<div class="space-y-3">
+<label class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/40 block">Description</label>
+<div class="min-h-[120px] w-full bg-surface-container p-4 rounded-xl border border-white/5 text-sm leading-relaxed text-on-surface/80 group">
+<p>The current neural weight distribution is causing 150ms latency spikes during high-load command ingestion. We need to:</p>
+<ul class="list-disc pl-5 mt-2 space-y-1">
+<li>Re-index the primary synapse vector.</li>
+<li>Optimize the recursive buffer clearing loop.</li>
+</ul>
+<div class="mt-4 text-on-surface-variant/30 italic group-hover:text-on-surface-variant/50 transition-colors cursor-text">Add more details...</div>
+</div>
+</div>
+<!-- Tabs -->
+<div class="pt-4 border-t border-white/5">
+<div class="flex gap-6 mb-6">
+<button class="text-xs font-bold uppercase tracking-widest text-primary border-b-2 border-primary pb-2">Comments</button>
+<button class="text-xs font-bold uppercase tracking-widest text-on-surface-variant/40 hover:text-on-surface-variant/80 transition-colors pb-2">Activity</button>
+</div>
+<!-- Comment Item -->
+<div class="flex gap-3 mb-6">
+<img class="w-8 h-8 rounded-full border border-white/10" data-alt="Elena Vance portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDNS8jrHX6Ss-koCiPAY9r__X4Ca9tTA6PLvT74P8BwkgeSDlKK0UMXvAd3SMMwT-zuR20qWMKlpAHhXodoREpFHRh1_1HV8GnlxF5T9QbDZKw-XDtOV8C1MSvmoY6I_A0Ne9WvJqFWi6gxDrYib8nfoBzbBFQyCTvRLAKa32rPYbrRZYoC2hn6tEDTRzRld7Ncp1K5HmOoxtOENnvip5gAkd8g9ri2qsqJ46IF3Ap0SAX4jLNiRsS2xQcDvTHruJcaPTbsWJA4dyDS"/>
+<div class="flex-1 space-y-1">
+<div class="flex items-center justify-between">
+<span class="text-xs font-bold text-on-surface">Elena Vance</span>
+<span class="text-[10px] font-mono text-on-surface-variant/30">2H AGO</span>
+</div>
+<div class="bg-surface-container p-3 rounded-lg rounded-tl-none border border-white/5 text-xs text-on-surface-variant/80">
+                                I've finished the initial audit on the buffer loop. It seems the bottleneck is actually in the garbage collector.
+                            </div>
+</div>
+</div>
+<!-- Comment Input -->
+<div class="flex gap-3">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest border border-white/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-[14px]">edit</span>
+</div>
+<div class="flex-1 relative">
+<input class="w-full bg-surface-container border border-white/5 rounded-lg px-4 py-2 text-xs focus:ring-1 focus:ring-primary focus:border-transparent outline-none" placeholder="Add a comment..." type="text"/>
+<span class="absolute right-3 top-2.5 text-[10px] font-mono text-on-surface-variant/30">CMD+ENTER</span>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</main>
+<!-- Contextual FAB (Supressed as per logic for Task Detail views) -->
+</body></html>

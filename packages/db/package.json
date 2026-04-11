@@ -1,0 +1,30 @@
+{
+  "name": "@deft/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "push": "drizzle-kit push",
+    "migrate": "drizzle-kit migrate",
+    "seed": "tsx seed.ts",
+    "studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.3.1",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0"
+  }
+}

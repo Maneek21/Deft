@@ -1,0 +1,1 @@
+{"@anthropic-ai/claude-code@*":{"dependencies":{"esbuild":true,"sharp":true,"msgpackr-extract":true}}}

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      display: inline-block;
+      line-height: 1;
+      text-transform: none;
+      letter-spacing: normal;
+      word-wrap: normal;
+      white-space: nowrap;
+      direction: ltr;
+    }
+    body {
+      background-color: #131315;
+      color: #e5e1e4;
+      font-family: 'Inter', sans-serif;
+    }
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    .glass-panel {
+      background: rgba(53, 52, 55, 0.7);
+      backdrop-filter: blur(12px);
+    }
+    .message-hover:hover .floating-toolbar {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "error": "#ffb4ab",
+            "primary-container": "#9080fa",
+            "surface-container": "#201f22",
+            "inverse-on-surface": "#313032",
+            "tertiary-fixed-dim": "#f9bd45",
+            "on-secondary": "#302a56",
+            "inverse-primary": "#5c4bc3",
+            "surface-dim": "#131315",
+            "error-container": "#93000a",
+            "secondary-container": "#494371",
+            "secondary-fixed": "#e5deff",
+            "on-tertiary-fixed": "#271900",
+            "inverse-surface": "#e5e1e4",
+            "on-primary-fixed-variant": "#4430aa",
+            "on-surface": "#e5e1e4",
+            "on-tertiary": "#422d00",
+            "on-secondary-fixed": "#1b1540",
+            "surface-container-low": "#1c1b1d",
+            "on-error": "#690005",
+            "surface-container-high": "#2a2a2c",
+            "tertiary-fixed": "#ffdea8",
+            "secondary-fixed-dim": "#c8c0f6",
+            "primary-fixed-dim": "#c8bfff",
+            "on-secondary-container": "#bab2e7",
+            "secondary": "#c8c0f6",
+            "background": "#131315",
+            "surface-container-highest": "#353437",
+            "on-tertiary-fixed-variant": "#5e4200",
+            "on-primary-fixed": "#190064",
+            "on-primary": "#2d0e94",
+            "surface-container-lowest": "#0e0e10",
+            "on-surface-variant": "#c9c4d5",
+            "surface-variant": "#353437",
+            "on-primary-container": "#26008b",
+            "outline": "#928f9f",
+            "surface-bright": "#39393b",
+            "on-error-container": "#ffdad6",
+            "surface": "#131315",
+            "tertiary": "#f9bd45",
+            "primary-fixed": "#e5deff",
+            "on-tertiary-container": "#392600",
+            "surface-tint": "#c8bfff",
+            "tertiary-container": "#bc8708",
+            "on-secondary-fixed-variant": "#47416e",
+            "outline-variant": "#474553",
+            "on-background": "#e5e1e4",
+            "primary": "#c8bfff"
+          },
+          fontFamily: {
+            "headline": ["Inter"],
+            "body": ["Inter"],
+            "label": ["Inter"]
+          },
+          borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+        },
+      },
+    }
+  </script>
+</head>
+<body class="bg-background text-on-surface flex overflow-hidden h-screen">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full w-[240px] bg-[#111113] dark:bg-[#111113] flex flex-col py-4 px-3 z-50">
+<div class="flex items-center gap-3 px-2 mb-8">
+<div class="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container text-xl" data-icon="water_drop">water_drop</span>
+</div>
+<div>
+<h1 class="text-lg font-semibold text-[#EDEDEF] tracking-tight">Cairn AI</h1>
+<p class="font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[#EDEDEF]/40">Workspace</p>
+</div>
+</div>
+<nav class="flex-1 space-y-1">
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="dashboard">dashboard</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Dashboard</span>
+</div>
+<!-- Active Navigation: Chat -->
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] text-[#8B7BF5] font-semibold bg-[#353437]/30 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="forum">forum</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Chat</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="task_alt">task_alt</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Tasks</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="smart_toy">smart_toy</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Agent</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="settings">settings</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Settings</span>
+</div>
+</nav>
+<div class="mt-8">
+<button class="w-full flex items-center justify-center gap-2 bg-primary-container text-on-primary-container py-2 rounded-xl font-semibold text-[0.875rem] transition-all duration-150 ease-out hover:saturate-150 active:scale-[0.98]">
+<span class="material-symbols-outlined text-[18px]" data-icon="add">add</span>
+        New Command
+      </button>
+</div>
+<div class="mt-auto pt-4 space-y-1">
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px]" data-icon="account_circle">account_circle</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Profile</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-[#EDEDEF]/60 cursor-pointer">
+<span class="material-symbols-outlined text-[20px] text-tertiary" data-icon="lens" style="font-variation-settings: 'FILL' 1;">lens</span>
+<span class="font-['Inter'] text-[0.875rem] leading-[1.5]">Status</span>
+</div>
+</div>
+</aside>
+<!-- Content Area -->
+<main class="flex-1 ml-[240px] flex flex-col h-full bg-surface">
+<!-- TopAppBar -->
+<header class="h-[48px] bg-transparent backdrop-blur-md border-b border-white/10 flex items-center justify-between px-6 z-40">
+<div class="flex items-center gap-2">
+<nav class="flex items-center gap-2 font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[#EDEDEF]/40">
+<span>Chat</span>
+<span class="material-symbols-outlined text-[14px]" data-icon="chevron_right">chevron_right</span>
+<span class="text-[#EDEDEF]">#engineering</span>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[18px] text-[#EDEDEF]/60 cursor-pointer transition-colors hover:text-[#EDEDEF] active:scale-95" data-icon="filter_list">filter_list</span>
+<span class="material-symbols-outlined text-[18px] text-[#EDEDEF]/60 cursor-pointer transition-colors hover:text-[#EDEDEF] active:scale-95" data-icon="grid_view">grid_view</span>
+<span class="material-symbols-outlined text-[18px] text-[#EDEDEF]/60 cursor-pointer transition-colors hover:text-[#EDEDEF] active:scale-95" data-icon="share">share</span>
+</div>
+<div class="w-7 h-7 rounded-full overflow-hidden border border-white/10 cursor-pointer active:scale-95">
+<img alt="User Avatar" class="w-full h-full object-cover" data-alt="close-up portrait of a professional man with a friendly expression in soft studio lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBAG6PEvj-3yGehNW7dP7mPTS0m4uqGtzFn3P9tgsz2Hq18aVjDSA9PrM2L5lUBWhFq_p0U0SPPHrH3i8WxPg4Yc-oGNCEyJPEHDgv6QDCMKjvSgKMi7CSQymGW5cxVcgv9CVbQqScChTdlpx4AhaLdA7DSrPC9eIKIuZzw1mNelhFRhOcj-3a5K8xcA2AitUMI2KvHAssRM2IMEV_L_XbaAPJkEFnRY7NMdKOfNalq6_jvauX8McngoXNdddkaZygPaIrSbbtZCZwQ"/>
+</div>
+</div>
+</header>
+<!-- Chat Sub-Layout -->
+<div class="flex-1 flex overflow-hidden">
+<!-- Spaces & DM Sidebar -->
+<nav class="w-64 bg-surface-container-low border-r border-white/5 flex flex-col py-6 overflow-y-auto no-scrollbar">
+<div class="px-4 mb-8">
+<h2 class="font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[#EDEDEF]/40 mb-3 px-2">Spaces</h2>
+<div class="space-y-0.5">
+<div class="group flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer transition-all">
+<div class="flex items-center gap-2 text-on-surface">
+<span class="text-[#EDEDEF]/40">#</span>
+<span class="text-[0.875rem] font-semibold">engineering</span>
+</div>
+<div class="w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(144,128,250,0.5)]"></div>
+</div>
+<div class="group flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer transition-all">
+<div class="flex items-center gap-2 text-on-surface/60">
+<span class="text-[#EDEDEF]/40">#</span>
+<span class="text-[0.875rem]">general</span>
+</div>
+</div>
+<div class="group flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer transition-all">
+<div class="flex items-center gap-2 text-on-surface/60">
+<span class="text-[#EDEDEF]/40">#</span>
+<span class="text-[0.875rem]">design-ops</span>
+</div>
+</div>
+</div>
+</div>
+<div class="px-4">
+<h2 class="font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em] text-[#EDEDEF]/40 mb-3 px-2">Direct Messages</h2>
+<div class="space-y-0.5">
+<div class="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer transition-all">
+<div class="relative w-6 h-6 rounded-md overflow-hidden bg-surface-container-highest">
+<img alt="Sarah Chen" class="w-full h-full object-cover" data-alt="professional headshot of a woman with black hair smiling gently, warm lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDmAwV1XLH_buDAvKiffhqJQ_VoKbv8bFBEOBFk6PXFT9SZJ4dEz95CfMllbqY5JW8RGDmfm-veGXRFhfBgyy927y_jlff3JRuSM0hg2HzrswsmqzpaxmQZ3uazMcLagMODGx86chMDevt4zIyIIrIgAKoY0F_R9uNPGxzt4zgZNqHNkz5AV0ajhmVrgTxx5LqlUINsNArAawcmwrayHC_AYqagHEhknolHqgzfYSCSB7oqXvJM6LoFg98OM-9m0WswUxgCcSRmmIKj"/>
+<div class="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-tertiary border border-surface-container-low"></div>
+</div>
+<span class="text-[0.875rem] text-on-surface/80">Sarah Chen</span>
+</div>
+<div class="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-surface-container cursor-pointer transition-all">
+<div class="relative w-6 h-6 rounded-md overflow-hidden bg-surface-container-highest">
+<img alt="Marcus V." class="w-full h-full object-cover" data-alt="portrait of a man with glasses looking thoughtfully at the camera, clean background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDfcn15YvwuSkrMwwyim1Fy1h445T_Y_DUjPtiQLp1aKja1cet90OQ7ZkmBl7OoQb9nzXgyHh5iyIKoqIgBeiT6MIKkYgpO8avLEHPZSTvR7-x7U52VjiSw6F_2pIGRrOuEZDxOzG13HhQKJU-OKv1KAt4-VUfl7bnJVU6I5EupfQ-qxZ-MxBgTgX2xHBcPgGrsrDDtBzBQBKJO5iODhACUUT9d4OqUuJUN-OwXC-bnEsq4ne3hutfQzoy6q4YKLZ8uWatNKlitAQ_8"/>
+<div class="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-on-surface/20 border border-surface-container-low"></div>
+</div>
+<span class="text-[0.875rem] text-on-surface/80">Marcus V.</span>
+</div>
+</div>
+</div>
+</nav>
+<!-- Chat Feed -->
+<section class="flex-1 flex flex-col relative">
+<!-- Message Area -->
+<div class="flex-1 overflow-y-auto no-scrollbar p-6 space-y-6">
+<!-- Space Header -->
+<div class="mb-8 pb-8 border-b border-white/5">
+<div class="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center mb-4">
+<span class="material-symbols-outlined text-3xl text-primary" data-icon="tag">tag</span>
+</div>
+<h1 class="text-2xl font-semibold tracking-tight text-[#EDEDEF]">#engineering</h1>
+<p class="text-on-surface-variant text-[0.875rem] mt-1">Technical discussions, architecture planning, and deployment coordination.</p>
+</div>
+<!-- Message Group -->
+<div class="relative message-hover group transition-colors duration-150 rounded-lg -mx-2 px-2 py-1 hover:bg-white/[0.03]">
+<div class="flex gap-4">
+<img alt="Alex Rivera" class="w-6 h-6 rounded-md mt-1 object-cover" data-alt="headshot of a man with a short beard and dark hair, soft natural lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA2q7ktRkds5yjqNmRn7oCVDUaOsPePlcfiioxDrESAQH0ti6tpZdQuyM8kVI_iLQHbgI56pAQgeDCFINmzQKG_LCRQcGE-9JwxhSZfbRD0dLJWwjfEO4JkeYefkfFnRtdbMPLRwz1wMFC0D8SAjbepddcXChigo_jldK0PGBledMgZsRHRfTN8dJNaNqIo8_Yu4cwjVhKq16EZgV25o-Z5e6mLCCSMZ4OzYiD7ADEKrF-k9tBmIJLHFBdWISaOJPM99E5bVBJ788I9"/>
+<div class="flex-1">
+<div class="flex items-baseline gap-2 mb-1">
+<span class="font-semibold text-[0.875rem] text-[#EDEDEF]">Alex Rivera</span>
+<span class="font-['JetBrains_Mono'] text-[0.75rem] text-[#EDEDEF]/40">10:42 AM</span>
+</div>
+<p class="text-[13px] leading-[1.5] text-on-surface-variant">The core architecture for the new vector index is ready for review. I've pushed the PR to `main-v2`. Can someone from the infra team take a look at the memory constraints?</p>
+<!-- Reaction Pills -->
+<div class="flex gap-1.5 mt-2">
+<button class="flex items-center gap-1.5 bg-surface-container-highest px-2 py-0.5 rounded-md hover:bg-surface-container-high transition-colors text-[0.75rem]">
+<span>🚀</span> <span class="text-on-surface-variant font-medium">4</span>
+</button>
+<button class="flex items-center gap-1.5 bg-surface-container-highest px-2 py-0.5 rounded-md hover:bg-surface-container-high transition-colors text-[0.75rem]">
+<span>👀</span> <span class="text-on-surface-variant font-medium">2</span>
+</button>
+</div>
+<!-- Thread Link -->
+<button class="mt-2 text-[#8B7BF5] text-[0.8125rem] font-medium hover:underline flex items-center gap-1">
+                  3 replies
+                </button>
+</div>
+</div>
+<!-- Floating Toolbar -->
+<div class="floating-toolbar absolute -top-4 right-4 opacity-0 transform translate-y-1 transition-all duration-150 glass-panel border border-white/10 rounded-lg p-1 flex gap-0.5 shadow-xl">
+<button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10 text-[#EDEDEF]/60 hover:text-[#EDEDEF]">
+<span class="material-symbols-outlined text-[18px]" data-icon="add_reaction">add_reaction</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10 text-[#EDEDEF]/60 hover:text-[#EDEDEF]">
+<span class="material-symbols-outlined text-[18px]" data-icon="reply">reply</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10 text-[#EDEDEF]/60 hover:text-[#EDEDEF]">
+<span class="material-symbols-outlined text-[18px]" data-icon="push_pin">push_pin</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10 text-[#EDEDEF]/60 hover:text-[#EDEDEF]">
+<span class="material-symbols-outlined text-[18px]" data-icon="assignment_add">assignment_add</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/10 text-[#EDEDEF]/60 hover:text-[#EDEDEF]">
+<span class="material-symbols-outlined text-[18px]" data-icon="more_horiz">more_horiz</span>
+</button>
+</div>
+</div>
+<!-- Grouped Message -->
+<div class="relative message-hover group transition-colors duration-150 rounded-lg -mx-2 px-2 py-1 hover:bg-white/[0.03]">
+<div class="flex gap-4">
+<div class="w-6 opacity-0 flex items-center justify-center text-[0.6rem] text-[#EDEDEF]/20 group-hover:opacity-100 font-['JetBrains_Mono']">
+                10:44
+              </div>
+<div class="flex-1">
+<p class="text-[13px] leading-[1.5] text-on-surface-variant">I also included the telemetry benchmarks. Performance is roughly 15% better than the previous iteration under high load.</p>
+</div>
+</div>
+</div>
+<!-- Message from another user -->
+<div class="relative message-hover group transition-colors duration-150 rounded-lg -mx-2 px-2 py-1 hover:bg-white/[0.03]">
+<div class="flex gap-4">
+<img alt="Sarah Chen" class="w-6 h-6 rounded-md mt-1 object-cover" data-alt="professional headshot of a woman with black hair smiling gently, warm lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBYhvpLEq5oTaNAgOKxSPFaghpqjJqILi6CJ-v9zEAYU6gN_jRM8nVPQDTfcW9IxJPKcm9qWuUIZDgq_bsmJrMcGMQ-mv4eQNb3IXh9bD5cue3zSUaAJlOg9A2rl22_1lt9hLfVYeRx9RtmJzsyZWAtOEBYMxVNp9iueublxe9PEJdLSufDA52LVT7moLhXlXzkFt9v5WuiR-O6c41VMORvgXXlVu2Qv6o2PgWYRbX6yz-PGBZMg3hs27S5aIiy3EfwcIAaOKvGrpgq"/>
+<div class="flex-1">
+<div class="flex items-baseline gap-2 mb-1">
+<span class="font-semibold text-[0.875rem] text-[#EDEDEF]">Sarah Chen</span>
+<span class="font-['JetBrains_Mono'] text-[0.75rem] text-[#EDEDEF]/40">10:50 AM</span>
+</div>
+<p class="text-[13px] leading-[1.5] text-on-surface-variant">Checking it now. The memory constraints look solid from a first glance, but let me run the stress test suite on the staging env.</p>
+<div class="mt-2 bg-surface-container-low border border-white/5 rounded-lg p-3 max-w-sm flex items-center gap-3">
+<span class="material-symbols-outlined text-primary" data-icon="description">description</span>
+<div class="flex-1 min-w-0">
+<p class="text-[0.75rem] font-medium text-[#EDEDEF] truncate">memory-benchmarks-v2.pdf</p>
+<p class="text-[0.65rem] text-on-surface-variant">2.4 MB • PDF</p>
+</div>
+<span class="material-symbols-outlined text-[#EDEDEF]/40 cursor-pointer hover:text-[#EDEDEF]" data-icon="download">download</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Composer -->
+<div class="p-6 pt-2">
+<div class="bg-surface-container-low border border-white/10 rounded-xl focus-within:border-primary/40 transition-colors shadow-lg">
+<div class="flex items-center gap-0.5 px-3 py-2 border-b border-white/5">
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="format_bold">format_bold</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="format_italic">format_italic</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="strikethrough_s">strikethrough_s</span>
+</button>
+<div class="w-px h-4 bg-white/10 mx-1"></div>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="code">code</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="link">link</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[18px]" data-icon="format_list_bulleted">format_list_bulleted</span>
+</button>
+</div>
+<div class="p-3">
+<textarea class="w-full bg-transparent border-none focus:ring-0 text-[13px] text-on-surface placeholder:text-on-surface-variant/40 resize-none h-20 no-scrollbar" placeholder="Message #engineering"></textarea>
+</div>
+<div class="flex items-center justify-between px-3 pb-3">
+<div class="flex items-center gap-1">
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="add_circle">add_circle</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="alternate_email">alternate_email</span>
+</button>
+<button class="p-1.5 rounded-md hover:bg-white/10 text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[20px]" data-icon="mood">mood</span>
+</button>
+</div>
+<button class="bg-[#8B7BF5] text-on-primary-container px-4 py-1.5 rounded-lg font-semibold text-[0.8125rem] transition-all hover:saturate-150 active:scale-95 flex items-center gap-2">
+                Send
+                <span class="material-symbols-outlined text-[16px]" data-icon="send">send</span>
+</button>
+</div>
+</div>
+<div class="mt-2 flex justify-center">
+<p class="text-[0.625rem] text-[#EDEDEF]/20 font-['JetBrains_Mono'] uppercase tracking-widest">Shift + Enter for new line • Markdown supported</p>
+</div>
+</div>
+</section>
+</div>
+</main>
+</body></html>

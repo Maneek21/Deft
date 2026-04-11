@@ -1,0 +1,41 @@
+Business Source License 1.1
+
+Licensor: Cairn
+
+Licensed Work: Cairn
+                The Licensed Work is (c) 2026 Cairn
+
+Additional Use Grant: You may use, copy, modify, and distribute the Licensed
+                      Work for any purpose, subject to these conditions:
+
+                      1. You may NOT offer the Licensed Work, or any modified
+                         version of it, to third parties as a hosted or
+                         managed service.
+
+                      2. All copies, forks, and derivative works MUST retain
+                         visible attribution to the original Cairn project
+                         in the following locations:
+                         - The README file (with link to the original repository)
+                         - The project documentation
+                         - The application's About or Settings page, visible
+                           to end users
+
+                         Attribution must include the text:
+                         "Based on Cairn (https://github.com/[org]/cairn),
+                         created by [Your Name / Company]."
+
+Change Date: Four years from each release date.
+
+Change License: Apache License, Version 2.0, with the attribution
+                requirement in clause 2 above preserved.
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact: [your email]
+
+Notice
+
+Business Source License 1.1 (BUSL-1.1)
+
+The Licensed Work is provided under the terms of the Business Source License
+1.1 as detailed above. See https://mariadb.com/bsl11/ for the full license
+text.

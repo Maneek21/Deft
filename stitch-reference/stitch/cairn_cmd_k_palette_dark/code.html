@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cairn AI - Command Palette</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error": "#ffb4ab",
+              "primary-container": "#9080fa",
+              "surface-container": "#201f22",
+              "inverse-on-surface": "#313032",
+              "tertiary-fixed-dim": "#f9bd45",
+              "on-secondary": "#302a56",
+              "inverse-primary": "#5c4bc3",
+              "surface-dim": "#131315",
+              "error-container": "#93000a",
+              "secondary-container": "#494371",
+              "secondary-fixed": "#e5deff",
+              "on-tertiary-fixed": "#271900",
+              "inverse-surface": "#e5e1e4",
+              "on-primary-fixed-variant": "#4430aa",
+              "on-surface": "#e5e1e4",
+              "on-tertiary": "#422d00",
+              "on-secondary-fixed": "#1b1540",
+              "surface-container-low": "#1c1b1d",
+              "on-error": "#690005",
+              "surface-container-high": "#2a2a2c",
+              "tertiary-fixed": "#ffdea8",
+              "secondary-fixed-dim": "#c8c0f6",
+              "primary-fixed-dim": "#c8bfff",
+              "on-secondary-container": "#bab2e7",
+              "secondary": "#c8c0f6",
+              "background": "#131315",
+              "surface-container-highest": "#353437",
+              "on-tertiary-fixed-variant": "#5e4200",
+              "on-primary-fixed": "#190064",
+              "on-primary": "#2d0e94",
+              "surface-container-lowest": "#0e0e10",
+              "on-surface-variant": "#c9c4d5",
+              "surface-variant": "#353437",
+              "on-primary-container": "#26008b",
+              "outline": "#928f9f",
+              "surface-bright": "#39393b",
+              "on-error-container": "#ffdad6",
+              "surface": "#131315",
+              "tertiary": "#f9bd45",
+              "primary-fixed": "#e5deff",
+              "on-tertiary-container": "#392600",
+              "surface-tint": "#c8bfff",
+              "tertiary-container": "#bc8708",
+              "on-secondary-fixed-variant": "#47416e",
+              "outline-variant": "#474553",
+              "on-background": "#e5e1e4",
+              "primary": "#c8bfff"
+            },
+            fontFamily: {
+              "headline": ["Inter"],
+              "body": ["Inter"],
+              "label": ["Inter"],
+              "mono": ["JetBrains Mono"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .glass-modal {
+        background: rgba(24, 24, 27, 0.85);
+        backdrop-filter: blur(20px);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 20px 50px rgba(0, 0, 0, 0.5);
+      }
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 4px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+      }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body overflow-hidden selection:bg-primary/30">
+<!-- DASHBOARD BACKGROUND (STUB) -->
+<div class="fixed inset-0 z-0 flex pointer-events-none opacity-40 blur-[8px]">
+<!-- SideNavBar Mockup -->
+<aside class="fixed left-0 top-0 h-full w-[240px] bg-[#111113] py-4 px-3 flex flex-col">
+<div class="flex items-center gap-3 px-2 mb-8">
+<div class="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center text-on-primary-container font-bold">C</div>
+<div>
+<div class="text-[#EDEDEF] font-semibold text-lg tracking-tight">Cairn AI</div>
+<div class="text-[#EDEDEF]/40 text-[10px] uppercase font-bold tracking-widest">Workspace</div>
+</div>
+</div>
+<nav class="space-y-1">
+<div class="flex items-center gap-3 px-3 py-2 text-[#8B7BF5] font-semibold">
+<span class="material-symbols-outlined">dashboard</span>
+<span>Dashboard</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 text-[#EDEDEF]/60">
+<span class="material-symbols-outlined">forum</span>
+<span>Chat</span>
+</div>
+<div class="flex items-center gap-3 px-3 py-2 text-[#EDEDEF]/60">
+<span class="material-symbols-outlined">task_alt</span>
+<span>Tasks</span>
+</div>
+</nav>
+</aside>
+<!-- Main Content Area Mockup -->
+<main class="ml-[240px] w-full p-8 pt-16">
+<div class="grid grid-cols-3 gap-6">
+<div class="col-span-2 h-64 bg-surface-container-low rounded-xl border border-white/5"></div>
+<div class="h-64 bg-surface-container-low rounded-xl border border-white/5"></div>
+<div class="h-48 bg-surface-container-low rounded-xl border border-white/5"></div>
+<div class="h-48 bg-surface-container-low rounded-xl border border-white/5"></div>
+<div class="h-48 bg-surface-container-low rounded-xl border border-white/5"></div>
+</div>
+</main>
+</div>
+<!-- OVERLAY SCRIM -->
+<div class="fixed inset-0 z-10 bg-black/50 backdrop-blur-[4px]"></div>
+<!-- COMMAND PALETTE MODAL -->
+<div class="fixed inset-0 z-20 flex items-start justify-center pt-[153px]">
+<div class="w-full max-w-[480px] glass-modal rounded-xl overflow-hidden border border-white/10 flex flex-col max-h-[716px]">
+<!-- Search Input Area -->
+<div class="flex items-center px-4 py-4 border-b border-white/5">
+<span class="material-symbols-outlined text-primary text-[20px] mr-3">smart_toy</span>
+<input autofocus="" class="bg-transparent border-none focus:ring-0 text-on-surface placeholder:text-on-surface-variant/50 w-full text-[0.9375rem] font-medium" placeholder="Search anything..." type="text"/>
+<div class="flex items-center gap-1.5 ml-2">
+<kbd class="px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-[10px] text-on-surface-variant font-mono">ESC</kbd>
+</div>
+</div>
+<!-- Scrollable Results -->
+<div class="overflow-y-auto custom-scrollbar flex-1 py-3 px-2">
+<!-- Group: Tasks -->
+<section class="mb-5">
+<h3 class="px-3 mb-2 text-on-surface-variant/40 text-[10px] font-bold uppercase tracking-[0.08em] font-label">Tasks</h3>
+<div class="space-y-0.5">
+<!-- Active Item -->
+<div class="group flex items-center justify-between px-3 py-2.5 rounded-lg bg-white/5 cursor-pointer border border-white/5">
+<div class="flex items-center gap-3">
+<span class="font-mono text-[0.75rem] text-primary bg-primary/10 px-1.5 py-0.5 rounded">CAIRN-102</span>
+<span class="text-on-surface text-[0.875rem] font-medium">Refactor agent cognition loop</span>
+</div>
+<span class="text-on-surface-variant/30 text-[0.75rem] font-medium">Engineering</span>
+</div>
+<div class="group flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors">
+<div class="flex items-center gap-3">
+<span class="font-mono text-[0.75rem] text-on-surface-variant/60 bg-white/5 px-1.5 py-0.5 rounded">CAIRN-089</span>
+<span class="text-on-surface/80 text-[0.875rem] font-medium">Draft workspace security protocol</span>
+</div>
+<span class="text-on-surface-variant/30 text-[0.75rem] font-medium">Security</span>
+</div>
+</div>
+</section>
+<!-- Group: Spaces -->
+<section class="mb-5">
+<h3 class="px-3 mb-2 text-on-surface-variant/40 text-[10px] font-bold uppercase tracking-[0.08em] font-label">Spaces</h3>
+<div class="flex flex-wrap gap-1 px-3">
+<div class="px-2 py-1 rounded bg-surface-container-highest/50 border border-white/5 hover:border-primary/30 transition-colors cursor-pointer text-[0.75rem] text-on-surface/90 flex items-center gap-1.5">
+<span class="text-on-surface-variant/40">#</span> engineering
+                        </div>
+<div class="px-2 py-1 rounded bg-surface-container-highest/50 border border-white/5 hover:border-primary/30 transition-colors cursor-pointer text-[0.75rem] text-on-surface/90 flex items-center gap-1.5">
+<span class="text-on-surface-variant/40">#</span> product-strategy
+                        </div>
+<div class="px-2 py-1 rounded bg-surface-container-highest/50 border border-white/5 hover:border-primary/30 transition-colors cursor-pointer text-[0.75rem] text-on-surface/90 flex items-center gap-1.5">
+<span class="text-on-surface-variant/40">#</span> design-system
+                        </div>
+</div>
+</section>
+<!-- Group: People -->
+<section class="mb-5">
+<h3 class="px-3 mb-2 text-on-surface-variant/40 text-[10px] font-bold uppercase tracking-[0.08em] font-label">People</h3>
+<div class="space-y-0.5">
+<div class="group flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors">
+<div class="flex items-center gap-3">
+<div class="relative">
+<img class="w-6 h-6 rounded-full object-cover" data-alt="professional portrait of Maneek, a man with glasses and a friendly expression in soft studio lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAHm2dDxdDoaCfc-S9HRc4qEY9JoVq8c6E_XGsq2Rw8M0ZVRorRv9BNlqtFY7iTUPgZWixZBagDJAIl-3sNb1gR4EeUtU-HvdhxBtdjc3OBK4RvRBRTfRa8yExsnJZKLPobGp8OA3vEb2JuXwrxxJcx1qWMNsvKsJJwGJSt9qAlq6ovSI1WOFp2kG3g3gefOGCTXTsxID_IF7P5O3gSaFgAJjUAA9NKjV4ORe4QNl6mI67I_Tlvh89nY_SAPV8EoBUmUGRIxB8outUW"/>
+<div class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary border border-surface"></div>
+</div>
+<span class="text-on-surface/90 text-[0.875rem] font-medium">Maneek</span>
+</div>
+<span class="text-[10px] text-primary font-bold uppercase tracking-wider">Active</span>
+</div>
+<div class="group flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors">
+<div class="flex items-center gap-3">
+<img class="w-6 h-6 rounded-full object-cover grayscale opacity-60" data-alt="portrait of Sarah Chen, a professional woman with dark hair and a confident look, high-end editorial style" src="https://lh3.googleusercontent.com/aida-public/AB6AXuADbd9D7oHcJoYjHTmWQ3BwGcPoaFiWK0fhEqDBJHD4OWMlQFGVL620x5P1EcvcijKzrDozRdobGwXX1AO70NPAQ4ciq49n_7DHd4FCEejVY2G_Ti5gBaGBuscJ42HO4sq1mjYptGg_pH6ev_3myKpRQ0NlTghQo-g1ye5KUIh1bWT4RukLX5bhXF0FwlEYfrguSbH-rjRLKSDHE_V6xVtx21d9Dk8oLQjmIj-Js_YSqETwOS1EVsrm6i3u5BfG3ad6MFlfxiiPBVvt"/>
+<span class="text-on-surface/60 text-[0.875rem] font-medium">Sarah Chen</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Group: Commands -->
+<section>
+<h3 class="px-3 mb-2 text-on-surface-variant/40 text-[10px] font-bold uppercase tracking-[0.08em] font-label">Commands</h3>
+<div class="space-y-0.5">
+<div class="group flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant/60 group-hover:text-primary transition-colors">add_task</span>
+<span class="text-on-surface/80 text-[0.875rem] font-medium">Create Task</span>
+</div>
+<div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+<kbd class="px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-[10px] text-on-surface-variant font-mono">C</kbd>
+</div>
+</div>
+<div class="group flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant/60 group-hover:text-primary transition-colors">send</span>
+<span class="text-on-surface/80 text-[0.875rem] font-medium">New Message</span>
+</div>
+<div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+<kbd class="px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-[10px] text-on-surface-variant font-mono">M</kbd>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- Footer Hints -->
+<div class="px-4 py-3 bg-white/[0.02] border-t border-white/5 flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-1.5 text-on-surface-variant/40 text-[10px] font-semibold uppercase tracking-wider">
+<kbd class="material-symbols-outlined text-[14px]">arrow_upward</kbd>
+<kbd class="material-symbols-outlined text-[14px]">arrow_downward</kbd>
+<span>to navigate</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant/40 text-[10px] font-semibold uppercase tracking-wider">
+<kbd class="material-symbols-outlined text-[14px]">keyboard_return</kbd>
+<span>to select</span>
+</div>
+</div>
+<div class="text-[10px] text-on-surface-variant/40 font-mono">
+                    v1.4.2-beta
+                </div>
+</div>
+</div>
+</div>
+</body></html>

@@ -1,0 +1,25 @@
+{
+  "name": "deft",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:web": "pnpm --filter @deft/web dev",
+    "dev:api": "pnpm --filter @deft/api dev",
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter @deft/db generate",
+    "db:push": "pnpm --filter @deft/db push",
+    "db:migrate": "pnpm --filter @deft/db migrate",
+    "db:seed": "pnpm --filter @deft/db seed",
+    "db:studio": "pnpm --filter @deft/db studio",
+    "lint": "pnpm -r lint"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp", "msgpackr-extract"]
+  }
+}

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cairn AI — Agent Workspace</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-size: 20px;
+        }
+        .glass-panel {
+            background: rgba(53, 52, 55, 0.7);
+            backdrop-filter: blur(12px);
+        }
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #353437;
+            border-radius: 10px;
+        }
+    </style>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "error": "#ffb4ab",
+              "primary-container": "#9080fa",
+              "surface-container": "#201f22",
+              "inverse-on-surface": "#313032",
+              "tertiary-fixed-dim": "#f9bd45",
+              "on-secondary": "#302a56",
+              "inverse-primary": "#5c4bc3",
+              "surface-dim": "#131315",
+              "error-container": "#93000a",
+              "secondary-container": "#494371",
+              "secondary-fixed": "#e5deff",
+              "on-tertiary-fixed": "#271900",
+              "inverse-surface": "#e5e1e4",
+              "on-primary-fixed-variant": "#4430aa",
+              "on-surface": "#e5e1e4",
+              "on-tertiary": "#422d00",
+              "on-secondary-fixed": "#1b1540",
+              "surface-container-low": "#1c1b1d",
+              "on-error": "#690005",
+              "surface-container-high": "#2a2a2c",
+              "tertiary-fixed": "#ffdea8",
+              "secondary-fixed-dim": "#c8c0f6",
+              "primary-fixed-dim": "#c8bfff",
+              "on-secondary-container": "#bab2e7",
+              "secondary": "#c8c0f6",
+              "background": "#131315",
+              "surface-container-highest": "#353437",
+              "on-tertiary-fixed-variant": "#5e4200",
+              "on-primary-fixed": "#190064",
+              "on-primary": "#2d0e94",
+              "surface-container-lowest": "#0e0e10",
+              "on-surface-variant": "#c9c4d5",
+              "surface-variant": "#353437",
+              "on-primary-container": "#26008b",
+              "outline": "#928f9f",
+              "surface-bright": "#39393b",
+              "on-error-container": "#ffdad6",
+              "surface": "#131315",
+              "tertiary": "#f9bd45",
+              "primary-fixed": "#e5deff",
+              "on-tertiary-container": "#392600",
+              "surface-tint": "#c8bfff",
+              "tertiary-container": "#bc8708",
+              "on-secondary-fixed-variant": "#47416e",
+              "outline-variant": "#474553",
+              "on-background": "#e5e1e4",
+              "primary": "#c8bfff"
+            },
+            fontFamily: {
+              "headline": ["Inter"],
+              "body": ["Inter"],
+              "label": ["Inter"],
+              "mono": ["JetBrains Mono"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+</head>
+<body class="bg-background text-on-surface font-body overflow-hidden">
+<!-- SideNavBar (Authority: JSON) -->
+<aside class="fixed left-0 top-0 h-full w-[240px] bg-[#111113] dark:bg-[#111113] flex flex-col py-4 px-3 border-r border-white/5 z-50">
+<!-- Brand Header -->
+<div class="flex items-center gap-3 mb-8 px-2">
+<div class="w-8 h-8 rounded bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div>
+<h1 class="text-lg font-semibold text-[#EDEDEF] tracking-tight leading-none">Cairn AI</h1>
+<p class="text-[0.6875rem] text-on-surface-variant/60 font-medium uppercase tracking-wider mt-1">Workspace</p>
+</div>
+</div>
+<!-- CTA -->
+<button class="mb-6 w-full py-2.5 px-4 rounded-xl bg-primary-container text-on-primary-container text-sm font-semibold flex items-center justify-center gap-2 transition-all duration-150 active:scale-95 shadow-lg shadow-primary-container/10">
+<span class="material-symbols-outlined">add</span>
+            New Command
+        </button>
+<!-- Navigation Tabs -->
+<nav class="flex-1 space-y-1">
+<!-- Dashboard -->
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] font-['Inter'] text-[0.875rem]" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span>Dashboard</span>
+</a>
+<!-- Chat -->
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] font-['Inter'] text-[0.875rem]" href="#">
+<span class="material-symbols-outlined">forum</span>
+<span>Chat</span>
+</a>
+<!-- Tasks -->
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] font-['Inter'] text-[0.875rem]" href="#">
+<span class="material-symbols-outlined">task_alt</span>
+<span>Tasks</span>
+</a>
+<!-- Agent (ACTIVE) -->
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#8B7BF5] font-semibold bg-[#353437]/30 font-['Inter'] text-[0.875rem]" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+<span>Agent</span>
+</a>
+<!-- Settings -->
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] font-['Inter'] text-[0.875rem]" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span>Settings</span>
+</a>
+<!-- Sub-Sidebar: Contextual Conversations -->
+<div class="mt-8 pt-6 border-t border-white/5 space-y-4 px-3">
+<p class="text-[0.625rem] font-bold text-on-surface-variant uppercase tracking-[0.1em]">Recent Activity</p>
+<div class="space-y-3">
+<div class="group flex flex-col gap-1 cursor-pointer">
+<span class="text-xs text-[#EDEDEF]/80 group-hover:text-[#8B7BF5] transition-colors truncate">Summarize #engineering</span>
+<span class="text-[10px] text-on-surface-variant/40 font-mono italic">2m ago</span>
+</div>
+<div class="group flex flex-col gap-1 cursor-pointer">
+<span class="text-xs text-[#EDEDEF]/80 group-hover:text-[#8B7BF5] transition-colors truncate">Task creation help</span>
+<span class="text-[10px] text-on-surface-variant/40 font-mono italic">1h ago</span>
+</div>
+</div>
+</div>
+</nav>
+<!-- Footer Tabs -->
+<div class="mt-auto pt-4 border-t border-white/5 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-sm" href="#">
+<span class="material-symbols-outlined">account_circle</span>
+<span>Profile</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 text-[#EDEDEF]/60 hover:bg-[#353437]/50 hover:text-[#EDEDEF] text-sm" href="#">
+<span class="material-symbols-outlined text-emerald-500" style="font-variation-settings: 'FILL' 1;">lens</span>
+<span>Status</span>
+</a>
+</div>
+</aside>
+<!-- Main Workspace Container -->
+<main class="ml-[240px] h-screen flex flex-col relative bg-surface-container-lowest">
+<!-- TopAppBar (Authority: JSON) -->
+<header class="fixed top-0 right-0 w-[calc(100%-240px)] h-[48px] flex items-center justify-between px-6 bg-transparent backdrop-blur-md border-b border-white/10 z-40">
+<div class="flex items-center gap-3 text-on-surface-variant/40 font-['Inter'] text-[0.6875rem] font-semibold uppercase tracking-[0.05em]">
+<span class="hover:text-[#EDEDEF] cursor-pointer transition-colors">Agent</span>
+<span class="material-symbols-outlined text-[12px]">chevron_right</span>
+<span class="text-[#EDEDEF]">New Conversation</span>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-on-surface-variant/60 hover:text-[#EDEDEF] cursor-pointer transition-colors p-1.5 active:scale-95">filter_list</span>
+<span class="material-symbols-outlined text-on-surface-variant/60 hover:text-[#EDEDEF] cursor-pointer transition-colors p-1.5 active:scale-95">grid_view</span>
+<span class="material-symbols-outlined text-on-surface-variant/60 hover:text-[#EDEDEF] cursor-pointer transition-colors p-1.5 active:scale-95">share</span>
+</div>
+<div class="h-4 w-[1px] bg-white/10 mx-1"></div>
+<img alt="User Avatar" class="w-6 h-6 rounded-full grayscale hover:grayscale-0 transition-all cursor-pointer" data-alt="portrait of a professional male designer with minimalist aesthetic clean studio lighting soft background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDoZbIaMHSCRif7-Xs0h-1diD7AGuBCI1fboCC6dM8EHJznFVGmgSSBQTLVz3xN5fE5rAy3voaDc5IiwaysnyHLhYTFLgNGHUutsLzwZ2rUbed2Z1TdS5_NucLc20-USB6ag5jZnXqSmWmFz3i4aZ1sUJd2vOxltTZ83bYHw5_bnIALneCzju0MgNVxmgYtxvqMDoaPD2r3B8MseLjYKSdaELDkyFPQANha9o1RET80kFS_9MEJj0GyayGtTJMll7Xs7J0bawMbNPJs"/>
+</div>
+</header>
+<!-- Chat Content Area -->
+<section class="flex-1 mt-[48px] mb-[100px] overflow-y-auto px-6 py-8 flex flex-col gap-10">
+<!-- Agent Message: Initial Response -->
+<div class="flex flex-col w-full max-w-4xl mx-auto">
+<div class="flex items-center gap-2 mb-4">
+<div class="w-6 h-6 rounded-sm bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-[14px] text-on-primary-container" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<span class="text-xs font-bold text-[#8B7BF5] tracking-wide uppercase">Cairn</span>
+<span class="text-[10px] font-mono text-on-surface-variant/40 italic">Just now</span>
+</div>
+<div class="bg-surface-container-low/30 rounded-xl p-6 text-on-surface leading-relaxed border border-white/5">
+<p class="mb-4 text-lg font-medium tracking-tight">How can I assist your workflow today?</p>
+<div class="flex flex-wrap gap-2">
+<button class="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-xs text-on-surface-variant border border-outline-variant/10 transition-colors">
+                            What tasks are in progress?
+                        </button>
+<button class="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-xs text-on-surface-variant border border-outline-variant/10 transition-colors">
+                            Summarize #engineering this week
+                        </button>
+</div>
+</div>
+</div>
+<!-- User Message -->
+<div class="flex flex-col items-end w-full max-w-4xl mx-auto">
+<div class="bg-[#111113] rounded-2xl rounded-tr-none px-5 py-3 text-sm text-on-surface max-w-[70%] border border-white/5 shadow-xl">
+                    I need to create a new task for the Q4 roadmap review. Assign it to David, set priority to High, and due by Friday.
+                </div>
+<span class="mt-2 text-[10px] font-mono text-on-surface-variant/40">Sent 11:42 AM</span>
+</div>
+<!-- Agent Message: Action Context -->
+<div class="flex flex-col w-full max-w-4xl mx-auto">
+<div class="flex items-center gap-2 mb-4">
+<div class="w-6 h-6 rounded-sm bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-[14px] text-on-primary-container" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<span class="text-xs font-bold text-[#8B7BF5] tracking-wide uppercase">Cairn</span>
+</div>
+<div class="bg-surface-container-low/30 rounded-xl p-6 border border-white/5">
+<p class="text-sm mb-6 text-on-surface-variant leading-relaxed">
+                        I've prepared the task draft based on our recent discussion in <span class="bg-surface-container px-1.5 py-0.5 rounded text-[10px] text-primary font-mono cursor-pointer border border-primary/20">#engineering-sync</span>.
+                    </p>
+<!-- Approval Card -->
+<div class="bg-surface-container-lowest border border-outline-variant/10 rounded-xl overflow-hidden shadow-2xl">
+<div class="px-5 py-3 border-b border-outline-variant/10 bg-white/[0.02] flex justify-between items-center">
+<span class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Task Proposal</span>
+<span class="text-[10px] font-mono text-primary">ID: CAIRN-102</span>
+</div>
+<div class="p-5 grid grid-cols-2 gap-4">
+<div class="col-span-2">
+<label class="text-[10px] font-semibold text-on-surface-variant/60 uppercase block mb-1">Title</label>
+<div class="text-sm text-[#EDEDEF]">Q4 Roadmap Review - Infrastructure Phase</div>
+</div>
+<div>
+<label class="text-[10px] font-semibold text-on-surface-variant/60 uppercase block mb-1">Assignee</label>
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-secondary-container flex items-center justify-center text-[10px] text-on-secondary-container font-bold">D</div>
+<span class="text-sm">David Chen</span>
+</div>
+</div>
+<div>
+<label class="text-[10px] font-semibold text-on-surface-variant/60 uppercase block mb-1">Due Date</label>
+<div class="text-sm flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[14px] text-error">event</span>
+                                    Friday, Oct 27
+                                </div>
+</div>
+</div>
+<div class="px-5 py-4 bg-white/[0.01] flex items-center justify-end gap-3">
+<button class="px-4 py-1.5 rounded-lg text-xs font-semibold text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors">Reject</button>
+<button class="px-6 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/20 transition-all active:scale-95">Approve &amp; Create</button>
+</div>
+</div>
+<!-- Citations -->
+<div class="mt-6 pt-6 border-t border-white/5 flex flex-col gap-3">
+<span class="text-[10px] font-semibold text-on-surface-variant/40 uppercase tracking-widest">Context Sources</span>
+<div class="flex flex-wrap gap-2">
+<div class="flex items-center gap-1.5 px-2 py-1 bg-surface-container-high/50 rounded-md border border-white/5 hover:border-primary/30 transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-[12px] text-on-surface-variant">link</span>
+<span class="text-[10px] font-mono text-on-surface-variant">CAIRN-102</span>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-1 bg-surface-container-high/50 rounded-md border border-white/5 hover:border-primary/30 transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-[12px] text-on-surface-variant">tag</span>
+<span class="text-[10px] font-mono text-on-surface-variant">#engineering message</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Thinking Indicator -->
+<div class="flex flex-col w-full max-w-4xl mx-auto pb-10">
+<div class="flex items-center gap-3">
+<div class="w-6 h-6 rounded-sm bg-primary-container/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-[14px] text-primary" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div class="flex gap-1 items-center">
+<div class="w-1 h-1 bg-primary rounded-full animate-bounce" style="animation-delay: 0s"></div>
+<div class="w-1 h-1 bg-primary rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+<div class="w-1 h-1 bg-primary rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+</div>
+<span class="text-[10px] font-mono text-primary/60 italic ml-2">Cairn is thinking...</span>
+</div>
+</div>
+</section>
+<!-- Composer Area -->
+<div class="fixed bottom-0 right-0 w-[calc(100%-240px)] p-6 bg-gradient-to-t from-background via-background to-transparent pointer-events-none">
+<div class="max-w-4xl mx-auto w-full glass-panel border border-white/10 rounded-2xl p-2 pointer-events-auto shadow-2xl flex flex-col">
+<div class="flex items-end gap-2 px-2 py-1">
+<button class="p-2 text-on-surface-variant/60 hover:text-primary transition-colors">
+<span class="material-symbols-outlined">attach_file</span>
+</button>
+<textarea class="flex-1 bg-transparent border-none focus:ring-0 text-sm py-2.5 resize-none placeholder-on-surface-variant/40 min-h-[44px]" placeholder="Ask Cairn anything..." rows="1"></textarea>
+<div class="flex items-center gap-1">
+<button class="p-2 text-on-surface-variant/60 hover:text-primary transition-colors">
+<span class="material-symbols-outlined">sentiment_satisfied</span>
+</button>
+<button class="h-9 w-9 rounded-xl bg-primary-container text-on-primary-container flex items-center justify-center shadow-lg transition-transform active:scale-90">
+<span class="material-symbols-outlined text-sm">send</span>
+</button>
+</div>
+</div>
+<div class="px-4 py-2 flex items-center justify-between border-t border-white/5 mt-1">
+<div class="flex gap-4">
+<div class="flex items-center gap-1.5 opacity-40 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined text-[14px]">bolt</span>
+<span class="text-[10px] font-bold uppercase tracking-widest">Deep Search</span>
+</div>
+<div class="flex items-center gap-1.5 opacity-40 hover:opacity-100 transition-opacity cursor-pointer">
+<span class="material-symbols-outlined text-[14px]">description</span>
+<span class="text-[10px] font-bold uppercase tracking-widest">Scan Context</span>
+</div>
+</div>
+<span class="text-[10px] font-mono text-on-surface-variant/20 tracking-tighter">CMD + ENTER TO SEND</span>
+</div>
+</div>
+</div>
+</main>
+</body></html>

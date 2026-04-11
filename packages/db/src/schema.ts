@@ -1,0 +1,939 @@
+// packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
+// This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
+
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+
+// ═══ HELPERS ═══
+const id = () => ({ id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });
+const orgId = () => ({ org_id: text('org_id').notNull() });
+const timestamps = () => ({
+  created_at: timestamp('created_at').defaultNow().notNull(),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+});
+
+// ═══ ENUMS ═══
+export const orgRoleEnum = pgEnum('org_role', ['owner', 'admin', 'member', 'guest']);
+export const spaceTypeEnum = pgEnum('space_type', ['public', 'private', 'dm', 'group_dm']);
+export const taskPriorityEnum = pgEnum('task_priority', ['p0', 'p1', 'p2', 'p3']);
+export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']);
+export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard', 'autonomous']);
+export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full']);
+export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
+export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear']);
+export const knowledgeTypeEnum = pgEnum('knowledge_type', ['decision', 'resource', 'action_item', 'note']);
+
+// ═══ ORGS ═══
+export const orgs = pgTable('orgs', {
+  ...id(),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  logo_url: text('logo_url'),
+  timezone: text('timezone').default('UTC').notNull(),
+  trust_level: trustLevelEnum('trust_level').default('conservative').notNull(),
+  agent_name: text('agent_name').default('Deft'),
+  agent_enabled: boolean('agent_enabled').default(true).notNull(),
+  ...timestamps(),
+});
+
+// ═══ USERS ═══
+export const users = pgTable('users', {
+  ...id(),
+  email: text('email').notNull().unique(),
+  name: text('name').notNull(),
+  avatar_url: text('avatar_url'),
+  title: text('title'),
+  timezone: text('timezone').default('UTC'),
+  status_emoji: text('status_emoji'),
+  status_text: text('status_text'),
+  status_expires_at: timestamp('status_expires_at'),
+  password_hash: text('password_hash'),
+  email_verified: boolean('email_verified').default(false).notNull(),
+  last_seen_at: timestamp('last_seen_at'),
+  ...timestamps(),
+});
+
+// ═══ ORG MEMBERS ═══
+export const orgMembers = pgTable('org_members', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  role: orgRoleEnum('role').default('member').notNull(),
+  is_active: boolean('is_active').default(true).notNull(),
+  joined_at: timestamp('joined_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('org_member_unique').on(t.org_id, t.user_id),
+]);
+
+// ═══ INVITES ═══
+export const invites = pgTable('invites', {
+  ...id(),
+  ...orgId(),
+  email: text('email'),
+  token: text('token').notNull().unique(),
+  type: text('type').default('email').notNull(), // 'email' | 'link'
+  invited_by: text('invited_by').notNull().references(() => users.id),
+  accepted_by: text('accepted_by').references(() => users.id),
+  accepted_at: timestamp('accepted_at'),
+  expires_at: timestamp('expires_at'),
+  ...timestamps(),
+});
+
+// ═══ SPACES (CHANNELS) ═══
+export const spaces = pgTable('spaces', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  description: text('description'),
+  topic: text('topic'),
+  type: spaceTypeEnum('type').default('public').notNull(),
+  is_default: boolean('is_default').default(false).notNull(),
+  is_archived: boolean('is_archived').default(false).notNull(),
+  agent_enabled: boolean('agent_enabled').default(true).notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('space_org_idx').on(t.org_id),
+]);
+
+// ═══ SPACE MEMBERS ═══
+export const spaceMembers = pgTable('space_members', {
+  ...id(),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+  is_muted: boolean('is_muted').default(false).notNull(),
+  last_read_message_id: text('last_read_message_id'),
+  last_read_at: timestamp('last_read_at'),
+  joined_at: timestamp('joined_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('space_member_unique').on(t.space_id, t.user_id),
+]);
+
+// ═══ MESSAGES ═══
+export const messages = pgTable('messages', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+  content: text('content').notNull(),
+  parent_id: text('parent_id'), // thread parent (self-ref)
+  is_pinned: boolean('is_pinned').default(false).notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  edited_at: timestamp('edited_at'),
+  metadata: jsonb('metadata'), // link previews, unfurled data, etc.
+  ...timestamps(),
+}, (t) => [
+  index('message_space_idx').on(t.space_id),
+  index('message_org_idx').on(t.org_id),
+  index('message_parent_idx').on(t.parent_id),
+  index('message_created_idx').on(t.created_at),
+]);
+
+// ═══ REACTIONS ═══
+export const reactions = pgTable('reactions', {
+  ...id(),
+  message_id: text('message_id').notNull().references(() => messages.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+  emoji: text('emoji').notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('reaction_unique').on(t.message_id, t.user_id, t.emoji),
+]);
+
+// ═══ FILES ═══
+export const files = pgTable('files', {
+  ...id(),
+  ...orgId(),
+  uploaded_by: text('uploaded_by').notNull().references(() => users.id),
+  filename: text('filename').notNull(),
+  mime_type: text('mime_type').notNull(),
+  size_bytes: integer('size_bytes').notNull(),
+  storage_key: text('storage_key').notNull(), // R2/local path
+  thumbnail_key: text('thumbnail_key'),
+  message_id: text('message_id').references(() => messages.id),
+  task_id: text('task_id'), // filled when attached to task
+  ...timestamps(),
+});
+
+// ═══ PROJECTS ═══
+export const projects = pgTable('projects', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  description: text('description'),
+  prefix: text('prefix').notNull(), // e.g., 'PROJ', 'ENG' — for task IDs
+  icon: text('icon'),
+  color: text('color'),
+  lead_id: text('lead_id').references(() => users.id),
+  is_archived: boolean('is_archived').default(false).notNull(),
+  task_counter: integer('task_counter').default(0).notNull(), // auto-increment for task IDs
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('project_prefix_unique').on(t.org_id, t.prefix),
+]);
+
+// ═══ PROJECT ↔ SPACE LINKS ═══
+export const projectSpaces = pgTable('project_spaces', {
+  ...id(),
+  project_id: text('project_id').notNull().references(() => projects.id),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+}, (t) => [
+  uniqueIndex('project_space_unique').on(t.project_id, t.space_id),
+]);
+
+// ═══ TASKS ═══
+export const tasks = pgTable('tasks', {
+  ...id(),
+  ...orgId(),
+  project_id: text('project_id').notNull().references(() => projects.id),
+  number: integer('number').notNull(), // auto-increment per project
+  title: text('title').notNull(),
+  description: text('description'),
+  status: taskStatusEnum('status').default('backlog').notNull(),
+  priority: taskPriorityEnum('priority').default('p2').notNull(),
+  assignee_id: text('assignee_id').references(() => users.id),
+  created_by: text('created_by').notNull().references(() => users.id),
+  due_date: timestamp('due_date'),
+  sort_order: real('sort_order').default(0).notNull(),
+  source_message_id: text('source_message_id').references(() => messages.id),
+  parent_task_id: text('parent_task_id'),  // self-reference for subtasks (one level deep)
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('task_project_idx').on(t.project_id),
+  index('task_assignee_idx').on(t.assignee_id),
+  index('task_org_idx').on(t.org_id),
+  index('task_parent_idx').on(t.parent_task_id),
+  uniqueIndex('task_number_unique').on(t.project_id, t.number),
+]);
+
+// ═══ LABELS ═══
+export const labels = pgTable('labels', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  color: text('color').notNull(),
+  ...timestamps(),
+});
+
+export const taskLabels = pgTable('task_labels', {
+  task_id: text('task_id').notNull().references(() => tasks.id),
+  label_id: text('label_id').notNull().references(() => labels.id),
+}, (t) => [
+  uniqueIndex('task_label_unique').on(t.task_id, t.label_id),
+]);
+
+// ═══ TASK COMMENTS ═══
+export const taskComments = pgTable('task_comments', {
+  ...id(),
+  task_id: text('task_id').notNull().references(() => tasks.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+  content: text('content').notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+});
+
+// ═══ TASK ACTIVITY LOG ═══
+export const taskActivity = pgTable('task_activity', {
+  ...id(),
+  task_id: text('task_id').notNull().references(() => tasks.id),
+  user_id: text('user_id').references(() => users.id), // null = agent
+  action: text('action').notNull(), // 'status_changed', 'assigned', 'priority_changed', 'commented', 'created'
+  field: text('field'),
+  old_value: text('old_value'),
+  new_value: text('new_value'),
+  ...timestamps(),
+}, (t) => [
+  index('activity_task_idx').on(t.task_id),
+]);
+
+// ═══ TASK RELATIONSHIPS ═══
+export const taskRelationships = pgTable('task_relationships', {
+  ...id(),
+  source_task_id: text('source_task_id').notNull().references(() => tasks.id),
+  target_task_id: text('target_task_id').notNull().references(() => tasks.id),
+  type: text('type').notNull(), // 'blocks', 'relates_to', 'duplicates'
+  ...timestamps(),
+});
+
+// ═══ NOTIFICATIONS ═══
+export const notifications = pgTable('notifications', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  type: text('type').notNull(), // 'mention', 'task_assigned', 'task_updated', 'agent_suggestion', 'system'
+  title: text('title').notNull(),
+  body: text('body'),
+  link: text('link'), // URL to navigate to
+  is_read: boolean('is_read').default(false).notNull(),
+  metadata: jsonb('metadata'),
+  ...timestamps(),
+}, (t) => [
+  index('notification_user_idx').on(t.user_id),
+]);
+
+// ═══ SAVED VIEWS ═══
+export const savedViews = pgTable('saved_views', {
+  ...id(),
+  ...orgId(),
+  project_id: text('project_id').references(() => projects.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+  name: text('name').notNull(),
+  config: jsonb('config').notNull(), // { filters, sort, group_by, columns }
+  is_shared: boolean('is_shared').default(false).notNull(),
+  ...timestamps(),
+});
+
+// ═══ USER FAVORITES ═══
+export const favorites = pgTable('favorites', {
+  ...id(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  entity_type: text('entity_type').notNull(), // 'project', 'space', 'task'
+  entity_id: text('entity_id').notNull(),
+  sort_order: real('sort_order').default(0).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('favorite_unique').on(t.user_id, t.entity_type, t.entity_id),
+]);
+
+// ═══ AGENT: CONVERSATIONS ═══
+export const agentConversations = pgTable('agent_conversations', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  title: text('title'),
+  ...timestamps(),
+});
+
+// ═══ AGENT: MESSAGES ═══
+export const agentMessages = pgTable('agent_messages', {
+  ...id(),
+  conversation_id: text('conversation_id').notNull().references(() => agentConversations.id),
+  role: text('role').notNull(), // 'user', 'assistant'
+  content: text('content').notNull(),
+  citations: jsonb('citations'), // [{ type, id, title, url }]
+  tool_calls: jsonb('tool_calls'), // [{ tool, params, result, status }]
+  model: text('model'),
+  tokens_in: integer('tokens_in'),
+  tokens_out: integer('tokens_out'),
+  ...timestamps(),
+});
+
+// ═══ AGENT: ACTIONS LOG ═══
+export const agentActions = pgTable('agent_actions', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  conversation_id: text('conversation_id').references(() => agentConversations.id),
+  action: text('action').notNull(), // 'create_task', 'update_task_status', 'post_message', etc.
+  params: jsonb('params').notNull(),
+  result: jsonb('result'),
+  approval_tier: approvalTierEnum('approval_tier').notNull(),
+  approval_status: approvalStatusEnum('approval_status').default('pending').notNull(),
+  approved_at: timestamp('approved_at'),
+  executed_at: timestamp('executed_at'),
+  error: text('error'),
+  before_state: jsonb('before_state'),
+  after_state: jsonb('after_state'),
+  undone_at: timestamp('undone_at'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_action_org_idx').on(t.org_id),
+  index('agent_action_user_idx').on(t.user_id),
+]);
+
+// ═══ AGENT: SKILLS ═══
+export const skills = pgTable('skills', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  description: text('description'),
+  slug: text('slug').notNull(), // /slug to invoke
+  system_prompt: text('system_prompt').notNull(),
+  param_schema: jsonb('param_schema'), // JSON schema for params
+  created_by: text('created_by').notNull().references(() => users.id),
+  usage_count: integer('usage_count').default(0).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('skill_slug_unique').on(t.org_id, t.slug),
+]);
+
+// ═══ AGENT: TOOL REGISTRY ═══
+export const tools = pgTable('tools', {
+  ...id(),
+  name: text('name').notNull().unique(),
+  description: text('description').notNull(),
+  category: text('category').notNull(), // 'native', 'google_calendar', 'github', 'slack', 'gmail'
+  params_schema: jsonb('params_schema').notNull(),
+  approval_tier: approvalTierEnum('approval_tier').default('quick').notNull(),
+  is_active: boolean('is_active').default(true).notNull(),
+  ...timestamps(),
+});
+
+// ═══ AGENT: TRIGGERS ═══
+export const triggers = pgTable('triggers', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  event_type: text('event_type').notNull(), // 'task_overdue', 'pr_merged', 'meeting_soon', 'task_stalled', 'cron'
+  condition: jsonb('condition'), // optional filter
+  actions: jsonb('actions').notNull(), // [{ tool, params }]
+  is_active: boolean('is_active').default(true).notNull(),
+  schedule: text('schedule'), // cron expression for scheduled triggers
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+});
+
+// ═══ CONNECTED ACCOUNTS (OAUTH) ═══
+export const connectedAccounts = pgTable('connected_accounts', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  provider: text('provider').notNull(), // 'google_calendar', 'github', 'slack', 'gmail'
+  provider_account_id: text('provider_account_id'),
+  access_token_encrypted: text('access_token_encrypted').notNull(),
+  refresh_token_encrypted: text('refresh_token_encrypted'),
+  token_expires_at: timestamp('token_expires_at'),
+  scopes: text('scopes'),
+  metadata: jsonb('metadata'), // provider-specific data (slack workspace, github org, etc.)
+  last_sync_at: timestamp('last_sync_at'),
+  sync_error: text('sync_error'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('connected_account_unique').on(t.user_id, t.provider),
+]);
+
+// ═══ UNIFIED EVENTS TABLE (CONNECTED TOOL DATA) ═══
+export const events = pgTable('events', {
+  ...id(),
+  ...orgId(),
+  source: eventSourceEnum('source').notNull(),
+  event_type: text('event_type').notNull(), // 'calendar_event', 'pr_opened', 'pr_merged', 'slack_message', 'email_received'
+  external_id: text('external_id'), // ID in the source system
+  title: text('title'),
+  body: text('body'),
+  url: text('url'), // deep link back to source
+  actor: text('actor'), // who did it (name or email)
+  timestamp: timestamp('timestamp').notNull(),
+  metadata: jsonb('metadata').notNull(), // full payload from source
+  user_id: text('user_id').references(() => users.id), // which of our users this belongs to
+  connected_account_id: text('connected_account_id').references(() => connectedAccounts.id),
+  ...timestamps(),
+}, (t) => [
+  index('event_org_idx').on(t.org_id),
+  index('event_source_idx').on(t.source),
+  index('event_timestamp_idx').on(t.timestamp),
+  index('event_type_idx').on(t.event_type),
+  uniqueIndex('event_external_unique').on(t.source, t.external_id),
+]);
+
+// ═══ REMINDERS ═══
+export const reminders = pgTable('reminders', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  message: text('message').notNull(),
+  remind_at: timestamp('remind_at').notNull(),
+  source_message_id: text('source_message_id').references(() => messages.id),
+  is_sent: boolean('is_sent').default(false).notNull(),
+  ...timestamps(),
+});
+
+// ═══ PINNED MESSAGES ═══
+export const pinnedMessages = pgTable('pinned_messages', {
+  ...id(),
+  message_id: text('message_id').notNull().references(() => messages.id),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  pinned_by: text('pinned_by').notNull().references(() => users.id),
+  pinned_at: timestamp('pinned_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('pinned_message_unique').on(t.message_id, t.space_id),
+]);
+
+// ═══ SCHEDULED MESSAGES ═══
+export const scheduledMessages = pgTable('scheduled_messages', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  content: text('content').notNull(),
+  scheduled_for: timestamp('scheduled_for').notNull(),
+  status: text('status').default('pending').notNull(), // 'pending', 'sent', 'cancelled'
+  sent_at: timestamp('sent_at'),
+  ...timestamps(),
+});
+
+// ═══ CANVASES ═══
+export const canvases = pgTable('canvases', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').notNull().references(() => spaces.id).unique(),
+  title: text('title').default('Canvas').notNull(),
+  content: jsonb('content'), // TipTap JSON document
+  last_edited_by: text('last_edited_by').references(() => users.id),
+  last_edited_at: timestamp('last_edited_at'),
+  ...timestamps(),
+});
+
+// ═══ SPACE KNOWLEDGE ═══
+export const spaceKnowledge = pgTable('space_knowledge', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  type: knowledgeTypeEnum('type').notNull(),
+  title: text('title').notNull(),
+  content: text('content'),
+  metadata: jsonb('metadata'),
+  source_message_id: text('source_message_id').references(() => messages.id),
+  created_by: text('created_by').notNull().references(() => users.id),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('space_knowledge_org_idx').on(t.org_id),
+  index('space_knowledge_space_idx').on(t.space_id),
+  index('space_knowledge_type_idx').on(t.space_id, t.type),
+]);
+
+// ═══ MESSAGE BOOKMARKS (Saved Messages) ═══
+export const messageBookmarks = pgTable('message_bookmarks', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  message_id: text('message_id').notNull().references(() => messages.id),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  ...timestamps(),
+}, (table) => [
+  uniqueIndex('message_bookmarks_user_message_idx').on(table.user_id, table.message_id),
+]);
+
+// ═══ USER GROUPS ═══
+export const userGroups = pgTable('user_groups', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  handle: text('handle').notNull(),
+  description: text('description'),
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('user_group_handle_unique').on(t.org_id, t.handle),
+]);
+
+export const userGroupMembers = pgTable('user_group_members', {
+  ...id(),
+  group_id: text('group_id').notNull().references(() => userGroups.id),
+  user_id: text('user_id').notNull().references(() => users.id),
+}, (t) => [
+  uniqueIndex('user_group_member_unique').on(t.group_id, t.user_id),
+]);
+
+// ═══ CUSTOM EMOJI ═══
+export const customEmoji = pgTable('custom_emoji', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  image_url: text('image_url').notNull(),
+  uploaded_by: text('uploaded_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('custom_emoji_name_unique').on(t.org_id, t.name),
+]);
+
+// ═══ WORKFLOW RULES ═══
+export const workflowRules = pgTable('workflow_rules', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  trigger_type: text('trigger_type').notNull(), // 'keyword_in_message', 'new_member_joins', 'reaction_added'
+  trigger_config: jsonb('trigger_config').notNull(),
+  action_type: text('action_type').notNull(), // 'create_task', 'send_message', 'notify_user'
+  action_config: jsonb('action_config').notNull(),
+  created_by: text('created_by').notNull().references(() => users.id),
+  is_active: boolean('is_active').default(true).notNull(),
+  ...timestamps(),
+});
+
+export const workflowRuns = pgTable('workflow_runs', {
+  ...id(),
+  rule_id: text('rule_id').notNull().references(() => workflowRules.id),
+  triggered_by_message_id: text('triggered_by_message_id').references(() => messages.id),
+  triggered_by_user_id: text('triggered_by_user_id').references(() => users.id),
+  result: jsonb('result'),
+  status: text('status').notNull(), // 'success', 'failed'
+  executed_at: timestamp('executed_at').defaultNow().notNull(),
+});
+
+// ═══ ONBOARDING STATE ═══
+export const onboardingState = pgTable('onboarding_state', {
+  ...id(),
+  user_id: text('user_id').notNull().references(() => users.id).unique(),
+  org_created: boolean('org_created').default(false),
+  profile_set: boolean('profile_set').default(false),
+  first_space_created: boolean('first_space_created').default(false),
+  first_message_sent: boolean('first_message_sent').default(false),
+  first_invite_sent: boolean('first_invite_sent').default(false),
+  first_task_created: boolean('first_task_created').default(false),
+  agent_tried: boolean('agent_tried').default(false),
+  completed: boolean('completed').default(false),
+  ...timestamps(),
+});
+
+// ═══ STANDUPS ═══
+export const standups = pgTable('standups', {
+  ...id(),
+  ...orgId(),
+  date: timestamp('date').notNull(),
+  generated_by: text('generated_by').notNull(), // user_id or 'system'
+  summary: text('summary').notNull(),
+  raw_data: jsonb('raw_data'),
+  ...timestamps(),
+});
+
+// ═══ AGENT: MEMORY ═══
+export const agentMemory = pgTable('agent_memory', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  conversation_id: text('conversation_id').references(() => agentConversations.id),
+  scope: text('scope').notNull(), // 'conversation' | 'user' | 'org'
+  key: text('key').notNull(),
+  value: text('value').notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_memory_upsert_unique').on(t.user_id, t.conversation_id, t.key),
+]);
+
+// ═══ DECISIONS ═══
+export const decisions = pgTable('decisions', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  message_id: text('message_id').notNull().references(() => messages.id),
+  decision_text: text('decision_text').notNull(),
+  decided_by: text('decided_by').notNull().references(() => users.id),
+  context: text('context'), // surrounding context / why
+  tags: jsonb('tags'), // ['payments', 'infrastructure']
+  is_reversed: boolean('is_reversed').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('decisions_org_idx').on(t.org_id),
+  index('decisions_space_idx').on(t.space_id),
+]);
+
+// ═══ CROSS REFERENCES ═══
+export const crossReferences = pgTable('cross_references', {
+  ...id(),
+  ...orgId(),
+  source_type: text('source_type').notNull(), // 'message' | 'task' | 'event'
+  source_id: text('source_id').notNull(),
+  target_type: text('target_type').notNull(), // 'message' | 'task' | 'event'
+  target_id: text('target_id').notNull(),
+  context: text('context'), // why they're linked
+  created_by: text('created_by').notNull().references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('cross_ref_source_idx').on(t.source_type, t.source_id),
+  index('cross_ref_target_idx').on(t.target_type, t.target_id),
+]);
+
+// ═══ AUDIT LOG ═══
+export const auditLog = pgTable('audit_log', {
+  ...id(),
+  ...orgId(),
+  actor_type: text('actor_type').notNull(), // 'user' | 'agent'
+  actor_id: text('actor_id').notNull(),
+  action: text('action').notNull(),
+  entity_type: text('entity_type').notNull(),
+  entity_id: text('entity_id').notNull(),
+  before_state: jsonb('before_state'),
+  after_state: jsonb('after_state'),
+  metadata: jsonb('metadata'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('audit_log_entity_idx').on(t.entity_type, t.entity_id),
+  index('audit_log_actor_idx').on(t.actor_id),
+]);
+
+// ═══ AGENT: NUDGES ═══
+export const agentNudges = pgTable('agent_nudges', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  task_id: text('task_id').notNull().references(() => tasks.id),
+  nudge_type: text('nudge_type').notNull(), // 'stalled' | 'overdue' | 'unassigned'
+  message: text('message').notNull(),
+  is_dismissed: boolean('is_dismissed').default(false).notNull(),
+  ...timestamps(),
+});
+
+// ═══ JOB QUEUE (Postgres-based background jobs) ═══
+export const jobQueue = pgTable('job_queue', {
+  ...id(),
+  queue: text('queue').notNull(), // 'agent-jobs' | 'scheduled-jobs'
+  name: text('name').notNull(), // job name like 'agent-reply', 'standup-generate'
+  data: jsonb('data').notNull(), // job payload
+  status: text('status').default('pending').notNull(), // 'pending' | 'running' | 'completed' | 'failed'
+  attempts: integer('attempts').default(0).notNull(),
+  max_attempts: integer('max_attempts').default(3).notNull(),
+  run_at: timestamp('run_at').defaultNow().notNull(), // for delayed jobs
+  started_at: timestamp('started_at'),
+  completed_at: timestamp('completed_at'),
+  error: text('error'), // last error message
+  cron_key: text('cron_key'), // for repeatable jobs, prevents duplicates
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('job_queue_poll_idx').on(t.status, t.queue, t.run_at),
+  index('job_queue_cron_idx').on(t.cron_key),
+]);
+
+// ═══ MEETING BRIEFS ═══
+export const meetingBriefs = pgTable('meeting_briefs', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  event_id: text('event_id').notNull().references(() => events.id),
+  brief_text: text('brief_text').notNull(),
+  ...timestamps(),
+});
+
+// ═══ PEOPLE GRAPH: INTERACTIONS ═══
+export const peopleInteractions = pgTable('people_interactions', {
+  ...id(),
+  ...orgId(),
+  user_a_id: text('user_a_id').notNull().references(() => users.id),
+  user_b_id: text('user_b_id').notNull().references(() => users.id),
+  interaction_count: integer('interaction_count').default(0).notNull(),
+  recency_weighted_score: real('recency_weighted_score').default(0).notNull(),
+  dm_count: integer('dm_count').default(0).notNull(),
+  shared_space_count: integer('shared_space_count').default(0).notNull(),
+  mention_count: integer('mention_count').default(0).notNull(),
+  thread_co_participation: integer('thread_co_participation').default(0).notNull(),
+  last_interaction_at: timestamp('last_interaction_at'),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  uniqueIndex('people_interaction_unique').on(t.org_id, t.user_a_id, t.user_b_id),
+  index('people_interaction_org_idx').on(t.org_id),
+]);
+
+// ═══ PEOPLE GRAPH: EXPERTISE ═══
+export const peopleExpertise = pgTable('people_expertise', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  topic: text('topic').notNull(),
+  message_count: integer('message_count').default(0).notNull(),
+  question_answered_count: integer('question_answered_count').default(0).notNull(),
+  mentioned_for_help_count: integer('mentioned_for_help_count').default(0).notNull(),
+  tasks_completed_count: integer('tasks_completed_count').default(0).notNull(),
+  expertise_score: real('expertise_score').default(0).notNull(),
+  first_seen_at: timestamp('first_seen_at').defaultNow().notNull(),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  uniqueIndex('people_expertise_unique').on(t.org_id, t.user_id, t.topic),
+  index('people_expertise_org_idx').on(t.org_id),
+]);
+
+// ═══ PEOPLE GRAPH: INFLUENCE ═══
+export const peopleInfluence = pgTable('people_influence', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  influence_type: text('influence_type').notNull(), // 'decision_maker' | 'blocker_resolver' | 'reviewer' | 'connector' | 'mentor'
+  context: text('context'),
+  score: real('score').notNull(),
+  evidence_count: integer('evidence_count').notNull(),
+  evidence_samples: jsonb('evidence_samples'),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  index('people_influence_org_idx').on(t.org_id),
+  index('people_influence_user_idx').on(t.user_id),
+]);
+
+// ═══ PEOPLE GRAPH: PATTERNS ═══
+export const peoplePatterns = pgTable('people_patterns', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  pattern_type: text('pattern_type').notNull(), // 'active_hours' | 'response_time' | 'communication_style' | 'activity_trend' | 'collaboration_preference'
+  pattern_data: jsonb('pattern_data'),
+  baseline_data: jsonb('baseline_data'),
+  confidence: real('confidence'),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  uniqueIndex('people_pattern_unique').on(t.org_id, t.user_id, t.pattern_type),
+]);
+
+// ═══ PEOPLE GRAPH: RELATIONSHIPS ═══
+export const peopleRelationships = pgTable('people_relationships', {
+  ...id(),
+  ...orgId(),
+  user_a_id: text('user_a_id').notNull().references(() => users.id),
+  user_b_id: text('user_b_id').notNull().references(() => users.id),
+  relationship_type: text('relationship_type').notNull(), // 'close_collaborator' | 'mentor_mentee' | 'tension' | 'delegation_chain' | 'cross_team_bridge'
+  strength: real('strength'),
+  direction: text('direction'), // 'bidirectional' | 'a_to_b' | 'b_to_a'
+  evidence: jsonb('evidence'),
+  first_detected_at: timestamp('first_detected_at').defaultNow().notNull(),
+  updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+}, (t) => [
+  index('people_relationship_org_idx').on(t.org_id),
+]);
+
+// ═══ PEOPLE GRAPH: TEAM HEALTH SNAPSHOTS ═══
+export const teamHealthSnapshots = pgTable('team_health_snapshots', {
+  ...id(),
+  ...orgId(),
+  snapshot_date: timestamp('snapshot_date').notNull(),
+  team_data: jsonb('team_data'),
+  generated_by: text('generated_by'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('team_health_org_idx').on(t.org_id),
+]);
+
+// ═══ PEOPLE GRAPH: 1:1 PREPS ═══
+export const oneonePreps = pgTable('oneone_preps', {
+  ...id(),
+  ...orgId(),
+  manager_id: text('manager_id').notNull().references(() => users.id),
+  report_id: text('report_id').notNull().references(() => users.id),
+  meeting_date: timestamp('meeting_date'),
+  prep_content: jsonb('prep_content'),
+  status: text('status').default('generated').notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('oneone_prep_org_idx').on(t.org_id),
+  index('oneone_prep_manager_idx').on(t.manager_id),
+]);
+
+// ═══ PEOPLE GRAPH: BURNOUT ALERTS ═══
+// PRIVACY: This data is sensitive. Never expose in API responses except to the manager in alerted_to and the user in user_id.
+export const burnoutAlerts = pgTable('burnout_alerts', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  alerted_to: text('alerted_to').notNull().references(() => users.id),
+  signals: jsonb('signals'),
+  confidence: real('confidence'),
+  status: text('status').default('active').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+  acknowledged_at: timestamp('acknowledged_at'),
+}, (t) => [
+  index('burnout_alert_org_idx').on(t.org_id),
+  index('burnout_alert_user_idx').on(t.user_id),
+]);
+
+// ═══ NOTES ═══
+export const notes = pgTable('notes', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  title: text('title').default('').notNull(),
+  content: text('content'), // TipTap HTML
+  icon: text('icon'), // emoji icon for the note
+  is_pinned: boolean('is_pinned').default(false).notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('note_org_idx').on(t.org_id),
+  index('note_user_idx').on(t.user_id),
+  index('note_updated_idx').on(t.updated_at),
+]);
+
+// ═══ TAGS ═══
+export const tags = pgTable('tags', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(), // lowercase, no spaces: "launch", "q3-planning"
+  color: text('color'), // hex color for visual distinction
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('tag_name_unique').on(t.org_id, t.name),
+]);
+
+// ═══ ENTITY TAGS (junction table) ═══
+export const entityTagTypeEnum = pgEnum('entity_tag_type', ['message', 'task', 'clip', 'daily_note', 'note']);
+
+export const entityTags = pgTable('entity_tags', {
+  ...id(),
+  ...orgId(),
+  tag_id: text('tag_id').notNull().references(() => tags.id, { onDelete: 'cascade' }),
+  entity_type: entityTagTypeEnum('entity_type').notNull(),
+  entity_id: text('entity_id').notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('entity_tag_unique').on(t.tag_id, t.entity_type, t.entity_id),
+  index('entity_tag_org_idx').on(t.org_id, t.tag_id),
+  index('entity_tag_entity_idx').on(t.entity_type, t.entity_id),
+]);
+
+// ═══ CLIPS (Async voice/video clips + Live huddle recordings) ═══
+export const clipStatusEnum = pgEnum('clip_status', ['uploading', 'transcribing', 'summarizing', 'ready', 'failed']);
+export const clipModeEnum = pgEnum('clip_mode', ['async', 'live']);
+export const clipContextTypeEnum = pgEnum('clip_context_type', ['space', 'task', 'thread', 'project']);
+
+export const clips = pgTable('clips', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').references(() => spaces.id),
+  message_id: text('message_id').references(() => messages.id), // the message that displays this clip card
+  context_type: clipContextTypeEnum('context_type').notNull(),
+  context_id: text('context_id').notNull(), // ID of the task, thread, project, or space
+  mode: clipModeEnum('mode').default('async').notNull(),
+  created_by: text('created_by').notNull().references(() => users.id),
+  duration_s: integer('duration_s'),
+  file_key: text('file_key').notNull(), // storage path (local or S3)
+  file_size: integer('file_size'), // bytes
+  mime_type: text('mime_type').default('audio/webm').notNull(),
+  status: clipStatusEnum('status').default('uploading').notNull(),
+  transcript: text('transcript'), // full plain-text transcript
+  segments: jsonb('segments'), // timestamped segments: [{ start, end, text, speaker? }]
+  summary: jsonb('summary'), // { tldr, decisions[], actions[], blockers[] }
+  participants: jsonb('participants'), // [{ id, name }]
+  whisper_model: text('whisper_model'), // which model was used for transcription
+  error: text('error'), // last processing error
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('clip_org_idx').on(t.org_id),
+  index('clip_space_idx').on(t.space_id),
+  index('clip_context_idx').on(t.context_type, t.context_id),
+  index('clip_status_idx').on(t.status),
+  index('clip_created_by_idx').on(t.created_by),
+]);
+
+// ═══ PEOPLE GRAPH: MANAGER SETTINGS ═══
+export const managerSettings = pgTable('manager_settings', {
+  ...id(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  ...orgId(),
+  team_pulse_frequency: text('team_pulse_frequency').default('daily').notNull(),
+  oneone_prep_enabled: boolean('oneone_prep_enabled').default(true).notNull(),
+  burnout_alerts_enabled: boolean('burnout_alerts_enabled').default(true).notNull(),
+  overload_threshold: integer('overload_threshold').default(6).notNull(),
+  blocked_threshold_hours: integer('blocked_threshold_hours').default(24).notNull(),
+  weekly_digest_enabled: boolean('weekly_digest_enabled').default(true).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('manager_settings_unique').on(t.user_id, t.org_id),
+]);
+
+// ═══ THREAD READS (track per-user thread read state) ═══
+export const threadReads = pgTable('thread_reads', {
+  ...id(),
+  user_id: text('user_id').notNull().references(() => users.id),
+  parent_message_id: text('parent_message_id').notNull().references(() => messages.id),
+  last_read_at: timestamp('last_read_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('thread_reads_unique').on(t.user_id, t.parent_message_id),
+]);
+
+// ═══ MESSAGE VERSIONS (edit history) ═══
+export const messageVersions = pgTable('message_versions', {
+  ...id(),
+  message_id: text('message_id').notNull().references(() => messages.id),
+  content: text('content').notNull(),
+  edited_at: timestamp('edited_at').defaultNow().notNull(),
+});

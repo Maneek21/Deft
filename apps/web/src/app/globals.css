@@ -1,0 +1,300 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════
+   DEFT AI — "The Quiet Workspace" Obsidian Design System
+   Based on Stitch reference designs. Tonal layering, no borders.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Surface Hierarchy ("No-Line Rule") ────────────────────── */
+  --surface-lowest: #0E0E10;
+  --surface-dim: #131315;
+  --surface: #131315;
+  --surface-container-low: #1C1B1D;
+  --surface-container: #201F22;
+  --surface-container-high: #2A2A2C;
+  --surface-container-highest: #353437;
+  --surface-variant: #353437;
+  --surface-bright: #39393B;
+
+  /* ── Text ──────────────────────────────────────────────────── */
+  --on-surface: #E5E1E4;
+  --on-surface-variant: #C9C4D5;
+  --on-background: #E5E1E4;
+  --outline: #928F9F;
+  --outline-variant: #474553;
+
+  /* ── Primary — Muted Violet ────────────────────────────────── */
+  --primary: #C8BFFF;
+  --primary-container: #9080FA;
+  --primary-fixed: #E5DEFF;
+  --primary-fixed-dim: #C8BFFF;
+  --on-primary: #2D0E94;
+  --on-primary-container: #FFFFFF;
+
+  /* ── Secondary ─────────────────────────────────────────────── */
+  --secondary: #C8C0F6;
+  --secondary-container: #494371;
+  --on-secondary: #302A56;
+
+  /* ── Tertiary — Warm Amber ─────────────────────────────────── */
+  --tertiary: #F9BD45;
+  --tertiary-container: #BC8708;
+
+  /* ── Error ──────────────────────────────────────────────────── */
+  --error: #FFB4AB;
+  --error-container: #93000A;
+
+  /* ── Status ─────────────────────────────────────────────────── */
+  --status-red: #E5484D;
+  --status-amber: #F5A623;
+  --status-green: #30A46C;
+  --status-blue: #3B82F6;
+  --status-gray: #5C5C5F;
+
+  /* ── Typography ─────────────────────────────────────────────── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ── Motion ─────────────────────────────────────────────────── */
+  --transition-snappy: 150ms cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Radius — architectural, not bubbly ─────────────────────── */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* ── Glassmorphism ──────────────────────────────────────────── */
+  --glass-bg: rgba(53, 52, 55, 0.7);
+  --glass-blur: blur(12px);
+  --glass-shadow: 0px 8px 24px rgba(0, 0, 0, 0.4);
+
+  /* ── Ghost border (accessibility only) ──────────────────────── */
+  --ghost-border: rgba(71, 69, 83, 0.1);
+
+  /* ═══ LEGACY ALIASES — backwards compat during migration ═══ */
+  --background: var(--surface);
+  --foreground: var(--on-surface);
+  --foreground-secondary: var(--on-surface-variant);
+  --text-primary: var(--on-surface);
+  --text-secondary: var(--on-surface-variant);
+  --text-tertiary: var(--outline);
+  --text-inverse: var(--on-primary-container);
+  --accent: var(--primary-container);
+  --accent-hover: #9D8FF7;
+  --accent-muted: rgba(144, 128, 250, 0.15);
+  --accent-subtle: rgba(144, 128, 250, 0.15);
+  --muted: var(--outline);
+  --card-bg: var(--surface-container);
+  --surface-alias: var(--surface-container-low);
+  --border: var(--ghost-border);
+  --border-default: var(--ghost-border);
+  --border-strong: rgba(71, 69, 83, 0.2);
+  --input-bg: var(--surface-container-low);
+  --input-border: var(--outline-variant);
+  --input-focus: rgba(144, 128, 250, 0.3);
+  --bg-base: var(--surface);
+  --bg-surface: var(--surface-container-low);
+  --bg-elevated: var(--surface-container);
+  --bg-overlay: var(--surface-container-high);
+  --bg-hover: rgba(255,255,255,0.03);
+  --bg-active: rgba(144, 128, 250, 0.12);
+  --sidebar-bg: var(--surface-container-low);
+  --sidebar-border: transparent;
+  --sidebar-hover: var(--bg-hover);
+  --sidebar-active: var(--bg-active);
+  --hover-tint: var(--bg-hover);
+  --danger: var(--status-red);
+  --danger-subtle: rgba(229,72,77,0.12);
+  --success: var(--status-green);
+  --avatar-bg: var(--primary-container);
+  --muted-bg: var(--surface-container);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.3);
+  --shadow-lg: var(--glass-shadow);
+}
+
+/* ── Light mode — minimal override ───────────────────────────── */
+.light {
+  --surface-lowest: #FAFAFA;
+  --surface-dim: #F5F5F5;
+  --surface: #FFFFFF;
+  --surface-container-low: #F5F5F7;
+  --surface-container: #EFEFEF;
+  --surface-container-high: #E8E8E8;
+  --surface-container-highest: #DEDEDE;
+  --surface-variant: #E0E0E0;
+  --on-surface: #1C1C1E;
+  --on-surface-variant: #5C5C5F;
+  --outline: #8E8E93;
+  --outline-variant: #C7C7CC;
+  --primary: #6A59E0;
+  --primary-container: #7C6BF0;
+  --on-primary-container: #FFFFFF;
+  --ghost-border: rgba(0,0,0,0.06);
+}
+
+/* ── Base Styles ─────────────────────────────────────────────── */
+* {
+  transition-property: color, background-color, border-color, box-shadow, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Pinned messages ──────────────────────────────────────────── */
+div.pinned-bar {
+  background-color: #1C1B1D !important;
+}
+div.pinned-dropdown {
+  background-color: #1C1B1D !important;
+}
+div.pinned-dropdown-item + div.pinned-dropdown-item {
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+.light div.pinned-bar {
+  background-color: #EFEFEF !important;
+}
+.light div.pinned-dropdown {
+  background-color: #EFEFEF !important;
+}
+.light div.pinned-dropdown-item + div.pinned-dropdown-item {
+  border-top: 1px solid rgba(0,0,0,0.06);
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface-container-highest); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--surface-bright); }
+* { scrollbar-width: thin; scrollbar-color: var(--surface-container-highest) transparent; }
+
+/* ── Hide scrollbar on touch/mobile devices ──────────────────── */
+@media (pointer: coarse) {
+  ::-webkit-scrollbar { display: none; }
+  * { scrollbar-width: none; }
+}
+
+/* ── Focus — sharp precision ring ────────────────────────────── */
+input:focus, textarea:focus, [contenteditable]:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(144, 128, 250, 0.3) !important;
+}
+
+/* ── Placeholder ─────────────────────────────────────────────── */
+::placeholder { color: var(--outline); }
+
+/* ── Message Highlight (scroll-to) ───────────────────────────── */
+@keyframes message-highlight-fade {
+  0% { background: var(--accent-subtle); }
+  70% { background: var(--accent-subtle); }
+  100% { background: transparent; }
+}
+.message-highlight {
+  animation: message-highlight-fade 3s ease-out forwards;
+}
+
+/* ── Skeleton ────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-container) 25%, var(--surface-container-high) 50%, var(--surface-container) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease infinite;
+  border-radius: var(--radius-md);
+}
+
+/* ── TipTap Editor ───────────────────────────────────────────── */
+.deft-editor {
+  outline: none;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--on-surface);
+  min-height: 24px;
+}
+.deft-editor p { margin: 0; }
+.deft-editor p + p { margin-top: 4px; }
+.deft-editor .is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left; color: var(--outline); pointer-events: none; height: 0;
+}
+.deft-editor strong { font-weight: 600; }
+.deft-editor em { font-style: italic; }
+.deft-editor s { text-decoration: line-through; }
+.deft-editor .deft-inline-code {
+  background: var(--surface-container-highest);
+  color: var(--tertiary);
+  padding: 1px 5px; border-radius: var(--radius-md);
+  font-family: var(--font-mono); font-size: 0.75rem;
+}
+.deft-editor .deft-code-block {
+  background: var(--surface-container-low);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.5;
+  margin: 8px 0; overflow-x: auto;
+}
+.deft-editor blockquote {
+  border-left: 2px solid var(--primary-container);
+  padding-left: 12px; margin: 6px 0; color: var(--on-surface-variant);
+}
+.deft-editor ul { list-style: disc; padding-left: 20px; margin: 4px 0; }
+.deft-editor ol { list-style: decimal; padding-left: 20px; margin: 4px 0; }
+.deft-editor li { margin: 2px 0; }
+.deft-editor .deft-link { color: var(--primary); text-decoration: underline; cursor: pointer; }
+.deft-editor h1 { font-size: 1.5rem; font-weight: 700; margin: 16px 0 8px; line-height: 1.3; letter-spacing: -0.02em; }
+.deft-editor h2 { font-size: 1.2rem; font-weight: 600; margin: 12px 0 6px; line-height: 1.35; letter-spacing: -0.01em; }
+.deft-editor h3 { font-size: 1rem; font-weight: 600; margin: 10px 0 4px; line-height: 1.4; }
+.deft-editor hr { border: none; border-top: 1px solid var(--outline-variant); margin: 16px 0; }
+.deft-notes-editor { font-size: 0.9375rem; line-height: 1.75; min-height: 160px; }
+.deft-notes-editor p + p { margin-top: 8px; }
+
+
+/* ── Message Content (sent messages) ─────────────────────────── */
+.message-content { font-family: var(--font-sans); font-size: 0.875rem; line-height: 1.5; }
+.message-content strong { font-weight: 600; }
+.message-content em { font-style: italic; }
+.message-content s { text-decoration: line-through; }
+.message-content code:not(pre code) {
+  background: var(--surface-container-highest); color: var(--tertiary);
+  padding: 1px 5px; border-radius: var(--radius-md);
+  font-family: var(--font-mono); font-size: 0.75rem;
+}
+.message-content pre {
+  background: var(--surface-container-low);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.5;
+  margin: 8px 0; overflow-x: auto;
+}
+.message-content blockquote {
+  border-left: 2px solid var(--primary-container);
+  padding-left: 12px; margin: 6px 0; color: var(--on-surface-variant);
+}
+.message-content ul { list-style: disc; padding-left: 20px; margin: 4px 0; }
+.message-content ol { list-style: decimal; padding-left: 20px; margin: 4px 0; }
+.message-content li { margin: 2px 0; }
+.message-content a { color: var(--primary); text-decoration: underline; }
+.message-content h2 { font-size: 1rem; font-weight: 600; margin: 14px 0 6px; }
+.message-content h3 { font-size: 0.9375rem; font-weight: 600; margin: 12px 0 4px; }
+.message-content p { margin: 0; }
+.message-content p + p { margin-top: 8px; }
+
+/* ── Safe areas for notched phones ────────────────────────────── */
+@supports (padding: env(safe-area-inset-top)) {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.craft.do)",
+      "WebFetch(domain:support.craft.do)",
+      "WebFetch(domain:craft-support.mintlify.app)"
+    ]
+  }
+}

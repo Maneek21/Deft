@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+coverage/
+.vercel/
+drizzle/meta/
+uploads/
+*.pdf

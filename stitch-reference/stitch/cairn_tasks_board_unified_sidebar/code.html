@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cairn AI - Tasks Board</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              colors: {
+                "on-primary-fixed": "#190064",
+                "on-surface-variant": "#c9c4d5",
+                "inverse-primary": "#5c4bc3",
+                "on-error-container": "#ffdad6",
+                "on-tertiary": "#422d00",
+                "error": "#ffb4ab",
+                "on-tertiary-fixed": "#271900",
+                "on-secondary-fixed": "#1b1540",
+                "on-background": "#e5e1e4",
+                "secondary-container": "#494371",
+                "tertiary": "#f9bd45",
+                "surface-variant": "#353437",
+                "surface-container-high": "#2a2a2c",
+                "on-primary-fixed-variant": "#4430aa",
+                "inverse-on-surface": "#313032",
+                "on-secondary": "#302a56",
+                "background": "#131315",
+                "tertiary-fixed": "#ffdea8",
+                "primary-container": "#9080fa",
+                "surface-container": "#201f22",
+                "on-primary": "#2d0e94",
+                "surface-tint": "#c8bfff",
+                "on-secondary-container": "#bab2e7",
+                "surface-dim": "#131315",
+                "outline-variant": "#474553",
+                "primary": "#c8bfff",
+                "tertiary-container": "#bc8708",
+                "primary-fixed-dim": "#c8bfff",
+                "surface": "#131315",
+                "on-primary-container": "#26008b",
+                "outline": "#928f9f",
+                "error-container": "#93000a",
+                "on-surface": "#e5e1e4",
+                "on-tertiary-container": "#392600",
+                "inverse-surface": "#e5e1e4",
+                "secondary-fixed-dim": "#c8c0f6",
+                "secondary-fixed": "#e5deff",
+                "surface-container-highest": "#353437",
+                "tertiary-fixed-dim": "#f9bd45",
+                "surface-bright": "#39393b",
+                "secondary": "#c8c0f6",
+                "on-secondary-fixed-variant": "#47416e",
+                "surface-container-low": "#1c1b1d",
+                "on-tertiary-fixed-variant": "#5e4200",
+                "primary-fixed": "#e5deff",
+                "on-error": "#690005",
+                "surface-container-lowest": "#0e0e10"
+              },
+              fontFamily: {
+                "headline": ["Inter"],
+                "body": ["Inter"],
+                "label": ["Inter"],
+                "mono": ["JetBrains Mono"]
+              },
+              borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+            },
+          },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-size: 1.25rem;
+        }
+        body {
+            background-color: #131315;
+            color: #e5e1e4;
+            -webkit-font-smoothing: antialiased;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #353437;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="font-body selection:bg-primary/30">
+<!-- Unified Sidebar -->
+<aside class="fixed left-0 top-0 h-full w-64 z-50 bg-[#111113] border-r border-[#474553]/10 flex flex-col p-4 gap-y-2">
+<!-- Logo & Header -->
+<div class="flex items-center gap-3 px-2 mb-6">
+<div class="w-8 h-8 rounded bg-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">mountain_flag</span>
+</div>
+<div>
+<h1 class="text-md font-bold text-[#EDEDEF] leading-tight">Cairn AI</h1>
+<p class="text-[0.6875rem] font-semibold tracking-wider text-[#353437] uppercase">The Quiet Workspace</p>
+</div>
+</div>
+<!-- Main Navigation -->
+<nav class="space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150 rounded-md" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-[0.875rem] font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150 rounded-md" href="#">
+<span class="material-symbols-outlined" data-icon="forum">forum</span>
+<span class="text-[0.875rem] font-medium">Chat</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 bg-[#201F22] text-[#8B7BF5] rounded-md transition-all duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="assignment" style="font-variation-settings: 'FILL' 1;">assignment</span>
+<span class="text-[0.875rem] font-medium">Tasks</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150 rounded-md" href="#">
+<span class="material-symbols-outlined" data-icon="smart_toy">smart_toy</span>
+<span class="text-[0.875rem] font-medium">Agent</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-[#353437] hover:bg-[#1C1B1D] hover:text-[#EDEDEF] transition-all duration-150 rounded-md" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="text-[0.875rem] font-medium">Settings</span>
+</a>
+</nav>
+<!-- CTA -->
+<button class="mt-4 mx-2 px-4 py-2 bg-[#201F22] hover:bg-[#2a2a2c] text-[#EDEDEF] text-[0.8125rem] font-medium rounded-md border border-[#474553]/20 flex items-center justify-center gap-2 transition-all">
+<span class="material-symbols-outlined text-sm">add</span>
+            New Session
+        </button>
+<!-- Contextual Section -->
+<div class="mt-8 px-2">
+<p class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest mb-3">Context</p>
+<div class="space-y-1">
+<a class="flex items-center gap-3 px-3 py-1.5 text-[#8B7BF5] text-[0.8125rem] font-medium hover:bg-[#1C1B1D] rounded transition-all" href="#">
+<span class="material-symbols-outlined text-sm">person</span>
+                    My Tasks
+                </a>
+<div class="pt-4">
+<p class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest mb-2">Projects</p>
+<a class="flex items-center gap-3 px-3 py-1.5 text-[#c9c4d5] text-[0.8125rem] font-medium hover:bg-[#1C1B1D] rounded transition-all" href="#">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
+                        Project Cairn
+                    </a>
+<a class="flex items-center gap-3 px-3 py-1.5 text-[#353437] text-[0.8125rem] font-medium hover:bg-[#1C1B1D] rounded transition-all" href="#">
+<span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span>
+                        Obsidian UX
+                    </a>
+</div>
+</div>
+</div>
+<!-- Footer Profile -->
+<div class="mt-auto pt-4 border-t border-[#474553]/10">
+<div class="flex items-center justify-between px-2">
+<div class="flex items-center gap-3">
+<div class="relative">
+<img alt="User Profile" class="w-8 h-8 rounded-full bg-surface-container-highest" data-alt="close-up portrait of a professional man in a dark turtleneck with soft cinematic lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD35QppIGh_uMG89okUBvgIEMwHTXJXQAFDy2etKnqHmcotN_QCQ3K3q3Hwu5R-ijyBoNWuTPor2Zp402oaRnSNwRVUOC9EznrryjPWk3mX9WEAzsmVIIVwI3aKoJpX-267oNQAASO8FyY9XciGHo43A9Odo4km0Wome7GGGVQXP4Bh-e5n-6SNOG7q1MgAD6ZuaUxEjBw7c1TVEUNw9ti7j9in1tUPFZVNDLmsz-BC4w_0Da9FwWdAnbz80EeuNNbJCZzYZbgs7xmh"/>
+<span class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-[#111113] rounded-full"></span>
+</div>
+<div class="flex flex-col">
+<span class="text-[0.8125rem] font-medium text-[#EDEDEF]">User Profile</span>
+<span class="text-[0.6875rem] text-[#353437]">Online</span>
+</div>
+</div>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined text-lg">more_vert</span>
+</button>
+</div>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-64 min-h-screen flex flex-col">
+<!-- Header / TopAppBar -->
+<header class="h-14 flex items-center justify-between px-8 bg-[#131315] border-b border-[#474553]/10 sticky top-0 z-40">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2 text-[0.8125rem] font-medium">
+<span class="text-[#353437]">Tasks</span>
+<span class="material-symbols-outlined text-xs text-[#353437]">chevron_right</span>
+<span class="text-[#EDEDEF]">Project Cairn</span>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<!-- View Toggle -->
+<div class="flex p-0.5 bg-surface-container-lowest rounded-md border border-[#474553]/10">
+<button class="px-3 py-1 text-[0.75rem] font-medium bg-[#201F22] text-[#8B7BF5] rounded shadow-sm">Board</button>
+<button class="px-3 py-1 text-[0.75rem] font-medium text-[#353437] hover:text-[#EDEDEF] transition-colors">List</button>
+</div>
+<div class="flex items-center gap-3">
+<button class="w-8 h-8 flex items-center justify-center text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined">search</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined">filter_list</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center text-[#353437] hover:text-[#EDEDEF] transition-colors relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1 right-1 w-2 h-2 bg-primary border-2 border-[#131315] rounded-full"></span>
+</button>
+</div>
+</div>
+</header>
+<!-- Kanban Board Area -->
+<div class="flex-1 overflow-x-auto p-8 custom-scrollbar">
+<div class="flex gap-6 h-full min-w-max">
+<!-- Backlog Column -->
+<div class="w-72 flex flex-col gap-4">
+<div class="flex items-center justify-between px-1 mb-2">
+<div class="flex items-center gap-2">
+<span class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest">Backlog</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-bold text-[#c9c4d5]">4</span>
+</div>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined text-sm">more_horiz</span>
+</button>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Task Card -->
+<div class="p-4 bg-surface-container rounded-lg border border-[#474553]/0 hover:border-[#474553]/30 transition-all cursor-grab active:cursor-grabbing group">
+<div class="flex justify-between items-start mb-2">
+<span class="font-mono text-[0.6875rem] text-[#353437]">CAIRN-38</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-semibold text-on-surface-variant">Low</span>
+</div>
+<h3 class="text-[0.875rem] font-medium text-[#EDEDEF] mb-4 leading-snug">Refactor glassmorphism utility classes</h3>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<img alt="Assignee" class="w-5 h-5 rounded-full" data-alt="minimal close-up portrait of a woman with short dark hair in high-key lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAymnutoqfHo9PjmX8rt5wtYel7R4dFu6kZK20sY7k-7zA0_VZqnt5gClm8D_lUisiBa9AFrxs4tmjLnPSE6lsvuSb5WmFKq4_Lq8A8Y9AVaf4r7ZPR55--1nK8n8P-vcIGvdkWlVB3-xCjWFHzXAQeNCZ60QkGXGQUJnXnEl8WBoAJJl7uqxn13d-aYJuAiLQLALF8p7tbCJI_qb4B9rXDo0uYZVxoIKM2hQQUdDvHp4B7-AbIIFNkAIcRps8_v0AwR1Xeh186Sm6R"/>
+<span class="text-[0.75rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">calendar_today</span>
+                                        Oct 12
+                                    </span>
+</div>
+</div>
+</div>
+<button class="w-full py-2 flex items-center justify-center gap-2 text-[0.75rem] font-medium text-[#353437] hover:text-[#EDEDEF] hover:bg-surface-container-low rounded-md transition-all border border-dashed border-[#474553]/20">
+<span class="material-symbols-outlined text-sm">add</span>
+                            Add task
+                        </button>
+</div>
+</div>
+<!-- Todo Column -->
+<div class="w-72 flex flex-col gap-4">
+<div class="flex items-center justify-between px-1 mb-2">
+<div class="flex items-center gap-2">
+<span class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest">Todo</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-bold text-[#c9c4d5]">2</span>
+</div>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined text-sm">more_horiz</span>
+</button>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Task Card -->
+<div class="p-4 bg-surface-container rounded-lg border border-[#474553]/0 hover:border-[#474553]/30 transition-all cursor-grab group">
+<div class="flex justify-between items-start mb-2">
+<span class="font-mono text-[0.6875rem] text-[#353437]">CAIRN-42</span>
+<span class="px-1.5 py-0.5 rounded bg-primary-container/20 text-[0.625rem] font-semibold text-primary">High</span>
+</div>
+<h3 class="text-[0.875rem] font-medium text-[#EDEDEF] mb-4 leading-snug">Initial architecture for Task Board view</h3>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<img alt="Assignee" class="w-5 h-5 rounded-full" data-alt="professional portrait of a man in glasses with soft focus background and cool lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAxZ30Z5SOn8t-C_WD5_ll1q9DvcTqJQma_amPApEL_UwxBxwEJTAa9CxYN2LeliXbyTMopmHnHnw0QktJIsoBoEulgTQYz7gtgIiXhoNInmsL3Xh5xGPA3U_fQ4H6VL6LFxajVsoRt7KTZE8tOFYNfMDdqxA3Bea3CcfVm--9SR0vfr_0CVvijit381O4sxBCz74AzaocQlYC5QS2kTmgHHQtvTKefJrGCE7jpYVzTQYSCbc39c-yQAnxkr2X_BQuo2XjHWNW164iE"/>
+<span class="text-[0.75rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">calendar_today</span>
+                                        Oct 14
+                                    </span>
+</div>
+</div>
+</div>
+<div class="p-4 bg-surface-container rounded-lg border border-[#474553]/0 hover:border-[#474553]/30 transition-all cursor-grab group">
+<div class="flex justify-between items-start mb-2">
+<span class="font-mono text-[0.6875rem] text-[#353437]">CAIRN-45</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-semibold text-on-surface-variant">Med</span>
+</div>
+<h3 class="text-[0.875rem] font-medium text-[#EDEDEF] mb-4 leading-snug">Design system token mapping</h3>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<img alt="Assignee" class="w-5 h-5 rounded-full" data-alt="close-up of a smiling young woman with warm natural light hitting her face" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBKB9wAP6kJWbxoi6cBbxS1PUTovIep5rGUTJiQV_RgyUdJLBlG85XgafGrZERDq7zkO1tGB-o3wgnvHtjBl0qdgqDTt00guEE26-7F4A5oikwQuNQvZuQxqPDCs-Mc4QzAaRnYL4ZroWCcc4gYuJ3_maqlwavfu6t2Y2VANBvYuomylsOEldF9009Qi4ruFmZnt8xSC4lMG1sqewOmGxW2P4cteeEdzEgdiawFahr2DUgsndcpj_1lXxB0BnOOSgbTEkcM4TWI3KJY"/>
+<span class="text-[0.75rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">calendar_today</span>
+                                        Oct 15
+                                    </span>
+</div>
+</div>
+</div>
+<button class="w-full py-2 flex items-center justify-center gap-2 text-[0.75rem] font-medium text-[#353437] hover:text-[#EDEDEF] hover:bg-surface-container-low rounded-md transition-all border border-dashed border-[#474553]/20">
+<span class="material-symbols-outlined text-sm">add</span>
+                            Add task
+                        </button>
+</div>
+</div>
+<!-- In Progress Column -->
+<div class="w-72 flex flex-col gap-4">
+<div class="flex items-center justify-between px-1 mb-2">
+<div class="flex items-center gap-2">
+<span class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest">In Progress</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-bold text-[#c9c4d5]">1</span>
+</div>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined text-sm">more_horiz</span>
+</button>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Task Card -->
+<div class="p-4 bg-surface-container rounded-lg border border-[#474553]/0 hover:border-[#474553]/30 transition-all cursor-grab group">
+<div class="flex justify-between items-start mb-2">
+<span class="font-mono text-[0.6875rem] text-[#353437]">CAIRN-31</span>
+<span class="px-1.5 py-0.5 rounded bg-primary-container/20 text-[0.625rem] font-semibold text-primary">High</span>
+</div>
+<h3 class="text-[0.875rem] font-medium text-[#EDEDEF] mb-4 leading-snug">AI Agent conversation threading</h3>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<img alt="Assignee" class="w-5 h-5 rounded-full" data-alt="close-up portrait of a professional man in a dark turtleneck with soft cinematic lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDGT9Z0B42LpxaVOATJ63o86Pid7dqpU5SmqavhBH1dyBzsl3dHfE0VzmbQeLS-82HgYDY2Xwt1Cv02xhPV42nWyYioDduE5AehseIkeIPeJzCTgWAosEsf53VJmrp6P0VJv84tQdmIJHrmoOUSuHePN4gbXSlCUqCIEqveay-_O_l5ZQ3JT6ndsJCruhgJ24vhuVp1R_JR7EUmNXcHul8fEn0MeRSPLjxEHBSU3HP1LAq3Pu5wmFKP1Q0IlGuw9g3Z2QQ0BPxNJdZt"/>
+<span class="text-[0.75rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">calendar_today</span>
+                                        Oct 10
+                                    </span>
+</div>
+<div class="flex -space-x-2">
+<img class="w-5 h-5 rounded-full border border-surface-container" data-alt="portrait of a man in casual attire with moody indoor lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCjQqNDnSY-PCMydW92-1-HKd-xeA-j0NGhaFFW-j_u1DCGV6b84ycyQ5ImCy3nOMnYKLr2lmFlKoIdsKu7JcRRmk7Omz88QEiJhbgq-S3P41adGSGp5hvOR-VW62tQjUvqEJnCPU1EW-u1sMXt1Jslx81RbbzdxCb8sSlRO5jabqJIV6y5W7vq69VcJ7yZcV1YXUFPELwxdBNzQ7MFBg1yxkWqr6kRjz59XHCj62V1-nvCqP_OPTtVOMR-CTlTm6ni84PPFx_qUHZN"/>
+</div>
+</div>
+</div>
+<button class="w-full py-2 flex items-center justify-center gap-2 text-[0.75rem] font-medium text-[#353437] hover:text-[#EDEDEF] hover:bg-surface-container-low rounded-md transition-all border border-dashed border-[#474553]/20">
+<span class="material-symbols-outlined text-sm">add</span>
+                            Add task
+                        </button>
+</div>
+</div>
+<!-- In Review Column -->
+<div class="w-72 flex flex-col gap-4">
+<div class="flex items-center justify-between px-1 mb-2">
+<div class="flex items-center gap-2">
+<span class="text-[0.6875rem] font-semibold text-[#353437] uppercase tracking-widest">In Review</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-bold text-[#c9c4d5]">1</span>
+</div>
+<button class="text-[#353437] hover:text-[#EDEDEF] transition-colors">
+<span class="material-symbols-outlined text-sm">more_horiz</span>
+</button>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Task Card -->
+<div class="p-4 bg-surface-container rounded-lg border border-[#474553]/0 hover:border-[#474553]/30 transition-all cursor-grab group">
+<div class="flex justify-between items-start mb-2">
+<span class="font-mono text-[0.6875rem] text-[#353437]">CAIRN-29</span>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-[0.625rem] font-semibold text-on-surface-variant">Med</span>
+</div>
+<h3 class="text-[0.875rem] font-medium text-[#EDEDEF] mb-4 leading-snug">Unified sidebar layout implementation</h3>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<img alt="Assignee" class="w-5 h-5 rounded-full" data-alt="woman with bright creative personality, soft focus, studio light" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBxrV1szVcTE4AeOo58yYgBsjKAvN-no-pHVs69TULqPcnr8gxa_2LoztmDRBpz5Wkwrfs2gA7tRuJqqTAVWZkWJimekXhRbLwRL-tFvJIle63JiRAmxYHls108w6RIa9QPTTyfKuZUul2DGhLXrlLREBdmj6hROd-eXJmawanByhhf2aGrHKUu_7GVtLngx6EkSYHcW_4sZzR4e3EhLsgGrVlO_xd7XpuCTUu0g9SnX0GnHA35Bk_72Ov5XUm2jN3ToIjZxk47XZbP"/>
+<span class="text-[0.75rem] text-[#353437] flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">calendar_today</span>
+                                        Oct 08
+                                    </span>
+</div>
+</div>
+</div>
+<button class="w-full py-2 flex items-center justify-center gap-2 text-[0.75rem] font-medium text-[#353437] hover:text-[#EDEDEF] hover:bg-surface-container-low rounded-md transition-all border border-dashed border-[#474553]/20">
+<span class="material-symbols-outlined text-sm">add</span>
+                            Add task
+                        </button>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Contextual Command Palette (Visual Only) -->
+<div class="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 bg-[#201F22]/90 backdrop-blur-xl border border-[#474553]/20 rounded-full shadow-2xl">
+<span class="text-[#353437] material-symbols-outlined text-lg">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-[0.8125rem] text-[#EDEDEF] w-64 placeholder-[#353437]" placeholder="Search tasks or commands..." type="text"/>
+<div class="flex items-center gap-1">
+<kbd class="px-1.5 py-0.5 bg-[#353437] text-[#EDEDEF] text-[0.625rem] font-mono rounded">⌘</kbd>
+<kbd class="px-1.5 py-0.5 bg-[#353437] text-[#EDEDEF] text-[0.625rem] font-mono rounded">K</kbd>
+</div>
+</div>
+</body></html>
