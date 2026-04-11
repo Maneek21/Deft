@@ -8,10 +8,31 @@ import {
   taskActivity,
   users,
   orgMembers,
+  spaceKnowledge,
+  wikiPages,
+  wikiLinks,
+  wikiOpsLog,
 } from '@deft/db/schema';
-import { eq, and, sql, ilike } from 'drizzle-orm';
+import { eq, and, sql, ilike, desc } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
+
+const AGENT_EMAIL = 'deft-agent@system.local';
+
+export async function ensureAgentUser(): Promise<string> {
+  const [existing] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, AGENT_EMAIL))
+    .limit(1);
+  if (existing) return existing.id;
+
+  const [created] = await db
+    .insert(users)
+    .values({ email: AGENT_EMAIL, name: 'Deft', email_verified: true })
+    .returning();
+  return created!.id;
+}
 
 async function resolveUser(orgId: string, name: string): Promise<string | null> {
   const [u] = await db
@@ -44,6 +65,19 @@ export async function executeAction(
           ? await resolveUser(orgId, params.assignee_name)
           : null;
 
+        // Smart priority detection if not explicitly set
+        let priority = params.priority || 'p2';
+        if (!params.priority) {
+          const lowerContent = (params.description || params.title || '').toLowerCase();
+          if (lowerContent.match(/\b(urgent|asap|critical|blocker|emergency|p0)\b/)) {
+            priority = 'p0';
+          } else if (lowerContent.match(/\b(important|high priority|p1|needs attention|blocking)\b/)) {
+            priority = 'p1';
+          } else if (lowerContent.match(/\b(low priority|nice to have|when possible|p3|minor)\b/)) {
+            priority = 'p3';
+          }
+        }
+
         const [upd] = await db
           .update(projects)
           .set({ task_counter: sql`${projects.task_counter} + 1` })
@@ -59,7 +93,7 @@ export async function executeAction(
             title: params.title,
             description: params.description || null,
             status: 'backlog',
-            priority: params.priority || 'p2',
+            priority,
             assignee_id: assigneeId,
             created_by: userId,
             due_date: params.due_date ? new Date(params.due_date) : null,
@@ -383,6 +417,177 @@ export async function executeAction(
         return { success: true, result: { message_id: msg!.id, space: space.name } };
       }
 
+      case 'add_knowledge': {
+        const [space] = await db
+          .select()
+          .from(spaces)
+          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, `%${params.space_name}%`)))
+          .limit(1);
+        if (!space) return { success: false, result: null, error: `Space "${params.space_name}" not found` };
+
+        const [entry] = await db
+          .insert(spaceKnowledge)
+          .values({
+            org_id: orgId,
+            space_id: space.id,
+            type: params.type,
+            title: params.title,
+            content: params.content || null,
+            metadata: params.metadata || null,
+            created_by: userId,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { knowledge_id: entry!.id, title: params.title, space: space.name },
+            before_state: null,
+            after_state: { id: entry!.id, type: params.type, title: params.title, space_id: space.id },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'add_knowledge',
+          entityType: 'knowledge',
+          entityId: entry!.id,
+          beforeState: null,
+          afterState: { type: params.type, title: params.title, space: space.name },
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { knowledge_id: entry!.id, title: params.title, space: space.name } };
+      }
+
+      case 'wiki_write': {
+        const { slug: existingSlug, title, content, type: pageType, summary, related_slugs } = params;
+
+        if (existingSlug) {
+          const [existing] = await db
+            .select()
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
+            .limit(1);
+          if (!existing) return { success: false, result: null, error: `Wiki page "${existingSlug}" not found` };
+
+          const updates: Record<string, any> = {};
+          if (title) updates.title = title;
+          if (summary) updates.summary = summary;
+          if (pageType) updates.type = pageType;
+          if (content && content !== existing.content) {
+            updates.content = content;
+            updates.previous_content = existing.content;
+            updates.version = existing.version + 1;
+          }
+
+          if (Object.keys(updates).length > 0) {
+            await db.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+          }
+
+          if (related_slugs && related_slugs.length > 0) {
+            await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
+            const targets = await db
+              .select({ id: wikiPages.id })
+              .from(wikiPages)
+              .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+            for (const t of targets) {
+              if (t.id !== existing.id) {
+                await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
+              }
+            }
+          }
+
+          await db.insert(wikiOpsLog).values({
+            org_id: orgId,
+            operation: 'update',
+            page_id: existing.id,
+            details: { updated_fields: Object.keys(updates), by_agent: true },
+            performed_by: userId,
+          });
+
+          await db
+            .update(agentActions)
+            .set({
+              result: { slug: existingSlug, action: 'updated' },
+              before_state: { content: existing.content, version: existing.version },
+              after_state: { content: content || existing.content, version: (existing.version || 0) + 1 },
+              executed_at: new Date(),
+            })
+            .where(eq(agentActions.id, actionId));
+
+          await logAuditEvent({
+            orgId,
+            actorType: 'agent',
+            actorId: userId,
+            action: 'wiki_write',
+            entityType: 'wiki_page',
+            entityId: existing.id,
+            beforeState: { content: existing.content },
+            afterState: { content: content || existing.content },
+            metadata: { action_id: actionId, slug: existingSlug },
+          });
+
+          return { success: true, result: { slug: existingSlug, action: 'updated' } };
+        } else {
+          if (!title || !content || !pageType) {
+            return { success: false, result: null, error: 'title, content, and type are required for new wiki pages' };
+          }
+
+          const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+          const [page] = await db
+            .insert(wikiPages)
+            .values({
+              org_id: orgId,
+              scope: 'org',
+              type: pageType,
+              title,
+              slug,
+              summary: summary || null,
+              content,
+              confidence: 0.7,
+              version: 1,
+            })
+            .returning();
+
+          await db.insert(wikiOpsLog).values({
+            org_id: orgId,
+            operation: 'create',
+            page_id: page!.id,
+            details: { type: pageType, by_agent: true },
+            performed_by: userId,
+          });
+
+          await db
+            .update(agentActions)
+            .set({
+              result: { slug, page_id: page!.id, action: 'created' },
+              before_state: null,
+              after_state: { id: page!.id, title, slug, type: pageType },
+              executed_at: new Date(),
+            })
+            .where(eq(agentActions.id, actionId));
+
+          await logAuditEvent({
+            orgId,
+            actorType: 'agent',
+            actorId: userId,
+            action: 'wiki_write',
+            entityType: 'wiki_page',
+            entityId: page!.id,
+            beforeState: null,
+            afterState: { title, slug, type: pageType },
+            metadata: { action_id: actionId },
+          });
+
+          return { success: true, result: { slug, page_id: page!.id, action: 'created' } };
+        }
+      }
+
       default:
         return { success: false, result: null, error: `Unknown action: ${action}` };
     }
@@ -391,4 +596,35 @@ export async function executeAction(
     await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
     return { success: false, result: null, error: msg };
   }
+}
+
+/**
+ * Create an action record and execute it immediately (for auto-approved actions).
+ * Unlike executeAction(), this creates the agentActions row as already approved.
+ */
+export async function executeActionDirect(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+  conversationId: string | null,
+  approvalTier: 'auto' | 'quick' | 'full',
+): Promise<{ actionId: string; success: boolean; result: any; error?: string }> {
+  const [actionRecord] = await db
+    .insert(agentActions)
+    .values({
+      org_id: orgId,
+      user_id: userId,
+      conversation_id: conversationId,
+      action,
+      params,
+      approval_tier: approvalTier,
+      approval_status: 'approved',
+      approved_at: new Date(),
+    })
+    .returning();
+
+  const result = await executeAction(actionRecord!.id, action, params, orgId, userId);
+
+  return { actionId: actionRecord!.id, ...result };
 }
