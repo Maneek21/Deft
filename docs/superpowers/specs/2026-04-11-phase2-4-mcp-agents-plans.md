@@ -122,10 +122,10 @@ NULL for regular human messages. Only populated when the message author is an ag
 ### 2.3 New enum: `agent_employee_role`
 
 ```
-'project_manager' | 'engineering_lead' | 'marketing_manager' | 'executive_assistant' | 'custom'
+'project_manager' | 'engineering_lead' | 'executive_assistant' | 'custom'
 ```
 
-Starting with 3 pre-built templates (PM, Engineering Lead, EA) + custom. Marketing/Finance/HR added when Zapier/n8n MCP foundations are tested.
+Starting with 3 pre-built templates (PM, Engineering Lead, EA) + custom. Additional roles (`marketing_manager`, `hr_manager`, `finance_manager`) added to the enum when their templates are built alongside Zapier/n8n MCP foundations.
 
 ### 2.4 New enum: `plan_status`
 
@@ -146,6 +146,7 @@ mcp_connections (
   id                      text PRIMARY KEY
   org_id                  text NOT NULL REFERENCES orgs(id)
   name                    text NOT NULL                        -- "Zapier", "Company Slack MCP", etc.
+  slug                    text NOT NULL                        -- auto-generated kebab-case from name, used in tool prefixing
   server_url              text                                 -- for SSE/streamable-http
   transport               mcp_transport NOT NULL
   stdio_command           text                                 -- for stdio: "npx", "node", etc.
@@ -163,6 +164,7 @@ mcp_connections (
   created_at              timestamp DEFAULT now() NOT NULL
   updated_at              timestamp DEFAULT now() NOT NULL
 
+  UNIQUE INDEX: (org_id, slug)
   INDEX: org_id
 )
 ```
@@ -195,7 +197,7 @@ agent_employees (
   avatar_url              text
   system_prompt           text NOT NULL                        -- role-specific instructions
   expertise_description   text                                 -- what this agent knows about
-  native_tool_ids         text[]                               -- which native tools it can use (NULL = all)
+  native_tools            text[]                               -- tool name strings e.g. ['search_tasks','create_task'] (NULL = all)
   mcp_connection_ids      text[]                               -- which MCP connections it can use
   disabled_tools          text[]                               -- tools explicitly blocked
   space_ids               text[]                               -- spaces it can see/post in (NULL = all)
@@ -247,8 +249,8 @@ agent_plans (
   id                  text PRIMARY KEY
   org_id              text NOT NULL REFERENCES orgs(id)
   user_id             text NOT NULL REFERENCES users(id)       -- who requested the plan
-  agent_employee_id   text REFERENCES agent_employees(id)      -- which employee is executing (NULL = main agent)
-  conversation_id     text REFERENCES agent_conversations(id)
+  agent_employee_id   text REFERENCES agent_employees(id)      -- which employee is executing (NULL = Defty)
+  conversation_id     text                                     -- agentConversations.id (Defty) or spaces.id (employee DM), nullable, no FK
   title               text NOT NULL
   description         text                                     -- what the plan accomplishes
   steps               jsonb NOT NULL                           -- PlanStep[] (see below)
@@ -491,7 +493,7 @@ if (toolName.startsWith('mcp__')) {
 - User clicks agent employee in sidebar DMs → opens a DM space (type='dm')
 - DM space is created on first interaction (like human DMs)
 - Messages stored in `messages` table with `metadata` jsonb for agent reasoning
-- Agent processing: message triggers `agent-employee-mention` worker → runs `agent-runner.ts` with employee's system prompt → posts reply as a message in the DM space with metadata
+- Agent processing: message triggers `agent-employee-message` worker → runs `agent-runner.ts` with employee's system prompt → posts reply as a message in the DM space with metadata
 - The **agent page** can also show these conversations — it queries DM spaces where the counterpart is an agent employee and renders with rich UI (expanding citations, tool call details from metadata)
 - Full multi-turn context: worker loads last 20 messages from the DM space as conversation history
 - Employee can do multi-turn reasoning, call many tools, produce detailed analysis
@@ -549,7 +551,7 @@ Daily action budget: {{remaining_actions}}/{{max_daily_actions}}
 
 ## Communication Guidelines
 - In channels: be concise, conversational. Respond in threads.
-- On agent page: be thorough, provide detailed analysis.
+- In DMs: be thorough, provide detailed analysis.
 - When assigned tasks: act autonomously within your scope. Ask questions if unclear.
 - For complex work that needs extended reasoning: suggest moving to the agent page.
 - Always identify yourself. Never impersonate humans.
@@ -633,16 +635,18 @@ Minimum viable creation: Step 1 + Step 2 only. Everything else has sensible defa
 
 ### 4.7 Defty superintendent tools
 
-New tools added exclusively to Defty (not available to employees):
+New tools added exclusively to Defty via a `SUPERINTENDENT_TOOLS` array in `agent-tools.ts` (not available to employees, not included when conversation is with an employee):
 
 ```
-manage_agent_employee    — Create, update, pause, resume, or delete an agent employee
-list_agent_employees     — List all employees with status, daily action usage, last active
-get_agent_activity       — Get recent actions for a specific employee or all employees
-manage_mcp_connection    — Add, remove, test, or reconfigure MCP connections
-get_agent_economics      — Token spend, action counts, credit usage per employee
-manage_triggers          — Create, update, or disable triggers for an employee
+manage_agent_employee    — Create, update, pause, resume, or delete an agent employee     [full tier — always needs approval]
+list_agent_employees     — List all employees with status, daily action usage, last active  [auto tier — read-only]
+get_agent_activity       — Get recent actions for a specific employee or all employees      [auto tier — read-only]
+manage_mcp_connection    — Add, remove, test, or reconfigure MCP connections                [full tier — always needs approval]
+get_agent_economics      — Token spend, action counts, credit usage per employee            [auto tier — read-only]
+manage_triggers          — Create, update, or disable triggers for an employee              [quick tier — moderate impact]
 ```
+
+Approval tiers are registered in `TOOL_APPROVAL_TIERS` alongside Phase 1 entries.
 
 These tools allow Defty to be the single conversational interface for platform management. Instead of navigating Settings pages, users can say:
 
@@ -663,7 +667,7 @@ When the agent determines a request requires multiple steps (or the user explici
 
 **New tool: `create_plan`**
 
-Added to AGENT_TOOLS. The agent calls this when it identifies a multi-step workflow:
+Added as a **system tool** — always included for both Defty and all employees regardless of `native_tools` scoping. The agent calls this when it identifies a multi-step workflow:
 
 ```typescript
 {
@@ -864,7 +868,7 @@ Subset of native tools, scoped by the API key's `permissions` and the linked age
 ```
 External Agent (NemoClaw) → HTTP POST /mcp → Authenticate (API key) →
   Resolve agent_employee from api_key.agent_employee_id →
-  Check tool permissions (api_key.permissions ∩ employee.native_tool_ids) →
+  Check tool permissions (api_key.permissions ∩ employee.native_tools) →
   Check rate limits (api_key.rate_limit_per_minute, per_day) →
   Execute tool via executeToolCall() or mcpClientManager.executeTool() →
   Log to agentActions with agent_employee_id + source →
@@ -966,10 +970,11 @@ GET    /mcp/actions/:id/status                 Poll action approval status (for 
 - Triggered when: task.assignee_id changes to an agent employee's user_id
 - Flow: Read task → reason about what's needed → call tools → post results as comments → update status to in_review → DM assigner
 
-**`agent-employee-mention`** — Handles @mentions of agent employees in chat
-- Triggered when: message contains @{employee_slug} or @{employee_name}
-- Flow: Load thread context → run agent-runner with employee's system prompt → post reply in thread
-- If response is long/complex: post summary + link to agent page
+**`agent-employee-message`** — Handles both DMs to and @mentions of agent employees
+- Triggered when: new message in a DM space with an agent employee, OR message contains @{employee_slug} or @{employee_name} in a channel
+- DM flow: Load last 20 messages from DM space → run agent-runner with employee's system prompt → post reply in DM space with metadata
+- @mention flow: Load last 10 messages in thread → run agent-runner with employee's system prompt → post reply in thread with metadata
+- If response is long/complex: post summary + link: "View full analysis in DM"
 
 **`agent-employee-trigger`** — Evaluates and fires agent employee triggers
 - Triggered when: relevant events occur (task_overdue, task_stalled, pr_merged, cron)
@@ -985,7 +990,7 @@ GET    /mcp/actions/:id/status                 Poll action approval status (for 
 
 ### 8.2 Modified workers
 
-**`agent-reply`** — Currently handles @agent/@deft mentions. Modified to also check for agent employee mentions and route to `agent-employee-mention` handler.
+**`agent-reply`** — Currently handles @agent/@deft mentions. Stays as-is for Defty routing (@agent/@deft → Defty). The message processing pipeline separately detects employee @mentions (by slug/name) and DM messages to agent users, enqueuing those to `agent-employee-message` instead. No overlap — Defty and employee mention detection are distinct checks.
 
 ---
 
@@ -1015,7 +1020,7 @@ Gate mechanism: check `process.env.DEFT_SELF_HOSTED === 'true'`. When true:
 ### 10.1 Agent employee + MCP tools
 
 When an agent employee executes, its available tools are:
-1. Native tools filtered by `native_tool_ids` (NULL = all)
+1. Native tools filtered by `native_tools` (NULL = all)
 2. MCP tools from connections in `mcp_connection_ids`
 3. Minus `disabled_tools`
 4. All filtered through the employee's `trust_level`
@@ -1047,6 +1052,7 @@ The existing Agent Activity widget (Phase 1) is extended:
 
 **Per agent employee:**
 - `max_daily_actions` checked before every tool execution (in executeToolCall and executeMCPTool)
+- **Counting:** Each tool call = 1 action. Each plan step = 1 action (regardless of internal retries or alternative reasoning within that step). `create_plan` itself does not count — only step executions do.
 - When limit reached: agent responds "I've reached my daily action limit (50/50). Please ask an admin to increase my limit or wait until tomorrow."
 - Plan execution pauses: "Plan paused — daily action limit reached. Will resume tomorrow."
 
@@ -1130,7 +1136,7 @@ apps/api/src/routes/api-keys.ts                         API key management
 apps/api/src/lib/agent-plans.ts                         Plan execution engine
 apps/api/src/lib/mcp-tools.ts                           getMCPToolsForAgent, parseMCPToolName
 apps/api/src/workers/handlers/agent-employee-task.ts    Task assignment handler
-apps/api/src/workers/handlers/agent-employee-mention.ts @mention handler
+apps/api/src/workers/handlers/agent-employee-message.ts DM + @mention handler
 apps/api/src/workers/handlers/agent-employee-trigger.ts Trigger evaluation
 apps/api/src/workers/handlers/plan-executor.ts          Plan step execution
 apps/api/src/workers/handlers/agent-daily-reset.ts      Daily counter reset
@@ -1152,7 +1158,7 @@ packages/db/src/migrations/XXXX_mcp_and_agents.ts       Schema migration
 packages/db/src/schema.ts                               New tables + enums + user/agentActions columns
 apps/api/src/routes/agent.ts                            MCP tool merging, employee context, plan events
 apps/api/src/lib/agent-context.ts                       MCP tool routing in executeToolCall
-apps/api/src/lib/agent-tools.ts                         Add create_plan tool
+apps/api/src/lib/agent-tools.ts                         Add create_plan tool + SUPERINTENDENT_TOOLS array
 apps/api/src/lib/agent-runner.ts                        Employee context injection, action counting
 apps/api/src/lib/agent-actions.ts                       Employee attribution, MCP source tracking
 apps/api/src/lib/agent-approval.ts                      MCP tool approval tier resolution
