@@ -259,8 +259,7 @@ export default function AgentPage() {
         {/* Reuse AgentChat with employee context */}
         <div className="flex-1 overflow-hidden">
           <AgentChat
-            key={activeEmployee.id + (activeId || '')}
-            conversationId={activeId || undefined}
+            key={activeEmployee.id}
             agentEmployeeId={activeEmployee.id}
           />
         </div>
