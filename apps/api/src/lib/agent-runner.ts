@@ -1,14 +1,18 @@
 // Reusable agent reasoning engine — used by @agent mentions in chat and other background jobs.
-// Does NOT stream; returns the final response synchronously.
+// Supports two modes:
+//   'chat_mention' (default): write actions are skipped (safety for @mentions)
+//   'background': write actions auto-execute based on org trust level
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getModelConfig } from './llm.js';
 import { db } from './db.js';
-import { connectedAccounts } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { connectedAccounts, wikiPages, orgs } from '@deft/db/schema';
+import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
 import { env } from './env.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
+import { executeActionDirect } from './agent-actions.js';
+import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -42,16 +46,21 @@ export async function runAgentQuery(params: {
   userId: string;
   orgName: string;
   conversationHistory?: ConversationMessage[];
+  /** 'chat_mention' (default): write actions skipped. 'background': auto-execute per trust level. */
+  mode?: 'chat_mention' | 'background';
+  /** Override system prompt (for agent employees in future). */
+  systemPromptOverride?: string;
 }): Promise<{
   text: string;
   citations: any[];
   pendingActions: any[];
+  executedActions: any[];
 }> {
   if (!env.ANTHROPIC_API_KEY) {
     throw new Error('Anthropic API key not configured');
   }
 
-  const { content, orgId, userId, orgName, conversationHistory } = params;
+  const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride } = params;
 
   // Check connected accounts for dynamic tool availability
   const connections = await db.select({ provider: connectedAccounts.provider })
@@ -82,9 +91,60 @@ export async function runAgentQuery(params: {
     connectionInfo = '\nNo external services are connected. If the user asks about calendar or GitHub, suggest they connect in Settings → Integrations.';
   }
 
-  const systemPrompt = SYSTEM_PROMPT
+  // Load trust level for background mode
+  let trustLevel: TrustLevel = 'conservative';
+  if (mode === 'background') {
+    const [org] = await db
+      .select({ trust_level: orgs.trust_level })
+      .from(orgs)
+      .where(eq(orgs.id, orgId))
+      .limit(1);
+    trustLevel = (org?.trust_level || 'conservative') as TrustLevel;
+  }
+
+  let systemPrompt = SYSTEM_PROMPT
     .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
     .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
+
+  // Auto-load relevant wiki context using full-text search
+  try {
+    // Use the user's message directly as a full-text search query
+    const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    if (searchQuery.length > 2) {
+      const relevantPages = await db.select({
+        title: wikiPages.title,
+        slug: wikiPages.slug,
+        summary: wikiPages.summary,
+        type: wikiPages.type,
+        confidence: wikiPages.confidence,
+      })
+        .from(wikiPages)
+        .where(and(
+          eq(wikiPages.org_id, orgId),
+          eq(wikiPages.is_deleted, false),
+          sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
+        ))
+        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
+        .limit(3);
+
+      if (relevantPages.length > 0) {
+        const wikiContext = relevantPages.map(p =>
+          `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
+        ).join('\n');
+        systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
+      }
+    }
+  } catch (err) {
+    // Non-critical: don't fail the agent reply if wiki auto-load errors
+    console.warn('[agent-runner] Wiki auto-load failed:', (err as Error).message);
+  }
+
+  // Apply system prompt override if provided (for agent employees)
+  if (systemPromptOverride) {
+    systemPrompt = systemPromptOverride
+      .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
+      .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
+  }
 
   const reasonConfig = getModelConfig('reason');
   const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -107,6 +167,7 @@ export async function runAgentQuery(params: {
 
   let allCitations: any[] = [];
   let pendingActions: any[] = [];
+  let executedActions: any[] = [];
   let finalText = '';
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
 
@@ -149,19 +210,44 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
-        // Write actions: skip in chat mention context, tell the agent it needs approval
-        pendingActions.push({
-          action: tool.name,
-          params: tool.input,
-        });
-        toolResults.push({
-          type: 'tool_result' as const,
-          tool_use_id: tool.id,
-          content: JSON.stringify({
-            status: 'skipped_in_chat_mention',
-            message: 'Write actions are not auto-executed from chat mentions. Suggest the user use the Agent panel for this action.',
-          }),
-        });
+        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel)) {
+          // Background mode: auto-execute if trust level permits
+          const approvalTier = getApprovalTier(tool.name);
+          const { actionId, success, result, error } = await executeActionDirect(
+            tool.name,
+            tool.input as Record<string, any>,
+            orgId,
+            userId,
+            null, // no conversation_id for background actions
+            approvalTier,
+          );
+          executedActions.push({ actionId, action: tool.name, params: tool.input, success, result, error });
+          toolResults.push({
+            type: 'tool_result' as const,
+            tool_use_id: tool.id,
+            content: JSON.stringify(
+              success
+                ? { status: 'auto_executed', ...result }
+                : { status: 'auto_execute_failed', error },
+            ),
+          });
+        } else {
+          // Chat mention mode or trust level requires approval: skip write actions
+          pendingActions.push({
+            action: tool.name,
+            params: tool.input,
+          });
+          toolResults.push({
+            type: 'tool_result' as const,
+            tool_use_id: tool.id,
+            content: JSON.stringify({
+              status: 'skipped',
+              message: mode === 'background'
+                ? 'Action requires approval. Trust level does not permit auto-execution.'
+                : 'Write actions are not auto-executed from chat mentions. Suggest the user use the Agent panel for this action.',
+            }),
+          });
+        }
       } else {
         // Read-only tools — execute immediately
         const { result, citations } = await executeToolCall(
@@ -195,5 +281,6 @@ export async function runAgentQuery(params: {
     text: responseText,
     citations: allCitations,
     pendingActions,
+    executedActions,
   };
 }
