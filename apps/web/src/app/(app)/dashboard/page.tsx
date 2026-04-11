@@ -76,6 +76,18 @@ type MyInsightsData = {
   pace: { week: string; completed: number }[];
 };
 
+type AgentActivity = {
+  id: string;
+  action: string;
+  params: any;
+  result: any;
+  approval_status: string;
+  approval_tier: string;
+  executed_at: string | null;
+  created_at: string;
+  error: string | null;
+};
+
 type DashboardData = {
   greeting: string; standup: StandupData; due_today: DashboardTask[];
   due_this_week: DashboardTask[]; overdue: DashboardTask[];
@@ -124,6 +136,20 @@ function formatActivity(a: ActivityEntry): string {
   return `${who} updated ${task}`;
 }
 
+function formatAgentAction(a: AgentActivity): string {
+  const p = a.params as Record<string, any>;
+  switch (a.action) {
+    case 'create_task': return `Created task "${p.title}" in ${p.project_name}`;
+    case 'update_task_status': return `Moved ${p.task_identifier} to ${(p.new_status || '').replace(/_/g, ' ')}`;
+    case 'assign_task': return `Assigned ${p.task_identifier} to ${p.assignee_name}`;
+    case 'post_message': return `Posted in #${p.space_name}`;
+    case 'add_knowledge': return `Added ${p.type}: "${p.title}"`;
+    case 'wiki_write': return `Updated wiki: ${p.title || p.slug}`;
+    case 'create_calendar_event': return `Created event: ${p.title}`;
+    default: return a.action.replace(/_/g, ' ');
+  }
+}
+
 // ═══ Bento Card component ═══
 
 function BentoCard({ title, span = 1, children, headerRight, bg }: {
@@ -133,7 +159,7 @@ function BentoCard({ title, span = 1, children, headerRight, bg }: {
   // On mobile (< md), everything is 1 col. On md, span 2 cards get col-span-2. On lg, full 3-col grid.
   const spanClass = span >= 2 ? 'md:col-span-2' : '';
   return (
-    <div className={`rounded-xl p-4 flex flex-col col-span-1 ${spanClass}`} style={{
+    <div className={`rounded-lg p-4 flex flex-col col-span-1 ${spanClass}`} style={{
       background: bg || 'var(--surface-container-low, var(--bg-surface))',
       border: '1px solid var(--border-default)',
       minHeight: 0,
@@ -297,10 +323,22 @@ function CalendarWidget() {
 
 // ═══ Bento Grid Dashboard ═══
 
+function getLocalGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
 export default function Dashboard3Page() {
   const { user } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [clientGreeting, setClientGreeting] = useState<string | null>(null);
+
+  useEffect(() => {
+    setClientGreeting(getLocalGreeting());
+  }, []);
   const [standupGenerating, setStandupGenerating] = useState(false);
   const [standupOpen, setStandupOpen] = useState(false);
 
@@ -309,6 +347,7 @@ export default function Dashboard3Page() {
   const [oneonePreps, setOneonePreps] = useState<OneOnePrepData[]>([]);
   const [prepModal, setPrepModal] = useState<OneOnePrepData | null>(null);
   const [myInsights, setMyInsights] = useState<MyInsightsData | null>(null);
+  const [agentActivity, setAgentActivity] = useState<AgentActivity[]>([]);
 
   useEffect(() => {
     api.get('/api/dashboard').then(async res => {
@@ -318,6 +357,10 @@ export default function Dashboard3Page() {
 
     api.get('/api/dashboard/my-insights').then(async res => {
       if (res.ok) setMyInsights(await res.json());
+    }).catch(() => {});
+
+    api.get('/api/dashboard/agent-activity').then(async res => {
+      if (res.ok) setAgentActivity(await res.json());
     }).catch(() => {});
   }, []);
 
@@ -413,7 +456,7 @@ export default function Dashboard3Page() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-4">
           <div>
             <h1 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-              {d.greeting}, {user?.name?.split(' ')[0]}
+              {clientGreeting ?? d.greeting}, {user?.name?.split(' ')[0]}
             </h1>
             <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>{formatFullDateLong(new Date())}</p>
           </div>
@@ -586,6 +629,39 @@ export default function Dashboard3Page() {
               </div>
             ) : (
               <p className="text-[11px] py-2" style={{ color: 'var(--text-tertiary)' }}>No recent activity</p>
+            )}
+          </BentoCard>
+
+          {/* Agent Activity card */}
+          <BentoCard title="Agent Activity">
+            {agentActivity.length === 0 ? (
+              <p className="text-[12px]" style={{ color: 'var(--muted)' }}>No recent agent activity</p>
+            ) : (
+              <div className="space-y-2">
+                {agentActivity.slice(0, 8).map((a) => (
+                  <div key={a.id} className="flex items-start gap-2 text-[12px]">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                      style={{
+                        background: a.approval_status === 'approved'
+                          ? a.error ? '#EF4444' : '#22C55E'
+                          : '#EAB308',
+                      }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate" style={{ color: 'var(--foreground)' }}>
+                        {formatAgentAction(a)}
+                      </p>
+                      <p style={{ color: 'var(--muted)', fontSize: '10px' }}>
+                        {a.approval_status === 'pending' ? 'Awaiting approval \u00b7 ' : ''}
+                        {new Date(a.executed_at || a.created_at).toLocaleString('en', {
+                          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </BentoCard>
 
