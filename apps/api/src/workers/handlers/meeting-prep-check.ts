@@ -74,7 +74,7 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
       // 2c. Gather context
 
       // Find users in our system that match attendee emails
-      let attendeeUsers: { id: string; name: string; email: string }[] = [];
+      let attendeeUsers: { id: string; name: string; email: string | null }[] = [];
       if (attendeeEmails.length > 0) {
         attendeeUsers = await db
           .select({ id: users.id, name: users.name, email: users.email })
