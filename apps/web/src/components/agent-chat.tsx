@@ -55,6 +55,7 @@ type Props = {
   initialPrompt?: string;
   onConversationCreated?: (id: string) => void;
   onTitleUpdate?: (title: string) => void;
+  agentEmployeeId?: string;
 };
 
 function renderAgentMarkdown(text: string): string {
@@ -112,7 +113,7 @@ function getFollowUpSuggestions(content: string, citations: Citation[]): string[
   return suggestions.slice(0, 3);
 }
 
-export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate }: Props) {
+export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate, agentEmployeeId }: Props) {
   const { user } = useAuth();
   const router = useRouter();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -236,7 +237,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       const res = await fetch(`${API_URL}/api/agent/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}) }),
         signal: controller.signal,
       });
 

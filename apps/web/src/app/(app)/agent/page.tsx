@@ -224,32 +224,44 @@ export default function AgentPage() {
     </div>
   ) : null;
 
-  // If viewing an employee tab, show placeholder
+  // Employee chat tab — functional chat interface
   if (activeTab !== 'defty' && activeEmployee) {
+    const formattedRole = activeEmployee.role
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c: string) => c.toUpperCase());
+
     return (
       <div className="flex flex-col h-full">
         {tabBar}
-        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+        {/* Employee header */}
+        <div
+          className="flex items-center gap-3 px-4 py-3 flex-shrink-0 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
           <div
-            className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-bold text-white flex-shrink-0"
             style={{ background: 'var(--primary-container)' }}
           >
             {activeEmployee.name.charAt(0).toUpperCase()}
           </div>
-          <div className="text-center">
+          <div>
             <h2
-              className="text-[18px] font-semibold"
+              className="text-[13px] font-semibold leading-tight"
               style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em' }}
             >
-              DM with {activeEmployee.name}
+              {activeEmployee.name}
             </h2>
-            <p className="text-[13px] mt-1" style={{ color: 'var(--muted)' }}>
-              {activeEmployee.role}
-            </p>
-            <p className="text-[12px] mt-3" style={{ color: 'var(--outline)' }}>
-              Direct messaging with agent employees coming soon.
+            <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+              {formattedRole}
             </p>
           </div>
+        </div>
+        {/* Reuse AgentChat with employee context */}
+        <div className="flex-1 overflow-hidden">
+          <AgentChat
+            key={activeEmployee.id}
+            agentEmployeeId={activeEmployee.id}
+          />
         </div>
       </div>
     );
