@@ -42,6 +42,7 @@ import { CreateProjectModal } from './create-project-modal';
 
 type AgentEmployee = {
   id: string;
+  user_id: string;
   name: string;
   role: string;
   avatar_url: string | null;
@@ -201,6 +202,7 @@ function ChatSidebarContent({
         </div>
         {orgMembers
           .filter((m) => m.id !== user?.id)
+          .filter((m) => !agentEmployees.some((e) => e.user_id === m.id))
           .map((member) => {
             const dmSpace = dmSpaces.find((s) => {
               const names = s.name.split(',').map((n) => n.trim());
@@ -587,6 +589,8 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
     { name: 'Tags', href: '/settings/tags' },
     { name: 'Integrations', href: '/settings/integrations' },
     { name: 'Agent', href: '/settings/agent' },
+    { name: 'Agent Employees', href: '/settings/agent-employees' },
+    { name: 'API Access', href: '/settings/api-access' },
   ];
 
   return (

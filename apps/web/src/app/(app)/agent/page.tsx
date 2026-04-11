@@ -376,7 +376,7 @@ export default function AgentPage() {
             style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
             <textarea value={input} onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(input); setInput(''); } }}
-              placeholder="Ask Deft anything..."
+              placeholder="Ask Defty anything..."
               className="flex-1 px-4 py-3 text-[14px] resize-none max-h-[120px] bg-transparent outline-none"
               style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', border: 'none', boxShadow: 'none' }}
               rows={1} />

@@ -821,7 +821,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   >
                     Unassigned
                   </button>
-                  {members.map((m) => (
+                  {members
+                    .filter((m) => !agentEmployees.some((e) => e.user_id === m.id))
+                    .map((m) => (
                     <button
                       key={m.id}
                       onClick={() => handleFieldUpdate('assignee_id', m.id)}
