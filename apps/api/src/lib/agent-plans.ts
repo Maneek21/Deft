@@ -1,0 +1,410 @@
+/**
+ * Multi-step plan execution engine.
+ *
+ * Plans are sequences of tool calls with:
+ *   - Step references: $step.{stepId}.result.{fieldPath}
+ *   - Conditional execution: eq, neq, gt, lt, contains, empty, not_empty
+ *   - Dependency tracking: steps can depend on prior steps
+ *   - Approval gating: write actions pause the plan unless auto-approved
+ *   - Failure recovery: agent reasons about alternatives on step failure
+ */
+
+import { db } from './db.js';
+import { agentPlans, agentEmployees, orgs } from '@deft/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
+import { executeToolCall } from './agent-context.js';
+import { shouldAutoExecute, getApprovalTier } from './agent-approval.js';
+import { executeActionDirect } from './agent-actions.js';
+import { ACTION_TOOLS } from './agent-tools.js';
+import { runAgentQuery } from './agent-runner.js';
+import type { TrustLevel } from './agent-approval.js';
+
+// ─── Types ───
+
+export interface PlanStep {
+  id: string;
+  description: string;
+  tool: string;
+  params: Record<string, any>;
+  depends_on?: string[];
+  condition?: StepCondition;
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'waiting_approval';
+  result?: any;
+  error?: string;
+}
+
+export interface StepCondition {
+  field: string;
+  operator: 'eq' | 'neq' | 'gt' | 'lt' | 'contains' | 'empty' | 'not_empty';
+  value?: any;
+}
+
+type PlanContext = Record<string, { result: any }>;
+
+type PlanEventType =
+  | 'step:start'
+  | 'step:complete'
+  | 'step:skip'
+  | 'step:fail'
+  | 'plan:pause'
+  | 'plan:complete'
+  | 'plan:fail';
+
+export type PlanEvent = {
+  type: PlanEventType;
+  stepId?: string;
+  data?: any;
+};
+
+// ─── Reference Resolution ───
+
+/**
+ * Replace $step.{stepId}.result.{fieldPath} references in params with actual
+ * values from completed step results stored in context.
+ */
+export function resolveStepReferences(
+  params: Record<string, any>,
+  context: PlanContext,
+): Record<string, any> {
+  const resolved: Record<string, any> = {};
+  for (const [key, value] of Object.entries(params)) {
+    resolved[key] = resolveValue(value, context);
+  }
+  return resolved;
+}
+
+function resolveValue(value: any, context: PlanContext): any {
+  if (typeof value === 'string') {
+    // Full replacement: entire value is a reference
+    const fullMatch = value.match(/^\$step\.([^.]+)\.result\.(.+)$/);
+    if (fullMatch) {
+      const [, stepId, fieldPath] = fullMatch;
+      return getNestedValue(context[stepId!]?.result, fieldPath!);
+    }
+    // Inline replacement: references embedded in a larger string
+    return value.replace(/\$step\.([^.]+)\.result\.([^\s}]+)/g, (_match, stepId, fieldPath) => {
+      const val = getNestedValue(context[stepId]?.result, fieldPath);
+      return val !== undefined ? String(val) : _match;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => resolveValue(v, context));
+  }
+  if (value && typeof value === 'object') {
+    return resolveStepReferences(value, context);
+  }
+  return value;
+}
+
+function getNestedValue(obj: any, path: string): any {
+  if (obj === undefined || obj === null) return undefined;
+  const parts = path.split('.');
+  let current = obj;
+  for (const part of parts) {
+    if (current === undefined || current === null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+// ─── Condition Evaluation ───
+
+/**
+ * Evaluate a step condition against the current plan context.
+ * Returns true if the step should execute.
+ */
+export function evaluateCondition(
+  condition: StepCondition,
+  context: PlanContext,
+): boolean {
+  const fieldValue = resolveValue(condition.field, context);
+
+  switch (condition.operator) {
+    case 'eq':
+      return fieldValue === condition.value;
+    case 'neq':
+      return fieldValue !== condition.value;
+    case 'gt':
+      return typeof fieldValue === 'number' && fieldValue > condition.value;
+    case 'lt':
+      return typeof fieldValue === 'number' && fieldValue < condition.value;
+    case 'contains':
+      if (typeof fieldValue === 'string') return fieldValue.includes(condition.value);
+      if (Array.isArray(fieldValue)) return fieldValue.includes(condition.value);
+      return false;
+    case 'empty':
+      return (
+        fieldValue === undefined ||
+        fieldValue === null ||
+        fieldValue === '' ||
+        (Array.isArray(fieldValue) && fieldValue.length === 0)
+      );
+    case 'not_empty':
+      return (
+        fieldValue !== undefined &&
+        fieldValue !== null &&
+        fieldValue !== '' &&
+        !(Array.isArray(fieldValue) && fieldValue.length === 0)
+      );
+    default:
+      return true;
+  }
+}
+
+// ─── Plan Execution ───
+
+/**
+ * Main plan execution loop.
+ *
+ * 1. Load plan from DB
+ * 2. Load trust level
+ * 3. For each step: check deps, evaluate conditions, execute or pause
+ * 4. On failure: ask agent for alternative. If ESCALATE → pause.
+ * 5. Store results in context for downstream step references.
+ */
+export async function executePlan(
+  planId: string,
+  orgId: string,
+  userId: string,
+  onEvent?: (event: PlanEvent) => void,
+): Promise<void> {
+  // 1. Load plan
+  const [plan] = await db
+    .select()
+    .from(agentPlans)
+    .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, orgId)))
+    .limit(1);
+
+  if (!plan) throw new Error(`Plan ${planId} not found`);
+  if (plan.status !== 'approved' && plan.status !== 'executing') {
+    throw new Error(`Plan ${planId} cannot be executed in status '${plan.status}'`);
+  }
+
+  // 2. Load trust level
+  let trustLevel: TrustLevel = 'standard';
+  if (plan.agent_employee_id) {
+    const [employee] = await db
+      .select({ trust_level: agentEmployees.trust_level })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, plan.agent_employee_id))
+      .limit(1);
+    if (employee?.trust_level) {
+      trustLevel = employee.trust_level as TrustLevel;
+    }
+  } else {
+    const [org] = await db
+      .select({ trust_level: orgs.trust_level })
+      .from(orgs)
+      .where(eq(orgs.id, orgId))
+      .limit(1);
+    if (org?.trust_level) {
+      trustLevel = org.trust_level as TrustLevel;
+    }
+  }
+
+  // 3. Set status to executing
+  await db
+    .update(agentPlans)
+    .set({ status: 'executing', updated_at: new Date() })
+    .where(eq(agentPlans.id, planId));
+
+  const steps = plan.steps as PlanStep[];
+  const context: PlanContext = (plan.context as PlanContext) ?? {};
+  const startIdx = plan.current_step ?? 0;
+
+  for (let i = startIdx; i < steps.length; i++) {
+    // Check if plan was paused externally
+    const [currentPlan] = await db
+      .select({ status: agentPlans.status })
+      .from(agentPlans)
+      .where(eq(agentPlans.id, planId))
+      .limit(1);
+
+    if (currentPlan?.status === 'paused' || currentPlan?.status === 'failed') {
+      onEvent?.({ type: 'plan:pause', data: { reason: 'externally paused' } });
+      return;
+    }
+
+    const step = steps[i]!;
+
+    // Check dependencies
+    if (step.depends_on?.length) {
+      const allDepsCompleted = step.depends_on.every((depId) => {
+        const depStep = steps.find((s) => s.id === depId);
+        return depStep?.status === 'completed' || depStep?.status === 'skipped';
+      });
+      if (!allDepsCompleted) {
+        step.status = 'failed';
+        step.error = 'Dependencies not met';
+        await updatePlanProgress(planId, steps, context, i);
+        onEvent?.({ type: 'step:fail', stepId: step.id, data: { error: step.error } });
+        continue;
+      }
+    }
+
+    // Evaluate condition
+    if (step.condition) {
+      const shouldRun = evaluateCondition(step.condition, context);
+      if (!shouldRun) {
+        step.status = 'skipped';
+        await updatePlanProgress(planId, steps, context, i);
+        onEvent?.({ type: 'step:skip', stepId: step.id });
+        continue;
+      }
+    }
+
+    // Mark step running
+    step.status = 'running';
+    await updatePlanProgress(planId, steps, context, i);
+    onEvent?.({ type: 'step:start', stepId: step.id });
+
+    const resolvedParams = resolveStepReferences(step.params, context);
+    const isWriteAction = ACTION_TOOLS.has(step.tool);
+
+    try {
+      if (!isWriteAction) {
+        // Read-only tool — execute directly
+        const { result } = await executeToolCall(step.tool, resolvedParams, orgId, userId);
+        step.status = 'completed';
+        step.result = result;
+        context[step.id] = { result };
+      } else {
+        // Write action — check if it's a dependency and if it should auto-execute
+        const isDependency = steps.some(
+          (s, idx) => idx > i && s.depends_on?.includes(step.id),
+        );
+        const autoExec = shouldAutoExecute(step.tool, trustLevel);
+
+        if (autoExec || !isDependency) {
+          // Auto-execute or non-blocking write
+          const tier = getApprovalTier(step.tool);
+          const execResult = await executeActionDirect(
+            step.tool,
+            resolvedParams,
+            orgId,
+            userId,
+            plan.conversation_id,
+            tier,
+            {
+              agentEmployeeId: plan.agent_employee_id ?? undefined,
+              source: 'plan',
+              planId,
+              planStepId: step.id,
+            },
+          );
+
+          if (execResult.success) {
+            step.status = 'completed';
+            step.result = execResult.result;
+            context[step.id] = { result: execResult.result };
+          } else {
+            throw new Error(execResult.error || 'Action execution failed');
+          }
+        } else {
+          // Needs approval — pause the plan
+          step.status = 'waiting_approval';
+          await updatePlanProgress(planId, steps, context, i, 'paused');
+          onEvent?.({
+            type: 'plan:pause',
+            stepId: step.id,
+            data: { reason: 'approval_required', tool: step.tool },
+          });
+          return;
+        }
+      }
+
+      await updatePlanProgress(planId, steps, context, i + 1);
+      onEvent?.({ type: 'step:complete', stepId: step.id, data: step.result });
+
+      // Increment daily action count for employee
+      if (plan.agent_employee_id) {
+        await db.execute(
+          sql`UPDATE agent_employees SET daily_action_count = daily_action_count + 1, last_active_at = now() WHERE id = ${plan.agent_employee_id}`,
+        );
+      }
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+
+      // Ask agent for alternative
+      try {
+        const orgRow = await db
+          .select({ name: orgs.name })
+          .from(orgs)
+          .where(eq(orgs.id, orgId))
+          .limit(1);
+
+        const recovery = await runAgentQuery({
+          content: `Step "${step.description}" using tool "${step.tool}" failed with error: ${errorMsg}. The plan is "${plan.title}". Should I try an alternative approach, skip this step, or escalate? If you have an alternative, explain what tool and params to use. If not, respond with ESCALATE.`,
+          orgId,
+          userId,
+          orgName: orgRow[0]?.name ?? 'Unknown',
+          mode: 'background',
+        });
+
+        if (recovery.text.includes('ESCALATE')) {
+          step.status = 'failed';
+          step.error = errorMsg;
+          await updatePlanProgress(planId, steps, context, i, 'paused');
+          onEvent?.({
+            type: 'plan:pause',
+            stepId: step.id,
+            data: { reason: 'step_failed_escalated', error: errorMsg },
+          });
+          return;
+        }
+
+        // Agent provided an alternative — mark step as failed but continue
+        step.status = 'failed';
+        step.error = errorMsg;
+        context[step.id] = { result: { error: errorMsg, recovery: recovery.text } };
+        await updatePlanProgress(planId, steps, context, i + 1);
+        onEvent?.({
+          type: 'step:fail',
+          stepId: step.id,
+          data: { error: errorMsg, recovery: recovery.text },
+        });
+      } catch {
+        // Recovery itself failed — pause the plan
+        step.status = 'failed';
+        step.error = errorMsg;
+        await updatePlanProgress(planId, steps, context, i, 'paused');
+        onEvent?.({
+          type: 'plan:pause',
+          stepId: step.id,
+          data: { reason: 'step_failed', error: errorMsg },
+        });
+        return;
+      }
+    }
+  }
+
+  // All steps processed
+  await db
+    .update(agentPlans)
+    .set({ status: 'completed', context, updated_at: new Date() })
+    .where(eq(agentPlans.id, planId));
+  onEvent?.({ type: 'plan:complete' });
+}
+
+// ─── Helpers ───
+
+async function updatePlanProgress(
+  planId: string,
+  steps: PlanStep[],
+  context: PlanContext,
+  currentStep: number,
+  status?: string,
+): Promise<void> {
+  const updates: Record<string, any> = {
+    steps,
+    context,
+    current_step: currentStep,
+    updated_at: new Date(),
+  };
+  if (status) updates.status = status;
+
+  await db
+    .update(agentPlans)
+    .set(updates)
+    .where(eq(agentPlans.id, planId));
+}

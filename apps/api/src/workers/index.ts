@@ -1,5 +1,5 @@
 // Postgres-based job workers — polls job_queue table and dispatches to handlers
-import { dequeueJob, completeJob, failJob, ensureCronJob, QUEUE_NAMES } from '../lib/queues.js';
+import { dequeueJob, completeJob, failJob, ensureCronJob, cleanupStaleJobs, QUEUE_NAMES } from '../lib/queues.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -11,6 +11,8 @@ const CRON_DELAYS: Record<string, number> = {
   'manager-pulse': 86400000,      // 24 hours
   'burnout-detect': 86400000,     // 24 hours
   'weekly-digest': 604800000,     // 7 days
+  'wiki-lint': 86400000,          // 24 hours
+  'agent-daily-reset': 86400000,  // 24 hours
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -21,6 +23,8 @@ const CRON_KEYS: Record<string, string> = {
   'manager-pulse': 'cron:manager-pulse',
   'burnout-detect': 'cron:burnout-detect',
   'weekly-digest': 'cron:weekly-digest',
+  'wiki-lint': 'cron:wiki-lint',
+  'agent-daily-reset': 'agent-daily-reset',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -58,6 +62,18 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/clip-process.js');
       return mod.handleClipProcess;
     }
+    case 'agent-employee-message': {
+      const mod = await import('./handlers/agent-employee-message.js');
+      return mod.handleAgentEmployeeMessage;
+    }
+    case 'agent-employee-task': {
+      const mod = await import('./handlers/agent-employee-task.js');
+      return mod.handleAgentEmployeeTask;
+    }
+    case 'plan-executor': {
+      const mod = await import('./handlers/plan-executor.js');
+      return mod.handlePlanExecutor;
+    }
     default:
       return null;
   }
@@ -93,6 +109,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/weekly-digest.js');
       return mod.handleWeeklyDigest;
     }
+    case 'wiki-lint': {
+      const mod = await import('./handlers/wiki-lint.js');
+      return mod.handleWikiLint;
+    }
+    case 'agent-daily-reset': {
+      const mod = await import('./handlers/agent-daily-reset.js');
+      return mod.handleAgentDailyReset;
+    }
     default:
       return null;
   }
@@ -109,6 +133,18 @@ let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startWorkers(): void {
   if (pollingInterval) return;
+
+  // Cleanup stale jobs on startup
+  cleanupStaleJobs().then(count => {
+    if (count > 0) console.log(`[workers] Recovered ${count} stale job(s) on startup`);
+  }).catch(() => {});
+
+  // Run stale cleanup every 60 seconds
+  setInterval(() => {
+    cleanupStaleJobs().then(count => {
+      if (count > 0) console.log(`[workers] Recovered ${count} stale job(s)`);
+    }).catch(() => {});
+  }, 60000);
 
   // Poll every 3 seconds
   pollingInterval = setInterval(async () => {

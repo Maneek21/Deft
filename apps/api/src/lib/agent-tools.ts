@@ -289,6 +289,46 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['space_name', 'type', 'title'],
     },
   },
+  {
+    name: 'create_plan',
+    description:
+      'Create a multi-step execution plan for complex requests. Use this when the task requires 3+ sequential operations, has write actions that need approval, or involves conditional logic. The plan will be shown to the user for approval before execution.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Short title for the plan' },
+        description: { type: 'string', description: 'What this plan accomplishes' },
+        steps: {
+          type: 'array',
+          description: 'Ordered list of steps',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Unique step identifier' },
+              description: { type: 'string', description: 'What this step does' },
+              tool: { type: 'string', description: 'Tool to call' },
+              params: {
+                type: 'object',
+                description:
+                  'Tool parameters. Use $step.{id}.result.{field} to reference prior results',
+              },
+              depends_on: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Step IDs this depends on',
+              },
+              condition: {
+                type: 'object',
+                description: 'Optional condition for execution',
+              },
+            },
+            required: ['id', 'description', 'tool', 'params'],
+          },
+        },
+      },
+      required: ['title', 'steps'],
+    },
+  },
   // ─── Wiki Tools (LLM Wiki pattern) ───
   {
     name: 'wiki_search',
