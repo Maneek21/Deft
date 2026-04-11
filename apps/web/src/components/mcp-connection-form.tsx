@@ -20,7 +20,15 @@ type Props = {
   connection?: McpConnection | null;
   onClose: () => void;
   onSaved: () => void;
-  prefill?: { name: string; server_url: string; transport: 'sse' | 'streamable-http' | 'stdio' } | null;
+  prefill?: {
+    name: string;
+    transport: 'sse' | 'streamable-http' | 'stdio';
+    server_url?: string;
+    stdio_command?: string;
+    stdio_args?: string[];
+    auth_type?: string;
+    default_trust_tier?: 'auto' | 'quick' | 'full';
+  } | null;
 };
 
 const TRUST_TIERS = [
@@ -43,12 +51,12 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
     connection?.transport || prefill?.transport || 'sse'
   );
   const [serverUrl, setServerUrl] = useState(connection?.server_url || prefill?.server_url || '');
-  const [stdioCommand, setStdioCommand] = useState(connection?.stdio_command || '');
-  const [stdioArgs, setStdioArgs] = useState(connection?.stdio_args?.join(' ') || '');
-  const [authType, setAuthType] = useState(connection?.auth_type || 'none');
+  const [stdioCommand, setStdioCommand] = useState(connection?.stdio_command || prefill?.stdio_command || '');
+  const [stdioArgs, setStdioArgs] = useState(connection?.stdio_args?.join(' ') || prefill?.stdio_args?.join(' ') || '');
+  const [authType, setAuthType] = useState(connection?.auth_type || prefill?.auth_type || 'none');
   const [apiKey, setApiKey] = useState('');
   const [defaultTrustTier, setDefaultTrustTier] = useState<'auto' | 'quick' | 'full'>(
-    connection?.default_trust_tier || 'full'
+    connection?.default_trust_tier || prefill?.default_trust_tier || 'full'
   );
 
   const [saving, setSaving] = useState(false);
@@ -60,8 +68,12 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
   useEffect(() => {
     if (prefill && !connection) {
       setName(prefill.name);
-      setServerUrl(prefill.server_url);
       setTransport(prefill.transport);
+      if (prefill.server_url) setServerUrl(prefill.server_url);
+      if (prefill.stdio_command) setStdioCommand(prefill.stdio_command);
+      if (prefill.stdio_args) setStdioArgs(prefill.stdio_args.join(' '));
+      if (prefill.auth_type) setAuthType(prefill.auth_type);
+      if (prefill.default_trust_tier) setDefaultTrustTier(prefill.default_trust_tier);
     }
   }, [prefill, connection]);
 

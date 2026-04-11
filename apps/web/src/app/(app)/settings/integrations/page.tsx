@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { useSearchParams } from 'next/navigation';
-import { ChevronDown, ChevronRight, RefreshCw, Trash2, Zap, Plug } from 'lucide-react';
+import { ChevronDown, ChevronRight, Globe, RefreshCw, Trash2, Zap, Plug } from 'lucide-react';
 import McpConnectionForm from '@/components/mcp-connection-form';
 
 type Connection = {
@@ -117,7 +117,15 @@ export default function IntegrationsPage() {
   const [showMcpForm, setShowMcpForm] = useState(false);
   const [editingMcp, setEditingMcp] = useState<McpConnection | null>(null);
   const [expandedMcp, setExpandedMcp] = useState<string | null>(null);
-  const [mcpPrefill, setMcpPrefill] = useState<{ name: string; server_url: string; transport: 'sse' | 'streamable-http' | 'stdio' } | null>(null);
+  const [mcpPrefill, setMcpPrefill] = useState<{
+    name: string;
+    transport: 'sse' | 'streamable-http' | 'stdio';
+    server_url?: string;
+    stdio_command?: string;
+    stdio_args?: string[];
+    auth_type?: string;
+    default_trust_tier?: 'auto' | 'quick' | 'full';
+  } | null>(null);
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -392,6 +400,25 @@ export default function IntegrationsPage() {
           >
             <Plug size={13} />
             Connect n8n
+          </button>
+          <button
+            onClick={() => {
+              setEditingMcp(null);
+              setMcpPrefill({
+                name: 'Playwright Browser',
+                transport: 'stdio',
+                stdio_command: 'npx',
+                stdio_args: ['-y', '@playwright/mcp@latest', '--headless'],
+                auth_type: 'none',
+                default_trust_tier: 'auto',
+              });
+              setShowMcpForm(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+            style={{ background: 'var(--surface-container)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
+          >
+            <Globe size={13} />
+            Connect Playwright
           </button>
         </div>
 
