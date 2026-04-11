@@ -258,6 +258,232 @@ Level 5: Self-improving agent (learn from feedback)    ← Future
 
 ---
 
+## 8. Deep Dive: OpenClaw's Heartbeat System
+
+OpenClaw (100k+ GitHub stars) is the most relevant open-source agent architecture to study. It solves the exact problem Deft faces: making agents proactive, not just reactive.
+
+### The Heartbeat — Cron-Triggered Agent Loop
+
+The heartbeat is a scheduled trigger (default: every 30 minutes). On each beat:
+1. Agent reads `HEARTBEAT.md` — a plain-English checklist of proactive tasks
+2. Evaluates whether anything needs attention right now
+3. If yes → takes action (sends messages, runs tools, updates files)
+4. If no → responds `HEARTBEAT_OK` (suppressed, no notification, minimal token cost)
+
+**Example HEARTBEAT.md:**
+```markdown
+# Heartbeat Tasks
+
+### Every 30 minutes:
+- Check Gmail via `gog` tool for emails marked "Urgent"
+- If found, send summary to Telegram
+- If nothing is urgent, reply with HEARTBEAT_OK
+
+### Every morning at 9am:
+- Generate daily standup from yesterday's activity
+- Post in #engineering Slack channel
+
+### Every Friday at 5pm:
+- Generate weekly project summary
+- Email to team leads
+```
+
+**Why it works:**
+- Token-efficient: Isolated sessions cut usage by 60-80% vs continuous monitoring
+- Self-modifiable: Agents can rewrite their own HEARTBEAT.md ("check emails every 15 minutes instead of 30")
+- Context-aware: Unlike cron scripts, heartbeat tasks have access to agent memory and can reason about context
+- Non-intrusive: HEARTBEAT_OK suppression means the agent stays silent when nothing needs attention
+
+### OpenClaw Memory System
+
+Plain markdown files — no external databases:
+
+```
+~/.openclaw/workspace/
+├── AGENTS.md          # Agent configuration
+├── SOUL.md            # Personality, preferences, tone
+├── MEMORY.md          # Long-term learned facts
+├── HEARTBEAT.md       # Proactive task checklist
+└── memory/
+    ├── 2026-02-15.md  # Daily ephemeral logs
+    └── 2026-02-16.md  # Append-only daily events
+```
+
+**MEMORY.md** = long-term facts (user preferences, tech stack, scheduling constraints). Loaded on-demand, not injected every turn.
+
+**SOUL.md** = personality and communication style. Shapes how the agent reasons and communicates.
+
+**Daily logs** = append-only files capturing events. Agent retrieves via memory tools when relevant.
+
+**Compaction**: When context exceeds window, older turns are summarized into compressed entries preserving semantic content.
+
+### OpenClaw Skills
+
+Same SKILL.md standard as Claude Code. Skills are directories with instructions, loaded on-demand:
+- Context assembly includes only a compact list of available skills (name + description)
+- Agent loads full skill content only when relevant
+- Keeps base prompt lean regardless of skill count
+
+### Key Design Principle: Serial Execution
+
+OpenClaw processes messages **serially per session** via a Command Queue. No parallel execution within a session — prevents tool conflicts and state corruption. Multiple agents can run on different channels simultaneously, but each session is single-threaded.
+
+---
+
+## 9. Deep Dive: Claude Skills & MCP Integration
+
+### Claude Code Skills Architecture
+
+Skills are the "progressive disclosure" mechanism — the agent loads specialized knowledge on-demand rather than carrying everything in context.
+
+**How it works:**
+1. Skills stored as `SKILL.md` files with YAML frontmatter + markdown instructions
+2. At session start, Claude sees a compact list of available skills (name + when to use)
+3. When a task matches a skill, Claude invokes it via the `Skill` meta-tool
+4. The skill's full content is injected as user messages into conversation context
+5. Claude follows the instructions, then the skill's effect fades as conversation continues
+
+**Invocation control:**
+- Default: both user and Claude can invoke any skill
+- `disable-model-invocation: true` — only user can invoke (for workflows with side effects)
+- `/skill-name` — user types directly to invoke
+
+**The meta-tool pattern:** The `Skill` tool doesn't execute actions — it injects instructions. It's a context modifier, not a function. This is elegant because skills can contain workflows, checklists, decision trees — anything expressible in natural language.
+
+### Claude MCP Integration
+
+Three MCP primitives that Claude uses:
+
+| Primitive | What It Does | How Claude Accesses It |
+|-----------|-------------|----------------------|
+| **Tools** | Functions the agent can execute | Listed in tool menu, called via tool_use blocks |
+| **Resources** | Structured data to read/write | User types `@` to see MCP resources alongside files |
+| **Prompts** | Predefined templates for common tasks | User types `/` → `mcp__servername__promptname` |
+
+**Dynamic updates:** MCP servers can send `list_changed` notifications. Claude auto-refreshes available capabilities without reconnection. This is important for Deft — when an org adds/removes MCP tools, agents should see changes immediately.
+
+**Claude Managed Agents + MCP:** Managed Agents run in isolated containers with MCP connections pre-configured. The agent has full browser, shell, code execution, and MCP tool access in its sandbox. This is the "maximally capable" agent — it can do anything a human can do on a computer.
+
+---
+
+## 10. Deep Dive: Deft's Wiki as Agent Brain
+
+Deft has something none of the agents above have: a **self-maintaining knowledge graph** that auto-populates from team conversations.
+
+### The Wiki Pipeline (Karpathy's LLM Wiki Pattern)
+
+```
+Chat message
+    ↓
+Haiku classifier → extracts facts[] + decision
+    ↓
+memory-extract worker
+    ├→ LLM decides: CREATE new page or UPDATE existing
+    ├→ Executes ingest (insert/append + links + citations)
+    └→ CASCADE: Updates related pages for consistency
+    ↓
+wiki_pages + wiki_links + wiki_citations
+    ↓
+Daily wiki-lint worker:
+    ├→ Orphan detection (pages with no links or citations)
+    ├→ Stale page decay (confidence reduces over time)
+    ├→ Confidence threshold deletion (<0.3 auto-deleted)
+    └→ LLM-powered contradiction detection between linked pages
+    ↓
+Agent context injection:
+    → Top 3 relevant pages (FTS + confidence ranking) auto-loaded
+    → Agent can wiki_search, wiki_read, wiki_write, wiki_suggest_update
+```
+
+### What Makes It a Brain (Not Just a Wiki)
+
+| Feature | Traditional Wiki | Deft Wiki Brain |
+|---------|-----------------|-----------------|
+| Population | Manual | Auto-extracted from chat via LLM |
+| Updates | Manual | Cascade updates propagate automatically |
+| Quality control | None | Daily linter: orphans, staleness, contradictions |
+| Confidence | None | 0.0-1.0 score, decays over time, auto-deletes below 0.3 |
+| Agent integration | Read-only | Full CRUD + auto-context injection |
+| Graph structure | None | Typed links with backlinks |
+| Source attribution | None | Citations trace every fact to source message |
+| Versioning | Basic | Full version history with previous_content snapshots |
+
+### Seven Wiki Page Types (Agent Knowledge Categories)
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| **concept** | Abstract ideas and patterns | "Microservices Architecture" |
+| **entity** | Named things (people, projects, tools) | "Project Alpha", "React v19" |
+| **decision** | Choices made with context | "Use PostgreSQL over MongoDB" |
+| **resource** | Links, docs, references | "API Documentation Links" |
+| **procedure** | How-to workflows | "Deploy to Production Checklist" |
+| **preference** | Team/user preferences | "Standup format: bullet points, include PRs" |
+| **fact** | Standalone data points | "Sprint velocity: 42 points/week" |
+
+### How Agents Use the Wiki Today
+
+1. **Auto-context:** Before every response, top 3 relevant pages injected into system prompt (FTS weighted: title=A, summary=B, content=C, multiplied by confidence)
+2. **wiki_search:** Full-text search with type/scope filtering
+3. **wiki_read:** Full page + linked pages + backlinks + citations (graph traversal)
+4. **wiki_write:** Create or update pages with link management
+5. **wiki_suggest_update:** Propose changes without overwriting (logged for human review)
+
+### What's Missing for Full Brain Capability
+
+1. **Agent employees don't write to wiki systematically** — They can, but nothing prompts them to. Needs: "After completing a task, update relevant wiki pages with findings"
+2. **No semantic search** — Only PostgreSQL FTS (keyword matching). Needs: pgvector for "find pages about topics similar to X"
+3. **No per-employee wiki scoping** — All employees see the full wiki. Needs: employee can have preferred wiki pages or specialized sections
+4. **Wiki not used for procedural memory** — Agent preferences and learned patterns aren't stored as wiki pages. Needs: "preference" type pages auto-created from user feedback
+5. **No wiki-driven task decomposition** — Agent can't look at procedure pages to figure out how to do a task. Needs: When assigned a task, search for relevant procedure pages first
+
+---
+
+## 11. Synthesis: What Deft Should Adopt from Each
+
+### From OpenClaw: The Heartbeat
+
+**Adapt for Deft agent employees:**
+- Each employee gets a `heartbeat` field (jsonb) on `agent_employees` table — their proactive task checklist
+- Configurable interval (default 30 min) via `heartbeat_interval_minutes`
+- On each heartbeat: employee runs `agent-runner.ts` with heartbeat instructions
+- If nothing to do → `HEARTBEAT_OK` (no action, minimal tokens)
+- If action needed → execute tools, post in channels, DM users
+- Employees can self-modify their heartbeat via wiki_write to a special procedure page
+
+**Token efficiency:** OpenClaw's isolated session pattern cuts 60-80% of monitoring costs. Deft can do the same — heartbeat sessions use minimal context (just the checklist + recent wiki pages), not full conversation history.
+
+### From Claude: Skills as Employee DNA
+
+**Adapt for Deft agent employees:**
+- Employee `system_prompt` already works like a skill — loaded on invocation
+- Add: Employee-specific "knowledge pages" (wiki pages tagged to that employee)
+- Before each invocation, auto-load the employee's tagged wiki pages alongside the top 3 FTS results
+- This gives each employee a growing, self-maintaining knowledge base
+- Employees learn by writing to their own knowledge pages after completing tasks
+
+### From Claude MCP: Dynamic Tool Discovery
+
+**Already built** — Deft's MCP client discovers tools with 5-min cache. But missing:
+- `list_changed` notification handling (tools update without manual refresh)
+- Resource primitive support (MCP resources as contextual data, not just tools)
+- Prompt primitive support (MCP prompts as reusable workflows)
+
+### From Manus/Devin: CodeAct and Verification
+
+**Adapt for Deft:**
+- Code execution sandbox for agent employees (generate + run reports, data analysis)
+- Critic step after every write action (self-verification before committing)
+- Task decomposition using wiki procedure pages as templates
+
+### From CrewAI: Shared Memory Across Agents
+
+**Already partially built** — Deft wiki is shared across all agents. But missing:
+- Entity memory: auto-extract people/project/tool mentions into structured entity pages
+- Short-term shared context: When PM agent discovers a blocker, Engineering Lead agent should know immediately (not wait for next wiki sync)
+- Event-driven memory updates: Real-time wiki updates from agent actions, not just chat messages
+
+---
+
 ## Sources
 
 - [Claude Managed Agents Overview](https://platform.claude.com/docs/en/managed-agents/overview)
