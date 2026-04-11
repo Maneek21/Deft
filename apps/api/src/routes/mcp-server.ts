@@ -112,7 +112,7 @@ function checkRateLimit(keyId: string, perMinute: number, perDay: number): boole
 mcpServerRoutes.get('/tools', async (c) => {
   const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
   if (!keyRecord) {
-    return c.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, 401);
+    return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
 
   const permissions = new Set(keyRecord.permissions);
@@ -126,29 +126,29 @@ mcpServerRoutes.post('/call', async (c) => {
   // 1. Authenticate
   const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
   if (!keyRecord) {
-    return c.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, 401);
+    return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
 
   // 2. Rate limit
   if (!checkRateLimit(keyRecord.id, keyRecord.rate_limit_per_minute, keyRecord.rate_limit_per_day)) {
-    return c.json({ error: 'Rate limit exceeded', code: 'RATE_LIMITED' }, 429);
+    return c.json({ error: { code: 'rate_limited', message: 'Rate limit exceeded', retry_after: 60 } }, 429);
   }
 
   // 3. Parse request
   const body = await c.req.json<{ tool: string; params: Record<string, any> }>();
   if (!body.tool || typeof body.tool !== 'string') {
-    return c.json({ error: 'Missing or invalid tool name', code: 'BAD_REQUEST' }, 400);
+    return c.json({ error: { code: 'bad_request', message: 'Missing or invalid tool name' } }, 400);
   }
 
   const toolDef = ALL_TOOLS.find((t) => t.name === body.tool);
   if (!toolDef) {
-    return c.json({ error: `Unknown tool: ${body.tool}`, code: 'UNKNOWN_TOOL' }, 400);
+    return c.json({ error: { code: 'not_found', message: `Unknown tool: ${body.tool}` } }, 404);
   }
 
   // 4. Check permission
   const permissions = new Set(keyRecord.permissions);
   if (!permissions.has(toolDef.permission)) {
-    return c.json({ error: 'Insufficient permissions for this tool', code: 'FORBIDDEN' }, 403);
+    return c.json({ error: { code: 'forbidden', message: 'Tool not permitted for this API key' } }, 403);
   }
 
   // Strip deft_ prefix to get the internal tool name
@@ -233,7 +233,7 @@ mcpServerRoutes.post('/call', async (c) => {
 mcpServerRoutes.get('/actions/:id/status', async (c) => {
   const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
   if (!keyRecord) {
-    return c.json({ error: 'Unauthorized', code: 'INVALID_API_KEY' }, 401);
+    return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
 
   const actionId = c.req.param('id');
@@ -252,7 +252,7 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
     .limit(1);
 
   if (!action) {
-    return c.json({ error: 'Action not found', code: 'NOT_FOUND' }, 404);
+    return c.json({ error: { code: 'not_found', message: 'Action not found' } }, 404);
   }
 
   return c.json(action);
