@@ -15,6 +15,8 @@ type AgentEmployee = {
   daily_actions_used: number;
   avatar_url: string | null;
   created_at: string;
+  heartbeat_enabled: boolean;
+  heartbeat_interval_min: number;
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -189,6 +191,11 @@ export default function AgentEmployeesPage() {
                 <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                   {emp.is_active ? 'Active' : 'Paused'}
                 </span>
+                {emp.heartbeat_enabled && (
+                  <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '8px' }}>
+                    &#9829; every {emp.heartbeat_interval_min}m
+                  </span>
+                )}
               </div>
 
               {/* Toggle switch */}

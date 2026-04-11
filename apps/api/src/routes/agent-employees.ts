@@ -27,6 +27,8 @@ const ROLE_TEMPLATES = [
     expertise_description:
       'Sprint tracking, blocker detection, team coordination, status reporting, risk escalation',
     native_tools: null,
+    heartbeat_config:
+      "### Every 30 minutes:\n- Check for tasks overdue by more than 24 hours. If found, post a summary in the task's project channel.\n- Check for tasks with status 'in_progress' that haven't been updated in 48+ hours. DM the assignee.\n\n### Every morning (if first heartbeat of the day):\n- Generate a brief standup summary from yesterday's task activity and post in #general.",
   },
   {
     role: 'engineering_lead' as const,
@@ -36,6 +38,8 @@ const ROLE_TEMPLATES = [
     expertise_description:
       'Code review management, PR lifecycle tracking, velocity monitoring, pipeline bottleneck detection',
     native_tools: null,
+    heartbeat_config:
+      '### Every hour:\n- Check for open PRs with no review activity in 24+ hours. Post a reminder in #engineering.\n- Check for tasks blocked by code review. DM the reviewer.\n\n### Every morning:\n- Summarize merged PRs from yesterday and post in #engineering.',
   },
   {
     role: 'executive_assistant' as const,
@@ -45,6 +49,8 @@ const ROLE_TEMPLATES = [
     expertise_description:
       'Calendar management, meeting preparation, daily briefings, schedule optimization',
     native_tools: null,
+    heartbeat_config:
+      '### Every 30 minutes:\n- Check calendar for meetings in the next 30 minutes. If found, generate a prep brief and DM the attendee.\n- Check for calendar conflicts in today\'s schedule. If found, alert the affected person.',
   },
 ];
 
@@ -114,6 +120,9 @@ const createSchema = z.object({
   max_daily_actions: z.number().int().positive().default(50),
   is_byoa: z.boolean().default(false),
   byoa_model_info: z.string().optional(),
+  heartbeat_enabled: z.boolean().default(false),
+  heartbeat_interval_min: z.number().int().min(5).max(1440).default(30),
+  heartbeat_config: z.string().optional(),
 });
 
 function roleToTitle(role: string): string {
@@ -204,6 +213,9 @@ agentEmployeeRoutes.post('/', async (c) => {
         max_daily_actions: data.max_daily_actions,
         is_byoa: data.is_byoa,
         byoa_model_info: data.byoa_model_info || null,
+        heartbeat_enabled: data.heartbeat_enabled,
+        heartbeat_interval_min: data.heartbeat_interval_min,
+        heartbeat_config: data.heartbeat_config || null,
         created_by: currentUser.id,
       })
       .returning();
@@ -262,6 +274,9 @@ const updateSchema = z.object({
   trust_level: z.enum(['conservative', 'standard', 'autonomous']).optional(),
   max_daily_actions: z.number().int().positive().optional(),
   byoa_model_info: z.string().nullable().optional(),
+  heartbeat_enabled: z.boolean().optional(),
+  heartbeat_interval_min: z.number().int().min(5).max(1440).optional(),
+  heartbeat_config: z.string().nullable().optional(),
 });
 
 agentEmployeeRoutes.put('/:id', async (c) => {
@@ -300,6 +315,9 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (data.trust_level !== undefined) updates.trust_level = data.trust_level;
     if (data.max_daily_actions !== undefined) updates.max_daily_actions = data.max_daily_actions;
     if (data.byoa_model_info !== undefined) updates.byoa_model_info = data.byoa_model_info;
+    if (data.heartbeat_enabled !== undefined) updates.heartbeat_enabled = data.heartbeat_enabled;
+    if (data.heartbeat_interval_min !== undefined) updates.heartbeat_interval_min = data.heartbeat_interval_min;
+    if (data.heartbeat_config !== undefined) updates.heartbeat_config = data.heartbeat_config;
 
     if (Object.keys(updates).length === 0) {
       return c.json(existing);
