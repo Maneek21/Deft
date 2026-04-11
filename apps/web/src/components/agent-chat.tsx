@@ -204,8 +204,14 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
           convId = convo.id;
           setActiveConversationId(convId);
           // Update URL without triggering a re-render/re-mount — router.push would
-          // destroy this component and lose the SSE stream
-          window.history.replaceState(null, '', `/agent?id=${convId}`);
+          // destroy this component and lose the SSE stream.
+          // Preserve employee param if present so the parent doesn't switch tabs.
+          const currentParams = new URLSearchParams(window.location.search);
+          const employeeId = currentParams.get('employee') || agentEmployeeId;
+          const newUrl = employeeId
+            ? `/agent?id=${convId}&employee=${employeeId}`
+            : `/agent?id=${convId}`;
+          window.history.replaceState(null, '', newUrl);
           if (onConversationCreated) onConversationCreated(convId!);
         } else {
           streamingRef.current = false;
