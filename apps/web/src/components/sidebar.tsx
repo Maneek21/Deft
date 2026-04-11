@@ -44,8 +44,8 @@ type AgentEmployee = {
   id: string;
   name: string;
   role: string;
-  color: string;
-  status: string;
+  avatar_url: string | null;
+  is_active: boolean;
 };
 
 type Space = {
@@ -99,7 +99,7 @@ function ChatSidebarContent({
     api.get('/api/agent-employees').then(async (res) => {
       if (res.ok) {
         const data = await res.json();
-        setAgentEmployees(data.filter((e: AgentEmployee) => e.status === 'active'));
+        setAgentEmployees(data.filter((e: AgentEmployee) => e.is_active));
       }
     });
   }, []);
