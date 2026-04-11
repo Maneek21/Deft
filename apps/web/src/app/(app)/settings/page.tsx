@@ -14,7 +14,6 @@ const settingsSections = [
   { name: 'Integrations', href: '/settings/integrations' },
   { name: 'Agent', href: '/settings/agent' },
   { name: 'Agent Employees', href: '/settings/agent-employees' },
-  { name: 'MCP Connections', href: '/settings/integrations' },
   { name: 'API Access', href: '/settings/api-access' },
 ];
 
