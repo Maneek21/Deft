@@ -69,6 +69,13 @@ You have been assigned the following task:
 3. Use available tools to complete the task.
 4. Post your results and findings clearly.
 5. When done, your work will be set to "in_review" status.
+
+## Knowledge Management
+- After completing analysis or answering questions, consider: did you learn anything new that should be saved?
+- Use wiki_write to create or update wiki pages with key findings, decisions, or new facts.
+- Create 'preference' type pages when you learn user preferences (e.g., preferred report format).
+- Create 'fact' type pages for data points you discover (e.g., current sprint velocity).
+- Update existing pages rather than creating duplicates — use wiki_search first.
 `;
 
   const taskPrompt = `I've been assigned task "${task.title}". ${task.description || ''}\n\nLet me work on this now.`;

@@ -6,7 +6,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getModelConfig } from './llm.js';
 import { db } from './db.js';
-import { connectedAccounts, wikiPages, orgs } from '@deft/db/schema';
+import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
 import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
 import { env } from './env.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
@@ -40,6 +40,42 @@ type ConversationMessage = {
   role: string;
   content: string;
 };
+
+async function verifyResponse(
+  originalQuery: string,
+  response: string,
+  citations: any[],
+  orgName: string,
+): Promise<string> {
+  try {
+    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const verificationResult = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      system: `You are a quality reviewer for an AI assistant at ${orgName}. Review the response briefly.`,
+      messages: [{
+        role: 'user',
+        content: `Original question: "${originalQuery.slice(0, 300)}"
+
+Response to review:
+${response.slice(0, 2000)}
+
+Citations: ${citations.length > 0 ? citations.slice(0, 5).map((c: any) => c.title || c.id).join(', ') : 'none'}
+
+Check: Does it answer the question? Any fabricated claims? Anything important missing?
+
+If good, reply exactly: VERIFIED
+If issues, provide a corrected version (same style/length).`,
+      }],
+    });
+
+    const text = (verificationResult.content[0] as any).text?.trim() || 'VERIFIED';
+    return text === 'VERIFIED' ? response : text;
+  } catch (err) {
+    console.warn('[agent-runner] Verification failed:', err);
+    return response;
+  }
+}
 
 export async function runAgentQuery(params: {
   content: string;
@@ -125,12 +161,35 @@ export async function runAgentQuery(params: {
     .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
     .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
 
-  // Auto-load relevant wiki context using full-text search
+  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
   try {
-    // Use the user's message directly as a full-text search query
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
-      const relevantPages = await db.select({
+      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
+
+      // Tier 1: Employee-tagged pages (if agent employee)
+      if (agentEmployeeId) {
+        const employeePages = await db.select({
+          title: wikiPages.title,
+          slug: wikiPages.slug,
+          summary: wikiPages.summary,
+          type: wikiPages.type,
+          confidence: wikiPages.confidence,
+        })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, orgId),
+            eq(wikiPages.is_deleted, false),
+            eq(wikiPages.agent_employee_id, agentEmployeeId),
+            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
+          ))
+          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
+          .limit(2);
+        allRelevantPages.push(...employeePages);
+      }
+
+      // Tier 2: Org-wide pages (no employee tag)
+      const orgWidePages = await db.select({
         title: wikiPages.title,
         slug: wikiPages.slug,
         summary: wikiPages.summary,
@@ -141,13 +200,15 @@ export async function runAgentQuery(params: {
         .where(and(
           eq(wikiPages.org_id, orgId),
           eq(wikiPages.is_deleted, false),
+          sql`${wikiPages.agent_employee_id} IS NULL`,
           sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
         ))
         .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
         .limit(3);
+      allRelevantPages.push(...orgWidePages);
 
-      if (relevantPages.length > 0) {
-        const wikiContext = relevantPages.map(p =>
+      if (allRelevantPages.length > 0) {
+        const wikiContext = allRelevantPages.map(p =>
           `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
         ).join('\n');
         systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
@@ -191,7 +252,8 @@ export async function runAgentQuery(params: {
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
 
   let iterations = 0;
-  while (iterations < 8) {
+  const maxIterations = params.mode === 'background' ? 25 : 8;
+  while (iterations < maxIterations) {
     iterations++;
 
     const response = await anthropic.messages.create({
@@ -298,8 +360,31 @@ export async function runAgentQuery(params: {
   // Use final text if available, fall back to intermediate text from tool-call iterations
   const responseText = finalText || intermediateText;
 
+  // Persist durable notes for agent employees
+  if (agentEmployeeId && responseText && responseText.length > 100) {
+    try {
+      const noteKey = `findings:${new Date().toISOString().slice(0, 10)}`;
+      await db.insert(agentMemory).values({
+        id: crypto.randomUUID(),
+        org_id: orgId,
+        user_id: userId,
+        scope: 'user',
+        key: noteKey,
+        value: responseText.slice(0, 500),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.warn('[agent-runner] Durable notes failed:', err);
+    }
+  }
+
+  // Self-verification for background mode
+  let verifiedText = responseText;
+  if (params.mode === 'background' && responseText && responseText.length > 50) {
+    verifiedText = await verifyResponse(content, responseText, allCitations, orgName);
+  }
+
   return {
-    text: responseText,
+    text: verifiedText,
     citations: allCitations,
     pendingActions,
     executedActions,

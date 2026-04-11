@@ -117,6 +117,13 @@ ${communicationGuideline}
 
 ## Action Budget
 You have ${dailyActionsRemaining} actions remaining today out of ${employee.max_daily_actions}.
+
+## Knowledge Management
+- After completing analysis or answering questions, consider: did you learn anything new that should be saved?
+- Use wiki_write to create or update wiki pages with key findings, decisions, or new facts.
+- Create 'preference' type pages when you learn user preferences (e.g., preferred report format).
+- Create 'fact' type pages for data points you discover (e.g., current sprint velocity).
+- Update existing pages rather than creating duplicates — use wiki_search first.
 `;
 
   // Strip @mention from content

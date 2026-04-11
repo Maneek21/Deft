@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
-import { eq, and, desc, lt } from 'drizzle-orm';
+import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentConversations,
@@ -14,6 +14,7 @@ import {
   tasks,
   messages,
   taskActivity,
+  wikiPages,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
@@ -301,6 +302,63 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     '{{DATE}}',
     new Date().toISOString().split('T')[0]!,
   ).replace('{{ORG}}', org?.name || 'Unknown') + connectionInfo + memoryContext;
+
+  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
+  try {
+    const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    if (searchQuery.length > 2) {
+      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
+
+      // Tier 1: Employee-tagged pages (if agent employee)
+      if (agentEmployeeId) {
+        const employeePages = await db.select({
+          title: wikiPages.title,
+          slug: wikiPages.slug,
+          summary: wikiPages.summary,
+          type: wikiPages.type,
+          confidence: wikiPages.confidence,
+        })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, user.org_id),
+            eq(wikiPages.is_deleted, false),
+            eq(wikiPages.agent_employee_id, agentEmployeeId),
+            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
+          ))
+          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
+          .limit(2);
+        allRelevantPages.push(...employeePages);
+      }
+
+      // Tier 2: Org-wide pages (no employee tag)
+      const orgWidePages = await db.select({
+        title: wikiPages.title,
+        slug: wikiPages.slug,
+        summary: wikiPages.summary,
+        type: wikiPages.type,
+        confidence: wikiPages.confidence,
+      })
+        .from(wikiPages)
+        .where(and(
+          eq(wikiPages.org_id, user.org_id),
+          eq(wikiPages.is_deleted, false),
+          sql`${wikiPages.agent_employee_id} IS NULL`,
+          sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
+        ))
+        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
+        .limit(3);
+      allRelevantPages.push(...orgWidePages);
+
+      if (allRelevantPages.length > 0) {
+        const wikiContext = allRelevantPages.map(p =>
+          `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
+        ).join('\n');
+        systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
+      }
+    }
+  } catch (err) {
+    console.warn('[agent] Wiki auto-load failed:', (err as Error).message);
+  }
 
   if (employeePrompt) {
     systemPrompt = employeePrompt;
