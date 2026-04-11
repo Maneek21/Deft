@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns } from '@deft/db/schema';
+import { tasks, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { getIO } from '../socket.js';
 
@@ -731,6 +731,35 @@ dashboardRoutes.get('/my-insights', async (c) => {
     console.error('My insights error:', err);
     return c.json({ error: 'Failed to load insights', code: 'INTERNAL_ERROR' }, 500);
   }
+});
+
+// Agent activity feed — recent auto-executed and approved actions
+dashboardRoutes.get('/agent-activity', async (c) => {
+  const user = c.get('user');
+
+  const recentActions = await db
+    .select({
+      id: agentActions.id,
+      action: agentActions.action,
+      params: agentActions.params,
+      result: agentActions.result,
+      approval_status: agentActions.approval_status,
+      approval_tier: agentActions.approval_tier,
+      executed_at: agentActions.executed_at,
+      created_at: agentActions.created_at,
+      error: agentActions.error,
+    })
+    .from(agentActions)
+    .where(
+      and(
+        eq(agentActions.org_id, user.org_id),
+        inArray(agentActions.approval_status, ['approved', 'pending']),
+      ),
+    )
+    .orderBy(desc(agentActions.created_at))
+    .limit(20);
+
+  return c.json(recentActions);
 });
 
 function getGreeting(): string {
