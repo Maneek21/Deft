@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 
@@ -27,9 +27,12 @@ const updateTaskSchema = z.object({
   priority: z.enum(['p0', 'p1', 'p2', 'p3']).optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
+  start_date: z.string().nullable().optional(),
+  estimation: z.string().nullable().optional(),
   sort_order: z.number().optional(),
   project_id: z.string().optional(),
   parent_task_id: z.string().nullable().optional(),
+  recurrence: z.enum(['daily', 'weekly', 'biweekly', 'monthly']).nullable().optional(),
 });
 
 const createDependencySchema = z.object({
@@ -124,6 +127,7 @@ taskRoutes.get('/my', async (c) => {
         and(
           eq(tasks.assignee_id, user.id),
           eq(tasks.is_deleted, false),
+          eq(tasks.is_template, false),
           eq(tasks.org_id, user.org_id),
           isNull(tasks.parent_task_id),
         )
@@ -384,6 +388,183 @@ taskRoutes.post('/bulk-delete', async (c) => {
   }
 });
 
+// GET /api/tasks/templates — list task templates for the org
+taskRoutes.get('/templates', async (c) => {
+  try {
+    const user = c.get('user');
+    const rows = await db.select({
+      id: tasks.id,
+      title: tasks.title,
+      description: tasks.description,
+      priority: tasks.priority,
+      estimation: tasks.estimation,
+    }).from(tasks)
+      .where(and(eq(tasks.org_id, user.org_id), eq(tasks.is_template, true), eq(tasks.is_deleted, false)))
+      .orderBy(tasks.title);
+    return c.json({ templates: rows });
+  } catch (err) {
+    console.error('Failed to fetch templates:', err);
+    return c.json({ error: 'Failed to fetch templates', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/tasks/saved-views — list saved views (must be before /:id)
+const createViewSchema = z.object({
+  name: z.string().min(1),
+  config: z.record(z.string(), z.unknown()),
+  project_id: z.string().nullable().optional(),
+  is_shared: z.boolean().optional(),
+});
+
+taskRoutes.get('/saved-views', async (c) => {
+  try {
+    const user = c.get('user');
+    const views = await db.select()
+      .from(savedViews)
+      .where(and(eq(savedViews.org_id, user.org_id), or(eq(savedViews.user_id, user.id), eq(savedViews.is_shared, true))))
+      .orderBy(desc(savedViews.created_at));
+    return c.json(views);
+  } catch (err) {
+    console.error('Failed to fetch saved views:', err);
+    return c.json({ error: 'Failed to fetch saved views', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+taskRoutes.post('/saved-views', async (c) => {
+  try {
+    const user = c.get('user');
+    const body = await c.req.json();
+    const parsed = createViewSchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    const [view] = await db.insert(savedViews).values({
+      org_id: user.org_id, user_id: user.id,
+      name: parsed.data.name, config: parsed.data.config,
+      project_id: parsed.data.project_id || null, is_shared: parsed.data.is_shared || false,
+    }).returning();
+    return c.json(view, 201);
+  } catch (err) {
+    console.error('Failed to create saved view:', err);
+    return c.json({ error: 'Failed to create saved view', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+taskRoutes.delete('/saved-views/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    const viewId = c.req.param('id');
+    const [view] = await db.select().from(savedViews)
+      .where(and(eq(savedViews.id, viewId), eq(savedViews.user_id, user.id))).limit(1);
+    if (!view) return c.json({ error: 'View not found', code: 'NOT_FOUND' }, 404);
+    await db.delete(savedViews).where(eq(savedViews.id, viewId));
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete saved view:', err);
+    return c.json({ error: 'Failed to delete saved view', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/tasks/:id/watchers — list watchers for a task
+taskRoutes.get('/:id/watchers', async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const watchers = await db.select({
+      id: taskWatchers.id,
+      user_id: taskWatchers.user_id,
+      user_name: users.name,
+      user_avatar: users.avatar_url,
+      created_at: taskWatchers.created_at,
+    }).from(taskWatchers)
+      .innerJoin(users, eq(taskWatchers.user_id, users.id))
+      .where(eq(taskWatchers.task_id, taskId));
+    return c.json({ watchers });
+  } catch (err) {
+    console.error('Failed to fetch watchers:', err);
+    return c.json({ error: 'Failed to fetch watchers', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/:id/watch — watch a task
+taskRoutes.post('/:id/watch', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    await db.insert(taskWatchers).values({
+      task_id: taskId,
+      user_id: user.id,
+    }).onConflictDoNothing();
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to watch task:', err);
+    return c.json({ error: 'Failed to watch task', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/tasks/:id/watch — unwatch a task
+taskRoutes.delete('/:id/watch', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    await db.delete(taskWatchers)
+      .where(and(eq(taskWatchers.task_id, taskId), eq(taskWatchers.user_id, user.id)));
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to unwatch task:', err);
+    return c.json({ error: 'Failed to unwatch task', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/:id/assignees — add additional assignee
+taskRoutes.post('/:id/assignees', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    const { user_id } = await c.req.json();
+    if (!user_id) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
+
+    await db.insert(taskAssignees).values({
+      task_id: taskId,
+      user_id,
+    }).onConflictDoNothing();
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to add assignee:', err);
+    return c.json({ error: 'Failed to add assignee', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/tasks/:id/assignees/:userId — remove assignee
+taskRoutes.delete('/:id/assignees/:userId', async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const userId = c.req.param('userId');
+    await db.delete(taskAssignees)
+      .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, userId)));
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to remove assignee:', err);
+    return c.json({ error: 'Failed to remove assignee', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/tasks/:id/assignees — list all assignees
+taskRoutes.get('/:id/assignees', async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const assignees = await db.select({
+      id: taskAssignees.id,
+      user_id: taskAssignees.user_id,
+      user_name: users.name,
+      user_avatar: users.avatar_url,
+    }).from(taskAssignees)
+      .innerJoin(users, eq(taskAssignees.user_id, users.id))
+      .where(eq(taskAssignees.task_id, taskId));
+    return c.json({ assignees });
+  } catch (err) {
+    console.error('Failed to fetch assignees:', err);
+    return c.json({ error: 'Failed to fetch assignees', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // GET /api/tasks/:id — single task detail
 taskRoutes.get('/:id', async (c) => {
   try {
@@ -400,6 +581,8 @@ taskRoutes.get('/:id', async (c) => {
       assignee_id: tasks.assignee_id,
       created_by: tasks.created_by,
       due_date: tasks.due_date,
+      start_date: tasks.start_date,
+      estimation: tasks.estimation,
       sort_order: tasks.sort_order,
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
@@ -839,6 +1022,7 @@ taskRoutes.get('/project/:projectId', async (c) => {
         and(
           eq(tasks.project_id, projectId),
           eq(tasks.is_deleted, false),
+          eq(tasks.is_template, false),
           isNull(tasks.parent_task_id),
         )
       )
@@ -1067,6 +1251,18 @@ taskRoutes.patch('/:id', async (c) => {
       });
     }
 
+    if (parsed.data.start_date !== undefined) {
+      const newStartDate = parsed.data.start_date ? new Date(parsed.data.start_date) : null;
+      if (newStartDate && isNaN(newStartDate.getTime())) {
+        return c.json({ error: 'Invalid start date', code: 'VALIDATION_ERROR' }, 400);
+      }
+      updateData.start_date = newStartDate;
+    }
+
+    if (parsed.data.estimation !== undefined) {
+      updateData.estimation = parsed.data.estimation;
+    }
+
     if (parsed.data.sort_order !== undefined) {
       updateData.sort_order = parsed.data.sort_order;
     }
@@ -1077,6 +1273,10 @@ taskRoutes.patch('/:id', async (c) => {
         updateData.parent_task_id = newParent;
         activityEntries.push({ action: 'parent_changed', field: 'parent_task_id', old_value: existingTask.parent_task_id ?? null, new_value: newParent });
       }
+    }
+
+    if (parsed.data.recurrence !== undefined) {
+      updateData.recurrence = parsed.data.recurrence;
     }
 
     if (parsed.data.project_id !== undefined && parsed.data.project_id !== existingTask.project_id) {
@@ -1122,6 +1322,48 @@ taskRoutes.patch('/:id', async (c) => {
       );
     }
 
+    // After the task update is committed, check for recurring task
+    if (updateData.status && ['done', 'cancelled'].includes(updateData.status)) {
+      // Refetch the updated task to check recurrence
+      const [recurringTask] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+      if (recurringTask?.recurrence) {
+        // Calculate next due date
+        const baseDue = recurringTask.due_date || new Date();
+        const nextDue = new Date(baseDue);
+        switch (recurringTask.recurrence) {
+          case 'daily': nextDue.setDate(nextDue.getDate() + 1); break;
+          case 'weekly': nextDue.setDate(nextDue.getDate() + 7); break;
+          case 'biweekly': nextDue.setDate(nextDue.getDate() + 14); break;
+          case 'monthly': nextDue.setMonth(nextDue.getMonth() + 1); break;
+        }
+
+        // Get next task number
+        const [maxNum] = await db.select({ max: sql<number>`COALESCE(MAX(number), 0)` })
+          .from(tasks).where(eq(tasks.project_id, recurringTask.project_id));
+        const nextNumber = (maxNum?.max || 0) + 1;
+
+        // Create next occurrence
+        await db.insert(tasks).values({
+          org_id: recurringTask.org_id,
+          project_id: recurringTask.project_id,
+          number: nextNumber,
+          title: recurringTask.title,
+          description: recurringTask.description,
+          status: 'todo',
+          priority: recurringTask.priority,
+          assignee_id: recurringTask.assignee_id,
+          due_date: nextDue,
+          estimation: recurringTask.estimation,
+          recurrence: recurringTask.recurrence,
+          recurrence_source_id: recurringTask.recurrence_source_id || recurringTask.id,
+          created_by: user.id,
+        });
+
+        // Update project task counter
+        await db.execute(sql`UPDATE projects SET task_counter = ${nextNumber} WHERE id = ${recurringTask.project_id}`);
+      }
+    }
+
     // Get project info for broadcasts
     const [project] = await db.select({
       prefix: projects.prefix,
@@ -1148,6 +1390,27 @@ taskRoutes.patch('/:id', async (c) => {
           });
           emitToUser(newAssignee, 'notification:new', { type: 'task_assigned', title: `Assigned ${taskId_str}` });
         } catch {}
+      }
+
+      // If the new assignee is an AI agent, enqueue the agent worker
+      if (newAssignee) {
+        try {
+          const [assigneeUser] = await db.select({
+            is_agent: users.is_agent,
+            agent_employee_id: users.agent_employee_id,
+          }).from(users).where(eq(users.id, newAssignee)).limit(1);
+
+          if (assigneeUser?.is_agent && assigneeUser?.agent_employee_id) {
+            await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-task', {
+              taskId: taskId,
+              orgId: user.org_id,
+              employeeId: assigneeUser.agent_employee_id,
+              assignedBy: user.id,
+            });
+          }
+        } catch (err) {
+          console.error('Failed to enqueue agent employee task:', err);
+        }
       }
     }
 
@@ -1540,3 +1803,96 @@ taskRoutes.get('/:id/attachments', async (c) => {
     return c.json({ error: 'Failed to fetch attachments', code: 'INTERNAL_ERROR' }, 500);
   }
 });
+
+// GET /api/tasks/:id/wiki-links — get wiki pages linked to this task
+taskRoutes.get('/:id/wiki-links', async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const links = await db.select({
+      citation_id: wikiCitations.id,
+      page_id: wikiPages.id,
+      slug: wikiPages.slug,
+      title: wikiPages.title,
+      type: wikiPages.type,
+      summary: wikiPages.summary,
+      confidence: wikiPages.confidence,
+    }).from(wikiCitations)
+      .innerJoin(wikiPages, eq(wikiCitations.page_id, wikiPages.id))
+      .where(and(
+        eq(wikiCitations.source_type, 'task'),
+        eq(wikiCitations.source_id, taskId),
+        eq(wikiPages.is_deleted, false),
+      ));
+    return c.json({ wiki_links: links });
+  } catch (err) {
+    console.error('Failed to fetch task wiki links:', err);
+    return c.json({ error: 'Failed to fetch wiki links', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/:id/wiki-links — link task to a wiki page
+taskRoutes.post('/:id/wiki-links', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    const { slug } = await c.req.json();
+    if (!slug) return c.json({ error: 'slug required', code: 'VALIDATION_ERROR' }, 400);
+
+    // Find the wiki page
+    const [page] = await db.select({ id: wikiPages.id }).from(wikiPages)
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+      .limit(1);
+    if (!page) return c.json({ error: 'Wiki page not found', code: 'NOT_FOUND' }, 404);
+
+    // Create citation (task → wiki page)
+    await db.insert(wikiCitations).values({
+      page_id: page.id,
+      source_type: 'task',
+      source_id: taskId,
+    }).onConflictDoNothing();
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to link task to wiki:', err);
+    return c.json({ error: 'Failed to link', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/tasks/:id/wiki-links/:citationId — unlink task from wiki page
+taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
+  try {
+    const citationId = c.req.param('citationId');
+    await db.delete(wikiCitations).where(eq(wikiCitations.id, citationId));
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to unlink task from wiki:', err);
+    return c.json({ error: 'Failed to unlink', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/tasks/:id/subtree — recursive subtask tree
+taskRoutes.get('/:id/subtree', async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const result = await db.execute(sql`
+      WITH RECURSIVE subtree AS (
+        SELECT id, title, status, priority, parent_task_id, 0 as depth
+        FROM tasks WHERE parent_task_id = ${taskId} AND is_deleted = false AND is_template = false
+        UNION ALL
+        SELECT t.id, t.title, t.status, t.priority, t.parent_task_id, s.depth + 1
+        FROM tasks t
+        JOIN subtree s ON t.parent_task_id = s.id
+        WHERE t.is_deleted = false AND t.is_template = false AND s.depth < 5
+      )
+      SELECT * FROM subtree ORDER BY depth, title
+    `);
+    const rows = (result as any).rows ?? result;
+    return c.json({ subtasks: Array.isArray(rows) ? rows : [] });
+  } catch (err) {
+    console.error('Failed to fetch subtree:', err);
+    return c.json({ error: 'Failed to fetch subtree', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ═══ SAVED VIEWS ═══
+

@@ -11,6 +11,7 @@ import { TagPicker } from './tag-picker';
 import {
   X,
   ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ArrowLeft,
   Calendar,
@@ -46,6 +47,8 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
+  estimation: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -240,10 +243,27 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const commentEditor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({
+        heading: false,
+        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
+        code: { HTMLAttributes: { class: 'deft-inline-code' } },
+      }),
+      Placeholder.configure({ placeholder: 'Add a comment...' }),
+    ],
+    editorProps: { attributes: { class: 'deft-editor' } },
+  });
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [members, setMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
+  const [agentEmployees, setAgentEmployees] = useState<any[]>([]);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [metadataExpanded, setMetadataExpanded] = useState(false);
+  useEffect(() => {
+    setMetadataExpanded(false);
+  }, [taskId]);
   const [taskTags, setTaskTags] = useState<{ id: string; name: string; color: string | null }[]>([]);
 
   useEffect(() => {
@@ -280,6 +300,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }[]>([]);
 
   const titleRef = useRef<HTMLInputElement>(null);
+  const dueDateInputRef = useRef<HTMLInputElement>(null);
+  const startDateInputRef = useRef<HTMLInputElement>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -438,6 +460,16 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     load();
   }, []);
 
+  // Load agent employees
+  useEffect(() => {
+    api.get('/api/agent-employees').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.filter((e: any) => e.is_active));
+      }
+    });
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'comments') loadComments();
     else loadActivity();
@@ -468,10 +500,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       const apiResult = await res.json();
       // Merge API result into existing task to preserve joined fields (project_prefix, assignee_name, labels, etc.)
       const merged = { ...task, ...apiResult };
-      // If assignee changed, update the name from members list
+      // If assignee changed, update the name from members list or agent employees
       if (field === 'assignee_id') {
         const member = members.find(m => m.id === value);
-        merged.assignee_name = member?.name || null;
+        const agent = agentEmployees.find(e => e.user_id === value);
+        merged.assignee_name = member?.name || (agent ? `${agent.name} (AI)` : null);
         merged.assignee_avatar = member?.avatar_url || null;
       }
       setTask(merged);
@@ -480,11 +513,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   };
 
   const handleAddComment = async () => {
-    if (!newComment.trim() || submittingComment) return;
+    const html = commentEditor?.getHTML() ?? '';
+    const text = commentEditor?.getText() ?? '';
+    if (!text.trim() || submittingComment) return;
     setSubmittingComment(true);
-    const res = await api.post(`/api/tasks/${taskId}/comments`, { content: newComment.trim() });
+    const res = await api.post(`/api/tasks/${taskId}/comments`, { content: html });
     if (res.ok) {
-      setNewComment('');
+      commentEditor?.commands.clearContent();
       loadComments();
     }
     setSubmittingComment(false);
@@ -807,6 +842,36 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       {m.name}
                     </button>
                   ))}
+                  {agentEmployees.length > 0 && (
+                    <>
+                      <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
+                      <div className="px-3 py-1 text-[11px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                        AI Agents
+                      </div>
+                      {agentEmployees.map((emp) => (
+                        <button
+                          key={emp.user_id}
+                          onClick={() => handleFieldUpdate('assignee_id', emp.user_id)}
+                          className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-[13px]"
+                          style={{
+                            color: task.assignee_id === emp.user_id ? 'var(--accent)' : 'var(--foreground)',
+                            fontFamily: 'var(--font-body)',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                            style={{ background: '#8B5CF6' }}
+                          >
+                            {emp.name.charAt(0).toUpperCase()}
+                          </div>
+                          {emp.name}
+                          <span className="text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--hover-tint)', color: 'var(--muted)' }}>AI</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -816,87 +881,163 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               <Calendar size={12} className="inline mr-1" />
               Due date
             </span>
-            <div className="relative">
-              {!task.due_date && (
-                <span
-                  className="absolute left-2 top-1/2 -translate-y-1/2 text-[13px] pointer-events-none"
-                  style={{
-                    color: 'var(--muted)',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                >
-                  Set due date
-                </span>
-              )}
+            <div className="flex items-center gap-1 relative">
+              <span
+                className="text-[13px] px-2 py-1 cursor-pointer rounded-md"
+                style={{
+                  color: task.due_date ? 'var(--foreground)' : 'var(--muted)',
+                  fontFamily: 'var(--font-body)',
+                }}
+                onClick={() => {
+                  dueDateInputRef.current?.showPicker?.();
+                  dueDateInputRef.current?.click();
+                }}
+              >
+                {task.due_date
+                  ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : 'Set due date'}
+              </span>
               <input
+                ref={dueDateInputRef}
                 type="date"
                 value={task.due_date ? new Date(task.due_date).toISOString().split('T')[0] : ''}
                 onChange={(e) => handleFieldUpdate('due_date', e.target.value || null)}
-                className="px-2 py-1 rounded-md text-[13px] bg-transparent outline-none"
-                style={{
-                  color: task.due_date ? 'var(--foreground)' : 'transparent',
-                  fontFamily: 'var(--font-body)',
-                  border: 'none',
-                }}
+                className="w-0 h-0 opacity-0 absolute"
+                tabIndex={-1}
               />
             </div>
 
-            {/* Created date */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Calendar size={12} className="inline mr-1" />
-              Created
-            </span>
-            <span className="text-[13px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
-              {new Date(task.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-            </span>
+            {/* Secondary fields — hidden on mobile until expanded */}
+            {(!isMobile || metadataExpanded) && (
+              <>
+                {/* Estimation */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  Size
+                </span>
+                <div className="flex gap-1 flex-wrap">
+                  {['XS', 'S', 'M', 'L', 'XL'].map(size => (
+                    <button key={size} onClick={() => handleFieldUpdate('estimation', size.toLowerCase())}
+                      className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors"
+                      style={{
+                        background: task.estimation === size.toLowerCase() ? 'var(--accent)' : 'var(--surface-container-low)',
+                        color: task.estimation === size.toLowerCase() ? 'white' : 'var(--muted)',
+                        fontFamily: 'var(--font-heading)',
+                      }}>
+                      {size}
+                    </button>
+                  ))}
+                  {task.estimation && (
+                    <button onClick={() => handleFieldUpdate('estimation', null)}
+                      className="px-1 py-0.5 rounded text-[10px]"
+                      style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                      ×
+                    </button>
+                  )}
+                </div>
 
-            {/* Labels */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Tag size={12} className="inline mr-1" />
-              Labels
-            </span>
-            <div className="flex flex-wrap gap-1">
-              {task.labels.length > 0 ? (
-                task.labels.map((label) => (
+                {/* Start Date */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Calendar size={12} className="inline mr-1" />
+                  Start date
+                </span>
+                <div className="flex items-center gap-1 relative">
                   <span
-                    key={label.id}
-                    className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+                    className="text-[13px] px-2 py-1 cursor-pointer rounded-md"
                     style={{
-                      background: `${label.color}20`,
-                      color: label.color,
+                      color: task.start_date ? 'var(--foreground)' : 'var(--muted)',
+                      fontFamily: 'var(--font-body)',
+                    }}
+                    onClick={() => {
+                      startDateInputRef.current?.showPicker?.();
+                      startDateInputRef.current?.click();
                     }}
                   >
-                    {label.name}
-                    <button
-                      onClick={async () => {
-                        await api.delete(`/api/tasks/${taskId}/labels/${label.id}`);
-                        loadTask();
-                      }}
-                      className="hover:opacity-70"
-                    >
-                      <X size={10} />
-                    </button>
+                    {task.start_date
+                      ? new Date(task.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                      : 'Set start date'}
                   </span>
-                ))
-              ) : (
-                <span className="text-[13px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                  None
-                </span>
-              )}
-            </div>
+                  <input
+                    ref={startDateInputRef}
+                    type="date"
+                    value={task.start_date ? new Date(task.start_date).toISOString().split('T')[0] : ''}
+                    onChange={(e) => handleFieldUpdate('start_date', e.target.value || null)}
+                    className="w-0 h-0 opacity-0 absolute"
+                    tabIndex={-1}
+                  />
+                </div>
 
-            {/* Tags */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Hash size={12} className="inline mr-1" />
-              Tags
-            </span>
-            <TagPicker
-              entityType="task"
-              entityId={taskId}
-              appliedTags={taskTags}
-              onTagsChange={setTaskTags}
-            />
+                {/* Created date */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Calendar size={12} className="inline mr-1" />
+                  Created
+                </span>
+                <span className="text-[13px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
+                  {new Date(task.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+
+                {/* Labels */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Tag size={12} className="inline mr-1" />
+                  Labels
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {task.labels.length > 0 ? (
+                    task.labels.map((label) => (
+                      <span
+                        key={label.id}
+                        className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+                        style={{
+                          background: `${label.color}20`,
+                          color: label.color,
+                        }}
+                      >
+                        {label.name}
+                        <button
+                          onClick={async () => {
+                            await api.delete(`/api/tasks/${taskId}/labels/${label.id}`);
+                            loadTask();
+                          }}
+                          className="hover:opacity-70"
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[13px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                      None
+                    </span>
+                  )}
+                </div>
+
+                {/* Tags */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Hash size={12} className="inline mr-1" />
+                  Tags
+                </span>
+                <TagPicker
+                  entityType="task"
+                  entityId={taskId}
+                  appliedTags={taskTags}
+                  onTagsChange={setTaskTags}
+                />
+              </>
+            )}
           </div>
+
+          {/* Mobile expand/collapse toggle */}
+          {isMobile && (
+            <button
+              onClick={() => setMetadataExpanded(!metadataExpanded)}
+              className="w-full text-center py-1.5 text-[11px] font-medium"
+              style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+            >
+              {metadataExpanded
+                ? <><ChevronUp size={11} className="inline" /> Less details</>
+                : <><ChevronDown size={11} className="inline" /> More details</>
+              }
+            </button>
+          )}
 
           {/* Description */}
           <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
@@ -1138,7 +1279,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     }}
                     disabled={creatingSubtask}
                   />
-                  {creatingSubtask && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--muted)' }} />}
+                  {creatingSubtask ? (
+                    <Loader2 size={12} className="animate-spin" style={{ color: 'var(--muted)' }} />
+                  ) : newSubtaskTitle.trim() ? (
+                    <button
+                      onClick={(e) => { e.preventDefault(); handleAddSubtask(); }}
+                      className="flex-shrink-0 p-1 rounded"
+                      style={{ color: 'var(--accent)' }}
+                      title="Add subtask"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  ) : null}
                 </div>
               )}
 
@@ -1570,12 +1722,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                             })}
                           </span>
                         </div>
-                        <p
-                          className="text-[13px] mt-0.5"
-                          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', lineHeight: '1.5' }}
-                        >
-                          {c.content}
-                        </p>
+                        <div
+                          className="deft-editor text-[13px] mt-0.5"
+                          dangerouslySetInnerHTML={{ __html: c.content }}
+                        />
                       </div>
                     </div>
                   ))}
@@ -1589,28 +1739,23 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       {user?.name?.charAt(0).toUpperCase()}
                     </div>
                     <div className="flex-1">
-                      <textarea
-                        value={newComment}
-                        onChange={(e) => setNewComment(e.target.value)}
-                        placeholder="Write a comment..."
-                        className="w-full text-[13px] bg-transparent outline-none resize-none rounded-md px-3 py-2"
-                        style={{
-                          color: 'var(--foreground)',
-                          fontFamily: 'var(--font-body)',
-                          border: '1px solid var(--border)',
-                          lineHeight: '1.5',
-                        }}
-                        rows={2}
+                      <div
+                        className="rounded-lg overflow-hidden"
+                        style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                             handleAddComment();
                           }
                         }}
-                      />
+                      >
+                        <div className="px-3 py-2 min-h-[80px] max-h-[200px] overflow-y-auto">
+                          <EditorContent editor={commentEditor} />
+                        </div>
+                      </div>
                       <div className="flex justify-end mt-1.5">
                         <button
                           onClick={handleAddComment}
-                          disabled={!newComment.trim() || submittingComment}
+                          disabled={!(commentEditor?.getText() ?? '').trim() || submittingComment}
                           className="text-[12px] font-medium px-3 py-1 rounded-md text-white disabled:opacity-50"
                           style={{
                             background: 'var(--accent)',
@@ -1631,11 +1776,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       No activity yet
                     </p>
                   )}
-                  {activity.map((a) => (
+                  {activity.map((a) => {
+                    const dotColor = a.field === 'status' ? '#3B82F6'
+                      : a.field === 'assignee_id' ? '#8B5CF6'
+                      : a.field === 'priority' ? '#F97316'
+                      : a.field === 'comment' ? '#22C55E'
+                      : 'var(--muted)';
+                    return (
                     <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
                       <div
                         className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                        style={{ background: 'var(--muted)' }}
+                        style={{ background: dotColor }}
                       />
                       <div>
                         <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
@@ -1656,7 +1807,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         </div>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
