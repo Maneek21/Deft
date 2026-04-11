@@ -24,6 +24,8 @@ import {
   wikiCitations,
   wikiOpsLog,
   mcpConnections,
+  agentEmployees,
+  agentActions,
 } from '@deft/db/schema';
 import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { mcpClientManager } from '@deft/mcp';
@@ -1805,6 +1807,125 @@ export async function executeToolCall(
       return {
         result: { success: true, message: `Suggestion logged for "${page.title}". A team member will review it.` },
         citations: [{ type: 'wiki', id: page.id, title: page.title }],
+      };
+    }
+
+    // ─── Superintendent Tools (read-only) ───
+
+    case 'list_agent_employees': {
+      const { status_filter } = params as { status_filter?: string };
+
+      let query = db
+        .select({
+          id: agentEmployees.id,
+          name: agentEmployees.name,
+          slug: agentEmployees.slug,
+          role: agentEmployees.role,
+          is_active: agentEmployees.is_active,
+          trust_level: agentEmployees.trust_level,
+          daily_action_count: agentEmployees.daily_action_count,
+          max_daily_actions: agentEmployees.max_daily_actions,
+          is_byoa: agentEmployees.is_byoa,
+          created_at: agentEmployees.created_at,
+          updated_at: agentEmployees.updated_at,
+        })
+        .from(agentEmployees)
+        .where(
+          status_filter === 'active'
+            ? and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.is_active, true))
+            : status_filter === 'paused'
+              ? and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.is_active, false))
+              : eq(agentEmployees.org_id, orgId),
+        )
+        .orderBy(desc(agentEmployees.created_at));
+
+      const employees = await query;
+      return {
+        result: {
+          employees: employees.map((e) => ({
+            id: e.id,
+            name: e.name,
+            slug: e.slug,
+            role: e.role,
+            status: e.is_active ? 'active' : 'paused',
+            trust_level: e.trust_level,
+            daily_actions: `${e.daily_action_count}/${e.max_daily_actions}`,
+            is_byoa: e.is_byoa,
+            created_at: e.created_at,
+            updated_at: e.updated_at,
+          })),
+          total: employees.length,
+        },
+        citations: [],
+      };
+    }
+
+    case 'get_agent_activity': {
+      const { employee_id, limit: resultLimit } = params as { employee_id?: string; limit?: number };
+      const maxResults = Math.min(resultLimit || 20, 100);
+
+      const conditions = [eq(agentActions.org_id, orgId)];
+      if (employee_id) {
+        conditions.push(eq(agentActions.agent_employee_id, employee_id));
+      }
+
+      const actions = await db
+        .select({
+          id: agentActions.id,
+          action: agentActions.action,
+          params: agentActions.params,
+          approval_status: agentActions.approval_status,
+          agent_employee_id: agentActions.agent_employee_id,
+          source: agentActions.source,
+          created_at: agentActions.created_at,
+          executed_at: agentActions.executed_at,
+          error: agentActions.error,
+        })
+        .from(agentActions)
+        .where(and(...conditions))
+        .orderBy(desc(agentActions.created_at))
+        .limit(maxResults);
+
+      return {
+        result: {
+          actions,
+          total: actions.length,
+        },
+        citations: [],
+      };
+    }
+
+    case 'get_agent_economics': {
+      const employees = await db
+        .select({
+          id: agentEmployees.id,
+          name: agentEmployees.name,
+          role: agentEmployees.role,
+          is_active: agentEmployees.is_active,
+          daily_action_count: agentEmployees.daily_action_count,
+          max_daily_actions: agentEmployees.max_daily_actions,
+          is_byoa: agentEmployees.is_byoa,
+        })
+        .from(agentEmployees)
+        .where(eq(agentEmployees.org_id, orgId))
+        .orderBy(desc(agentEmployees.daily_action_count));
+
+      return {
+        result: {
+          employees: employees.map((e) => ({
+            id: e.id,
+            name: e.name,
+            role: e.role,
+            is_active: e.is_active,
+            daily_actions_used: e.daily_action_count,
+            daily_actions_limit: e.max_daily_actions,
+            is_byoa: e.is_byoa,
+          })),
+          total_employees: employees.length,
+          total_active: employees.filter((e) => e.is_active).length,
+          total_daily_actions_used: employees.reduce((sum, e) => sum + e.daily_action_count, 0),
+        },
+        citations: [],
       };
     }
 

@@ -16,7 +16,7 @@ import {
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
-import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS } from '../lib/agent-tools.js';
+import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
@@ -202,6 +202,14 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     });
   } catch (err) {
     console.warn('[agent] Failed to load MCP tools:', err instanceof Error ? err.message : err);
+  }
+
+  // Superintendent tools — only for Defty, not employee conversations
+  // When employee conversations are added, set agentEmployeeId from the conversation metadata
+  const agentEmployeeId: string | undefined = undefined;
+  if (!agentEmployeeId) {
+    tools = [...tools, ...SUPERINTENDENT_TOOLS];
+    SUPERINTENDENT_ACTION_TOOLS.forEach(t => allActionTools.add(t));
   }
 
   let connectionInfo = '';

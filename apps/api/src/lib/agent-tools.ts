@@ -289,6 +289,69 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['space_name', 'type', 'title'],
     },
   },
+  // ─── Wiki Tools (LLM Wiki pattern) ───
+  {
+    name: 'wiki_search',
+    description:
+      'Search the team wiki for knowledge pages about concepts, decisions, preferences, entities, or facts. The wiki accumulates structured knowledge from conversations and manual entries. Use this first before searching messages — wiki pages contain synthesized, up-to-date knowledge.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search topic or keywords' },
+        type: { type: 'string', enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'], description: 'Optional: filter by page type' },
+        scope: { type: 'string', enum: ['org', 'space', 'user'], description: 'Optional: filter by scope' },
+        limit: { type: 'number', description: 'Max results (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'wiki_read',
+    description:
+      'Read the full content of a wiki page including its linked pages, backlinks, and source citations. Use after wiki_search to get details on a specific topic.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        slug: { type: 'string', description: 'The page slug (from wiki_search results)' },
+      },
+      required: ['slug'],
+    },
+  },
+  {
+    name: 'wiki_write',
+    description:
+      'Create or update a wiki page. Use to capture important knowledge, decisions, or preferences that the team should remember. For updates, provide the slug of the existing page.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        slug: { type: 'string', description: 'Optional: slug of existing page to update. Omit to create new.' },
+        title: { type: 'string', description: 'Page title (required for new pages)' },
+        content: { type: 'string', description: 'Page content in markdown' },
+        type: { type: 'string', enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'], description: 'Page type (required for new pages)' },
+        summary: { type: 'string', description: 'One-sentence summary' },
+        related_slugs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Slugs of related wiki pages to link to',
+        },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'wiki_suggest_update',
+    description:
+      'Suggest an update to an existing wiki page based on new information from the conversation. The suggestion is saved for user review — it does NOT auto-apply. Use when you notice a wiki page is outdated or incomplete based on what you learned in this conversation.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        slug: { type: 'string', description: 'Slug of the wiki page to suggest updating' },
+        suggested_content: { type: 'string', description: 'The suggested new content for the page' },
+        reason: { type: 'string', description: 'Why this update is needed — what new information prompted it' },
+      },
+      required: ['slug', 'suggested_content', 'reason'],
+    },
+  },
 ];
 
 /** Tool names that require user approval before execution */
@@ -298,6 +361,7 @@ export const ACTION_TOOLS = new Set([
   'assign_task',
   'post_message',
   'add_knowledge',
+  'wiki_write',
 ]);
 
 // Calendar tools (only added when calendar is connected)
@@ -465,4 +529,137 @@ export const MANAGER_TOOLS: Anthropic.Tool[] = [
 export const MANAGER_ONLY_TOOLS = new Set([
   'prep_oneone',
   'get_burnout_risks',
+]);
+
+// ─── Superintendent Tools (Defty only, not agent employees) ───
+
+export const SUPERINTENDENT_TOOLS: Anthropic.Tool[] = [
+  {
+    name: 'list_agent_employees',
+    description:
+      'List all agent employees in the organization with their status, role, daily action usage, and last active timestamp.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status_filter: {
+          type: 'string',
+          enum: ['active', 'paused', 'all'],
+          description: 'Filter by status. Default: all',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'manage_agent_employee',
+    description:
+      'Create, update, pause, resume, or delete an agent employee. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'update', 'pause', 'resume', 'delete'],
+          description: 'Action to perform',
+        },
+        employee_id: { type: 'string', description: 'Employee ID (required for update/pause/resume/delete)' },
+        name: { type: 'string', description: 'Employee name (required for create)' },
+        role: { type: 'string', description: 'Employee role' },
+        system_prompt: { type: 'string', description: 'System prompt for the employee' },
+        trust_level: {
+          type: 'string',
+          enum: ['conservative', 'standard', 'autonomous'],
+          description: 'Trust level for the employee',
+        },
+        max_daily_actions: { type: 'number', description: 'Maximum daily actions allowed' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'get_agent_activity',
+    description:
+      'Get recent agent actions across employees. Optionally filter by a specific employee.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        employee_id: { type: 'string', description: 'Optional: filter to a specific employee by ID' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_agent_economics',
+    description:
+      'Get token spend and action counts per employee. Shows daily usage, limits, and active status.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'manage_mcp_connection',
+    description:
+      'Add, remove, test, or update an MCP (Model Context Protocol) connection. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'remove', 'test', 'update'],
+          description: 'Action to perform',
+        },
+        connection_id: { type: 'string', description: 'Connection ID (required for remove/test/update)' },
+        name: { type: 'string', description: 'Connection name (required for add)' },
+        server_url: { type: 'string', description: 'MCP server URL (required for add)' },
+        transport: {
+          type: 'string',
+          enum: ['stdio', 'sse', 'streamable-http'],
+          description: 'Transport type',
+        },
+        auth_type: {
+          type: 'string',
+          enum: ['none', 'bearer', 'api_key'],
+          description: 'Authentication type',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'manage_triggers',
+    description:
+      'Create, update, disable, enable, delete, or list triggers for agent employees. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'update', 'disable', 'enable', 'delete', 'list'],
+          description: 'Action to perform',
+        },
+        trigger_id: { type: 'string', description: 'Trigger ID (required for update/disable/enable/delete)' },
+        employee_id: { type: 'string', description: 'Employee ID to attach trigger to (required for create)' },
+        event_type: { type: 'string', description: 'Event type that fires the trigger (e.g., "task:overdue", "pr:merged")' },
+        conditions: {
+          type: 'object',
+          description: 'Conditions that must be met for the trigger to fire',
+        },
+        action_template: {
+          type: 'object',
+          description: 'Action template to execute when trigger fires',
+        },
+      },
+      required: ['action'],
+    },
+  },
+];
+
+/** Superintendent tool names that require user approval before execution */
+export const SUPERINTENDENT_ACTION_TOOLS = new Set([
+  'manage_agent_employee',
+  'manage_mcp_connection',
+  'manage_triggers',
 ]);
