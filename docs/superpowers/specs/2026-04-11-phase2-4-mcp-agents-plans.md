@@ -18,11 +18,13 @@ Four integrated layers shipped as one cohesive system:
 
 ## 1.1 Key Architectural Decisions
 
-### The Deft System Agent — Platform Superintendent
+### Defty — The Platform Superintendent
 
-The existing "Deft" agent is NOT an employee. It is the **platform-native superintendent** — the control plane for the entire agentic system. Agent employees are the data plane — they do the work. Deft manages, configures, and oversees everything.
+Every org gets **Defty** for free. Defty is NOT an employee — it is the **platform-native superintendent**, the control plane for the entire agentic system. Agent employees are the data plane — they do the work. Defty manages, configures, and oversees everything.
 
-**Deft's unique role:**
+**Defty consumes employee AI credits** — not a separate budget. This keeps the pricing model simple: orgs buy human seats ($15/mo with $5 credits) and agent employee seats ($25/mo with $15 credits). Defty draws from the org's credit pool, same as employees. No hidden costs.
+
+**Defty's unique role:**
 - Build and configure agent employees: "Create me a Marketing agent that monitors Ahrefs weekly"
 - Manage agent operations: "Pause all agents until Monday"
 - Investigate agent behavior: "Why did the PM agent post that message in #engineering?"
@@ -30,11 +32,12 @@ The existing "Deft" agent is NOT an employee. It is the **platform-native superi
 - Reconfigure employees: "Update the Engineering Lead to also watch Linear"
 - General-purpose workspace queries: everything it does today (search, analyze, report)
 
-**What Deft is NOT:**
+**What Defty is NOT:**
 - Not an employee record — no `agent_employees` row, no daily action limit, no trust level override (uses org-level)
 - Not replaceable by an employee — employees never see platform internals or manage other agents
+- Not a paid seat — included free with every org
 
-**The agent page** stays as Deft's interface. Users talk to Deft for platform management and general queries. A dropdown/tabs allow switching to specific employees for specialized conversations.
+**The agent page** stays as Defty's interface. Users talk to Defty for platform management and general queries. A dropdown/tabs allow switching to specific employees for specialized conversations.
 
 ### Agent Employee Conversations — Chat as Source of Truth
 
@@ -44,7 +47,7 @@ Agent employees are workspace citizens. Their messages live where all messages l
 - Agent reasoning metadata (tool calls, citations, token counts) stored in a new `metadata` jsonb column on the `messages` table
 - **The agent page** is a view layer for employee conversations — it queries messages where the counterpart is an agent employee and renders with rich agent UI (citations, tool calls, plan progress) using `metadata`
 - Chat search finds agent conversations naturally. Activity feeds include agent actions. One notification pipeline.
-- The existing `agentConversations` / `agentMessages` tables remain for the Deft system agent (backward compatible)
+- The existing `agentConversations` / `agentMessages` tables remain for Defty (backward compatible)
 
 ### Plan Resumption — Auto-Resume with Review Window
 
@@ -515,13 +518,14 @@ if (toolName.startsWith('mcp__')) {
   6. DM the assigner: "I've completed DEFT-42 and moved it to Review. Summary: ..."
 - Each tool call counts toward `max_daily_actions`
 
-**D. Deft system agent (platform superintendent):**
+**D. Defty (platform superintendent):**
 - Lives on the agent page as the default conversation partner
 - Uses `agentConversations` / `agentMessages` tables (existing system, unchanged)
 - Has all native tools + platform management capabilities
-- Dropdown/tabs on agent page: "Deft (Platform)" | "PM Agent" | "Engineering Lead" | ...
+- Dropdown/tabs on agent page: "Defty" | "PM Agent" | "Engineering Lead" | ...
 - Switching to an employee tab shows their DM conversation with rich agent UI
-- Deft gets new platform management tools (see section 4.7)
+- Defty gets new platform management tools (see section 4.7)
+- Consumes AI credits from org's employee credit pool
 
 ### 4.3 Org chart awareness
 
@@ -622,14 +626,14 @@ Minimum viable creation: Step 1 + Step 2 only. Everything else has sensible defa
 **Agent Activity widget (dashboard):** Shows actions from all employees in one feed. Filter dropdown to select specific employee.
 
 **Agent page layout:**
-- Default tab: "Deft (Platform)" — existing agent conversations via agentConversations/agentMessages
+- Default tab: "Defty" — existing agent conversations via agentConversations/agentMessages
 - Additional tabs: one per active agent employee — shows their DM conversation rendered with rich agent UI
 - Tab shows unread indicator if employee has new messages
-- Creating a new conversation: dropdown to pick Deft or a specific employee
+- Creating a new conversation: dropdown to pick Defty or a specific employee
 
-### 4.7 Deft superintendent tools
+### 4.7 Defty superintendent tools
 
-New tools added exclusively to the Deft system agent (not available to employees):
+New tools added exclusively to Defty (not available to employees):
 
 ```
 manage_agent_employee    — Create, update, pause, resume, or delete an agent employee
@@ -640,14 +644,14 @@ get_agent_economics      — Token spend, action counts, credit usage per employ
 manage_triggers          — Create, update, or disable triggers for an employee
 ```
 
-These tools allow the Deft agent to be the single interface for platform management. Instead of navigating Settings pages, users can say:
+These tools allow Defty to be the single conversational interface for platform management. Instead of navigating Settings pages, users can say:
 
 - "Create a PM agent called Alex that tracks sprint progress in #engineering"
 - "Show me which agents ran today and how many actions they took"
 - "Connect our company's n8n server at https://n8n.internal/mcp"
 - "The Engineering Lead agent is posting too often, set its daily limit to 20"
 
-The Deft agent uses these tools to call the same API endpoints as the Settings UI — it's a conversational interface to the same CRUD operations.
+Defty uses these tools to call the same API endpoints as the Settings UI — it's a conversational interface to the same CRUD operations.
 
 ---
 
