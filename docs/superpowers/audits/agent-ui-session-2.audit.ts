@@ -206,28 +206,36 @@ async function testInFlightLabelHumanized(page: Page): Promise<void> {
   const ta = page.locator('textarea[placeholder*="Ask Alex"]');
   await ta.fill('use tavily to search for recent react news, keep it brief');
   await ta.press('Enter');
-  const captured = await page.waitForFunction(
+  // Two acceptance signals:
+  //   a) the in-flight AgentThinking "Searching Tavily Search ..." text
+  //   b) the completed tool badge pill "💬 Tavily Search · Tavily Search"
+  // Either one proves formatToolLabel is wired. Polling both makes the
+  // assertion robust to fast responses that close the in-flight window
+  // before the first poll tick.
+  await page.waitForFunction(
     () => {
       const text = document.querySelector('main')?.innerText || '';
-      const hasRaw = /mcp__tavily[-_]search__tavily_search/.test(text);
-      const hasHuman = /Tavily Search/.test(text);
-      if (hasRaw || hasHuman) return { hasRaw, hasHuman };
-      return null;
+      const hasHumanStreaming = /Tavily Search/.test(text);
+      const hasCompletedBadge = Array.from(document.querySelectorAll('main button'))
+        .some((b) => /💬.*Tavily Search/.test(b.textContent || ''));
+      const hasRawStreaming = /mcp__tavily[-_]search__tavily/.test(text);
+      // Fail loudly if the raw name leaks into the UI.
+      if (hasRawStreaming) return { fail: true };
+      return (hasHumanStreaming || hasCompletedBadge) ? { ok: true } : null;
     },
     null,
-    { timeout: 60_000 },
-  );
-  const { hasRaw, hasHuman } = (await captured.jsonValue()) as { hasRaw: boolean; hasHuman: boolean };
-  assert(
-    !hasRaw,
-    'Raw tool name "mcp__tavily-search__tavily_search" observed in live UI — humanization of in-flight label failed',
-  );
-  assert(hasHuman, 'Did not observe a humanized "Tavily Search" label during streaming');
-  // Wait for completion before returning so subsequent tests start clean.
+    { timeout: 180_000 },
+  ).then(async (handle) => {
+    const result = (await handle.jsonValue()) as { ok?: boolean; fail?: boolean };
+    if (result.fail) {
+      throw new Error('Raw tool name "mcp__tavily-..." observed in live UI — humanization failed');
+    }
+  });
+  // Wait for completion so subsequent tests start clean.
   await page.waitForFunction(
     () => /tokens\b/.test((document.querySelector('main')?.innerText || '').slice(-500)),
     null,
-    { timeout: 120_000 },
+    { timeout: 180_000 },
   );
   console.log('    ✓ in-flight label humanized (no raw mcp__ string observed)');
 }

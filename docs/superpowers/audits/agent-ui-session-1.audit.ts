@@ -213,10 +213,12 @@ async function testSingleBubbleReload(page: Page): Promise<void> {
   console.log('  Test 7/7: multi-iteration response = 1 bubble on reload...');
   await newConversation(page);
   // Tavily search with a follow-up prompt usually triggers multi-iteration.
+  // Network-bound end-to-end (search + extract + synthesis) — give it a
+  // generous 4-minute budget since occasional runs take 2-3 min.
   await sendAndWaitForResponse(
     page,
     'use tavily search to find 2 recent articles about react 19 and summarize them in 3 bullet points',
-    180_000,
+    240_000,
   );
   const convId = await getLatestConversationId();
 
