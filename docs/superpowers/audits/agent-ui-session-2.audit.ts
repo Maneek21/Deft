@@ -176,10 +176,12 @@ async function testToolBackedIsHighConfidence(page: Page): Promise<void> {
 async function testTokensAggregated(page: Page): Promise<void> {
   console.log('  Test 6/7: cumulative tokens shown on terminal row...');
   await newConversation(page);
+  // Tavily multi-iter can take 2-3 minutes end-to-end (search + extract +
+  // synthesize), so give it a generous 4-minute budget.
   await sendAndWaitForResponse(
     page,
     'use tavily search to find 2 articles about React Server Components and summarize',
-    180_000,
+    240_000,
   );
   const convId = await getLatestConversationId();
   await page.goto(`${WEB_URL}/agent?id=${convId}&employee=${ALEX_PM_ID}`, {
