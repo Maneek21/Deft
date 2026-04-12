@@ -2,24 +2,33 @@
   "name": "deft",
   "private": true,
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
-    "dev:web": "pnpm --filter @deft/web dev",
-    "dev:api": "pnpm --filter @deft/api dev",
+    "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
+    "audit:setup": "tsx docs/superpowers/audits/setup-auth.ts",
     "build": "pnpm -r build",
     "db:generate": "pnpm --filter @deft/db generate",
-    "db:push": "pnpm --filter @deft/db push",
     "db:migrate": "pnpm --filter @deft/db migrate",
+    "db:push": "pnpm --filter @deft/db push",
     "db:seed": "pnpm --filter @deft/db seed",
     "db:studio": "pnpm --filter @deft/db studio",
-    "lint": "pnpm -r lint"
+    "dev": "pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @deft/api dev",
+    "dev:web": "pnpm --filter @deft/web dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
+    "playwright": "^1.59.1",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "sharp", "msgpackr-extract"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "msgpackr-extract"
+    ]
   }
 }

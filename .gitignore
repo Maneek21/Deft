@@ -13,3 +13,7 @@ coverage/
 drizzle/meta/
 uploads/
 *.pdf
+
+# Audit script state (contains access tokens)
+playwright-auth.json
+audit-failure-*.png
