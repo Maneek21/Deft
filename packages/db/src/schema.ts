@@ -350,6 +350,7 @@ export const agentMessages = pgTable('agent_messages', {
   conversation_id: text('conversation_id').notNull().references(() => agentConversations.id),
   role: text('role').notNull(), // 'user', 'assistant'
   content: text('content').notNull(),
+  content_blocks: jsonb('content_blocks'), // Anthropic content blocks: [{type:'text'},{type:'tool_use'},{type:'tool_result'}]
   citations: jsonb('citations'), // [{ type, id, title, url }]
   tool_calls: jsonb('tool_calls'), // [{ tool, params, result, status }]
   hidden: boolean('hidden').default(false).notNull(),
@@ -367,6 +368,7 @@ export const agentActions = pgTable('agent_actions', {
   conversation_id: text('conversation_id').references(() => agentConversations.id),
   message_id: text('message_id'),
   agent_employee_id: text('agent_employee_id'),
+  tool_use_id: text('tool_use_id'), // Anthropic tool_use block id (toolu_*)
   source: text('source').default('native'),
   mcp_connection_id: text('mcp_connection_id'),
   plan_id: text('plan_id'),
