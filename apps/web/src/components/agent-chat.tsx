@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { formatToolLabel, humanizeToolName } from '@/lib/tool-display';
+import { deriveConfidence } from '@/lib/confidence';
 import { useRouter } from 'next/navigation';
 import { Send, Square, Loader2, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -671,29 +672,27 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                   );
                 })()}
 
-                {/* Confidence indicator */}
-                {!msg.streaming && msg.role === 'assistant' && msg.content && (
-                  <div className="flex items-center gap-1.5 mt-2 text-[10px]" style={{ color: 'var(--muted)' }}>
-                    {(msg.citations?.length || 0) >= 3 ? (
-                      <><span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success)' }} /> High confidence</>
-                    ) : (msg.citations?.length || 0) >= 1 ? (
-                      <><span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent)' }} /> Based on limited data</>
-                    ) : (
-                      <><span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--danger)' }} /> Low confidence — no direct sources</>
-                    )}
-                  </div>
-                )}
+                {/* Confidence indicator — hidden while any tool calls are awaiting approval */}
+                {!msg.streaming && msg.role === 'assistant' && msg.content && !msg.pending_actions?.length && (() => {
+                  const c = deriveConfidence(msg);
+                  return (
+                    <div className="flex items-center gap-1.5 mt-2 text-[10px]" style={{ color: 'var(--muted)' }}>
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: `var(--${c.colorVar})` }} />
+                      {c.label}
+                    </div>
+                  );
+                })()}
 
-                {/* Token/model metadata */}
-                {!msg.streaming && msg.role === 'assistant' && msg.model && (
+                {/* Token/model metadata — hidden while a tool call awaits approval */}
+                {!msg.streaming && msg.role === 'assistant' && msg.model && !msg.pending_actions?.length && (
                   <div className="mt-1 text-[10px]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
                     {msg.model.replace('claude-', '').replace(/-\d+$/, '')}
                     {msg.tokens_in && msg.tokens_out ? ` · ${msg.tokens_in + msg.tokens_out} tokens` : ''}
                   </div>
                 )}
 
-                {/* Follow-up suggestion chips */}
-                {!msg.streaming && !streaming && msg.follow_ups && msg.follow_ups.length > 0 && (
+                {/* Follow-up suggestion chips — hidden while a tool call awaits approval */}
+                {!msg.streaming && !streaming && msg.follow_ups && msg.follow_ups.length > 0 && !msg.pending_actions?.length && (
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {msg.follow_ups.map((s, si) => (
                       <button key={si} onClick={() => sendMessage(s)}
