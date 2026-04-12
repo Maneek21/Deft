@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
+import type { TrustLevel } from '../lib/agent-approval.js';
 import { eq, and, desc, lt, sql, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
@@ -22,7 +23,7 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTIO
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
-import { shouldAutoExecute, getApprovalTier, type TrustLevel } from '../lib/agent-approval.js';
+import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
 import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
 
@@ -47,182 +48,36 @@ Rules:
 - Current date: {{DATE}}
 - Organization: {{ORG}}`;
 
-// ── CRUD routes ──
+// ── Stream context types ──
 
-agentRoutes.get('/conversations', async (c) => {
-  const user = c.get('user');
-  const employeeFilter = c.req.query('employee');
+type StreamContextError = { _kind: 'error'; error: string; code: string; status: 400 | 403 | 404 | 503 };
+type StreamContextOk = {
+  _kind: 'ok';
+  apiMessages: Anthropic.MessageParam[];
+  systemPrompt: string;
+  tools: Anthropic.Tool[];
+  allActionTools: Set<string>;
+  trustLevel: TrustLevel;
+  model: string;
+  agentEmployeeId: string | undefined;
+};
+type StreamContext = StreamContextOk | StreamContextError;
 
-  const conditions = [
-    eq(agentConversations.user_id, user.id),
-    eq(agentConversations.org_id, user.org_id),
-  ];
-  if (employeeFilter) {
-    conditions.push(eq(agentConversations.agent_employee_id, employeeFilter));
-  } else {
-    conditions.push(isNull(agentConversations.agent_employee_id));
-  }
-
-  const convos = await db
-    .select()
-    .from(agentConversations)
-    .where(and(...conditions))
-    .orderBy(desc(agentConversations.updated_at))
-    .limit(50);
-  return c.json(convos);
-});
-
-agentRoutes.post('/conversations', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json().catch(() => ({}));
-  const [convo] = await db
-    .insert(agentConversations)
-    .values({
-      org_id: user.org_id,
-      user_id: user.id,
-      title: body.title || 'New conversation',
-      agent_employee_id: body.agent_employee_id || null,
-    })
-    .returning();
-  return c.json(convo, 201);
-});
-
-agentRoutes.get('/conversations/:id', async (c) => {
-  const user = c.get('user');
-  const id = c.req.param('id');
-  const [conv] = await db
-    .select()
-    .from(agentConversations)
-    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
-    .limit(1);
-  if (!conv) return c.json({ error: 'Not found' }, 404);
-  return c.json(conv);
-});
-
-agentRoutes.patch('/conversations/:id', async (c) => {
-  const user = c.get('user');
-  const id = c.req.param('id');
-  const body = await c.req.json();
-  const { title } = body;
-  if (title) {
-    await db
-      .update(agentConversations)
-      .set({ title })
-      .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)));
-  }
-  return c.json({ success: true });
-});
-
-agentRoutes.delete('/conversations/:id', async (c) => {
-  const user = c.get('user');
-  const id = c.req.param('id');
-  await db.delete(agentMessages).where(eq(agentMessages.conversation_id, id));
-  await db
-    .delete(agentConversations)
-    .where(
-      and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)),
-    );
-  return c.json({ success: true });
-});
-
-agentRoutes.get('/conversations/:id/messages', async (c) => {
-  const id = c.req.param('id');
-
-  // Expire stale pending actions (older than 1 hour)
-  await db.update(agentActions)
-    .set({ approval_status: 'expired' })
-    .where(and(
-      eq(agentActions.conversation_id, id),
-      eq(agentActions.approval_status, 'pending'),
-      lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
-    ));
-
-  const messageList = await db
-    .select()
-    .from(agentMessages)
-    .where(and(
-      eq(agentMessages.conversation_id, id),
-      eq(agentMessages.hidden, false),
-    ))
-    .orderBy(agentMessages.created_at);
-
-  // Fetch all actions for this conversation
-  const actionList = await db
-    .select()
-    .from(agentActions)
-    .where(eq(agentActions.conversation_id, id));
-
-  // Attach actions to their messages
-  const messagesWithActions = messageList.map((m) => ({
-    ...m,
-    pending_actions: actionList
-      .filter((a) => a.message_id === m.id)
-      .map((a) => ({
-        id: a.id,
-        action: a.action,
-        params: a.params,
-        approval_tier: a.approval_tier,
-        status: a.approval_status,
-        result: a.result,
-        executed_at: a.executed_at,
-        error: a.error,
-      })),
-  }));
-
-  return c.json(messagesWithActions);
-});
-
-// ── Main chat endpoint — non-streaming tool loop, then stream final text ──
-
-agentRoutes.post('/conversations/:id/messages', async (c) => {
-  const user = c.get('user');
-  const convoId = c.req.param('id');
-  const body = await c.req.json();
-  const { content, agent_employee_id, hidden } = body;
-  const agentEmployeeId = agent_employee_id || undefined;
-
+async function buildStreamContext(
+  user: { id: string; org_id: string },
+  convoId: string,
+): Promise<StreamContext> {
   if (!env.ANTHROPIC_API_KEY) {
-    return c.json(
-      { error: 'Anthropic API key not configured', code: 'NO_API_KEY' },
-      503,
-    );
+    return { _kind: 'error', error: 'Anthropic API key not configured', code: 'NO_API_KEY', status: 503 };
   }
 
-  // Save user message
-  await db.insert(agentMessages).values({
-    conversation_id: convoId,
-    role: 'user',
-    content,
-    hidden: hidden || false,
-  });
-
-  // If agent_employee_id provided and conversation doesn't have one yet, set it
-  if (agentEmployeeId) {
-    const [existingConv] = await db
-      .select()
-      .from(agentConversations)
-      .where(eq(agentConversations.id, convoId))
-      .limit(1);
-    if (existingConv && !existingConv.agent_employee_id) {
-      await db
-        .update(agentConversations)
-        .set({ agent_employee_id: agentEmployeeId })
-        .where(eq(agentConversations.id, convoId));
-    }
-  }
-
-  // Auto-title on first message
+  // Load the conversation to get agent_employee_id
   const [convo] = await db
     .select()
     .from(agentConversations)
     .where(eq(agentConversations.id, convoId))
     .limit(1);
-  if (convo && (!convo.title || convo.title === 'New conversation')) {
-    await db
-      .update(agentConversations)
-      .set({ title: content.slice(0, 60) + (content.length > 60 ? '...' : '') })
-      .where(eq(agentConversations.id, convoId));
-  }
+  const agentEmployeeId = convo?.agent_employee_id ?? undefined;
 
   // Load conversation history
   const history = await db
@@ -246,7 +101,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
   const connectedProviders = connections.map(conn => conn.provider);
 
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
-  let tools = [...AGENT_TOOLS, ...MANAGER_TOOLS];
+  let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...MANAGER_TOOLS];
   const allActionTools = new Set([...ACTION_TOOLS]);
   if (connectedProviders.includes('google_calendar')) {
     tools = [...tools, ...CALENDAR_TOOLS];
@@ -373,9 +228,12 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   ).replace('{{ORG}}', org?.name || 'Unknown');
   let wikiSection = '';
 
-  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
+  // Auto-load relevant wiki context using the last user message as the search query
   try {
-    const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    // Derive search query from the most recent user message in history
+    const lastUserMsg = [...history].reverse().find(m => m.role === 'user');
+    const rawQuery = lastUserMsg?.content || '';
+    const searchQuery = rawQuery.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
       const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
 
@@ -461,67 +319,292 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   const reasonConfig = getModelConfig('reason');
 
-  return streamSSE(c, async (sseStream) => {
-    console.log(`[agent] SSE stream started for conversation ${convoId}`);
-    const abortController = new AbortController();
-    sseStream.onAbort(() => { console.log(`[agent] Stream aborted for ${convoId}`); abortController.abort(); });
+  // Rehydrate history into Anthropic message format. Rows with content_blocks
+  // use the structured form; legacy rows fall back to plain text. Skip empty rows.
+  const apiMessages: Anthropic.MessageParam[] = [];
+  for (const m of history) {
+    const blocks = (m as any).content_blocks;
+    if (blocks && Array.isArray(blocks) && blocks.length > 0) {
+      apiMessages.push({ role: m.role as 'user' | 'assistant', content: blocks as any });
+    } else if (m.content && m.content.trim().length > 0) {
+      apiMessages.push({ role: m.role as 'user' | 'assistant', content: m.content });
+    }
+  }
 
+  return {
+    _kind: 'ok',
+    apiMessages,
+    systemPrompt,
+    tools,
+    allActionTools,
+    trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
+    model: reasonConfig.model,
+    agentEmployeeId,
+  };
+}
+
+// ── CRUD routes ──
+
+agentRoutes.get('/conversations', async (c) => {
+  const user = c.get('user');
+  const employeeFilter = c.req.query('employee');
+
+  const conditions = [
+    eq(agentConversations.user_id, user.id),
+    eq(agentConversations.org_id, user.org_id),
+  ];
+  if (employeeFilter) {
+    conditions.push(eq(agentConversations.agent_employee_id, employeeFilter));
+  } else {
+    conditions.push(isNull(agentConversations.agent_employee_id));
+  }
+
+  const convos = await db
+    .select()
+    .from(agentConversations)
+    .where(and(...conditions))
+    .orderBy(desc(agentConversations.updated_at))
+    .limit(50);
+  return c.json(convos);
+});
+
+agentRoutes.post('/conversations', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json().catch(() => ({}));
+  const [convo] = await db
+    .insert(agentConversations)
+    .values({
+      org_id: user.org_id,
+      user_id: user.id,
+      title: body.title || 'New conversation',
+      agent_employee_id: body.agent_employee_id || null,
+    })
+    .returning();
+  return c.json(convo, 201);
+});
+
+agentRoutes.get('/conversations/:id', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const [conv] = await db
+    .select()
+    .from(agentConversations)
+    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
+    .limit(1);
+  if (!conv) return c.json({ error: 'Not found' }, 404);
+  return c.json(conv);
+});
+
+agentRoutes.patch('/conversations/:id', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { title } = body;
+  if (title) {
+    await db
+      .update(agentConversations)
+      .set({ title })
+      .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)));
+  }
+  return c.json({ success: true });
+});
+
+agentRoutes.delete('/conversations/:id', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  await db.delete(agentMessages).where(eq(agentMessages.conversation_id, id));
+  await db
+    .delete(agentConversations)
+    .where(
+      and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)),
+    );
+  return c.json({ success: true });
+});
+
+agentRoutes.get('/conversations/:id/messages', async (c) => {
+  const id = c.req.param('id');
+
+  // Expire stale pending actions (older than 1 hour)
+  await db.update(agentActions)
+    .set({ approval_status: 'expired' })
+    .where(and(
+      eq(agentActions.conversation_id, id),
+      eq(agentActions.approval_status, 'pending'),
+      lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
+    ));
+
+  const messageList = await db
+    .select()
+    .from(agentMessages)
+    .where(and(
+      eq(agentMessages.conversation_id, id),
+      eq(agentMessages.hidden, false),
+    ))
+    .orderBy(agentMessages.created_at);
+
+  // Fetch all actions for this conversation
+  const actionList = await db
+    .select()
+    .from(agentActions)
+    .where(eq(agentActions.conversation_id, id));
+
+  // Attach actions to their messages
+  const messagesWithActions = messageList.map((m) => ({
+    ...m,
+    pending_actions: actionList
+      .filter((a) => a.message_id === m.id)
+      .map((a) => ({
+        id: a.id,
+        action: a.action,
+        params: a.params,
+        approval_tier: a.approval_tier,
+        status: a.approval_status,
+        result: a.result,
+        executed_at: a.executed_at,
+        error: a.error,
+      })),
+  }));
+
+  return c.json(messagesWithActions);
+});
+
+// ── Main chat endpoint ──
+
+agentRoutes.post('/conversations/:id/messages', async (c) => {
+  const user = c.get('user');
+  const convoId = c.req.param('id');
+  const body = await c.req.json();
+  const { content, agent_employee_id, hidden } = body;
+
+  // Insert the user message first so buildStreamContext picks it up.
+  await db.insert(agentMessages).values({
+    conversation_id: convoId,
+    role: 'user',
+    content,
+    hidden: hidden || false,
+  });
+
+  // Auto-set agent_employee_id on conversation if provided and not yet set.
+  if (agent_employee_id) {
+    const [existingConv] = await db
+      .select()
+      .from(agentConversations)
+      .where(eq(agentConversations.id, convoId))
+      .limit(1);
+    if (existingConv && !existingConv.agent_employee_id) {
+      await db
+        .update(agentConversations)
+        .set({ agent_employee_id })
+        .where(eq(agentConversations.id, convoId));
+    }
+  }
+
+  // Auto-title on first message.
+  const [convo] = await db
+    .select()
+    .from(agentConversations)
+    .where(eq(agentConversations.id, convoId))
+    .limit(1);
+  if (convo && (!convo.title || convo.title === 'New conversation')) {
+    await db
+      .update(agentConversations)
+      .set({ title: content.slice(0, 60) + (content.length > 60 ? '...' : '') })
+      .where(eq(agentConversations.id, convoId));
+  }
+
+  const ctx = await buildStreamContext(user, convoId);
+  if (ctx._kind === 'error') {
+    return c.json({ error: ctx.error, code: ctx.code }, ctx.status);
+  }
+
+  return streamSSE(c, async (sseStream) => {
+    const abortController = new AbortController();
+    sseStream.onAbort(() => abortController.abort());
     const write = async (data: any) => {
       await sseStream.writeSSE({ data: JSON.stringify(data) });
     };
-
     const keepalive = setInterval(async () => {
       try { await sseStream.writeSSE({ data: JSON.stringify({ type: 'heartbeat' }) }); } catch { /* closed */ }
     }, 10000);
 
     try {
-      // Rehydrate history into Anthropic message format. Rows with content_blocks
-      // use the structured form; legacy rows fall back to plain text. Skip empty rows.
-      const apiMessages: Anthropic.MessageParam[] = [];
-      for (const m of history) {
-        const blocks = (m as any).content_blocks;
-        if (blocks && Array.isArray(blocks) && blocks.length > 0) {
-          apiMessages.push({ role: m.role as 'user' | 'assistant', content: blocks as any });
-        } else if (m.content && m.content.trim().length > 0) {
-          apiMessages.push({ role: m.role as 'user' | 'assistant', content: m.content });
-        }
-      }
-
       const result = await runAgentStreamingLoop({
         convoId,
         userId: user.id,
         orgId: user.org_id,
-        agentEmployeeId,
-        systemPrompt,
-        tools,
-        allActionTools,
-        trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
-        apiMessages,
+        agentEmployeeId: ctx.agentEmployeeId,
+        systemPrompt: ctx.systemPrompt,
+        tools: ctx.tools,
+        allActionTools: ctx.allActionTools,
+        trustLevel: ctx.trustLevel,
+        apiMessages: ctx.apiMessages,
         write,
         abortSignal: abortController.signal,
-        model: reasonConfig.model,
+        model: ctx.model,
       });
-
-      if (result.citations.length > 0) {
-        await write({ type: 'citations', citations: result.citations });
-      }
-      if (result.pendingActions.length > 0) {
-        await write({ type: 'actions', actions: result.pendingActions });
-      }
+      if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
+      if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
       clearInterval(keepalive);
-      await write({
-        type: 'done',
-        model: reasonConfig.model,
-        tokens_in: result.totalTokensIn,
-        tokens_out: result.totalTokensOut,
-      });
+      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
       console.error('[agent] Stream error:', errMsg);
-      try {
-        await write({ type: 'error', error: errMsg });
-      } catch { /* closed */ }
+      try { await write({ type: 'error', error: errMsg }); } catch { /* closed */ }
+    }
+  });
+});
+
+// ── Continue endpoint — resumes the agent after an approval ──
+
+agentRoutes.post('/conversations/:id/continue', async (c) => {
+  const user = c.get('user');
+  const convoId = c.req.param('id');
+
+  // Verify conversation ownership.
+  const [convo] = await db
+    .select()
+    .from(agentConversations)
+    .where(and(eq(agentConversations.id, convoId), eq(agentConversations.user_id, user.id)))
+    .limit(1);
+  if (!convo) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+
+  const ctx = await buildStreamContext(user, convoId);
+  if (ctx._kind === 'error') {
+    return c.json({ error: ctx.error, code: ctx.code }, ctx.status);
+  }
+
+  return streamSSE(c, async (sseStream) => {
+    const abortController = new AbortController();
+    sseStream.onAbort(() => abortController.abort());
+    const write = async (data: any) => { await sseStream.writeSSE({ data: JSON.stringify(data) }); };
+    const keepalive = setInterval(async () => {
+      try { await sseStream.writeSSE({ data: JSON.stringify({ type: 'heartbeat' }) }); } catch { /* closed */ }
+    }, 10000);
+
+    try {
+      const result = await runAgentStreamingLoop({
+        convoId,
+        userId: user.id,
+        orgId: user.org_id,
+        agentEmployeeId: ctx.agentEmployeeId,
+        systemPrompt: ctx.systemPrompt,
+        tools: ctx.tools,
+        allActionTools: ctx.allActionTools,
+        trustLevel: ctx.trustLevel,
+        apiMessages: ctx.apiMessages,
+        write,
+        abortSignal: abortController.signal,
+        model: ctx.model,
+      });
+      if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
+      if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
+      clearInterval(keepalive);
+      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
+    } catch (err) {
+      clearInterval(keepalive);
+      const errMsg = err instanceof Error ? err.message : 'Unknown error';
+      try { await write({ type: 'error', error: errMsg }); } catch { /* closed */ }
     }
   });
 });
@@ -547,14 +630,39 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     .set({ approval_status: 'approved', approved_at: new Date() })
     .where(eq(agentActions.id, actionId));
 
-  const result = await executeAction(
+  const execResult = await executeAction(
     actionId,
     action.action,
     action.params as any,
     user.org_id,
     user.id,
   );
-  return c.json({ ...result, executed_at: new Date().toISOString() });
+
+  // Insert a hidden user agent_messages row with a proper tool_result block so
+  // the next streaming turn (via /continue) sees a valid Anthropic tool_use →
+  // tool_result pair. This is what eliminates the "messages repeated over and
+  // over" disclaimers — the model can see its own prior call and its real result.
+  if (action.tool_use_id && action.conversation_id) {
+    const toolResultBlock = {
+      type: 'tool_result' as const,
+      tool_use_id: action.tool_use_id,
+      content: JSON.stringify(
+        execResult.success
+          ? execResult.result
+          : { error: execResult.error || 'Action failed' }
+      ),
+      ...(execResult.success ? {} : { is_error: true }),
+    };
+    await db.insert(agentMessages).values({
+      conversation_id: action.conversation_id,
+      role: 'user',
+      content: '',
+      content_blocks: [toolResultBlock] as any,
+      hidden: true,
+    });
+  }
+
+  return c.json({ ...execResult, executed_at: new Date().toISOString() });
 });
 
 agentRoutes.post('/actions/:id/reject', async (c) => {
