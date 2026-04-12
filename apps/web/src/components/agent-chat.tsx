@@ -823,6 +823,34 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
   );
 }
 
+function GenericParams({ params }: { params: Record<string, any> }) {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  if (entries.length === 0) {
+    return <p style={{ opacity: 0.6 }}>(no parameters)</p>;
+  }
+  return (
+    <div className="space-y-0.5">
+      {entries.map(([k, v]) => {
+        const isUrl = typeof v === 'string' && /^https?:\/\//.test(v);
+        const display =
+          typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : String(v).slice(0, 120);
+        return (
+          <p key={k}>
+            <span style={{ color: 'var(--muted)' }}>{k}:</span>{' '}
+            {isUrl ? (
+              <a href={v} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+                {display}
+              </a>
+            ) : (
+              <span>{display}</span>
+            )}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function ActionCard({ action, onApprove, onReject, onUndo }: {
   action: PendingAction & { status?: string; executed_at?: string };
   onApprove: () => void;
@@ -888,13 +916,19 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
         {displayLabel}
       </p>
       <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
-        {action.params.title && <p>"{action.params.title}"</p>}
-        {action.params.project_name && <p>{action.params.project_name}</p>}
-        {(action.params.priority || action.params.assignee_name) && (
-          <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' · ')}</p>
+        {action.action in labels ? (
+          <>
+            {action.params.title && <p>"{action.params.title}"</p>}
+            {action.params.project_name && <p>{action.params.project_name}</p>}
+            {(action.params.priority || action.params.assignee_name) && (
+              <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' · ')}</p>
+            )}
+            {action.params.content && <p>"{action.params.content.slice(0, 80)}..."</p>}
+            {action.params.space_name && <p>in #{action.params.space_name}</p>}
+          </>
+        ) : (
+          <GenericParams params={action.params} />
         )}
-        {action.params.content && <p>"{action.params.content.slice(0, 80)}..."</p>}
-        {action.params.space_name && <p>in #{action.params.space_name}</p>}
       </div>
       <div className="flex gap-2 mt-2.5">
         <button onClick={onApprove} className="px-3 py-1 rounded-md text-[11px] font-medium text-white"
