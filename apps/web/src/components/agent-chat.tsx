@@ -184,7 +184,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async (content: string, hidden = false) => {
     if (!content.trim() || streaming) return;
 
     setInput('');
@@ -236,11 +236,11 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     abortRef.current = controller;
 
     // Add user message AND assistant placeholder in one atomic update
-    setMessages(prev => [
-      ...prev,
-      { role: 'user', content },
-      { role: 'assistant', content: '', streaming: true, thinking: true },
-    ]);
+    // (hidden sends skip the user message — used for system-level follow-ups like synthesis)
+    setMessages(prev => hidden
+      ? [...prev, { role: 'assistant', content: '', streaming: true, thinking: true }]
+      : [...prev, { role: 'user', content }, { role: 'assistant', content: '', streaming: true, thinking: true }]
+    );
     isUserScrolledUp.current = false;
     setTimeout(scrollToBottom, 50);
 
@@ -408,7 +408,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     }
   };
 
-  const handleApprove = async (actionId: string) => {
+  const handleApprove = async (actionId: string): Promise<{ success: boolean; result: any; error?: string } | null> => {
     // Show "executing" state immediately
     setMessages(prev => prev.map(m => ({
       ...m,
@@ -428,7 +428,9 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
           a.id === actionId ? { ...a, status: result.success ? 'approved' : 'failed', executed_at: result.executed_at } : a
         ),
       })));
+      return result;
     }
+    return null;
   };
 
   const handleReject = async (actionId: string) => {
@@ -605,17 +607,37 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                 {msg.pending_actions && msg.pending_actions.length > 0 && (
                   msg.pending_actions.length === 1 ? (
                     <ActionCard key={msg.pending_actions[0].id} action={msg.pending_actions[0]}
-                      onApprove={() => handleApprove(msg.pending_actions![0].id)}
+                      onApprove={async () => {
+                        const action = msg.pending_actions![0];
+                        const r = await handleApprove(action.id);
+                        if (r) {
+                          const summary = r.error
+                            ? `- ${action.action}: ERROR — ${r.error}`
+                            : `- ${action.action}: ${JSON.stringify(r.result).slice(0, 1000)}`;
+                          await sendMessage(`[System: The approved action has completed. Here is the result:\n${summary}\n\nNow provide the user with your analysis based on this result.]`, true);
+                        }
+                      }}
                       onReject={() => handleReject(msg.pending_actions![0].id)}
                       onUndo={() => handleUndo(msg.pending_actions![0].id)} />
                   ) : (
                     <PlanCard
                       actions={msg.pending_actions}
                       onApproveAll={async () => {
+                        const results: { action: string; result: any; error?: string }[] = [];
                         for (const a of msg.pending_actions!) {
                           if (a.status !== 'rejected' && a.status !== 'approved') {
-                            await handleApprove(a.id);
+                            const r = await handleApprove(a.id);
+                            if (r) results.push({ action: a.action, result: r.result, error: r.error });
                           }
+                        }
+                        // After all actions complete, trigger agent synthesis
+                        if (results.length > 0) {
+                          const summary = results.map(r =>
+                            r.error
+                              ? `- ${r.action}: ERROR — ${r.error}`
+                              : `- ${r.action}: ${JSON.stringify(r.result).slice(0, 1000)}`
+                          ).join('\n');
+                          await sendMessage(`[System: The approved actions have completed. Here are the results:\n${summary}\n\nNow provide the user with your analysis based on these results.]`, true);
                         }
                       }}
                       onRejectAll={() => {
