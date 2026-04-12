@@ -82,12 +82,16 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     const iterText = textBlocks.map((b) => b.text).join('\n\n').trim();
 
     // Persist this assistant iteration with structured content_blocks.
+    // Any iteration that made tool calls is hidden from reload UI — only the
+    // terminal iteration (no tool_use, stop_reason=end_turn) stays visible.
+    // This ensures reload shows exactly one bubble per user question, matching
+    // the live streaming UX where all iteration text flows into one placeholder.
     const [assistantRow] = await db.insert(agentMessages).values({
       conversation_id: p.convoId,
       role: 'assistant',
       content: iterText,
       content_blocks: response.content as any,
-      hidden: toolUseBlocks.length > 0 && !iterText, // intermediate "I'll search" turns with no text stay hidden
+      hidden: toolUseBlocks.length > 0,
       model: p.model,
       tokens_in: response.usage?.input_tokens ?? null,
       tokens_out: response.usage?.output_tokens ?? null,

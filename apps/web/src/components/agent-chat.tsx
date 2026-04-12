@@ -44,6 +44,7 @@ type AgentMessage = {
   citations?: Citation[];
   pending_actions?: (PendingAction & { status?: string; executed_at?: string })[];
   auto_executed?: AutoExecutedAction[];
+  tool_calls?: { tool: string; params: any; result?: any }[];
   streaming?: boolean;
   thinking?: boolean;
   tool_status?: string; // "Searching messages..."
@@ -140,26 +141,39 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     api.get(`/api/agent/conversations/${conversationId}/messages`).then(async (res) => {
       if (res.ok) {
         const data = await res.json();
-        setMessages(data.map((m: any) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          citations: m.citations || [],
-          pending_actions: (m.pending_actions || []).map((a: any) => ({
-            id: a.id,
-            action: a.action,
-            params: a.params,
-            approval_tier: a.approval_tier,
-            status: a.status,
-            result: a.result,
-            executed_at: a.executed_at,
-            error: a.error,
-          })),
-          auto_executed: [],
-          model: m.model,
-          tokens_in: m.tokens_in,
-          tokens_out: m.tokens_out,
-        })));
+        setMessages(data.map((m: any) => {
+          // Extract tool_use blocks from content_blocks (new structured format).
+          // Fallback to legacy m.tool_calls for old rows.
+          let toolCalls: { tool: string; params: any; result?: any }[] = [];
+          if (Array.isArray(m.content_blocks)) {
+            toolCalls = m.content_blocks
+              .filter((b: any) => b && b.type === 'tool_use')
+              .map((b: any) => ({ tool: b.name, params: b.input }));
+          } else if (Array.isArray(m.tool_calls)) {
+            toolCalls = m.tool_calls;
+          }
+          return {
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            citations: m.citations || [],
+            pending_actions: (m.pending_actions || []).map((a: any) => ({
+              id: a.id,
+              action: a.action,
+              params: a.params,
+              approval_tier: a.approval_tier,
+              status: a.status,
+              result: a.result,
+              executed_at: a.executed_at,
+              error: a.error,
+            })),
+            auto_executed: [],
+            tool_calls: toolCalls,
+            model: m.model,
+            tokens_in: m.tokens_in,
+            tokens_out: m.tokens_out,
+          };
+        }));
       }
       setLoading(false);
       // Scroll to top so the user sees their original question first.
@@ -560,7 +574,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
               <div className={`${msg.role === 'user' ? 'max-w-[85%] md:max-w-[70%]' : 'w-full'}`}>
                 {msg.role === 'assistant' && (
                   <p className="text-[12px] font-semibold mb-1"
-                    style={{ color: 'var(--accent)' }}>Deft</p>
+                    style={{ color: 'var(--accent)' }}>{agentName || 'Defty'}</p>
                 )}
                 <div className="px-4 py-3" style={msg.role === 'user' ? {
                   background: 'var(--bg-active)',
@@ -582,6 +596,19 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                           {msg.content || (msg.streaming ? '' : '...')}
                         </ReactMarkdown>
                       </div>
+                      {msg.tool_calls && msg.tool_calls.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2.5">
+                          {msg.tool_calls.map((tc, ti) => (
+                            <button
+                              key={ti}
+                              className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
+                              style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+                            >
+                              💬 {tc.tool}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {msg.thinking && msg.tool_status && (
                         <AgentThinking toolStatus={msg.tool_status} />
                       )}
