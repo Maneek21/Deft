@@ -93,21 +93,24 @@ async function screenshotOnFail(page: Page, name: string): Promise<void> {
 async function testFriendlyToolName(page: Page): Promise<void> {
   console.log('  Test 1/7: friendly tool name in approval card...');
   await newConversation(page);
+  // create_task is always full-review tier for conservative trust level,
+  // so it reliably triggers an approval card regardless of which tool Alex
+  // might otherwise reach for. Prior version used browser_navigate which
+  // was flaky because Alex sometimes picked fetch_url (auto-execute).
+  const TITLE = 'audit-s2-friendly-name-test';
   await sendAndWaitForApprovalCard(
     page,
-    'please navigate my browser to https://example.com to verify the page is reachable',
+    `create a task titled "${TITLE}" in the Deft v1 project with priority p3. do not add any other details.`,
   );
   const mainText = await page.evaluate(() => document.querySelector('main')?.innerText || '');
   assert(
-    !mainText.includes('mcp__playwright-browser__browser_navigate'),
-    `Found raw tool name in main DOM — humanization failed.\nMain innerText tail: ${mainText.slice(-600)}`,
+    !/mcp__[a-z-]+__/.test(mainText),
+    `Found raw mcp__ tool name in main DOM — humanization failed.\nMain innerText tail: ${mainText.slice(-600)}`,
   );
-  const humanizedFound =
-    mainText.includes('Playwright Browser') ||
-    mainText.includes('Browser Navigate');
+  // Native action label "Create task" must appear in the card.
   assert(
-    humanizedFound,
-    `Expected humanized label (Playwright Browser / Browser Navigate) in card, got: ${mainText.slice(-400)}`,
+    mainText.includes('Create task'),
+    `Expected "Create task" label in card, got: ${mainText.slice(-400)}`,
   );
   console.log('    ✓ humanized label shown, raw name hidden');
 }
@@ -117,10 +120,10 @@ async function testParamsVisible(page: Page): Promise<void> {
   // Reuse the state from Test 1 — the approval card is still on screen.
   const mainText = await page.evaluate(() => document.querySelector('main')?.innerText || '');
   assert(
-    mainText.includes('example.com'),
-    `Expected the URL "example.com" to be visible in the approval card, got: ${mainText.slice(-400)}`,
+    mainText.includes('audit-s2-friendly-name-test'),
+    `Expected task title to be visible in the approval card, got: ${mainText.slice(-400)}`,
   );
-  console.log('    ✓ URL param visible in card');
+  console.log('    ✓ task title visible in card');
 }
 
 async function testNoFollowUpsPending(page: Page): Promise<void> {
