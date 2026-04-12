@@ -465,24 +465,27 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const activeConvId = searchParams.get('id');
+  const activeTab = searchParams.get('employee') || 'defty';
 
   // relativeTime imported as formatRelative from @/lib/time
 
-  const loadConversations = () => {
-    api.get('/api/agent/conversations').then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        const filtered = data.filter((c: any) => c.title && c.title !== 'New conversation');
-        setConversations(filtered);
-      }
-    });
-  };
-
   useEffect(() => {
+    const url = activeTab === 'defty'
+      ? '/api/agent/conversations'
+      : `/api/agent/conversations?employee=${activeTab}`;
+    const loadConversations = () => {
+      api.get(url).then(async res => {
+        if (res.ok) {
+          const data = await res.json();
+          const filtered = data.filter((c: any) => c.title && c.title !== 'New conversation');
+          setConversations(filtered);
+        }
+      });
+    };
     loadConversations();
     const interval = setInterval(loadConversations, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeTab]);
 
   useEffect(() => {
     api.get('/api/agent-employees').then(async (res) => {
@@ -506,7 +509,7 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
   return (
     <>
       <div className="px-3 pt-3 pb-1">
-        <Link href="/agent"
+        <Link href={activeTab === 'defty' ? '/agent' : `/agent?employee=${activeTab}`}
           onClick={onNav}
           className="w-full flex items-center gap-2 px-2 font-medium"
           style={{
