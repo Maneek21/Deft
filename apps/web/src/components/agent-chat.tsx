@@ -5,6 +5,9 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useRouter } from 'next/navigation';
 import { Send, Square, Loader2, ExternalLink } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -59,38 +62,6 @@ type Props = {
   agentName?: string;
 };
 
-function renderAgentMarkdown(text: string): string {
-  if (!text) return '';
-  let html = text
-    // Code blocks
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Bold
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    // Italic
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    // Headers (## Header)
-    .replace(/^### (.+)$/gm, '<h3 style="font-size:15px;font-weight:600;margin:12px 0 4px">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 style="font-size:16px;font-weight:600;margin:14px 0 6px">$1</h2>')
-    // Unordered lists
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    // Ordered lists
-    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-    // Wrap consecutive <li> in <ul>
-    .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul style="list-style:disc;padding-left:20px;margin:4px 0">$1</ul>')
-    // Blockquotes
-    .replace(/^> (.+)$/gm, '<blockquote style="border-left:3px solid var(--accent);padding-left:12px;margin:6px 0;color:var(--foreground-secondary)">$1</blockquote>')
-    // Paragraphs — convert double newlines
-    .replace(/\n\n/g, '</p><p>')
-    // Single newlines within paragraphs
-    .replace(/\n/g, '<br/>');
-
-  // Wrap in paragraph
-  if (!html.startsWith('<')) html = '<p>' + html + '</p>';
-
-  return html;
-}
 
 function getFollowUpSuggestions(content: string, citations: Citation[]): string[] {
   const hasTasks = citations.some(c => c.type === 'task');
@@ -603,8 +574,14 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                     <AgentThinking toolStatus={msg.tool_status} />
                   ) : msg.role === 'assistant' ? (
                     <>
-                      <div className="message-content text-[13px] leading-relaxed"
-                        dangerouslySetInnerHTML={{ __html: renderAgentMarkdown(msg.content || (msg.streaming ? '' : '...')) }} />
+                      <div className="message-content text-[13px] leading-relaxed">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          rehypePlugins={[[rehypeSanitize, defaultSchema]]}
+                        >
+                          {msg.content || (msg.streaming ? '' : '...')}
+                        </ReactMarkdown>
+                      </div>
                       {msg.thinking && msg.tool_status && (
                         <AgentThinking toolStatus={msg.tool_status} />
                       )}
