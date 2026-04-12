@@ -256,7 +256,8 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
   }
 
-  // MCP tools
+  // MCP tools — discover from active connections and auto-classify tiers.
+  const mcpToolsBySlug = new Map<string, { originalName: string; tier: string }[]>();
   try {
     const mcpTools = await getMCPToolsForAgent(org?.id ?? user.org_id, agentEmployeeId);
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
@@ -265,6 +266,10 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
       if (t.approvalTierMapped !== 'auto') {
         allActionTools.add(t.name);
       }
+      const slug = t.connectionSlug;
+      const existing = mcpToolsBySlug.get(slug) || [];
+      existing.push({ originalName: t.originalName, tier: t.approvalTierMapped });
+      mcpToolsBySlug.set(slug, existing);
     });
   } catch (err) {
     console.warn('[agent] Failed to load MCP tools:', err instanceof Error ? err.message : err);
@@ -364,7 +369,8 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   let systemPrompt = SYSTEM_PROMPT.replace(
     '{{DATE}}',
     new Date().toISOString().split('T')[0]!,
-  ).replace('{{ORG}}', org?.name || 'Unknown') + connectionInfo + memoryContext;
+  ).replace('{{ORG}}', org?.name || 'Unknown');
+  let wikiSection = '';
 
   // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
   try {
@@ -416,15 +422,40 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
         const wikiContext = allRelevantPages.map(p =>
           `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
         ).join('\n');
-        systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
+        wikiSection = `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
       }
     }
   } catch (err) {
     console.warn('[agent] Wiki auto-load failed:', (err as Error).message);
   }
 
+  // Build the MCP capabilities section so the agent knows what external tools
+  // it has. Without this, employees with a narrow stored system prompt
+  // (e.g. "project manager") will refuse to use browser tools as "outside scope".
+  let mcpCapabilitiesSection = '';
+  if (mcpToolsBySlug.size > 0) {
+    const lines: string[] = ['\n\n## Your Connected MCP Capabilities'];
+    for (const [slug, toolList] of mcpToolsBySlug.entries()) {
+      lines.push(`\n**${slug}** — ${toolList.length} tools available:`);
+      const byTier: Record<string, string[]> = { auto: [], quick: [], full: [] };
+      for (const t of toolList) byTier[t.tier]?.push(t.originalName);
+      if (byTier.auto!.length) lines.push(`  - instant (no approval needed): ${byTier.auto!.join(', ')}`);
+      if (byTier.quick!.length) lines.push(`  - quick-approve: ${byTier.quick!.join(', ')}`);
+      if (byTier.full!.length)  lines.push(`  - full-review (ask first): ${byTier.full!.join(', ')}`);
+    }
+    lines.push(
+      '\nUse these tools whenever the user asks for something that matches their purpose.',
+      'Do NOT disclaim that the task is "outside your scope" — if the tool is listed here, it IS in scope.',
+      'Do NOT narrate approval flow to the user — the UI already shows an approve/reject card.',
+      'When a tool requires approval, call it once and stop; wait for the result to come back.',
+    );
+    mcpCapabilitiesSection = lines.join('\n');
+  }
+
   if (employeePrompt) {
-    systemPrompt = employeePrompt;
+    systemPrompt = employeePrompt + connectionInfo + memoryContext + wikiSection + mcpCapabilitiesSection;
+  } else {
+    systemPrompt = systemPrompt + connectionInfo + memoryContext + wikiSection + mcpCapabilitiesSection;
   }
 
   const reasonConfig = getModelConfig('reason');
