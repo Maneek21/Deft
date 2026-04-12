@@ -8,6 +8,76 @@ import type {
   MCPResult,
 } from "./types.js";
 
+/**
+ * Classify an MCP tool into an approval tier based on protocol annotations
+ * and a name-based fallback. Returns isWrite and approvalTier.
+ *
+ * Precedence (highest to lowest):
+ *   1. annotations.destructiveHint === true → full-review, isWrite=true
+ *   2. annotations.readOnlyHint === true    → auto-execute, isWrite=false
+ *   3. Name heuristics (browser_*, filesystem_*, git_*, ...)
+ *   4. Default: full-review, isWrite=false (conservative)
+ */
+function classifyTool(
+  name: string,
+  annotations: Record<string, unknown> | null
+): { approvalTier: MCPTool["approvalTier"]; isWrite: boolean } {
+  if (annotations) {
+    if (annotations.destructiveHint === true) {
+      return { approvalTier: "full-review", isWrite: true };
+    }
+    if (annotations.readOnlyHint === true) {
+      return { approvalTier: "auto-execute", isWrite: false };
+    }
+  }
+
+  // browser_* (Playwright): reads auto, state changes quick, code-exec/file-upload full.
+  if (name.startsWith("browser_")) {
+    const READ_ONLY_BROWSER = new Set([
+      "browser_snapshot",
+      "browser_take_screenshot",
+      "browser_console_messages",
+      "browser_network_requests",
+      "browser_tabs",
+      "browser_wait_for",
+    ]);
+    if (READ_ONLY_BROWSER.has(name)) {
+      return { approvalTier: "auto-execute", isWrite: false };
+    }
+
+    const DESTRUCTIVE_BROWSER = new Set([
+      "browser_run_code",
+      "browser_evaluate",
+      "browser_file_upload",
+      "browser_close",
+      "browser_handle_dialog",
+    ]);
+    if (DESTRUCTIVE_BROWSER.has(name)) {
+      return { approvalTier: "full-review", isWrite: true };
+    }
+
+    return { approvalTier: "quick-approve", isWrite: false };
+  }
+
+  // filesystem_*
+  if (name.startsWith("filesystem_read") || name === "filesystem_list") {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+  if (name.startsWith("filesystem_")) {
+    return { approvalTier: "full-review", isWrite: true };
+  }
+
+  // git_*
+  if (name === "git_log" || name === "git_diff" || name === "git_show" || name === "git_status") {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+  if (name.startsWith("git_")) {
+    return { approvalTier: "full-review", isWrite: true };
+  }
+
+  return { approvalTier: "full-review", isWrite: false };
+}
+
 interface PoolEntry {
   client: Client;
   config: MCPConnectionConfig;
@@ -289,11 +359,14 @@ export class MCPClientManager {
   // --- Private helpers ---
 
   private mapTool(
-    tool: { name: string; description?: string; inputSchema?: unknown },
+    tool: { name: string; description?: string; inputSchema?: unknown; annotations?: unknown },
     config: MCPConnectionConfig,
     overrides: MCPToolOverride[]
   ): MCPTool {
     const override = overrides.find((o) => o.toolName === tool.name);
+    const annotations = (tool as { annotations?: Record<string, unknown> }).annotations ?? null;
+
+    const classified = classifyTool(tool.name, annotations);
 
     return {
       name: `mcp__${config.connectionSlug}__${tool.name}`,
@@ -302,8 +375,9 @@ export class MCPClientManager {
       inputSchema: (tool.inputSchema as Record<string, unknown>) ?? {},
       connectionId: config.connectionId,
       connectionSlug: config.connectionSlug,
-      isWrite: override?.isWrite ?? false,
-      approvalTier: override?.approvalTier ?? "full-review",
+      isWrite: override?.isWrite ?? classified.isWrite,
+      approvalTier: override?.approvalTier ?? classified.approvalTier,
+      annotations,
     };
   }
 

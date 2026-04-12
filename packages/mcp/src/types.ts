@@ -44,6 +44,12 @@ export interface MCPTool {
   isWrite: boolean;
   /** Approval tier for the agent's three-tier approval system */
   approvalTier: "auto-execute" | "quick-approve" | "full-review";
+  /**
+   * Raw MCP tool annotations from the protocol, if the server provided them.
+   * { readOnlyHint?, destructiveHint?, idempotentHint?, openWorldHint?, title? }
+   * See https://modelcontextprotocol.io/specification/server/tools
+   */
+  annotations?: Record<string, unknown> | null;
 }
 
 /**
