@@ -143,13 +143,16 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         const data = await res.json();
         setMessages(data.map((m: any) => {
           // Extract tool_use blocks from content_blocks (new structured format).
-          // Fallback to legacy m.tool_calls for old rows.
+          // If none are present (terminal iteration has only text blocks), fall
+          // through to the legacy tool_calls column — the server aggregates
+          // cumulative tool calls from hidden iterations onto the terminal row.
           let toolCalls: { tool: string; params: any; result?: any }[] = [];
           if (Array.isArray(m.content_blocks)) {
             toolCalls = m.content_blocks
               .filter((b: any) => b && b.type === 'tool_use')
               .map((b: any) => ({ tool: b.name, params: b.input }));
-          } else if (Array.isArray(m.tool_calls)) {
+          }
+          if (toolCalls.length === 0 && Array.isArray(m.tool_calls)) {
             toolCalls = m.tool_calls;
           }
           return {

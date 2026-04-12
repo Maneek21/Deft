@@ -51,6 +51,10 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
   let finalText = '';
   const allCitations: any[] = [];
   const pendingActions: { id: string; action: string; params: any }[] = [];
+  // Accumulated across iterations; written to the terminal assistant row's
+  // tool_calls column so history reload can render badges on the one visible
+  // bubble (all intermediate tool-calling iterations are hidden).
+  const cumulativeToolCalls: { tool: string; params: any }[] = [];
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let iterations = 0;
@@ -81,17 +85,30 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
 
     const iterText = textBlocks.map((b) => b.text).join('\n\n').trim();
 
+    // Collect tool_use blocks from this iteration into the cumulative list.
+    for (const tu of toolUseBlocks) {
+      cumulativeToolCalls.push({ tool: tu.name, params: tu.input });
+    }
+
     // Persist this assistant iteration with structured content_blocks.
     // Any iteration that made tool calls is hidden from reload UI — only the
     // terminal iteration (no tool_use, stop_reason=end_turn) stays visible.
     // This ensures reload shows exactly one bubble per user question, matching
     // the live streaming UX where all iteration text flows into one placeholder.
+    //
+    // The terminal (visible) row gets the accumulated tool_calls in its
+    // legacy tool_calls column so history reload can render tool badges —
+    // by definition the terminal row's content_blocks has only text blocks.
+    const isTerminalIteration = toolUseBlocks.length === 0;
     const [assistantRow] = await db.insert(agentMessages).values({
       conversation_id: p.convoId,
       role: 'assistant',
       content: iterText,
       content_blocks: response.content as any,
       hidden: toolUseBlocks.length > 0,
+      tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
+        ? (cumulativeToolCalls as any)
+        : null,
       model: p.model,
       tokens_in: response.usage?.input_tokens ?? null,
       tokens_out: response.usage?.output_tokens ?? null,
