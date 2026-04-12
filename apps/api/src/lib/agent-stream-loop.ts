@@ -100,6 +100,10 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     // legacy tool_calls column so history reload can render tool badges —
     // by definition the terminal row's content_blocks has only text blocks.
     const isTerminalIteration = toolUseBlocks.length === 0;
+    // totalTokensIn / totalTokensOut already include this iteration's usage
+    // (accumulated at line 74 above after response.usage is read). The terminal
+    // row gets the cumulative running sum so history reload can show the full
+    // cost of a multi-iter response, not just the final API call's tokens.
     const [assistantRow] = await db.insert(agentMessages).values({
       conversation_id: p.convoId,
       role: 'assistant',
@@ -110,8 +114,8 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
         ? (cumulativeToolCalls as any)
         : null,
       model: p.model,
-      tokens_in: response.usage?.input_tokens ?? null,
-      tokens_out: response.usage?.output_tokens ?? null,
+      tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
+      tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
     }).returning();
 
     // Stream this iteration's text word-by-word for typing effect.
