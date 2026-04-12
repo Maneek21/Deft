@@ -86,6 +86,18 @@ agentRoutes.post('/conversations', async (c) => {
   return c.json(convo, 201);
 });
 
+agentRoutes.get('/conversations/:id', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const [conv] = await db
+    .select()
+    .from(agentConversations)
+    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
+    .limit(1);
+  if (!conv) return c.json({ error: 'Not found' }, 404);
+  return c.json(conv);
+});
+
 agentRoutes.patch('/conversations/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');

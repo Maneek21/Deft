@@ -15,21 +15,26 @@ const SUGGESTIONS = [
   "What's overdue?",
 ];
 
-type Conversation = { id: string; title: string | null; updated_at: string };
+type Conversation = { id: string; title: string | null; updated_at: string; agent_employee_id?: string | null };
 type AgentEmployee = { id: string; name: string; role: string; avatar_url: string | null; is_active: boolean };
 
 function MobileConversationPanel({
   onClose,
   activeId,
+  activeTab,
 }: {
   onClose: () => void;
   activeId: string | null;
+  activeTab: string;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const router = useRouter();
 
   useEffect(() => {
-    api.get('/api/agent/conversations').then(async res => {
+    const url = activeTab === 'defty'
+      ? '/api/agent/conversations'
+      : `/api/agent/conversations?employee=${activeTab}`;
+    api.get(url).then(async res => {
       if (res.ok) {
         const data = await res.json();
         setConversations(
@@ -37,7 +42,7 @@ function MobileConversationPanel({
         );
       }
     });
-  }, []);
+  }, [activeTab]);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -77,7 +82,7 @@ function MobileConversationPanel({
       {/* New conversation */}
       <div className="px-3 py-2">
         <Link
-          href="/agent"
+          href={activeTab === 'defty' ? '/agent' : `/agent?employee=${activeTab}`}
           onClick={handleNav}
           className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-[0.8125rem] font-medium w-full"
           style={{ color: 'var(--foreground-secondary)', background: 'var(--surface-hover)' }}
@@ -99,7 +104,9 @@ function MobileConversationPanel({
           return (
             <Link
               key={conv.id}
-              href={`/agent?id=${conv.id}`}
+              href={conv.agent_employee_id
+                ? `/agent?id=${conv.id}&employee=${conv.agent_employee_id}`
+                : `/agent?id=${conv.id}`}
               onClick={handleNav}
               className="flex items-center justify-between gap-2 px-2 py-2 rounded-lg text-[0.8125rem] group"
               style={{
@@ -161,6 +168,30 @@ export default function AgentPage() {
       setLocalConvId(null);
       setPendingPrompt(null);
     }
+  }, [activeId]);
+
+  // When a specific conversation is loaded, preserve its agent context by
+  // aligning the active tab with the conversation's agent_employee_id.
+  useEffect(() => {
+    if (!activeId) return;
+    api.get(`/api/agent/conversations/${activeId}`).then(async (res) => {
+      if (res.ok) {
+        const conv = await res.json();
+        const newTab = conv.agent_employee_id || 'defty';
+        if (newTab !== activeTab) {
+          setActiveTab(newTab);
+          // Update URL to include employee param so refreshes keep the tab
+          if (conv.agent_employee_id) {
+            window.history.replaceState(
+              null,
+              '',
+              `/agent?id=${activeId}&employee=${conv.agent_employee_id}`,
+            );
+          }
+        }
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   // Close mobile panel on navigation
@@ -260,7 +291,9 @@ export default function AgentPage() {
         <div className="flex-1 overflow-hidden">
           <AgentChat
             key={activeEmployee.id}
+            conversationId={activeId || undefined}
             agentEmployeeId={activeEmployee.id}
+            agentName={activeEmployee.name}
           />
         </div>
       </div>
@@ -296,6 +329,7 @@ export default function AgentPage() {
           <MobileConversationPanel
             onClose={() => setShowMobileConversations(false)}
             activeId={effectiveId}
+            activeTab={activeTab}
           />
         )}
         <div className="flex-1 overflow-hidden">
@@ -320,6 +354,7 @@ export default function AgentPage() {
           <MobileConversationPanel
             onClose={() => setShowMobileConversations(false)}
             activeId={null}
+            activeTab={activeTab}
           />
         )}
         <div className="flex-1 overflow-hidden">
@@ -341,6 +376,7 @@ export default function AgentPage() {
         <MobileConversationPanel
           onClose={() => setShowMobileConversations(false)}
           activeId={null}
+          activeTab={activeTab}
         />
       )}
 
