@@ -88,13 +88,26 @@ function classifyTool(
     return { approvalTier: "auto-execute", isWrite: false };
   }
 
-  // Time / clock tools — pure reads.
-  if (name === "get_current_time" || name === "convert_time" || name.startsWith("time_")) {
+  // Time / clock tools — pure reads. Covers the official Python server
+  // (get_current_time, convert_time) and yokingma/time-mcp
+  // (current_time, relative_time, days_in_month, get_timestamp, get_week_year).
+  const TIME_TOOL_NAMES = new Set([
+    "get_current_time",
+    "convert_time",
+    "current_time",
+    "relative_time",
+    "days_in_month",
+    "get_timestamp",
+    "get_week_year",
+  ]);
+  if (TIME_TOOL_NAMES.has(name) || name.startsWith("time_")) {
     return { approvalTier: "auto-execute", isWrite: false };
   }
 
-  // Simple HTTP fetch — read-only URL grab.
-  if (name === "fetch" || name === "http_get") {
+  // Simple HTTP fetch — read-only URL grab. Covers the official Python fetch
+  // server (`fetch`), plain `http_get`, and fetch-mcp (`fetch_url`,
+  // `fetch_youtube_transcript`, etc — any name starting with `fetch_`).
+  if (name === "fetch" || name === "http_get" || /^fetch[_-]/.test(name)) {
     return { approvalTier: "auto-execute", isWrite: false };
   }
 
