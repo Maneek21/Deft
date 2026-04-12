@@ -207,6 +207,129 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  const streamAgentResponse = async (
+    res: Response,
+    assistantPlaceholderIdx: number,
+  ): Promise<void> => {
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+    const decoder = new TextDecoder();
+    let agentText = '';
+    let citations: Citation[] = [];
+    let pendingActions: PendingAction[] = [];
+    let autoExecutedActions: AutoExecutedAction[] = [];
+    let buffer = '';
+    let doneModel: string | undefined;
+    let doneTokensIn: number | undefined;
+    let doneTokensOut: number | undefined;
+
+    let streamDone = false;
+
+    while (!streamDone) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        try {
+          const data = JSON.parse(payload);
+
+          switch (data.type) {
+            case 'heartbeat':
+              // Keepalive from server — ignore
+              break;
+            case 'text': {
+              agentText += data.text;
+              const snap = agentText;
+              setMessages(prev => {
+                const updated = [...prev];
+                const msg = updated[assistantPlaceholderIdx];
+                if (msg && msg.role === 'assistant') {
+                  updated[assistantPlaceholderIdx] = { ...msg, content: snap, thinking: false, streaming: true, tool_status: undefined };
+                }
+                return updated;
+              });
+              scrollToBottom();
+              break;
+            }
+            case 'tool_start': {
+              const toolLabel = data.tool.replace(/_/g, ' ').replace(/^(search|get|find|check)/, (m: string) => {
+                const labels: Record<string, string> = { search: 'Searching', get: 'Checking', find: 'Looking up', check: 'Checking' };
+                return labels[m] || m;
+              });
+              setMessages(prev => {
+                const updated = [...prev];
+                const msg = updated[assistantPlaceholderIdx];
+                if (msg && msg.role === 'assistant') {
+                  updated[assistantPlaceholderIdx] = { ...msg, tool_status: toolLabel + '...', thinking: true };
+                }
+                return updated;
+              });
+              break;
+            }
+            case 'tool_result':
+              // Don't clear tool_status — keep showing until next tool or text arrives
+              break;
+            case 'citations':
+              citations = data.citations;
+              break;
+            case 'pending_action':
+              pendingActions.push(data);
+              break;
+            case 'action_auto_executed':
+              autoExecutedActions.push({
+                id: data.id,
+                action: data.action,
+                params: data.params,
+                success: data.success,
+                result: data.result,
+                error: data.error,
+              });
+              break;
+            case 'error':
+              agentText += `\n\n*Error: ${data.error}*`;
+              break;
+            case 'done':
+              doneModel = data.model;
+              doneTokensIn = data.tokens_in;
+              doneTokensOut = data.tokens_out;
+              streamDone = true; // exit the read loop
+              break;
+          }
+        } catch {}
+      }
+    }
+
+    // If stream ended with no content, show error
+    if (!agentText.trim()) {
+      agentText = 'Failed to get a response. Please try again.';
+    }
+
+    // Finalize agent message
+    const followUps = getFollowUpSuggestions(agentText, citations);
+    setMessages(prev => {
+      const updated = [...prev];
+      const msg = updated[assistantPlaceholderIdx];
+      if (msg && msg.role === 'assistant') {
+        updated[assistantPlaceholderIdx] = {
+          ...msg, content: agentText, streaming: false,
+          citations, pending_actions: pendingActions, auto_executed: autoExecutedActions, tool_status: undefined,
+          follow_ups: followUps,
+          model: doneModel,
+          tokens_in: doneTokensIn,
+          tokens_out: doneTokensOut,
+        };
+      }
+      return updated;
+    });
+  };
+
   const sendMessage = async (content: string, hidden = false) => {
     if (!content.trim() || streaming) return;
 
@@ -264,10 +387,14 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
 
     // Add user message AND assistant placeholder in one atomic update
     // (hidden sends skip the user message — used for system-level follow-ups like synthesis)
-    setMessages(prev => hidden
-      ? [...prev, { role: 'assistant', content: '', streaming: true, thinking: true }]
-      : [...prev, { role: 'user', content }, { role: 'assistant', content: '', streaming: true, thinking: true }]
-    );
+    let assistantPlaceholderIdx = 0;
+    setMessages(prev => {
+      const newMessages = hidden
+        ? [...prev, { role: 'assistant' as const, content: '', streaming: true, thinking: true }]
+        : [...prev, { role: 'user' as const, content }, { role: 'assistant' as const, content: '', streaming: true, thinking: true }];
+      assistantPlaceholderIdx = newMessages.length - 1;
+      return newMessages;
+    });
     isUserScrolledUp.current = false;
     setTimeout(scrollToBottom, 50);
 
@@ -295,139 +422,20 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         throw new Error(data.error || 'Failed to get response');
       }
 
-      // Parse SSE stream
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-      const decoder = new TextDecoder();
-      let agentText = '';
-      let citations: Citation[] = [];
-      let pendingActions: PendingAction[] = [];
-      let autoExecutedActions: AutoExecutedAction[] = [];
-      let buffer = '';
-      let doneModel: string | undefined;
-      let doneTokensIn: number | undefined;
-      let doneTokensOut: number | undefined;
-      let lastDataTime = Date.now();
-
-      let streamDone = false;
-
-      while (!streamDone) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        lastDataTime = Date.now();
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // keep incomplete line
-
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload) continue;
-          try {
-            const data = JSON.parse(payload);
-
-            switch (data.type) {
-              case 'heartbeat':
-                // Keepalive from server — ignore
-                break;
-              case 'text': {
-                agentText += data.text;
-                const snap = agentText;
-                setMessages(prev => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last && last.role === 'assistant') {
-                    updated[updated.length - 1] = { ...last, content: snap, thinking: false, streaming: true, tool_status: undefined };
-                  }
-                  return updated;
-                });
-                scrollToBottom();
-                break;
-              }
-              case 'tool_start': {
-                const toolLabel = data.tool.replace(/_/g, ' ').replace(/^(search|get|find|check)/, (m: string) => {
-                  const labels: Record<string, string> = { search: 'Searching', get: 'Checking', find: 'Looking up', check: 'Checking' };
-                  return labels[m] || m;
-                });
-                setMessages(prev => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last && last.role === 'assistant') {
-                    updated[updated.length - 1] = { ...last, tool_status: toolLabel + '...', thinking: true };
-                  }
-                  return updated;
-                });
-                break;
-              }
-              case 'tool_result':
-                // Don't clear tool_status — keep showing until next tool or text arrives
-                break;
-              case 'citations':
-                citations = data.citations;
-                break;
-              case 'pending_action':
-                pendingActions.push(data);
-                break;
-              case 'action_auto_executed':
-                autoExecutedActions.push({
-                  id: data.id,
-                  action: data.action,
-                  params: data.params,
-                  success: data.success,
-                  result: data.result,
-                  error: data.error,
-                });
-                break;
-              case 'error':
-                agentText += `\n\n*Error: ${data.error}*`;
-                break;
-              case 'done':
-                doneModel = data.model;
-                doneTokensIn = data.tokens_in;
-                doneTokensOut = data.tokens_out;
-                streamDone = true; // exit the read loop
-                break;
-            }
-          } catch {}
-        }
-      }
-
-      // If stream ended with no content, show error
-      if (!agentText.trim()) {
-        agentText = 'Failed to get a response. Please try again.';
-      }
-
-      // Finalize agent message
-      const followUps = getFollowUpSuggestions(agentText, citations);
-      setMessages(prev => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last && last.role === 'assistant') {
-          updated[updated.length - 1] = {
-            ...last, content: agentText, streaming: false,
-            citations, pending_actions: pendingActions, auto_executed: autoExecutedActions, tool_status: undefined,
-            follow_ups: followUps,
-            model: doneModel,
-            tokens_in: doneTokensIn,
-            tokens_out: doneTokensOut,
-          };
-        }
-        return updated;
-      });
+      await streamAgentResponse(res, assistantPlaceholderIdx);
     } catch (err: any) {
       if (err.name === 'AbortError') {
         setMessages(prev => {
           const updated = [...prev];
-          const last = updated[updated.length - 1];
-          if (last) updated[updated.length - 1] = { ...last, streaming: false, content: last.content + '\n\n*(stopped)*' };
+          const msg = updated[assistantPlaceholderIdx];
+          if (msg) updated[assistantPlaceholderIdx] = { ...msg, streaming: false, content: msg.content + '\n\n*(stopped)*' };
           return updated;
         });
       } else {
         setMessages(prev => {
           const updated = [...prev];
-          const last = updated[updated.length - 1];
-          if (last) updated[updated.length - 1] = { ...last, streaming: false, content: `Error: ${err.message}` };
+          const msg = updated[assistantPlaceholderIdx];
+          if (msg) updated[assistantPlaceholderIdx] = { ...msg, streaming: false, content: `Error: ${err.message}` };
           return updated;
         });
       }
@@ -436,6 +444,48 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       streamingRef.current = false;
       abortRef.current = null;
       scrollToBottom();
+    }
+  };
+
+  const continueAfterAction = async (convId: string): Promise<void> => {
+    if (streaming) return;
+    setStreaming(true);
+    streamingRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // Append an assistant placeholder that the stream will fill in.
+    let assistantPlaceholderIdx = 0;
+    setMessages(prev => {
+      const next = [...prev, { role: 'assistant' as const, content: '', streaming: true, thinking: true }];
+      assistantPlaceholderIdx = next.length - 1;
+      return next;
+    });
+    isUserScrolledUp.current = false;
+    setTimeout(scrollToBottom, 50);
+
+    try {
+      const token = localStorage.getItem('deft-access-token');
+      const res = await fetch(`${API_URL}/api/agent/conversations/${convId}/continue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({}),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Continue failed');
+      }
+
+      await streamAgentResponse(res, assistantPlaceholderIdx);
+    } catch (err) {
+      setMessages(prev => prev.map((m, i) => i === assistantPlaceholderIdx
+        ? { ...m, content: `Failed to continue: ${err instanceof Error ? err.message : 'Unknown error'}`, streaming: false, thinking: false }
+        : m));
+    } finally {
+      setStreaming(false);
+      streamingRef.current = false;
     }
   };
 
@@ -642,10 +692,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                         const action = msg.pending_actions![0];
                         const r = await handleApprove(action.id);
                         if (r) {
-                          const summary = r.error
-                            ? `- ${action.action}: ERROR — ${r.error}`
-                            : `- ${action.action}: ${JSON.stringify(r.result).slice(0, 1000)}`;
-                          await sendMessage(`[System: The approved action has completed. Here is the result:\n${summary}\n\nNow provide the user with your analysis based on this result.]`, true);
+                          if (activeConversationId) await continueAfterAction(activeConversationId);
                         }
                       }}
                       onReject={() => handleReject(msg.pending_actions![0].id)}
@@ -661,14 +708,9 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                             if (r) results.push({ action: a.action, result: r.result, error: r.error });
                           }
                         }
-                        // After all actions complete, trigger agent synthesis
+                        // After all actions complete, trigger agent continuation
                         if (results.length > 0) {
-                          const summary = results.map(r =>
-                            r.error
-                              ? `- ${r.action}: ERROR — ${r.error}`
-                              : `- ${r.action}: ${JSON.stringify(r.result).slice(0, 1000)}`
-                          ).join('\n');
-                          await sendMessage(`[System: The approved actions have completed. Here are the results:\n${summary}\n\nNow provide the user with your analysis based on these results.]`, true);
+                          if (activeConversationId) await continueAfterAction(activeConversationId);
                         }
                       }}
                       onRejectAll={() => {
