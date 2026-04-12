@@ -147,6 +147,14 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
   // Load conversation messages — skip if we're already streaming (lazy-created conversation)
   useEffect(() => {
     if (!conversationId) {
+      // Transitioning to "new conversation" — clear stale state so the empty
+      // view renders and the next sendMessage lazy-creates a fresh conversation.
+      // Don't clobber state while a stream is mid-flight (lazy-create in progress).
+      if (!streamingRef.current) {
+        setMessages([]);
+        setActiveConversationId(undefined);
+        initialPromptSent.current = false;
+      }
       setLoading(false);
       return;
     }
