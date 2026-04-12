@@ -71,6 +71,43 @@ function classifyTool(
     return { approvalTier: "full-review", isWrite: true };
   }
 
+  // Search MCPs — read-only lookups that should never gate the agent.
+  // Matches tavily-search, tavily-extract, tavily-crawl, tavily_search, etc.
+  // Also covers brave_web_search / brave_news / brave_image / brave_video,
+  // exa_search / exa_contents / exa_find_similar, perplexity_ask, and the
+  // common `web_search` / `search` aliases community servers expose.
+  const SEARCH_PATTERNS = [
+    /^tavily[-_]/,
+    /^brave[-_]/,
+    /^exa[-_]/,
+    /^perplexity[-_]/,
+    /^web[-_]search$/,
+    /^search$/,
+  ];
+  if (SEARCH_PATTERNS.some((rx) => rx.test(name))) {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+
+  // Time / clock tools — pure reads.
+  if (name === "get_current_time" || name === "convert_time" || name.startsWith("time_")) {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+
+  // Simple HTTP fetch — read-only URL grab.
+  if (name === "fetch" || name === "http_get") {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+
+  // Sequential thinking — pure reasoning, no side effects.
+  if (name === "sequentialthinking" || name === "sequential_thinking") {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+
+  // Context7 / library docs lookup — read-only.
+  if (name === "resolve-library-id" || name === "get-library-docs" || name === "query-docs") {
+    return { approvalTier: "auto-execute", isWrite: false };
+  }
+
   // Annotation-based fallback for unknown tool families.
   if (annotations) {
     if (annotations.destructiveHint === true) {
