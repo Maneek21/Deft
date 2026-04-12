@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { formatToolLabel, humanizeToolName } from '@/lib/tool-display';
 import { useRouter } from 'next/navigation';
 import { Send, Square, Loader2, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -15,6 +16,12 @@ type Citation = { type: string; id: string; title: string };
 type PendingAction = { id: string; action: string; params: Record<string, any> };
 
 function AgentThinking({ toolStatus }: { toolStatus?: string }) {
+  // toolStatus may arrive as a raw SSE tool name ("mcp__tavily-search__tavily_search")
+  // or as a human string ("Searching messages..."). If it looks like an mcp name or a
+  // snake_case tool, humanize it via formatToolLabel. Otherwise pass through.
+  const display = toolStatus
+    ? (/^(mcp__|[a-z_]+$)/.test(toolStatus) ? formatToolLabel(toolStatus) : toolStatus)
+    : 'Thinking...';
   return (
     <div className="flex items-center gap-2.5 py-0.5">
       <div className="relative w-4 h-4 flex-shrink-0">
@@ -22,7 +29,7 @@ function AgentThinking({ toolStatus }: { toolStatus?: string }) {
           style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
       </div>
       <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
-        {toolStatus || 'Thinking...'}
+        {display}
       </span>
     </div>
   );
@@ -607,7 +614,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                               className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
                               style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
                             >
-                              💬 {tc.tool}
+                              💬 {formatToolLabel(tc.tool)}
                             </button>
                           ))}
                         </div>
@@ -828,6 +835,8 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
     assign_task: 'Assign task',
     post_message: 'Post message',
   };
+  const humanized = humanizeToolName(action.action);
+  const displayLabel = labels[action.action] ?? humanized.full;
 
   if (action.status === 'executing') {
     return (
@@ -837,7 +846,7 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
           <div className="absolute w-4 h-4 rounded-full border-2 border-t-transparent animate-spin"
             style={{ borderColor: 'var(--primary)', borderTopColor: 'transparent' }} />
         </div>
-        <span className="font-medium">Executing {labels[action.action]?.toLowerCase()}...</span>
+        <span className="font-medium">Executing {displayLabel.toLowerCase()}...</span>
       </div>
     );
   }
@@ -846,7 +855,7 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
     return (
       <div className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2"
         style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}>
-        <span>{'\u2713'} {labels[action.action]} — done</span>
+        <span>{'\u2713'} {displayLabel} — done</span>
         {canUndo && onUndo && (
           <button onClick={onUndo} className="text-[11px] underline ml-2" style={{ color: 'var(--muted)' }}>
             Undo
@@ -859,7 +868,7 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
     return (
       <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
-        {'\u21A9'} {labels[action.action]} — undone
+        {'\u21A9'} {displayLabel} — undone
       </div>
     );
   }
@@ -867,7 +876,7 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
     return (
       <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
-        ✗ {labels[action.action]} — rejected
+        ✗ {displayLabel} — rejected
       </div>
     );
   }
@@ -876,7 +885,7 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
     <div className="p-3 mt-2 max-w-[380px] w-full"
       style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}>
       <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
-        {labels[action.action] || action.action}
+        {displayLabel}
       </p>
       <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
         {action.params.title && <p>"{action.params.title}"</p>}
@@ -918,22 +927,26 @@ function PlanCard({ actions, onApproveAll, onRejectAll, onApproveOne, onRejectOn
         Plan — {actions.length} steps
       </p>
       <div className="space-y-1.5">
-        {actions.map((a, i) => (
-          <div key={a.id} className="flex items-center gap-2 text-[12px]">
-            <span style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)', width: '16px' }}>
-              {a.status === 'approved' ? '\u2713' : a.status === 'rejected' ? '\u2717' : a.status === 'undone' ? '\u21A9' : `${i + 1}.`}
-            </span>
-            <span className="flex-1" style={{
-              color: a.status === 'approved' ? 'var(--status-green)' :
-                     a.status === 'rejected' ? 'var(--outline)' : 'var(--on-surface-variant)',
-              textDecoration: a.status === 'rejected' ? 'line-through' : 'none',
-            }}>
-              {labels[a.action] || a.action}
-              {a.params.title && `: "${a.params.title}"`}
-              {a.params.space_name && ` in #${a.params.space_name}`}
-            </span>
-          </div>
-        ))}
+        {actions.map((a, i) => {
+          const humanized = humanizeToolName(a.action);
+          const displayLabel = labels[a.action] ?? humanized.full;
+          return (
+            <div key={a.id} className="flex items-center gap-2 text-[12px]">
+              <span style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)', width: '16px' }}>
+                {a.status === 'approved' ? '\u2713' : a.status === 'rejected' ? '\u2717' : a.status === 'undone' ? '\u21A9' : `${i + 1}.`}
+              </span>
+              <span className="flex-1" style={{
+                color: a.status === 'approved' ? 'var(--status-green)' :
+                       a.status === 'rejected' ? 'var(--outline)' : 'var(--on-surface-variant)',
+                textDecoration: a.status === 'rejected' ? 'line-through' : 'none',
+              }}>
+                {displayLabel}
+                {a.params.title && `: "${a.params.title}"`}
+                {a.params.space_name && ` in #${a.params.space_name}`}
+              </span>
+            </div>
+          );
+        })}
       </div>
       {!allDone && (
         <div className="flex gap-2 mt-3">
