@@ -458,7 +458,8 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
 
 // ── Agent sidebar content ────────────────────────────────────────────
 function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
-  const [conversations, setConversations] = useState<{id:string;title:string|null;updated_at:string}[]>([]);
+  const [conversations, setConversations] = useState<{id:string;title:string|null;updated_at:string;agent_employee_id?:string|null}[]>([]);
+  const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
   const [editingConvo, setEditingConvo] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const searchParams = useSearchParams();
@@ -481,6 +482,15 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
     loadConversations();
     const interval = setInterval(loadConversations, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    api.get('/api/agent-employees').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.filter((e: AgentEmployee) => e.is_active));
+      }
+    });
   }, []);
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -516,8 +526,14 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
         </div>
         {conversations.slice(0, 10).map(conv => {
           const active = activeConvId === conv.id;
+          const employee = conv.agent_employee_id
+            ? agentEmployees.find(e => e.id === conv.agent_employee_id)
+            : null;
+          const href = employee
+            ? `/agent?id=${conv.id}&employee=${employee.id}`
+            : `/agent?id=${conv.id}`;
           return (
-            <Link key={conv.id} href={`/agent?id=${conv.id}`}
+            <Link key={conv.id} href={href}
               onClick={onNav}
               className="w-full text-left px-2 flex items-center gap-2 group"
               onDoubleClick={(e) => { e.preventDefault(); setEditingConvo(conv.id); setEditTitle(conv.title || ''); }}
@@ -529,6 +545,21 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
                 fontSize: '0.8125rem',
                 borderRadius: 'var(--radius-lg)',
               }}>
+              {employee ? (
+                <div
+                  className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-semibold text-white flex-shrink-0"
+                  style={{ background: 'var(--primary-container)' }}
+                  title={employee.name}
+                >
+                  {employee.name[0].toUpperCase()}
+                </div>
+              ) : (
+                <span
+                  className="text-[11px] flex-shrink-0"
+                  style={{ color: 'var(--accent)' }}
+                  title="Defty"
+                >{'\u25C7'}</span>
+              )}
               {editingConvo === conv.id ? (
                 <input
                   autoFocus
