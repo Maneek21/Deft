@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -469,23 +469,29 @@ function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
 
   // relativeTime imported as formatRelative from @/lib/time
 
-  useEffect(() => {
+  const fetchConversations = useCallback(async () => {
     const url = activeTab === 'defty'
       ? '/api/agent/conversations'
       : `/api/agent/conversations?employee=${activeTab}`;
-    const loadConversations = () => {
-      api.get(url).then(async res => {
-        if (res.ok) {
-          const data = await res.json();
-          const filtered = data.filter((c: any) => c.title && c.title !== 'New conversation');
-          setConversations(filtered);
-        }
-      });
-    };
-    loadConversations();
-    const interval = setInterval(loadConversations, 10000);
-    return () => clearInterval(interval);
+    const res = await api.get(url);
+    if (res.ok) {
+      const data = await res.json();
+      const filtered = data.filter((c: any) => c.title && c.title !== 'New conversation');
+      setConversations(filtered);
+    }
   }, [activeTab]);
+
+  useEffect(() => {
+    fetchConversations();
+    const interval = setInterval(fetchConversations, 10000);
+    return () => clearInterval(interval);
+  }, [fetchConversations]);
+
+  useEffect(() => {
+    const handler = () => fetchConversations();
+    window.addEventListener('agent-conversation-created', handler);
+    return () => window.removeEventListener('agent-conversation-created', handler);
+  }, [fetchConversations]);
 
   useEffect(() => {
     api.get('/api/agent-employees').then(async (res) => {

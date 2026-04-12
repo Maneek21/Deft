@@ -238,6 +238,8 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
             : `/agent?id=${convId}`;
           window.history.replaceState(null, '', newUrl);
           if (onConversationCreated) onConversationCreated(convId!);
+          // Notify sidebar to refresh its conversation list
+          window.dispatchEvent(new CustomEvent('agent-conversation-created'));
         } else {
           streamingRef.current = false;
           setMessages(prev => [...prev, { role: 'assistant', content: 'Failed to create conversation.' }]);
