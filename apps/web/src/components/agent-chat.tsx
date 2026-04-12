@@ -149,7 +149,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     api.get(`/api/agent/conversations/${conversationId}/messages`).then(async (res) => {
       if (res.ok) {
         const data = await res.json();
-        setMessages(data.map((m: any) => {
+        const mapped: AgentMessage[] = data.map((m: any) => {
           // Extract tool_use blocks from content_blocks (new structured format).
           // If none are present (terminal iteration has only text blocks), fall
           // through to the legacy tool_calls column — the server aggregates
@@ -184,7 +184,29 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
             tokens_in: m.tokens_in,
             tokens_out: m.tokens_out,
           };
-        }));
+        });
+        // Post-process: the synthesis message that follows an approved action
+        // has no tool_calls of its own (the action was executed server-side,
+        // not via a read-only tool_use block). Propagate approved actions from
+        // the preceding assistant message so deriveConfidence treats the
+        // synthesis as tool-backed → "High confidence".
+        for (let i = 1; i < mapped.length; i++) {
+          const cur = mapped[i]!;
+          if (cur.role !== 'assistant') continue;
+          if ((cur.tool_calls?.length ?? 0) > 0) continue;
+          // Walk backward to the most recent prior assistant message.
+          let j = i - 1;
+          while (j >= 0 && mapped[j]!.role !== 'assistant') j--;
+          if (j < 0) continue;
+          const prior = mapped[j]!;
+          const approved = (prior.pending_actions || []).filter(
+            (a) => a.status === 'approved',
+          );
+          if (approved.length > 0) {
+            cur.tool_calls = approved.map((a) => ({ tool: a.action, params: a.params }));
+          }
+        }
+        setMessages(mapped);
       }
       setLoading(false);
       // Scroll to top so the user sees their original question first.
@@ -649,8 +671,10 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
 
                 {/* Citations */}
                 {msg.citations && msg.citations.length > 0 && (() => {
-                  // Filter out DM citations and deduplicate
+                  // Filter out DM citations, MCP tool-execution stubs (already
+                  // represented by the 💬 tool badge pill above), and dedupe.
                   const filtered = msg.citations
+                    .filter(c => c.type !== 'mcp') // tool_calls render handles these
                     .filter(c => !c.title.includes(',')) // Remove DM-style "Maneek, Rahul" citations
                     .filter((c, ci, arr) => arr.findIndex(x => x.id === c.id) === ci) // dedupe
                     .slice(0, 5);

@@ -91,14 +91,15 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     }
 
     // Persist this assistant iteration with structured content_blocks.
-    // Any iteration that made tool calls is hidden from reload UI — only the
-    // terminal iteration (no tool_use, stop_reason=end_turn) stays visible.
-    // This ensures reload shows exactly one bubble per user question, matching
-    // the live streaming UX where all iteration text flows into one placeholder.
     //
-    // The terminal (visible) row gets the accumulated tool_calls in its
-    // legacy tool_calls column so history reload can render tool badges —
-    // by definition the terminal row's content_blocks has only text blocks.
+    // Hide rule: an iteration is hidden from reload UI only when EVERY tool
+    // call in it is a read-only lookup (search/time/fetch/etc). If any
+    // tool_use is an action (create_task, post_message, MCP write), the
+    // iteration stays visible so the approval card — linked by
+    // agent_actions.message_id — has a parent row the GET endpoint returns.
+    // Hiding action-bearing iterations previously orphaned their approval
+    // cards and broke post-approval confidence inference.
+    const hasAnyActionToolUse = toolUseBlocks.some((tu) => p.allActionTools.has(tu.name));
     const isTerminalIteration = toolUseBlocks.length === 0;
     // totalTokensIn / totalTokensOut already include this iteration's usage
     // (accumulated at line 74 above after response.usage is read). The terminal
@@ -109,7 +110,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       role: 'assistant',
       content: iterText,
       content_blocks: response.content as any,
-      hidden: toolUseBlocks.length > 0,
+      hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
       tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
         ? (cumulativeToolCalls as any)
         : null,
