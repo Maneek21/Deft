@@ -24,6 +24,7 @@ import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
+import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
 
 export const agentRoutes = new Hono();
 
@@ -459,312 +460,68 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   }
 
   const reasonConfig = getModelConfig('reason');
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-
-  // Create an AbortController for cancellation
-  const abortController = new AbortController();
-
-  // Create assistant message row early so actions can link to it
-  const assistantMsgId = crypto.randomUUID();
-  await db.insert(agentMessages).values({
-    id: assistantMsgId,
-    conversation_id: convoId,
-    role: 'assistant',
-    content: '',
-    hidden: false,
-  });
 
   return streamSSE(c, async (sseStream) => {
     console.log(`[agent] SSE stream started for conversation ${convoId}`);
+    const abortController = new AbortController();
     sseStream.onAbort(() => { console.log(`[agent] Stream aborted for ${convoId}`); abortController.abort(); });
 
     const write = async (data: any) => {
       await sseStream.writeSSE({ data: JSON.stringify(data) });
     };
 
-    // Keepalive every 10s — streamSSE flushes each writeSSE call properly
     const keepalive = setInterval(async () => {
-      try { await sseStream.writeSSE({ data: JSON.stringify({ type: 'heartbeat' }) }); } catch { /* stream closed */ }
+      try { await sseStream.writeSSE({ data: JSON.stringify({ type: 'heartbeat' }) }); } catch { /* closed */ }
     }, 10000);
 
-    let allCitations: any[] = [];
-    let toolCalls: any[] = [];
-    let pendingActions: any[] = [];
-    let finalText = '';
-    let totalTokensIn = 0;
-    let totalTokensOut = 0;
-
     try {
-      // Build messages for Anthropic API
-      let apiMessages: any[] = history.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      // Token budget instead of hard iteration cap — agent runs until done or budget exhausted
-      const MAX_INPUT_TOKENS = 200_000; // ~$0.60 at Sonnet pricing — generous but bounded
-      const MAX_ITERATIONS = 50; // absolute safety net (should never hit this)
-      let iterations = 0;
-      while (iterations < MAX_ITERATIONS && totalTokensIn < MAX_INPUT_TOKENS) {
-        iterations++;
-
-        console.log(`[agent] Iteration ${iterations}, tokens: ${totalTokensIn}/${MAX_INPUT_TOKENS}, messages: ${apiMessages.length}`);
-
-        const response = await anthropic.messages.create({
-          model: reasonConfig.model,
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: apiMessages,
-          tools,
-        }, { signal: abortController.signal }).catch((err) => {
-          console.error(`[agent] Anthropic API error:`, err.message, err.status, err.error);
-          throw err;
-        });
-
-        // Accumulate token usage
-        if (response.usage) {
-          totalTokensIn += response.usage.input_tokens || 0;
-          totalTokensOut += response.usage.output_tokens || 0;
-        }
-
-        const toolUseBlocks = response.content.filter(
-          (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-        );
-        const textBlocks = response.content.filter(
-          (b): b is Anthropic.TextBlock => b.type === 'text',
-        );
-
-        const newText = textBlocks.map((b: any) => b.text).join('\n\n').trim();
-
-        if (toolUseBlocks.length === 0) {
-          // No tool calls — this is the final response
-          finalText = newText;
-          break;
-        }
-
-        if (response.stop_reason === 'end_turn' && toolUseBlocks.length === 0) {
-          finalText = newText;
-          break;
-        }
-
-        // This iteration has tool calls — text is preamble ("I'll search...")
-        // Don't add it to finalText — the final iteration's text is the real response
-
-        // Execute tool calls
-        const toolResults: any[] = [];
-        for (const tool of toolUseBlocks) {
-          const isAction = allActionTools.has(tool.name);
-
-          if (isAction) {
-            const approvalTier = getApprovalTier(tool.name);
-
-            const effectiveTrustLevel = (employeeTrustLevel || trustLevel) as TrustLevel;
-            if (shouldAutoExecute(tool.name, effectiveTrustLevel)) {
-              // Trust level permits auto-execution
-              await write({ type: 'tool_start', tool: tool.name });
-              const { actionId, success, result, error } = await executeActionDirect(
-                tool.name,
-                tool.input as Record<string, any>,
-                user.org_id,
-                user.id,
-                convoId,
-                approvalTier,
-              );
-
-              await write({
-                type: 'action_auto_executed',
-                id: actionId,
-                action: tool.name,
-                params: tool.input,
-                success,
-                result,
-                error,
-              });
-
-              toolResults.push({
-                type: 'tool_result' as const,
-                tool_use_id: tool.id,
-                content: JSON.stringify(
-                  success
-                    ? { status: 'auto_executed', ...result }
-                    : { status: 'auto_execute_failed', error },
-                ),
-              });
-            } else {
-              // Needs user approval
-              const [actionRecord] = await db
-                .insert(agentActions)
-                .values({
-                  org_id: user.org_id,
-                  user_id: user.id,
-                  conversation_id: convoId,
-                  action: tool.name,
-                  params: tool.input as any,
-                  approval_tier: approvalTier,
-                  approval_status: 'pending',
-                  message_id: assistantMsgId,
-                })
-                .returning();
-
-              pendingActions.push({
-                id: actionRecord!.id,
-                action: tool.name,
-                params: tool.input,
-              });
-              await write({
-                type: 'pending_action',
-                id: actionRecord!.id,
-                action: tool.name,
-                params: tool.input,
-              });
-
-              toolResults.push({
-                type: 'tool_result' as const,
-                tool_use_id: tool.id,
-                content: JSON.stringify({
-                  status: 'pending_approval',
-                  action_id: actionRecord!.id,
-                }),
-              });
-            }
-          } else {
-            // Read-only tools (including remember/recall) — execute immediately
-            await write({ type: 'tool_start', tool: tool.name });
-            try {
-              const { result, citations } = await executeToolCall(
-                tool.name,
-                tool.input as any,
-                user.org_id,
-                user.id,
-                convoId,
-                agentEmployeeId,
-              );
-              allCitations.push(...citations);
-              toolCalls.push({ tool: tool.name, params: tool.input, result });
-              await write({
-                type: 'tool_result',
-                tool: tool.name,
-                count: Array.isArray(result) ? result.length : 1,
-              });
-
-              toolResults.push({
-                type: 'tool_result' as const,
-                tool_use_id: tool.id,
-                content: JSON.stringify(result),
-              });
-            } catch (toolErr) {
-              console.error(`[agent] Tool ${tool.name} failed:`, toolErr);
-              const errorMsg = toolErr instanceof Error ? toolErr.message : 'Tool execution failed';
-              await write({ type: 'tool_result', tool: tool.name, error: errorMsg });
-              toolResults.push({
-                type: 'tool_result' as const,
-                tool_use_id: tool.id,
-                content: JSON.stringify({ error: errorMsg }),
-                is_error: true,
-              });
-            }
-          }
-        }
-
-        // Continue conversation with tool results
-        apiMessages = [
-          ...apiMessages,
-          { role: 'assistant' as const, content: response.content },
-          { role: 'user' as const, content: toolResults },
-        ];
-
-      }
-
-      // If loop exited without a final response (budget/iteration limit), force one
-      if (!finalText && totalTokensIn > 0) {
-        console.log(`[agent] Budget/iteration limit reached (${iterations} iters, ${totalTokensIn} tokens). Forcing final response.`);
-        try {
-          const finalResponse = await anthropic.messages.create({
-            model: reasonConfig.model,
-            max_tokens: 4096,
-            system: systemPrompt + '\n\nIMPORTANT: You have used all available research steps. Provide your best answer NOW based on everything gathered. Do NOT call any tools.',
-            messages: apiMessages,
-          }, { signal: abortController.signal });
-
-          if (finalResponse.usage) {
-            totalTokensIn += finalResponse.usage.input_tokens || 0;
-            totalTokensOut += finalResponse.usage.output_tokens || 0;
-          }
-          const finalTextBlocks = finalResponse.content.filter(
-            (b): b is Anthropic.TextBlock => b.type === 'text',
-          );
-          finalText = finalTextBlocks.map((b: any) => b.text).join('\n\n').trim();
-        } catch (err) {
-          console.error(`[agent] Forced final response failed:`, err);
-          finalText = '*I gathered extensive information but encountered an issue generating the final summary. Please try asking again.*';
+      // Rehydrate history into Anthropic message format. Rows with content_blocks
+      // use the structured form; legacy rows fall back to plain text. Skip empty rows.
+      const apiMessages: Anthropic.MessageParam[] = [];
+      for (const m of history) {
+        const blocks = (m as any).content_blocks;
+        if (blocks && Array.isArray(blocks) && blocks.length > 0) {
+          apiMessages.push({ role: m.role as 'user' | 'assistant', content: blocks as any });
+        } else if (m.content && m.content.trim().length > 0) {
+          apiMessages.push({ role: m.role as 'user' | 'assistant', content: m.content });
         }
       }
 
-      // Stream final text word by word for a typing effect
-      if (finalText) {
-        const words = finalText.split(/(\s+)/);
-        for (const word of words) {
-          if (abortController.signal.aborted) break;
-          await write({ type: 'text', text: word });
-          await new Promise((r) => setTimeout(r, 12));
-        }
-      }
+      const result = await runAgentStreamingLoop({
+        convoId,
+        userId: user.id,
+        orgId: user.org_id,
+        agentEmployeeId,
+        systemPrompt,
+        tools,
+        allActionTools,
+        trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
+        apiMessages,
+        write,
+        abortSignal: abortController.signal,
+        model: reasonConfig.model,
+      });
 
-      // Send citations and pending actions
-      if (allCitations.length > 0) {
-        await write({ type: 'citations', citations: allCitations });
+      if (result.citations.length > 0) {
+        await write({ type: 'citations', citations: result.citations });
       }
-      if (pendingActions.length > 0) {
-        await write({ type: 'actions', actions: pendingActions });
+      if (result.pendingActions.length > 0) {
+        await write({ type: 'actions', actions: result.pendingActions });
       }
       clearInterval(keepalive);
-      await write({ type: 'done', model: reasonConfig.model, tokens_in: totalTokensIn, tokens_out: totalTokensOut });
-
-      // Update the pre-created assistant message row with final content
-      await db
-        .update(agentMessages)
-        .set({
-          content: finalText || '',
-          citations: allCitations.length > 0 ? (allCitations as any) : null,
-          tool_calls: toolCalls.length > 0 ? (toolCalls as any) : null,
-          model: reasonConfig.model,
-          tokens_in: totalTokensIn,
-          tokens_out: totalTokensOut,
-        })
-        .where(eq(agentMessages.id, assistantMsgId));
-      await db
-        .update(agentConversations)
-        .set({ updated_at: new Date() })
-        .where(eq(agentConversations.id, convoId));
+      await write({
+        type: 'done',
+        model: reasonConfig.model,
+        tokens_in: result.totalTokensIn,
+        tokens_out: result.totalTokensOut,
+      });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
       console.error('[agent] Stream error:', errMsg);
       try {
-        await write({
-          type: 'error',
-          error: errMsg,
-        });
-        await write({ type: 'done' });
-      } catch {
-        // Stream may already be closed
-      }
-
-      // Save error into the pre-created assistant message so user sees something on refresh
-      try {
-        const errorContent = finalText
-          ? finalText + '\n\n*[An error occurred while processing: ' + errMsg + ']*'
-          : '*I encountered an error processing your request: ' + errMsg + '. Please try again.*';
-        await db
-          .update(agentMessages)
-          .set({
-            content: errorContent,
-            model: reasonConfig.model,
-          })
-          .where(eq(agentMessages.id, assistantMsgId));
-      } catch {
-        // DB save failed too — nothing we can do
-      }
+        await write({ type: 'error', error: errMsg });
+      } catch { /* closed */ }
     }
   });
 });
