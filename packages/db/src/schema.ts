@@ -339,6 +339,7 @@ export const agentConversations = pgTable('agent_conversations', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
+  agent_employee_id: text('agent_employee_id'),
   title: text('title'),
   ...timestamps(),
 });
@@ -351,6 +352,7 @@ export const agentMessages = pgTable('agent_messages', {
   content: text('content').notNull(),
   citations: jsonb('citations'), // [{ type, id, title, url }]
   tool_calls: jsonb('tool_calls'), // [{ tool, params, result, status }]
+  hidden: boolean('hidden').default(false).notNull(),
   model: text('model'),
   tokens_in: integer('tokens_in'),
   tokens_out: integer('tokens_out'),
@@ -363,6 +365,7 @@ export const agentActions = pgTable('agent_actions', {
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
   conversation_id: text('conversation_id').references(() => agentConversations.id),
+  message_id: text('message_id'),
   agent_employee_id: text('agent_employee_id'),
   source: text('source').default('native'),
   mcp_connection_id: text('mcp_connection_id'),
