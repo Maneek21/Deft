@@ -13,24 +13,20 @@ import type {
  * and a name-based fallback. Returns isWrite and approvalTier.
  *
  * Precedence (highest to lowest):
- *   1. annotations.destructiveHint === true → full-review, isWrite=true
- *   2. annotations.readOnlyHint === true    → auto-execute, isWrite=false
- *   3. Name heuristics (browser_*, filesystem_*, git_*, ...)
+ *   1. Name heuristics for known tool families (browser_*, filesystem_*, git_*)
+ *      — these take top priority because we have explicit knowledge of each tool.
+ *   2. annotations.destructiveHint === true → full-review, isWrite=true
+ *   3. annotations.readOnlyHint === true    → auto-execute, isWrite=false
  *   4. Default: full-review, isWrite=false (conservative)
+ *
+ * Note: name heuristics run before annotation checks for known families because
+ * some MCP servers (e.g. Playwright) set destructiveHint=true on interactive
+ * actions (navigate, click, type) that we intentionally classify as quick-approve.
  */
 function classifyTool(
   name: string,
   annotations: Record<string, unknown> | null
 ): { approvalTier: MCPTool["approvalTier"]; isWrite: boolean } {
-  if (annotations) {
-    if (annotations.destructiveHint === true) {
-      return { approvalTier: "full-review", isWrite: true };
-    }
-    if (annotations.readOnlyHint === true) {
-      return { approvalTier: "auto-execute", isWrite: false };
-    }
-  }
-
   // browser_* (Playwright): reads auto, state changes quick, code-exec/file-upload full.
   if (name.startsWith("browser_")) {
     const READ_ONLY_BROWSER = new Set([
@@ -73,6 +69,16 @@ function classifyTool(
   }
   if (name.startsWith("git_")) {
     return { approvalTier: "full-review", isWrite: true };
+  }
+
+  // Annotation-based fallback for unknown tool families.
+  if (annotations) {
+    if (annotations.destructiveHint === true) {
+      return { approvalTier: "full-review", isWrite: true };
+    }
+    if (annotations.readOnlyHint === true) {
+      return { approvalTier: "auto-execute", isWrite: false };
+    }
   }
 
   return { approvalTier: "full-review", isWrite: false };
