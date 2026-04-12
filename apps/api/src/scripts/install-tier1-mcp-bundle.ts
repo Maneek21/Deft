@@ -36,19 +36,22 @@ const TAVILY_URL = process.env.TAVILY_MCP_URL || '';
 
 const BUNDLE: BundleEntry[] = [
   {
+    // yokingma/time-mcp — Node-native, no Python deps. Exposes current_time,
+    // relative_time, convert_time, days_in_month, get_week_year, get_timestamp.
     slug: 'time',
     name: 'Time',
     transport: 'stdio',
     stdio_command: 'npx',
-    stdio_args: ['-y', '@modelcontextprotocol/server-time', '--local-timezone=Asia/Kolkata'],
+    stdio_args: ['-y', 'time-mcp'],
     required: true,
   },
   {
+    // fetch-mcp — generic HTTP/GraphQL/WebSocket client, Node-native.
     slug: 'fetch',
     name: 'Fetch',
     transport: 'stdio',
     stdio_command: 'npx',
-    stdio_args: ['-y', '@kazuph/mcp-fetch'],
+    stdio_args: ['-y', 'fetch-mcp'],
     required: true,
   },
   {
