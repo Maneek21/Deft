@@ -222,6 +222,10 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     let citations: Citation[] = [];
     let pendingActions: PendingAction[] = [];
     let autoExecutedActions: AutoExecutedAction[] = [];
+    // Tool names observed across the stream. Populated from tool_start events
+    // so the completed message has the same tool_calls array the reload path
+    // produces — keeps the 💬 badge pill and deriveConfidence consistent.
+    const streamedToolCalls: { tool: string; params: any }[] = [];
     let buffer = '';
     let doneModel: string | undefined;
     let doneTokensIn: number | undefined;
@@ -263,15 +267,26 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
               break;
             }
             case 'tool_start': {
-              const toolLabel = data.tool.replace(/_/g, ' ').replace(/^(search|get|find|check)/, (m: string) => {
-                const labels: Record<string, string> = { search: 'Searching', get: 'Checking', find: 'Looking up', check: 'Checking' };
-                return labels[m] || m;
-              });
+              // Track this tool call for the final setMessages so reload and
+              // live render produce matching tool_calls state.
+              streamedToolCalls.push({ tool: data.tool, params: data.params || {} });
+              // Humanize the tool name for the in-flight "Searching..." label.
+              // formatToolLabel handles both mcp__slug__name and native names.
+              const humanized = formatToolLabel(data.tool);
+              // Pick a verb based on the original action for nicer UX.
+              const verbPrefix =
+                /search/i.test(data.tool) ? 'Searching' :
+                /^(get|fetch|read)/.test(data.tool) ? 'Checking' :
+                /^find/.test(data.tool) ? 'Looking up' :
+                /navigate/.test(data.tool) ? 'Opening' :
+                /think/.test(data.tool) ? 'Thinking through' :
+                'Running';
+              const toolLabel = `${verbPrefix} ${humanized}...`;
               setMessages(prev => {
                 const updated = [...prev];
                 const msg = updated[assistantPlaceholderIdx];
                 if (msg && msg.role === 'assistant') {
-                  updated[assistantPlaceholderIdx] = { ...msg, tool_status: toolLabel + '...', thinking: true };
+                  updated[assistantPlaceholderIdx] = { ...msg, tool_status: toolLabel, thinking: true };
                 }
                 return updated;
               });
@@ -324,6 +339,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         updated[assistantPlaceholderIdx] = {
           ...msg, content: agentText, streaming: false,
           citations, pending_actions: pendingActions, auto_executed: autoExecutedActions, tool_status: undefined,
+          tool_calls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
           follow_ups: followUps,
           model: doneModel,
           tokens_in: doneTokensIn,

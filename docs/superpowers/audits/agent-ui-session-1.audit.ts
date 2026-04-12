@@ -131,9 +131,13 @@ async function testCodeFenceIsolation(page: Page): Promise<void> {
 async function testLinksClickable(page: Page): Promise<void> {
   console.log('  Test 4/7: markdown links render as <a href>...');
   await newConversation(page);
+  // Prompt is tight: don't use any tools, just echo a specific markdown block.
+  // Without the "no tools" constraint the agent calls Tavily/fetch to verify
+  // URLs and takes 4+ iterations / 100+ seconds — blowing past the default
+  // 90s wait. Echoing fixed markdown finishes in one iteration.
   await sendAndWaitForResponse(
     page,
-    'respond with a bulleted list of 3 React docs links in markdown format: [title](https://react.dev/reference/react/useState) style with different real anchor slugs',
+    'reply ONLY with this exact markdown (no tools, no extra text):\n- [useState](https://react.dev/reference/react/useState)\n- [useEffect](https://react.dev/reference/react/useEffect)\n- [useMemo](https://react.dev/reference/react/useMemo)',
   );
   const linkCount = await page.locator('main a[href*="react.dev"]').count();
   assert(
