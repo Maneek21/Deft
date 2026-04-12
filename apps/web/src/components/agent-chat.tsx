@@ -56,6 +56,7 @@ type Props = {
   onConversationCreated?: (id: string) => void;
   onTitleUpdate?: (title: string) => void;
   agentEmployeeId?: string;
+  agentName?: string;
 };
 
 function renderAgentMarkdown(text: string): string {
@@ -113,7 +114,7 @@ function getFollowUpSuggestions(content: string, citations: Citation[]): string[
   return suggestions.slice(0, 3);
 }
 
-export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate, agentEmployeeId }: Props) {
+export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate, agentEmployeeId, agentName }: Props) {
   const { user } = useAuth();
   const router = useRouter();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -161,9 +162,24 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       if (res.ok) {
         const data = await res.json();
         setMessages(data.map((m: any) => ({
-          id: m.id, role: m.role, content: m.content,
-          citations: m.citations || [], pending_actions: [], auto_executed: [],
-          model: m.model, tokens_in: m.tokens_in, tokens_out: m.tokens_out,
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          citations: m.citations || [],
+          pending_actions: (m.pending_actions || []).map((a: any) => ({
+            id: a.id,
+            action: a.action,
+            params: a.params,
+            approval_tier: a.approval_tier,
+            status: a.status,
+            result: a.result,
+            executed_at: a.executed_at,
+            error: a.error,
+          })),
+          auto_executed: [],
+          model: m.model,
+          tokens_in: m.tokens_in,
+          tokens_out: m.tokens_out,
         })));
       }
       setLoading(false);
@@ -198,7 +214,9 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
     // Lazy conversation creation if no conversationId yet
     if (!convId) {
       try {
-        const res = await api.post('/api/agent/conversations', {});
+        const res = await api.post('/api/agent/conversations', {
+          agent_employee_id: agentEmployeeId || undefined,
+        });
         if (res.ok) {
           const convo = await res.json();
           convId = convo.id;
@@ -249,7 +267,11 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       const res = await fetch(`${API_URL}/api/agent/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ content, ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}) }),
+        body: JSON.stringify({
+          content,
+          ...(agentEmployeeId ? { agent_employee_id: agentEmployeeId } : {}),
+          ...(hidden ? { hidden: true } : {}),
+        }),
         signal: controller.signal,
       });
 
@@ -702,7 +724,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask Deft anything..."
+              placeholder={agentName ? `Ask ${agentName} anything...` : 'Ask Defty anything...'}
               className="flex-1 px-4 py-3 text-[14px] resize-none max-h-[120px] bg-transparent outline-none"
               style={{ color: 'var(--text-primary)', border: 'none', boxShadow: 'none' }}
               rows={1}
