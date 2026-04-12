@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
-import { eq, and, desc, lt, sql } from 'drizzle-orm';
+import { eq, and, desc, lt, sql, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentConversations,
@@ -50,15 +50,22 @@ Rules:
 
 agentRoutes.get('/conversations', async (c) => {
   const user = c.get('user');
+  const employeeFilter = c.req.query('employee');
+
+  const conditions = [
+    eq(agentConversations.user_id, user.id),
+    eq(agentConversations.org_id, user.org_id),
+  ];
+  if (employeeFilter) {
+    conditions.push(eq(agentConversations.agent_employee_id, employeeFilter));
+  } else {
+    conditions.push(isNull(agentConversations.agent_employee_id));
+  }
+
   const convos = await db
     .select()
     .from(agentConversations)
-    .where(
-      and(
-        eq(agentConversations.user_id, user.id),
-        eq(agentConversations.org_id, user.org_id),
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(desc(agentConversations.updated_at))
     .limit(50);
   return c.json(convos);
@@ -73,6 +80,7 @@ agentRoutes.post('/conversations', async (c) => {
       org_id: user.org_id,
       user_id: user.id,
       title: body.title || 'New conversation',
+      agent_employee_id: body.agent_employee_id || null,
     })
     .returning();
   return c.json(convo, 201);
@@ -116,12 +124,39 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
     ));
 
-  const msgs = await db
+  const messageList = await db
     .select()
     .from(agentMessages)
-    .where(eq(agentMessages.conversation_id, id))
+    .where(and(
+      eq(agentMessages.conversation_id, id),
+      eq(agentMessages.hidden, false),
+    ))
     .orderBy(agentMessages.created_at);
-  return c.json(msgs);
+
+  // Fetch all actions for this conversation
+  const actionList = await db
+    .select()
+    .from(agentActions)
+    .where(eq(agentActions.conversation_id, id));
+
+  // Attach actions to their messages
+  const messagesWithActions = messageList.map((m) => ({
+    ...m,
+    pending_actions: actionList
+      .filter((a) => a.message_id === m.id)
+      .map((a) => ({
+        id: a.id,
+        action: a.action,
+        params: a.params,
+        approval_tier: a.approval_tier,
+        status: a.approval_status,
+        result: a.result,
+        executed_at: a.executed_at,
+        error: a.error,
+      })),
+  }));
+
+  return c.json(messagesWithActions);
 });
 
 // ── Main chat endpoint — non-streaming tool loop, then stream final text ──
@@ -130,7 +165,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
   const body = await c.req.json();
-  const { content, agent_employee_id } = body;
+  const { content, agent_employee_id, hidden } = body;
   const agentEmployeeId = agent_employee_id || undefined;
 
   if (!env.ANTHROPIC_API_KEY) {
@@ -145,7 +180,23 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     conversation_id: convoId,
     role: 'user',
     content,
+    hidden: hidden || false,
   });
+
+  // If agent_employee_id provided and conversation doesn't have one yet, set it
+  if (agentEmployeeId) {
+    const [existingConv] = await db
+      .select()
+      .from(agentConversations)
+      .where(eq(agentConversations.id, convoId))
+      .limit(1);
+    if (existingConv && !existingConv.agent_employee_id) {
+      await db
+        .update(agentConversations)
+        .set({ agent_employee_id: agentEmployeeId })
+        .where(eq(agentConversations.id, convoId));
+    }
+  }
 
   // Auto-title on first message
   const [convo] = await db
@@ -370,6 +421,16 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   // Create an AbortController for cancellation
   const abortController = new AbortController();
 
+  // Create assistant message row early so actions can link to it
+  const assistantMsgId = crypto.randomUUID();
+  await db.insert(agentMessages).values({
+    id: assistantMsgId,
+    conversation_id: convoId,
+    role: 'assistant',
+    content: '',
+    hidden: false,
+  });
+
   return streamSSE(c, async (sseStream) => {
     console.log(`[agent] SSE stream started for conversation ${convoId}`);
     sseStream.onAbort(() => { console.log(`[agent] Stream aborted for ${convoId}`); abortController.abort(); });
@@ -498,6 +559,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
                   params: tool.input as any,
                   approval_tier: approvalTier,
                   approval_status: 'pending',
+                  message_id: assistantMsgId,
                 })
                 .returning();
 
@@ -615,21 +677,22 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
       clearInterval(keepalive);
       await write({ type: 'done', model: reasonConfig.model, tokens_in: totalTokensIn, tokens_out: totalTokensOut });
 
-      // Save assistant message to DB
-      if (finalText) {
-        await db.insert(agentMessages).values({
-          conversation_id: convoId,
-          role: 'assistant',
-          content: finalText,
-          citations: allCitations.length > 0 ? allCitations : null,
-          tool_calls: toolCalls.length > 0 ? toolCalls : null,
+      // Update the pre-created assistant message row with final content
+      await db
+        .update(agentMessages)
+        .set({
+          content: finalText || '',
+          citations: allCitations.length > 0 ? (allCitations as any) : null,
+          tool_calls: toolCalls.length > 0 ? (toolCalls as any) : null,
           model: reasonConfig.model,
-        });
-        await db
-          .update(agentConversations)
-          .set({ updated_at: new Date() })
-          .where(eq(agentConversations.id, convoId));
-      }
+          tokens_in: totalTokensIn,
+          tokens_out: totalTokensOut,
+        })
+        .where(eq(agentMessages.id, assistantMsgId));
+      await db
+        .update(agentConversations)
+        .set({ updated_at: new Date() })
+        .where(eq(agentConversations.id, convoId));
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -644,17 +707,18 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
         // Stream may already be closed
       }
 
-      // Save error as assistant message so user sees something on refresh
+      // Save error into the pre-created assistant message so user sees something on refresh
       try {
         const errorContent = finalText
           ? finalText + '\n\n*[An error occurred while processing: ' + errMsg + ']*'
           : '*I encountered an error processing your request: ' + errMsg + '. Please try again.*';
-        await db.insert(agentMessages).values({
-          conversation_id: convoId,
-          role: 'assistant',
-          content: errorContent,
-          model: reasonConfig.model,
-        });
+        await db
+          .update(agentMessages)
+          .set({
+            content: errorContent,
+            model: reasonConfig.model,
+          })
+          .where(eq(agentMessages.id, assistantMsgId));
       } catch {
         // DB save failed too — nothing we can do
       }
