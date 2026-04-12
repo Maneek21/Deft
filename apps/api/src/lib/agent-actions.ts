@@ -12,10 +12,13 @@ import {
   wikiPages,
   wikiLinks,
   wikiOpsLog,
+  mcpConnections,
 } from '@deft/db/schema';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
+import { mcpClientManager } from '@deft/mcp';
+import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 
 const AGENT_EMAIL = 'deft-agent@system.local';
 
@@ -52,6 +55,30 @@ export async function executeAction(
   userId: string,
 ): Promise<{ success: boolean; result: any; error?: string }> {
   try {
+    // MCP tool execution — handle before the native action switch
+    if (action.startsWith('mcp__')) {
+      const { connectionSlug, toolName } = parseMCPToolName(action);
+      const [conn] = await db
+        .select()
+        .from(mcpConnections)
+        .where(and(eq(mcpConnections.org_id, orgId), eq(mcpConnections.slug, connectionSlug)))
+        .limit(1);
+      if (!conn) {
+        return { success: false, result: null, error: `MCP connection '${connectionSlug}' not found` };
+      }
+      const config = toConnectionConfig(conn);
+      const mcpResult = await mcpClientManager.executeTool(config, toolName, params);
+      if (!mcpResult.success) {
+        return { success: false, result: null, error: mcpResult.error || 'MCP tool error' };
+      }
+      // Update the action record with result
+      await db.update(agentActions).set({
+        executed_at: new Date(),
+        result: mcpResult.content as any,
+      }).where(eq(agentActions.id, actionId));
+      return { success: true, result: mcpResult.content };
+    }
+
     switch (action) {
       case 'create_task': {
         const [project] = await db
