@@ -183,9 +183,16 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
         })));
       }
       setLoading(false);
-      setTimeout(scrollToBottom, 100);
+      // Scroll to top so the user sees their original question first.
+      // Mark as "scrolled up" so the messages-change auto-scroll effect
+      // doesn't immediately yank us back to the bottom after load.
+      isUserScrolledUp.current = true;
+      setTimeout(() => {
+        const container = scrollContainerRef.current;
+        if (container) container.scrollTop = 0;
+      }, 100);
     });
-  }, [conversationId, scrollToBottom]);
+  }, [conversationId]);
 
   // Send initial prompt if provided (lazy conversation creation)
   useEffect(() => {
