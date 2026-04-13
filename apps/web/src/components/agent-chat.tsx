@@ -73,6 +73,26 @@ type Props = {
 };
 
 
+async function fetchContextualFollowups(userPrompt: string, finalResponse: string): Promise<string[]> {
+  if (!userPrompt || !finalResponse) return [];
+  try {
+    const token = localStorage.getItem('deft-access-token');
+    const res = await fetch(`${API_URL}/api/agent/followups`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userPrompt, finalResponse }),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { followups?: string[] };
+    return data.followups ?? [];
+  } catch {
+    return [];
+  }
+}
+
 function getFollowUpSuggestions(content: string, citations: Citation[]): string[] {
   const hasTasks = citations.some(c => c.type === 'task');
   const hasMessages = citations.some(c => c.type === 'message');
@@ -371,6 +391,33 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       }
       return updated;
     });
+
+    // After the stream is fully finalized, fetch contextual follow-ups via
+    // Haiku and merge them in. Best-effort — if the fetch fails the
+    // hardcoded fallback from getFollowUpSuggestions is kept.
+    // Use a state-reader pattern to find the user prompt without a closure stale ref.
+    let userPromptForFollowups = '';
+    setMessages((prev) => {
+      for (let j = assistantPlaceholderIdx - 1; j >= 0; j--) {
+        if (prev[j]?.role === 'user') {
+          userPromptForFollowups = prev[j]!.content;
+          break;
+        }
+      }
+      return prev;
+    });
+    if (userPromptForFollowups && agentText) {
+      fetchContextualFollowups(userPromptForFollowups, agentText)
+        .then((fups) => {
+          if (fups.length === 0) return;
+          setMessages((pp) =>
+            pp.map((m, idx) =>
+              idx === assistantPlaceholderIdx ? { ...m, follow_ups: fups } : m,
+            ),
+          );
+        })
+        .catch(() => { /* keep fallback */ });
+    }
   };
 
   const sendMessage = async (content: string, hidden = false) => {
