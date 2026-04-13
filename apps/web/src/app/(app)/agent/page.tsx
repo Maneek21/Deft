@@ -225,6 +225,24 @@ export default function AgentPage() {
     </div>
   ) : null;
 
+  // Mobile history toggle button (shown only on mobile).
+  // Declared BEFORE the employee branch so both render paths can use it.
+  const mobileHistoryButton = (
+    <button
+      onClick={() => setShowMobileConversations(prev => !prev)}
+      className="md:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[0.75rem] font-medium flex-shrink-0"
+      style={{
+        background: showMobileConversations ? 'var(--accent-subtle)' : 'var(--surface-container-low)',
+        color: showMobileConversations ? 'var(--accent)' : 'var(--on-surface-variant)',
+        border: '1px solid var(--border)',
+      }}
+      aria-label="Toggle conversation history"
+    >
+      <History size={14} />
+      History
+    </button>
+  );
+
   // Employee chat tab — functional chat interface
   if (activeTab !== 'defty' && activeEmployee) {
     const formattedRole = activeEmployee.role
@@ -257,6 +275,17 @@ export default function AgentPage() {
             </p>
           </div>
         </div>
+        {/* Mobile history toggle row — only visible under md: */}
+        <div className="md:hidden flex items-center px-4 py-2 flex-shrink-0 border-b" style={{ borderColor: 'var(--border)' }}>
+          {mobileHistoryButton}
+        </div>
+        {showMobileConversations && (
+          <MobileConversationPanel
+            onClose={() => setShowMobileConversations(false)}
+            activeId={activeId}
+            activeTab={activeTab}
+          />
+        )}
         {/* Reuse AgentChat with employee context */}
         <div className="flex-1 overflow-hidden">
           <AgentChat
@@ -270,23 +299,6 @@ export default function AgentPage() {
       </div>
     );
   }
-
-  // Mobile history toggle button (shown only on mobile)
-  const mobileHistoryButton = (
-    <button
-      onClick={() => setShowMobileConversations(prev => !prev)}
-      className="md:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[0.75rem] font-medium flex-shrink-0"
-      style={{
-        background: showMobileConversations ? 'var(--accent-subtle)' : 'var(--surface-container-low)',
-        color: showMobileConversations ? 'var(--accent)' : 'var(--on-surface-variant)',
-        border: '1px solid var(--border)',
-      }}
-      aria-label="Toggle conversation history"
-    >
-      <History size={14} />
-      History
-    </button>
-  );
 
   if (effectiveId) {
     return (

@@ -181,15 +181,22 @@ async function testBothSidebarsRender(page: Page): Promise<void> {
   await page.reload({ waitUntil: 'networkidle' });
   // Click the mobile History toggle button.
   const historyBtn = await page.$('button:has-text("History")');
-  if (historyBtn) await historyBtn.click();
-  await page.waitForTimeout(1000);
+  assert(historyBtn, 'Mobile History button not found — is the layout rendering correctly at 390x844?');
+  await historyBtn.click();
+  // Wait for the panel to mount AND its async conversations fetch to resolve.
+  // The panel renders with its own useEffect that fetches /api/agent/conversations.
+  await page.waitForFunction(
+    () => document.querySelectorAll('main a[href*="/agent?id="]').length > 0,
+    null,
+    { timeout: 10_000 },
+  ).catch(() => { /* fall through to the assertion below for a clearer error */ });
   const mobileCount = await page.$$eval(
     'main a[href*="/agent?id="]',
     (links) => links.length,
   );
   assert(
     mobileCount > 0,
-    `Expected ≥1 mobile panel conversation link after clicking History, got ${mobileCount}`,
+    `Expected ≥1 mobile panel conversation link after clicking History, got ${mobileCount}. Check: is the mobile panel rendering ConversationList? Is the fetch returning data?`,
   );
   console.log(`    ✓ desktop=${desktopCount} mobile=${mobileCount} both rendering`);
   await page.setViewportSize(DESKTOP_VIEWPORT);
