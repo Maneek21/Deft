@@ -69,6 +69,7 @@ type Props = {
   onTitleUpdate?: (title: string) => void;
   agentEmployeeId?: string;
   agentName?: string;
+  starterPrompts?: string[];
 };
 
 
@@ -94,7 +95,7 @@ function getFollowUpSuggestions(content: string, citations: Citation[]): string[
   return suggestions.slice(0, 3);
 }
 
-export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate, agentEmployeeId, agentName }: Props) {
+export function AgentChat({ conversationId, initialPrompt, onConversationCreated, onTitleUpdate, agentEmployeeId, agentName, starterPrompts }: Props) {
   const { user } = useAuth();
   const router = useRouter();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -608,10 +609,35 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
             </div>
           )}
           {!loading && messages.length === 0 && !streaming && (
-            <div className="flex flex-col items-center justify-center py-20 gap-4">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl"
-                style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}>◇</div>
-              <p className="text-[13px]" style={{ color: 'var(--muted)' }}>Send a message to start</p>
+            <div className="flex flex-col items-center justify-center flex-1 py-20 px-4 gap-4">
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-3"
+                style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}>
+                ◇
+              </div>
+              <p className="text-[13px] mb-4" style={{ color: 'var(--muted)' }}>
+                {starterPrompts && starterPrompts.length > 0
+                  ? `Try one of these or ask ${agentName || 'Defty'} anything`
+                  : 'Send a message to start'}
+              </p>
+              {starterPrompts && starterPrompts.length > 0 && (
+                <div className="flex flex-wrap gap-2 max-w-[520px] justify-center">
+                  {starterPrompts.slice(0, 5).map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => sendMessage(prompt)}
+                      disabled={streaming}
+                      className="px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors"
+                      style={{
+                        background: 'var(--surface-container)',
+                        color: 'var(--foreground-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {messages.map((msg, i) => (

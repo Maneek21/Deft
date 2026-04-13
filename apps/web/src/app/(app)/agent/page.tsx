@@ -16,7 +16,7 @@ const SUGGESTIONS = [
 ];
 
 type Conversation = { id: string; title: string | null; updated_at: string; agent_employee_id?: string | null };
-type AgentEmployee = { id: string; name: string; role: string; avatar_url: string | null; is_active: boolean };
+type AgentEmployee = { id: string; name: string; role: string; avatar_url: string | null; is_active: boolean; starter_prompts?: string[] | null };
 
 function MobileConversationPanel({
   onClose,
@@ -294,6 +294,7 @@ export default function AgentPage() {
             conversationId={activeId || undefined}
             agentEmployeeId={activeEmployee.id}
             agentName={activeEmployee.name}
+            starterPrompts={activeEmployee.starter_prompts ?? undefined}
           />
         </div>
       </div>
