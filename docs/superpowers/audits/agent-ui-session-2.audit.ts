@@ -193,9 +193,14 @@ async function testTokensAggregated(page: Page): Promise<void> {
   const m = mainText.match(/·\s+(\d+)\s+tokens/);
   assert(m, `Expected a "· N tokens" token readout, got tail: ${mainText.slice(-400)}`);
   const tokens = parseInt(m![1]!, 10);
+  // Threshold tuned after Session 2.5 prompt caching: a multi-iter Tavily
+  // response with cache hits on the system+tools (~10k cached per iter)
+  // lands in the 8-15k range instead of the 60k+ from pre-caching. The
+  // "bug" we're catching is the UI showing only the final iter's tokens
+  // (~2-4k), not the cumulative sum. 5000 is a safe floor.
   assert(
-    tokens >= 20_000,
-    `Expected cumulative tokens >= 20000 on a multi-iter Tavily response, got ${tokens}`,
+    tokens >= 5_000,
+    `Expected cumulative tokens >= 5000 on a multi-iter Tavily response, got ${tokens}`,
   );
   console.log(`    ✓ cumulative tokens = ${tokens}`);
 }
