@@ -475,3 +475,138 @@ The following are already working well and don't need attention before launch:
 - [Roadmap (April 8)](../../ROADMAP.md) — phases 1-6 product features
 - [Agent UI Backlog (April 13)](AGENT-UI-BACKLOG.md) — 12 deferred items from the 3-session sweep
 - [Agent UI Sessions Rollup (April 13)](2026-04-13-agent-ui-sessions-rollup.md) — what shipped in the April 12-13 sweep
+
+---
+
+# External Dependencies
+
+Everything Deft will need from the outside world to ship. Grouped by category, with free-tier notes and rough monthly cost at launch scale (small team, low traffic). Price estimates are USD, accurate as of April 2026 — verify before committing.
+
+## 🏠 Hosting + infrastructure (required)
+
+| Service | What for | Free tier | Launch cost | Notes |
+|---|---|---|---|---|
+| **Railway** *(recommended)* | Hosts both the Next.js web and the Hono API as separate services. Native Docker, WebSocket support, auto-deploy from GitHub. | $5/mo hobby, $0 usage credit | **$20/mo base + ~$10–30 usage** | Best fit — supports persistent processes for background workers. Includes managed Postgres + Redis as add-ons. |
+| **Fly.io** *(alt)* | Docker-native, globally distributed, good for WebSockets | Free tier: 3 shared VMs, 3GB storage | ~$15/mo | Requires more manual config than Railway, but cheaper at small scale. |
+| **Postgres (managed)** | Primary database. Options: Railway Postgres (included), Neon (serverless, pgvector support, free tier 0.5GB), Supabase (blocked in India per CLAUDE.md — skip). | Railway: included. Neon: free 0.5GB / 190 compute hours | **$0–20/mo** | Must enable pgvector extension for future embeddings. PgBouncer connection pooling at scale. |
+| **Redis (managed)** | Socket.IO adapter (multi-instance), session revocation cache (Phase A3), rate-limit counters (Phase A4) | Railway: included. Upstash: free 10k commands/day. Redis Cloud: free 30MB | **$0** at launch | Optional if you launch single-instance. Required for multi-instance scaling. |
+| **Cloudflare R2** | File storage for user uploads (replaces current local `./uploads` filesystem) | 10GB storage, 10M reads/mo, 1M writes/mo free | **$0** at launch, ~$0.015/GB/mo beyond free tier | S3-compatible API, zero egress fees. Upload route at `apps/api/src/routes/upload.ts` already checks for R2 config and falls back to local. |
+| **Cloudflare** (DNS + CDN + SSL) | DNS, DDoS protection, CDN, free TLS, domain registrar | Fully free | **$0** | Industry standard. Enables WebSocket tunneling for Socket.IO. |
+| **Domain registrar** | e.g. `deft.dev`, `getdeft.com`, `usedeft.com` | N/A | **~$10–50/yr** | Cloudflare Registrar sells at cost (no markup). |
+
+## 📧 Communication
+
+| Service | What for | Free tier | Launch cost | Notes |
+|---|---|---|---|---|
+| **Resend** | Transactional email: password reset, email verification (Phase A6), member invites, weekly digests | 3,000 emails/mo, 100/day free | **$0** at launch, $20/mo for 50k | Required for Phase G3 email verification flow. Needs domain verification via DNS records. Set `RESEND_API_KEY` + `FROM_EMAIL`. |
+
+## 🔐 Auth / OAuth providers
+
+| Service | What for | Cost | Setup effort |
+|---|---|---|---|
+| **Google Cloud Console** | OAuth credentials for "Sign in with Google" + Google Calendar integration | Free | **Medium** — requires OAuth consent screen verification (brand verification can take 2–6 weeks for apps requesting sensitive scopes like Calendar). Google reviews: domain ownership, Privacy Policy URL, Terms of Service URL, demo video. **This is why Phases B1+B2 are blocking.** |
+| **GitHub OAuth App** | OAuth credentials for GitHub integration (PR/issue polling, agent read) | Free | Low — create OAuth app, add client id/secret, done. Production redirect URI: `https://api.deft.dev/api/connections/github/callback` |
+
+## 🤖 AI / MCP services (required for agent features)
+
+| Service | What for | Free tier | Launch cost | Notes |
+|---|---|---|---|---|
+| **Anthropic API** (Claude Sonnet + Haiku) | Core agent loop + contextual follow-ups + all LLM features | Pay-per-token, no free tier | **$5–50/mo at small usage, $200+ at growing team scale** | **Primary cost driver.** Session 2.5 prompt caching cuts cost ~55%. Budget $0.07–0.21 per agent query depending on complexity. See `docs/superpowers/plans/AGENT-UI-BACKLOG.md` item #11 for proper credit tracking (deferred). |
+| **Tavily** | Web search MCP — used by all agent employees via `tavily_search` / `tavily_extract` / `tavily_crawl` | 1,000 credits/mo free | **$0** at small scale, ~$30/mo for 4k credits | Credit rotation: the dev key pasted into this session's chat history on April 12 should be rotated post-deploy. |
+| **Upstash Context7** | Real-time library documentation MCP — used by `resolve-library-id` / `get-library-docs` | Generous free tier with API key (`CONTEXT7_API_KEY`) | **$0** | Paid only at serious scale. |
+| **Playwright MCP** | Browser automation (`mcp__playwright-browser__*` tools) | Free — runs as a stdio subprocess via `npx @playwright/mcp` | **$0** | Self-hosted, uses local chromium. Chromium binary (~150MB) must be pre-installed in the production container. |
+| **Time MCP** (`time-mcp`) | Current time + timezone conversion | Free | **$0** | Local stdio subprocess via npx. |
+| **Fetch MCP** (`fetch-mcp`) | HTTP GET with markdown extraction | Free | **$0** | Local stdio. |
+| **Sequential Thinking MCP** | Structured reasoning scratchpad | Free | **$0** | Local stdio. |
+
+## 📊 Monitoring + observability
+
+| Service | What for | Free tier | Launch cost | Notes |
+|---|---|---|---|---|
+| **Sentry** (Phase C2) | Error tracking for API (`@sentry/node`) + web (`@sentry/nextjs`) | 5,000 errors/mo, 1 user | **$0** at launch, $26/mo team plan | Required per DEPLOYMENT-PLAN. Captures unhandled exceptions, API 5xx, failed jobs. |
+| **BetterUptime** or **UptimeRobot** | Uptime monitoring: `/health`, `/health/queue`, WebSocket connectivity | Free: 50 monitors, 5-min checks | **$0** | Required for Phase G. Alerts via email/SMS/Slack. |
+| **Axiom** or **Logtail** (optional) | Log aggregation + query — needed after Phase C3 structured logging is in | Axiom free: 500MB/mo. Logtail free: 1GB/mo | **$0** at launch | Not strictly required — Railway/Fly.io capture stdout/stderr by default. Aggregation helps after you have real traffic. |
+
+## 📈 Analytics
+
+| Service | What for | Cost | Notes |
+|---|---|---|---|
+| **Plausible** *(recommended)* | Privacy-friendly product analytics — no cookies, no consent banner needed, no GDPR headaches | **$9/mo** for 10k pageviews | Ships in a single script tag. Great for privacy-conscious product. Reduces legal surface (no cookie consent). |
+| **PostHog** *(alt)* | Full-featured analytics + session recordings + feature flags + A/B testing | Free tier: 1M events/mo | Much more powerful but requires cookie consent (Phase B5). Useful if you want behavioral analytics and experimentation. |
+
+## 💳 Payments (Sprint 6 — optional at launch)
+
+| Service | What for | Cost | Notes |
+|---|---|---|---|
+| **Stripe** | Billing, checkout, customer portal, invoices, dunning | **2.9% + $0.30 per charge**, no monthly fee | Phase F1 if/when you charge customers. Launch free first, add when paying intent materializes. |
+| **Stripe Tax** (optional) | Automatic VAT / sales tax calculation | 0.5% per transaction | Only matters for international + US state-level sales tax. |
+
+## ⚖️ Legal / compliance
+
+| Service | What for | Cost | Notes |
+|---|---|---|---|
+| **iubenda** or **Termly** | Privacy Policy + Terms of Service generator (Phase B1+B2) | iubenda: $9/mo for full suite. Termly: free with branding, $10/mo without | Alternative: hand-written by you or a lawyer ($500–2000 one-time). Required for Google OAuth approval. |
+| **Data Processing Agreement template** | GDPR compliance for enterprise customers asking for a DPA | Free templates (gdpr.eu, iubenda) or lawyer ($500+) | Not needed for launch; needed when first enterprise prospect asks. |
+| **Google Workspace** or **Zoho Mail** (optional) | Custom-domain email for `support@deft.dev`, `noreply@deft.dev`, etc. | Google Workspace: $6/user/mo. Zoho Mail: free for 5 users | Can delay — start with `noreply@deft.dev` via Resend domain verification + forward to a personal inbox. |
+
+## 🛠️ Dev tooling / CI
+
+| Service | What for | Cost | Notes |
+|---|---|---|---|
+| **GitHub** | Source hosting + Actions CI/CD | Free for private repos + 2,000 Actions minutes/mo | Already using. Existing `.github/workflows/ci.yml` runs typecheck + build. |
+| **GitHub Actions** | CI: typecheck, build, deploy, eventually test | Free tier: 2,000 min/mo on private. $0.008/min beyond. | Plenty for a small team. |
+| **Claude Code** / **Anthropic API** (dev tooling) | You already have this | Per-session cost | Not counted as "Deft dependency" but worth noting — agentic dev loops are part of the budget. |
+
+## 📦 npm packages to add (not yet installed)
+
+These are packages the audit flags as needed but which aren't in the tree yet. Install with `pnpm --filter @deft/web add <pkg>` or `pnpm --filter @deft/api add <pkg>`:
+
+| Package | Where | Purpose | Phase |
+|---|---|---|---|
+| **`dompurify`** + `@types/dompurify` | `@deft/web` | Sanitize the 8 `dangerouslySetInnerHTML` sites | A2 |
+| **`hono-rate-limiter`** (or similar: `@hono/rate-limiter`) | `@deft/api` | Rate limiting middleware | A4 |
+| **`hono-helmet`** (or manual header middleware) | `@deft/api` | Security headers (CSP, HSTS, X-Frame-Options, etc.) | A5 |
+| **`pino`** + **`pino-http`** (or `hono-pino`) | `@deft/api` | Structured JSON logging with redaction | C3 |
+| **`@sentry/node`** | `@deft/api` | Error tracking (API) | C2 |
+| **`@sentry/nextjs`** | `@deft/web` | Error tracking (web) | C2 |
+| **`@socket.io/redis-adapter`** (conditional) | `@deft/api` | Only if you go multi-instance and keep Redis | C7 |
+| **`stripe`** (conditional) | `@deft/api` | Only if Phase F1 ships | F1 |
+| **`posthog-node`** + **`posthog-js`** (if PostHog) | both | Analytics | G2 |
+
+## 💰 Total launch-month cost estimate
+
+Minimum viable (free tiers only):
+- Railway hobby: $5/mo
+- Domain: ~$1/mo amortized
+- Everything else: $0 (free tiers)
+- Anthropic API: $10–30/mo (depends on usage)
+
+**Total: ~$16–36/mo to run Deft in production on day 1.**
+
+Realistic first 6 months (light traffic, some paid tier upgrades):
+- Railway Pro: $20–50/mo
+- Postgres overage: $0–20/mo
+- Plausible (if chosen): $9/mo
+- Email overage: $0–20/mo (Resend paid tier)
+- Anthropic API: $50–200/mo
+- Sentry Team: $0–26/mo (when free tier runs out)
+
+**Total: ~$80–325/mo for the first 6 months of real operation.**
+
+At 100+ active users or heavy agent usage, expect the Anthropic API line to dominate — budget $500–2000/mo. That's why Session 2.5 prompt caching was worth shipping pre-launch (cuts cost ~55%).
+
+## 🚦 Sequencing note on external dependencies
+
+Many of these dependencies gate each other. Rough order to set up:
+
+1. **Domain + Cloudflare DNS** (before Google OAuth approval can start)
+2. **Resend + domain verification** (before email verification flow works)
+3. **Privacy Policy + TOS pages** (Phase B1+B2 — blocks Google OAuth consent screen approval, which takes 2–6 weeks)
+4. **Google OAuth consent screen + verification** — start the approval flow early, it's async
+5. **Railway + Postgres + managed Redis** (infra)
+6. **R2 + env vars** (file storage)
+7. **Sentry + uptime monitor** (observability)
+8. **Analytics** (after legal pages land)
+9. **Stripe** (only if charging)
+
+Google OAuth verification in particular is **not a code change** — it's a manual process with Google that requires domain ownership, public Privacy Policy URL, public TOS URL, and sometimes a demo video. Start it as soon as the domain and legal pages are live, and don't count on the approval being instant.
