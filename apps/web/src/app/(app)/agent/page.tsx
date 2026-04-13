@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import { AgentChat } from '@/components/agent-chat';
+import { ConversationList } from '@/components/conversation-list';
 import { Send, History, Plus, X } from 'lucide-react';
 
 const SUGGESTIONS = [
@@ -44,21 +45,6 @@ function MobileConversationPanel({
     });
   }, [activeTab]);
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    await api.delete(`/api/agent/conversations/${id}`);
-    setConversations(prev => prev.filter(c => c.id !== id));
-    if (activeId === id) {
-      router.push('/agent');
-    }
-    onClose();
-  };
-
-  const handleNav = () => {
-    onClose();
-  };
-
   return (
     <div
       className="md:hidden flex flex-col flex-shrink-0 border-b"
@@ -83,7 +69,7 @@ function MobileConversationPanel({
       <div className="px-3 py-2">
         <Link
           href={activeTab === 'defty' ? '/agent' : `/agent?employee=${activeTab}`}
-          onClick={handleNav}
+          onClick={onClose}
           className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-[0.8125rem] font-medium w-full"
           style={{ color: 'var(--foreground-secondary)', background: 'var(--surface-hover)' }}
         >
@@ -93,39 +79,23 @@ function MobileConversationPanel({
       </div>
 
       {/* Conversation list */}
-      <div className="px-3 pb-3 overflow-y-auto max-h-[40vh] flex flex-col gap-0.5">
-        {conversations.length === 0 && (
-          <p className="text-[12px] text-center py-4" style={{ color: 'var(--outline)' }}>
-            No conversations yet
-          </p>
-        )}
-        {conversations.slice(0, 20).map(conv => {
-          const isActive = activeId === conv.id;
-          return (
-            <Link
-              key={conv.id}
-              href={conv.agent_employee_id
-                ? `/agent?id=${conv.id}&employee=${conv.agent_employee_id}`
-                : `/agent?id=${conv.id}`}
-              onClick={handleNav}
-              className="flex items-center justify-between gap-2 px-2 py-2 rounded-lg text-[0.8125rem] group"
-              style={{
-                background: isActive ? 'var(--accent-subtle)' : 'transparent',
-                color: isActive ? 'var(--accent)' : 'var(--foreground-secondary)',
-              }}
-            >
-              <span className="truncate flex-1">{conv.title || 'Untitled'}</span>
-              <button
-                onClick={e => handleDelete(conv.id, e)}
-                className="p-1 rounded opacity-0 group-active:opacity-100 flex-shrink-0"
-                style={{ color: 'var(--outline)' }}
-                aria-label="Delete conversation"
-              >
-                <X size={12} />
-              </button>
-            </Link>
-          );
-        })}
+      <div className="px-3 pb-3 overflow-y-auto max-h-[40vh]">
+        <ConversationList
+          conversations={conversations}
+          activeId={activeId}
+          hrefFor={(conv) =>
+            conv.agent_employee_id
+              ? `/agent?id=${conv.id}&employee=${conv.agent_employee_id}`
+              : `/agent?id=${conv.id}`
+          }
+          onDelete={(id) => {
+            setConversations((prev) => prev.filter((c) => c.id !== id));
+            if (activeId === id) router.push('/agent');
+            onClose();
+          }}
+          onNavigate={onClose}
+          emptyText="No conversations yet"
+        />
       </div>
     </div>
   );
