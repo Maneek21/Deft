@@ -29,6 +29,20 @@
       "when": 1775321736076,
       "tag": "0003_complex_maelstrom",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775400000000,
+      "tag": "0004_agent_content_blocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776063215870,
+      "tag": "0005_employee_starter_prompts",
+      "breakpoints": true
     }
   ]
 }
