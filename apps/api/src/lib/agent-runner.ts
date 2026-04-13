@@ -256,13 +256,41 @@ export async function runAgentQuery(params: {
   while (iterations < maxIterations) {
     iterations++;
 
+    // Prompt caching: wrap system prompt and mark the last tool with
+    // cache_control so both blocks read at 10% cost on subsequent
+    // iterations. See agent-stream-loop.ts for the same pattern.
+    const cachedSystem: Anthropic.TextBlockParam[] = [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+    const cachedTools: Anthropic.Tool[] =
+      tools.length > 0
+        ? [
+            ...tools.slice(0, -1),
+            { ...tools[tools.length - 1]!, cache_control: { type: 'ephemeral' } },
+          ]
+        : tools;
+
     const response = await anthropic.messages.create({
       model: reasonConfig.model,
       max_tokens: 4096,
-      system: systemPrompt,
+      system: cachedSystem,
       messages: apiMessages,
-      tools,
+      tools: cachedTools,
     });
+
+    if (response.usage) {
+      const cacheRead = (response.usage as any).cache_read_input_tokens ?? 0;
+      const cacheWrite = (response.usage as any).cache_creation_input_tokens ?? 0;
+      if (cacheRead > 0 || cacheWrite > 0) {
+        console.log(
+          `[agent-runner] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
+        );
+      }
+    }
 
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',

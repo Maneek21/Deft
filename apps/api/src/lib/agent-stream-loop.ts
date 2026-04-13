@@ -63,17 +63,47 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     iterations++;
     console.log(`[agent-loop] iter=${iterations} tokens=${totalTokensIn}/${MAX_INPUT_TOKENS} msgs=${apiMessages.length}`);
 
+    // Two cache breakpoints per Anthropic's prompt-caching limit of 4:
+    //   1. End of system prompt (the employee role + MCP capabilities +
+    //      connections + memory + wiki section — ~4-6k tokens, stable
+    //      across all iterations in a turn).
+    //   2. End of tools list (38+ tool definitions, ~4-6k tokens, also
+    //      stable across iterations).
+    // Subsequent iterations within 5 minutes read both at 10% of the
+    // normal input cost. See docs/superpowers/plans/2026-04-12-agent-ui-session-2.5-prompt-caching.md
+    const cachedSystem: Anthropic.TextBlockParam[] = [
+      {
+        type: 'text',
+        text: p.systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+    const cachedTools: Anthropic.Tool[] =
+      p.tools.length > 0
+        ? [
+            ...p.tools.slice(0, -1),
+            { ...p.tools[p.tools.length - 1]!, cache_control: { type: 'ephemeral' } },
+          ]
+        : p.tools;
+
     const response = await anthropic.messages.create({
       model: p.model,
       max_tokens: 4096,
-      system: p.systemPrompt,
+      system: cachedSystem,
       messages: apiMessages,
-      tools: p.tools,
+      tools: cachedTools,
     }, { signal: p.abortSignal });
 
     if (response.usage) {
       totalTokensIn += response.usage.input_tokens || 0;
       totalTokensOut += response.usage.output_tokens || 0;
+      const cacheRead = (response.usage as any).cache_read_input_tokens ?? 0;
+      const cacheWrite = (response.usage as any).cache_creation_input_tokens ?? 0;
+      if (cacheRead > 0 || cacheWrite > 0) {
+        console.log(
+          `[agent-loop] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
+        );
+      }
     }
 
     const toolUseBlocks = response.content.filter(
