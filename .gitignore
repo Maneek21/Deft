@@ -17,3 +17,8 @@ uploads/
 # Audit script state (contains access tokens)
 playwright-auth.json
 audit-failure-*.png
+
+# Ad-hoc visual review screenshots from the session audit sweep
+s2-visual-*.png
+mcp-bundle-*.png
+ui-audit-*.png
