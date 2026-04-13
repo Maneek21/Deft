@@ -646,7 +646,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                 <div className="w-4 h-4 flex items-center justify-center text-[16px] font-bold flex-shrink-0 mr-2 mt-0.5"
                   style={{ color: 'var(--accent)' }}>◇</div>
               )}
-              <div className={`${msg.role === 'user' ? 'max-w-[85%] md:max-w-[70%]' : 'w-full'}`}>
+              <div className={`${msg.role === 'user' ? 'max-w-[85%] md:max-w-[70%]' : 'w-full pr-4 md:pr-0'}`}>
                 {msg.role === 'assistant' && (
                   <p className="text-[12px] font-semibold mb-1"
                     style={{ color: 'var(--accent)' }}>{agentName || 'Defty'}</p>

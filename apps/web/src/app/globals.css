@@ -399,3 +399,21 @@ input:focus, textarea:focus {
   border-top: 1px solid var(--border, #2a2a35);
   margin: 0.75rem 0;
 }
+
+/* Mobile: keep the horizontal scrollbar visible on code blocks as a hint
+   that wide code can be swiped. Default webkit hides the scrollbar until
+   hover, which doesn't work on touch. */
+@media (max-width: 768px) {
+  .message-content pre {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border, #2a2a35) transparent;
+    padding-bottom: 0.75rem;
+  }
+  .message-content pre::-webkit-scrollbar {
+    height: 4px;
+  }
+  .message-content pre::-webkit-scrollbar-thumb {
+    background: var(--border, #2a2a35);
+    border-radius: 2px;
+  }
+}
