@@ -509,6 +509,16 @@ async function assertGatewayHealth(page: Page): Promise<void> {
 }
 
 async function assertConfirmDangerousFlow(page: Page): Promise<void> {
+  // Phase 11 closed the drawer to check gateway health above the list.
+  // Reopen it here so the upgrade button inside the drawer is clickable.
+  const drawer = page.locator('[data-testid="employee-drawer"]');
+  if (!(await drawer.isVisible().catch(() => false))) {
+    await page
+      .locator(`[data-testid="employee-row-${TEST_EMPLOYEE.slug}"]`)
+      .click();
+    await drawer.waitFor({ state: 'visible', timeout: 5_000 });
+  }
+
   // Click the upgrade button to open the modal.
   await page.locator('[data-testid="upgrade-autonomous-btn"]').click();
   const modal = page.locator('[data-testid="confirm-upgrade-autonomous"]');
