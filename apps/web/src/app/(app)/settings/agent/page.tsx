@@ -2,6 +2,27 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
+import { ConfirmDangerous } from '@/components/confirm-dangerous';
+import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
+
+// Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
+// because the cost column is advisory only.
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  'anthropic/claude-opus-4-6': { input: 15, output: 75 },
+  'anthropic/claude-sonnet-4-6': { input: 3, output: 15 },
+  'anthropic/claude-haiku-4-5-20251001': { input: 0.8, output: 4 },
+};
+
+function computeTurnCostUsd(
+  modelName: string | null | undefined,
+  tin: number | null | undefined,
+  tout: number | null | undefined,
+): number | null {
+  if (!modelName) return null;
+  const p = MODEL_PRICING[modelName];
+  if (!p) return null;
+  return ((tin ?? 0) / 1_000_000) * p.input + ((tout ?? 0) / 1_000_000) * p.output;
+}
 
 type Action = {
   id: string;
@@ -52,19 +73,7 @@ type PendingAction = {
   proposer: 'employee' | 'defty';
 };
 
-type Turn = {
-  id: string;
-  trigger_kind: string;
-  space_id: string | null;
-  latency_ms: number;
-  model_name: string | null;
-  tokens_in: number | null;
-  tokens_out: number | null;
-  result: string;
-  raw_reply_text: string | null;
-  error: string | null;
-  created_at: string;
-};
+type Turn = SessionTurn;
 
 type Toast = { id: string; kind: 'success' | 'error' | 'info'; text: string };
 
@@ -116,6 +125,15 @@ export default function AgentSettingsPage() {
   const [drawerTurns, setDrawerTurns] = useState<Turn[]>([]);
   const [drawerTurnsLoading, setDrawerTurnsLoading] = useState(false);
   const [expandedTurn, setExpandedTurn] = useState<string | null>(null);
+  const [turnsLimit, setTurnsLimit] = useState(20);
+  const [turnFilterTrigger, setTurnFilterTrigger] = useState<string>('');
+  const [turnFilterResult, setTurnFilterResult] = useState<string>('');
+  const [turnReceiptActionId, setTurnReceiptActionId] = useState<string | null>(null);
+  const [turnReceiptIds, setTurnReceiptIds] = useState<Record<string, string>>({});
+
+  // Phase 10 — typed-confirmation modals for the drawer's destructive actions.
+  const [confirmAutonomous, setConfirmAutonomous] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [rejectTarget, setRejectTarget] = useState<PendingAction | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -172,21 +190,91 @@ export default function AgentSettingsPage() {
     })();
   }, [fetchActions, fetchEmployees, fetchPending]);
 
-  const openDrawer = useCallback(async (emp: Employee) => {
-    setDrawerEmp(emp);
-    setDrawerTurns([]);
-    setExpandedTurn(null);
-    setDrawerTurnsLoading(true);
-    try {
-      const res = await api.get(`/api/agent-employees/${emp.id}/turns`);
+  const fetchTurns = useCallback(
+    async (empId: string, limit: number, trigger: string, result: string) => {
+      setDrawerTurnsLoading(true);
+      try {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (trigger) params.set('trigger_kind', trigger);
+        if (result) params.set('result', result);
+        const res = await api.get(`/api/agent-employees/${empId}/turns?${params}`);
+        if (res.ok) {
+          const data = await res.json();
+          setDrawerTurns(data.turns || []);
+        }
+      } finally {
+        setDrawerTurnsLoading(false);
+      }
+    },
+    [],
+  );
+
+  const openDrawer = useCallback(
+    async (emp: Employee) => {
+      setDrawerEmp(emp);
+      setDrawerTurns([]);
+      setExpandedTurn(null);
+      setTurnsLimit(20);
+      setTurnFilterTrigger('');
+      setTurnFilterResult('');
+      setTurnReceiptIds({});
+      await fetchTurns(emp.id, 20, '', '');
+    },
+    [fetchTurns],
+  );
+
+  // Refetch turns when filters/limit change while the drawer is open.
+  useEffect(() => {
+    if (!drawerEmp) return;
+    void fetchTurns(drawerEmp.id, turnsLimit, turnFilterTrigger, turnFilterResult);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnsLimit, turnFilterTrigger, turnFilterResult]);
+
+  // Probe the receipt proxy lazily when the user expands a turn.
+  const checkReceipt = useCallback(
+    async (turnId: string) => {
+      if (!drawerEmp) return;
+      if (turnReceiptIds[turnId]) return; // already resolved
+      const res = await api.get(
+        `/api/agent-employees/${drawerEmp.id}/turns/${turnId}/receipt`,
+      );
       if (res.ok) {
         const data = await res.json();
-        setDrawerTurns(data.turns || []);
+        if (data.action_id) {
+          setTurnReceiptIds((prev) => ({ ...prev, [turnId]: data.action_id }));
+        }
       }
-    } finally {
-      setDrawerTurnsLoading(false);
+    },
+    [drawerEmp, turnReceiptIds],
+  );
+
+  const upgradeToAutonomous = useCallback(async () => {
+    if (!drawerEmp) return;
+    const res = await api.patch(`/api/agent-employees/${drawerEmp.id}`, {
+      trust_level: 'autonomous',
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as any));
+      throw new Error(body.error || 'Failed to upgrade trust level');
     }
-  }, []);
+    setDrawerEmp({ ...drawerEmp, trust_level: 'autonomous' });
+    setEmployees((prev) =>
+      prev.map((e) => (e.id === drawerEmp.id ? { ...e, trust_level: 'autonomous' } : e)),
+    );
+    flash('success', `${drawerEmp.name} upgraded to autonomous`);
+  }, [drawerEmp, flash]);
+
+  const deleteEmployee = useCallback(async () => {
+    if (!drawerEmp) return;
+    const res = await api.delete(`/api/agent-employees/${drawerEmp.id}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as any));
+      throw new Error(body.error || 'Failed to delete employee');
+    }
+    setEmployees((prev) => prev.filter((e) => e.id !== drawerEmp.id));
+    flash('info', `${drawerEmp.name} deleted`);
+    setDrawerEmp(null);
+  }, [drawerEmp, flash]);
 
   const scrollToPending = useCallback(() => {
     const el = document.getElementById('pending-approvals-section');
@@ -617,6 +705,66 @@ export default function AgentSettingsPage() {
         />
       )}
 
+      {/* Phase 10 — turn-scoped receipt viewer (from the drawer) */}
+      {turnReceiptActionId && (
+        <ReceiptViewer
+          actionId={turnReceiptActionId}
+          isOpen={turnReceiptActionId !== null}
+          onClose={() => setTurnReceiptActionId(null)}
+        />
+      )}
+
+      {/* Phase 10 — trust upgrade to autonomous */}
+      {drawerEmp && (
+        <ConfirmDangerous
+          open={confirmAutonomous}
+          onClose={() => setConfirmAutonomous(false)}
+          title="Upgrade trust level to AUTONOMOUS?"
+          body={
+            <>
+              <p className="mb-2">
+                Autonomous trust auto-executes all write actions except posting to
+                chat. Every action will still produce a signed receipt in the action
+                log.
+              </p>
+              <p>This cannot be undone without another confirmation.</p>
+            </>
+          }
+          confirmWord="AUTONOMOUS"
+          confirmLabel="Upgrade trust level"
+          variant="warning"
+          onConfirm={upgradeToAutonomous}
+          testId="confirm-upgrade-autonomous"
+        />
+      )}
+
+      {/* Phase 10 — delete employee */}
+      {drawerEmp && (
+        <ConfirmDangerous
+          open={confirmDelete}
+          onClose={() => setConfirmDelete(false)}
+          title={`Delete ${drawerEmp.name}?`}
+          body={
+            <>
+              <p className="mb-2">
+                Soft-deletes the employee and tears down any managed provider
+                instances. Pending approvals are marked expired. You can still
+                access the audit log afterwards.
+              </p>
+              <p>
+                Type the employee slug to confirm —{' '}
+                <span className="font-mono">{drawerEmp.slug}</span>
+              </p>
+            </>
+          }
+          confirmWord={drawerEmp.slug}
+          confirmLabel="Delete employee"
+          variant="danger"
+          onConfirm={deleteEmployee}
+          testId="confirm-delete-employee"
+        />
+      )}
+
       {/* Drawer */}
       {drawerEmp && (
         <div
@@ -674,18 +822,98 @@ export default function AgentSettingsPage() {
             </div>
 
             <div className="p-5">
-              <button
-                disabled
-                title="Coming in Phase 10"
-                className="w-full text-[12px] px-3 py-2 rounded opacity-50 cursor-not-allowed mb-4"
-                style={{ background: 'var(--surface-container)', color: 'var(--muted)', border: '1px solid var(--border)' }}
-              >
-                Upgrade to autonomous (Coming in Phase 10)
-              </button>
+              {/* Phase 10 — destructive action gates */}
+              <div className="flex gap-2 mb-4">
+                {drawerEmp.trust_level !== 'autonomous' ? (
+                  <button
+                    onClick={() => setConfirmAutonomous(true)}
+                    className="flex-1 text-[12px] px-3 py-2 rounded font-medium"
+                    style={{
+                      background: 'var(--warning, #f59e0b)',
+                      color: 'white',
+                    }}
+                    data-testid="upgrade-autonomous-btn"
+                  >
+                    Upgrade to autonomous
+                  </button>
+                ) : (
+                  <div
+                    className="flex-1 text-[11px] px-3 py-2 rounded text-center"
+                    style={{
+                      background: 'var(--surface-container)',
+                      color: 'var(--muted)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    Trust: autonomous
+                  </div>
+                )}
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-[12px] px-3 py-2 rounded font-medium"
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--danger, #ef4444)',
+                    border: '1px solid var(--danger, #ef4444)',
+                  }}
+                  data-testid="delete-employee-btn"
+                >
+                  Delete
+                </button>
+              </div>
 
-              <h4 className="text-[12px] font-semibold mb-2" style={{ color: 'var(--foreground)' }}>
-                Recent turns
-              </h4>
+              {/* Recent turns header + filter bar */}
+              <div className="flex items-center justify-between mb-2">
+                <h4
+                  className="text-[12px] font-semibold"
+                  style={{ color: 'var(--foreground)' }}
+                >
+                  Recent turns
+                </h4>
+                <div className="flex gap-1.5">
+                  <select
+                    value={turnFilterTrigger}
+                    onChange={(e) => {
+                      setTurnsLimit(20);
+                      setTurnFilterTrigger(e.target.value);
+                    }}
+                    className="text-[10px] px-1.5 py-0.5 rounded"
+                    style={{
+                      background: 'var(--surface-container-low, var(--surface))',
+                      color: 'var(--foreground-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    data-testid="turn-filter-trigger"
+                  >
+                    <option value="">all triggers</option>
+                    <option value="chat_mention">chat_mention</option>
+                    <option value="cron">cron</option>
+                    <option value="webhook">webhook</option>
+                    <option value="event">event</option>
+                  </select>
+                  <select
+                    value={turnFilterResult}
+                    onChange={(e) => {
+                      setTurnsLimit(20);
+                      setTurnFilterResult(e.target.value);
+                    }}
+                    className="text-[10px] px-1.5 py-0.5 rounded"
+                    style={{
+                      background: 'var(--surface-container-low, var(--surface))',
+                      color: 'var(--foreground-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    data-testid="turn-filter-result"
+                  >
+                    <option value="">all results</option>
+                    <option value="success">success</option>
+                    <option value="error">error</option>
+                    <option value="timeout">timeout</option>
+                    <option value="rejected_approval">rejected</option>
+                  </select>
+                </div>
+              </div>
+
               {drawerTurnsLoading ? (
                 <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
                   Loading...
@@ -695,73 +923,52 @@ export default function AgentSettingsPage() {
                   No recent turns.
                 </p>
               ) : (
-                <div className="space-y-1.5">
-                  {drawerTurns.map((turn) => {
-                    const expanded = expandedTurn === turn.id;
-                    return (
-                      <div
-                        key={turn.id}
-                        className="rounded px-2 py-1.5 text-[11px]"
-                        style={{
-                          background: 'var(--card-bg)',
-                          border: '1px solid var(--border)',
-                        }}
-                      >
-                        <button
-                          onClick={() => setExpandedTurn(expanded ? null : turn.id)}
-                          className="w-full flex items-center gap-2 text-left"
-                          data-testid={`turn-row-${turn.id}`}
-                        >
-                          <span
-                            className="px-1.5 py-0.5 rounded text-[9px] font-medium"
-                            style={{
-                              background:
-                                turn.result === 'success'
-                                  ? 'rgba(16,185,129,0.15)'
-                                  : 'rgba(239,68,68,0.15)',
-                              color: turn.result === 'success' ? '#10b981' : '#ef4444',
-                            }}
-                          >
-                            {turn.result}
-                          </span>
-                          <span style={{ color: 'var(--foreground)' }}>{turn.trigger_kind}</span>
-                          <span className="flex-1" />
-                          <span style={{ color: 'var(--muted)' }}>{turn.latency_ms}ms</span>
-                          <span style={{ color: 'var(--muted)' }}>
-                            {formatRelative(turn.created_at)}
-                          </span>
-                        </button>
-                        {expanded && (
-                          <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
-                            {turn.model_name && (
-                              <p className="text-[10px]" style={{ color: 'var(--muted)' }}>
-                                model: {turn.model_name}
-                              </p>
-                            )}
-                            {turn.raw_reply_text && (
-                              <pre
-                                className="text-[10px] whitespace-pre-wrap mt-1 p-2 rounded"
-                                style={{
-                                  background: 'var(--surface-container)',
-                                  color: 'var(--foreground-secondary)',
-                                  maxHeight: 200,
-                                  overflowY: 'auto',
-                                }}
-                              >
-                                {turn.raw_reply_text}
-                              </pre>
-                            )}
-                            {turn.error && (
-                              <p className="text-[10px] mt-1" style={{ color: '#ef4444' }}>
-                                {turn.error}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                <>
+                  <div className="space-y-1.5">
+                    {drawerTurns.map((turn) => {
+                      const expanded = expandedTurn === turn.id;
+                      const cost = computeTurnCostUsd(
+                        turn.model_name,
+                        turn.tokens_in,
+                        turn.tokens_out,
+                      );
+                      const receiptActionId = turnReceiptIds[turn.id];
+                      return (
+                        <SessionTurnCard
+                          key={turn.id}
+                          turn={turn}
+                          expanded={expanded}
+                          costUsd={cost}
+                          receiptAvailable={Boolean(receiptActionId)}
+                          onViewReceipt={
+                            receiptActionId
+                              ? () => setTurnReceiptActionId(receiptActionId)
+                              : undefined
+                          }
+                          onToggle={() => {
+                            const next = expanded ? null : turn.id;
+                            setExpandedTurn(next);
+                            if (next) void checkReceipt(turn.id);
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  {drawerTurns.length >= turnsLimit && turnsLimit < 100 && (
+                    <button
+                      onClick={() => setTurnsLimit(Math.min(turnsLimit + 20, 100))}
+                      className="w-full mt-2 text-[11px] py-1.5 rounded"
+                      style={{
+                        background: 'var(--surface-container)',
+                        color: 'var(--foreground-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                      data-testid="turns-load-more"
+                    >
+                      Load more
+                    </button>
+                  )}
+                </>
               )}
 
               {/* Pending approvals scoped to this employee */}

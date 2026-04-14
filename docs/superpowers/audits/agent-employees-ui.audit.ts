@@ -139,15 +139,39 @@ async function seedTestEmployee(): Promise<{ projectId: string; spaceId: string 
     assert(sp.rows.length > 0, 'no space available for audit');
     const spaceId: string = sp.rows[0].id;
 
-    // Seed a session_turns row for the drawer assertion.
+    // Phase 10 — seed 3 session_turns rows with varied trigger_kinds,
+    // latencies, and results so the session inspector can render + filter
+    // without hitting an empty state.
     await c.query(
       `INSERT INTO agent_session_turns
          (id, org_id, employee_id, trigger_kind, input_messages_json,
-          raw_reply_text, latency_ms, model_name, result)
+          tool_calls_json, raw_reply_text, latency_ms, model_name,
+          tokens_in, tokens_out, result)
        VALUES
-         (gen_random_uuid()::text, $1, $2, 'cron:standup', '[]'::jsonb,
-          'Test reply', 1234, 'anthropic/claude-sonnet-4-6', 'success')`,
-      [ORG_ID, TEST_EMPLOYEE.id],
+         (gen_random_uuid()::text, $1, $2, 'cron:standup', $3::jsonb,
+          $4::jsonb, 'Daily standup posted.', 1234, 'anthropic/claude-sonnet-4-6',
+          512, 256, 'success'),
+         (gen_random_uuid()::text, $1, $2, 'chat_mention', $5::jsonb,
+          '[]'::jsonb, 'Roger that.', 850, 'anthropic/claude-sonnet-4-6',
+          128, 64, 'success'),
+         (gen_random_uuid()::text, $1, $2, 'webhook:pr-merged', '[]'::jsonb,
+          '[]'::jsonb, null, 5600, 'anthropic/claude-sonnet-4-6',
+          0, 0, 'error')`,
+      [
+        ORG_ID,
+        TEST_EMPLOYEE.id,
+        JSON.stringify([
+          { role: 'system', content: 'You are alex-pm.' },
+          { role: 'user', content: 'Kick off the standup.' },
+        ]),
+        JSON.stringify([
+          { type: 'tool_use', name: 'memory_recall', input: { query: 'standup' }, output: { facts: [] } },
+        ]),
+        JSON.stringify([
+          { role: 'system', content: 'You are alex-pm.' },
+          { role: 'user', content: '@alex-pm what is the status?' },
+        ]),
+      ],
     );
 
     return { projectId, spaceId };
@@ -363,9 +387,101 @@ async function assertDrawerOpensAndShowsTurn(page: Page): Promise<void> {
     `drawer should surface the pending task_create, got: ${drawerText.slice(0, 400)}`,
   );
   console.log('  step 3: drawer opens + turns + pending OK');
+}
 
+async function assertSessionInspector(page: Page): Promise<void> {
+  // Phase 10 — the drawer should render all 3 seeded turns, each with a
+  // result pill, trigger kind chip, and latency metric.
+  const turnRows = page.locator('[data-testid^="turn-row-"]');
+  await turnRows.first().waitFor({ state: 'visible', timeout: 5_000 });
+  const turnCount = await turnRows.count();
+  assert(
+    turnCount >= 3,
+    `expected at least 3 session turn rows, got ${turnCount}`,
+  );
+
+  // Expand the first turn — it should reveal tabs (input / tools / reply / metrics).
+  await turnRows.first().click();
+  const expanded = page.locator('[data-testid^="turn-expanded-"]').first();
+  await expanded.waitFor({ state: 'visible', timeout: 3_000 });
+  const expandedText = (await expanded.innerText()).toLowerCase();
+  assert(
+    expandedText.includes('input'),
+    `expanded turn should show Input tab label, got: ${expandedText.slice(0, 300)}`,
+  );
+  assert(
+    expandedText.includes('tools'),
+    `expanded turn should show Tools tab label, got: ${expandedText.slice(0, 300)}`,
+  );
+  assert(
+    expandedText.includes('reply'),
+    `expanded turn should show Reply tab label, got: ${expandedText.slice(0, 300)}`,
+  );
+  console.log('  step 3b: session inspector expand + tabs OK');
+}
+
+async function assertConfirmDangerousFlow(page: Page): Promise<void> {
+  // Click the upgrade button to open the modal.
+  await page.locator('[data-testid="upgrade-autonomous-btn"]').click();
+  const modal = page.locator('[data-testid="confirm-upgrade-autonomous"]');
+  await modal.waitFor({ state: 'visible', timeout: 3_000 });
+
+  const input = page.locator('[data-testid="confirm-upgrade-autonomous-input"]');
+  const confirmBtn = page.locator('[data-testid="confirm-upgrade-autonomous-confirm"]');
+
+  // Wrong word → button still disabled.
+  await input.fill('autonomous'); // lowercase ≠ AUTONOMOUS
+  assert(
+    await confirmBtn.isDisabled(),
+    'confirm button should stay disabled when the typed word does not match exactly',
+  );
+
+  // Clear and type the right word.
+  await input.fill('');
+  await input.fill('AUTONOMOUS');
+  assert(
+    await confirmBtn.isEnabled(),
+    'confirm button should enable once the typed word matches',
+  );
+
+  // Cancel — modal should close without changing trust_level.
+  await page.locator('[data-testid="confirm-upgrade-autonomous-cancel"]').click();
+  await modal.waitFor({ state: 'hidden', timeout: 3_000 });
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT trust_level FROM agent_employees WHERE id = $1`,
+      [TEST_EMPLOYEE.id],
+    );
+    assert(
+      r.rows[0]?.trust_level === 'standard',
+      `cancel must not flip trust_level, got: ${JSON.stringify(r.rows[0])}`,
+    );
+  });
+
+  // Reopen, type correct word, confirm → DB flips.
+  await page.locator('[data-testid="upgrade-autonomous-btn"]').click();
+  await modal.waitFor({ state: 'visible', timeout: 3_000 });
+  await input.fill('AUTONOMOUS');
+  await confirmBtn.click();
+  await modal.waitFor({ state: 'hidden', timeout: 5_000 });
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT trust_level FROM agent_employees WHERE id = $1`,
+      [TEST_EMPLOYEE.id],
+    );
+    assert(
+      r.rows[0]?.trust_level === 'autonomous',
+      `confirm should flip trust_level to autonomous, got: ${JSON.stringify(r.rows[0])}`,
+    );
+  });
+  console.log('  step 3c: ConfirmDangerous upgrade flow OK');
+
+  // Close the drawer before the next test step expects the pending row.
   await page.locator('[data-testid="drawer-close"]').click();
-  await drawer.waitFor({ state: 'hidden', timeout: 3_000 });
+  await page
+    .locator('[data-testid="employee-drawer"]')
+    .waitFor({ state: 'hidden', timeout: 3_000 });
 }
 
 async function rejectAction(page: Page, actionId: string): Promise<void> {
@@ -480,6 +596,8 @@ async function main(): Promise<void> {
       await assertEmployeeRowVisible(page);
       await assertPendingSectionShows(page, rejectActionId);
       await assertDrawerOpensAndShowsTurn(page);
+      await assertSessionInspector(page);
+      await assertConfirmDangerousFlow(page);
       await rejectAction(page, rejectActionId);
 
       // Insert a second pending action and approve it.

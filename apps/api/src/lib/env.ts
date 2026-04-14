@@ -34,4 +34,6 @@ export const env = {
   RAILWAY_OAUTH_REDIRECT_URI:
     process.env.RAILWAY_OAUTH_REDIRECT_URI ||
     'http://localhost:3001/api/integrations/railway/callback',
+  // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.
+  METRICS_SCRAPE_TOKEN: process.env.METRICS_SCRAPE_TOKEN || '',
 };

@@ -46,6 +46,7 @@ import { agentFollowupsRoutes } from './routes/agent-followups.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
 import { integrationsRoutes } from './routes/integrations.js';
 import { agentDeployRoutes } from './routes/agent-deploy.js';
+import { metricsRoutes } from './routes/metrics.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -67,6 +68,10 @@ app.route('/mcp', mcpServerRoutes);
 
 // Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
 app.route('/api/mcp/v1', mcpServerV1Routes);
+
+// Phase 10 — Prometheus metrics export, own bearer scheme, mounted before
+// authMiddleware so scrapers don't need a JWT.
+app.route('/api/metrics', metricsRoutes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);

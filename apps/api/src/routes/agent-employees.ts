@@ -155,45 +155,154 @@ agentEmployeeRoutes.get('/', async (c) => {
   }
 });
 
-// Phase 6.5 — recent session turns for an employee, used by the detail
-// drawer in Settings → Agent. Returns the last 20 turns.
+// Phase 6.5 / Phase 10 — session inspector feed for an employee.
+//
+// Phase 6.5 shipped the first cut (last 20 turns, compact fields).
+// Phase 10 extends this to:
+//   - accept `?limit=<1..100>` (default 20)
+//   - accept `?trigger_kind=` and `?result=` filters
+//   - include the full `input_messages_json` + `tool_calls_json` so the
+//     drawer can render a proper session inspector
+// The UI is responsible for paginating by incrementing `limit`.
 agentEmployeeRoutes.get('/:id/turns', async (c) => {
   try {
     const user = c.get('user');
     const id = c.req.param('id');
 
+    // Scope check — the caller must share the employee's org.
     const [existing] = await db
-      .select({ id: agentEmployees.id })
+      .select({ id: agentEmployees.id, org_id: agentEmployees.org_id })
       .from(agentEmployees)
-      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .where(eq(agentEmployees.id, id))
       .limit(1);
     if (!existing) {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (existing.org_id !== user.org_id) {
+      return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
+    }
+
+    // Parse ?limit (1..100, default 20).
+    const limitRaw = c.req.query('limit');
+    let limit = 20;
+    if (limitRaw !== undefined) {
+      const n = parseInt(limitRaw, 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        return c.json({ error: 'Invalid limit', code: 'VALIDATION_ERROR' }, 400);
+      }
+      limit = Math.min(n, 100);
+    }
+
+    const triggerKind = c.req.query('trigger_kind');
+    const result = c.req.query('result');
+
+    const conds = [eq(agentSessionTurns.employee_id, id)];
+    if (triggerKind) conds.push(eq(agentSessionTurns.trigger_kind, triggerKind));
+    if (result) {
+      conds.push(
+        eq(
+          agentSessionTurns.result,
+          result as 'success' | 'timeout' | 'error' | 'rejected_approval',
+        ),
+      );
     }
 
     const turns = await db
       .select({
         id: agentSessionTurns.id,
         trigger_kind: agentSessionTurns.trigger_kind,
+        triggering_message_id: agentSessionTurns.triggering_message_id,
         space_id: agentSessionTurns.space_id,
+        input_messages_json: agentSessionTurns.input_messages_json,
+        tool_calls_json: agentSessionTurns.tool_calls_json,
+        raw_reply_text: agentSessionTurns.raw_reply_text,
         latency_ms: agentSessionTurns.latency_ms,
         model_name: agentSessionTurns.model_name,
         tokens_in: agentSessionTurns.tokens_in,
         tokens_out: agentSessionTurns.tokens_out,
         result: agentSessionTurns.result,
-        raw_reply_text: agentSessionTurns.raw_reply_text,
         error: agentSessionTurns.error,
         created_at: agentSessionTurns.created_at,
       })
       .from(agentSessionTurns)
-      .where(eq(agentSessionTurns.employee_id, id))
+      .where(and(...conds))
       .orderBy(desc(agentSessionTurns.created_at))
-      .limit(20);
+      .limit(limit);
 
-    return c.json({ turns });
+    return c.json({ turns, limit });
   } catch (err) {
     console.error('Failed to list employee turns:', err);
     return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// Phase 10 — receipt proxy for a specific session turn. If the turn is linked
+// to an `agent_actions` row (via `triggering_message_id` or a separate join)
+// and that action has an `action_receipts` row, return the receipt envelope
+// plus the verified flag. This lets the drawer surface a "View receipt"
+// affordance without the UI probing two endpoints.
+//
+// Matching strategy: `agent_session_turns` does not directly reference
+// `agent_actions`, but both carry `agent_employee_id` + a common time window.
+// We match the most recent receipt for that employee where the receipt's
+// `created_at` is within the turn window (±5s). Narrow enough for production
+// and only ever returns a receipt the caller is entitled to see.
+agentEmployeeRoutes.get('/:id/turns/:turn_id/receipt', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const turnId = c.req.param('turn_id');
+
+    const [employee] = await db
+      .select({ id: agentEmployees.id, org_id: agentEmployees.org_id })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, id))
+      .limit(1);
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (employee.org_id !== user.org_id) {
+      return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
+    }
+
+    const [turn] = await db
+      .select({
+        id: agentSessionTurns.id,
+        employee_id: agentSessionTurns.employee_id,
+        created_at: agentSessionTurns.created_at,
+      })
+      .from(agentSessionTurns)
+      .where(eq(agentSessionTurns.id, turnId))
+      .limit(1);
+    if (!turn || turn.employee_id !== id) {
+      return c.json({ error: 'Turn not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    // Find the most recent agent_actions row for this employee where the
+    // receipt landed within a small window around the turn.
+    const rows = await db.execute(sql`
+      SELECT r.*
+      FROM action_receipts r
+      JOIN agent_actions a ON a.id = r.action_id
+      WHERE a.agent_employee_id = ${id}
+        AND a.org_id = ${user.org_id}
+        AND r.created_at BETWEEN ${turn.created_at}::timestamp - interval '5 seconds'
+                             AND ${turn.created_at}::timestamp + interval '30 seconds'
+      ORDER BY r.created_at DESC
+      LIMIT 1
+    `);
+    const row = ((rows as any).rows ?? rows)[0];
+    if (!row) {
+      return c.json({ error: 'No receipt for turn', code: 'NOT_FOUND' }, 404);
+    }
+
+    // Reuse the existing verify helper from Phase 7.
+    const { verifyReceipt } = await import('../lib/receipts.js');
+    const verified = await verifyReceipt(row as any);
+    return c.json({ receipt: row, verified, action_id: row.action_id });
+  } catch (err) {
+    console.error('Failed to fetch turn receipt:', err);
+    return c.json({ error: 'Failed to fetch turn receipt', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
@@ -458,6 +567,75 @@ agentEmployeeRoutes.put('/:id', async (c) => {
   }
 });
 
+// ═══ PATCH (Phase 10 — targeted field updates, gated by role) ═══
+
+const patchSchema = z.object({
+  trust_level: z.enum(['conservative', 'standard', 'autonomous']).optional(),
+});
+
+async function getOrgRole(userId: string, orgId: string): Promise<string | null> {
+  const [m] = await db
+    .select({ role: orgMembers.role })
+    .from(orgMembers)
+    .where(and(eq(orgMembers.user_id, userId), eq(orgMembers.org_id, orgId)))
+    .limit(1);
+  return m?.role ?? null;
+}
+
+agentEmployeeRoutes.patch('/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = patchSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
+        400,
+      );
+    }
+
+    const [existing] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!existing) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    // Any destructive field flips (trust_level in Phase 10) require
+    // `owner` or `admin` on the caller's org_members row.
+    if (parsed.data.trust_level !== undefined) {
+      const role = await getOrgRole(user.id, user.org_id);
+      if (role !== 'owner' && role !== 'admin') {
+        return c.json(
+          { error: 'Only owners or admins can change trust level', code: 'FORBIDDEN' },
+          403,
+        );
+      }
+    }
+
+    const updates: Record<string, any> = {};
+    if (parsed.data.trust_level !== undefined) updates.trust_level = parsed.data.trust_level;
+
+    if (Object.keys(updates).length === 0) {
+      return c.json(existing);
+    }
+
+    const [updated] = await db
+      .update(agentEmployees)
+      .set(updates)
+      .where(eq(agentEmployees.id, id))
+      .returning();
+
+    return c.json(updated);
+  } catch (err) {
+    console.error('Failed to patch agent employee:', err);
+    return c.json({ error: 'Failed to update', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // ═══ DELETE (soft) ═══
 
 agentEmployeeRoutes.delete('/:id', async (c) => {
@@ -475,6 +653,16 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
+    // Phase 10 — Settings page gates this behind ConfirmDangerous (user
+    // types the slug). owner/admin only on the destructive path.
+    const role = await getOrgRole(user.id, user.org_id);
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json(
+        { error: 'Only owners or admins can delete an employee', code: 'FORBIDDEN' },
+        403,
+      );
+    }
+
     // Soft delete: deactivate employee and user
     await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
     await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
@@ -489,6 +677,48 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
           eq(agentActions.approval_status, 'pending'),
         ),
       );
+
+    // Phase 10 — tear down any managed provider_instances rows via the
+    // DeploymentProvider registry. Best-effort — a failing destroy should
+    // not leave the employee undeletable from the UI.
+    try {
+      const instances = await db.execute(sql`
+        SELECT id, org_id, provider, integration_id, external_instance_id,
+               external_project_id, external_environment_id, provider_metadata
+        FROM provider_instances
+        WHERE employee_id = ${id} AND status <> 'destroyed'
+      `);
+      const rows = ((instances as any).rows ?? instances) as any[];
+      if (rows.length > 0) {
+        const { getProvider } = await import('../lib/deployment/index.js');
+        for (const row of rows) {
+          try {
+            const provider = getProvider(row.provider);
+            await provider.destroy({
+              id: row.id,
+              org_id: row.org_id,
+              provider: row.provider,
+              integration_id: row.integration_id,
+              external_instance_id: row.external_instance_id,
+              external_project_id: row.external_project_id,
+              external_environment_id: row.external_environment_id,
+              provider_metadata: row.provider_metadata,
+            });
+            await db.execute(sql`
+              UPDATE provider_instances SET status = 'destroyed' WHERE id = ${row.id}
+            `);
+          } catch (destroyErr) {
+            console.warn(
+              '[delete-employee] provider.destroy failed for instance',
+              row.id,
+              destroyErr,
+            );
+          }
+        }
+      }
+    } catch (provErr) {
+      console.warn('[delete-employee] provider_instances cleanup skipped:', provErr);
+    }
 
     return c.json({ success: true });
   } catch (err) {

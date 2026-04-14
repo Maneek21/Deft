@@ -9,6 +9,7 @@
     "audit:agent-employees-ui": "tsx docs/superpowers/audits/agent-employees-ui.audit.ts",
     "audit:receipts": "tsx docs/superpowers/audits/audit-receipts.audit.ts",
     "audit:deploy-wizard": "tsx docs/superpowers/audits/deploy-wizard.audit.ts",
+    "audit:metrics": "tsx docs/superpowers/audits/metrics-smoke.ts",
     "audit:setup": "tsx docs/superpowers/audits/setup-auth.ts",
     "build": "pnpm -r build",
     "db:generate": "pnpm --filter @deft/db generate",
