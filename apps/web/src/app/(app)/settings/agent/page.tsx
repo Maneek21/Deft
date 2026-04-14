@@ -4,6 +4,10 @@ import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
 import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
+import {
+  GatewayHealthCard,
+  type GatewayHealthMember,
+} from '@/components/gateway-health-card';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -48,6 +52,9 @@ type Employee = {
   avatar_url?: string | null;
   connection_status?: 'pending' | 'connected' | 'error' | 'revoked';
   connection_url?: string | null;
+  connection_error?: string | null;
+  last_gateway_ping_at?: string | null;
+  gateway_ping_fail_count?: number | null;
   template_slug?: string | null;
   template_version?: string | null;
   trigger_subscriptions?: string[] | null;
@@ -386,6 +393,58 @@ export default function AgentSettingsPage() {
             Saving...
           </p>
         )}
+      </div>
+
+      {/* Gateway health — Phase 11 */}
+      <div className="mb-8" data-testid="gateway-health-section">
+        <h3
+          className="text-[14px] font-semibold mb-3"
+          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+        >
+          Gateway health
+        </h3>
+        {(() => {
+          const openclawEmployees = employees.filter(
+            (e) => (e.kind ?? 'openclaw') === 'openclaw' && !!e.connection_url,
+          );
+          if (openclawEmployees.length === 0) {
+            return (
+              <p className="text-[13px]" style={{ color: 'var(--muted)' }}>
+                No OpenClaw gateways deployed yet.
+              </p>
+            );
+          }
+          const groups = new Map<string, Employee[]>();
+          for (const emp of openclawEmployees) {
+            const url = emp.connection_url as string;
+            const list = groups.get(url) ?? [];
+            list.push(emp);
+            groups.set(url, list);
+          }
+          return (
+            <div className="space-y-2">
+              {Array.from(groups.entries()).map(([url, members]) => {
+                const healthMembers: GatewayHealthMember[] = members.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  slug: m.slug,
+                  role: m.role,
+                  connection_status: m.connection_status ?? 'pending',
+                  connection_error: m.connection_error ?? null,
+                  last_gateway_ping_at: m.last_gateway_ping_at ?? null,
+                  gateway_ping_fail_count: m.gateway_ping_fail_count ?? 0,
+                }));
+                return (
+                  <GatewayHealthCard
+                    key={url}
+                    gatewayUrl={url}
+                    employees={healthMembers}
+                  />
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Employees — Phase 6.5 */}

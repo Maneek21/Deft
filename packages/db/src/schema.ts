@@ -1192,6 +1192,8 @@ export const agentEmployees = pgTable('agent_employees', {
     .$type<'railway' | 'fly' | 'digitalocean' | 'deft_cloud' | 'byo'>(),
   provider_instance_id: text('provider_instance_id'),
   connection_error: text('connection_error'),
+  last_gateway_ping_at: timestamp('last_gateway_ping_at'),
+  gateway_ping_fail_count: integer('gateway_ping_fail_count').default(0).notNull(),
   capability_packs: text('capability_packs').array(),
   // ────────────────────────────────────────────────────────────────────
   created_by: text('created_by').notNull().references(() => users.id),

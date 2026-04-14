@@ -14,6 +14,7 @@ const CRON_DELAYS: Record<string, number> = {
   'wiki-lint': 86400000,          // 24 hours
   'agent-daily-reset': 86400000,  // 24 hours
   'agent-heartbeat': 60000,       // 60 seconds
+  'gateway-ping': 60000,          // 60 seconds — Phase 11
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -27,6 +28,7 @@ const CRON_KEYS: Record<string, string> = {
   'wiki-lint': 'cron:wiki-lint',
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
+  'gateway-ping': 'gateway-ping',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -140,6 +142,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'agent-heartbeat': {
       const mod = await import('./handlers/agent-employee-heartbeat.js');
       return mod.handleAgentEmployeeHeartbeat;
+    }
+    case 'gateway-ping': {
+      // Phase 11 — per-Gateway connectivity ping. Distinct from the
+      // proactive wake-up agent-heartbeat handler above; this one only
+      // verifies the OpenClaw Gateway is reachable and updates per-row
+      // connection_status/gateway_ping_fail_count.
+      const mod = await import('./handlers/gateway-ping.js');
+      return mod.handleGatewayPing;
     }
     default:
       return null;

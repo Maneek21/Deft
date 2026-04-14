@@ -50,6 +50,13 @@ const TEST_EMPLOYEE = {
   name: `Test UI Employee ${RUN_SUFFIX}`,
   connection_url: 'http://localhost:18789',
 };
+// Phase 11 — sibling employee sharing TEST_EMPLOYEE.connection_url so the
+// Gateway Health card aggregates two rows under one Gateway entry.
+const TEST_EMPLOYEE_SIBLING = {
+  id: `test-ui-emp-sibling-${RUN_SUFFIX}`,
+  slug: `test-ui-emp-sibling-${RUN_SUFFIX}`,
+  name: `Test UI Employee Sibling ${RUN_SUFFIX}`,
+};
 const TEST_USER_ID = `test-ui-shadow-${RUN_SUFFIX}`;
 
 const LAST_RUN_PATH = 'docs/superpowers/audits/agent-employees-ui.last-run.txt';
@@ -113,6 +120,38 @@ async function seedTestEmployee(): Promise<{ projectId: string; spaceId: string 
         TEST_USER_ID,
         TEST_EMPLOYEE.name,
         TEST_EMPLOYEE.slug,
+        TEST_EMPLOYEE.connection_url,
+      ],
+    );
+
+    // Phase 11 — sibling employee sharing the same connection_url. Both
+    // rows should roll up into a single Gateway Health card.
+    await c.query(
+      `INSERT INTO agent_employees
+         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+          kind, connection_url, connection_status, template_slug, template_version,
+          trigger_subscriptions, is_active, last_gateway_ping_at, gateway_ping_fail_count,
+          created_by)
+       VALUES
+         ($1, $2, $3, $4, $5, 'engineering_lead', 'test ui employee sibling', 'standard',
+          'openclaw', $6, 'connected', 'engineering-lead', '1.0.0',
+          ARRAY['cron:standup']::text[], true, now(), 0, $3)
+       ON CONFLICT (id) DO UPDATE SET
+         kind = 'openclaw',
+         connection_url = $6,
+         connection_status = 'connected',
+         template_slug = 'engineering-lead',
+         template_version = '1.0.0',
+         trigger_subscriptions = ARRAY['cron:standup']::text[],
+         is_active = true,
+         last_gateway_ping_at = now(),
+         gateway_ping_fail_count = 0`,
+      [
+        TEST_EMPLOYEE_SIBLING.id,
+        ORG_ID,
+        TEST_USER_ID,
+        TEST_EMPLOYEE_SIBLING.name,
+        TEST_EMPLOYEE_SIBLING.slug,
         TEST_EMPLOYEE.connection_url,
       ],
     );
@@ -237,9 +276,10 @@ async function cleanupAll(): Promise<void> {
       `DELETE FROM org_members WHERE user_id = $1`,
       [TEST_USER_ID],
     );
+    // Phase 11 — remove the sibling row before the parent so no dangling FKs.
     await c.query(
-      `DELETE FROM agent_employees WHERE id = $1`,
-      [TEST_EMPLOYEE.id],
+      `DELETE FROM agent_employees WHERE id IN ($1, $2)`,
+      [TEST_EMPLOYEE.id, TEST_EMPLOYEE_SIBLING.id],
     );
     await c.query(
       `DELETE FROM users WHERE id = $1`,
@@ -420,6 +460,54 @@ async function assertSessionInspector(page: Page): Promise<void> {
   console.log('  step 3b: session inspector expand + tabs OK');
 }
 
+async function assertGatewayHealth(page: Page): Promise<void> {
+  // Phase 11 — the "Gateway health" section should show one card for the
+  // shared connection_url with both seeded employees rolled up under it.
+  // Close any open drawer so the section above the list is visible.
+  const drawerClose = page.locator('[data-testid="drawer-close"]');
+  if (await drawerClose.isVisible().catch(() => false)) {
+    await drawerClose.click();
+    await page
+      .locator('[data-testid="employee-drawer"]')
+      .waitFor({ state: 'hidden', timeout: 3_000 })
+      .catch(() => {});
+  }
+
+  const section = page.locator('[data-testid="gateway-health-section"]');
+  await section.waitFor({ state: 'visible', timeout: 5_000 });
+
+  const host = new URL(TEST_EMPLOYEE.connection_url).host;
+  const card = page.locator(`[data-testid="gateway-health-card-${host}"]`);
+  await card.waitFor({ state: 'visible', timeout: 5_000 });
+
+  const statusPill = page.locator(`[data-testid="gateway-health-status-${host}"]`);
+  await statusPill.waitFor({ state: 'visible', timeout: 3_000 });
+  const pillText = (await statusPill.innerText()).toLowerCase();
+  assert(
+    pillText.includes('connected'),
+    `gateway status pill should read "Connected", got: ${pillText}`,
+  );
+
+  // Both seeded employees should appear inside the card.
+  const cardText = await card.innerText();
+  assert(
+    cardText.includes(TEST_EMPLOYEE.name),
+    `gateway card should list ${TEST_EMPLOYEE.name}, got: ${cardText.slice(0, 400)}`,
+  );
+  assert(
+    cardText.includes(TEST_EMPLOYEE_SIBLING.name),
+    `gateway card should list ${TEST_EMPLOYEE_SIBLING.name}, got: ${cardText.slice(0, 400)}`,
+  );
+
+  const memberRows = card.locator('[data-testid^="gateway-health-member-"]');
+  const memberCount = await memberRows.count();
+  assert(
+    memberCount >= 2,
+    `expected at least 2 gateway member rows, got ${memberCount}`,
+  );
+  console.log('  step 3d: gateway health card shows both employees OK');
+}
+
 async function assertConfirmDangerousFlow(page: Page): Promise<void> {
   // Click the upgrade button to open the modal.
   await page.locator('[data-testid="upgrade-autonomous-btn"]').click();
@@ -597,6 +685,7 @@ async function main(): Promise<void> {
       await assertPendingSectionShows(page, rejectActionId);
       await assertDrawerOpensAndShowsTurn(page);
       await assertSessionInspector(page);
+      await assertGatewayHealth(page);
       await assertConfirmDangerousFlow(page);
       await rejectAction(page, rejectActionId);
 
