@@ -161,7 +161,91 @@ async function cleanupCurrentRun(): Promise<void> {
   });
 }
 
+// Phase 9 — all 8 first-party templates ship. Wizard step 1 renders 8
+// clickable cards (not 1 + 7 coming-soon placeholders).
+const EXPECTED_TEMPLATE_SLUGS = [
+  'alex-pm',
+  'designer',
+  'qa',
+  'cs',
+  'community',
+  'on-call',
+  'cfo',
+  'devops',
+];
+
+// Expected default packs for alex-pm on step 2 (matches the §17 catalog +
+// capability-packs.ts TEMPLATE_DEFAULT_PACKS).
+const ALEX_PM_EXPECTED_PACKS = [
+  'deft-workspace',
+  'web-browsing',
+  'tavily',
+  'github',
+  'google-calendar',
+];
+
+async function verifyAllTemplateCardsClickable(page: Page): Promise<void> {
+  for (const slug of EXPECTED_TEMPLATE_SLUGS) {
+    const card = page.locator(`[data-testid="role-card-${slug}"]`);
+    const count = await card.count();
+    assert(count === 1, `Template card ${slug} should render exactly once (found ${count})`);
+    const isDisabled = await card.first().isDisabled();
+    assert(!isDisabled, `Template card ${slug} should be enabled in Phase 9`);
+
+    // Click each card — this verifies the card renders its description
+    // and flips selection state without errors. We don't proceed past
+    // step 1 here.
+    await card.first().click();
+    const descriptionText = await card.first().innerText();
+    assert(
+      descriptionText.length > 20,
+      `Template card ${slug} must render a non-trivial description`,
+    );
+  }
+  console.log(`  all ${EXPECTED_TEMPLATE_SLUGS.length} role cards clickable + describe themselves`);
+}
+
+async function verifyAlexPmDefaultPacks(page: Page): Promise<void> {
+  // After clicking alex-pm, move to step 2 and verify the preview shows
+  // the expected default-capability-packs for this template.
+  await page.click('[data-testid="role-card-alex-pm"]');
+  await page.waitForSelector('[data-testid="wizard-slug-input"]');
+  // We need a slug + name filled in to proceed, so feed placeholder values.
+  await page.fill('[data-testid="wizard-slug-input"]', `${TEST_SLUG}-preview`);
+  await page.fill('[data-testid="wizard-name-input"]', 'preview');
+  await page.click('[data-testid="wizard-next"]');
+
+  // On step 2, every default pack should have its checkbox pre-checked.
+  await page.waitForSelector('[data-testid="capability-pack-deft-workspace"]');
+  for (const packSlug of ALEX_PM_EXPECTED_PACKS) {
+    const locator = page.locator(`[data-testid="capability-pack-${packSlug}"] input`);
+    const count = await locator.count();
+    assert(count > 0, `capability-pack-${packSlug} checkbox not rendered`);
+    const checked = await locator.first().isChecked();
+    assert(checked, `capability-pack-${packSlug} should be checked by default for alex-pm`);
+  }
+  console.log(`  alex-pm defaults match expected capability packs: ${ALEX_PM_EXPECTED_PACKS.join(', ')}`);
+
+  // Go back to step 1 so the main runWizard flow starts clean.
+  await page.click('[data-testid="wizard-back"]').catch(async () => {
+    // If back button isn't present, reload the page and restart.
+    await page.goto(`${WEB_URL}/settings/agent`, { waitUntil: 'networkidle' });
+    await page.click('[data-testid="deploy-new-employee"]');
+    await page.waitForSelector('[data-testid="deploy-wizard"]');
+  });
+}
+
 async function runWizard(page: Page): Promise<string> {
+  await page.goto(`${WEB_URL}/settings/agent`, { waitUntil: 'networkidle' });
+  await page.click('[data-testid="deploy-new-employee"]');
+  await page.waitForSelector('[data-testid="deploy-wizard"]');
+
+  // Phase 9 — verify all 8 cards render + are clickable BEFORE the main
+  // deploy flow. This is the expanded step-1 coverage.
+  await verifyAllTemplateCardsClickable(page);
+  await verifyAlexPmDefaultPacks(page);
+
+  // Re-enter the wizard to run the deploy flow fresh.
   await page.goto(`${WEB_URL}/settings/agent`, { waitUntil: 'networkidle' });
   await page.click('[data-testid="deploy-new-employee"]');
   await page.waitForSelector('[data-testid="deploy-wizard"]');

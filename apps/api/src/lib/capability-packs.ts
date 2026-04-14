@@ -203,18 +203,29 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
 ];
 
 /**
- * Default capability pack per first-party role template. Wizard seeds the
- * step 2 checklist with these picks but the user can change any of them.
+ * Default capability pack per first-party role template.
+ *
+ * @deprecated Phase 9 moved the canonical defaults into the
+ * `agent_employee_templates.default_capability_packs` column (migration 0016).
+ * Read `agentEmployeeTemplates.default_capability_packs` from the DB instead.
+ * This map is retained ONLY as a fallback so existing code paths don't break
+ * during rolling deploys where a template row might predate migration 0016.
+ * A later phase may remove it entirely once all environments are re-seeded.
+ *
+ * NOTE: these values are intentionally aligned with the §17 catalog as of
+ * Phase 9 — they differ from the Phase 8 v1 list (which included unavailable
+ * packs like figma/playwright-mcp/pagerduty that are still marked
+ * `coming_soon` in `CAPABILITY_PACKS`).
  */
 export const TEMPLATE_DEFAULT_PACKS: Record<string, string[]> = {
   'alex-pm': ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],
-  designer: ['deft-workspace', 'web-browsing', 'figma'],
+  designer: ['deft-workspace', 'web-browsing', 'tavily'],
+  qa: ['deft-workspace', 'web-browsing', 'github'],
+  cs: ['deft-workspace', 'web-browsing'],
+  community: ['deft-workspace', 'web-browsing', 'tavily'],
+  'on-call': ['deft-workspace', 'web-browsing', 'tavily', 'github', 'shell-exec'],
   cfo: ['deft-workspace', 'google-calendar'],
-  qa: ['deft-workspace', 'github', 'playwright-mcp'],
-  cs: ['deft-workspace', 'web-browsing', 'gmail'],
-  'on-call': ['deft-workspace', 'web-browsing', 'tavily', 'pagerduty', 'shell-exec'],
-  community: ['deft-workspace', 'web-browsing', 'slack'],
-  devops: ['deft-workspace', 'web-browsing', 'github', 'shell-exec', 'cloudflare'],
+  devops: ['deft-workspace', 'web-browsing', 'github', 'shell-exec'],
 };
 
 export function getCapabilityPack(slug: string): CapabilityPack | undefined {

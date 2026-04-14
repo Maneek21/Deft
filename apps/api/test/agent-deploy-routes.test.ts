@@ -40,6 +40,12 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 }
 
 async function seedFixtures() {
+  // Phase 9 — wizard-config now reads real templates from
+  // `agent_employee_templates`. Make sure they're seeded before the
+  // wizard-config test runs.
+  const { seedTemplates } = await import('../src/scripts/seed-templates.js');
+  await seedTemplates({ silent: true });
+
   await withClient(async (c) => {
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)

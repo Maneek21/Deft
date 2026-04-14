@@ -1259,6 +1259,9 @@ export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
   user_md_template: text('user_md_template').notNull(),
   tools_md: text('tools_md').notNull(),
   default_tools: text('default_tools').array().notNull(),
+  // Phase 9 — pack slugs matching `CAPABILITY_PACKS` in capability-packs.ts.
+  // Nullable for backward compatibility with rows seeded before migration 0016.
+  default_capability_packs: text('default_capability_packs').array(),
   default_trust_level: trustLevelEnum('default_trust_level').default('standard').notNull(),
   default_trigger_subscriptions: text('default_trigger_subscriptions').array(),
   model_recommendation: text('model_recommendation').notNull(),

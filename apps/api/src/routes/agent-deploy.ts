@@ -41,7 +41,10 @@ export const agentDeployRoutes = new Hono();
 
 // ─── Wizard config ───────────────────────────────────────────────────
 agentDeployRoutes.get('/wizard-config', async (c) => {
-  // Pull the limited first-party templates the wizard exposes today.
+  // Phase 9: the wizard reads templates ONLY from the real table. The
+  // synthesised alex-pm fallback from Phase 8 has been removed — if the
+  // table is empty, we return a pointed error telling the operator how
+  // to seed it.
   const templates = await db
     .select({
       slug: agentEmployeeTemplates.slug,
@@ -51,34 +54,33 @@ agentDeployRoutes.get('/wizard-config', async (c) => {
       role: agentEmployeeTemplates.role,
       default_trust_level: agentEmployeeTemplates.default_trust_level,
       default_trigger_subscriptions: agentEmployeeTemplates.default_trigger_subscriptions,
+      default_capability_packs: agentEmployeeTemplates.default_capability_packs,
     })
     .from(agentEmployeeTemplates)
     .where(eq(agentEmployeeTemplates.is_public, true));
 
-  // Fallback: if no templates seeded yet, synthesize the alex-pm card so
-  // the wizard UI still renders. Phase 9 replaces this with real seeding.
-  const hasAlex = templates.some((t) => t.slug === 'alex-pm');
-  const synthesized = hasAlex
-    ? templates
-    : [
-        ...templates,
-        {
-          slug: 'alex-pm',
-          name: 'Alex PM',
-          description: 'Project manager — sprint tracking, standup briefings, blocker detection.',
-          version: '1.0.0',
-          role: 'project_manager' as const,
-          default_trust_level: 'standard' as const,
-          default_trigger_subscriptions: ['cron:standup'],
-        },
-      ];
+  if (templates.length === 0) {
+    return c.json(
+      {
+        error:
+          'No templates available. Run `pnpm tsx apps/api/src/scripts/seed-templates.ts` to seed the defaults.',
+        code: 'TEMPLATES_NOT_SEEDED',
+      },
+      500,
+    );
+  }
 
-  // Only alex-pm is fully implemented in Phase 8 per the plan; others get
-  // disabled badges until Phase 9.
-  const templateCards = synthesized.map((t) => ({
+  // Phase 9 — all 8 first-party templates are fully implemented. The
+  // `ready_in_phase_8` flag is retained on the wire for backward compat
+  // with any older wizard UI still in the field, but now returns `true`
+  // for every template so no cards are disabled.
+  const templateCards = templates.map((t) => ({
     ...t,
-    ready_in_phase_8: t.slug === 'alex-pm',
-    default_capability_packs: TEMPLATE_DEFAULT_PACKS[t.slug] ?? [],
+    ready_in_phase_8: true,
+    // Prefer the DB column; fall back to the Phase 8 hashmap for rows
+    // that predate migration 0016 and haven't been re-seeded yet.
+    default_capability_packs:
+      t.default_capability_packs ?? TEMPLATE_DEFAULT_PACKS[t.slug] ?? [],
   }));
 
   return c.json({
