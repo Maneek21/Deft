@@ -3,8 +3,19 @@
  *
  * Trust levels (set per org in Settings > Agent):
  *   conservative — every write action requires explicit user approval
- *   standard     — 'auto' tier actions execute immediately, 'quick'/'full' need approval
+ *   standard     — 'auto' and 'quick' execute immediately, only 'full' needs approval
  *   autonomous   — 'auto' and 'quick' execute immediately, only 'full' needs approval
+ *
+ * Matrix update (task #58 / Option 2 — 2026-04-14):
+ *   Previously `standard` was near-identical to `conservative` — it only
+ *   auto-executed `auto` tier, so task_create / memory_update / wiki_write
+ *   all queued. The mental model in plan doc §0 was "routine stuff auto,
+ *   risky stuff queued" which wasn't matching reality. Loosening standard
+ *   to auto-exec quick-tier makes it behave like the plan promises.
+ *   Autonomous and standard now share the same matrix; the distinction is
+ *   primarily a UX affordance (autonomous implies "you read the receipts
+ *   after the fact and trust the agent") vs standard (you still occasionally
+ *   check the queue for full-tier actions). Receipts make both modes safe.
  *
  * Approval tiers (assigned per action tool):
  *   auto  — low-risk internal state changes (status update, assignment)
@@ -67,7 +78,7 @@ export function shouldAutoExecute(
 
   const tier = TOOL_APPROVAL_TIERS[action] || 'full';
 
-  if (trustLevel === 'standard') return tier === 'auto';
+  if (trustLevel === 'standard') return tier === 'auto' || tier === 'quick';
   if (trustLevel === 'autonomous') return tier === 'auto' || tier === 'quick';
 
   return false;

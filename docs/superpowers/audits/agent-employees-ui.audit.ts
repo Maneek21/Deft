@@ -187,6 +187,12 @@ async function insertPendingAction(
 
 async function cleanupAll(): Promise<void> {
   await withClient(async (c) => {
+    // Phase 7 added action_receipts with a real FK to agent_actions.id —
+    // drop receipts first so the agent_actions delete doesn't violate FK.
+    await c.query(
+      `DELETE FROM action_receipts WHERE action_id IN (SELECT id FROM agent_actions WHERE agent_employee_id = $1)`,
+      [TEST_EMPLOYEE.id],
+    );
     await c.query(
       `DELETE FROM agent_actions WHERE agent_employee_id = $1`,
       [TEST_EMPLOYEE.id],

@@ -1,6 +1,6 @@
 Phase 6.5 agent employees UI audit — PASS
-run at: 2026-04-14T12:32:45.538Z
-elapsed_ms: 11264
+run at: 2026-04-14T13:23:50.373Z
+elapsed_ms: 11839
 api_url: http://localhost:3001
 web_url: http://localhost:3000
-test_employee_slug: test-ui-emp-1776169954274
+test_employee_slug: test-ui-emp-1776173018533
