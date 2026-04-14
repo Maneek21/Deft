@@ -1,5 +1,11 @@
 'use client';
 
+// Phase 12 — feature flag gating the entire wizard. Matches the constant in
+// ../page.tsx. When off, this route renders a short "not enabled" message
+// instead of the wizard. Also prevents direct URL access.
+const FEATURE_OPENCLAW_EMPLOYEES =
+  process.env.NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES === 'true';
+
 /**
  * Phase 8 — Deploy Employee wizard.
  *
@@ -33,7 +39,32 @@ type WizardConfig = {
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
+function DeployDisabled() {
+  return (
+    <div className="max-w-3xl mx-auto p-6" data-testid="deploy-wizard-disabled">
+      <h2
+        className="text-[20px] font-semibold mb-2"
+        style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+      >
+        Deploy Employee is not enabled
+      </h2>
+      <p className="text-[13px]" style={{ color: 'var(--muted)' }}>
+        Set <code>NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES=true</code> in your
+        environment to enable the agent employee wizard.
+      </p>
+    </div>
+  );
+}
+
 export default function DeployEmployeePage() {
+  if (!FEATURE_OPENCLAW_EMPLOYEES) {
+    return <DeployDisabled />;
+  }
+
+  return <DeployEmployeePageInner />;
+}
+
+function DeployEmployeePageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
