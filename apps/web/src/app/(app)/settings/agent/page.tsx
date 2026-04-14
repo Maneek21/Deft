@@ -302,12 +302,22 @@ export default function AgentSettingsPage() {
 
       {/* Employees — Phase 6.5 */}
       <div className="mb-8">
-        <h3
-          className="text-[14px] font-semibold mb-3"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-        >
-          Employees
-        </h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3
+            className="text-[14px] font-semibold"
+            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+          >
+            Employees
+          </h3>
+          <a
+            href="/settings/agent/deploy"
+            data-testid="deploy-new-employee"
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+            style={{ background: 'var(--accent)', color: 'white' }}
+          >
+            Deploy new employee
+          </a>
+        </div>
         {employeesLoading ? (
           <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
             Loading...

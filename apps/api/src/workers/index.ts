@@ -87,6 +87,13 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/employee-trigger.js');
       return mod.handleEmployeeTrigger;
     }
+    case 'deploy-provision': {
+      // Phase 8 — wizard submission handler. Dispatches to the correct
+      // DeploymentProvider and persists provider_instances + updates the
+      // employee row based on the result.
+      const mod = await import('./handlers/deploy-provision.js');
+      return mod.handleDeployProvision;
+    }
     default:
       return null;
   }

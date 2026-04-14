@@ -1187,6 +1187,12 @@ export const agentEmployees = pgTable('agent_employees', {
   template_version: text('template_version'),
   trigger_subscriptions: text('trigger_subscriptions').array(),
   provider_hint: text('provider_hint'),
+  // ─── Phase 8 deployment provider columns ────────────────────────────
+  deployment_provider: text('deployment_provider')
+    .$type<'railway' | 'fly' | 'digitalocean' | 'deft_cloud' | 'byo'>(),
+  provider_instance_id: text('provider_instance_id'),
+  connection_error: text('connection_error'),
+  capability_packs: text('capability_packs').array(),
   // ────────────────────────────────────────────────────────────────────
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
@@ -1332,4 +1338,51 @@ export const spaceMemory = pgTable('space_memory', {
   ...timestamps(),
 }, (t) => [
   uniqueIndex('space_memory_key_unique').on(t.space_id, t.key),
+]);
+
+// ═══ INTEGRATIONS (Phase 8) ═══
+// Third-party OAuth integrations Deft uses to orchestrate managed employee
+// deployments (Railway today; Fly/DO later). Tokens encrypted via env.ENCRYPTION_KEY.
+export const integrations = pgTable('integrations', {
+  ...id(),
+  ...orgId(),
+  provider: text('provider').$type<'railway' | 'fly' | 'digitalocean'>().notNull(),
+  account_label: text('account_label'),
+  access_token_encrypted: text('access_token_encrypted').notNull(),
+  refresh_token_encrypted: text('refresh_token_encrypted'),
+  access_token_expires_at: timestamp('access_token_expires_at'),
+  scopes: text('scopes').array(),
+  external_workspace_id: text('external_workspace_id'),
+  external_workspace_name: text('external_workspace_name'),
+  external_default_project_id: text('external_default_project_id'),
+  status: text('status').$type<'connected' | 'revoked' | 'error'>().default('connected').notNull(),
+  connected_by: text('connected_by').references(() => users.id),
+  last_used_at: timestamp('last_used_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('integrations_org_provider_idx').on(t.org_id, t.provider),
+]);
+
+// ═══ PROVIDER INSTANCES (Phase 8) ═══
+// One row per deployed OpenClaw employee that lives on a managed provider
+// or BYO infrastructure. DeploymentProvider.provision() inserts the row;
+// DeploymentProvider.destroy() flips status='destroyed'.
+export const providerInstances = pgTable('provider_instances', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id),
+  provider: text('provider').$type<'railway' | 'fly' | 'digitalocean' | 'deft_cloud' | 'byo'>().notNull(),
+  integration_id: text('integration_id').references(() => integrations.id),
+  external_instance_id: text('external_instance_id'),
+  external_project_id: text('external_project_id'),
+  external_environment_id: text('external_environment_id'),
+  provider_metadata: jsonb('provider_metadata'),
+  cost_usd_cents_monthly: integer('cost_usd_cents_monthly'),
+  deft_orchestration_fee_usd_cents_monthly: integer('deft_orchestration_fee_usd_cents_monthly'),
+  status: text('status').$type<'provisioning' | 'running' | 'crashed' | 'stopped' | 'destroyed' | 'unknown'>().default('provisioning').notNull(),
+  last_status_check_at: timestamp('last_status_check_at'),
+  ...timestamps(),
+}, (t) => [
+  index('provider_instances_employee_idx').on(t.employee_id),
+  index('provider_instances_org_idx').on(t.org_id),
 ]);

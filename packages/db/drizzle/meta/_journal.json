@@ -85,6 +85,27 @@
       "when": 1776600005000,
       "tag": "0011_wiki_pages_embedding",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1776600006000,
+      "tag": "0013_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776600007000,
+      "tag": "0014_provider_instances",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1776600008000,
+      "tag": "0015_agent_employees_deployment",
+      "breakpoints": true
     }
   ]
 }

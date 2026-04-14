@@ -44,6 +44,8 @@ import { mcpServerRoutes } from './routes/mcp-server.js';
 import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
 import { agentFollowupsRoutes } from './routes/agent-followups.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
+import { integrationsRoutes } from './routes/integrations.js';
+import { agentDeployRoutes } from './routes/agent-deploy.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -105,6 +107,8 @@ app.route('/api/mcp-connections', mcpConnectionRoutes);
 app.route('/api/api-keys', apiKeyRoutes);
 app.route('/api/agent/followups', agentFollowupsRoutes);
 app.route('/api/agent-plans', agentPlanRoutes);
+app.route('/api/integrations', integrationsRoutes);
+app.route('/api/agents/deploy', agentDeployRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
