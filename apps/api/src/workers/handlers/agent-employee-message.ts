@@ -178,6 +178,9 @@ You have ${dailyActionsRemaining} actions remaining today out of ${employee.max_
       systemPromptOverride: systemPrompt,
       trustLevelOverride: employee.trust_level,
       agentEmployeeId: employeeId,
+      // Chat mentions have a human in the loop; skip the self-verification
+      // pass which was mangling Alex PM replies with meta-commentary.
+      skipVerification: true,
     }),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('agent-employee-message: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),

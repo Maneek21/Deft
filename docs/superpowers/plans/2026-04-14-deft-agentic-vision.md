@@ -8,7 +8,7 @@
 
 **Architecture:** Two-surface agent model: (a) Defty runs in-process with direct SQL access, unchanged, the demo centerpiece; (b) Employees run as OpenClaw agents on user-controlled VPSes, connecting back to Deft through a new MCP server that exposes the wiki as typed memory, tasks as action tools, and approval-gated write operations. **Dynamic per-turn context flows through a `platform_context` MCP tool called by the agent at turn start, not through request-body system prompts — OpenClaw owns the system prompt assembly and does not merge client-supplied system messages.** All triggers (cron, chat @mention, webhook, DB event) stay in Deft's job queue and dispatch to employees via `/v1/chat/completions` with `model: openclaw/<slug>` routing (confirmed supported). Audit receipts, template marketplace, and session inspector are adapted from Mission Control's MIT-licensed codebase.
 
-**Tech Stack:** TypeScript (Hono API, Next.js 16 App Router), PostgreSQL + Drizzle + tsvector FTS + pgvector (new), BullMQ-on-Postgres job queue, Socket.io, MCP streamable-http, OpenClaw Docker (external, ghcr.io/openclaw/openclaw:latest pinned), Anthropic SDK, Claude Opus 4.6 (Defty) / user-BYOK for employees.
+**Tech Stack:** TypeScript (Hono API, Next.js 16 App Router), PostgreSQL + Drizzle + tsvector FTS + pgvector (new), BullMQ-on-Postgres job queue, Socket.io, MCP streamable-http, OpenClaw Docker (external, ghcr.io/openclaw/openclaw:latest pinned), Anthropic SDK, Claude Opus 4.6 (Defty native) / Claude Sonnet 4.6 (OpenClaw employee default, BYOK) / Opus opt-in for high-stakes employee roles.
 
 **Target demo date:** 2026-04-28 (two weeks). **Realistic effort:** 50-85 working hours or 8-14 working days. The "4 days MVP" estimate from yesterday's rev 1 was optimistic and has been removed. MVP must demo: Defty unchanged, one deployed OpenClaw Alex PM employee replying in chat, wiki memory being read/written across both agents, audit receipts visible on Settings → Agent, DigitalOcean one-click deploy path working end-to-end.
 
@@ -102,9 +102,9 @@ Defty and employees share the brain. Employees are portable and BYOK. The worksp
 │  OpenClaw Gateway :18789                                                    │
 │  ├─ mcp.servers.deft → single bearer, shared by all agents                  │
 │  ├─ agents.list[]                                                           │
-│  │   ├─ alex-pm    (Claude Opus 4.6, SOUL.md, AGENTS.md, USER.md, TOOLS.md) │
+│  │   ├─ alex-pm    (Claude Sonnet 4.6, SOUL.md, AGENTS.md, USER.md, TOOLS.md)│
 │  │   ├─ designer   (Claude Sonnet 4.6, SOUL.md, AGENTS.md, USER.md, TOOLS.md)│
-│  │   ├─ cfo        (Claude Opus 4.6, SOUL.md, AGENTS.md, USER.md, TOOLS.md) │
+│  │   ├─ cfo        (Claude Opus 4.6,   SOUL.md, AGENTS.md, USER.md, TOOLS.md)│  // Opus opt-in for finance
 │  │   └─ qa         (Claude Sonnet 4.6, SOUL.md, AGENTS.md, USER.md, TOOLS.md)│
 │  ├─ plugins.slots.memory = "none"  (Deft wiki is sole memory source)        │
 │  ├─ tools.agentToAgent.enabled = true  (sessions_send cross-employee)       │
@@ -120,7 +120,7 @@ Defty and employees share the brain. Employees are portable and BYOK. The worksp
 3. Worker looks up employee. If `kind = 'native'` → existing `runAgentQuery` path (unchanged). If `kind = 'openclaw'` → new `openclaw-chat-envelope.ts`:
    a. Builds thread context (parent + last 10 replies + trigger message)
    b. POSTs to `<connection_url>/v1/chat/completions` with `model: openclaw/alex-pm`, `stream: true`, bearer = Gateway token. **No dynamic system message** — OpenClaw owns the prompt assembly; dynamic context is retrieved by the agent via tool call (step 5).
-4. OpenClaw Gateway routes to the `alex-pm` agent, calls Claude Opus 4.6 with the employee's configured tools
+4. OpenClaw Gateway routes to the `alex-pm` agent, calls Claude Sonnet 4.6 with the employee's configured tools (Sonnet is the default for cost; Opus is opt-in per role)
 5. Agent's **first tool call (always)**: `deft_platform_context({caller_employee_slug: "alex-pm", trigger: {kind: "chat_mention", space_id: "general"}})`. Deft's MCP server returns a JSON blob: current date, org name, employee role + trust level, teammate roster, top 3-5 wiki snippets via FTS+pgvector hybrid search, trigger context. The agent's `AGENTS.md` file instructs it to call this first on every turn.
 6. Agent proceeds with additional tool calls as needed: `deft_memory_recall`, `deft_task_query`, etc. Each carries `caller_employee_slug` for Deft-side scoping enforcement.
 7. Agent finalizes reply → SSE stream back to Deft worker
@@ -495,8 +495,13 @@ New route: `apps/web/src/app/(app)/settings/agent/deploy/page.tsx`
     defaults: {
       workspace: "~/.openclaw/workspace",
       model: {
-        primary: "anthropic/claude-opus-4-6",
-        fallbacks: ["anthropic/claude-sonnet-4-6"],
+        // Sonnet 4.6 is the default for cost — comparable quality to Opus 4.6
+        // on most employee tasks at a fraction of the price, and measurably
+        // faster (Phase 5 audit: Sonnet 16s vs Opus 23-27s per turn). Opus is
+        // opt-in for high-stakes roles like CFO or On-call Responder via the
+        // template marketplace. Fallback to Haiku for trivial acknowledgements.
+        primary: "anthropic/claude-sonnet-4-6",
+        fallbacks: ["anthropic/claude-haiku-4-5-20251001"],
       },
       skills: [],
       timeoutSeconds: 600,
@@ -1172,8 +1177,20 @@ Budget: 3-5 days compat work. Watch `openclaw/openclaw` `main` weekly.
 
 Populated in Phase 9. 6 adapted from `mergisi/awesome-openclaw-agents` (MIT) + 2 Deft-originals.
 
-**alex-pm / designer / qa / cs / on-call / community** — mergisi adapted
-**cfo / devops** — Deft-original
+**Default model per template** (Sonnet is default, Opus is opt-in for high-stakes roles):
+
+| Template | Source | Default model | Opus upgrade? |
+|---|---|---|---|
+| alex-pm | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
+| designer | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
+| qa | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
+| cs | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
+| community | mergisi | `anthropic/claude-haiku-4-5` | n/a — Haiku is plenty for community engagement |
+| **on-call** | mergisi | `anthropic/claude-opus-4-6` | ✅ **default Opus** — incident response needs strongest reasoning |
+| **cfo** | Deft-original | `anthropic/claude-opus-4-6` | ✅ **default Opus** — finance/burn analysis needs strongest reasoning |
+| devops | Deft-original | `anthropic/claude-sonnet-4-6` | optional, default off |
+
+**Rationale:** Sonnet 4.6 empirically delivered comparable response quality to Opus 4.6 in Phase 5 audit testing at ~60% faster turn time (16s vs 23-27s) and ~5x lower token cost. For most employee roles (task management, QA triage, design review, customer support, devops) Sonnet is strictly better UX. Only high-stakes reasoning roles where wrong answers have real cost (finance, incident response) default to Opus. Users can upgrade any template to Opus via the wizard's approval mapping step.
 
 Each template ships SOUL.md + AGENTS.md + USER.md template + TOOLS.md.
 

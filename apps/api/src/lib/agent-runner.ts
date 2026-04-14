@@ -48,7 +48,7 @@ async function verifyResponse(
   orgName: string,
 ): Promise<string> {
   try {
-    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
     const verificationResult = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
@@ -70,7 +70,11 @@ If issues, provide a corrected version (same style/length).`,
     });
 
     const text = (verificationResult.content[0] as any).text?.trim() || 'VERIFIED';
-    return text === 'VERIFIED' ? response : text;
+    // Pass if the first word is VERIFIED — Haiku often appends meta-commentary
+    // like "VERIFIED\n\nThe response accurately..." which would otherwise
+    // replace the real answer with a self-review.
+    const firstWord = text.toUpperCase().match(/^[A-Z]+/)?.[0];
+    return firstWord === 'VERIFIED' ? response : text;
   } catch (err) {
     console.warn('[agent-runner] Verification failed:', err);
     return response;
@@ -91,6 +95,8 @@ export async function runAgentQuery(params: {
   trustLevelOverride?: 'conservative' | 'standard' | 'autonomous';
   /** Agent employee ID for limit enforcement. */
   agentEmployeeId?: string;
+  /** Skip the self-verification pass. Defaults to true for chat_mention, false for background. */
+  skipVerification?: boolean;
 }): Promise<{
   text: string;
   citations: any[];
@@ -227,7 +233,7 @@ export async function runAgentQuery(params: {
   }
 
   const reasonConfig = getModelConfig('reason');
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
 
   // Build messages array
   let apiMessages: Anthropic.MessageParam[] = [];
@@ -405,9 +411,15 @@ export async function runAgentQuery(params: {
     }
   }
 
-  // Self-verification for background mode
+  // Self-verification for background mode. Skipped for chat mentions where
+  // the user is in the loop. Callers can force-skip with skipVerification=true
+  // even in background mode (useful for agent-employee chat replies, which
+  // use background mode for auto-exec but don't want verifier mangling).
   let verifiedText = responseText;
-  if (params.mode === 'background' && responseText && responseText.length > 50) {
+  const shouldVerify = params.skipVerification === undefined
+    ? params.mode === 'background'
+    : !params.skipVerification;
+  if (shouldVerify && responseText && responseText.length > 50) {
     verifiedText = await verifyResponse(content, responseText, allCitations, orgName);
   }
 
