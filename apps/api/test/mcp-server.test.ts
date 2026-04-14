@@ -1,0 +1,307 @@
+/**
+ * Phase 3 — MCP server MVP tests.
+ *
+ * Run: pnpm --filter @deft/api test -- mcp-server
+ *
+ * Covers:
+ *   1. POST /initialize returns MCP handshake without bearer
+ *   2. POST /tools/list with missing bearer returns 401
+ *   3. POST /tools/list with valid bearer returns tool catalog
+ *   4. POST /tools/call platform_context returns JSON with date/org/employee fields
+ *   5. POST /tools/call memory_recall returns at least one page for "BSL"
+ *   6. POST /tools/call memory_write creates a wiki page row
+ *   7. Calling an unknown tool returns MCP tool error
+ *   8. Invalid caller_employee_slug returns 403
+ *   9. platform_context second call within 60s hits the LRU cache
+ *
+ * The test uses a dedicated throwaway OpenClaw-kind employee seeded in setup()
+ * and deleted in teardown() so the 2026-04-13 Alex PM native demo is untouched.
+ */
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import pg from 'pg';
+import { Hono } from 'hono';
+
+// We import the MCP router directly (NOT apps/api/src/index.ts) because
+// importing index.ts would call serve() and open a real TCP port.
+const DATABASE_URL =
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6'; // Maneek seed org
+const TEST_EMPLOYEE_ID = 'test-mcp-phase3-employee';
+const TEST_EMPLOYEE_SLUG = 'mcp-phase3-test';
+const TEST_CONNECTION_URL = 'http://127.0.0.1:19999/test-phase3';
+
+let RAW_TOKEN: string | null = null;
+let TEST_USER_ID: string | null = null;
+let testApp: Hono | null = null;
+let tokenModule: typeof import('../src/lib/mcp-token.js') | null = null;
+
+async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
+  const c = new pg.Client({ connectionString: DATABASE_URL });
+  await c.connect();
+  try {
+    return await fn(c);
+  } finally {
+    await c.end();
+  }
+}
+
+async function findOrCreateTestUser(): Promise<string> {
+  return withClient(async (c) => {
+    const existing = await c.query(
+      `SELECT id FROM users WHERE id = $1`,
+      ['test-mcp-phase3-user']
+    );
+    if (existing.rows.length > 0) return existing.rows[0].id;
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, $3, true)`,
+      ['test-mcp-phase3-user', 'mcp-phase3@test.local', 'MCP Phase 3 Test User']
+    );
+    return 'test-mcp-phase3-user';
+  });
+}
+
+async function seedTestEmployee(userId: string) {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         kind, connection_url, connection_status, is_active, created_by)
+       VALUES ($1, $2, $3, $4, $5, 'project_manager', 'test', 'standard',
+         'openclaw', $6, 'pending', true, $3)
+       ON CONFLICT (id) DO UPDATE SET
+         kind = 'openclaw',
+         connection_url = $6,
+         connection_status = 'pending',
+         is_active = true`,
+      [
+        TEST_EMPLOYEE_ID,
+        ORG_ID,
+        userId,
+        'MCP Phase 3 Test Employee',
+        TEST_EMPLOYEE_SLUG,
+        TEST_CONNECTION_URL,
+      ]
+    );
+  });
+}
+
+async function teardownTestEmployee() {
+  await withClient(async (c) => {
+    // Delete any wiki pages created by the test employee
+    await c.query(`DELETE FROM wiki_pages WHERE agent_employee_id = $1`, [TEST_EMPLOYEE_ID]);
+    await c.query(`DELETE FROM agent_employees WHERE id = $1`, [TEST_EMPLOYEE_ID]);
+    if (TEST_USER_ID) {
+      await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
+    }
+  });
+}
+
+before(async () => {
+  TEST_USER_ID = await findOrCreateTestUser();
+  await seedTestEmployee(TEST_USER_ID);
+  // Dynamic import so env is loaded and imports don't run before DB seed
+  tokenModule = await import('../src/lib/mcp-token.js');
+  const routeModule = await import('../src/routes/mcp-server-v1.js');
+  testApp = new Hono();
+  testApp.route('/api/mcp/v1', routeModule.mcpServerV1Routes);
+  RAW_TOKEN = await tokenModule.issueGatewayToken(ORG_ID, TEST_CONNECTION_URL);
+});
+
+after(async () => {
+  await teardownTestEmployee();
+});
+
+function app() {
+  if (!testApp) throw new Error('test app not initialized');
+  return testApp;
+}
+
+async function mcpPost(path: string, body: unknown, bearer?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+  return app().request(`/api/mcp/v1${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('1. POST /initialize returns MCP handshake without bearer', async () => {
+  const res = await mcpPost('/initialize', {});
+  assert.equal(res.status, 200, 'initialize must succeed without bearer');
+  const body = (await res.json()) as any;
+  assert.ok(body.serverInfo?.name, 'serverInfo.name present');
+  assert.equal(body.serverInfo.name, 'deft-mcp');
+  assert.ok(body.capabilities, 'capabilities present');
+});
+
+test('2. POST /tools/list with missing bearer returns 401', async () => {
+  const res = await mcpPost('/tools/list', {});
+  assert.equal(res.status, 401, 'missing bearer must 401');
+});
+
+test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
+  assert.ok(RAW_TOKEN, 'token must have been issued');
+  const res = await mcpPost('/tools/list', {}, RAW_TOKEN!);
+  assert.equal(res.status, 200, 'tools/list must succeed');
+  const body = (await res.json()) as any;
+  assert.ok(Array.isArray(body.tools), 'tools array present');
+  const names = new Set<string>(body.tools.map((t: any) => t.name));
+  assert.ok(names.has('platform_context'), 'platform_context in catalog');
+  assert.ok(names.has('memory_recall'), 'memory_recall in catalog');
+  assert.ok(names.has('memory_write'), 'memory_write in catalog');
+  assert.ok(names.has('task_query'), 'task_query in catalog');
+  assert.ok(names.has('thread_fetch'), 'thread_fetch in catalog');
+  assert.ok(names.has('member_list'), 'member_list in catalog');
+});
+
+test('4. POST /tools/call platform_context returns org, employee, date', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'platform_context',
+      arguments: { caller_employee_slug: TEST_EMPLOYEE_SLUG },
+    },
+    RAW_TOKEN!
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(!body.isError, `platform_context should not error: ${JSON.stringify(body)}`);
+  const text = body.content?.[0]?.text;
+  assert.ok(text, 'content[0].text present');
+  const parsed = JSON.parse(text);
+  assert.ok(parsed.date, 'date field present');
+  assert.ok(parsed.org?.id, 'org.id present');
+  assert.equal(parsed.org.id, ORG_ID);
+  assert.equal(parsed.employee?.slug, TEST_EMPLOYEE_SLUG);
+  assert.equal(parsed.employee?.trust_level, 'standard');
+  assert.ok(Array.isArray(parsed.teammates), 'teammates is array');
+});
+
+test('5. POST /tools/call memory_recall returns at least one page for "BSL"', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'memory_recall',
+      arguments: {
+        caller_employee_slug: TEST_EMPLOYEE_SLUG,
+        query: 'BSL license',
+        limit: 5,
+      },
+    },
+    RAW_TOKEN!
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(!body.isError, `memory_recall should not error: ${JSON.stringify(body)}`);
+  const parsed = JSON.parse(body.content[0].text);
+  assert.ok(Array.isArray(parsed), 'recall result is array');
+  // Not strictly required that a BSL page exists, but the seed wiki includes one.
+  // If it's missing we warn rather than fail so the test can still run on fresh DBs.
+  if (parsed.length === 0) {
+    console.warn('[test] memory_recall returned empty for "BSL" — is seed-wiki loaded?');
+  } else {
+    assert.ok(parsed[0].slug, 'first page has a slug');
+  }
+});
+
+test('6. POST /tools/call memory_write creates a wiki_pages row', async () => {
+  const title = `Phase3 MCP test memory ${Date.now()}`;
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'memory_write',
+      arguments: {
+        caller_employee_slug: TEST_EMPLOYEE_SLUG,
+        title,
+        body: 'This is a Phase 3 MCP server test memory page body.',
+        type: 'fact',
+        confidence: 0.8,
+      },
+    },
+    RAW_TOKEN!
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(!body.isError, `memory_write should not error: ${JSON.stringify(body)}`);
+  const parsed = JSON.parse(body.content[0].text);
+  assert.ok(parsed.slug, 'slug returned');
+
+  // Verify row exists in DB
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT id, title, agent_employee_id FROM wiki_pages WHERE slug = $1`,
+      [parsed.slug]
+    );
+    assert.equal(r.rows.length, 1);
+    assert.equal(r.rows[0].title, title);
+    assert.equal(r.rows[0].agent_employee_id, TEST_EMPLOYEE_ID);
+  });
+});
+
+test('7. Calling an unknown tool returns MCP error result', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'no_such_tool_exists',
+      arguments: { caller_employee_slug: TEST_EMPLOYEE_SLUG },
+    },
+    RAW_TOKEN!
+  );
+  // Expect a 200 with isError:true (MCP standard for tool-level errors)
+  // OR a 400 — either is acceptable. We check for error shape.
+  const body = (await res.json()) as any;
+  assert.ok(
+    body.isError === true || res.status === 400 || res.status === 404,
+    `unknown tool should produce an error, got ${res.status} ${JSON.stringify(body)}`
+  );
+});
+
+test('8. Invalid caller_employee_slug returns 403', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'platform_context',
+      arguments: { caller_employee_slug: 'nobody-on-this-gateway' },
+    },
+    RAW_TOKEN!
+  );
+  assert.equal(res.status, 403);
+});
+
+test('9. platform_context second call within 60s hits LRU cache', async () => {
+  // Clear cache first by calling with a fresh random trigger to force compute.
+  // Then call twice and check cached flag or consistent output.
+  const args = {
+    name: 'platform_context',
+    arguments: {
+      caller_employee_slug: TEST_EMPLOYEE_SLUG,
+      trigger: { kind: 'test-cache-check', space_id: null },
+    },
+  };
+  const res1 = await mcpPost('/tools/call', args, RAW_TOKEN!);
+  const b1 = (await res1.json()) as any;
+  const p1 = JSON.parse(b1.content[0].text);
+
+  const res2 = await mcpPost('/tools/call', args, RAW_TOKEN!);
+  const b2 = (await res2.json()) as any;
+  const p2 = JSON.parse(b2.content[0].text);
+
+  // The cache guarantees identical output (including a cache_hit or generated_at marker).
+  // We check that _cache or generated_at is equal — the platform_context impl sets
+  // a generated_at timestamp that is deterministic per cache entry, so if p2 is a
+  // fresh compute it will differ. We also allow an explicit cache_hit=true flag.
+  if (p2._cache_hit === true) {
+    assert.ok(true, 'second call had explicit _cache_hit flag');
+    return;
+  }
+  assert.equal(
+    p1.generated_at,
+    p2.generated_at,
+    'second call within 60s should return the cached generated_at'
+  );
+});

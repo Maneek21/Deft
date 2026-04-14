@@ -41,6 +41,7 @@ import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { mcpConnectionRoutes } from './routes/mcp-connections.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
+import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
 import { agentFollowupsRoutes } from './routes/agent-followups.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -61,6 +62,9 @@ app.route('/api/files', fileServingRoutes);
 
 // MCP server — own API key auth, mounted before auth middleware
 app.route('/mcp', mcpServerRoutes);
+
+// Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
+app.route('/api/mcp/v1', mcpServerV1Routes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);

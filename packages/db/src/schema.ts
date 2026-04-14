@@ -1,8 +1,8 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check } from 'drizzle-orm/pg-core';
+import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
 const id = () => ({ id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()) });
@@ -1050,6 +1050,7 @@ export const wikiPages = pgTable('wiki_pages', {
   version: integer('version').default(1).notNull(),
   previous_content: text('previous_content'),
   is_deleted: boolean('is_deleted').default(false).notNull(),
+  embedding: vector('embedding', { dimensions: 1536 }),
   ...timestamps(),
 }, (t) => [
   uniqueIndex('wiki_pages_org_slug').on(t.org_id, t.slug),
@@ -1173,6 +1174,20 @@ export const agentEmployees = pgTable('agent_employees', {
   is_active: boolean('is_active').default(true).notNull(),
   is_byoa: boolean('is_byoa').default(false).notNull(),
   byoa_model_info: text('byoa_model_info'),
+  // ─── OpenClaw sidecar columns (Phase 2) ─────────────────────────────
+  kind: text('kind').$type<'native' | 'openclaw' | 'claude_sdk' | 'custom_mcp'>()
+    .default('openclaw').notNull(),
+  connection_url: text('connection_url'),
+  gateway_token_encrypted: text('gateway_token_encrypted'),
+  mcp_token_hash: text('mcp_token_hash'),
+  connection_status: text('connection_status')
+    .$type<'pending' | 'connected' | 'error' | 'revoked'>()
+    .default('pending').notNull(),
+  template_slug: text('template_slug'),
+  template_version: text('template_version'),
+  trigger_subscriptions: text('trigger_subscriptions').array(),
+  provider_hint: text('provider_hint'),
+  // ────────────────────────────────────────────────────────────────────
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 }, (t) => [
@@ -1220,4 +1235,101 @@ export const apiKeys = pgTable('api_keys', {
 }, (t) => [
   index('api_key_org_idx').on(t.org_id),
   index('api_key_prefix_idx').on(t.key_prefix),
+]);
+
+// ═══ AGENT EMPLOYEE TEMPLATES (Phase 2) ═══
+// Template marketplace — SOUL.md / AGENTS.md / USER.md / TOOLS.md bootstrap files.
+// Version is semver-validated at app layer via `assertSemver` AND at DB layer via
+// the `agent_employee_templates_version_semver` CHECK constraint applied in migration 0009.
+export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
+  ...id(),
+  slug: text('slug').notNull().unique(),
+  name: text('name').notNull(),
+  version: text('version').notNull(),
+  role: agentEmployeeRoleEnum('role').notNull(),
+  description: text('description').notNull(),
+  soul_md: text('soul_md').notNull(),
+  agents_md: text('agents_md').notNull(),
+  user_md_template: text('user_md_template').notNull(),
+  tools_md: text('tools_md').notNull(),
+  default_tools: text('default_tools').array().notNull(),
+  default_trust_level: trustLevelEnum('default_trust_level').default('standard').notNull(),
+  default_trigger_subscriptions: text('default_trigger_subscriptions').array(),
+  model_recommendation: text('model_recommendation').notNull(),
+  fallback_models: text('fallback_models').array(),
+  source: text('source').$type<'first-party' | 'community' | 'user'>()
+    .default('first-party').notNull(),
+  source_attribution: text('source_attribution'),
+  download_count: integer('download_count').default(0).notNull(),
+  is_public: boolean('is_public').default(true).notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  check(
+    'agent_employee_templates_version_semver',
+    sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$'`,
+  ),
+]);
+
+// ═══ AGENT SESSION TURNS (Phase 2) ═══
+// Session inspector feed — one row per OpenClaw turn. Cost is computed on read
+// from {model_name, tokens_in, tokens_out} against a model_pricing lookup table.
+export const agentSessionTurns = pgTable('agent_session_turns', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id),
+  trigger_kind: text('trigger_kind').notNull(),
+  triggering_message_id: text('triggering_message_id'),
+  space_id: text('space_id'),
+  input_messages_json: jsonb('input_messages_json').notNull(),
+  raw_reply_text: text('raw_reply_text'),
+  tool_calls_json: jsonb('tool_calls_json'),
+  latency_ms: integer('latency_ms').notNull(),
+  model_name: text('model_name'),
+  tokens_in: integer('tokens_in'),
+  tokens_out: integer('tokens_out'),
+  result: text('result').$type<'success' | 'timeout' | 'error' | 'rejected_approval'>().notNull(),
+  error: text('error'),
+  ...timestamps(),
+}, (t) => [
+  index('ast_employee_idx').on(t.employee_id, t.created_at),
+  index('ast_org_idx').on(t.org_id, t.created_at),
+]);
+
+// ═══ ACTION RECEIPTS (Phase 2) ═══
+// HMAC-signed receipts for every elevated action. action_id is a real FK to
+// agent_actions.id (verified in Phase 0).
+export const actionReceipts = pgTable('action_receipts', {
+  ...id(),
+  ...orgId(),
+  action_id: text('action_id').notNull().references(() => agentActions.id),
+  employee_id: text('employee_id').references(() => agentEmployees.id),
+  proposer: text('proposer').$type<'defty' | 'employee' | 'user' | 'cron'>().notNull(),
+  proposer_id: text('proposer_id'),
+  approver_id: text('approver_id').references(() => users.id),
+  decision: text('decision').$type<'auto_executed' | 'approved' | 'rejected' | 'expired'>().notNull(),
+  decision_reason: text('decision_reason'),
+  action_name: text('action_name').notNull(),
+  action_params_json: jsonb('action_params_json').notNull(),
+  result_json: jsonb('result_json'),
+  signature_hmac: text('signature_hmac').notNull(),
+  signed_at: timestamp('signed_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('receipt_org_idx').on(t.org_id, t.created_at),
+  index('receipt_action_idx').on(t.action_id),
+]);
+
+// ═══ SPACE MEMORY (Phase 2) ═══
+// Per-channel KV bag used by OpenClaw employees to remember space-scoped facts.
+export const spaceMemory = pgTable('space_memory', {
+  ...id(),
+  ...orgId(),
+  space_id: text('space_id').notNull().references(() => spaces.id),
+  key: text('key').notNull(),
+  value: jsonb('value').notNull(),
+  updated_by_employee_id: text('updated_by_employee_id').references(() => agentEmployees.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('space_memory_key_unique').on(t.space_id, t.key),
 ]);
