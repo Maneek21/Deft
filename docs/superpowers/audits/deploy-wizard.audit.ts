@@ -271,6 +271,13 @@ async function runWizard(page: Page): Promise<string> {
   // via the input element directly so React's onChange fires.
   await page.locator('[data-testid="trigger-cron\\:standup"] input').check();
 
+  // Phase 12 — Anthropic API key is now required (BYOK). Without a non-
+  // empty value the Deploy button stays disabled.
+  await page.fill(
+    '[data-testid="wizard-anthropic-key"]',
+    'sk-ant-api03-deploy-wizard-audit-fake-key',
+  );
+
   // Capture the POST body so we can echo it if provision fails.
   let capturedBody: string | null = null;
   page.on('request', (req) => {
