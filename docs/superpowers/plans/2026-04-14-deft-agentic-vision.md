@@ -443,20 +443,78 @@ Branch on `employee.kind === 'openclaw'` → use chat envelope. Keep native path
 
 `standup-generate.ts`, `meeting-prep-check.ts`, `nudge-check.ts`, `task-extract.ts` all call `findEmployeeWithSubscription(orgId, triggerKind)` first. If found, route through `employee-trigger`. Otherwise fall back to existing native path.
 
+### 4.6 The three-layer capability model
+
+Agent employees do **work** — not just chat. Every tool an employee can call comes from one of three layers. Deft's wizard assembles the right mix per role.
+
+| Layer | What it gives the agent | Examples | Source |
+|---|---|---|---|
+| **1. Deft MCP server** (Phases 3-4) | Workspace data — wiki, tasks, members, messages, events, space memory | `deft_platform_context`, `deft_memory_recall`, `deft_task_create`, `deft_message_post`, `deft_events_query` | **Deft** owns the surface |
+| **2. OpenClaw native plugins** (ship with the container) | General work tools — web browser, file system, shell execution | `browser_navigate`, `browser_snapshot`, `exec_command`, `fs_read`, `fs_write`, `acpx` (agent control) | **OpenClaw** ships these |
+| **3. External MCP servers + ClawHub skills** (wizard connects per role) | Vendor integrations — GitHub, Gmail, Slack, Linear, Notion, Tavily, Playwright, PagerDuty, etc. Plus 13,729 reusable ClawHub skills. | `github_pulls_list`, `gmail_search`, `linear_create_issue`, `tavily_search`, `playwright_navigate`, `slack_post_message` | **User** via wizard config |
+
+**The agent sees a unified tool palette.** It calls `github_pulls_list` or `deft_memory_recall` with the same MCP dispatch logic — it doesn't care which layer the tool came from. The wizard's job is to assemble the right mix.
+
+#### Concrete example: Alex PM running a 9am standup
+
+1. **Layer 1:** `deft_platform_context({...})` → org state, teammates, wiki snippets
+2. **Layer 1:** `deft_task_query({status: ['in_progress','in_review'], updated_since: yesterday})` → current task state
+3. **Layer 1 OR Layer 3:** `deft_events_query({type: 'github.pr.merged', since: yesterday})` (via Deft's existing GitHub webhook events) OR `github_pulls_list({state: merged, since: yesterday})` (via a GitHub MCP server the user connected)
+4. **Layer 2:** `browser_navigate('status.deft.io')` + `browser_snapshot()` → check infra dashboard for incidents
+5. **Layer 1:** `deft_memory_write({title: 'Standup 2026-04-14', body: ..., type: 'fact', scope: 'org'})` → save a copy
+6. **Layer 1:** `deft_message_post({space_id: general, content: '...'})` → publish the standup (trust-gated)
+
+#### Layer 2 — which OpenClaw plugins the wizard enables
+
+OpenClaw ships with 5 plugins by default: `acpx`, `browser`, `device-pair`, `phone-control`, `talk-voice`. For Deft employees deployed as server-side agents:
+
+| Plugin | Default for Deft employees | Why |
+|---|---|---|
+| `browser` | ✅ **enabled** | Web research, dashboard checks, public URL navigation |
+| `acpx` | ✅ **enabled** | OpenClaw's Agent Control Protocol (required for agent runtime) |
+| `exec` (shell) | 🟡 **opt-in via Advanced checkbox** | Powerful but risky — only DevOps, On-call, CI/CD roles should default-enable |
+| `fs` (file system) | 🟡 **opt-in via Advanced checkbox** | Only power users |
+| `device-pair` | ❌ disabled | Irrelevant for server-side; attack surface |
+| `phone-control` | ❌ disabled | Irrelevant; attack surface |
+| `talk-voice` | ❌ disabled | Irrelevant; attack surface |
+
+Wizard emits `plugins.deny: ['device-pair', 'phone-control', 'talk-voice']` unconditionally and gates `exec`/`fs` behind the advanced path.
+
+#### Layer 3 — capability packs per role template
+
+Each first-party template ships with a DEFAULT capability pack. User can override per-deploy via the wizard. See §17 for the full per-template table.
+
+Examples:
+- **PM (alex-pm)** default pack: Deft Workspace, Web browsing, GitHub, Google Calendar
+- **QA** default pack: Deft Workspace, GitHub, Playwright MCP (for UI test automation)
+- **On-call** default pack: Deft Workspace, Web browsing, PagerDuty, shell exec, Tavily search
+- **CFO** default pack: Deft Workspace, Google Calendar, Spreadsheet MCP (for calculations)
+
+For MVP, "connect X MCP" means adding an entry under `mcp.servers.<name>` in the generated `openclaw.json`. The user provides their API key / OAuth token / bearer per the chosen MCP provider. Wizard UX for token collection is Phase 8 polish; for the minimal shipping path, the wizard gives the user a single shell command that writes the entire config including capability-pack MCP server entries.
+
+#### Audit visibility gap (v1 — documented, not fixed)
+
+Deft sees every **Deft MCP tool call** (Layer 1). These get logged to `agent_session_turns` and produce `action_receipts` for writes. Deft does **NOT see OpenClaw-internal or external MCP tool calls** (Layers 2 and 3) — those happen inside the OpenClaw container and get logged to `~/.openclaw/agents/<slug>/sessions/*.jsonl` on the user's VPS.
+
+**Trade-off:** this is privacy-positive (user's tool use is not centralized in Deft) but audit-incomplete. The Settings → Agent action log only covers Layer 1.
+
+**For v1.1:** a "session inspector upload" feature could ship the OpenClaw session files back to Deft on a schedule for centralized audit. Deferred.
+
 ---
 
 ## 5. Setup wizard UX
 
 New route: `apps/web/src/app/(app)/settings/agent/deploy/page.tsx`
 
-### 5.1 Six-step flow
+### 5.1 Seven-step flow
 
 | Step | Screen | What the user does |
 |---|---|---|
-| 1 | Pick a role template | Browse 8 first-party templates seeded from mergisi + Deft-originals. Preview SOUL.md, AGENTS.md, TOOLS.md, default tools, recommended model. |
+| 1 | Pick a role template | Browse 8 first-party templates seeded from mergisi + Deft-originals. Preview SOUL.md, AGENTS.md, TOOLS.md, default tools, recommended model, **default capability pack**. |
 | 2 | Pick deployment target | 4 cards: **DigitalOcean 1-click** ($12/mo, recommended), **Hostinger Docker Manager** (~$5-8/mo, manual install with screenshot walkthrough), **Railway 1-click template** (~$5/mo + usage), **Advanced: BYO URL**. |
+| **2.5** | **Capability pack (Layer 2 + Layer 3)** | **Checklist of tool bundles. Role template pre-fills a sensible default pack. Checkboxes: Deft Workspace (always on), Web browsing (OpenClaw browser plugin), GitHub, Google Calendar, Gmail, Slack, Linear, Notion, Tavily Search, Playwright MCP, PagerDuty, Advanced → shell exec, Advanced → file system. Each external MCP selected adds a block under `mcp.servers.<name>` in the generated config and prompts the user for their API key / OAuth at install time. Power users can paste a raw MCP server URL + bearer for custom providers.** |
 | 3 | Configure triggers | Checklist of trigger subscriptions. Validates against the (org_id, trigger_kind) uniqueness rule; blocks deploy if another employee already owns that trigger. |
-| 4 | Generate config + tokens | Deft issues: **one-time install token (15-min TTL)** + Gateway token + MCP bearer. Single "Copy" button for the install command. |
+| 4 | Generate config + tokens | Deft issues: **one-time install token (15-min TTL)** + Gateway token + MCP bearer. Single "Copy" button for the install command. The generated `openclaw.json` includes the capability-pack MCP servers plus `plugins.deny: ['device-pair', 'phone-control', 'talk-voice']` to lock down non-server surfaces. |
 | 5 | Handshake test | User deploys externally, pastes back the public URL, clicks "Test connection". **C4/NC4 fix:** Deft POSTs to `/v1/models` (cheap, no LLM tokens), verifies the expected `openclaw/<slug>` appears in the returned list. On success flip `connection_status='connected'`. |
 | 6 | Approval mapping | Pick which write tools auto-execute vs queue. Trust level is capped at `standard` in this wizard (**I6 fix**). Upgrading to `autonomous` is a separate post-deploy action gated by `ConfirmDangerous`. |
 
@@ -477,18 +535,37 @@ New route: `apps/web/src/app/(app)/settings/agent/deploy/page.tsx`
 
   mcp: {
     servers: {
+      // Layer 1 — always present. The workspace data layer.
       deft: {
         url: "https://api.deft.io/mcp/v1",
         transport: "streamable-http",
         connectionTimeoutMs: 10000,
         headers: { Authorization: "Bearer ${DEFT_MCP_TOKEN}" },
       },
+      // Layer 3 — added per capability pack picks in wizard step 2.5.
+      // Example: PM template default pack adds GitHub.
+      github: {
+        url: "https://mcp.github.com",
+        transport: "streamable-http",
+        headers: { Authorization: "Bearer ${GITHUB_MCP_TOKEN}" },
+      },
+      // PM pack also adds Tavily for web research.
+      tavily: {
+        url: "https://mcp.tavily.com/mcp/",
+        transport: "streamable-http",
+        headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
+      },
+      // Users pick which MCPs to add per employee via wizard step 2.5.
+      // Each selected MCP gets its own entry here with the user's credentials.
     },
   },
 
   plugins: {
-    slots: { memory: "none" },             // Deft wiki is sole memory (Phase 1 empirical test verifies this fully silences workspace writes)
+    slots: { memory: "none" },             // Deft wiki is sole memory (Phase 1 empirical verified)
     entries: { "memory-wiki": { enabled: false } },
+    // Lock down plugins that don't belong on a server-side employee runtime.
+    // Keeps `browser` + `acpx` which are the general-work Layer 2 plugins.
+    deny: ["device-pair", "phone-control", "talk-voice"],
   },
 
   agents: {
@@ -959,24 +1036,37 @@ Budget: 3-5 days compat work. Watch `openclaw/openclaw` `main` weekly.
 
 **Commit:** `feat(api): openclaw chat envelope + agent-employee-message dispatch branch`
 
-### Phase 6 — Trigger dispatcher (Day 4 morning ~ 3 hours)
+### Phase 6 — Trigger dispatcher + events_query MCP tool (Day 4 ~ 4 hours)
+
+**Scope note:** Phase 6 now includes the `events_query` MCP tool from §4.6 Gap #3 because trigger-driven work (standup, webhook-reactive) needs to query events (GitHub webhooks, calendar events) through Deft's Layer 1 rather than requiring every user to connect a separate GitHub MCP server.
 
 **Files:**
 - Create: `apps/api/src/workers/handlers/employee-trigger.ts`
+- Create: `apps/api/src/lib/mcp-tools/events.ts` — new `events_query` tool
+- Modify: `apps/api/src/lib/mcp-tools/index.ts` — register `events_query` in READ_ONLY_TOOLS + toolSchemas
 - Modify: `apps/api/src/workers/handlers/standup-generate.ts`
 - Modify: `apps/api/src/workers/handlers/meeting-prep-check.ts`
 - Modify: `apps/api/src/workers/handlers/nudge-check.ts`
 - Modify: `apps/api/src/workers/handlers/task-extract.ts`
-- Modify: `apps/api/src/workers/index.ts` — register
+- Modify: `apps/api/src/workers/index.ts` — register new handler
+- Create: `apps/api/test/employee-trigger.test.ts`
+- Create: `apps/api/test/mcp-events.test.ts` — unit tests for `events_query`
 
 **Steps:**
 
-- [ ] **Step 6.1: Implement `employee-trigger.ts`** per §4.3
-- [ ] **Step 6.2: Register in `workers/index.ts`**
-- [ ] **Step 6.3: Modify each existing trigger handler** to check for subscription first
-- [ ] **Step 6.4: Verify standup trigger fires via OpenClaw** — set `alex-pm.trigger_subscriptions = ['cron:standup']`, wait for cron fire, confirm a new message appears in #general authored by Alex PM
+- [ ] **Step 6.1: Implement `events_query` MCP tool** — `{caller_employee_slug, type?, since?, until?, limit?}` filter over the `events` table. Read-only, no gating. Returns event rows scoped to `org_id`.
+- [ ] **Step 6.2: Register `events_query` in `mcp-tools/index.ts`** — add to READ_ONLY_TOOLS + toolSchemas.
+- [ ] **Step 6.3: Write failing unit tests** for `events_query` (shape, scoping, filter logic)
+- [ ] **Step 6.4: Implement `employee-trigger.ts`** per §4.3
+- [ ] **Step 6.5: Register trigger handler in `workers/index.ts`**
+- [ ] **Step 6.6: Modify each existing trigger handler** (standup-generate, meeting-prep-check, nudge-check, task-extract) to check for subscription first and route through `employee-trigger` if an employee subscribes to that kind
+- [ ] **Step 6.7: Write failing integration test for `employee-trigger`** — directly enqueue a synthetic cron invocation via `enqueue('agent-jobs', 'employee-trigger', {...})`, verify the worker picks it up and posts a message authored by the employee's shadow user
+- [ ] **Step 6.8: Run tests, confirm pass**
+- [ ] **Step 6.9: Manual verification** — set `alex-pm.trigger_subscriptions = ['cron:standup']`, directly enqueue a synthetic trigger via tsx script, confirm a new message appears in #general
 
-**Commit:** `feat(api): employee trigger dispatcher routes cron/event/webhook through openclaw`
+**Out of scope for Phase 6 (handled in Phase 8):** wiring the capability pack picker into the wizard UI. Phase 6 only delivers the `events_query` tool + the trigger dispatcher; the wizard step 2.5 UX lands in Phase 8.
+
+**Commit:** `feat(api): employee trigger dispatcher + events_query mcp tool (phase 6)`
 
 ### Phase 7 — Audit receipts (Day 4 afternoon ~ 3 hours)
 
@@ -1179,16 +1269,20 @@ Populated in Phase 9. 6 adapted from `mergisi/awesome-openclaw-agents` (MIT) + 2
 
 **Default model per template** (Sonnet is default, Opus is opt-in for high-stakes roles):
 
-| Template | Source | Default model | Opus upgrade? |
+| Template | Source | Default model | Default capability pack (Layer 2 + Layer 3 on top of Deft Workspace) |
 |---|---|---|---|
-| alex-pm | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
-| designer | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
-| qa | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
-| cs | mergisi | `anthropic/claude-sonnet-4-6` | optional, default off |
-| community | mergisi | `anthropic/claude-haiku-4-5` | n/a — Haiku is plenty for community engagement |
-| **on-call** | mergisi | `anthropic/claude-opus-4-6` | ✅ **default Opus** — incident response needs strongest reasoning |
-| **cfo** | Deft-original | `anthropic/claude-opus-4-6` | ✅ **default Opus** — finance/burn analysis needs strongest reasoning |
-| devops | Deft-original | `anthropic/claude-sonnet-4-6` | optional, default off |
+| alex-pm | mergisi | `sonnet-4-6` | Web browsing, GitHub, Google Calendar, Tavily Search |
+| designer | mergisi | `sonnet-4-6` | Web browsing, Figma MCP (if available), Tavily Search |
+| qa | mergisi | `sonnet-4-6` | Web browsing, GitHub, Playwright MCP, shell exec |
+| cs | mergisi | `sonnet-4-6` | Gmail, Linear, Slack |
+| community | mergisi | `haiku-4-5` | Web browsing, Tavily Search, Slack |
+| **on-call** | mergisi | **`opus-4-6`** | Web browsing, PagerDuty, shell exec, GitHub, Tavily Search |
+| **cfo** | Deft-original | **`opus-4-6`** | Google Calendar, Google Sheets MCP, Stripe MCP (optional) |
+| devops | Deft-original | `sonnet-4-6` | GitHub, shell exec, file system, Cloudflare/AWS MCP, Web browsing |
+
+**Rationale for Opus defaults:** `on-call` and `cfo` need strongest reasoning because wrong answers have real cost (missed incidents, bad financial analysis). Every other template ships on Sonnet, which is measurably faster (Phase 5 audit: 16s vs 23-27s Opus) at ~5x lower token cost.
+
+**Rationale for capability packs:** the default pack is the smallest set of tools that lets each role start doing useful work on day one. Users can add/remove per deploy in wizard step 2.5. The wizard prompts for API keys / OAuth at install time.
 
 **Rationale:** Sonnet 4.6 empirically delivered comparable response quality to Opus 4.6 in Phase 5 audit testing at ~60% faster turn time (16s vs 23-27s) and ~5x lower token cost. For most employee roles (task management, QA triage, design review, customer support, devops) Sonnet is strictly better UX. Only high-stakes reasoning roles where wrong answers have real cost (finance, incident response) default to Opus. Users can upgrade any template to Opus via the wizard's approval mapping step.
 
