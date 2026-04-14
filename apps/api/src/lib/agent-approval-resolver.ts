@@ -50,6 +50,7 @@ import {
   executeMemoryUpdate,
   type MemoryUpdateArgs,
 } from './mcp-tools/memory-update.js';
+import { generateReceipt } from './receipts.js';
 
 export const MCP_ACTION_KINDS = new Set([
   'task_create',
@@ -125,15 +126,19 @@ async function dispatchAction(
   params: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  // Phase 7 — skipReceipt=true: the approval resolver owns receipt
+  // generation for approved actions (it knows the approver_id). The inner
+  // executors only emit receipts in the auto-exec path.
+  const opts = { skipReceipt: true } as const;
   switch (actionName) {
     case 'task_create':
-      return executeTaskCreate(params as unknown as TaskCreateArgs, ctx);
+      return executeTaskCreate(params as unknown as TaskCreateArgs, ctx, opts);
     case 'task_update':
-      return executeTaskUpdate(params as unknown as TaskUpdateArgs, ctx);
+      return executeTaskUpdate(params as unknown as TaskUpdateArgs, ctx, opts);
     case 'message_post':
-      return executeMessagePost(params as unknown as MessagePostArgs, ctx);
+      return executeMessagePost(params as unknown as MessagePostArgs, ctx, opts);
     case 'memory_update':
-      return executeMemoryUpdate(params as unknown as MemoryUpdateArgs, ctx);
+      return executeMemoryUpdate(params as unknown as MemoryUpdateArgs, ctx, opts);
     default:
       throw new Error(`Unsupported action: ${actionName}`);
   }
@@ -274,15 +279,26 @@ export async function approveAction(
     // best-effort
   }
 
-  // ── Phase 7 hook point ───────────────────────────────────────────────
-  // generateReceipt({
-  //   actionId: row.id, orgId: row.org_id, employeeId: ctx.employee_id,
-  //   proposer: 'employee', actionName: row.action,
-  //   actionParams: (row.params ?? {}) as Record<string, unknown>,
-  //   decision: 'approved', approverId: approverUserId,
-  //   resultJson: isError ? null : parsedResult,
-  //   decisionReason: isError ? resultText : undefined,
-  // });
+  // ── Phase 7 — signed approval receipt ────────────────────────────────
+  // The approval decision itself is audit-recorded regardless of whether
+  // the inner executor succeeded. decision_reason captures the failure
+  // message so a compliance officer can read "approved but execution
+  // failed: X" instead of silently losing the decision.
+  await generateReceipt({
+    actionId: row.id,
+    orgId: row.org_id,
+    employeeId: ctx.employee_id,
+    proposer: 'employee',
+    proposerId: ctx.employee_id,
+    approverId: approverUserId,
+    decision: 'approved',
+    decisionReason: isError
+      ? `execution failed: ${resultText || caughtError?.message || 'unknown'}`.slice(0, 2000)
+      : null,
+    actionName: row.action,
+    actionParams: (row.params ?? {}) as Record<string, unknown>,
+    resultJson: isError ? null : parsedResult,
+  });
 
   if (isError) {
     return {
@@ -360,8 +376,20 @@ export async function rejectAction(
     })
     .where(eq(agentActions.id, actionId));
 
-  // ── Phase 7 hook point ───────────────────────────────────────────────
-  // generateReceipt({ ..., decision: 'rejected', decisionReason: reason });
+  // ── Phase 7 — signed rejection receipt ───────────────────────────────
+  await generateReceipt({
+    actionId: row.id,
+    orgId: row.org_id,
+    employeeId: row.agent_employee_id ?? null,
+    proposer: 'employee',
+    proposerId: row.agent_employee_id ?? null,
+    approverId: rejecterUserId,
+    decision: 'rejected',
+    decisionReason: reason ?? null,
+    actionName: row.action,
+    actionParams: (row.params ?? {}) as Record<string, unknown>,
+    resultJson: null,
+  });
 
   return { status: 'rejected', message: reason };
 }

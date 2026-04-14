@@ -153,6 +153,13 @@ async function teardownFixtures() {
   await withClient(async (c) => {
     // Clean up agent_actions, messages, tasks, space_memory, wiki_pages
     // created during this test run.
+    // Phase 7 — clear receipts first to satisfy FK constraints.
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
+          OR employee_id = ANY($2::text[])`,
+      [TEST_USER_ID, [EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]]
+    );
     await c.query(
       `DELETE FROM agent_actions WHERE user_id = $1`,
       [TEST_USER_ID]

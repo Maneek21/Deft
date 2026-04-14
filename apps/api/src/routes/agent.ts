@@ -10,11 +10,13 @@ import {
   agentActions,
   agentMemory,
   agentEmployees,
+  actionReceipts,
   connectedAccounts,
   orgs,
   tasks,
   messages,
   taskActivity,
+  users,
   wikiPages,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
@@ -930,13 +932,89 @@ agentRoutes.get('/actions', async (c) => {
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
     ));
 
-  const actions = await db
-    .select()
+  // Phase 7 — LEFT JOIN action_receipts so the UI can show a "View receipt"
+  // button only when there's something to show. We materialize has_receipt
+  // via EXISTS rather than DISTINCT-on to keep one row per action regardless
+  // of how many receipts are attached (future-proofing for re-execution).
+  const rows = await db.execute(sql`
+    SELECT a.*,
+           EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = a.id) AS has_receipt
+    FROM agent_actions a
+    WHERE a.org_id = ${user.org_id}
+    ORDER BY a.created_at DESC
+    LIMIT 100
+  `);
+  const rawRows = (rows as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
+  return c.json(rawRows);
+});
+
+// Phase 7 — fetch the most-recent receipt for an action and report whether
+// the HMAC still verifies. The action log UI hits this on "View receipt".
+//
+// 404 semantics: if the action exists but has no receipt, we return 404 —
+// this is how a compliance officer expects a missing record to surface.
+// 403 semantics: if the action belongs to another org, also 404-like but
+// we use 403 so the UI can distinguish "hidden by ACL" from "missing".
+agentRoutes.get('/actions/:id/receipt', async (c) => {
+  const user = c.get('user');
+  const actionId = c.req.param('id');
+
+  const [action] = await db
+    .select({ id: agentActions.id, org_id: agentActions.org_id })
     .from(agentActions)
-    .where(eq(agentActions.org_id, user.org_id))
-    .orderBy(desc(agentActions.created_at))
-    .limit(100);
-  return c.json(actions);
+    .where(eq(agentActions.id, actionId))
+    .limit(1);
+
+  if (!action) {
+    return c.json({ error: 'action not found', code: 'NOT_FOUND' }, 404);
+  }
+  if (action.org_id !== user.org_id) {
+    return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
+  }
+
+  const [receipt] = await db
+    .select()
+    .from(actionReceipts)
+    .where(eq(actionReceipts.action_id, actionId))
+    .orderBy(desc(actionReceipts.created_at))
+    .limit(1);
+
+  if (!receipt) {
+    return c.json({ error: 'no receipt for action', code: 'NOT_FOUND' }, 404);
+  }
+
+  // Resolve approver + proposer display names so the viewer doesn't have
+  // to probe /api/members separately.
+  let approver_name: string | null = null;
+  if (receipt.approver_id) {
+    const [u] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, receipt.approver_id))
+      .limit(1);
+    approver_name = u?.name ?? null;
+  }
+  let proposer_name: string | null = null;
+  if (receipt.employee_id) {
+    const [e] = await db
+      .select({ name: agentEmployees.name })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, receipt.employee_id))
+      .limit(1);
+    proposer_name = e?.name ?? null;
+  }
+
+  const { verifyReceipt } = await import('../lib/receipts.js');
+  const verified = await verifyReceipt(receipt);
+
+  return c.json({
+    receipt: {
+      ...receipt,
+      approver_name,
+      proposer_name,
+    },
+    verified,
+  });
 });
 
 // ── Trust level settings ──

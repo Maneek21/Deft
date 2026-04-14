@@ -29,6 +29,7 @@ import {
   asPseudoResult,
 } from '../agent-approval.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
+import { generateReceipt } from '../receipts.js';
 
 export type MemoryUpdateArgs = {
   caller_employee_slug: string;
@@ -55,6 +56,7 @@ export type MemoryUpdateArgs = {
 export async function executeMemoryUpdate(
   args: MemoryUpdateArgs,
   ctx: ToolContext,
+  opts?: { skipReceipt?: boolean },
 ): Promise<ToolResult> {
   if (!args.slug) return errorResult('memory_update requires slug');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -131,11 +133,58 @@ export async function executeMemoryUpdate(
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
-    return textResult({
+    const resultPayload = {
       slug: args.slug,
       updated: true,
       promoted: isPromotion,
-    });
+    };
+
+    if (!opts?.skipReceipt) {
+      // Insert a synthetic agent_actions row so the receipt FK has a real
+      // target. Matches the pattern in writes.ts — auto-exec rows are
+      // stamped approved+executed so the action log UI can render them.
+      let actionId: string | null = null;
+      try {
+        const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
+        if (shadowUserId) {
+          const now = new Date();
+          const [insertedAction] = await db
+            .insert(agentActions)
+            .values({
+              org_id: ctx.org_id,
+              user_id: shadowUserId,
+              agent_employee_id: ctx.employee_id,
+              source: 'mcp',
+              action: 'memory_update',
+              params: args as unknown as Record<string, unknown>,
+              approval_tier: getApprovalTier('memory_update'),
+              approval_status: 'approved',
+              approved_at: now,
+              executed_at: now,
+              result: resultPayload as any,
+            })
+            .returning({ id: agentActions.id });
+          actionId = insertedAction?.id ?? null;
+        }
+      } catch (err) {
+        console.error('[memory_update] auto-exec action row insert failed:', err);
+      }
+      if (actionId) {
+        await generateReceipt({
+          actionId,
+          orgId: ctx.org_id,
+          employeeId: ctx.employee_id,
+          proposer: 'employee',
+          proposerId: ctx.employee_id,
+          decision: 'auto_executed',
+          actionName: 'memory_update',
+          actionParams: args as unknown,
+          resultJson: resultPayload,
+        });
+      }
+    }
+
+    return textResult(resultPayload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`memory_update failed: ${msg}`);

@@ -18,8 +18,15 @@
  */
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from './db.js';
-import { messages, users, orgMembers as orgMembersTable } from '@deft/db/schema';
+import {
+  messages,
+  users,
+  orgMembers as orgMembersTable,
+  agentActions,
+} from '@deft/db/schema';
 import type { TrustLevel } from './mcp-tools/types.js';
+import { generateReceipt } from './receipts.js';
+import { getApprovalTier } from './agent-approval.js';
 
 // Minimal shapes — the real Message/Employee types live in the routes layer.
 type MessageLike = {
@@ -300,6 +307,38 @@ export async function parseReplyIntoMessage(
   // inspector but the thread stays clean.
   let inserted: typeof messages.$inferSelect | undefined;
   if (finalContent) {
+    // Phase 7 — OpenClaw replies bypass the MCP layer entirely, so we
+    // insert a synthetic agent_actions row first to give the receipt FK
+    // a target. The row is stamped approved+executed so the action log
+    // UI renders it alongside other auto-exec rows.
+    let envActionId: string | null = null;
+    try {
+      const now = new Date();
+      const triggerKind = params.context.trigger_kind ?? 'chat_mention';
+      const [actionRow] = await db
+        .insert(agentActions)
+        .values({
+          org_id: params.context.org_id,
+          user_id: params.employee.user_id,
+          agent_employee_id: params.employee.id,
+          source: 'mcp',
+          action: 'message_post',
+          params: {
+            space_id: params.context.space_id,
+            content: finalContent.slice(0, 500),
+            trigger_kind: triggerKind,
+          } as Record<string, unknown>,
+          approval_tier: getApprovalTier('message_post'),
+          approval_status: 'approved',
+          approved_at: now,
+          executed_at: now,
+        })
+        .returning({ id: agentActions.id });
+      envActionId = actionRow?.id ?? null;
+    } catch (err) {
+      console.error('[openclaw-envelope] synthetic action row insert failed:', err);
+    }
+
     const rows = await db
       .insert(messages)
       .values({
@@ -322,6 +361,40 @@ export async function parseReplyIntoMessage(
       })
       .returning();
     inserted = rows[0];
+
+    if (envActionId) {
+      try {
+        await db
+          .update(agentActions)
+          .set({
+            result: {
+              message_id: inserted?.id,
+              model_name: modelName,
+            } as any,
+          })
+          .where(eq(agentActions.id, envActionId));
+      } catch (err) {
+        console.error('[openclaw-envelope] result patch failed:', err);
+      }
+      await generateReceipt({
+        actionId: envActionId,
+        orgId: params.context.org_id,
+        employeeId: params.employee.id,
+        proposer: 'employee',
+        proposerId: params.employee.id,
+        decision: 'auto_executed',
+        decisionReason: `openclaw_reply:${params.context.trigger_kind ?? 'chat_mention'}`,
+        actionName: 'message_post',
+        actionParams: {
+          space_id: params.context.space_id,
+          content: finalContent.slice(0, 500),
+          trigger_kind: params.context.trigger_kind ?? 'chat_mention',
+        },
+        resultJson: inserted
+          ? { id: inserted.id, space_id: inserted.space_id }
+          : null,
+      });
+    }
   }
 
   const turn: AgentSessionTurnInsert = {

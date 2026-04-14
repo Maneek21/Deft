@@ -35,6 +35,64 @@ import {
   asPseudoResult,
 } from '../agent-approval.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
+import { generateReceipt } from '../receipts.js';
+
+/**
+ * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
+ * the inner execute* functions have a real action_id to attach their
+ * receipt to. The row is approved+executed in the same write so the
+ * action log UI sees a completed row whether or not receipt generation
+ * succeeds downstream. Returns the action id or null on failure.
+ */
+async function insertAutoExecActionRow(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<string | null> {
+  try {
+    const shadowUserId = await getShadowUserId(ctx.employee_id);
+    if (!shadowUserId) return null;
+    const now = new Date();
+    const [row] = await db
+      .insert(agentActions)
+      .values({
+        org_id: ctx.org_id,
+        user_id: shadowUserId,
+        agent_employee_id: ctx.employee_id,
+        source: 'mcp',
+        action: toolName,
+        params: args,
+        approval_tier: getApprovalTier(toolName),
+        approval_status: 'approved',
+        approved_at: now,
+        executed_at: now,
+      })
+      .returning({ id: agentActions.id });
+    return row?.id ?? null;
+  } catch (err) {
+    console.error('[writes] insertAutoExecActionRow failed:', err);
+    return null;
+  }
+}
+
+/**
+ * Phase 7 — best-effort: stash the tool result on the agent_actions row so
+ * the action log UI can surface what the auto-exec produced. Swallows errors.
+ */
+async function patchActionResult(
+  actionId: string | null,
+  result: unknown,
+): Promise<void> {
+  if (!actionId) return;
+  try {
+    await db
+      .update(agentActions)
+      .set({ result: result as any })
+      .where(eq(agentActions.id, actionId));
+  } catch (err) {
+    console.error('[writes] patchActionResult failed:', err);
+  }
+}
 
 const QUEUE_MESSAGE =
   'Action requires human approval. Tell the user the action is pending review and will execute asynchronously if approved.';
@@ -100,6 +158,7 @@ export type TaskCreateArgs = {
 export async function executeTaskCreate(
   args: TaskCreateArgs,
   ctx: ToolContext,
+  opts?: { skipReceipt?: boolean },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
@@ -156,7 +215,7 @@ export async function executeTaskCreate(
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
-    return textResult({
+    const resultPayload = {
       id: task!.id,
       project_id: task!.project_id,
       number: task!.number,
@@ -165,7 +224,31 @@ export async function executeTaskCreate(
       priority: task!.priority,
       assignee_id: task!.assignee_id,
       created_at: task!.created_at,
-    });
+    };
+
+    if (!opts?.skipReceipt) {
+      const actionId = await insertAutoExecActionRow(
+        'task_create',
+        args as Record<string, unknown>,
+        ctx,
+      );
+      await patchActionResult(actionId, resultPayload);
+      if (actionId) {
+        await generateReceipt({
+          actionId,
+          orgId: ctx.org_id,
+          employeeId: ctx.employee_id,
+          proposer: 'employee',
+          proposerId: ctx.employee_id,
+          decision: 'auto_executed',
+          actionName: 'task_create',
+          actionParams: args as unknown,
+          resultJson: resultPayload,
+        });
+      }
+    }
+
+    return textResult(resultPayload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`task_create failed: ${msg}`);
@@ -216,6 +299,7 @@ export type TaskUpdateArgs = {
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
+  opts?: { skipReceipt?: boolean },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -245,14 +329,38 @@ export async function executeTaskUpdate(
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
-    return textResult({
+    const resultPayload = {
       id: row.id,
       title: row.title,
       status: row.status,
       priority: row.priority,
       assignee_id: row.assignee_id,
       updated_at: row.updated_at,
-    });
+    };
+
+    if (!opts?.skipReceipt) {
+      const actionId = await insertAutoExecActionRow(
+        'task_update',
+        args as Record<string, unknown>,
+        ctx,
+      );
+      await patchActionResult(actionId, resultPayload);
+      if (actionId) {
+        await generateReceipt({
+          actionId,
+          orgId: ctx.org_id,
+          employeeId: ctx.employee_id,
+          proposer: 'employee',
+          proposerId: ctx.employee_id,
+          decision: 'auto_executed',
+          actionName: 'task_update',
+          actionParams: args as unknown,
+          resultJson: resultPayload,
+        });
+      }
+    }
+
+    return textResult(resultPayload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`task_update failed: ${msg}`);
@@ -288,6 +396,7 @@ export type MessagePostArgs = {
 export async function executeMessagePost(
   args: MessagePostArgs,
   ctx: ToolContext,
+  opts?: { skipReceipt?: boolean },
 ): Promise<ToolResult> {
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
@@ -324,14 +433,38 @@ export async function executeMessagePost(
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
-    return textResult({
+    const resultPayload = {
       id: row!.id,
       space_id: row!.space_id,
       user_id: row!.user_id,
       content: row!.content,
       parent_id: row!.parent_id,
       created_at: row!.created_at,
-    });
+    };
+
+    if (!opts?.skipReceipt) {
+      const actionId = await insertAutoExecActionRow(
+        'message_post',
+        args as Record<string, unknown>,
+        ctx,
+      );
+      await patchActionResult(actionId, resultPayload);
+      if (actionId) {
+        await generateReceipt({
+          actionId,
+          orgId: ctx.org_id,
+          employeeId: ctx.employee_id,
+          proposer: 'employee',
+          proposerId: ctx.employee_id,
+          decision: 'auto_executed',
+          actionName: 'message_post',
+          actionParams: args as unknown,
+          resultJson: resultPayload,
+        });
+      }
+    }
+
+    return textResult(resultPayload);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`message_post failed: ${msg}`);

@@ -98,6 +98,17 @@ before(async () => {
 
 after(async () => {
   await withClient(async (c) => {
+    // Phase 7 — receipts FK to agent_actions + agent_employees; clear first.
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE employee_id = $1
+          OR action_id IN (SELECT id FROM agent_actions WHERE user_id = $2)`,
+      [TEST_EMPLOYEE_ID, TEST_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM agent_actions WHERE user_id = $1`,
+      [TEST_USER_ID],
+    );
     await c.query(`DELETE FROM messages WHERE user_id = $1`, [TEST_USER_ID]);
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [TEST_EMPLOYEE_ID]);
     await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);

@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { ReceiptViewer } from '@/components/receipt-viewer';
 
 type Action = {
   id: string;
@@ -12,6 +13,7 @@ type Action = {
   agent_employee_id?: string | null;
   source?: string | null;
   error?: string | null;
+  has_receipt?: boolean;
 };
 
 type Employee = {
@@ -119,6 +121,9 @@ export default function AgentSettingsPage() {
   const [rejectReason, setRejectReason] = useState('');
 
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Phase 7 — signed receipt viewer modal state.
+  const [receiptActionId, setReceiptActionId] = useState<string | null>(null);
 
   const flash = useCallback((kind: Toast['kind'], text: string) => {
     const id = Math.random().toString(36).slice(2);
@@ -573,10 +578,33 @@ export default function AgentSettingsPage() {
                     minute: '2-digit',
                   })}
                 </span>
+                {a.has_receipt && (
+                  <button
+                    onClick={() => setReceiptActionId(a.id)}
+                    data-testid={`view-receipt-${a.id}`}
+                    className="text-[10px] px-2 py-0.5 rounded"
+                    style={{
+                      background: 'var(--surface-container)',
+                      color: 'var(--foreground-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    View receipt
+                  </button>
+                )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Phase 7 — signed receipt viewer modal */}
+      {receiptActionId && (
+        <ReceiptViewer
+          actionId={receiptActionId}
+          isOpen={receiptActionId !== null}
+          onClose={() => setReceiptActionId(null)}
+        />
       )}
 
       {/* Drawer */}

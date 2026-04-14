@@ -1,0 +1,7 @@
+Phase 7 HMAC-signed receipts audit — PASS
+run at: 2026-04-14T13:14:07.824Z
+elapsed_ms: 13249
+api_url: http://localhost:3001
+web_url: http://localhost:3000
+test_employee_slug: receipts-audit-emp-1776172434574
+flow: auto_exec → receipt generated → verified green → tampered → red

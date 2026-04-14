@@ -124,6 +124,13 @@ async function seedFixtures() {
 
 async function teardownFixtures() {
   await withClient(async (c) => {
+    // Phase 7 — clear receipts first to satisfy FK constraints.
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
+          OR employee_id = $2`,
+      [SHADOW_USER_ID, EMP_ID],
+    );
     await c.query(
       `DELETE FROM agent_actions WHERE user_id = $1`,
       [SHADOW_USER_ID],

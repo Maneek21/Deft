@@ -90,6 +90,14 @@ async function seedFixtures() {
 
 async function teardownFixtures() {
   await withClient(async (c) => {
+    // Phase 7 — receipts FK to agent_actions + agent_employees, so delete
+    // them first so the subsequent cascade doesn't bounce off the FK.
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
+          OR employee_id = $2`,
+      [SHADOW_USER_ID, EMP_ID],
+    );
     await c.query(
       `DELETE FROM agent_actions WHERE user_id = $1`,
       [SHADOW_USER_ID],

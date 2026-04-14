@@ -163,6 +163,18 @@ async function teardownFixtures() {
       `DELETE FROM agent_session_turns WHERE employee_id = ANY($1::text[])`,
       [empIds],
     );
+    // Phase 7 — clear receipts + their backing agent_actions rows before
+    // the agent_employees FK cascade bites.
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE employee_id = ANY($1::text[])
+          OR action_id IN (SELECT id FROM agent_actions WHERE user_id = $2)`,
+      [empIds, TEST_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM agent_actions WHERE user_id = $1`,
+      [TEST_USER_ID],
+    );
     await c.query(`DELETE FROM messages WHERE user_id = $1`, [TEST_USER_ID]);
     await c.query(
       `DELETE FROM agent_employees WHERE id = ANY($1::text[])`,

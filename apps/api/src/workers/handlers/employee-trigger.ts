@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
+  agentActions,
   agentEmployees,
   agentSessionTurns,
   messages,
@@ -40,6 +41,8 @@ import { runAgentQuery } from '../../lib/agent-runner.js';
 import { dispatchViaOpenClaw } from '../../lib/openclaw-dispatch.js';
 import { invalidatePlatformContextCacheFor } from '../../lib/mcp-tools/context.js';
 import { getIO } from '../../socket.js';
+import { generateReceipt } from '../../lib/receipts.js';
+import { getApprovalTier } from '../../lib/agent-approval.js';
 
 /**
  * Shape sent to `enqueue('agent-jobs', 'employee-trigger', invocation)`.
@@ -239,6 +242,36 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
 
   // Post the reply as a message authored by the employee's shadow user.
   if (spaceId) {
+    // Phase 7 — native triggers bypass the MCP layer, so we insert a
+    // synthetic agent_actions row first to give the receipt FK a target.
+    // Same pattern as the MCP auto-exec path in writes.ts.
+    let triggerActionId: string | null = null;
+    try {
+      const now = new Date();
+      const [actionRow] = await db
+        .insert(agentActions)
+        .values({
+          org_id: employee.org_id,
+          user_id: employee.user_id,
+          agent_employee_id: employee.id,
+          source: 'mcp',
+          action: 'message_post',
+          params: {
+            space_id: spaceId,
+            content: resultText.slice(0, 500),
+            trigger_kind,
+          } as Record<string, unknown>,
+          approval_tier: getApprovalTier('message_post'),
+          approval_status: 'approved',
+          approved_at: now,
+          executed_at: now,
+        })
+        .returning({ id: agentActions.id });
+      triggerActionId = actionRow?.id ?? null;
+    } catch (err) {
+      console.error('[employee-trigger] failed to insert synthetic action row:', err);
+    }
+
     const [agentMessage] = await db
       .insert(messages)
       .values({
@@ -253,6 +286,36 @@ export async function handleEmployeeTrigger(job: JobData): Promise<void> {
         },
       })
       .returning();
+
+    if (triggerActionId) {
+      // best-effort stash result + emit receipt
+      try {
+        await db
+          .update(agentActions)
+          .set({ result: { message_id: agentMessage?.id, trigger_kind } as any })
+          .where(eq(agentActions.id, triggerActionId));
+      } catch (err) {
+        console.error('[employee-trigger] result patch failed:', err);
+      }
+      await generateReceipt({
+        actionId: triggerActionId,
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        proposer: 'cron',
+        proposerId: employee.id,
+        decision: 'auto_executed',
+        decisionReason: `trigger:${trigger_kind}`,
+        actionName: 'message_post',
+        actionParams: {
+          space_id: spaceId,
+          content: resultText.slice(0, 500),
+          trigger_kind,
+        },
+        resultJson: agentMessage
+          ? { id: agentMessage.id, space_id: spaceId, trigger_kind }
+          : null,
+      });
+    }
 
     // Increment the daily budget.
     await db.execute(
