@@ -74,6 +74,14 @@ function canonicalize(value: unknown): string {
 }
 
 function sortKeys(value: unknown): unknown {
+  // Date instances must be preserved as-is so JSON.stringify uses Date's
+  // toJSON (→ ISO string). If we fell into the generic object branch,
+  // Object.keys(new Date()) would be [] and the Date would collapse to {}.
+  // Phase 12 review fix: without this, a resultJson that contains a Date
+  // field (task_create returns task.created_at as a Date) hashes to a
+  // completely different digest than the same row read back from JSONB,
+  // where the same field is a plain string.
+  if (value instanceof Date) return value;
   if (Array.isArray(value)) {
     return value.map(sortKeys);
   }
@@ -100,12 +108,17 @@ type SignedEnvelope = {
   // signed { actionId, orgId, actionName, params, decision, signed_at },
   // which let an attacker with DB write access swap `approver_id` or
   // `result_json` without invalidating the signature.
+  //
+  // Note: signed_at is deliberately NOT part of the envelope anymore.
+  // Date/timestamptz round-trip through drizzle .returning() was producing
+  // off-by-offset values on read, and signed_at is a display field, not
+  // an attribution one. Tamper-evident attribution lives in the fields
+  // below.
   employeeId: string | null;
   proposer: ReceiptProposer;
   proposerId: string | null;
   approverId: string | null;
   resultHash: string | null;
-  signed_at: string;
 };
 
 /**
@@ -126,7 +139,6 @@ function buildSignedEnvelope(params: {
   actionParams: unknown;
   decision: ReceiptDecision;
   decisionReason?: string | null;
-  signedAt: Date;
   employeeId?: string | null;
   proposer: ReceiptProposer;
   proposerId?: string | null;
@@ -145,7 +157,6 @@ function buildSignedEnvelope(params: {
     proposerId: params.proposerId ?? null,
     approverId: params.approverId ?? null,
     resultHash: hashResult(params.resultJson),
-    signed_at: params.signedAt.toISOString(),
   };
 }
 
@@ -171,7 +182,6 @@ export async function generateReceipt(
       actionParams: params.actionParams,
       decision: params.decision,
       decisionReason: params.decisionReason ?? null,
-      signedAt,
       employeeId: params.employeeId ?? null,
       proposer: params.proposer,
       proposerId: params.proposerId ?? null,
@@ -229,7 +239,6 @@ export async function verifyReceipt(
       actionParams: receipt.action_params_json,
       decision: receipt.decision as ReceiptDecision,
       decisionReason: receipt.decision_reason,
-      signedAt: new Date(receipt.signed_at),
       employeeId: receipt.employee_id,
       proposer: receipt.proposer as ReceiptProposer,
       proposerId: receipt.proposer_id,

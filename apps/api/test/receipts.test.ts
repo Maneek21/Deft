@@ -211,7 +211,50 @@ test('4. verifyReceipt returns false if signature_hmac is wrong', async () => {
   assert.equal(ok, false, 'receipt with wrong signature must NOT verify');
 });
 
-test('5. generateReceipt swallows DB failures and returns null', async () => {
+test('5. Date fields in resultJson survive DB roundtrip and still verify', async () => {
+  // Phase 12 regression — canonicalize previously treated Date instances
+  // as generic objects, collapsing them to {} on generate while the
+  // JSONB-read value was a plain string on verify. That produced
+  // mismatched hashes and verifyReceipt returned false for any write
+  // whose result payload included a Date (e.g. task_create returning
+  // task.created_at).
+  const actionId = await insertPendingAction('task_create');
+  const { generateReceipt, verifyReceipt } = await import('../src/lib/receipts.js');
+
+  const receipt = await generateReceipt({
+    actionId,
+    orgId: ORG_ID,
+    employeeId: TEST_EMP_ID,
+    proposer: 'employee',
+    decision: 'auto_executed',
+    actionName: 'task_create',
+    actionParams: { title: 'roundtrip' },
+    resultJson: {
+      id: 'task-with-date',
+      created_at: new Date('2026-04-14T12:34:56.789Z'),
+      number: 7,
+    },
+  });
+  assert.ok(receipt, 'receipt should be generated');
+
+  // Read the row back through drizzle — this simulates what the
+  // receipt-route does when a user opens the viewer.
+  const freshRow = await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT * FROM action_receipts WHERE id = $1`,
+      [receipt!.id],
+    );
+    return r.rows[0] as any;
+  });
+  const ok = await verifyReceipt(freshRow);
+  assert.equal(
+    ok,
+    true,
+    `Date-in-result receipt must verify after DB roundtrip. Row: ${JSON.stringify(freshRow).slice(0, 400)}`,
+  );
+});
+
+test('6. generateReceipt swallows DB failures and returns null', async () => {
   // Pass a non-existent action_id so the FK constraint fails. The library
   // must log + return null, not propagate the error.
   const { generateReceipt } = await import('../src/lib/receipts.js');
