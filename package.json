@@ -5,6 +5,7 @@
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
     "audit:session2": "tsx docs/superpowers/audits/agent-ui-session-2.audit.ts",
     "audit:session3": "tsx docs/superpowers/audits/agent-ui-session-3.audit.ts",
+    "audit:openclaw-flow": "tsx docs/superpowers/audits/openclaw-employee-flow.audit.ts",
     "audit:setup": "tsx docs/superpowers/audits/setup-auth.ts",
     "build": "pnpm -r build",
     "db:generate": "pnpm --filter @deft/db generate",
