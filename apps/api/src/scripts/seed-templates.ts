@@ -27,14 +27,23 @@ const TEMPLATES_DIR = join(__dirname, 'templates');
 // ─── Template metadata ────────────────────────────────────────────────────
 // Note: `role` is constrained by the agent_employee_role enum which in Phase
 // 2 has only four values: project_manager, engineering_lead,
-// executive_assistant, custom. We map the 8 templates onto the closest
-// enum value — this is a known simplification until a later phase expands
-// the enum. See plan §17 (template catalog).
+// executive_assistant, custom, plus the task-61 expansions:
+// product_designer, qa_engineer, customer_success, community_manager, cfo.
+// Every Phase-9 template now maps to its semantic role rather than 'custom'.
 type TemplateMeta = {
   slug: string;
   name: string;
   version: string;
-  role: 'project_manager' | 'engineering_lead' | 'executive_assistant' | 'custom';
+  role:
+    | 'project_manager'
+    | 'engineering_lead'
+    | 'executive_assistant'
+    | 'custom'
+    | 'product_designer'
+    | 'qa_engineer'
+    | 'customer_success'
+    | 'community_manager'
+    | 'cfo';
   description: string;
   default_tools: string[];
   default_capability_packs: string[];
@@ -88,7 +97,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     slug: 'designer',
     name: 'Dara — Product Designer',
     version: '1.0.0',
-    role: 'custom',
+    role: 'product_designer',
     description:
       'Product designer and UX researcher. Reviews specs, audits design patterns in the wiki, and drafts design tickets with clear user stories.',
     default_tools: [
@@ -116,7 +125,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     slug: 'qa',
     name: 'Quinn — QA Engineer',
     version: '1.0.0',
-    role: 'custom',
+    role: 'qa_engineer',
     description:
       'QA engineer and test-plan author. Reproduces bugs before filing, writes repeatable steps, and drives release go/no-go reports.',
     default_tools: [
@@ -145,7 +154,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     slug: 'cs',
     name: 'Sam — Customer Success',
     version: '1.0.0',
-    role: 'custom',
+    role: 'customer_success',
     description:
       'Customer success lead. Responds to support tickets with empathy and precision, turns recurring complaints into product-team follow-ups.',
     default_tools: [
@@ -173,7 +182,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     slug: 'community',
     name: 'Riley — Community Manager',
     version: '1.0.0',
-    role: 'custom',
+    role: 'community_manager',
     description:
       'Community manager and voice-of-the-brand. Scans external channels, drafts public replies, surfaces community sentiment back to the team.',
     default_tools: [
@@ -236,7 +245,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     slug: 'cfo',
     name: 'Morgan — CFO',
     version: '1.0.0',
-    role: 'custom',
+    role: 'cfo',
     description:
       'CFO and financial analyst. Tracks runway, drafts the weekly burn report, models spend scenarios, and flags auto-renewing contracts.',
     default_tools: [

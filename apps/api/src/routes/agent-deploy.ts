@@ -36,6 +36,25 @@ import {
 import { listWizardProviders, getProvider } from '../lib/deployment/index.js';
 import { enqueue } from '../lib/queues.js';
 import { env } from '../lib/env.js';
+import { TEMPLATE_META } from '../scripts/seed-templates.js';
+
+type AgentEmployeeRole =
+  | 'project_manager'
+  | 'engineering_lead'
+  | 'executive_assistant'
+  | 'custom'
+  | 'product_designer'
+  | 'qa_engineer'
+  | 'customer_success'
+  | 'community_manager'
+  | 'cfo';
+
+/** Task 61 — the wizard role must match whatever the seed writes. Fall back
+ * to 'custom' only when the template isn't registered. */
+function resolveTemplateRole(templateSlug: string): AgentEmployeeRole {
+  const meta = TEMPLATE_META.find((t) => t.slug === templateSlug);
+  return (meta?.role as AgentEmployeeRole | undefined) ?? 'custom';
+}
 
 export const agentDeployRoutes = new Hono();
 
@@ -210,12 +229,7 @@ agentDeployRoutes.post('/start', async (c) => {
     user_id: shadowUserId,
     name: body.name,
     slug: body.slug,
-    role:
-      body.template_slug === 'alex-pm'
-        ? 'project_manager'
-        : body.template_slug === 'designer'
-          ? 'custom'
-          : 'custom',
+    role: resolveTemplateRole(body.template_slug),
     system_prompt: `You are ${body.name}, deployed via the Phase 8 setup wizard using the ${body.template_slug} template.`,
     kind: 'openclaw',
     deployment_provider: body.provider,

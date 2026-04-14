@@ -25,7 +25,18 @@ export const knowledgeTypeEnum = pgEnum('knowledge_type', ['decision', 'resource
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
 export const mcpTransportEnum = pgEnum('mcp_transport', ['stdio', 'sse', 'streamable-http']);
-export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', ['project_manager', 'engineering_lead', 'executive_assistant', 'custom']);
+export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', [
+  'project_manager',
+  'engineering_lead',
+  'executive_assistant',
+  'custom',
+  // Task 61 — expanded to cover the 8 first-party templates (Phase 9).
+  'product_designer',
+  'qa_engineer',
+  'customer_success',
+  'community_manager',
+  'cfo',
+]);
 export const planStatusEnum = pgEnum('plan_status', ['draft', 'approved', 'executing', 'paused', 'completed', 'failed']);
 export const planStepStatusEnum = pgEnum('plan_step_status', ['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval']);
 

@@ -27,7 +27,18 @@ const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
 
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
-const VALID_ROLES = ['project_manager', 'engineering_lead', 'executive_assistant', 'custom'];
+const VALID_ROLES = [
+  'project_manager',
+  'engineering_lead',
+  'executive_assistant',
+  'custom',
+  // Task 61 — added so the 5 remapped first-party templates pass this check.
+  'product_designer',
+  'qa_engineer',
+  'customer_success',
+  'community_manager',
+  'cfo',
+];
 const EXPECTED_SLUGS = [
   'alex-pm',
   'designer',
