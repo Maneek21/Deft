@@ -11,6 +11,7 @@
  * Returns: Prometheus text format 0.0.4, `text/plain; version=0.0.4`.
  */
 import { Hono } from 'hono';
+import { timingSafeEqual } from 'node:crypto';
 import { db } from '../lib/db.js';
 import { collectMetrics } from '../lib/otel-metrics.js';
 
@@ -35,7 +36,11 @@ metricsRoutes.get('/', async (c) => {
     return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
   }
   const token = authHeader.slice(7);
-  if (token !== expected) {
+  // Phase 12 review fix — constant-time compare. Length-mismatched buffers
+  // throw inside timingSafeEqual, so gate on length first.
+  const a = Buffer.from(token);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return c.json({ error: 'Unauthorized', code: 'BAD_TOKEN' }, 401);
   }
 

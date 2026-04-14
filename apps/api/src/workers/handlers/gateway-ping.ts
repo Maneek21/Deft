@@ -138,6 +138,11 @@ async function pingGateway(
 
 async function markGroupConnected(group: GatewayGroup): Promise<void> {
   try {
+    // Phase 12 review fix — restrict the UPDATE to the exact employee ids
+    // we enumerated for this group. If two orgs ever share a connection
+    // URL, we must not flip rows from the other org when only ours passed.
+    const ids = group.employees.map((e) => e.id);
+    if (ids.length === 0) return;
     await db
       .update(agentEmployees)
       .set({
@@ -150,17 +155,14 @@ async function markGroupConnected(group: GatewayGroup): Promise<void> {
         and(
           eq(agentEmployees.kind, 'openclaw'),
           eq(agentEmployees.is_active, true),
-          eq(agentEmployees.connection_url, group.connectionUrl),
+          inArray(agentEmployees.id, ids),
         ),
       );
 
-    const ids = group.employees.map((e) => e.id);
-    if (ids.length > 0) {
-      await db
-        .update(providerInstances)
-        .set({ last_status_check_at: new Date() })
-        .where(inArray(providerInstances.employee_id, ids));
-    }
+    await db
+      .update(providerInstances)
+      .set({ last_status_check_at: new Date() })
+      .where(inArray(providerInstances.employee_id, ids));
   } catch (err) {
     console.error(
       `[gateway-ping] failed to mark group ${group.connectionUrl} connected: ${(err as Error).message}`,
@@ -176,24 +178,36 @@ async function markGroupFailure(
   try {
     // Atomic: increment the counter and conditionally flip status + error
     // in a single UPDATE so races can't leave the row half-updated.
-    await db.execute(sql`
-      UPDATE agent_employees SET
-        gateway_ping_fail_count = gateway_ping_fail_count + 1,
-        last_gateway_ping_at = NOW(),
-        connection_status = CASE
-          WHEN gateway_ping_fail_count + 1 >= ${FAIL_THRESHOLD}
+    // Phase 12 review fix — scope the UPDATE to the exact employee ids we
+    // pinged so a multi-org shared connection_url can't leak failures.
+    // We use drizzle's update chain with inArray rather than a raw
+    // `id = ANY($1)` because raw array interpolation isn't reliable
+    // across drizzle's sql template tag.
+    const ids = group.employees.map((e) => e.id);
+    if (ids.length === 0) return;
+    await db
+      .update(agentEmployees)
+      .set({
+        gateway_ping_fail_count: sql`${agentEmployees.gateway_ping_fail_count} + 1`,
+        last_gateway_ping_at: new Date(),
+        connection_status: sql`CASE
+          WHEN ${agentEmployees.gateway_ping_fail_count} + 1 >= ${FAIL_THRESHOLD}
             THEN 'error'
-          ELSE connection_status
-        END,
-        connection_error = CASE
-          WHEN gateway_ping_fail_count + 1 >= ${FAIL_THRESHOLD}
+          ELSE ${agentEmployees.connection_status}
+        END`,
+        connection_error: sql`CASE
+          WHEN ${agentEmployees.gateway_ping_fail_count} + 1 >= ${FAIL_THRESHOLD}
             THEN ${errMsg}
-          ELSE connection_error
-        END
-      WHERE connection_url = ${group.connectionUrl}
-        AND kind = 'openclaw'
-        AND is_active = true
-    `);
+          ELSE ${agentEmployees.connection_error}
+        END`,
+      })
+      .where(
+        and(
+          eq(agentEmployees.kind, 'openclaw'),
+          eq(agentEmployees.is_active, true),
+          inArray(agentEmployees.id, ids),
+        ),
+      );
   } catch (err) {
     console.error(
       `[gateway-ping] failed to mark group ${group.connectionUrl} failure: ${(err as Error).message}`,

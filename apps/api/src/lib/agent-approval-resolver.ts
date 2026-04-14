@@ -29,7 +29,7 @@
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentActions,
@@ -154,6 +154,9 @@ export async function approveAction(
   actionId: string,
   approverUserId: string,
 ): Promise<ApprovalResolverResult> {
+  // Pre-checks read immutable fields so they are safe to run before the
+  // atomic claim. If any pre-check fails we return without ever flipping
+  // the row.
   const [row] = await db
     .select()
     .from(agentActions)
@@ -168,7 +171,7 @@ export async function approveAction(
     };
   }
 
-  // Idempotency: already processed.
+  // Idempotency: already in a terminal state.
   if (row.approval_status === 'approved') {
     return {
       status: 'approved',
@@ -227,6 +230,31 @@ export async function approveAction(
 
   const ctx = buildCtxFromEmployee(emp);
 
+  // Phase 12 review fix — atomic claim. Two concurrent callers could both
+  // pass the `status === 'pending'` read above; the UPDATE … WHERE … AND
+  // approval_status = 'pending' only succeeds for one of them. If this
+  // returns zero rows, we lost the race and return the idempotent result.
+  const claimed = await db.execute(
+    sql`UPDATE agent_actions
+           SET approval_status = 'approved', approved_at = NOW()
+         WHERE id = ${actionId} AND approval_status = 'pending'
+         RETURNING id`,
+  );
+  const claimedRows =
+    (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
+  if (claimedRows.length === 0) {
+    const [winner] = await db
+      .select()
+      .from(agentActions)
+      .where(eq(agentActions.id, actionId))
+      .limit(1);
+    return {
+      status: 'approved',
+      message: 'already approved (lost race)',
+      result: winner?.result ?? undefined,
+    };
+  }
+
   let toolResult: ToolResult;
   let caughtError: Error | null = null;
   try {
@@ -252,15 +280,12 @@ export async function approveAction(
     // leave as string
   }
 
-  // Stamp the row regardless of exec outcome — the user approved it,
-  // even if execution failed. The error column captures the failure
-  // reason so the UI can show "approved but failed".
+  // Stamp exec outcome on the row. approval_status is already 'approved'
+  // from the atomic claim; we only touch executed_at + result/error here.
   const now = new Date();
   await db
     .update(agentActions)
     .set({
-      approval_status: 'approved',
-      approved_at: now,
       executed_at: now,
       result: (isError ? null : parsedResult) as any,
       error: isError ? String(resultText).slice(0, 2000) : null,

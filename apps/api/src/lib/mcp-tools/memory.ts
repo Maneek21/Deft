@@ -17,6 +17,7 @@ import { db } from '../db.js';
 import { wikiPages } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+import { invalidatePlatformContextCacheFor } from './context.js';
 
 const VALID_TYPES = new Set([
   'concept',
@@ -170,6 +171,10 @@ export async function memoryWrite(
         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
       WHERE id = ${id}
     `);
+
+    // Phase 12 review fix — plan §4.2 I3: invalidate platform_context cache
+    // on any memory_write so the next turn sees the new wiki page.
+    invalidatePlatformContextCacheFor(ctx.employee_id);
 
     return textResult({
       slug: String(first.slug),

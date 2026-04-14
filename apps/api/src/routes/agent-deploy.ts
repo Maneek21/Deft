@@ -103,7 +103,11 @@ const StartSchema = z.object({
   byo_gateway_token: z.string().optional(),
   trigger_subscriptions: z.array(z.string()).default([]),
   trust_level: z.enum(['conservative', 'standard']).default('standard'),
-  anthropic_api_key: z.string().optional(),
+  // BYOK: the deployed employee uses the user's own Anthropic key. We do
+  // NOT fall back to Deft's server key — that would silently bill Deft for
+  // every tenant deploy and leak our master key into every tenant's
+  // provider env. Callers must supply a key.
+  anthropic_api_key: z.string().min(1),
 });
 
 agentDeployRoutes.post('/start', async (c) => {
@@ -236,7 +240,7 @@ agentDeployRoutes.post('/start', async (c) => {
     integration_id: body.integration_id ?? null,
     byo_connection_url: body.byo_connection_url ?? null,
     capability_pack_secrets: body.capability_pack_secrets ?? {},
-    anthropic_api_key: body.anthropic_api_key ?? env.ANTHROPIC_API_KEY,
+    anthropic_api_key: body.anthropic_api_key,
     deft_api_url: env.NEXT_PUBLIC_APP_URL.replace(':3000', ':3001'),
   });
 

@@ -188,7 +188,13 @@ function DeployEmployeePageInner() {
     if (provider === 'railway') {
       payload.integration_id = selectedIntegrationId;
     }
-    if (anthropicKey) payload.anthropic_api_key = anthropicKey;
+    // Phase 12 review fix — backend now requires a non-empty key. Guard
+    // here so the user gets an inline error rather than a 400 roundtrip.
+    if (!anthropicKey.trim()) {
+      setError('Anthropic API key is required. Paste a BYOK key to continue.');
+      return;
+    }
+    payload.anthropic_api_key = anthropicKey.trim();
 
     const res = await api.fetch('/api/agents/deploy/start', {
       method: 'POST',
@@ -383,11 +389,43 @@ function DeployEmployeePageInner() {
         />
       )}
       {step === 4 && (
-        <TriggerConfig
-          selected={triggers}
-          defaults={defaultPacksForTemplate}
-          onToggle={onToggleTrigger}
-        />
+        <>
+          <TriggerConfig
+            selected={triggers}
+            defaults={defaultPacksForTemplate}
+            onToggle={onToggleTrigger}
+          />
+          <div className="mt-6">
+            <label
+              className="block text-[12px] font-medium mb-2"
+              style={{ color: 'var(--foreground)' }}
+            >
+              Anthropic API key
+              <span style={{ color: '#ef4444' }}> *</span>
+            </label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={anthropicKey}
+              onChange={(e) => setAnthropicKey(e.target.value)}
+              placeholder="sk-ant-api03-…"
+              className="w-full px-3 py-2 rounded-lg text-[13px]"
+              style={{
+                background: 'var(--surface-container)',
+                color: 'var(--foreground)',
+                border: '1px solid var(--border)',
+              }}
+              data-testid="wizard-anthropic-key"
+            />
+            <p
+              className="mt-2 text-[11px]"
+              style={{ color: 'var(--muted)' }}
+            >
+              Required. The deployed employee uses your own key — Deft never
+              bills against our server key for your agent's usage.
+            </p>
+          </div>
+        </>
       )}
       {step === 5 && (
         <ProvisionProgress
@@ -442,9 +480,14 @@ function DeployEmployeePageInner() {
           <button
             type="button"
             onClick={() => void onDeploy()}
+            disabled={anthropicKey.trim().length === 0}
             data-testid="wizard-deploy"
             className="px-4 py-2 rounded-lg text-[12px] font-medium"
-            style={{ background: 'var(--accent)', color: 'white' }}
+            style={{
+              background: 'var(--accent)',
+              color: 'white',
+              opacity: anthropicKey.trim().length > 0 ? 1 : 0.4,
+            }}
           >
             Deploy
           </button>

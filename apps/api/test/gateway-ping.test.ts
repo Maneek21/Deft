@@ -137,6 +137,14 @@ function mockFetch(
   (globalThis as any).fetch = async (input: any, _init?: any) => {
     const url = typeof input === 'string' ? input : input?.url ?? String(input);
     calls.push(url);
+    // URL filter isolates the test's own gateway from the global DB pool.
+    // handleGatewayPing iterates every openclaw row in the DB, including
+    // rows from sibling test files (e.g. the deploy-wizard's BYO employee).
+    // For unknown URLs we return a 503 so the handler increments the fail
+    // counter but does NOT flip connection_status (threshold is 3 fails).
+    if (urlFilter && !url.startsWith(urlFilter)) {
+      return new Response('mock: unknown gateway', { status: 503 });
+    }
     return responder(url);
   };
   return {

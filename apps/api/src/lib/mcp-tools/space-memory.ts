@@ -8,9 +8,24 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db.js';
-import { spaceMemory } from '@deft/db/schema';
+import { spaceMemory, spaces } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+
+/** Phase 12 review fix: verify space belongs to the caller's org before any
+ * read or write. Without this a bearer-authenticated employee could access
+ * any space's memory bag globally by id-guessing. */
+async function verifySpaceInOrg(
+  spaceId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: spaces.id })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
+    .limit(1);
+  return !!row;
+}
 
 // ─── space_memory_get ─────────────────────────────────────────────────────
 
@@ -28,6 +43,12 @@ export async function spaceMemoryGet(
   if (!args.key) return errorResult('space_memory_get requires key');
 
   try {
+    if (!(await verifySpaceInOrg(args.space_id, ctx.org_id))) {
+      return errorResult(
+        `space_memory_get: space ${args.space_id} not found in caller's org`,
+      );
+    }
+
     const [row] = await db
       .select({
         key: spaceMemory.key,
@@ -77,6 +98,12 @@ export async function spaceMemorySet(
   }
 
   try {
+    if (!(await verifySpaceInOrg(args.space_id, ctx.org_id))) {
+      return errorResult(
+        `space_memory_set: space ${args.space_id} not found in caller's org`,
+      );
+    }
+
     // Upsert on (space_id, key). Drizzle's onConflictDoUpdate handles this.
     const [row] = await db
       .insert(spaceMemory)

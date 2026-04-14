@@ -165,6 +165,7 @@ test('POST /start byo happy path inserts employee + enqueues provision job', asy
       byo_gateway_token: 'gw-token-raw',
       trigger_subscriptions: [],
       trust_level: 'standard',
+      anthropic_api_key: 'sk-ant-test-fake',
     }),
   });
   assert.equal(res.status, 200);
@@ -205,11 +206,32 @@ test('POST /start byo missing connection_url returns 400', async () => {
       capability_packs: [],
       provider: 'byo',
       trigger_subscriptions: [],
+      anthropic_api_key: 'sk-ant-test-fake',
     }),
   });
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.match(body.error ?? body.code ?? '', /BYO|MISSING/);
+});
+
+test('POST /start missing anthropic_api_key returns 400 (Phase 12 review fix)', async () => {
+  const res = await app().request('/api/agents/deploy/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template_slug: 'alex-pm',
+      name: 'No Key',
+      slug: 'no-key-test',
+      capability_packs: [],
+      provider: 'byo',
+      byo_connection_url: 'http://host.docker.internal:18789',
+      byo_gateway_token: 'gw',
+      trigger_subscriptions: [],
+      // anthropic_api_key intentionally omitted — schema requires it so
+      // Deft's server key never leaks into tenant deploy env vars.
+    }),
+  });
+  assert.equal(res.status, 400);
 });
 
 test('POST /start deft_cloud returns 400 COMING_SOON', async () => {
@@ -223,6 +245,7 @@ test('POST /start deft_cloud returns 400 COMING_SOON', async () => {
       capability_packs: [],
       provider: 'deft_cloud',
       trigger_subscriptions: [],
+      anthropic_api_key: 'sk-ant-test-fake',
     }),
   });
   assert.equal(res.status, 400);
@@ -243,6 +266,7 @@ test('POST /start conflicting trigger returns 409', async () => {
       byo_connection_url: 'http://localhost:18789',
       byo_gateway_token: 'gw',
       trigger_subscriptions: ['cron:standup'],
+      anthropic_api_key: 'sk-ant-test-fake',
     }),
   });
   assert.equal(res.status, 409);

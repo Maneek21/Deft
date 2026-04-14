@@ -95,8 +95,29 @@ type SignedEnvelope = {
   params: unknown;
   decision: ReceiptDecision;
   decisionReason: string | null;
+  // Phase 12 review fix — the signed envelope now covers every field a
+  // tamperer could flip to forge attribution. The previous envelope only
+  // signed { actionId, orgId, actionName, params, decision, signed_at },
+  // which let an attacker with DB write access swap `approver_id` or
+  // `result_json` without invalidating the signature.
+  employeeId: string | null;
+  proposer: ReceiptProposer;
+  proposerId: string | null;
+  approverId: string | null;
+  resultHash: string | null;
   signed_at: string;
 };
+
+/**
+ * Stable hash of the result payload so we can include it in the envelope
+ * without blowing up the signed body with a duplicate copy of the result.
+ * null when there is no result (e.g. a rejection).
+ */
+function hashResult(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const canonical = canonicalize(value);
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
 
 function buildSignedEnvelope(params: {
   actionId: string;
@@ -106,6 +127,11 @@ function buildSignedEnvelope(params: {
   decision: ReceiptDecision;
   decisionReason?: string | null;
   signedAt: Date;
+  employeeId?: string | null;
+  proposer: ReceiptProposer;
+  proposerId?: string | null;
+  approverId?: string | null;
+  resultJson?: unknown;
 }): SignedEnvelope {
   return {
     actionId: params.actionId,
@@ -114,6 +140,11 @@ function buildSignedEnvelope(params: {
     params: params.actionParams,
     decision: params.decision,
     decisionReason: params.decisionReason ?? null,
+    employeeId: params.employeeId ?? null,
+    proposer: params.proposer,
+    proposerId: params.proposerId ?? null,
+    approverId: params.approverId ?? null,
+    resultHash: hashResult(params.resultJson),
     signed_at: params.signedAt.toISOString(),
   };
 }
@@ -141,6 +172,11 @@ export async function generateReceipt(
       decision: params.decision,
       decisionReason: params.decisionReason ?? null,
       signedAt,
+      employeeId: params.employeeId ?? null,
+      proposer: params.proposer,
+      proposerId: params.proposerId ?? null,
+      approverId: params.approverId ?? null,
+      resultJson: params.resultJson ?? null,
     });
     const canonical = canonicalize(envelope);
     const signature = computeHmac(canonical);
@@ -194,6 +230,11 @@ export async function verifyReceipt(
       decision: receipt.decision as ReceiptDecision,
       decisionReason: receipt.decision_reason,
       signedAt: new Date(receipt.signed_at),
+      employeeId: receipt.employee_id,
+      proposer: receipt.proposer as ReceiptProposer,
+      proposerId: receipt.proposer_id,
+      approverId: receipt.approver_id,
+      resultJson: receipt.result_json,
     });
     const canonical = canonicalize(envelope);
     const expected = computeHmac(canonical);

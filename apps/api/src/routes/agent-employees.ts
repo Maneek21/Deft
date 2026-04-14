@@ -497,7 +497,9 @@ const updateSchema = z.object({
   disabled_tools: z.array(z.string()).nullable().optional(),
   space_ids: z.array(z.string()).nullable().optional(),
   project_ids: z.array(z.string()).nullable().optional(),
-  trust_level: z.enum(['conservative', 'standard', 'autonomous']).optional(),
+  // trust_level is intentionally NOT part of the PUT schema — it must flow
+  // through PATCH /:id which enforces owner/admin role gating. Allowing it
+  // here would bypass the ConfirmDangerous gate in Settings → Agent.
   max_daily_actions: z.number().int().positive().optional(),
   byoa_model_info: z.string().nullable().optional(),
   heartbeat_enabled: z.boolean().optional(),
@@ -538,7 +540,8 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (data.disabled_tools !== undefined) updates.disabled_tools = data.disabled_tools;
     if (data.space_ids !== undefined) updates.space_ids = data.space_ids;
     if (data.project_ids !== undefined) updates.project_ids = data.project_ids;
-    if (data.trust_level !== undefined) updates.trust_level = data.trust_level;
+    // trust_level intentionally omitted here — see schema comment. Callers
+    // must use PATCH /:id for trust changes (owner/admin only).
     if (data.max_daily_actions !== undefined) updates.max_daily_actions = data.max_daily_actions;
     if (data.byoa_model_info !== undefined) updates.byoa_model_info = data.byoa_model_info;
     if (data.heartbeat_enabled !== undefined) updates.heartbeat_enabled = data.heartbeat_enabled;

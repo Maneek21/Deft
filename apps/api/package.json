@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

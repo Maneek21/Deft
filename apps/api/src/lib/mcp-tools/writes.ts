@@ -26,6 +26,7 @@ import {
   agentActions,
   agentEmployees,
   projects,
+  spaces,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -135,6 +136,55 @@ async function getShadowUserId(employeeId: string): Promise<string | null> {
   return row?.user_id ?? null;
 }
 
+// ─── cross-tenant scope guards (Phase 12 code-review fix) ─────────────────
+
+/** Resolves a project_id only if it belongs to the caller's org. */
+async function verifyProjectInOrg(
+  projectId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.org_id, orgId)))
+    .limit(1);
+  return !!row;
+}
+
+/** Resolves a space_id only if it belongs to the caller's org. */
+async function verifySpaceInOrg(
+  spaceId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: spaces.id })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
+    .limit(1);
+  return !!row;
+}
+
+/** Verifies a parent message exists, is in the caller's org, and is in
+ * the same space as the proposed reply (prevents cross-space thread hijack). */
+async function verifyParentMessageMatches(
+  parentId: string,
+  spaceId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.id, parentId),
+        eq(messages.org_id, orgId),
+        eq(messages.space_id, spaceId),
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
 // ─── task_create ──────────────────────────────────────────────────────────
 
 const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
@@ -163,10 +213,16 @@ export async function executeTaskCreate(
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
   try {
-    // Resolve project — use provided project_id or fall back to the first
-    // project in the org.
+    // Resolve project — use provided project_id (scoped to caller org) or
+    // fall back to the first project in the org.
     let projectId = args.project_id ?? null;
-    if (!projectId) {
+    if (projectId) {
+      if (!(await verifyProjectInOrg(projectId, ctx.org_id))) {
+        return errorResult(
+          `task_create: project ${projectId} not found in caller's org`,
+        );
+      }
+    } else {
       const [p] = await db
         .select({ id: projects.id })
         .from(projects)
@@ -189,10 +245,10 @@ export async function executeTaskCreate(
         : ('p2' as const);
 
     // Atomically bump the project's task_counter and use it as the task
-    // number. Keep it simple — one UPDATE + RETURNING inline in the SQL.
+    // number. Counter UPDATE is also org-scoped as defence-in-depth.
     const counterRow = await db.execute(
       sql`UPDATE projects SET task_counter = task_counter + 1
-          WHERE id = ${projectId} RETURNING task_counter`,
+          WHERE id = ${projectId} AND org_id = ${ctx.org_id} RETURNING task_counter`,
     );
     const rawRows = (counterRow as { rows?: unknown[] }).rows ?? (counterRow as unknown as unknown[]);
     const first = (rawRows as Array<Record<string, unknown>>)[0];
@@ -407,6 +463,25 @@ export async function executeMessagePost(
       return errorResult(
         `message_post: no shadow user for employee ${ctx.employee_id}`,
       );
+    }
+
+    if (!(await verifySpaceInOrg(args.space_id, ctx.org_id))) {
+      return errorResult(
+        `message_post: space ${args.space_id} not found in caller's org`,
+      );
+    }
+    if (args.parent_id) {
+      if (
+        !(await verifyParentMessageMatches(
+          args.parent_id,
+          args.space_id,
+          ctx.org_id,
+        ))
+      ) {
+        return errorResult(
+          `message_post: parent ${args.parent_id} is not in space ${args.space_id}`,
+        );
+      }
     }
 
     const [row] = await db
