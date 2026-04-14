@@ -2,6 +2,7 @@
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
+  agentEmployees,
   tasks,
   projects,
   notifications,
@@ -11,6 +12,31 @@ import {
 } from '@deft/db/schema';
 import { eq, and, lt, sql, gte, inArray, isNotNull } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
+import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
+import type { TriggerInvocation } from './employee-trigger.js';
+
+// Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
+// separate kinds so an employee can subscribe to just one. If the org has
+// a subscribed employee for a given kind, we hand the nudge off to the
+// `employee-trigger` dispatcher and skip the built-in notification path
+// for that (kind, task) pair.
+const NUDGE_STALLED_KIND = 'event:task-stalled';
+const NUDGE_OVERDUE_KIND = 'event:task-overdue';
+
+async function findNudgeEmployee(orgId: string, triggerKind: string) {
+  const [row] = await db
+    .select()
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        sql`${triggerKind} = ANY(${agentEmployees.trigger_subscriptions})`,
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 export async function handleNudgeCheck(_job: JobData): Promise<void> {
   console.log('[nudge-check] Checking for overdue and stalled tasks');
@@ -67,8 +93,40 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
         ),
       );
 
+    // Phase 6 — per-org memoized subscription lookups. We resolve each
+    // (org_id, trigger_kind) pair at most once per nudge pass so we don't
+    // spam the DB with the same query for every task in a large org.
+    const stalledEmpByOrg = new Map<string, Awaited<ReturnType<typeof findNudgeEmployee>>>();
+    const overdueEmpByOrg = new Map<string, Awaited<ReturnType<typeof findNudgeEmployee>>>();
+
     // Process stalled tasks
     for (const task of stalledTasks) {
+      if (!stalledEmpByOrg.has(task.org_id)) {
+        stalledEmpByOrg.set(task.org_id, await findNudgeEmployee(task.org_id, NUDGE_STALLED_KIND));
+      }
+      const subscribed = stalledEmpByOrg.get(task.org_id);
+      if (subscribed) {
+        const invocation: TriggerInvocation = {
+          employee_id: subscribed.id,
+          trigger_kind: NUDGE_STALLED_KIND,
+          context: {
+            task_id: task.id,
+            task_identifier: `${task.project_prefix}-${task.number}`,
+            title: task.title,
+            assignee_id: task.assignee_id,
+            updated_at: task.updated_at,
+          },
+          goal:
+            `Task ${task.project_prefix}-${task.number} ("${task.title}") has been stalled since ${task.updated_at.toISOString()}. ` +
+            'Ask the assignee for a status update or suggest an unblock path.',
+        };
+        await enqueue(
+          QUEUE_NAMES.AGENT_JOBS,
+          'employee-trigger',
+          invocation as unknown as Record<string, unknown>,
+        );
+        continue;
+      }
       await processNudge({
         taskId: task.id,
         orgId: task.org_id,
@@ -82,6 +140,32 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
 
     // Process overdue tasks
     for (const task of overdueTasks) {
+      if (!overdueEmpByOrg.has(task.org_id)) {
+        overdueEmpByOrg.set(task.org_id, await findNudgeEmployee(task.org_id, NUDGE_OVERDUE_KIND));
+      }
+      const subscribed = overdueEmpByOrg.get(task.org_id);
+      if (subscribed) {
+        const invocation: TriggerInvocation = {
+          employee_id: subscribed.id,
+          trigger_kind: NUDGE_OVERDUE_KIND,
+          context: {
+            task_id: task.id,
+            task_identifier: `${task.project_prefix}-${task.number}`,
+            title: task.title,
+            assignee_id: task.assignee_id,
+            due_date: task.due_date,
+          },
+          goal:
+            `Task ${task.project_prefix}-${task.number} ("${task.title}") is overdue (due ${task.due_date?.toISOString() ?? 'unset'}). ` +
+            'DM the assignee and alert the project lead.',
+        };
+        await enqueue(
+          QUEUE_NAMES.AGENT_JOBS,
+          'employee-trigger',
+          invocation as unknown as Record<string, unknown>,
+        );
+        continue;
+      }
       await processNudge({
         taskId: task.id,
         orgId: task.org_id,

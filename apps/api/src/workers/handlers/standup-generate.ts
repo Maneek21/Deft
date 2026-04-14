@@ -3,6 +3,7 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import { env } from '../../lib/env.js';
 import {
+  agentEmployees,
   orgs,
   tasks,
   taskActivity,
@@ -10,8 +11,33 @@ import {
   spaces,
   standups,
 } from '@deft/db/schema';
-import { eq, and, gte, sql, count } from 'drizzle-orm';
+import { eq, and, gte, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
+import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
+import type { TriggerInvocation } from './employee-trigger.js';
+
+const TRIGGER_KIND = 'cron:standup';
+
+/**
+ * Phase 6 — check whether any employee in this org has subscribed to the
+ * `cron:standup` trigger. If yes, route the standup through the employee
+ * trigger dispatcher (the employee will author the standup itself via its
+ * own chat envelope) and skip the built-in native standup for this org.
+ */
+async function findSubscribedEmployee(orgId: string) {
+  const [row] = await db
+    .select()
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        sql`${TRIGGER_KIND} = ANY(${agentEmployees.trigger_subscriptions})`,
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 /**
  * Get the current hour (0-23) in a given IANA timezone.
@@ -41,6 +67,35 @@ export async function handleStandupGenerate(job: JobData): Promise<void> {
       // 2. Check if current UTC hour matches their 9am
       const localHour = currentHourInTimezone(org.timezone);
       if (localHour !== 9) {
+        continue;
+      }
+
+      // Phase 6 branch: if an employee subscribes to `cron:standup` for this
+      // org, hand the work off to the employee-trigger dispatcher and skip
+      // the built-in native standup path. The fallback below stays unchanged
+      // for orgs that have NOT deployed a subscribed employee, so existing
+      // demos keep working.
+      const subscribed = await findSubscribedEmployee(org.id);
+      if (subscribed) {
+        const [defaultSpace] = await db
+          .select({ id: spaces.id })
+          .from(spaces)
+          .where(and(eq(spaces.org_id, org.id), eq(spaces.is_default, true)))
+          .limit(1);
+        const invocation: TriggerInvocation = {
+          employee_id: subscribed.id,
+          trigger_kind: TRIGGER_KIND,
+          context: { org_id: org.id, org_name: org.name },
+          goal:
+            'Generate a concise daily standup summary for the team. ' +
+            'Pull task activity + messages from the last 24h via your MCP ' +
+            'tools, post the summary in #general.',
+          target_space_id: defaultSpace?.id,
+        };
+        await enqueue(QUEUE_NAMES.AGENT_JOBS, 'employee-trigger', invocation as unknown as Record<string, unknown>);
+        console.log(
+          `[standup-generate] Routed cron:standup to employee ${subscribed.slug} in org "${org.name}"`,
+        );
         continue;
       }
 

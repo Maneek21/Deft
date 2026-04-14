@@ -3,6 +3,7 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import { env } from '../../lib/env.js';
 import {
+  agentEmployees,
   events,
   meetingBriefs,
   notifications,
@@ -14,6 +15,25 @@ import {
 } from '@deft/db/schema';
 import { eq, and, gte, lt, sql, desc, inArray } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
+import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
+import type { TriggerInvocation } from './employee-trigger.js';
+
+const MEETING_PREP_TRIGGER_KIND = 'cron:meeting-prep';
+
+async function findMeetingPrepEmployee(orgId: string) {
+  const [row] = await db
+    .select()
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        sql`${MEETING_PREP_TRIGGER_KIND} = ANY(${agentEmployees.trigger_subscriptions})`,
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
   console.log('[meeting-prep-check] Checking for meetings starting in ~15 minutes');
@@ -59,6 +79,37 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
 
       if (existingBrief) {
         console.log(`[meeting-prep-check] Brief already exists for event ${meeting.id}, skipping`);
+        continue;
+      }
+
+      // Phase 6 branch: hand off to subscribed employee if one exists.
+      // The employee owns the brief generation via its own MCP envelope.
+      // Existing native path below remains the fallback.
+      const subscribed = await findMeetingPrepEmployee(meeting.org_id);
+      if (subscribed) {
+        const invocation: TriggerInvocation = {
+          employee_id: subscribed.id,
+          trigger_kind: MEETING_PREP_TRIGGER_KIND,
+          context: {
+            event_id: meeting.id,
+            event_title: meeting.title,
+            event_user_id: meeting.user_id,
+            event_timestamp: meeting.timestamp,
+            event_metadata: meeting.metadata,
+          },
+          goal:
+            `Generate a 3-bullet meeting prep brief for the upcoming meeting "${meeting.title ?? 'untitled'}". ` +
+            'Query events_query + task_query + thread_fetch via your MCP tools to gather context, ' +
+            'then post the brief (or DM the attendee).',
+        };
+        await enqueue(
+          QUEUE_NAMES.AGENT_JOBS,
+          'employee-trigger',
+          invocation as unknown as Record<string, unknown>,
+        );
+        console.log(
+          `[meeting-prep-check] Routed cron:meeting-prep to ${subscribed.slug} for event ${meeting.id}`,
+        );
         continue;
       }
 

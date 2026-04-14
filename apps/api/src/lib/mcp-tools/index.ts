@@ -23,6 +23,7 @@ import { threadFetch } from './messages.js';
 import { taskCreate, taskUpdate, messagePost } from './writes.js';
 import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
+import { eventsQuery } from './events.js';
 
 export type ToolHandler = (args: any, ctx: ToolContext) => Promise<ToolResult>;
 
@@ -34,6 +35,7 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   thread_fetch: threadFetch as ToolHandler,
   member_list: memberList as ToolHandler,
   space_memory_get: spaceMemoryGet as ToolHandler,
+  events_query: eventsQuery as ToolHandler,
 };
 
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
@@ -211,6 +213,47 @@ export const toolSchemas: ToolSchema[] = [
     inputSchema: {
       type: 'object',
       properties: { ...CALLER_SLUG_PROP },
+      required: ['caller_employee_slug'],
+    },
+  },
+  {
+    name: 'events_query',
+    description:
+      'Query the unified events stream for connected-tool activity (GitHub ' +
+      'webhooks, Google Calendar reminders, Slack notifications, Gmail, ' +
+      'Linear, etc.). Filter by type, source, and a since/until time window. ' +
+      'Returns the most recent events ordered by event timestamp descending. ' +
+      'Default limit is 50, max 200. Scoped to your org automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        type: {
+          type: 'string',
+          description:
+            'Single event_type to filter by (e.g. "pr_merged", ' +
+            '"calendar_event", "pr_opened"). Mutually exclusive with `types`.',
+        },
+        types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of event_type values to filter by (OR).',
+        },
+        source: {
+          type: 'string',
+          enum: ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear'],
+          description: 'Optional provider source filter.',
+        },
+        since: {
+          type: 'string',
+          description: 'ISO8601 timestamp — only return events at/after this time.',
+        },
+        until: {
+          type: 'string',
+          description: 'ISO8601 timestamp — only return events at/before this time.',
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
+      },
       required: ['caller_employee_slug'],
     },
   },

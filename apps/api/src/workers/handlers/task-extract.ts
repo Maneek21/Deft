@@ -2,10 +2,35 @@
 // and sends a suggestion notification to the message author.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { notifications, spaces, projectSpaces, projects } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import {
+  agentEmployees,
+  notifications,
+  spaces,
+  projectSpaces,
+  projects,
+} from '@deft/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
 import { env } from '../../lib/env.js';
 import { emitToUser } from '../../socket.js';
+import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
+import type { TriggerInvocation } from './employee-trigger.js';
+
+const TASK_EXTRACT_TRIGGER_KIND = 'event:task-extract';
+
+async function findTaskExtractEmployee(orgId: string) {
+  const [row] = await db
+    .select()
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        sql`${TASK_EXTRACT_TRIGGER_KIND} = ANY(${agentEmployees.trigger_subscriptions})`,
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 interface TaskExtractJobData {
   messageId: string;
@@ -55,6 +80,38 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
 
   // Only process task_create or actionable intents
   if (classification.intent !== 'task_create' && classification.intent !== 'actionable') {
+    return;
+  }
+
+  // Phase 6 branch: if an employee subscribes to `event:task-extract`,
+  // hand the extraction off. The employee owns deciding whether to
+  // suggest + with what fields via its own tool calls. The native
+  // suggestion path below stays as the fallback for unsubscribed orgs.
+  const subscribed = await findTaskExtractEmployee(orgId);
+  if (subscribed) {
+    const invocation: TriggerInvocation = {
+      employee_id: subscribed.id,
+      trigger_kind: TASK_EXTRACT_TRIGGER_KIND,
+      context: {
+        message_id: messageId,
+        space_id: spaceId,
+        author_user_id: userId,
+        classification,
+        message_preview: content.replace(/<[^>]+>/g, '').slice(0, 500),
+      },
+      goal:
+        'A new message looks actionable. Inspect it, decide whether to create a task, ' +
+        'and call task_create (or suggest the user create one). Reference the message id in context.',
+      target_space_id: spaceId,
+    };
+    await enqueue(
+      QUEUE_NAMES.AGENT_JOBS,
+      'employee-trigger',
+      invocation as unknown as Record<string, unknown>,
+    );
+    console.log(
+      `[task-extract] Routed event:task-extract to ${subscribed.slug} for message ${messageId}`,
+    );
     return;
   }
 

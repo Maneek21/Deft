@@ -80,6 +80,13 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/agent-employee-trigger.js');
       return mod.handleAgentEmployeeTrigger;
     }
+    case 'employee-trigger': {
+      // Phase 6 — synthetic TriggerInvocation dispatcher. Receives cron-
+      // and webhook-originated jobs enqueued by existing handlers when
+      // an employee subscribes to that trigger kind.
+      const mod = await import('./handlers/employee-trigger.js');
+      return mod.handleEmployeeTrigger;
+    }
     default:
       return null;
   }
