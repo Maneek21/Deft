@@ -12,6 +12,11 @@
  *   4. Else → direct update. Raw SQL with explicit column list to dodge the
  *      deferred pgvector column (same pattern as Phase 3 `memory_write`).
  *   5. Invalidate platform_context cache on successful auto-executes.
+ *
+ * Phase 6.5 refactor: extracted the side-effecting write into
+ * `executeMemoryUpdate` so the approval resolver can re-invoke it when a
+ * queued scope-promotion action is approved. The public `memoryUpdate`
+ * handler still does the gating + cross-employee isolation check.
  */
 import { sql, eq, and } from 'drizzle-orm';
 import { db } from '../db.js';
@@ -36,7 +41,18 @@ export type MemoryUpdateArgs = {
   };
 };
 
-export async function memoryUpdate(
+/**
+ * Inner executor — performs the actual wiki_pages update. It re-runs the
+ * target-lookup + cross-employee isolation check because callers may be
+ * invoking with stale approval payloads where another employee has since
+ * claimed the page. Returns an error ToolResult if the page is now missing
+ * or owned by someone else.
+ *
+ * Deliberately does NOT gate on trust_level — if the caller decided to
+ * run this (either because of auto-exec at handler time or because a
+ * user approved the queued action), we trust their decision.
+ */
+export async function executeMemoryUpdate(
   args: MemoryUpdateArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
@@ -46,7 +62,6 @@ export async function memoryUpdate(
   }
 
   try {
-    // 1. Fetch the target page
     const [page] = await db
       .select({
         id: wikiPages.id,
@@ -68,8 +83,6 @@ export async function memoryUpdate(
       return errorResult(`memory_update: page "${args.slug}" not found`);
     }
 
-    // 2. Cross-employee isolation. Null means org-wide which is allowed
-    // through the scope-promotion path.
     if (
       page.agent_employee_id !== null &&
       page.agent_employee_id !== ctx.employee_id
@@ -79,7 +92,98 @@ export async function memoryUpdate(
       );
     }
 
-    // 3. Scope-promotion path — requires approval unless trust allows it.
+    const isPromotion = args.patch.scope === 'org' && page.scope !== 'org';
+
+    const setFragments: ReturnType<typeof sql>[] = [];
+    if (typeof args.patch.title === 'string') {
+      setFragments.push(sql`title = ${args.patch.title}`);
+    }
+    if (typeof args.patch.body === 'string') {
+      setFragments.push(sql`content = ${args.patch.body}`);
+      setFragments.push(sql`summary = ${args.patch.body.slice(0, 240)}`);
+    }
+    if (typeof args.patch.confidence === 'number') {
+      const c = Math.max(0, Math.min(1, args.patch.confidence));
+      setFragments.push(sql`confidence = ${c}`);
+    }
+    if (isPromotion) {
+      setFragments.push(sql`scope = 'org'`);
+      setFragments.push(sql`agent_employee_id = NULL`);
+    }
+    setFragments.push(sql`updated_at = now()`);
+    setFragments.push(sql`version = version + 1`);
+
+    const setClause = sql.join(setFragments, sql`, `);
+
+    await db.execute(sql`
+      UPDATE wiki_pages SET ${setClause}
+      WHERE id = ${page.id}
+    `);
+
+    // Refresh search_vector so memory_recall sees the edit.
+    await db.execute(sql`
+      UPDATE wiki_pages SET search_vector =
+        setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+      WHERE id = ${page.id}
+    `);
+
+    invalidatePlatformContextCacheFor(ctx.employee_id);
+
+    return textResult({
+      slug: args.slug,
+      updated: true,
+      promoted: isPromotion,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`memory_update failed: ${msg}`);
+  }
+}
+
+export async function memoryUpdate(
+  args: MemoryUpdateArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!args.slug) return errorResult('memory_update requires slug');
+  if (!args.patch || Object.keys(args.patch).length === 0) {
+    return errorResult('memory_update requires a non-empty patch');
+  }
+
+  try {
+    // Look up the page to check if this is a scope promotion that needs
+    // approval. We intentionally duplicate the lookup with executeMemoryUpdate
+    // so the gating decision can run before we queue vs execute.
+    const [page] = await db
+      .select({
+        id: wikiPages.id,
+        agent_employee_id: wikiPages.agent_employee_id,
+        scope: wikiPages.scope,
+      })
+      .from(wikiPages)
+      .where(
+        and(
+          eq(wikiPages.slug, args.slug),
+          eq(wikiPages.org_id, ctx.org_id),
+          eq(wikiPages.is_deleted, false),
+        ),
+      )
+      .limit(1);
+
+    if (!page) {
+      return errorResult(`memory_update: page "${args.slug}" not found`);
+    }
+
+    if (
+      page.agent_employee_id !== null &&
+      page.agent_employee_id !== ctx.employee_id
+    ) {
+      return errorResult(
+        `memory_update: cannot update another employee's memory (page is owned by a different employee)`,
+      );
+    }
+
     const isPromotion = args.patch.scope === 'org' && page.scope !== 'org';
     if (isPromotion && !shouldAutoExecute('memory_update', ctx.trust_level)) {
       const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
@@ -110,52 +214,7 @@ export async function memoryUpdate(
       );
     }
 
-    // 4. Direct update — build raw SQL to avoid the embedding column.
-    // Build the SET clause conditionally.
-    const setFragments: ReturnType<typeof sql>[] = [];
-    if (typeof args.patch.title === 'string') {
-      setFragments.push(sql`title = ${args.patch.title}`);
-    }
-    if (typeof args.patch.body === 'string') {
-      setFragments.push(sql`content = ${args.patch.body}`);
-      setFragments.push(sql`summary = ${args.patch.body.slice(0, 240)}`);
-    }
-    if (typeof args.patch.confidence === 'number') {
-      const c = Math.max(0, Math.min(1, args.patch.confidence));
-      setFragments.push(sql`confidence = ${c}`);
-    }
-    if (isPromotion) {
-      // Auto-exec promotion path — autonomous trust
-      setFragments.push(sql`scope = 'org'`);
-      setFragments.push(sql`agent_employee_id = NULL`);
-    }
-    setFragments.push(sql`updated_at = now()`);
-    setFragments.push(sql`version = version + 1`);
-
-    // Join fragments with commas
-    const setClause = sql.join(setFragments, sql`, `);
-
-    await db.execute(sql`
-      UPDATE wiki_pages SET ${setClause}
-      WHERE id = ${page.id}
-    `);
-
-    // Refresh search_vector so memory_recall sees the edit.
-    await db.execute(sql`
-      UPDATE wiki_pages SET search_vector =
-        setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
-        setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
-        setweight(to_tsvector('english', COALESCE(content, '')), 'C')
-      WHERE id = ${page.id}
-    `);
-
-    invalidatePlatformContextCacheFor(ctx.employee_id);
-
-    return textResult({
-      slug: args.slug,
-      updated: true,
-      promoted: isPromotion,
-    });
+    return executeMemoryUpdate(args, ctx);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`memory_update failed: ${msg}`);

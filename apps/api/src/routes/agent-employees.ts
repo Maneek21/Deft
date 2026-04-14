@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import {
   agentEmployees,
+  agentSessionTurns,
   users,
   orgMembers,
   spaceMembers,
@@ -63,9 +64,15 @@ agentEmployeeRoutes.get('/templates', async (c) => {
 });
 
 // GET / — list org's agent employees
+// Phase 6.5 — supports `?expand=stats` to enrich each row with pending
+// action counts, 24h session turn counts, last turn timestamp, and 24h
+// avg latency. Existing callers (UI + tests) that don't pass the query
+// continue to get the bare row shape.
 agentEmployeeRoutes.get('/', async (c) => {
   try {
     const user = c.get('user');
+    const expand = c.req.query('expand') ?? '';
+    const wantsStats = expand.split(',').map(s => s.trim()).includes('stats');
 
     const employees = await db
       .select()
@@ -73,10 +80,120 @@ agentEmployeeRoutes.get('/', async (c) => {
       .where(eq(agentEmployees.org_id, user.org_id))
       .orderBy(desc(agentEmployees.created_at));
 
-    return c.json(employees);
+    if (!wantsStats || employees.length === 0) {
+      return c.json(employees);
+    }
+
+    // Aggregate pending action counts per employee.
+    const pendingRows = await db.execute(sql`
+      SELECT agent_employee_id, COUNT(*)::int AS cnt
+      FROM agent_actions
+      WHERE org_id = ${user.org_id}
+        AND agent_employee_id IS NOT NULL
+        AND approval_status = 'pending'
+      GROUP BY agent_employee_id
+    `);
+    const pendingMap = new Map<string, number>();
+    for (const r of ((pendingRows as any).rows ?? pendingRows) as any[]) {
+      if (r.agent_employee_id) pendingMap.set(r.agent_employee_id, Number(r.cnt));
+    }
+
+    // 24h session turn stats: count, last_turn_at, avg latency.
+    const turnStats = await db.execute(sql`
+      SELECT
+        employee_id,
+        COUNT(*)::int AS cnt_24h,
+        MAX(created_at) AS last_turn_at,
+        AVG(latency_ms)::int AS avg_latency
+      FROM agent_session_turns
+      WHERE org_id = ${user.org_id}
+        AND created_at > now() - interval '24 hours'
+      GROUP BY employee_id
+    `);
+    const turnMap = new Map<
+      string,
+      { cnt_24h: number; last_turn_at: string | null; avg_latency: number | null }
+    >();
+    for (const r of ((turnStats as any).rows ?? turnStats) as any[]) {
+      if (r.employee_id) {
+        turnMap.set(r.employee_id, {
+          cnt_24h: Number(r.cnt_24h ?? 0),
+          last_turn_at: r.last_turn_at ?? null,
+          avg_latency: r.avg_latency != null ? Number(r.avg_latency) : null,
+        });
+      }
+    }
+
+    // Also fetch last_turn_at overall (not just 24h) so the UI can still
+    // show a "last turn" chip even for dormant employees.
+    const lastTurnOverall = await db.execute(sql`
+      SELECT employee_id, MAX(created_at) AS last_turn_at
+      FROM agent_session_turns
+      WHERE org_id = ${user.org_id}
+      GROUP BY employee_id
+    `);
+    const lastTurnMap = new Map<string, string | null>();
+    for (const r of ((lastTurnOverall as any).rows ?? lastTurnOverall) as any[]) {
+      if (r.employee_id) lastTurnMap.set(r.employee_id, r.last_turn_at ?? null);
+    }
+
+    const enriched = employees.map((emp) => {
+      const turn = turnMap.get(emp.id);
+      return {
+        ...emp,
+        pending_action_count: pendingMap.get(emp.id) ?? 0,
+        recent_turn_count_24h: turn?.cnt_24h ?? 0,
+        last_turn_at: turn?.last_turn_at ?? lastTurnMap.get(emp.id) ?? null,
+        avg_latency_ms_24h: turn?.avg_latency ?? null,
+      };
+    });
+
+    return c.json(enriched);
   } catch (err) {
     console.error('Failed to list agent employees:', err);
     return c.json({ error: 'Failed to list agent employees', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// Phase 6.5 — recent session turns for an employee, used by the detail
+// drawer in Settings → Agent. Returns the last 20 turns.
+agentEmployeeRoutes.get('/:id/turns', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [existing] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!existing) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const turns = await db
+      .select({
+        id: agentSessionTurns.id,
+        trigger_kind: agentSessionTurns.trigger_kind,
+        space_id: agentSessionTurns.space_id,
+        latency_ms: agentSessionTurns.latency_ms,
+        model_name: agentSessionTurns.model_name,
+        tokens_in: agentSessionTurns.tokens_in,
+        tokens_out: agentSessionTurns.tokens_out,
+        result: agentSessionTurns.result,
+        raw_reply_text: agentSessionTurns.raw_reply_text,
+        error: agentSessionTurns.error,
+        created_at: agentSessionTurns.created_at,
+      })
+      .from(agentSessionTurns)
+      .where(eq(agentSessionTurns.employee_id, id))
+      .orderBy(desc(agentSessionTurns.created_at))
+      .limit(20);
+
+    return c.json({ turns });
+  } catch (err) {
+    console.error('Failed to list employee turns:', err);
+    return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

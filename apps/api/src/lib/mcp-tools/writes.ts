@@ -4,16 +4,21 @@
  * All three share the same trust-gating pattern:
  *   1. getApprovalTier(toolName) → static tier
  *   2. shouldAutoExecute(toolName, ctx.trust_level) → bool
- *   3. if auto-exec: do the write, invalidate the platform_context cache, return
- *      the written entity as a JSON string ToolResult.
+ *   3. if auto-exec: call the matching `execute*` inner function which does
+ *      the actual write + cache invalidation + returns a ToolResult.
  *   4. if queued: INSERT into agent_actions with approval_status='pending' and
  *      return asPseudoResult(actionId, "...pending human review...").
  *
- * We deliberately do NOT touch action_receipts here — Phase 7 wraps the write
- * handlers with receipt generation.
+ * Phase 6.5 refactor: the execute* inner functions are exported so that the
+ * agent-approval-resolver can re-use them when a user approves a queued
+ * action. They deliberately DO NOT re-check shouldAutoExecute — that's the
+ * caller's job. They also DO NOT queue on failure; any error bubbles up as
+ * an error ToolResult for the resolver to stash in agent_actions.error.
+ *
+ * Phase 7 will wrap the write handlers with receipt generation — the hook
+ * point is the end of each execute* function.
  */
 import { sql, eq, and } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import {
   tasks,
@@ -87,15 +92,16 @@ export type TaskCreateArgs = {
   size?: string;
 };
 
-export async function taskCreate(
+/**
+ * Inner executor for task_create. No trust-gating check — the caller is
+ * expected to have already decided whether the action should run (either
+ * via shouldAutoExecute at handler time or via user approval).
+ */
+export async function executeTaskCreate(
   args: TaskCreateArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
-
-  if (!shouldAutoExecute('task_create', ctx.trust_level)) {
-    return queueAction('task_create', args as Record<string, unknown>, ctx);
-  }
 
   try {
     // Resolve project — use provided project_id or fall back to the first
@@ -166,6 +172,23 @@ export async function taskCreate(
   }
 }
 
+/**
+ * Public MCP tool handler — does the trust-gating check, then either
+ * dispatches to the inner executor or queues an approval.
+ */
+export async function taskCreate(
+  args: TaskCreateArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!args.title?.trim()) return errorResult('task_create requires title');
+
+  if (!shouldAutoExecute('task_create', ctx.trust_level)) {
+    return queueAction('task_create', args as Record<string, unknown>, ctx);
+  }
+
+  return executeTaskCreate(args, ctx);
+}
+
 // ─── task_update ──────────────────────────────────────────────────────────
 
 const VALID_STATUS = new Set([
@@ -189,17 +212,14 @@ export type TaskUpdateArgs = {
   };
 };
 
-export async function taskUpdate(
+/** Inner executor for task_update. No trust-gating. */
+export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
-  }
-
-  if (!shouldAutoExecute('task_update', ctx.trust_level)) {
-    return queueAction('task_update', args as Record<string, unknown>, ctx);
   }
 
   try {
@@ -239,6 +259,22 @@ export async function taskUpdate(
   }
 }
 
+export async function taskUpdate(
+  args: TaskUpdateArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!args.task_id) return errorResult('task_update requires task_id');
+  if (!args.patch || Object.keys(args.patch).length === 0) {
+    return errorResult('task_update requires a non-empty patch');
+  }
+
+  if (!shouldAutoExecute('task_update', ctx.trust_level)) {
+    return queueAction('task_update', args as Record<string, unknown>, ctx);
+  }
+
+  return executeTaskUpdate(args, ctx);
+}
+
 // ─── message_post ─────────────────────────────────────────────────────────
 
 export type MessagePostArgs = {
@@ -248,16 +284,13 @@ export type MessagePostArgs = {
   parent_id?: string;
 };
 
-export async function messagePost(
+/** Inner executor for message_post. No trust-gating. */
+export async function executeMessagePost(
   args: MessagePostArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
-
-  if (!shouldAutoExecute('message_post', ctx.trust_level)) {
-    return queueAction('message_post', args as Record<string, unknown>, ctx);
-  }
 
   try {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
@@ -303,4 +336,18 @@ export async function messagePost(
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`message_post failed: ${msg}`);
   }
+}
+
+export async function messagePost(
+  args: MessagePostArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!args.space_id) return errorResult('message_post requires space_id');
+  if (!args.content?.trim()) return errorResult('message_post requires content');
+
+  if (!shouldAutoExecute('message_post', ctx.trust_level)) {
+    return queueAction('message_post', args as Record<string, unknown>, ctx);
+  }
+
+  return executeMessagePost(args, ctx);
 }

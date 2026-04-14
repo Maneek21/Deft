@@ -26,6 +26,11 @@ import { logAuditEvent } from '../lib/audit.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
 import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
+import {
+  approveAction as resolveApproveAction,
+  rejectAction as resolveRejectAction,
+  MCP_ACTION_KINDS,
+} from '../lib/agent-approval-resolver.js';
 
 export const agentRoutes = new Hono();
 
@@ -611,6 +616,56 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
 
 // ── Action approval / rejection / undo ──
 
+// Phase 6.5 — Pending approvals list for the Settings → Agent pending
+// approvals section. Returns the current user's org's pending MCP-sourced
+// actions (the new employee-write kinds) plus the legacy Defty actions.
+// The UI uses the `proposer` field + `employee_name` to show a source badge.
+agentRoutes.get('/actions/pending', async (c) => {
+  const user = c.get('user');
+  // Auto-expire stale pending actions so the list doesn't grow forever.
+  await db.update(agentActions)
+    .set({ approval_status: 'expired' })
+    .where(and(
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+      lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+    ));
+
+  const rows = await db
+    .select({
+      id: agentActions.id,
+      action: agentActions.action,
+      params: agentActions.params,
+      source: agentActions.source,
+      approval_tier: agentActions.approval_tier,
+      created_at: agentActions.created_at,
+      agent_employee_id: agentActions.agent_employee_id,
+      employee_name: agentEmployees.name,
+      employee_slug: agentEmployees.slug,
+      employee_avatar: agentEmployees.avatar_url,
+      employee_kind: agentEmployees.kind,
+    })
+    .from(agentActions)
+    .leftJoin(
+      agentEmployees,
+      eq(agentActions.agent_employee_id, agentEmployees.id),
+    )
+    .where(
+      and(
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.approval_status, 'pending'),
+      ),
+    )
+    .orderBy(desc(agentActions.created_at))
+    .limit(50);
+
+  const actions = rows.map((r) => ({
+    ...r,
+    proposer: r.agent_employee_id ? 'employee' : 'defty',
+  }));
+  return c.json({ actions });
+});
+
 agentRoutes.post('/actions/:id/approve', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
@@ -621,6 +676,32 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
     .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+
+  // Phase 6.5 — MCP-sourced actions (task_create/task_update/message_post/
+  // memory_update) go through the approval resolver, which rebuilds the
+  // ToolContext from the employee row and dispatches to the inner execute*
+  // functions. Legacy Defty actions (create_task/update_task_status/…)
+  // still use the original executeAction path.
+  if (MCP_ACTION_KINDS.has(action.action)) {
+    const result = await resolveApproveAction(actionId, user.id);
+    if (result.status === 'error') {
+      const statusCode =
+        result.code === 'NOT_FOUND' ? 404
+        : result.code === 'FORBIDDEN' ? 403
+        : result.code === 'EXECUTE_FAILED' ? 500
+        : 400;
+      return c.json(
+        { error: result.message, code: result.code },
+        statusCode,
+      );
+    }
+    return c.json({
+      status: result.status,
+      message: 'message' in result ? result.message : undefined,
+      result: 'result' in result ? result.result : undefined,
+    });
+  }
+
   if (action.approval_status !== 'pending') {
     return c.json({ error: 'Already processed', code: 'ALREADY_PROCESSED' }, 400);
   }
@@ -666,10 +747,38 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
 });
 
 agentRoutes.post('/actions/:id/reject', async (c) => {
+  const user = c.get('user');
   const actionId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({} as { reason?: string }));
+  const reason = typeof body?.reason === 'string' ? body.reason : undefined;
+
+  const [action] = await db
+    .select()
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
+    .limit(1);
+
+  if (!action) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+
+  // Phase 6.5 — MCP-sourced actions go through the resolver for idempotency
+  // + permission enforcement + reason capture.
+  if (MCP_ACTION_KINDS.has(action.action)) {
+    const result = await resolveRejectAction(actionId, user.id, reason);
+    if (result.status === 'error') {
+      const statusCode =
+        result.code === 'NOT_FOUND' ? 404
+        : result.code === 'FORBIDDEN' ? 403
+        : 400;
+      return c.json({ error: result.message, code: result.code }, statusCode);
+    }
+    return c.json({ status: result.status });
+  }
+
   await db
     .update(agentActions)
-    .set({ approval_status: 'rejected' })
+    .set({ approval_status: 'rejected', error: reason ?? null })
     .where(eq(agentActions.id, actionId));
   return c.json({ success: true });
 });
