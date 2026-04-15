@@ -15,7 +15,7 @@ const PRESET_COLORS = [
 
 type Props = {
   onClose: () => void;
-  onCreated: (project: { id: string; name: string; prefix: string; color: string | null; task_counter: number }) => void;
+  onCreated: (project: { id: string; name: string; prefix: string; color: string | null; task_counter: number; total_tasks: number; done_tasks: number }) => void;
 };
 
 export function CreateProjectModal({ onClose, onCreated }: Props) {
@@ -75,7 +75,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
       }
 
       const project = await res.json();
-      onCreated(project);
+      onCreated({ ...project, total_tasks: 0, done_tasks: 0 });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create project');
     } finally {

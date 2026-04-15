@@ -22,6 +22,17 @@ projectRoutes.get('/', async (c) => {
       color: projects.color,
       lead_id: projects.lead_id,
       task_counter: projects.task_counter,
+      total_tasks: sql<number>`(
+        select count(*)::int from "tasks"
+        where "tasks"."project_id" = "projects"."id"
+          and "tasks"."is_deleted" = false
+      )`.as('total_tasks'),
+      done_tasks: sql<number>`(
+        select count(*)::int from "tasks"
+        where "tasks"."project_id" = "projects"."id"
+          and "tasks"."is_deleted" = false
+          and "tasks"."status" = 'done'
+      )`.as('done_tasks'),
       is_archived: projects.is_archived,
       created_at: projects.created_at,
     })

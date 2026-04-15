@@ -64,6 +64,8 @@ type Project = {
   prefix: string;
   color: string | null;
   task_counter: number;
+  total_tasks: number;
+  done_tasks: number;
 };
 
 const navItems = [
@@ -434,7 +436,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
               </div>
               <span className="truncate flex-1">{project.name}</span>
               <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
-                {project.task_counter}
+                {project.total_tasks}
               </span>
             </button>
           );

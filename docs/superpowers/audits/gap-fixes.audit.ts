@@ -183,6 +183,23 @@ async function main(): Promise<void> {
           missing.length ? `missing=${missing.join(',')}` : `values=${values.length}`,
         );
       }
+      // ─── Gap #7+#12: projects endpoint exposes live total_tasks ───
+      {
+        const r = await page.request.get(`${API_URL}/api/projects`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        type ProjectRow = { prefix?: string; total_tasks?: number; task_counter?: number };
+        const projects = (await r.json()) as ProjectRow[];
+        const deft = projects.find((p) => p.prefix === 'DEFT');
+        const hasLive = deft && typeof deft.total_tasks === 'number';
+        const counter = deft?.task_counter ?? Number.MAX_SAFE_INTEGER;
+        const sane = hasLive && (deft.total_tasks as number) < counter;
+        record(
+          'gap#7+12 projects endpoint exposes live total_tasks',
+          Boolean(hasLive) && Boolean(sane),
+          `deft.total_tasks=${deft?.total_tasks} deft.task_counter=${deft?.task_counter}`,
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
