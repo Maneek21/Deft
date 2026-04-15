@@ -2,9 +2,54 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
+
+// ─── Mention node ─────────────────────────────────────────────────────
+// Inline atom that renders as a styled pill in the composer and serializes
+// to `<@uuid|name>` text markers when the message is sent. Parsing back
+// from the same `span[data-mention-uuid]` format lets drafts round-trip.
+// The pill colors match the same --accent token that space-chat.tsx uses
+// for rendered mentions, so the composer preview matches the final message.
+const MentionNode = Node.create({
+  name: 'mention',
+  inline: true,
+  group: 'inline',
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      uuid: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-mention-uuid'),
+        renderHTML: (attrs) => ({ 'data-mention-uuid': attrs.uuid }),
+      },
+      name: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-mention-name'),
+        renderHTML: (attrs) => ({ 'data-mention-name': attrs.name }),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-mention-uuid]' }];
+  },
+  renderHTML({ HTMLAttributes, node }) {
+    return [
+      'span',
+      mergeAttributes(HTMLAttributes, {
+        class: 'px-1 py-0.5 rounded text-[13px] font-medium',
+        style: 'background:rgba(212,168,83,0.15);color:var(--accent)',
+      }),
+      `@${node.attrs.name ?? ''}`,
+    ];
+  },
+  renderText({ node }) {
+    return `<@${node.attrs.uuid}|${node.attrs.name}>`;
+  },
+});
 import {
   Bold,
   Italic,
@@ -117,6 +162,7 @@ export function RichComposer({
         openOnClick: false,
         HTMLAttributes: { class: 'deft-link' },
       }),
+      MentionNode,
     ],
     editorProps: {
       attributes: {
@@ -261,12 +307,19 @@ export function RichComposer({
     if (!editor) return;
     const { from } = editor.state.selection;
     const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
-    const atMatch = textBefore.match(/@(\w*)$/);
+    // Match one or more @ signs so accidentally typing "@@Rahul" collapses
+    // to a single mention pill instead of leaving a literal @ before the span.
+    const atMatch = textBefore.match(/@+(\w*)$/);
     if (atMatch) {
       const deleteFrom = from - atMatch[0].length;
-      editor.chain().focus()
+      editor
+        .chain()
+        .focus()
         .deleteRange({ from: deleteFrom, to: from })
-        .insertContent(`<@${selected.id}|${selected.name}> `)
+        .insertContent([
+          { type: 'mention', attrs: { uuid: selected.id, name: selected.name } },
+          { type: 'text', text: ' ' },
+        ])
         .run();
     }
     setShowMentions(false);
