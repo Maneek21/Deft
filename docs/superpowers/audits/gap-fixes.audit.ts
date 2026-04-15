@@ -200,6 +200,25 @@ async function main(): Promise<void> {
           `deft.total_tasks=${deft?.total_tasks} deft.task_counter=${deft?.task_counter}`,
         );
       }
+      // ─── Gap #5: no tiptap duplicate extension warning ───
+      {
+        const warnings: string[] = [];
+        const handler = (msg: { type: () => string; text: () => string }) => {
+          if (msg.type() === 'warning' && /Duplicate extension/i.test(msg.text())) {
+            warnings.push(msg.text());
+          }
+        };
+        page.on('console', handler);
+        await page.goto(`${WEB_URL}/chat`);
+        await page.waitForLoadState('networkidle');
+        await page.waitForTimeout(600);
+        page.off('console', handler);
+        record(
+          'gap#5 no tiptap duplicate extension warning',
+          warnings.length === 0,
+          warnings.length ? warnings[0].slice(0, 200) : 'clean',
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {

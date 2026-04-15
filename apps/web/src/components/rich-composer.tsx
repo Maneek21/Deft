@@ -104,10 +104,13 @@ export function RichComposer({
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
+      // StarterKit bundles its own Link extension since TipTap 2.4; disable it
+      // so our explicit Link.configure below is the only one registered.
       StarterKit.configure({
         codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
         code: { HTMLAttributes: { class: 'deft-inline-code' } },
         heading: false,
+        link: false,
       }),
       Placeholder.configure({ placeholder }),
       Link.configure({
