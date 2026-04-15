@@ -142,7 +142,12 @@ export default function CalendarPage() {
 
   const handleViewChange = useCallback((v: CalendarView) => {
     setView(v);
-    if (v === 'month') setAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth(), 1));
+    if (v === 'month') {
+      setAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth(), 1));
+    } else {
+      // When switching to week or day view, anchor on today
+      setAnchor(new Date());
+    }
     setSelectedDay(null);
   }, []);
 

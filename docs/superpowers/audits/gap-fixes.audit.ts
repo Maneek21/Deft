@@ -415,6 +415,62 @@ async function main(): Promise<void> {
         );
       }
 
+      // ─── Gap #14: Calendar Week view anchors on current date, not first of month ───
+      {
+        // Create a fresh context to avoid auth state issues
+        const calCtx = await browser.newContext({
+          storageState: getStatePath(),
+          viewport: { width: 1440, height: 900 },
+        });
+        const calPage = await calCtx.newPage();
+        try {
+          // Navigate to calendar
+          await calPage.goto(`${WEB_URL}/calendar`, { waitUntil: 'networkidle' });
+          await calPage.waitForTimeout(500);
+
+          // Check if we have the Week button
+          const hasWeekBtn = await calPage.getByRole('button', { name: /^Week$/i }).first().isVisible().catch(() => false);
+
+          if (!hasWeekBtn) {
+            const url = calPage.url();
+            const title = await calPage.title();
+            record(
+              'gap#14 Calendar Week view anchors on current date',
+              false,
+              `calendar page not found (url=${url}, title=${title})`,
+            );
+          } else {
+            // Ensure we're on the current month by clicking Today
+            await calPage.getByRole('button', { name: /Today/i }).first().click().catch(() => {});
+            await calPage.waitForTimeout(300);
+            // Click Week view button
+            await calPage.getByRole('button', { name: /^Week$/i }).first().click().catch(() => {});
+            await calPage.waitForTimeout(300);
+            const heading = (await calPage.locator('main h1').first().innerText()).trim();
+            // Heading should include the short month name of the current date.
+            const now = new Date();
+            const currentMonthAbbr = now.toLocaleString('en-US', { month: 'short' });
+            const nextMonthAbbr = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+              .toLocaleString('en-US', { month: 'short' });
+            // Accept either current month (mid-week) or a range spanning into next month
+            const containsCurrent = heading.includes(currentMonthAbbr) || heading.includes(nextMonthAbbr);
+            // Compute the date of the week-start for today and confirm it's in the heading
+            const today = now.getDate();
+            const todayInHeading = new RegExp(`\\b${today}\\b`).test(heading);
+            // Less strict: heading covers a day within 6 of today
+            const nearby = Array.from({ length: 7 }, (_, i) => today - i).filter((d) => d > 0);
+            const anyNearby = nearby.some((d) => new RegExp(`\\b${d}\\b`).test(heading));
+            record(
+              'gap#14 Calendar Week view anchors on current date',
+              containsCurrent && (todayInHeading || anyNearby),
+              `heading="${heading}" today=${today}`,
+            );
+          }
+        } finally {
+          await calCtx.close();
+        }
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
