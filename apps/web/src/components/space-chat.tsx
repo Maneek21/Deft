@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -28,6 +29,8 @@ import {
   ChevronDown,
   Bell,
   BellOff,
+  MailOpen,
+  Forward,
 } from 'lucide-react';
 import { formatMessageTime, formatDayLabel, isSameDay, formatTimeWithSenderZone } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
@@ -44,6 +47,10 @@ import { ClipCard } from './clip-card';
 import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
+import ConfirmDialog from './confirm-dialog';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Link from '@tiptap/extension-link';
 
 type Reaction = {
   emoji: string;
@@ -486,7 +493,9 @@ export function SpaceChat({
   const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
   const [menuDirection, setMenuDirection] = useState<'down' | 'up'>('down');
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [forwardMsgId, setForwardMsgId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
   const [linkPreviews, setLinkPreviews] = useState<Map<string, LinkPreview[]>>(new Map());
   const [taskSuggestions, setTaskSuggestions] = useState<Map<string, any>>(new Map());
@@ -502,7 +511,7 @@ export function SpaceChat({
   const [reminderMenuId, setReminderMenuId] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; messageId: string } | null>(null);
+  const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; description: string; messageId: string } | null>(null);
   const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   const [recapSummary, setRecapSummary] = useState<string | null>(null);
   const [recapLoading, setRecapLoading] = useState(false);
@@ -784,8 +793,16 @@ export function SpaceChat({
     };
   }, [spaceId, user?.id, scrollToBottom]);
 
+  const serializeMentions = (html: string) => html.replace(
+    /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,
+    '<@$1|$2>'
+  ).replace(
+    /<span[^>]*data-mention-name="([^"]+)"[^>]*data-mention-uuid="([^"]+)"[^>]*>[^<]*<\/span>/g,
+    '<@$2|$1>'
+  );
+
   const handleScheduleSend = async (scheduledFor: string, html: string, text: string) => {
-    let content = html;
+    let content = serializeMentions(html);
     // Embed file references as markers in the content
     if (pendingFiles.length > 0) {
       const fileLines = pendingFiles.map(
@@ -802,7 +819,7 @@ export function SpaceChat({
   };
 
   const handleRichSend = async (html: string, text: string) => {
-    let content = html;
+    let content = serializeMentions(html);
     // Prepend quoted message if present
     if (quotedMessage) {
       const quoteHtml = `<blockquote style="border-left:3px solid var(--primary-container);padding-left:12px;margin:0 0 8px 0;color:var(--on-surface-variant)"><strong>${quotedMessage.userName}</strong><br/>${quotedMessage.content}</blockquote>`;
@@ -831,7 +848,7 @@ export function SpaceChat({
     const lastMsg = myMessages[myMessages.length - 1];
     if (lastMsg) {
       setEditingId(lastMsg.id);
-      setEditContent(lastMsg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+      setEditContent(lastMsg.content);
       // Scroll the message into view so the edit box is visible
       setTimeout(() => {
         const el = document.querySelector(`[data-message-id="${lastMsg.id}"]`);
@@ -842,10 +859,7 @@ export function SpaceChat({
 
   const handleEdit = async (id: string) => {
     if (!editContent.trim()) return;
-    // Wrap plain text in <p> tags so TipTap-rendered content stays consistent
-    const isHtml = editContent.startsWith('<') && /<\/?[a-z][\s>]/i.test(editContent);
-    const contentToSave = isHtml ? editContent : `<p>${editContent.replace(/\n/g, '</p><p>')}</p>`;
-    await api.patch(`/api/messages/${id}`, { content: contentToSave });
+    await api.patch(`/api/messages/${id}`, { content: editContent });
     setEditingId(null);
     setMoreMenuId(null);
   };
@@ -1284,7 +1298,9 @@ export function SpaceChat({
                           } else if (title.length > 80) {
                             title = (title.slice(0, title.lastIndexOf(' ', 80)) || title.slice(0, 80)) + '...';
                           }
-                          setCreateTaskMsg({ title, messageId: msg.id });
+                          // Build description with source attribution
+                          const description = `<blockquote>${msg.content}</blockquote><p><em>Created from chat in #${spaceName}</em></p>`;
+                          setCreateTaskMsg({ title, description, messageId: msg.id });
                         }}
                       >
                         <CheckSquare size={16} strokeWidth={1.5} />
@@ -1318,7 +1334,7 @@ export function SpaceChat({
                               <button
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                                 style={{ color: 'var(--foreground-secondary)' }}
-                                onClick={() => { setEditingId(msg.id); setEditContent(msg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); setMoreMenuId(null); }}
+                                onClick={() => { setEditingId(msg.id); setEditContent(msg.content); setMoreMenuId(null); }}
                               >
                                 <Pencil size={13} strokeWidth={1.5} /> Edit
                               </button>
@@ -1330,6 +1346,13 @@ export function SpaceChat({
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <Copy size={13} strokeWidth={1.5} /> Copy link
                             </button>
+                            <button onClick={async () => {
+                              await api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: msg.id });
+                              setMoreMenuId(null);
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                              style={{ color: 'var(--on-surface-variant)' }}>
+                              <MailOpen size={13} strokeWidth={1.5} /> Mark unread
+                            </button>
                             <button onClick={() => {
                               const plain = msg.content.replace(/<[^>]+>/g, '').slice(0, 200);
                               setQuotedMessage({ userName: msg.user_name, content: plain });
@@ -1337,6 +1360,13 @@ export function SpaceChat({
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <MessageSquare size={13} strokeWidth={1.5} /> Quote
+                            </button>
+                            <button onClick={() => {
+                              setForwardMsgId(msg.id);
+                              setMoreMenuId(null);
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                              style={{ color: 'var(--on-surface-variant)' }}>
+                              <Forward size={13} strokeWidth={1.5} /> Forward
                             </button>
                             <button onClick={async () => {
                               const title = msg.content.replace(/<[^>]+>/g, '').split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
@@ -1349,7 +1379,7 @@ export function SpaceChat({
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
-                              <BookOpen size={13} strokeWidth={1.5} /> Capture Decision
+                              <BookOpen size={13} strokeWidth={1.5} /> Save to Knowledge
                             </button>
                             <div className="relative">
                               <button className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
@@ -1391,9 +1421,7 @@ export function SpaceChat({
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                                 style={{ color: 'var(--danger)' }}
                                 onClick={() => {
-                                  if (confirm('Delete this message? This can\'t be undone.')) {
-                                    handleDelete(msg.id);
-                                  }
+                                  setDeleteConfirmId(msg.id);
                                   setMoreMenuId(null);
                                 }}
                               >
@@ -1420,7 +1448,7 @@ export function SpaceChat({
                         <button
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                           style={{ color: 'var(--foreground-secondary)' }}
-                          onClick={() => { setEditingId(msg.id); setEditContent(msg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); setMoreMenuId(null); }}
+                          onClick={() => { setEditingId(msg.id); setEditContent(msg.content); setMoreMenuId(null); }}
                         >
                           <Pencil size={13} strokeWidth={1.5} /> Edit
                         </button>
@@ -1467,7 +1495,7 @@ export function SpaceChat({
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                           style={{ color: 'var(--danger)' }}
                           onClick={() => {
-                            if (confirm('Delete this message? This can\'t be undone.')) handleDelete(msg.id);
+                            setDeleteConfirmId(msg.id);
                             setMoreMenuId(null);
                           }}
                         >
@@ -1801,7 +1829,7 @@ export function SpaceChat({
           onSlashCommand={async (command, args) => {
             switch (command) {
               case 'task':
-                setCreateTaskMsg({ title: args || 'New task', messageId: '' });
+                setCreateTaskMsg({ title: args || 'New task', description: '', messageId: '' });
                 break;
 
               case 'remind': {
@@ -1880,6 +1908,7 @@ export function SpaceChat({
           <TaskQuickCreate
             projectId={defaultProjectId}
             initialTitle={createTaskMsg.title}
+            initialDescription={createTaskMsg.description}
             sourceMessageId={createTaskMsg.messageId}
             onClose={() => setCreateTaskMsg(null)}
             onCreated={() => { setCreateTaskMsg(null); setCmdToast('Task created'); }}
@@ -1906,7 +1935,40 @@ export function SpaceChat({
           onClose={() => setProfileCard(null)}
         />
       )}
+      {deleteConfirmId && (
+        <ConfirmDialog
+          title="Delete message"
+          message="Delete this message? This can't be undone."
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { handleDelete(deleteConfirmId); setDeleteConfirmId(null); }}
+          onCancel={() => setDeleteConfirmId(null)}
+        />
+      )}
       </div>
+      {forwardMsgId && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => setForwardMsgId(null)}>
+          <div className="w-80 max-h-96 rounded-xl overflow-hidden" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="p-3 font-semibold text-[14px]" style={{ color: 'var(--foreground)', borderBottom: '1px solid var(--border)' }}>
+              Forward to...
+            </div>
+            <div className="overflow-y-auto max-h-72 p-2">
+              {spaces?.filter(s => s.id !== spaceId).map(s => (
+                <button key={s.id} onClick={async () => {
+                  await api.post('/api/messages/forward', { message_id: forwardMsgId, target_space_id: s.id });
+                  setForwardMsgId(null);
+                }} className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2 hover:bg-white/5"
+                  style={{ color: 'var(--foreground)' }}>
+                  # {s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </FileDropZone>
   );
 }
@@ -2219,22 +2281,36 @@ function TaskSuggestionCard({
 }
 
 function EditBox({ content, onChange, onSave, onCancel }: { content: string; onChange: (v: string) => void; onSave: () => void; onCancel: () => void }) {
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({ heading: false }),
+      Link.configure({ openOnClick: false }),
+    ],
+    content,
+    onUpdate: ({ editor: e }) => onChange(e.getHTML()),
+    editorProps: {
+      attributes: { class: 'deft-editor' },
+      handleKeyDown(_view, event) {
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSave(); return true; }
+        if (event.key === 'Escape') { onCancel(); return true; }
+        return false;
+      },
+    },
+  });
+
+  useEffect(() => { editor?.commands.focus('end'); }, [editor]);
+
   return (
     <div className="mt-1">
       <div className="text-[11px] mb-1 font-medium" style={{ color: 'var(--accent)' }}>Editing</div>
-      <div className="flex gap-2">
-        <textarea
-          value={content}
-          onChange={(e) => onChange(e.target.value)}
-          className="flex-1 px-3 py-1.5 rounded-lg text-[13px] resize-none outline-none"
-          style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: 'var(--foreground)' }}
-          rows={2}
-          autoFocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSave(); }
-            if (e.key === 'Escape') onCancel();
-          }}
-        />
+      <div className="flex gap-2 items-start">
+        <div
+          className="flex-1 px-3 py-1.5 rounded-lg text-[13px] outline-none"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: 'var(--foreground)', minHeight: '2.5rem' }}
+        >
+          <EditorContent editor={editor} />
+        </div>
         <button onClick={onSave} className="p-1" style={{ color: 'var(--success)' }}><Check size={15} /></button>
         <button onClick={onCancel} className="p-1" style={{ color: 'var(--danger)' }}><X size={15} /></button>
       </div>
