@@ -47,3 +47,4 @@ deft-human-test-results.md
 
 # Claude Code agent runtime state
 .claude/scheduled_tasks.lock
+.deploy-tokens
