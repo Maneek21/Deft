@@ -107,9 +107,10 @@ async function main() {
           `delete from ${spec.table} where ${spec.column} = ANY($1::text[])`,
           [testUserIds],
         );
-        if (result.rowCount > 0) {
-          console.log(`  deleted ${result.rowCount} rows from ${spec.table}.${spec.column}`);
-          totalDeleted += result.rowCount;
+        const rowCount = result.rowCount ?? 0;
+        if (rowCount > 0) {
+          console.log(`  deleted ${rowCount} rows from ${spec.table}.${spec.column}`);
+          totalDeleted += rowCount;
         }
       } catch (e: any) {
         // Skip if table/column doesn't exist
