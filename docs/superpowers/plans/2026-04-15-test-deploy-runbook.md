@@ -361,3 +361,58 @@ R2_*                   — uploads default to local fs (ephemeral)
 ---
 
 **When everything is green and testers are in, you're done.** Come back to this doc before touching the deferred items.
+
+---
+
+## Appendix — Actual deploy log (2026-04-15)
+
+Recording the real sequence of events so the next deploy is less surprising.
+
+**Stack used in practice:**
+- Neon (free tier) → Postgres 17.8 + pgvector 0.8.0
+- Railway (Hobby) → BOTH api and web as separate services in one project
+- Vercel → **not used** (the initial token the user generated was read-only and couldn't create projects — pivoted web to Railway instead)
+- Redis → skipped
+- Resend → not configured (temp passwords surfaced in API response per the members.ts fix)
+
+**Final URLs (testers):**
+- Web: `https://deft-web-production.up.railway.app`
+- API: `https://deft-api-production.up.railway.app`
+- DB: Neon project `deft-test` (id `crimson-boat-34247541` or similar — check your Neon console)
+
+**First admin:** `maneek@deft.test` / `ChangeMeOnFirstLogin-2026-04`. Change this immediately after first login.
+
+### Gotchas I hit (in the order they bit me)
+
+1. **Vercel token scope.** The user created the token with "Full Account" scope in the UI, but the generated account is `"version": "northstar"` + `"limited": true`, meaning personal accounts are effectively read-only shells. `whoami` worked, everything else returned 403. **Workaround:** skip Vercel, host web on a second Railway service.
+
+2. **Railway CLI auth vs GraphQL auth.** Account tokens (the UUID you get from Account Settings → Tokens) work for GraphQL (`backboard.railway.com/graphql/v2`) and some CLI commands but NOT for the `railway up` upload endpoint. You need a **project-scoped CLI token** created via the `projectTokenCreate` GraphQL mutation after the project exists, then set it as `RAILWAY_TOKEN` in the shell when running `railway up`. The same token doesn't work for `railway link` or other account-level commands — use the account token for those.
+
+3. **`railway up` + `.railwayignore`.** The monorepo has a root `Dockerfile` that builds BOTH web + api in one container. Railway auto-detects Dockerfiles and used that, ignoring the `builder: NIXPACKS` setting. **Fix:** add `Dockerfile` to `.railwayignore`. Also exclude `node_modules`, `.next`, `.git`, `uploads/`, `*.png`, `*.pdf`, `.playwright-mcp/`, and `docs/` or the tarball is > 1GB and uploads time out.
+
+4. **Railway upload endpoint intermittent 500s.** Between tarball-ready and deployment-registered, Railway's upload endpoint returned 500 for ~5 minutes. Retrying after 2 minutes worked. If you see `Failed to upload code with status code 500`, just retry.
+
+5. **Recreating a Railway service drops the domain.** Deleted + recreated the web service during debugging. The public domain I had generated earlier became unattached — the new service had no public domain at all. Regenerating via `serviceDomainCreate` gave back the same name (`deft-web-production.up.railway.app`) because the name was available again, and the router picked it up within 10 seconds.
+
+6. **`pnpm --filter @deft/web exec next start -p $PORT` didn't expand `$PORT`.** Result: Next.js bound to its default 3000 while Railway expected its injected `$PORT`, and the edge router returned 404 "Application not found". **Fix:** drop the `-p` flag entirely. Next.js 16 reads `PORT` from env natively. Start command is just `pnpm --filter @deft/web exec next start`.
+
+7. **API PORT fallback.** Separate fix committed earlier: `apps/api/src/index.ts` now reads `process.env.PORT || process.env.API_PORT || '3001'`. Without this change, Railway's `$PORT` isn't picked up and the API also hits the 404 issue.
+
+8. **Signup payload field name.** The signup endpoint expects `org_name` (snake_case), not `orgName`. If the first admin creation fails with 400 VALIDATION_ERROR, check the field names.
+
+### What's running right now
+
+- **DB:** Neon `deft-test` project, 85 tables, pgvector installed, ivfflat index on `wiki_pages.embedding`.
+- **API:** Railway service `deft-api` (id `4d4a6c73-274c-4ad9-9151-8903d6cbfb0e`). Env vars: DATABASE_URL → Neon pooled, JWT/refresh/encryption secrets generated inline, NEXT_PUBLIC_APP_URL → Railway web URL for CORS, ANTHROPIC_API_KEY **still unset** (set it before inviting testers or agent queries will fail).
+- **Web:** Railway service `deft-web` (id `cc300bbe-982b-4c8c-978a-54f43cca8166`). Env vars: NEXT_PUBLIC_API_URL / NEXT_PUBLIC_WS_URL / NEXT_PUBLIC_APP_URL all pointing at Railway domains, NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES=true.
+- **First admin:** `maneek@deft.test`. Sign in at `$WEB_URL/login`, change password immediately.
+- **Deferred:** Resend (temp passwords come back in API response), Anthropic (agent page will error until key is set), R2 (uploads ephemeral).
+
+### Credentials to rotate
+
+- **Neon API key** — revoke at console.neon.tech → Account settings → API keys
+- **Railway account token** — revoke at railway.com → Account Settings → Tokens
+- **Railway project token** — revoke via `projectTokenDelete` mutation or via the project's settings
+- **Vercel token** — revoke at vercel.com/account/tokens (even unused, it's in chat history)
+- **`/tmp/deft.tar.gz`, `/tmp/deft.tar`, `/tmp/upload.out`, `/tmp/upload2.out`, `/tmp/upload3.out`, `/tmp/signup.json`, `/tmp/signup.out`** — delete local tmp scratch files
+- **`.deploy-tokens`** — delete once everything is in Railway/Neon dashboards (it's `.gitignore`d, but still)
