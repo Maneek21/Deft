@@ -1,0 +1,24 @@
+April 15, 2026 gap fixes audit
+
+preflight: API + web reachable
+Saved storage state to playwright-auth.json
+extracted access token from storage state
+  PASS: gap#2 chat message wrapper is <div> not <p> — 0 span.message-content with non-DIV parent
+  PASS: gap#10 wiki detail endpoint 200 — status=200
+  PASS: gap#21 agent employee create dropdown has all 9 role values — values=9
+  PASS: gap#7+12 projects endpoint exposes live total_tasks — deft.total_tasks=24 deft.task_counter=338
+  PASS: gap#5 no tiptap duplicate extension warning — clean
+  PASS: gap#9 wiki page shows "Entities" not "Entitie" — hasEntities=true hasBadEntitie=false
+  PASS: gap#11 note preview strips block-type labels — clean
+  PASS: gap#8 event create rejects blank title — status=400
+  PASS: gap#19 note delete prompts confirmation — dialogShown=true stillExists=true statusAfter=200
+  PASS: gap#22 Cmd+K first search does not 401 — responses=0 any401=false proactive=true
+  PASS: gap#18 tasks Select button has immediate visible effect — tasks page has immediate-bar branch=true
+  PASS: gap#13 Google button state matches login + signup — login.disabled=false signup.disabled=false
+  PASS: gap#14 Calendar Week view anchors on current date — heading="Apr 12 – Apr 18, 2026" today=15
+  PASS: gap#server-logout refresh token revoked after logout — logout=200 refresh-after=401
+  PASS: gap#16 seed-cleanup no test-ui-shadow members — clean
+
+15 passing, 0 failing (15 total) — 14610ms
+
+All checks passed.
