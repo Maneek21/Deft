@@ -504,6 +504,34 @@ async function main(): Promise<void> {
         }
       }
 
+      // ─── Gap #16 (seed-cleanup): no test-ui-shadow members in org_members ───
+      {
+        const r = await page.request.get(`${API_URL}/api/members`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (r.status() !== 200) {
+          record('gap#16 seed-cleanup no test shadow rows', false, `members endpoint status=${r.status()}`);
+        } else {
+          type Member = { email?: string; name?: string };
+          const members = (await r.json()) as Member[] | { members: Member[] };
+          const list = Array.isArray(members) ? members : members.members ?? [];
+          const shadowEmails = list.filter((m) =>
+            m.email?.startsWith('test-ui-shadow-') || m.email?.endsWith('@test.local'),
+          );
+          const testEmployees = list.filter((m) =>
+            m.name?.startsWith('Test UI Employee ') || m.name?.includes('Test OpenClaw PM'),
+          );
+          const leftover = shadowEmails.length + testEmployees.length;
+          record(
+            'gap#16 seed-cleanup no test-ui-shadow members',
+            leftover === 0,
+            leftover
+              ? `shadowEmails=${shadowEmails.length} testEmployees=${testEmployees.length}`
+              : 'clean',
+          );
+        }
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
