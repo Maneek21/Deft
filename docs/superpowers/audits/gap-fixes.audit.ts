@@ -200,6 +200,36 @@ async function main(): Promise<void> {
           `deft.total_tasks=${deft?.total_tasks} deft.task_counter=${deft?.task_counter}`,
         );
       }
+      // ─── Gap #3: composer collapses multiple @ prefixes on mention select ───
+      {
+        await page.goto(`${WEB_URL}/chat`);
+        await page.waitForLoadState('networkidle');
+        // Click the general space
+        await page.click('button:has-text("general")');
+        await page.waitForTimeout(500);
+        // Focus composer and type @@Rahul then pick the first result
+        const composer = page.locator('.ProseMirror').first();
+        await composer.click();
+        // Clear any existing content
+        await page.keyboard.press('ControlOrMeta+a');
+        await page.keyboard.press('Delete');
+        await composer.type('@@Rahul', { delay: 40 });
+        await page.waitForTimeout(400);
+        // Arrow down + Enter to accept the first mention suggestion
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(200);
+        const text = await composer.textContent();
+        const atCount = (text?.match(/@/g) ?? []).length;
+        record(
+          'gap#3 composer collapses multiple @ prefixes',
+          atCount === 1,
+          `composer text="${text}" @count=${atCount}`,
+        );
+        // Clean up so later checks don't inherit composer state
+        await page.keyboard.press('ControlOrMeta+a');
+        await page.keyboard.press('Delete');
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
