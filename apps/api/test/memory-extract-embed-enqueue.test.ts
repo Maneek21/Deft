@@ -269,6 +269,11 @@ test('2. enqueue embed-content called after wiki page UPDATE', async () => {
 });
 
 test('3. embed-content enqueue failure does NOT propagate (fire-and-forget)', async () => {
+  // KNOWN GAP: This test cannot inject an enqueue() failure due to ESM live
+  // bindings. It only verifies the handler completes successfully in the happy
+  // path. The fire-and-forget try/catch guarantee is enforced by code review,
+  // not by this test. Revisit when a module-mocking solution is available.
+  //
   // This test verifies that if the enqueue call inside memory-extract throws,
   // the handler still resolves without re-throwing.
   //

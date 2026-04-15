@@ -2,10 +2,9 @@
 // and stores them as wiki pages (LLM Wiki pattern). Also writes to legacy agentMemory for compat.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { agentMemory, decisions, wikiPages, wikiLinks, wikiCitations, wikiOpsLog } from '@deft/db/schema';
+import { agentMemory, decisions, wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
-import { wikiPageVersions } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 
 interface MemoryExtractJobData {
@@ -194,7 +193,7 @@ async function executeWikiIngest(
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: existing.id });
       } catch (err) {
-        console.warn(`[memory-extract] failed to enqueue embed-content for ${existing.id}`, err);
+        console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${existing.id} (message ${messageId})`, err);
       }
 
       return;
@@ -257,7 +256,7 @@ async function executeWikiIngest(
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page!.id });
     } catch (err) {
-      console.warn(`[memory-extract] failed to enqueue embed-content for ${page!.id}`, err);
+      console.warn(`[memory-extract] failed to enqueue embed-content for wiki_page ${page!.id} (message ${messageId})`, err);
     }
   }
 }
@@ -295,6 +294,7 @@ async function cascadeIngest(
   triggerPageSlug: string,
   newContent: string,
   orgId: string,
+  messageId: string,
 ): Promise<void> {
   try {
     // Pre-filter: find top 20 candidate pages via full-text search
@@ -390,6 +390,13 @@ Return [] if no updates needed.`;
       });
 
       console.log(`[cascade-ingest] Updated "${page.slug}" (triggered by "${triggerPageSlug}")`);
+
+      // Enqueue embedding regeneration for the cascade-updated page.
+      try {
+        await enqueue(QUEUE_NAMES.AGENT_JOBS, 'embed-content', { source_type: 'wiki_page', source_id: page.id });
+      } catch (err) {
+        console.warn(`[cascade-ingest] failed to enqueue embed-content for wiki_page ${page.id} (message ${messageId})`, err);
+      }
     }
   } catch (err) {
     // Non-critical: cascade failure shouldn't block the main ingest
@@ -430,7 +437,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
       // Cascade ingest: update related pages (Karpathy pattern)
       const triggerSlug = result.slug || (result.title ? slugify(result.title) : null);
       if (triggerSlug && result.content) {
-        await cascadeIngest(triggerSlug, result.content, orgId);
+        await cascadeIngest(triggerSlug, result.content, orgId, messageId);
       }
 
       // COMPAT: Also write to legacy agentMemory (remove after wiki migration complete)
