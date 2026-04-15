@@ -318,6 +318,48 @@ async function main(): Promise<void> {
         }
       }
 
+      // ─── Gap #22: Cmd+K first search does not 401 ───
+      {
+        // Clear access token only, keep refresh — simulates cold page load
+        // after access token expired but refresh token still valid.
+        await page.evaluate(() => {
+          localStorage.removeItem('deft-access-token');
+        });
+        await page.goto(`${WEB_URL}/dashboard`);
+        await page.waitForLoadState('networkidle');
+
+        const searchResponses: Array<{ url: string; status: number }> = [];
+        const listener = (res: { url: () => string; status: () => number }) => {
+          const u = res.url();
+          if (u.includes('/api/search')) {
+            searchResponses.push({ url: u, status: res.status() });
+          }
+        };
+
+        page.on('response', listener);
+        try {
+          // Open command palette with Cmd+K (or Ctrl+K on Windows)
+          await page.keyboard.press('ControlOrMeta+k');
+          await page.waitForTimeout(100);
+          // Type 'e' to trigger search — the first char would 401 before the fix
+          await page.keyboard.type('e', { delay: 100 });
+          // Wait for search requests to complete
+          await page.waitForTimeout(1000);
+        } finally {
+          page.off('response', listener);
+          await page.keyboard.press('Escape').catch(() => {});
+        }
+
+        const any401 = searchResponses.some((r) => r.status === 401);
+        // Pass if: no 401 found (either no requests or all succeeded)
+        // Fail if: any 401 detected
+        record(
+          'gap#22 Cmd+K first search does not 401',
+          !any401,
+          `responses=${searchResponses.length} any401=${any401}`,
+        );
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
