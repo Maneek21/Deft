@@ -151,6 +151,54 @@ export function evaluateCondition(
   }
 }
 
+// ─── Plan Creation ───
+
+export interface CreatePlanRowInput {
+  org_id: string;
+  user_id: string;
+  conversation_id?: string | null;
+  agent_employee_id?: string | null;
+  title: string;
+  description?: string | null;
+  steps: PlanStep[];
+}
+
+/**
+ * Persist a new plan as a draft.
+ *
+ * This is the single source of truth for plan creation — used by both the
+ * REST POST handler and the create_plan tool case in executeToolCall.
+ *
+ * It does NOT approve or execute the plan.  Execution is a separate concern
+ * handled by executePlan() after the user approves the plan.
+ */
+export async function createPlanRow(
+  input: CreatePlanRowInput,
+): Promise<{ plan_id: string; status: 'draft' }> {
+  const steps = input.steps.map((step) => ({
+    ...step,
+    status: 'pending' as const,
+  }));
+
+  const [plan] = await db
+    .insert(agentPlans)
+    .values({
+      org_id: input.org_id,
+      user_id: input.user_id,
+      agent_employee_id: input.agent_employee_id ?? null,
+      conversation_id: input.conversation_id ?? null,
+      title: input.title,
+      description: input.description ?? null,
+      steps,
+      status: 'draft',
+      current_step: 0,
+      context: {},
+    })
+    .returning({ id: agentPlans.id, status: agentPlans.status });
+
+  return { plan_id: plan!.id, status: 'draft' };
+}
+
 // ─── Plan Execution ───
 
 /**

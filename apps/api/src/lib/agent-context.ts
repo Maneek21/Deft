@@ -35,6 +35,7 @@ import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
+import { createPlanRow } from './agent-plans.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -1941,6 +1942,33 @@ export async function executeToolCall(
         },
         citations: [],
       };
+    }
+
+    case 'create_plan': {
+      const { title, description, steps } = params as {
+        title?: string;
+        description?: string;
+        steps?: any[];
+      };
+
+      if (!title || !steps || !Array.isArray(steps)) {
+        return {
+          result: { error: 'create_plan requires title and steps' },
+          citations: [],
+        };
+      }
+
+      const planResult = await createPlanRow({
+        org_id: orgId,
+        user_id: _userId,
+        conversation_id: conversationId ?? null,
+        agent_employee_id: agentEmployeeId ?? null,
+        title,
+        description: description ?? null,
+        steps,
+      });
+
+      return { result: planResult, citations: [] };
     }
 
     default:

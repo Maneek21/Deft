@@ -3,6 +3,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentPlans } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { createPlanRow } from '../lib/agent-plans.js';
 
 export const agentPlanRoutes = new Hono();
 
@@ -68,27 +69,22 @@ agentPlanRoutes.post('/', async (c) => {
       return c.json({ error: 'title and steps are required', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    // Initialize step statuses
-    const steps = body.steps.map((step: any) => ({
-      ...step,
-      status: 'pending',
-    }));
+    const { plan_id } = await createPlanRow({
+      org_id: user.org_id,
+      user_id: user.id,
+      agent_employee_id: body.agent_employee_id ?? null,
+      conversation_id: body.conversation_id ?? null,
+      title: body.title,
+      description: body.description ?? null,
+      steps: body.steps,
+    });
 
+    // Return the full plan row so the external API contract stays identical.
     const [plan] = await db
-      .insert(agentPlans)
-      .values({
-        org_id: user.org_id,
-        user_id: user.id,
-        agent_employee_id: body.agent_employee_id ?? null,
-        conversation_id: body.conversation_id ?? null,
-        title: body.title,
-        description: body.description ?? null,
-        steps,
-        status: 'draft',
-        current_step: 0,
-        context: {},
-      })
-      .returning();
+      .select()
+      .from(agentPlans)
+      .where(eq(agentPlans.id, plan_id))
+      .limit(1);
 
     return c.json(plan, 201);
   } catch (err) {
