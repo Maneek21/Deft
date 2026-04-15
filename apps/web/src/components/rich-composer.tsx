@@ -139,6 +139,11 @@ export function RichComposer({
   const [showTaskAutocomplete, setShowTaskAutocomplete] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [showMentions, setShowMentions] = useState(false);
+  // Anchor (start of @) + end (current cursor) at the moment the mention
+  // autocomplete opened. Captured in onUpdate so handleMentionSelect can
+  // delete the correct range even if the editor has lost focus (clicking
+  // the dropdown blurs the editor, which resets selection.from to 0).
+  const mentionRangeRef = useRef<{ from: number; to: number } | null>(null);
   const [slashQuery, setSlashQuery] = useState('');
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const emojiBtnRef = useRef<HTMLButtonElement>(null);
@@ -182,8 +187,13 @@ export function RichComposer({
         if (event.key === 'Enter' && !event.shiftKey) {
           const { from } = view.state.selection;
           const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
-            return false; // Let autocomplete handler take it
+          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@+(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
+            // Prevent the default Enter behavior (which would insert a
+            // newline) and let the autocomplete's document-level listener
+            // handle the keystroke. Returning true + preventDefault stops
+            // ProseMirror from running its own Enter handler.
+            event.preventDefault();
+            return true;
           }
           event.preventDefault();
           handleSend();
@@ -216,14 +226,23 @@ export function RichComposer({
         setTaskQuery('');
       }
 
-      // Mention autocomplete (@)
-      const atMatch = textBefore.match(/@(\w*)$/);
+      // Mention autocomplete (@) — match one or more leading @ so typos
+      // like "@@name" collapse to a single mention. Capture the range
+      // of text that should be replaced when a suggestion is accepted,
+      // so handleMentionSelect works even after the editor loses focus
+      // on click.
+      const atMatch = textBefore.match(/@+(\w*)$/);
       if (atMatch) {
         setShowMentions(true);
         setMentionQuery(atMatch[1]);
+        mentionRangeRef.current = {
+          from: from - atMatch[0].length,
+          to: from,
+        };
       } else {
         setShowMentions(false);
         setMentionQuery('');
+        mentionRangeRef.current = null;
       }
 
       // Slash command autocomplete (/) — only show when typing the command name, not args
@@ -305,23 +324,22 @@ export function RichComposer({
 
   const handleMentionSelect = (selected: { id: string; name: string }) => {
     if (!editor) return;
-    const { from } = editor.state.selection;
-    const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
-    // Match one or more @ signs so accidentally typing "@@Rahul" collapses
-    // to a single mention pill instead of leaving a literal @ before the span.
-    const atMatch = textBefore.match(/@+(\w*)$/);
-    if (atMatch) {
-      const deleteFrom = from - atMatch[0].length;
+    // Use the range we captured in onUpdate — don't re-read selection
+    // here because clicking the dropdown blurs the editor, which resets
+    // editor.state.selection.from to 0 and would wipe out the wrong range.
+    const range = mentionRangeRef.current;
+    if (range) {
       editor
         .chain()
         .focus()
-        .deleteRange({ from: deleteFrom, to: from })
+        .deleteRange(range)
         .insertContent([
           { type: 'mention', attrs: { uuid: selected.id, name: selected.name } },
           { type: 'text', text: ' ' },
         ])
         .run();
     }
+    mentionRangeRef.current = null;
     setShowMentions(false);
   };
 
