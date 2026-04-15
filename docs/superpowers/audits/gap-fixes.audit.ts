@@ -275,6 +275,49 @@ async function main(): Promise<void> {
         );
       }
 
+      // ─── Gap #19: note delete requires confirmation ───
+      {
+        // Create a probe note via API to avoid UI flakiness
+        const create = await page.request.post(`${API_URL}/api/daily-notes`, {
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          data: {
+            title: `qa-delete-probe-${Date.now()}`,
+            content: 'test',
+          },
+        });
+        if (create.status() !== 201 && create.status() !== 200) {
+          record('gap#19 note delete prompts confirmation', false, `probe create failed: ${create.status()}`);
+        } else {
+          const probe = await create.json();
+          await page.goto(`${WEB_URL}/notes?id=${probe.id}`);
+          await page.waitForLoadState('networkidle');
+          // Dismiss the confirm dialog when it appears
+          let dialogShown = false;
+          const dialogHandler = (d: { message: () => string; dismiss: () => Promise<void> }) => {
+            dialogShown = true;
+            void d.dismiss();
+          };
+          page.once('dialog', dialogHandler);
+          const delBtn = page.locator('button[title="Delete note"]').first();
+          await delBtn.click().catch(() => {});
+          await page.waitForTimeout(400);
+          // Note should still exist since we dismissed
+          const check = await page.request.get(`${API_URL}/api/daily-notes/${probe.id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const stillExists = check.status() === 200;
+          record(
+            'gap#19 note delete prompts confirmation',
+            dialogShown && stillExists,
+            `dialogShown=${dialogShown} stillExists=${stillExists} statusAfter=${check.status()}`,
+          );
+          // Cleanup: accept confirm this time and actually delete
+          page.once('dialog', (d: { accept: () => Promise<void> }) => void d.accept());
+          await delBtn.click().catch(() => {});
+          await page.waitForTimeout(300);
+        }
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {

@@ -400,6 +400,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   };
 
   const handleDelete = async () => {
+    if (!window.confirm('Delete this note? This cannot be undone.')) return;
     await api.delete(`/api/daily-notes/${noteId}`);
     onDeleted();
   };
