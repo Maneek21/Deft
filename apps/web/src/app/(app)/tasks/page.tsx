@@ -869,6 +869,32 @@ export default function TasksPage() {
         </button>
       )}
 
+      {/* Selection mode active indicator (shown when in select mode but nothing chosen yet) */}
+      {selectionMode && selectedTaskIds.size === 0 && (
+        <div
+          className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl"
+          style={{
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-lg)',
+          }}
+        >
+          <span
+            className="text-[13px] font-medium"
+            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+          >
+            0 selected — click tasks to select
+          </span>
+          <button
+            onClick={() => setSelectionMode(false)}
+            className="text-[12px] px-2 py-1 rounded"
+            style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       {/* Floating bulk action bar */}
       {selectedTaskIds.size > 0 && (
         <>

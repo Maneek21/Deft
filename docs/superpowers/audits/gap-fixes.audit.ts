@@ -360,6 +360,29 @@ async function main(): Promise<void> {
         );
       }
 
+      // ─── Gap #18: Tasks Select button has a visible effect (or is absent) ───
+      {
+        await page.goto(`${WEB_URL}/tasks`);
+        await page.waitForLoadState('networkidle');
+        const selectBtn = page.locator('main button', { hasText: /^Select$/ }).first();
+        const hasButton = (await selectBtn.count()) > 0;
+        if (!hasButton) {
+          record('gap#18 tasks Select button removed or wired', true, 'button absent — ok');
+        } else {
+          await selectBtn.click();
+          await page.waitForTimeout(300);
+          const cbCount = await page.locator('main input[type="checkbox"]').count();
+          const hasBulkBar = await page
+            .locator('main', { hasText: /selected|bulk/i })
+            .count();
+          record(
+            'gap#18 tasks Select button shows checkboxes or bulk bar',
+            cbCount > 0 || hasBulkBar > 0,
+            `checkboxes=${cbCount} bulkBar=${hasBulkBar}`,
+          );
+        }
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
