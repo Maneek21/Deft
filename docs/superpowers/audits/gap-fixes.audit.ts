@@ -250,6 +250,31 @@ async function main(): Promise<void> {
           looksLikeRawLabel ? 'found raw block-type label in preview' : 'clean',
         );
       }
+
+      // ─── Gap #8: event create rejects blank title ───
+      {
+        const start = new Date();
+        start.setMinutes(start.getMinutes() + 60);
+        const end = new Date(start);
+        end.setMinutes(end.getMinutes() + 30);
+        const r = await page.request.post(`${API_URL}/api/events`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          data: {
+            title: '',
+            start: start.toISOString(),
+            end: end.toISOString(),
+          },
+        });
+        record(
+          'gap#8 event create rejects blank title',
+          r.status() === 400,
+          `status=${r.status()}`,
+        );
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
