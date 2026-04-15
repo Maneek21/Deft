@@ -125,6 +125,28 @@ async function main(): Promise<void> {
       const page = await ctx.newPage();
 
       // ─── GAP CHECKS START ───
+      // ─── Gap #2: chat message body wrapper is <div>, not <p> ───
+      // Pre-fix bug: outer wrapper was <p>, inner TipTap content also had
+      // <p>, so the browser auto-closed the outer <p> and split each message
+      // into sibling paragraphs. Post-fix: outer wrapper is <div> so the
+      // inner <p> parses cleanly under span.message-content.
+      {
+        await page.goto(`${WEB_URL}/chat`);
+        await page.waitForLoadState('networkidle');
+        await page.waitForSelector('main span.message-content', { timeout: 5000 });
+        const bad = await page.evaluate(() => {
+          const spans = document.querySelectorAll('main span.message-content');
+          return Array.from(spans).filter((s) => {
+            const parent = s.parentElement;
+            return parent?.tagName !== 'DIV';
+          }).length;
+        });
+        record(
+          'gap#2 chat message wrapper is <div> not <p>',
+          bad === 0,
+          `${bad} span.message-content with non-DIV parent`,
+        );
+      }
       // ─── Gap #10: wiki detail endpoint 200 ───
       {
         const res = await page.request.get(`${API_URL}/api/wiki/fact-license-bsl`, {

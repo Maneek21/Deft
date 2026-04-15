@@ -1539,10 +1539,10 @@ export function SpaceChat({
                               }
                               return (
                                 <>
-                                  <p className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
+                                  <div className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
-                                  </p>
+                                  </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
@@ -1665,10 +1665,10 @@ export function SpaceChat({
                               }
                               return (
                                 <>
-                                  <p className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
+                                  <div className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
-                                  </p>
+                                  </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
