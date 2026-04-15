@@ -90,6 +90,11 @@ async function pgVectorAvailable(): Promise<boolean> {
 }
 
 async function main() {
+  const isDryRun = process.argv.includes('--dry-run');
+  if (isDryRun) {
+    console.log('[backfill] DRY RUN MODE — no changes will be written');
+  }
+
   const provider = pickProvider();
   console.log(`[backfill-wiki-embeddings] provider=${provider.name}`);
 
@@ -99,6 +104,19 @@ async function main() {
         'Skipping — install pgvector + run migration 0011 first. 0 pages backfilled.'
     );
     process.exit(0);
+  }
+
+  // Per-org count of pages needing embeddings — shown in both dry-run and real-run.
+  const orgCountResult = await db.execute(sql`
+    SELECT org_id, COUNT(*)::int AS null_count
+    FROM wiki_pages
+    WHERE embedding IS NULL AND is_deleted = false
+    GROUP BY org_id
+  `);
+  const orgCountRows = (orgCountResult as unknown as { rows?: Array<Record<string, unknown>> }).rows
+    ?? (orgCountResult as unknown as Array<Record<string, unknown>>);
+  for (const row of orgCountRows) {
+    console.log(`[backfill] org=${row['org_id']}: ${row['null_count']} pages need embeddings`);
   }
 
   // Use a raw query so this script works whether or not the embedding column
@@ -115,6 +133,16 @@ async function main() {
   let errs = 0;
   for (let i = 0; i < pending.length; i++) {
     const p = pending[i] as { id: string; title: string; summary: string | null; content: string };
+
+    if (isDryRun) {
+      console.log(`[backfill-dry] would embed wiki_page ${p.id}`);
+      ok++;
+      if ((i + 1) % BATCH_LOG_EVERY === 0) {
+        console.log(`[backfill-dry] progress: ${i + 1}/${pending.length}`);
+      }
+      continue;
+    }
+
     const text = `${p.title}\n\n${p.summary ?? ''}\n\n${p.content}`.trim();
     try {
       const vec = await provider.embed(text);
@@ -139,9 +167,16 @@ async function main() {
     }
   }
 
-  console.log(
-    `[backfill-wiki-embeddings] done. ${ok} pages backfilled, ${errs} errors, ${pending.length} total.`
-  );
+  if (isDryRun) {
+    const orgCount = orgCountRows.length;
+    console.log(
+      `[backfill] DRY RUN — would have embedded ${pending.length} pages across ${orgCount} orgs (no changes made)`
+    );
+  } else {
+    console.log(
+      `[backfill-wiki-embeddings] done. ${ok} pages backfilled, ${errs} errors, ${pending.length} total.`
+    );
+  }
   process.exit(0);
 }
 
