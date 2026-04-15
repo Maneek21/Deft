@@ -471,6 +471,39 @@ async function main(): Promise<void> {
         }
       }
 
+      // ─── Gap (server-logout): logout endpoint revokes the refresh token ───
+      {
+        // Do a fresh login to get a disposable token pair
+        const login = await page.request.post(`${API_URL}/api/auth/login`, {
+          headers: { 'Content-Type': 'application/json' },
+          data: { email: 'maneek@test.com', password: 'test1234' },
+        });
+        const loginOk = login.status() === 200;
+        if (!loginOk) {
+          record('gap#server-logout refresh token revoked after logout', false, `login failed: ${login.status()}`);
+        } else {
+          const body = (await login.json()) as { refreshToken?: string; refresh_token?: string };
+          const refreshToken = body.refreshToken ?? body.refresh_token;
+          // Call logout with this refresh token
+          const out = await page.request.post(`${API_URL}/api/auth/logout`, {
+            headers: { 'Content-Type': 'application/json' },
+            data: { refreshToken },
+          });
+          const logoutOk = out.status() === 200 || out.status() === 204;
+          // Attempt to use the refresh token again — should be 401
+          const refreshAgain = await page.request.post(`${API_URL}/api/auth/refresh`, {
+            headers: { 'Content-Type': 'application/json' },
+            data: { refreshToken },
+          });
+          const rejected = refreshAgain.status() === 401;
+          record(
+            'gap#server-logout refresh token revoked after logout',
+            logoutOk && rejected,
+            `logout=${out.status()} refresh-after=${refreshAgain.status()}`,
+          );
+        }
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {

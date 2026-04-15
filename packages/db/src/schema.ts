@@ -1402,3 +1402,16 @@ export const providerInstances = pgTable('provider_instances', {
   index('provider_instances_employee_idx').on(t.employee_id),
   index('provider_instances_org_idx').on(t.org_id),
 ]);
+
+// ═══ REVOKED TOKENS ═══
+// Server-side refresh token revocation (Option B — stateless JWTs, hash-based blacklist).
+// Logout inserts the sha256 hash; /refresh rejects any token whose hash is present.
+export const revokedTokens = pgTable('revoked_tokens', {
+  ...id(),
+  token_hash: text('token_hash').notNull().unique(),
+  user_id: text('user_id'),
+  org_id: text('org_id'),
+  revoked_at: timestamp('revoked_at').defaultNow().notNull(),
+}, (t) => [
+  index('revoked_tokens_hash_idx').on(t.token_hash),
+]);

@@ -3,8 +3,9 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { db } from '../lib/db.js';
-import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState } from '@deft/db/schema';
+import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revokedTokens } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 
 export const authRoutes = new Hono();
@@ -149,6 +150,13 @@ authRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'No refresh token', code: 'NO_TOKEN' }, 401);
   }
 
+  // Check revocation list before validating the JWT
+  const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
+  const [revoked] = await db.select().from(revokedTokens).where(eq(revokedTokens.token_hash, tokenHash)).limit(1);
+  if (revoked) {
+    return c.json({ error: 'Token revoked', code: 'TOKEN_REVOKED' }, 401);
+  }
+
   try {
     const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { id: string; email: string; org_id: string };
     const tokens = generateTokens({ id: payload.id, email: payload.email, org_id: payload.org_id });
@@ -158,11 +166,24 @@ authRoutes.post('/refresh', async (c) => {
   }
 });
 
-// POST /api/auth/logout
+// POST /api/auth/logout — revoke the caller's refresh token
 authRoutes.post('/logout', async (c) => {
-  // With JWT, logout is client-side (clear tokens)
-  // In production, you'd add the token to a blacklist
-  return c.json({ success: true });
+  try {
+    const body = await c.req.json().catch(() => ({} as { refreshToken?: string }));
+    const token = body.refreshToken;
+    if (!token) return c.json({ ok: true }); // idempotent: nothing to revoke
+
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    await db.insert(revokedTokens).values({
+      id: crypto.randomUUID(),
+      token_hash: tokenHash,
+    }).onConflictDoNothing();
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] Failed to logout:', err);
+    return c.json({ error: 'Failed to logout', code: 'INTERNAL_ERROR' }, 500);
+  }
 });
 
 // GET /api/auth/me
