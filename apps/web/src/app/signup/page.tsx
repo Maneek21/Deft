@@ -13,9 +13,17 @@ export default function SignupPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const [passwordError, setPasswordError] = useState('');
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setPasswordError('');
+    if (password.length < 8) {
+      setPasswordError('Password must be at least 8 characters');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       await signup(name, email, password, orgName);
@@ -110,10 +118,13 @@ export default function SignupPage() {
               <label className="text-[0.6875rem] font-semibold uppercase" style={labelStyle}>
                 Password
               </label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              <input type="password" value={password} onChange={e => { setPassword(e.target.value); setPasswordError(''); }}
                 placeholder="••••••••"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={inputStyle} minLength={8} required />
+                style={{ ...inputStyle, ...(passwordError ? { borderColor: 'var(--error)' } : {}) }} minLength={8} required />
+              {passwordError && (
+                <span className="text-[0.75rem]" style={{ color: 'var(--error)' }}>{passwordError}</span>
+              )}
             </div>
 
             <div className="flex flex-col gap-2">
@@ -149,13 +160,16 @@ export default function SignupPage() {
           </div>
 
           {/* Google SSO */}
-          <button type="button" disabled
-            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 opacity-50 cursor-not-allowed"
+          <button type="button"
+            onClick={() => { window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/auth/google`; }}
+            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 active:scale-[0.98]"
             style={{
               background: 'var(--surface-container-low)',
               color: 'var(--on-surface)',
               border: '1px solid var(--ghost-border)',
               borderRadius: '0.5rem',
+              transition: 'all 150ms',
+              cursor: 'pointer',
             }}>
             <svg className="w-4 h-4" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>

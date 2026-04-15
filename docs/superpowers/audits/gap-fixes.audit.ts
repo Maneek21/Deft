@@ -394,6 +394,27 @@ async function main(): Promise<void> {
         );
       }
 
+      // ─── Gap #13 (OAuth parity): Google button enablement matches across login + signup ───
+      {
+        await page.goto(`${WEB_URL}/login`);
+        await page.waitForLoadState('networkidle');
+        const loginDisabled = await page
+          .locator('button:has-text("Continue with Google")')
+          .first()
+          .isDisabled();
+        await page.goto(`${WEB_URL}/signup`);
+        await page.waitForLoadState('networkidle');
+        const signupDisabled = await page
+          .locator('button:has-text("Continue with Google")')
+          .first()
+          .isDisabled();
+        record(
+          'gap#13 Google button state matches login + signup',
+          loginDisabled === signupDisabled,
+          `login.disabled=${loginDisabled} signup.disabled=${signupDisabled}`,
+        );
+      }
+
       // ─── GAP CHECKS END ───
 
     } finally {
