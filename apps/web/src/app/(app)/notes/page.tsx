@@ -8,12 +8,40 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import LinkExt from '@tiptap/extension-link';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableCell } from '@tiptap/extension-table-cell';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { Image as TiptapImage } from '@tiptap/extension-image';
+import { TaskList } from '@tiptap/extension-task-list';
+import { TaskItem } from '@tiptap/extension-task-item';
+import { Highlight } from '@tiptap/extension-highlight';
+import { Underline } from '@tiptap/extension-underline';
+import TurndownService from 'turndown';
 import {
   Plus, ArrowLeft, Loader2, Check, Trash2, Pin, PinOff,
   Bold, Italic, Strikethrough, List, ListOrdered, Quote, Code,
   Heading1, Heading2, Minus, FileText, Search, Settings2,
+  Table as TableIcon, ImageIcon, CheckSquare, Highlighter,
+  Underline as UnderlineIcon, Download, BookOpen,
+  FolderPlus, Folder, ChevronRight, LayoutTemplate,
+  History, Share2, Maximize2, Minimize2, Users,
 } from 'lucide-react';
 import { EmojiPicker } from '@/components/emoji-picker';
+
+type NoteFolder = {
+  id: string;
+  name: string;
+  icon: string | null;
+  parent_folder_id: string | null;
+};
+
+type NoteTemplate = {
+  id: string;
+  title: string;
+  content: string | null;
+  icon: string | null;
+};
 
 type Note = {
   id: string;
@@ -21,12 +49,76 @@ type Note = {
   content: string | null;
   icon: string | null;
   is_pinned: boolean;
+  folder_id: string | null;
   created_at: string;
   updated_at: string;
 };
 
 function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+  // First, add space before closing block-level tags to prevent concatenation
+  let text = html.replace(/<\/(h[1-6]|p|div|li|blockquote)>/gi, ' </$1>');
+  // Remove all HTML tags
+  text = text.replace(/<[^>]*>/g, '');
+  // Replace HTML entities
+  text = text.replace(/&nbsp;/g, ' ');
+  // Normalize whitespace
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+/**
+ * Walk a TipTap JSON doc and collect raw text nodes only, ignoring
+ * block-type names. Previously the preview was stringifying nodes
+ * directly, which leaked labels like "Heading 1" into the preview.
+ */
+function getNotePreview(content: unknown, maxLen = 120): string {
+  if (!content) return '';
+
+  // If it's a string, try to parse as JSON first, fall back to treating as HTML
+  let parsed = content;
+  if (typeof content === 'string') {
+    if (content.startsWith('{') || content.startsWith('[')) {
+      try {
+        parsed = JSON.parse(content);
+      } catch (e) {
+        // If JSON parse fails, treat as HTML
+        return stripHtml(content).slice(0, maxLen);
+      }
+    } else {
+      // It's HTML or plain text
+      return stripHtml(content).slice(0, maxLen);
+    }
+  }
+
+  // Walk JSON nodes and collect text
+  const parts: string[] = [];
+  function walk(node: unknown, depth = 0): void {
+    if (!node || typeof node !== 'object') return;
+    if (depth > 100) return; // Prevent infinite loops
+    const n = node as { text?: unknown; content?: unknown; type?: unknown };
+    if (typeof n.text === 'string') {
+      parts.push(n.text);
+    }
+    if (Array.isArray(n.content)) {
+      n.content.forEach(item => walk(item, depth + 1));
+    }
+  }
+  walk(parsed);
+
+  let text = parts.join(' ').replace(/\s+/g, ' ').trim();
+
+  // Remove block-type labels that may have leaked through JSON stringification
+  // or through other means. These appear when labels are directly concatenated
+  // with content (e.g., "Heading 1jjdjd" instead of properly separated).
+  const testRegex = /^(Heading\s+[123]|Toggle\s+heading)(?=\S)/i;
+  if (testRegex.test(text)) {
+    text = text.replace(testRegex, '').trim();
+  }
+
+  if (text.length > maxLen) {
+    return text.slice(0, maxLen) + '…';
+  }
+  return text;
 }
 
 function timeAgo(dateStr: string): string {
@@ -55,10 +147,10 @@ function TBtn({ active, onClick, children, title }: { active?: boolean; onClick:
 
 // ── Note Card ──────────────────────────────────────────────
 function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
-  const preview = note.content ? stripHtml(note.content).slice(0, 120) : '';
+  const preview = getNotePreview(note.content);
   return (
     <div onClick={onClick}
-      className="group p-4 rounded-xl cursor-pointer transition-all hover:shadow-sm"
+      className="group p-4 rounded-lg cursor-pointer transition-all hover:shadow-sm"
       style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
       <div className="flex items-start gap-2 mb-2">
         <span className="text-[18px] flex-shrink-0">{note.icon || '\uD83D\uDCC4'}</span>
@@ -82,12 +174,24 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 
 // ── Note Editor ────────────────────────────────────────────
 function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () => void; onDeleted: () => void }) {
+  const { user } = useAuth();
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [showPromoteModal, setShowPromoteModal] = useState(false);
+  const [promoteType, setPromoteType] = useState('concept');
+  const [promoting, setPromoting] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyVersions, setHistoryVersions] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<any>(null);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shares, setShares] = useState<any[]>([]);
+  const [members, setMembers] = useState<any[]>([]);
   const iconBtnRef = useRef<HTMLButtonElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -102,10 +206,45 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
         code: { HTMLAttributes: { class: 'deft-inline-code' } },
       }),
-      Placeholder.configure({ placeholder: 'Start writing...' }),
+      Placeholder.configure({ placeholder: 'Start writing... (type / for commands)' }),
       LinkExt.configure({ openOnClick: true, HTMLAttributes: { class: 'deft-link' } }),
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableCell,
+      TableHeader,
+      TiptapImage.configure({ inline: false, allowBase64: false }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      Highlight.configure({ multicolor: false }),
+      Underline,
     ],
-    editorProps: { attributes: { class: 'deft-editor deft-notes-editor' } },
+    editorProps: {
+      attributes: { class: 'deft-editor deft-notes-editor' },
+      handlePaste: (view, event) => {
+        const items = event.clipboardData?.items;
+        if (!items) return false;
+        for (const item of items) {
+          if (item.type.startsWith('image/')) {
+            event.preventDefault();
+            const file = item.getAsFile();
+            if (!file) return false;
+            api.upload('/api/upload', file).then(async (res) => {
+              if (res.ok) {
+                const data = await res.json();
+                const imgNode = view.state.schema.nodes.image;
+                if (imgNode) {
+                  view.dispatch(view.state.tr.replaceSelectionWith(
+                    imgNode.create({ src: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/files/${data.id}` })
+                  ));
+                }
+              }
+            });
+            return true;
+          }
+        }
+        return false;
+      },
+    },
     onUpdate: ({ editor: ed }) => {
       if (!initialContentSet.current) return;
       setSaveStatus('saving');
@@ -118,6 +257,102 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       }, 600);
     },
   });
+
+  const handleImageUpload = useCallback(async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file || !editor) return;
+      try {
+        const res = await api.upload('/api/upload', file);
+        if (res.ok) {
+          const data = await res.json();
+          editor.chain().focus().setImage({ src: `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/files/${data.id}` }).run();
+        }
+      } catch {}
+    };
+    input.click();
+  }, [editor]);
+
+  const exportMarkdown = useCallback(() => {
+    if (!editor || !note) return;
+    const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    const md = `# ${title || 'Untitled'}\n\n${turndown.turndown(editor.getHTML())}`;
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(title || 'untitled').toLowerCase().replace(/\s+/g, '-')}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [editor, note, title]);
+
+  const handlePromoteToWiki = async () => {
+    if (!editor || !note || !title.trim()) return;
+    setPromoting(true);
+    try {
+      const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+      const content = turndown.turndown(editor.getHTML());
+      const res = await api.post('/api/wiki', {
+        title: title.trim(),
+        content,
+        type: promoteType,
+        scope: 'org',
+        summary: content.split('\n')[0]?.slice(0, 100) || null,
+        confidence: 1.0,
+      });
+      if (res.ok) {
+        setShowPromoteModal(false);
+        alert('Note promoted to wiki!');
+      }
+    } catch {
+    } finally {
+      setPromoting(false);
+    }
+  };
+
+  const fetchHistory = async () => {
+    if (!noteId) return;
+    setHistoryLoading(true);
+    try {
+      const res = await api.get(`/api/daily-notes/${noteId}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setHistoryVersions(data.versions || []);
+      }
+    } catch {} finally { setHistoryLoading(false); }
+  };
+
+  const fetchShares = async () => {
+    if (!noteId) return;
+    const res = await api.get(`/api/daily-notes/${noteId}/shares`);
+    if (res.ok) {
+      const data = await res.json();
+      setShares(data.shares || []);
+    }
+  };
+
+  const fetchMembers = async () => {
+    const res = await api.get('/api/members');
+    if (res.ok) {
+      const data = await res.json();
+      setMembers(Array.isArray(data) ? data : data.members || []);
+    }
+  };
+
+  const handleShare = async (userId: string) => {
+    if (!noteId) return;
+    await api.post(`/api/daily-notes/${noteId}/shares`, { user_id: userId });
+    fetchShares();
+  };
+
+  const handleUnshare = async (userId: string) => {
+    if (!noteId) return;
+    await api.delete(`/api/daily-notes/${noteId}/shares/${userId}`);
+    fetchShares();
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -178,11 +413,12 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className={`h-full overflow-y-auto ${focusMode ? 'fixed inset-0 z-[90]' : ''}`}
+      style={focusMode ? { background: 'var(--background)', padding: '2rem 0' } : undefined}>
       <div className="max-w-[700px] mx-auto px-6 py-6">
         {/* Top bar */}
         <div className="flex items-center justify-between mb-4">
-          <button onClick={onBack} className="flex items-center gap-1.5 text-[13px] font-medium px-2 py-1 rounded-lg"
+          <button onClick={focusMode ? () => setFocusMode(false) : onBack} className="flex items-center gap-1.5 text-[13px] font-medium px-2 py-1 rounded-lg"
             style={{ color: 'var(--muted)' }}>
             <ArrowLeft size={15} /> All Notes
           </button>
@@ -197,6 +433,22 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <Check size={11} /> Saved
               </span>
             )}
+            <button onClick={() => setFocusMode(!focusMode)} className="p-1.5 rounded-lg"
+              style={{ color: focusMode ? 'var(--accent)' : 'var(--muted)' }} title={focusMode ? 'Exit focus mode' : 'Focus mode'}>
+              {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            </button>
+            <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="p-1.5 rounded-lg"
+              style={{ color: 'var(--muted)' }} title="Share note">
+              <Share2 size={15} />
+            </button>
+            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="p-1.5 rounded-lg"
+              style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
+              <History size={15} />
+            </button>
+            <button onClick={() => setShowPromoteModal(true)} className="p-1.5 rounded-lg"
+              style={{ color: 'var(--muted)' }} title="Promote to Wiki">
+              <BookOpen size={15} />
+            </button>
             <button onClick={handlePin} className="p-1.5 rounded-lg"
               style={{ color: note?.is_pinned ? 'var(--accent)' : 'var(--muted)' }} title={note?.is_pinned ? 'Unpin' : 'Pin'}>
               {note?.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}
@@ -206,6 +458,82 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               <Trash2 size={15} />
             </button>
           </div>
+
+          {/* Promote to Wiki Modal */}
+          {showPromoteModal && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}
+              onClick={() => setShowPromoteModal(false)}>
+              <div className="w-80 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
+                onClick={e => e.stopPropagation()}>
+                <h3 className="text-[14px] font-semibold mb-3" style={{ color: 'var(--foreground)' }}>Promote to Wiki</h3>
+                <p className="text-[11px] mb-3" style={{ color: 'var(--muted)' }}>
+                  Create a wiki page from this note. The note will remain in your notes.
+                </p>
+                <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--muted)' }}>Page Type</label>
+                <div className="flex flex-wrap gap-1 mb-4">
+                  {['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].map(t => (
+                    <button key={t} onClick={() => setPromoteType(t)}
+                      className="px-2 py-1 rounded-md text-[10px] font-medium capitalize"
+                      style={{
+                        background: promoteType === t ? 'var(--accent)' : 'var(--surface-container-low)',
+                        color: promoteType === t ? 'white' : 'var(--muted)',
+                        border: `1px solid ${promoteType === t ? 'var(--accent)' : 'var(--border)'}`,
+                      }}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShowPromoteModal(false)}
+                    className="px-3 py-1.5 rounded-lg text-[12px]"
+                    style={{ color: 'var(--muted)' }}>Cancel</button>
+                  <button onClick={handlePromoteToWiki} disabled={promoting || !title.trim()}
+                    className="px-3 py-1.5 rounded-lg text-[12px] font-medium text-white disabled:opacity-40"
+                    style={{ background: 'var(--accent)' }}>
+                    {promoting ? 'Promoting...' : 'Promote'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Share Modal */}
+          {showShareModal && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}
+              onClick={() => setShowShareModal(false)}>
+              <div className="w-80 p-4 rounded-xl" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
+                onClick={e => e.stopPropagation()}>
+                <h3 className="text-[14px] font-semibold mb-3" style={{ color: 'var(--foreground)' }}>Share Note</h3>
+                {shares.length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Shared with</div>
+                    {shares.map((s: any) => (
+                      <div key={s.id} className="flex items-center justify-between py-1.5">
+                        <span className="text-[12px]" style={{ color: 'var(--foreground)' }}>{s.user_name} ({s.permission})</span>
+                        <button onClick={() => handleUnshare(s.user_id)} className="text-[10px] px-2 py-0.5 rounded"
+                          style={{ color: 'var(--status-red)' }}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Add people</div>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {members
+                    .filter((m: any) => m.user_id !== user?.id && !shares.some((s: any) => s.user_id === m.user_id))
+                    .map((m: any) => (
+                      <button key={m.user_id} onClick={() => handleShare(m.user_id)}
+                        className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded-md text-[12px] hover:opacity-80"
+                        style={{ color: 'var(--foreground)', background: 'var(--surface-container-low)' }}>
+                        <Users size={12} /> {m.name || m.email}
+                      </button>
+                    ))}
+                </div>
+                <button onClick={() => setShowShareModal(false)}
+                  className="mt-3 w-full py-1.5 rounded-lg text-[12px] font-medium"
+                  style={{ background: 'var(--surface-container-low)', color: 'var(--muted)' }}>Done</button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Icon + Title */}
@@ -240,9 +568,9 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         </div>
 
         {/* Editor with toolbar */}
-        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)', background: 'var(--surface-container)' }}>
+        <div className="rounded-lg overflow-hidden" style={{ background: 'var(--surface-container)' }}>
           {editor && (
-            <div className="flex items-center gap-0.5 px-2 py-1.5 flex-wrap"
+            <div className="flex items-center gap-0.5 px-2 py-1.5 overflow-x-auto flex-nowrap"
               style={{ borderBottom: '1px solid var(--border)' }}>
               <TBtn active={editor.isActive('heading', { level: 1 })}
                 onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="Heading 1">
@@ -269,6 +597,14 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 onClick={() => editor.chain().focus().toggleCode().run()} title="Code">
                 <Code size={15} />
               </TBtn>
+              <TBtn active={editor.isActive('underline')}
+                onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline">
+                <UnderlineIcon size={15} />
+              </TBtn>
+              <TBtn active={editor.isActive('highlight')}
+                onClick={() => editor.chain().focus().toggleHighlight().run()} title="Highlight">
+                <Highlighter size={15} />
+              </TBtn>
               <div className="w-px h-4 mx-1" style={{ background: 'var(--border)' }} />
               <TBtn active={editor.isActive('bulletList')}
                 onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet list">
@@ -278,6 +614,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Numbered list">
                 <ListOrdered size={15} />
               </TBtn>
+              <TBtn active={editor.isActive('taskList')}
+                onClick={() => editor.chain().focus().toggleTaskList().run()} title="Checkbox list">
+                <CheckSquare size={15} />
+              </TBtn>
               <TBtn active={editor.isActive('blockquote')}
                 onClick={() => editor.chain().focus().toggleBlockquote().run()} title="Quote">
                 <Quote size={15} />
@@ -286,12 +626,79 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Divider">
                 <Minus size={15} />
               </TBtn>
+              <div className="w-px h-4 mx-1" style={{ background: 'var(--border)' }} />
+              <TBtn active={false}
+                onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} title="Insert table">
+                <TableIcon size={15} />
+              </TBtn>
+              <TBtn active={false}
+                onClick={handleImageUpload} title="Insert image">
+                <ImageIcon size={15} />
+              </TBtn>
+              <TBtn active={false}
+                onClick={exportMarkdown} title="Export as Markdown">
+                <Download size={15} />
+              </TBtn>
             </div>
           )}
-          <div className="px-4 py-3">
+          <div className="px-4 py-3 min-h-[calc(100vh-350px)]">
             <EditorContent editor={editor} />
           </div>
+          {/* Word count footer */}
+          {editor && (
+            <div className="flex items-center justify-between px-3 py-1.5"
+              style={{ borderTop: '1px solid var(--border)', color: 'var(--muted)' }}>
+              <span className="text-[10px]">
+                {(() => {
+                  const text = editor.getText();
+                  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+                  const chars = text.length;
+                  const readMin = Math.max(1, Math.ceil(words / 200));
+                  return `${words} words · ${chars} chars · ${readMin} min read`;
+                })()}
+              </span>
+              <span className="text-[10px]">
+                {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : ''}
+              </span>
+            </div>
+          )}
         </div>
+
+        {/* Version History Panel */}
+        {showHistory && (
+          <div className="mt-4 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+            <h3 className="text-[13px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--foreground)' }}>
+              <History size={14} /> Version History
+            </h3>
+            {historyLoading ? (
+              <Loader2 size={14} className="animate-spin" style={{ color: 'var(--muted)' }} />
+            ) : historyVersions.length === 0 ? (
+              <p className="text-[11px]" style={{ color: 'var(--muted)' }}>No previous versions yet. Versions are saved when content changes.</p>
+            ) : (
+              <div className="space-y-1">
+                {historyVersions.map((v: any) => (
+                  <button key={v.id} onClick={() => setSelectedVersion(selectedVersion?.id === v.id ? null : v)}
+                    className="w-full text-left p-2 rounded-lg text-[11px]"
+                    style={{
+                      background: selectedVersion?.id === v.id ? 'var(--accent-muted, var(--surface-container-low))' : 'var(--surface-container-low)',
+                      border: `1px solid ${selectedVersion?.id === v.id ? 'var(--accent)' : 'var(--border)'}`,
+                      color: 'var(--foreground)',
+                    }}>
+                    <span className="font-medium">v{v.version}</span>
+                    <span style={{ color: 'var(--muted)' }}> &middot; {v.title}</span>
+                  </button>
+                ))}
+                {selectedVersion && (
+                  <div className="mt-2 p-3 rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}>
+                    <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>v{selectedVersion.version} content:</div>
+                    <div className="text-[12px] whitespace-pre-wrap" style={{ color: 'var(--foreground)', opacity: 0.8 }}
+                      dangerouslySetInnerHTML={{ __html: selectedVersion.content || '<em>Empty</em>' }} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -320,27 +727,68 @@ export default function NotesPage() {
   const [defaultIconPickerOpen, setDefaultIconPickerOpen] = useState(false);
   const [currentDefault, setCurrentDefault] = useState(getDefaultIcon);
   const defaultIconBtnRef = useRef<HTMLButtonElement>(null);
+  const [folders, setFolders] = useState<NoteFolder[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<NoteTemplate[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
 
   const activeId = searchParams.get('id');
 
   const loadNotes = useCallback(async () => {
     if (!user) return;
-    const res = await api.get('/api/daily-notes');
+    const params = new URLSearchParams();
+    if (activeFolderId) params.set('folder_id', activeFolderId);
+    const res = await api.get(`/api/daily-notes?${params.toString()}`);
     if (res.ok) {
       const data = await res.json();
       setAllNotes(data);
     }
     setLoading(false);
-  }, [user]);
+  }, [user, activeFolderId]);
+
+  const loadFolders = useCallback(async () => {
+    const res = await api.get('/api/daily-notes/folders');
+    if (res.ok) {
+      const data = await res.json();
+      setFolders(data.folders || []);
+    }
+  }, []);
+
+  const loadTemplates = useCallback(async () => {
+    const res = await api.get('/api/daily-notes/templates');
+    if (res.ok) {
+      const data = await res.json();
+      setTemplates(data.templates || []);
+    }
+  }, []);
 
   useEffect(() => { loadNotes(); }, [loadNotes]);
+  useEffect(() => { loadFolders(); loadTemplates(); }, [loadFolders, loadTemplates]);
 
-  const handleCreate = async () => {
-    const res = await api.post('/api/daily-notes', { title: '', icon: getDefaultIcon() });
+  const handleCreate = async (templateId?: string) => {
+    let body: any = { title: '', icon: getDefaultIcon(), folder_id: activeFolderId };
+    if (templateId) {
+      const tmpl = templates.find(t => t.id === templateId);
+      if (tmpl) {
+        body = { title: tmpl.title, content: tmpl.content || '', icon: tmpl.icon, folder_id: activeFolderId };
+      }
+    }
+    const res = await api.post('/api/daily-notes', body);
     if (res.ok) {
       const note = await res.json();
+      setShowTemplates(false);
       router.push(`/notes?id=${note.id}`);
     }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    await api.post('/api/daily-notes/folders', { name: newFolderName.trim() });
+    setNewFolderName('');
+    setShowNewFolder(false);
+    loadFolders();
   };
 
   const handleOpenNote = (id: string) => {
@@ -406,12 +854,75 @@ export default function NotesPage() {
                 />
               )}
             </div>
-            <button onClick={handleCreate}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
-              style={{ background: 'var(--accent)' }}>
-              <Plus size={14} /> New Note
-            </button>
+            <div className="relative">
+              <button onClick={() => setShowTemplates(!showTemplates)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+                style={{ background: 'var(--accent)' }}>
+                <Plus size={14} /> New Note
+              </button>
+              {showTemplates && (
+                <div className="absolute right-0 top-full mt-1 w-56 py-1 rounded-lg z-50"
+                  style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)', border: '1px solid var(--border)' }}>
+                  <button onClick={() => handleCreate()}
+                    className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
+                    style={{ color: 'var(--foreground)' }}>
+                    <FileText size={14} /> Blank Note
+                  </button>
+                  {templates.length > 0 && (
+                    <>
+                      <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
+                      <div className="px-3 py-1 text-[10px] font-medium" style={{ color: 'var(--muted)' }}>Templates</div>
+                      {templates.map(t => (
+                        <button key={t.id} onClick={() => handleCreate(t.id)}
+                          className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
+                          style={{ color: 'var(--foreground)' }}>
+                          <span>{t.icon || '📄'}</span> {t.title}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
+        </div>
+
+        {/* Folder bar */}
+        <div className="flex items-center gap-1 mb-4 overflow-x-auto">
+          <button onClick={() => setActiveFolderId(null)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+            style={{
+              background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
+              color: !activeFolderId ? 'white' : 'var(--muted)',
+            }}>
+            All Notes
+          </button>
+          {folders.map(f => (
+            <button key={f.id} onClick={() => setActiveFolderId(f.id)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+              style={{
+                background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
+                color: activeFolderId === f.id ? 'white' : 'var(--muted)',
+              }}>
+              <Folder size={11} /> {f.name}
+            </button>
+          ))}
+          {showNewFolder ? (
+            <div className="flex items-center gap-1">
+              <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
+                placeholder="Folder name..."
+                autoFocus
+                className="px-2 py-1 rounded-md text-[11px] outline-none w-24"
+                style={{ background: 'var(--surface-container)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
+            </div>
+          ) : (
+            <button onClick={() => setShowNewFolder(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] flex-shrink-0"
+              style={{ color: 'var(--muted)' }}>
+              <FolderPlus size={11} />
+            </button>
+          )}
         </div>
 
         {/* Search */}
@@ -437,7 +948,7 @@ export default function NotesPage() {
             <p className="text-[13px] mb-4" style={{ color: 'var(--muted)' }}>
               Create your first note to start capturing ideas.
             </p>
-            <button onClick={handleCreate}
+            <button onClick={() => handleCreate()}
               className="px-4 py-2 rounded-lg text-[13px] font-medium text-white"
               style={{ background: 'var(--accent)' }}>
               <Plus size={14} className="inline mr-1" /> Create Note

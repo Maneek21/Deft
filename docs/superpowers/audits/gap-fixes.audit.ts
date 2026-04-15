@@ -233,6 +233,23 @@ async function main(): Promise<void> {
           `hasEntities=${hasGoodEntities} hasBadEntitie=${hasBadEntitie}`,
         );
       }
+
+      // ─── Gap #11: note preview does not leak block-type labels ───
+      {
+        await page.goto(`${WEB_URL}/notes`);
+        await page.waitForLoadState('networkidle');
+        const txt = await page.locator('main').innerText();
+        // Heuristic: the bug produced previews like "Heading 1jjdjd..." or
+        // "Toggle headingToggle heading..." with block-type strings inlined
+        // directly next to note text. Detect by looking for "Heading 1" or
+        // "Toggle heading" adjacent to more text (not as a real heading).
+        const looksLikeRawLabel = /(Heading [123]|Toggle heading)(?=[a-zA-Z0-9])/.test(txt);
+        record(
+          'gap#11 note preview strips block-type labels',
+          !looksLikeRawLabel,
+          looksLikeRawLabel ? 'found raw block-type label in preview' : 'clean',
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
