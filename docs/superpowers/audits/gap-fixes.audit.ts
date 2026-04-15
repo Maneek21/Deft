@@ -219,6 +219,20 @@ async function main(): Promise<void> {
           warnings.length ? warnings[0].slice(0, 200) : 'clean',
         );
       }
+
+      // ─── Gap #9: wiki type label "Entities" not "Entitie" ───
+      {
+        await page.goto(`${WEB_URL}/knowledge`);
+        await page.waitForLoadState('networkidle');
+        const bodyText = await page.locator('main').innerText();
+        const hasGoodEntities = /\bEntities\b/.test(bodyText);
+        const hasBadEntitie = /\bEntitie(?!s)/.test(bodyText);
+        record(
+          'gap#9 wiki page shows "Entities" not "Entitie"',
+          hasGoodEntities && !hasBadEntitie,
+          `hasEntities=${hasGoodEntities} hasBadEntitie=${hasBadEntitie}`,
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
