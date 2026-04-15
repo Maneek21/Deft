@@ -125,6 +125,17 @@ async function main(): Promise<void> {
       const page = await ctx.newPage();
 
       // ─── GAP CHECKS START ───
+      // ─── Gap #10: wiki detail endpoint 200 ───
+      {
+        const res = await page.request.get(`${API_URL}/api/wiki/fact-license-bsl`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        record(
+          'gap#10 wiki detail endpoint 200',
+          res.status() === 200,
+          `status=${res.status()}`,
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
