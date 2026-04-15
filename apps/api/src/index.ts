@@ -137,7 +137,8 @@ app.get('/health/queue', async (c) => {
   }
 });
 
-const port = parseInt(process.env.API_PORT || '3001');
+// Prefer Railway/Fly's PORT env, then API_PORT, then local default.
+const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
 
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
