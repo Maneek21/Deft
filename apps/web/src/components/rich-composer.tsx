@@ -258,9 +258,7 @@ export function RichComposer({
     if (!editor) return;
     const { from } = editor.state.selection;
     const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
-    // Match one-or-more @ signs so accidentally typing "@@Rahul" collapses
-    // to a single mention instead of leaving a literal @ before the span.
-    const atMatch = textBefore.match(/@+(\w*)$/);
+    const atMatch = textBefore.match(/@(\w*)$/);
     if (atMatch) {
       const deleteFrom = from - atMatch[0].length;
       editor.chain().focus()
