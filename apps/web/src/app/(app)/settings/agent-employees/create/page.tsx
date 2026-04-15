@@ -20,6 +20,11 @@ const ROLES = [
   { value: 'project_manager', label: 'Project Manager' },
   { value: 'engineering_lead', label: 'Engineering Lead' },
   { value: 'executive_assistant', label: 'Executive Assistant' },
+  { value: 'product_designer', label: 'Product Designer' },
+  { value: 'qa_engineer', label: 'QA Engineer' },
+  { value: 'customer_success', label: 'Customer Success' },
+  { value: 'community_manager', label: 'Community Manager' },
+  { value: 'cfo', label: 'CFO' },
   { value: 'custom', label: 'Custom' },
 ];
 

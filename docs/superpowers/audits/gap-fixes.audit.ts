@@ -158,6 +158,31 @@ async function main(): Promise<void> {
           `status=${res.status()}`,
         );
       }
+      // ─── Gap #21: agent employee create dropdown has all 9 role values ───
+      {
+        await page.goto(`${WEB_URL}/settings/agent-employees/create`);
+        await page.waitForLoadState('networkidle');
+        const values = await page.$$eval('select option', (opts) =>
+          (opts as HTMLOptionElement[]).map((o) => o.value).filter(Boolean),
+        );
+        const expected = [
+          'project_manager',
+          'engineering_lead',
+          'executive_assistant',
+          'product_designer',
+          'qa_engineer',
+          'customer_success',
+          'community_manager',
+          'cfo',
+          'custom',
+        ];
+        const missing = expected.filter((v) => !values.includes(v));
+        record(
+          'gap#21 agent employee create dropdown has all 9 role values',
+          missing.length === 0,
+          missing.length ? `missing=${missing.join(',')}` : `values=${values.length}`,
+        );
+      }
       // ─── GAP CHECKS END ───
 
     } finally {
