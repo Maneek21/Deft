@@ -145,6 +145,45 @@ projectRoutes.get('/:id', async (c) => {
   }
 });
 
+// GET /api/projects/:id/velocity — rolling weekly completion velocity
+projectRoutes.get('/:id/velocity', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const weeks = parseInt(c.req.query('weeks') || '8');
+
+    const result = await db.execute(sql`
+      SELECT
+        date_trunc('week', ta.created_at)::text as week_start,
+        count(DISTINCT ta.task_id)::int as completed
+      FROM task_activity ta
+      JOIN tasks t ON ta.task_id = t.id
+      WHERE t.project_id = ${projectId}
+        AND t.org_id = ${user.org_id}
+        AND ta.action = 'status_changed'
+        AND ta.new_value = 'done'
+        AND ta.created_at > NOW() - make_interval(weeks => ${weeks})
+      GROUP BY date_trunc('week', ta.created_at)
+      ORDER BY week_start
+    `);
+
+    const rows = (result as any).rows ?? result;
+    const velocity = Array.isArray(rows) ? rows.map((r: any) => ({
+      week: r.week_start,
+      completed: Number(r.completed),
+    })) : [];
+
+    const avg = velocity.length > 0
+      ? Math.round(velocity.reduce((s: number, v: any) => s + v.completed, 0) / velocity.length * 10) / 10
+      : 0;
+
+    return c.json({ velocity, average: avg, weeks });
+  } catch (err) {
+    console.error('Failed to fetch velocity:', err);
+    return c.json({ error: 'Failed to fetch velocity', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // ═══ PROJECT-SCOPED TASK ROUTES ═══
 // These match the frontend's expected URLs: /api/projects/:id/tasks
 
@@ -225,6 +264,8 @@ projectRoutes.get('/:id/tasks', async (c) => {
       assignee_id: tasks.assignee_id,
       created_by: tasks.created_by,
       due_date: tasks.due_date,
+      start_date: tasks.start_date,
+      estimation: tasks.estimation,
       sort_order: tasks.sort_order,
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
@@ -241,6 +282,7 @@ projectRoutes.get('/:id/tasks', async (c) => {
         and(
           eq(tasks.project_id, projectId),
           eq(tasks.is_deleted, false),
+          eq(tasks.is_template, false),
           isNull(tasks.parent_task_id),
         )
       )

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -21,7 +21,10 @@ import {
   MousePointerSquareDashed,
   X,
   Trash2,
+  CalendarRange,
 } from 'lucide-react';
+
+const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
 import { CreateProjectModal } from '@/components/create-project-modal';
 
@@ -38,6 +41,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -49,6 +53,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -59,6 +64,8 @@ type Project = {
   prefix: string;
   color: string | null;
   task_counter: number;
+  total_tasks: number;
+  done_tasks: number;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -93,12 +100,15 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [view, setView] = useState<'board' | 'list'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'timeline'>('board');
   const [filters, setFilters] = useState<Filters>({
-    assigneeId: null,
+    assigneeIds: [],
     priorities: [],
     labels: [],
     dueDate: null,
+    dateFrom: null,
+    dateTo: null,
+    projectId: null,
   });
   const [loading, setLoading] = useState(true);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
@@ -110,6 +120,14 @@ export default function TasksPage() {
   const [bulkActionDropdown, setBulkActionDropdown] = useState<string | null>(null);
   const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [velocity, setVelocity] = useState<{ average: number } | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
 
   const currentView = searchParams.get('view');
   const currentProjectId = searchParams.get('project');
@@ -186,6 +204,14 @@ export default function TasksPage() {
       }
     });
   }, [user]);
+
+  // Fetch rolling velocity for selected project
+  useEffect(() => {
+    if (!selectedProject) return;
+    api.get(`/api/projects/${selectedProject.id}/velocity`).then(async res => {
+      if (res.ok) setVelocity(await res.json());
+    }).catch(() => {});
+  }, [selectedProject?.id]);
 
   // Clear selection when leaving selection mode
   useEffect(() => {
@@ -338,20 +364,24 @@ export default function TasksPage() {
         // In My Tasks view, only show tasks assigned to the current user
         if (task.assignee_id !== user?.id) return false;
       }
-      if (filters.assigneeId === 'me' && task.assignee_id !== user?.id) return false;
-      if (filters.assigneeId && filters.assigneeId !== 'me' && task.assignee_id !== filters.assigneeId) return false;
+      if (filters.assigneeIds.length > 0 && !filters.assigneeIds.includes(task.assignee_id || '')) return false;
       if (filters.priorities.length > 0 && !filters.priorities.includes(task.priority)) return false;
       if (filters.labels.length > 0 && !task.labels.some((l) => filters.labels.includes(l.id))) return false;
-      if (filters.dueDate) {
+      if (filters.projectId && task.project_id !== filters.projectId) return false;
+      if (filters.dueDate || filters.dateFrom || filters.dateTo) {
         if (!task.due_date) return false;
         const due = new Date(task.due_date);
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const endOfWeek = new Date(today);
-        endOfWeek.setDate(today.getDate() + (7 - today.getDay()));
-        if (filters.dueDate === 'overdue' && due >= today) return false;
-        if (filters.dueDate === 'today' && (due < today || due >= new Date(today.getTime() + 86400000))) return false;
-        if (filters.dueDate === 'this_week' && (due < today || due > endOfWeek)) return false;
+        if (filters.dueDate) {
+          const now = new Date();
+          const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const endOfWeek = new Date(today);
+          endOfWeek.setDate(today.getDate() + (7 - today.getDay()));
+          if (filters.dueDate === 'overdue' && due >= today) return false;
+          if (filters.dueDate === 'today' && (due < today || due >= new Date(today.getTime() + 86400000))) return false;
+          if (filters.dueDate === 'this_week' && (due < today || due > endOfWeek)) return false;
+        }
+        if (filters.dateFrom && due < new Date(filters.dateFrom)) return false;
+        if (filters.dateTo && due > new Date(filters.dateTo + 'T23:59:59')) return false;
       }
       return true;
     });
@@ -516,6 +546,12 @@ export default function TasksPage() {
                   {selectedProject?.name || 'Select project'}
                   <ChevronDown size={14} style={{ color: 'var(--muted)' }} />
                 </button>
+                {!isMobile && velocity && velocity.average > 0 && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full ml-2"
+                    style={{ background: 'var(--surface-container-low)', color: 'var(--muted)' }}>
+                    ~{velocity.average} {velocity.average === 1 ? 'task' : 'tasks'}/week
+                  </span>
+                )}
                 {projectDropdownOpen && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setProjectDropdownOpen(false)} />
@@ -570,13 +606,11 @@ export default function TasksPage() {
             >
               <button
                 onClick={() => setView('board')}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
-                  background: view === 'board' ? 'var(--card-bg)' : 'transparent',
-                  color: view === 'board' ? 'var(--foreground)' : 'var(--muted)',
-                  boxShadow: view === 'board' ? 'var(--shadow-sm)' : 'none',
+                  background: view === 'board' ? 'var(--accent)' : 'transparent',
+                  color: view === 'board' ? 'white' : 'var(--muted)',
                   fontFamily: 'var(--font-heading)',
-                  transition: 'all 150ms',
                 }}
               >
                 <LayoutGrid size={13} />
@@ -584,35 +618,47 @@ export default function TasksPage() {
               </button>
               <button
                 onClick={() => setView('list')}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
-                  background: view === 'list' ? 'var(--card-bg)' : 'transparent',
-                  color: view === 'list' ? 'var(--foreground)' : 'var(--muted)',
-                  boxShadow: view === 'list' ? 'var(--shadow-sm)' : 'none',
+                  background: view === 'list' ? 'var(--accent)' : 'transparent',
+                  color: view === 'list' ? 'white' : 'var(--muted)',
                   fontFamily: 'var(--font-heading)',
-                  transition: 'all 150ms',
                 }}
               >
                 <List size={13} />
                 List
               </button>
+              <button
+                onClick={() => setView('timeline')}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                style={{
+                  background: view === 'timeline' ? 'var(--accent)' : 'transparent',
+                  color: view === 'timeline' ? 'white' : 'var(--muted)',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                <CalendarRange size={13} />
+                Timeline
+              </button>
             </div>
 
             {/* Select toggle */}
-            <button
-              onClick={() => setSelectionMode(!selectionMode)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
-              style={{
-                background: selectionMode ? 'var(--accent-subtle)' : 'transparent',
-                color: selectionMode ? 'var(--accent)' : 'var(--muted)',
-                border: `1px solid ${selectionMode ? 'var(--accent)' : 'var(--border)'}`,
-                fontFamily: 'var(--font-heading)',
-                transition: 'all 150ms',
-              }}
-            >
-              <MousePointerSquareDashed size={13} />
-              Select
-            </button>
+            {!isMobile && (
+              <button
+                onClick={() => setSelectionMode(!selectionMode)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+                style={{
+                  background: selectionMode ? 'var(--accent-subtle)' : 'transparent',
+                  color: selectionMode ? 'var(--accent)' : 'var(--muted)',
+                  border: `1px solid ${selectionMode ? 'var(--accent)' : 'var(--border)'}`,
+                  fontFamily: 'var(--font-heading)',
+                  transition: 'all 150ms',
+                }}
+              >
+                <MousePointerSquareDashed size={13} />
+                Select
+              </button>
+            )}
           </div>
 
           {!isMyTasksView && (
@@ -621,7 +667,7 @@ export default function TasksPage() {
                 setQuickCreateStatus(undefined);
                 setQuickCreateOpen(true);
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium text-white"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium text-white"
               style={{
                 background: 'var(--accent)',
                 fontFamily: 'var(--font-heading)',
@@ -637,7 +683,7 @@ export default function TasksPage() {
         </div>
 
         {/* Filter bar */}
-        <TaskFilters filters={filters} onChange={setFilters} />
+        <TaskFilters filters={filters} onChange={setFilters} projects={projects} />
 
         {/* Board or List view */}
         <div className="flex-1 overflow-hidden">
@@ -698,7 +744,7 @@ export default function TasksPage() {
               ))}
             </div>
           ) : (
-            /* Project view: single board/list */
+            /* Project view: single board/list/timeline */
             view === 'board' ? (
               <TaskBoard
                 tasks={filteredTasks}
@@ -714,7 +760,7 @@ export default function TasksPage() {
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={handleToggleSelect}
               />
-            ) : (
+            ) : view === 'list' ? (
               <TaskList
                 tasks={filteredTasks}
                 projectPrefix={selectedProject?.prefix || ''}
@@ -725,6 +771,16 @@ export default function TasksPage() {
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={handleToggleSelect}
               />
+            ) : (
+              view === 'timeline' && selectedProject && (
+                <Suspense fallback={<div className="flex items-center justify-center py-12"><Loader2 size={20} className="animate-spin" /></div>}>
+                  <TaskTimeline
+                    tasks={filteredTasks}
+                    onTaskClick={(num) => router.push(`/tasks?task=${selectedProject.prefix}-${num}`)}
+                    projectPrefix={selectedProject.prefix}
+                  />
+                </Suspense>
+              )
             )
           )}
         </div>
@@ -763,6 +819,7 @@ export default function TasksPage() {
                 created_by: data.created_by,
                 creator_name: data.creator?.name || null,
                 due_date: data.due_date,
+                start_date: data.start_date || null,
                 sort_order: data.sort_order,
                 source_message_id: data.source_message_id,
                 is_deleted: data.is_deleted,
@@ -794,6 +851,22 @@ export default function TasksPage() {
           onClose={() => setQuickCreateOpen(false)}
           onCreated={handleTaskCreated}
         />
+      )}
+
+      {/* Mobile FAB */}
+      {isMobile && !isMyTasksView && !selectedTask && (
+        <button
+          onClick={() => { setQuickCreateStatus(undefined); setQuickCreateOpen(true); }}
+          className="fixed z-30 w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg"
+          style={{
+            background: 'var(--accent)',
+            bottom: '80px',
+            right: '16px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          }}
+        >
+          <Plus size={22} />
+        </button>
       )}
 
       {/* Floating bulk action bar */}
