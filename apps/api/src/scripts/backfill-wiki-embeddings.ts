@@ -39,7 +39,7 @@ function pickProvider(): { name: string; embed: EmbedFn } {
           },
           body: JSON.stringify({
             model: 'text-embedding-3-small',
-            input: text.slice(0, 8000), // safe truncation
+            input: text.slice(0, 32000), // ~32k chars ≈ 8k tokens — matches embed-content worker
             dimensions: EMBED_DIMS,
           }),
         });

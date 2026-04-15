@@ -9,12 +9,17 @@ const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
 // ~32k chars ≈ 8k tokens — safe input limit for text-embedding-3-small
 const MAX_INPUT_CHARS = 32000;
 
+interface EmbedContentJobData {
+  source_type: string;
+  source_id: string;
+}
+
 /**
  * Call OpenAI embeddings API with the given text.
  * Throws on non-OK response so BullMQ retries the job.
  */
 async function embedText(text: string, apiKey: string): Promise<number[]> {
-  const response = await fetch(OPENAI_EMBED_URL, {
+  const response = await globalThis.fetch(OPENAI_EMBED_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -42,16 +47,20 @@ async function embedText(text: string, apiKey: string): Promise<number[]> {
       `OpenAI returned ${embedding.length} dims, expected ${EMBED_DIMS}`,
     );
   }
+  if (embedding.some((v) => !Number.isFinite(v))) {
+    throw new Error('OpenAI embedding contains non-finite values');
+  }
   return embedding;
 }
 
 export async function handleEmbedContent(job: JobData): Promise<void> {
-  const { source_type, source_id } = job.data as {
-    source_type: string;
-    source_id: string;
-  };
+  const data = job.data as Partial<EmbedContentJobData>;
+  if (!data.source_type || !data.source_id) {
+    console.warn(`[embed-content] job ${job.id} missing source_type or source_id — skipping`);
+    return;
+  }
+  const { source_type, source_id } = data as EmbedContentJobData;
 
-  // Only wiki_page is supported for now.
   if (source_type !== 'wiki_page') {
     console.warn(
       `[embed-content] Unknown source_type="${source_type}" (job ${job.id}) — skipping`,
@@ -93,6 +102,10 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
     summary: string | null;
     content: string;
   };
+
+  if (!page.content?.trim() && !page.summary?.trim()) {
+    console.warn(`[embed-content] wiki_page ${page.id} has empty content+summary — embedding title only (job ${job.id})`);
+  }
 
   const inputText = `${page.title}\n\n${page.summary ?? ''}\n\n${page.content}`.trim();
 

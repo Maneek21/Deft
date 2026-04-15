@@ -32,8 +32,11 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 // ─── Fetch mock ──────────────────────────────────────────────────────────────
 
 let fetchMock: ReturnType<typeof mock.fn> | null = null;
+let originalFetch: typeof fetch;
 
 before(() => {
+  originalFetch = globalThis.fetch;
+
   // Set OPENAI_API_KEY for all tests unless explicitly overridden.
   process.env.OPENAI_API_KEY = 'sk-test-mock';
 
@@ -44,10 +47,11 @@ before(() => {
     json: async () => ({ data: [{ embedding: MOCK_EMBEDDING }] }),
   }));
   // Replace global fetch with our mock.
-  (global as any).fetch = fetchMock;
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 
 after(() => {
+  globalThis.fetch = originalFetch;
   mock.restoreAll();
 });
 
@@ -125,6 +129,7 @@ test('1. writes a 1536-dim embedding to the target wiki page', async () => {
 });
 
 test('2. returns early without error when OPENAI_API_KEY is unset', async () => {
+  // Early return happens before any DB access — source_id is irrelevant here.
   const saved = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = '';
   try {
@@ -133,7 +138,7 @@ test('2. returns early without error when OPENAI_API_KEY is unset', async () => 
     await handleEmbedContent({
       id: 'job-2',
       name: 'embed-content',
-      data: { source_type: 'wiki_page', source_id: 'missing-id' },
+      data: { source_type: 'wiki_page', source_id: 'irrelevant-no-api-key' },
     });
   } finally {
     process.env.OPENAI_API_KEY = saved;
@@ -152,12 +157,12 @@ test('3. warns and skips unknown source_type without throwing', async () => {
 
 test('4. throws on non-OK OpenAI response so the queue retries', async () => {
   // Temporarily override fetch to return a 429.
-  const originalFetch = (global as any).fetch;
-  (global as any).fetch = async () => ({
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
     ok: false,
     status: 429,
     text: async () => 'Rate limited',
-  });
+  }) as unknown as Response;
 
   try {
     const { handleEmbedContent } = await import('../src/workers/handlers/embed-content.js');
@@ -190,6 +195,6 @@ test('4. throws on non-OK OpenAI response so the queue retries', async () => {
       );
     }
   } finally {
-    (global as any).fetch = originalFetch;
+    globalThis.fetch = savedFetch;
   }
 });
