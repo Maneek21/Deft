@@ -214,6 +214,12 @@ export const tasks = pgTable('tasks', {
   description: text('description'),
   status: taskStatusEnum('status').default('backlog').notNull(),
   priority: taskPriorityEnum('priority').default('p2').notNull(),
+  /**
+   * Primary assignee (singular).
+   * Used by board columns, dashboard "My Tasks", nudge targeting, and status-change
+   * notifications. Every task has exactly one primary assignee or null.
+   * @see Phase 0.3 plan — primary assignee; use taskAssignees for additional
+   */
   assignee_id: text('assignee_id').references(() => users.id),
   created_by: text('created_by').notNull().references(() => users.id),
   due_date: timestamp('due_date'),
@@ -296,6 +302,12 @@ export const taskWatchers = pgTable('task_watchers', {
 ]);
 
 // ═══ TASK ASSIGNEES ═══
+/**
+ * Additional (non-primary) assignees — shown as secondary avatars on the task card.
+ * The task's single primary assignee lives on tasks.assignee_id and MUST NOT be
+ * duplicated here. Route handlers enforce this invariant.
+ * @see Phase 0.3 — additional (non-primary) assignees; do not duplicate tasks.assignee_id here
+ */
 export const taskAssignees = pgTable('task_assignees', {
   ...id(),
   task_id: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),

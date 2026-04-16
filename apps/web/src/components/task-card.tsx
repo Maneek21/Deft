@@ -12,9 +12,12 @@ type Task = {
   description: string | null;
   status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
   priority: 'p0' | 'p1' | 'p2' | 'p3';
+  // Primary assignee — singular (see Phase 0.3: schema.ts tasks.assignee_id)
   assignee_id: string | null;
   assignee_name: string | null;
   assignee_avatar: string | null;
+  // Additional assignees — secondary avatars (see taskAssignees table)
+  additional_assignees?: { user_id: string; user_name: string | null; user_avatar: string | null }[];
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
@@ -367,17 +370,55 @@ export function TaskCard({ task, projectPrefix, onClick, isSelected, isDragOverl
             </div>
           )}
 
-          {/* Bottom row: assignee */}
+          {/* Bottom row: primary assignee + up to 2 secondary avatars + overflow */}
           <div className="flex items-center justify-end mt-2">
-            {assigneeInitial && (
-              <div
-                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
-                style={{ background: 'var(--accent)' }}
-                title={task.assignee_name || ''}
-              >
-                {assigneeInitial}
-              </div>
-            )}
+            {(() => {
+              const extras = task.additional_assignees ?? [];
+              const shownExtras = extras.slice(0, 2);
+              const overflow = extras.length - shownExtras.length;
+              return (
+                <div className="flex items-center -space-x-1.5">
+                  {shownExtras.map((a) => (
+                    <div
+                      key={a.user_id}
+                      className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
+                      style={{
+                        background: 'var(--muted)',
+                        border: '1.5px solid var(--card-bg)',
+                      }}
+                      title={a.user_name || ''}
+                    >
+                      {(a.user_name || '?').charAt(0).toUpperCase()}
+                    </div>
+                  ))}
+                  {overflow > 0 && (
+                    <div
+                      className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium flex-shrink-0"
+                      style={{
+                        background: 'var(--surface-container-high)',
+                        color: 'var(--muted)',
+                        border: '1.5px solid var(--card-bg)',
+                      }}
+                      title={`+${overflow} more`}
+                    >
+                      +{overflow}
+                    </div>
+                  )}
+                  {assigneeInitial && (
+                    <div
+                      className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
+                      style={{
+                        background: 'var(--accent)',
+                        border: '1.5px solid var(--card-bg)',
+                      }}
+                      title={`Primary: ${task.assignee_name || ''}`}
+                    >
+                      {assigneeInitial}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>

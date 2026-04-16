@@ -41,9 +41,12 @@ type Task = {
   description: string | null;
   status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
   priority: 'p0' | 'p1' | 'p2' | 'p3';
+  // Primary assignee — singular (see Phase 0.3: schema.ts tasks.assignee_id)
   assignee_id: string | null;
   assignee_name: string | null;
   assignee_avatar: string | null;
+  // Additional assignees — loaded from GET /api/tasks/:id/assignees
+  additional_assignees?: { user_id: string; user_name: string | null; user_avatar: string | null }[];
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
@@ -775,7 +778,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               )}
             </div>
 
-            {/* Assignee */}
+            {/* Assignee (primary) */}
             <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
               <User size={12} className="inline mr-1" />
               Assignee
@@ -807,6 +810,20 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 )}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
+              {/* Phase 0.3 — summarize primary + additional assignees */}
+              {(task.additional_assignees?.length ?? 0) > 0 && (
+                <div
+                  className="text-[11px] mt-1 px-2"
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
+                >
+                  Primary: {task.assignee_name || 'Unassigned'}
+                  {' • '}
+                  Additional:{' '}
+                  {task.additional_assignees!
+                    .map((a) => a.user_name || 'Unknown')
+                    .join(', ')}
+                </div>
+              )}
               {openDropdown === 'assignee' && (
                 <div
                   className="absolute top-full left-0 mt-1 w-52 rounded-lg py-1 z-20"

@@ -523,13 +523,27 @@ taskRoutes.delete('/:id/watch', async (c) => {
   }
 });
 
-// POST /api/tasks/:id/assignees — add additional assignee
+// POST /api/tasks/:id/assignees — add additional (non-primary) assignee.
+// Refuses if user_id is the task's primary assignee — see Phase 0.3 plan.
 taskRoutes.post('/:id/assignees', async (c) => {
   try {
     const user = c.get('user');
     const taskId = c.req.param('id');
     const { user_id } = await c.req.json();
     if (!user_id) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
+
+    // Look up the task's primary assignee to enforce "no duplication" invariant.
+    const [taskRow] = await db.select({ assignee_id: tasks.assignee_id })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1);
+    if (!taskRow) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    if (taskRow.assignee_id && taskRow.assignee_id === user_id) {
+      return c.json({
+        error: 'User is already the primary assignee for this task',
+        code: 'ALREADY_PRIMARY_ASSIGNEE',
+      }, 409);
+    }
 
     await db.insert(taskAssignees).values({
       task_id: taskId,
@@ -542,13 +556,19 @@ taskRoutes.post('/:id/assignees', async (c) => {
   }
 });
 
-// DELETE /api/tasks/:id/assignees/:userId — remove assignee
+// DELETE /api/tasks/:id/assignees/:userId — remove an additional assignee.
+// Succeeds ONLY for users present in taskAssignees; the primary assignee lives on
+// tasks.assignee_id and cannot be removed via this endpoint — see Phase 0.3 plan.
 taskRoutes.delete('/:id/assignees/:userId', async (c) => {
   try {
     const taskId = c.req.param('id');
     const userId = c.req.param('userId');
-    await db.delete(taskAssignees)
-      .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, userId)));
+    const deleted = await db.delete(taskAssignees)
+      .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, userId)))
+      .returning({ id: taskAssignees.id });
+    if (deleted.length === 0) {
+      return c.json({ error: 'Assignee not found', code: 'NOT_FOUND' }, 404);
+    }
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to remove assignee:', err);
@@ -1254,6 +1274,13 @@ taskRoutes.patch('/:id', async (c) => {
       if (newAssignee !== existingTask.assignee_id) {
         updateData.assignee_id = newAssignee;
         activityEntries.push({ action: 'assigned', field: 'assignee_id', old_value: existingTask.assignee_id ?? null, new_value: newAssignee });
+      }
+      // Phase 0.3 — no duplication: if the new primary is currently listed as an
+      // additional assignee, remove the taskAssignees row so the two sources of
+      // truth never point to the same user.
+      if (newAssignee) {
+        await db.delete(taskAssignees)
+          .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, newAssignee)));
       }
     }
 
