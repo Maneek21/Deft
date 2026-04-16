@@ -19,6 +19,10 @@ import {
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from './skill-config.js';
 import { enqueue } from './queues.js';
+import {
+  findTriggerConflicts,
+  type TriggerConflict,
+} from './trigger-resolver.js';
 
 export type SkillInstallResult =
   | { status: 'already_installed' }
@@ -26,6 +30,11 @@ export type SkillInstallResult =
   | {
       status: 'requires_approval';
       skill: { id: string; name: string; source: 'marketplace' };
+    }
+  | {
+      status: 'requires_user_decision';
+      skill: { id: string; name: string };
+      conflicting_triggers: TriggerConflict[];
     };
 
 /**
@@ -96,6 +105,28 @@ export async function ensureSkillInstalled(
     throw new Error(`ensureSkillInstalled: employee ${employeeId} not found`);
   }
 
+  // Task 4.15 — before mutating anything, check if this skill's declared
+  // triggers would collide with a trigger kind already claimed by another
+  // active employee in the same org. If yes, bail with a
+  // `requires_user_decision` result so the caller can surface a reassign
+  // prompt instead of silently blocking (or silently stealing).
+  const agentConfig = (skill.agent_config ?? {}) as SkillAgentConfig;
+  const incomingTriggers = agentConfig.triggers ?? [];
+  if (incomingTriggers.length > 0) {
+    const conflicts = await findTriggerConflicts({
+      orgId: employee.org_id,
+      targetEmployeeId: employeeId,
+      candidateTriggers: incomingTriggers,
+    });
+    if (conflicts.length > 0) {
+      return {
+        status: 'requires_user_decision',
+        skill: { id: skill.id, name: skill.name },
+        conflicting_triggers: conflicts,
+      };
+    }
+  }
+
   await db
     .insert(agentEmployeeSkills)
     .values({
@@ -106,7 +137,6 @@ export async function ensureSkillInstalled(
     .onConflictDoNothing();
 
   // Merge capability_packs (set union) into the employee row.
-  const agentConfig = (skill.agent_config ?? {}) as SkillAgentConfig;
   const incomingPacks = agentConfig.capability_packs ?? [];
   const existingPacks = employee.capability_packs ?? [];
 

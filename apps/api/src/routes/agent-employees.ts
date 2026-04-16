@@ -6,14 +6,17 @@ import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import {
   agentEmployees,
+  agentEmployeeSkills,
   agentSessionTurns,
   users,
   orgMembers,
   spaceMembers,
   spaces,
+  skills,
   agentActions,
   apiKeys,
 } from '@deft/db/schema';
+import type { SkillAgentConfig } from '../lib/skill-config.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -635,6 +638,180 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
   }
 });
 
+// ═══ REASSIGN TRIGGER (Task 4.15) ═══
+//
+// When `ensureSkillInstalled` returns `requires_user_decision` because a
+// skill's `agent_config.triggers` collides with a trigger already claimed by
+// a different employee in the org, the frontend surfaces a prompt:
+// "Alex PM currently owns cron:standup. Reassign to Riya?"
+//
+// On confirmation the UI calls this endpoint with `{trigger_kind, skill_id}`
+// and `:id` set to the NEW employee. We:
+//   1. Require the caller has owner/admin on the org.
+//   2. Remove the trigger kind from every other active employee's
+//      `trigger_subscriptions` array in the same org.
+//   3. Install the skill on the target employee (bundled/org skills only —
+//      marketplace requires the separate approval path and would have been
+//      caught earlier).
+//   4. Append the trigger kind to the target's `trigger_subscriptions` (via
+//      the skill's agent_config.triggers — which unions at read time).
+//
+// The transaction keeps the array mutations + the junction insert consistent
+// so we don't end up with a trigger orphaned mid-reassign.
+const reassignTriggerSchema = z.object({
+  trigger_kind: z.string().min(1),
+  skill_id: z.string().min(1),
+});
+
+agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
+  try {
+    const user = c.get('user');
+    const targetEmployeeId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = reassignTriggerSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
+        400,
+      );
+    }
+
+    const { trigger_kind, skill_id } = parsed.data;
+
+    // 1. Load + org-scope the target employee.
+    const [target] = await db
+      .select()
+      .from(agentEmployees)
+      .where(
+        and(eq(agentEmployees.id, targetEmployeeId), eq(agentEmployees.org_id, user.org_id)),
+      )
+      .limit(1);
+    if (!target) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    // 2. Admin/owner gate — reassignment rewrites another agent's claims.
+    const role = await getOrgRole(user.id, user.org_id);
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json(
+        { error: 'Only owners or admins can reassign triggers', code: 'FORBIDDEN' },
+        403,
+      );
+    }
+
+    // 3. Load the skill being installed.
+    const [skill] = await db
+      .select()
+      .from(skills)
+      .where(eq(skills.id, skill_id))
+      .limit(1);
+    if (!skill) {
+      return c.json({ error: 'Skill not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (skill.source === 'marketplace') {
+      return c.json(
+        {
+          error: 'Marketplace skills require a separate approval flow',
+          code: 'MARKETPLACE_REQUIRES_APPROVAL',
+        },
+        400,
+      );
+    }
+
+    const agentConfig = (skill.agent_config ?? {}) as SkillAgentConfig;
+    const skillTriggers = agentConfig.triggers ?? [];
+    if (!skillTriggers.includes(trigger_kind)) {
+      return c.json(
+        {
+          error: `Skill does not declare trigger "${trigger_kind}"`,
+          code: 'TRIGGER_NOT_IN_SKILL',
+        },
+        400,
+      );
+    }
+
+    // 4. Reassign in a transaction: strip trigger_kind from every other
+    //    active employee in this org, install skill on target, and union
+    //    any remaining skill triggers into the target's inline column.
+    const updatedTarget = await db.transaction(async (tx) => {
+      // Strip the trigger from peers (inline column only — skill-owned
+      // triggers would require uninstalling the skill, which is a separate
+      // user flow).
+      const peers = await tx
+        .select({
+          id: agentEmployees.id,
+          trigger_subscriptions: agentEmployees.trigger_subscriptions,
+        })
+        .from(agentEmployees)
+        .where(
+          and(
+            eq(agentEmployees.org_id, user.org_id),
+            eq(agentEmployees.is_active, true),
+          ),
+        );
+
+      for (const peer of peers) {
+        if (peer.id === targetEmployeeId) continue;
+        const claims = peer.trigger_subscriptions ?? [];
+        if (!claims.includes(trigger_kind)) continue;
+        const next = claims.filter((t) => t !== trigger_kind);
+        await tx
+          .update(agentEmployees)
+          .set({ trigger_subscriptions: next.length > 0 ? next : null })
+          .where(eq(agentEmployees.id, peer.id));
+      }
+
+      // Install skill on target (idempotent).
+      await tx
+        .insert(agentEmployeeSkills)
+        .values({
+          agent_employee_id: targetEmployeeId,
+          skill_id: skill_id,
+          installed_version: skill.version,
+        })
+        .onConflictDoNothing();
+
+      // Merge skill.agent_config.triggers into the target's inline
+      // `trigger_subscriptions` (set union). Read-time dedup already
+      // collapses any overlap between the inline column and installed
+      // skills, but writing through to the inline column keeps the
+      // existing `= ANY(trigger_subscriptions)` cron dispatchers working
+      // without needing them to consult skill config.
+      const existingClaims = target.trigger_subscriptions ?? [];
+      const mergedClaims = Array.from(
+        new Set([...existingClaims, ...skillTriggers]),
+      );
+
+      // Merge capability packs too (same shape as ensureSkillInstalled).
+      const existingPacks = target.capability_packs ?? [];
+      const incomingPacks = agentConfig.capability_packs ?? [];
+      const mergedPacks = Array.from(
+        new Set([...existingPacks, ...incomingPacks]),
+      );
+
+      const [updated] = await tx
+        .update(agentEmployees)
+        .set({
+          trigger_subscriptions: mergedClaims,
+          capability_packs: mergedPacks.length > 0 ? mergedPacks : null,
+        })
+        .where(eq(agentEmployees.id, targetEmployeeId))
+        .returning();
+
+      return updated!;
+    });
+
+    return c.json({
+      employee: updatedTarget,
+      reassigned_trigger: trigger_kind,
+      skill_id,
+    });
+  } catch (err) {
+    console.error('Failed to reassign trigger:', err);
+    return c.json({ error: 'Failed to reassign trigger', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // ═══ DELETE (soft) ═══
 
 agentEmployeeRoutes.delete('/:id', async (c) => {
@@ -807,5 +984,51 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
   } catch (err) {
     console.error('Failed to get agent employee activity:', err);
     return c.json({ error: 'Failed to get activity', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ═══ RETRY PROVISIONING (Task 4.13) ═══
+//
+// JIT skill installs (Task 4.6) can leave an openclaw employee in
+// `connection_status='pending'` if the deploy-provision worker fails to
+// push the new capability packs through to the sidecar. This endpoint
+// re-enqueues that provision job in `update` mode so the caller can
+// retry without touching the employee row itself.
+agentEmployeeRoutes.post('/:id/retry-provision', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    if (employee.connection_status !== 'pending') {
+      return c.json(
+        {
+          error: 'Retry only allowed while connection_status=pending',
+          code: 'INVALID_STATE',
+          current_status: employee.connection_status,
+        },
+        409,
+      );
+    }
+
+    const { enqueue } = await import('../lib/queues.js');
+    await enqueue('agent-jobs', 'deploy-provision', {
+      employee_id: id,
+      mode: 'update',
+    });
+
+    return c.json({ success: true, enqueued: true });
+  } catch (err) {
+    console.error('Failed to retry provision:', err);
+    return c.json({ error: 'Failed to retry provision', code: 'INTERNAL_ERROR' }, 500);
   }
 });
