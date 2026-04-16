@@ -43,7 +43,15 @@ export async function executeAction(
   params: Record<string, any>,
   orgId: string,
   userId: string,
+  options?: {
+    /**
+     * Task 3.3 — when set, every task_activity row written by this call
+     * is attributed back to the specific agent employee that acted.
+     */
+    agentEmployeeId?: string;
+  },
 ): Promise<{ success: boolean; result: any; error?: string }> {
+  const agentEmployeeId = options?.agentEmployeeId ?? null;
   try {
     // MCP tool execution — handle before the native action switch
     if (action.startsWith('mcp__')) {
@@ -138,6 +146,8 @@ export async function executeAction(
           task_id: task!.id,
           user_id: userId,
           action: 'created',
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
         });
 
         await db
@@ -231,6 +241,8 @@ export async function executeAction(
           field: 'status',
           old_value: oldStatus,
           new_value: params.new_status,
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
         });
 
         await db
@@ -361,6 +373,8 @@ export async function executeAction(
           field: 'assignee',
           old_value: oldAssigneeName,
           new_value: newAssigneeName,
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
         });
 
         await db
@@ -679,7 +693,9 @@ export async function executeActionDirect(
     })
     .returning();
 
-  const result = await executeAction(actionRecord!.id, action, params, orgId, userId);
+  const result = await executeAction(actionRecord!.id, action, params, orgId, userId, {
+    agentEmployeeId: options?.agentEmployeeId,
+  });
 
   return { actionId: actionRecord!.id, ...result };
 }

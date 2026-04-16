@@ -296,6 +296,12 @@ export const taskActivity = pgTable('task_activity', {
   field: text('field'),
   old_value: text('old_value'),
   new_value: text('new_value'),
+  // Task 3.3 — attribution to the specific agent action + employee that
+  // produced this activity row. Both nullable; when set they link the
+  // activity log entry to an agentActions row and/or an agentEmployees
+  // row so the UI can show "done by agent X via plan Y".
+  agent_action_id: text('agent_action_id'),
+  acting_agent_employee_id: text('acting_agent_employee_id'),
   ...timestamps(),
 }, (t) => [
   index('activity_task_idx').on(t.task_id),

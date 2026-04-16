@@ -683,6 +683,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     action.params as any,
     user.org_id,
     user.id,
+    { agentEmployeeId: action.agent_employee_id ?? undefined },
   );
 
   // Insert a hidden user agent_messages row with a proper tool_result block so
