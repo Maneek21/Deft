@@ -12,7 +12,8 @@ import {
   wikiPages,
   oneonePreps,
 } from '@deft/db/schema';
-import { eq, and, gte, sql, desc } from 'drizzle-orm';
+import { eq, and, gte, sql, desc, lt } from 'drizzle-orm';
+import { getDayBoundaries, getOrgTimezone } from '../lib/task-dates.js';
 
 export async function generateOneOnePrep(
   managerId: string,
@@ -36,6 +37,11 @@ export async function generateOneOnePrep(
   const now = new Date();
   const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
   const sinceDate = lastPrep?.created_at ?? fourteenDaysAgo;
+
+  // Org-local start of "today" for the overdue filter below — `due_date <
+  // NOW()` would incorrectly flag tasks as overdue based on UTC rollover.
+  const orgTz = await getOrgTimezone(orgId);
+  const { start: startOfToday } = getDayBoundaries(orgTz, 0, now);
 
   // Get report user info
   const [reportUser] = await db
@@ -101,7 +107,7 @@ export async function generateOneOnePrep(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, reportId),
         eq(tasks.is_deleted, false),
-        sql`${tasks.due_date} < now()`,
+        lt(tasks.due_date, startOfToday),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
       ),
     );

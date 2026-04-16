@@ -12,6 +12,7 @@ import {
   teamHealthSnapshots,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, ne, count as drizzleCount, lt } from 'drizzle-orm';
+import { getDayBoundaries, getOrgTimezone } from '../lib/task-dates.js';
 
 type HealthStatus = 'green' | 'yellow' | 'red';
 
@@ -67,6 +68,11 @@ export async function generateManagerPulse(
   const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+  // Org-local start of "today" — anything with a due_date strictly before
+  // this instant is overdue in the org's timezone. Computed once per call.
+  const orgTz = await getOrgTimezone(orgId);
+  const { start: startOfToday } = getDayBoundaries(orgTz, 0, now);
+
   const healthCards: HealthCard[] = [];
   const actionItems: ActionItem[] = [];
   const wins: string[] = [];
@@ -96,7 +102,7 @@ export async function generateManagerPulse(
           eq(tasks.assignee_id, member.userId),
           eq(tasks.is_deleted, false),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
-          lt(tasks.due_date, now),
+          lt(tasks.due_date, startOfToday),
         ),
       );
     const overdueTasks = Number(overdueRow?.count ?? 0);

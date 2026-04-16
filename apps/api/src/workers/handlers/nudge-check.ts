@@ -14,6 +14,7 @@ import { eq, and, lt, sql, gte, inArray, isNotNull } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
+import { getOrgTimezone, isOverdue, isDueWithinDays } from '../../lib/task-dates.js';
 
 // Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
 // separate kinds so an employee can subscribe to just one. If the org has
@@ -45,6 +46,22 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
   const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
   const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const twentyFourHoursFromNow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  // Widened SQL windows for tz-aware filtering: the most extreme real tz
+  // offsets are ±14h, so ±1 day safely contains every task that might be
+  // "overdue" or "due today" in any org's local timezone. We then filter
+  // precisely in JS using isOverdue / isDueWithinDays with the org's tz.
+  const fortyEightHoursFromNow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  // Memoize tz lookups per org so we don't re-query orgs.timezone for every
+  // candidate task.
+  const tzByOrg = new Map<string, string>();
+  const getTz = async (orgId: string): Promise<string> => {
+    let tz = tzByOrg.get(orgId);
+    if (tz === undefined) {
+      tz = await getOrgTimezone(orgId);
+      tzByOrg.set(orgId, tz);
+    }
+    return tz;
+  };
 
   try {
     // 1. Query stalled tasks: in_progress and not updated in 48h
@@ -70,8 +87,10 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
         ),
       );
 
-    // 2. Query overdue tasks: due_date < now and not done/cancelled
-    const overdueTasks = await db
+    // 2. Query overdue tasks: due_date < start-of-today in org-local tz. We
+    //    broaden the SQL bound to (now + 24h) to cover any tz offset, then
+    //    filter in JS against each org's actual timezone via isOverdue().
+    const overdueCandidates = await db
       .select({
         id: tasks.id,
         org_id: tasks.org_id,
@@ -88,10 +107,15 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
       .where(
         and(
           eq(tasks.is_deleted, false),
-          lt(tasks.due_date, now),
+          lt(tasks.due_date, twentyFourHoursFromNow),
           sql`${tasks.status} NOT IN ('done', 'cancelled')`,
         ),
       );
+    const overdueTasks: typeof overdueCandidates = [];
+    for (const t of overdueCandidates) {
+      const tz = await getTz(t.org_id);
+      if (isOverdue(t.due_date, tz, now)) overdueTasks.push(t);
+    }
 
     // Phase 6 — per-org memoized subscription lookups. We resolve each
     // (org_id, trigger_kind) pair at most once per nudge pass so we don't

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, between, desc, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, events, notes, projects, meetingBriefs, reminders } from '@deft/db/schema';
+import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 
 export const calendarRoutes = new Hono();
 
@@ -15,18 +16,28 @@ calendarRoutes.get('/', async (c) => {
     return c.json({ error: 'from and to query params required', code: 'MISSING_PARAMS' }, 400);
   }
 
-  const from = new Date(fromStr);
-  const to = new Date(toStr);
+  const fromRaw = new Date(fromStr);
+  const toRaw = new Date(toStr);
 
-  if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+  if (isNaN(fromRaw.getTime()) || isNaN(toRaw.getTime())) {
     return c.json({ error: 'Invalid date format', code: 'INVALID_DATE' }, 400);
   }
 
   // Max range: 45 days (6 weeks + padding)
-  const diffDays = (to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24);
+  const diffDays = (toRaw.getTime() - fromRaw.getTime()) / (1000 * 60 * 60 * 24);
   if (diffDays > 45 || diffDays < 0) {
     return c.json({ error: 'Date range must be 0-45 days', code: 'RANGE_TOO_LARGE' }, 400);
   }
+
+  // Reinterpret `from`/`to` as org-local calendar-day boundaries. A client
+  // asking for "from 2025-07-15" expects "start of Jul 15 in the org's tz",
+  // not a UTC midnight instant — otherwise a Los_Angeles user would miss
+  // tasks due at 02:00 UTC on Jul 15 (which is still Jul 14 locally).
+  const orgTz = await getOrgTimezone(user.org_id);
+  const fromWC = new Date(fromRaw.getTime());
+  const toWC = new Date(toRaw.getTime());
+  const { start: from } = getDayBoundaries(orgTz, 0, fromWC);
+  const { end: to } = getDayBoundaries(orgTz, 0, toWC);
 
   // Run three queries in parallel
   const [taskRows, eventRows, noteRows, reminderRows] = await Promise.all([
