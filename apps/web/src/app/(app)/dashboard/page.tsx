@@ -97,7 +97,8 @@ type AgentEmployeeBrief = {
 type DashboardData = {
   greeting: string; standup: StandupData; due_today: DashboardTask[];
   due_this_week: DashboardTask[]; overdue: DashboardTask[];
-  in_progress: DashboardTask[]; unread_spaces: UnreadSpace[];
+  in_progress: DashboardTask[]; my_work: DashboardTask[];
+  unread_spaces: UnreadSpace[];
   recent_activity: ActivityEntry[]; projects: DashboardProject[];
   calendar_events: CalendarEvent[]; github_activity: GitHubEvent[];
 };
@@ -424,7 +425,7 @@ export default function Dashboard3Page() {
 
   const d = data || {
     greeting: 'Good morning', standup: null, due_today: [], due_this_week: [],
-    overdue: [], in_progress: [], unread_spaces: [], recent_activity: [],
+    overdue: [], in_progress: [], my_work: [], unread_spaces: [], recent_activity: [],
     projects: [], calendar_events: [], github_activity: [],
   };
 
@@ -451,11 +452,11 @@ export default function Dashboard3Page() {
     return (pOrder[a.priority] ?? 3) - (pOrder[b.priority] ?? 3);
   });
 
-  // Kanban-lite groups
+  // Kanban-lite groups — source of truth is my_work (filtered server-side to
+  // tasks assigned to the current user, primary or additional).
   const kanban: Record<string, DashboardTask[]> = { todo: [], in_progress: [], in_review: [] };
-  const allWork = [...d.in_progress, ...d.due_today, ...d.due_this_week, ...d.overdue];
   const seenWork = new Set<string>();
-  allWork.forEach(t => {
+  (d.my_work ?? []).forEach(t => {
     if (seenWork.has(t.id)) return;
     seenWork.add(t.id);
     if (kanban[t.status]) kanban[t.status].push(t);
