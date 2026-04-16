@@ -17,7 +17,6 @@ import {
   messages,
   taskActivity,
   users,
-  wikiPages,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
@@ -28,6 +27,7 @@ import { logAuditEvent } from '../lib/audit.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
 import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
+import { retrieveContext } from '../lib/retrieve-context.js';
 import {
   approveAction as resolveApproveAction,
   rejectAction as resolveRejectAction,
@@ -237,56 +237,20 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   // Auto-load relevant wiki context using the last user message as the search query
   try {
-    // Derive search query from the most recent user message in history
     const lastUserMsg = [...history].reverse().find(m => m.role === 'user');
     const rawQuery = lastUserMsg?.content || '';
     const searchQuery = rawQuery.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
-      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
-
-      // Tier 1: Employee-tagged pages (if agent employee)
-      if (agentEmployeeId) {
-        const employeePages = await db.select({
-          title: wikiPages.title,
-          slug: wikiPages.slug,
-          summary: wikiPages.summary,
-          type: wikiPages.type,
-          confidence: wikiPages.confidence,
-        })
-          .from(wikiPages)
-          .where(and(
-            eq(wikiPages.org_id, user.org_id),
-            eq(wikiPages.is_deleted, false),
-            eq(wikiPages.agent_employee_id, agentEmployeeId),
-            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-          ))
-          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-          .limit(2);
-        allRelevantPages.push(...employeePages);
-      }
-
-      // Tier 2: Org-wide pages (no employee tag)
-      const orgWidePages = await db.select({
-        title: wikiPages.title,
-        slug: wikiPages.slug,
-        summary: wikiPages.summary,
-        type: wikiPages.type,
-        confidence: wikiPages.confidence,
-      })
-        .from(wikiPages)
-        .where(and(
-          eq(wikiPages.org_id, user.org_id),
-          eq(wikiPages.is_deleted, false),
-          sql`${wikiPages.agent_employee_id} IS NULL`,
-          sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-        ))
-        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-        .limit(3);
-      allRelevantPages.push(...orgWidePages);
-
-      if (allRelevantPages.length > 0) {
-        const wikiContext = allRelevantPages.map(p =>
-          `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
+      const wikiResults = await retrieveContext({
+        query: searchQuery,
+        org_id: user.org_id,
+        agent_employee_id: agentEmployeeId,
+        types: ['wiki'],
+        limit: 5,
+      });
+      if (wikiResults.length > 0) {
+        const wikiContext = wikiResults.map(r =>
+          `- **${r.title}** (${(r.metadata?.type as string) || 'wiki'}, confidence: ${r.confidence ?? 1}): ${r.content || 'No summary'}`
         ).join('\n');
         wikiSection = `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
       }
