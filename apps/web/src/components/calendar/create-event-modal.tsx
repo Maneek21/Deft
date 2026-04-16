@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
-import { X } from 'lucide-react';
+import { X, Users } from 'lucide-react';
+
+type OrgMember = { id: string; name: string; email: string; avatar_url: string | null };
 
 export function CreateEventModal({
   onClose, onCreated, defaultDate, defaultStart, defaultEnd,
@@ -22,11 +24,27 @@ export function CreateEventModal({
   const [endTime, setEndTime] = useState(defaultEnd || '10:00');
   const [description, setDescription] = useState('');
   const [location, setLocation] = useState('');
+  const [attendees, setAttendees] = useState<OrgMember[]>([]);
+  const [allMembers, setAllMembers] = useState<OrgMember[]>([]);
+  const [attendeeSearch, setAttendeeSearch] = useState('');
+  const [showAttendeeDropdown, setShowAttendeeDropdown] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    api.get('/api/members').then(async res => {
+      if (res.ok) setAllMembers(await res.json());
+    }).catch(() => {});
+  }, []);
+
+  const filteredMembers = allMembers.filter(m =>
+    !attendees.some(a => a.id === m.id) &&
+    (m.name.toLowerCase().includes(attendeeSearch.toLowerCase()) ||
+     m.email.toLowerCase().includes(attendeeSearch.toLowerCase()))
+  );
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -51,6 +69,9 @@ export function CreateEventModal({
         end,
         description: description.trim() || undefined,
         location: location.trim() || undefined,
+        metadata: attendees.length > 0 ? {
+          attendees: attendees.map(a => ({ name: a.name, email: a.email })),
+        } : undefined,
       });
 
       if (res.ok) {
@@ -136,6 +157,60 @@ export function CreateEventModal({
               className="w-full px-3 py-2 rounded-lg text-[13px] outline-none resize-none"
               style={{ background: 'var(--surface-container-highest, var(--bg-surface))', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
             />
+          </div>
+
+          {/* Attendees */}
+          <div>
+            <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
+              <Users size={11} className="inline mr-1" />Attendees
+            </label>
+            {attendees.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {attendees.map(a => (
+                  <span key={a.id} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px]"
+                    style={{ background: 'var(--surface-container-highest, var(--bg-surface))', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}>
+                    {a.name}
+                    <button type="button" onClick={() => setAttendees(prev => prev.filter(x => x.id !== a.id))}
+                      className="hover:opacity-70">
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <input
+                value={attendeeSearch}
+                onChange={e => { setAttendeeSearch(e.target.value); setShowAttendeeDropdown(true); }}
+                onFocus={() => setShowAttendeeDropdown(true)}
+                placeholder="Search members..."
+                className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
+                style={{ background: 'var(--surface-container-highest, var(--bg-surface))', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+              {showAttendeeDropdown && filteredMembers.length > 0 && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowAttendeeDropdown(false)} />
+                  <div className="absolute left-0 right-0 top-full mt-1 max-h-32 overflow-y-auto rounded-lg py-1 z-20"
+                    style={{ background: 'var(--card-bg, var(--surface-container-low))', border: '1px solid var(--border-default)', boxShadow: '0 8px 24px rgba(0,0,0,.15)' }}>
+                    {filteredMembers.slice(0, 8).map(m => (
+                      <button key={m.id} type="button"
+                        onClick={() => { setAttendees(prev => [...prev, m]); setAttendeeSearch(''); setShowAttendeeDropdown(false); }}
+                        className="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2"
+                        style={{ color: 'var(--text-primary)' }}
+                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover-tint, rgba(255,255,255,0.05))')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                        <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-medium text-white"
+                          style={{ background: 'var(--accent)' }}>
+                          {m.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span>{m.name}</span>
+                        <span className="ml-auto" style={{ color: 'var(--text-tertiary)' }}>{m.email}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {error && (
