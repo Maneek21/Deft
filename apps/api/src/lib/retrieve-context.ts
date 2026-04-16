@@ -1,11 +1,11 @@
 /**
  * Task 1.1 — unified retrieval gateway.
+ * Task 1.2 — hybrid FTS + pgvector ranking.
  *
  * retrieveContext() is the single entry-point for all agent knowledge retrieval.
  * It replaces the 5 separate per-surface queries previously scattered across
  * agent.ts, mcp-tools/memory.ts, and mcp-tools/context.ts.
  *
- * Task 1.2 will layer hybrid vector+FTS ranking on top of this baseline.
  * Tasks 1.3–1.5 will swap the existing call sites over to this gateway.
  */
 
@@ -36,6 +36,12 @@ export interface RetrieveContextParams {
   agent_employee_id?: string;
   types?: Array<'wiki' | 'memory' | 'notes' | 'decisions'>;
   limit?: number;
+  /**
+   * When true (default), combine FTS score with cosine similarity when an
+   * embedding can be generated for the query. Set to false to force FTS-only
+   * ranking (useful for testing or when vector search is not desired).
+   */
+  hybrid?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -80,139 +86,282 @@ function ilikeScore(text: string, queryWords: string[]): number {
   return clampScore(0.5 + 0.5 * (matched / queryWords.length));
 }
 
+// ─── Hybrid vector helpers ────────────────────────────────────────────────────
+
+const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
+const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
+const EMBED_DIMS = 1536;
+
+// Warn only once per process when the <=> operator is unavailable (BYTEA env).
+let _byteFallbackWarned = false;
+
+/**
+ * Walk the error cause chain and check whether any level indicates that the
+ * pgvector extension or <=> operator is unavailable (BYTEA/no-pgvector environment).
+ *
+ * Handles two cases:
+ *   - PG code 42704 / message "type "vector" does not exist" — extension not installed
+ *   - PG code 42883 / message "operator does not exist" — extension installed but wrong type
+ */
+function isVectorOperatorError(err: unknown): boolean {
+  let node: unknown = err;
+  while (node != null && typeof node === 'object') {
+    const e = node as { message?: string; code?: string; cause?: unknown };
+    if (typeof e.message === 'string') {
+      if (
+        e.message.includes('operator does not exist') ||
+        e.message.includes('type "vector" does not exist')
+      ) {
+        return true;
+      }
+    }
+    if (e.code === '42883' || e.code === '42704') {
+      return true;
+    }
+    node = e.cause ?? null;
+  }
+  return false;
+}
+
+/**
+ * Generate a query embedding via OpenAI text-embedding-3-small.
+ * Returns null on any failure (missing key, API error, malformed response)
+ * so callers can gracefully fall back to FTS-only ranking.
+ */
+async function generateQueryEmbedding(query: string): Promise<number[] | null> {
+  const apiKey = process.env.OPENAI_API_KEY ?? '';
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await globalThis.fetch(OPENAI_EMBED_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_EMBED_MODEL,
+        input: query.slice(0, 32000),
+        dimensions: EMBED_DIMS,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn(`[retrieveContext] OpenAI embeddings returned ${response.status} — falling back to FTS`);
+      return null;
+    }
+
+    const json = (await response.json()) as { data?: { embedding?: number[] }[] };
+    const embedding = json.data?.[0]?.embedding;
+    if (!Array.isArray(embedding) || embedding.length !== EMBED_DIMS) {
+      console.warn('[retrieveContext] OpenAI embeddings response malformed — falling back to FTS');
+      return null;
+    }
+    // Guard against NaN/Infinity that would corrupt the SQL literal.
+    if (embedding.some((v) => !Number.isFinite(v))) {
+      console.warn('[retrieveContext] OpenAI embedding contains non-finite values — falling back to FTS');
+      return null;
+    }
+
+    return embedding;
+  } catch (err) {
+    console.warn('[retrieveContext] generateQueryEmbedding failed:', (err as Error).message, '— falling back to FTS');
+    return null;
+  }
+}
+
+/**
+ * Build the hybrid score SELECT expression when a query embedding is available.
+ * Formula: (0.4 * ts_rank + 0.6 * cosine_similarity) * confidence
+ * where cosine_similarity = coalesce(1 - (embedding <=> vectorLiteral), 0)
+ * (NULL embedding rows get cosine_similarity = 0, so FTS alone drives their score).
+ */
+function hybridScoreExpr(forFTS: string, vectorLiteral: string) {
+  return sql<number>`(0.4 * ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) + 0.6 * coalesce(1 - (embedding <=> ${vectorLiteral}::vector), 0)) * ${wikiPages.confidence}`;
+}
+
+function ftsScoreExpr(forFTS: string) {
+  return sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence}`;
+}
+
 // ─── Internal branch helpers ──────────────────────────────────────────────────
+
+/**
+ * Execute the wiki SELECT query with the given score expression.
+ * Extracted so we can retry with FTS-only on BYTEA/operator-not-found errors.
+ */
+async function runWikiQuery(
+  org_id: string,
+  forFTS: string,
+  agent_employee_id: string | undefined,
+  limit: number,
+  scoreExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>,
+  orderExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>,
+) {
+  if (agent_employee_id) {
+    const [tier1Rows, tier2Rows] = await Promise.all([
+      db
+        .select({
+          id: wikiPages.id,
+          title: wikiPages.title,
+          content: wikiPages.content,
+          scope: wikiPages.scope,
+          confidence: wikiPages.confidence,
+          type: wikiPages.type,
+          rawScore: scoreExpr,
+        })
+        .from(wikiPages)
+        .where(
+          and(
+            eq(wikiPages.org_id, org_id),
+            eq(wikiPages.is_deleted, false),
+            sql`${wikiPages.type} != 'decision'`,
+            eq(wikiPages.agent_employee_id, agent_employee_id),
+            sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
+          ),
+        )
+        .orderBy(sql`${orderExpr} DESC`)
+        .limit(2),
+
+      db
+        .select({
+          id: wikiPages.id,
+          title: wikiPages.title,
+          content: wikiPages.content,
+          scope: wikiPages.scope,
+          confidence: wikiPages.confidence,
+          type: wikiPages.type,
+          rawScore: scoreExpr,
+        })
+        .from(wikiPages)
+        .where(
+          and(
+            eq(wikiPages.org_id, org_id),
+            eq(wikiPages.is_deleted, false),
+            sql`${wikiPages.type} != 'decision'`,
+            sql`${wikiPages.agent_employee_id} IS NULL`,
+            sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
+          ),
+        )
+        .orderBy(sql`${orderExpr} DESC`)
+        .limit(3),
+    ]);
+    return { tier1Rows, tier2Rows, singleRows: null };
+  }
+
+  const singleRows = await db
+    .select({
+      id: wikiPages.id,
+      title: wikiPages.title,
+      content: wikiPages.content,
+      scope: wikiPages.scope,
+      confidence: wikiPages.confidence,
+      type: wikiPages.type,
+      rawScore: scoreExpr,
+    })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, org_id),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.type} != 'decision'`,
+        sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
+      ),
+    )
+    .orderBy(sql`${orderExpr} DESC`)
+    .limit(limit);
+  return { tier1Rows: null, tier2Rows: null, singleRows };
+}
+
+function mapWikiRows(
+  tier1Rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
+  tier2Rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
+  singleRows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
+): ContextResult[] {
+  const out: ContextResult[] = [];
+  if (tier1Rows && tier2Rows) {
+    for (const row of tier1Rows) {
+      out.push({
+        source_type: 'wiki_page',
+        source_id: row.id,
+        title: row.title,
+        content: row.content,
+        score: clampScore((row.rawScore ?? 0) + 0.1),
+        scope: row.scope,
+        confidence: row.confidence,
+        metadata: { type: row.type, tier: 'employee' },
+      });
+    }
+    for (const row of tier2Rows) {
+      out.push({
+        source_type: 'wiki_page',
+        source_id: row.id,
+        title: row.title,
+        content: row.content,
+        score: clampScore(row.rawScore ?? 0),
+        scope: row.scope,
+        confidence: row.confidence,
+        metadata: { type: row.type, tier: 'org' },
+      });
+    }
+  } else if (singleRows) {
+    for (const row of singleRows) {
+      out.push({
+        source_type: 'wiki_page',
+        source_id: row.id,
+        title: row.title,
+        content: row.content,
+        score: clampScore(row.rawScore ?? 0),
+        scope: row.scope,
+        confidence: row.confidence,
+        metadata: { type: row.type },
+      });
+    }
+  }
+  return out;
+}
 
 async function fetchWiki(
   org_id: string,
   forFTS: string,
   agent_employee_id: string | undefined,
   limit: number,
+  queryEmbedding: number[] | null,
+  hybrid: boolean,
 ): Promise<ContextResult[]> {
+  // Determine whether to use hybrid scoring.
+  const useHybrid = hybrid && queryEmbedding !== null;
+  const vectorLiteral = useHybrid ? `[${queryEmbedding!.join(',')}]` : '';
+
+  const scoreExpr = useHybrid ? hybridScoreExpr(forFTS, vectorLiteral) : ftsScoreExpr(forFTS);
+  const orderExpr = useHybrid ? hybridScoreExpr(forFTS, vectorLiteral) : ftsScoreExpr(forFTS);
+
   try {
-    if (agent_employee_id) {
-      // Two-tier retrieval: employee-tagged pages first (tier 1), then org-wide
-      // pages (tier 2). Employee-tagged results receive a +0.1 tier bonus so
-      // they win tiebreaks against org-wide pages with identical FTS scores.
-      const [tier1Rows, tier2Rows] = await Promise.all([
-        // Tier 1: pages explicitly tagged to this agent employee (limit 2).
-        db
-          .select({
-            id: wikiPages.id,
-            title: wikiPages.title,
-            content: wikiPages.content,
-            scope: wikiPages.scope,
-            confidence: wikiPages.confidence,
-            type: wikiPages.type,
-            rawScore: sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence}`,
-          })
-          .from(wikiPages)
-          .where(
-            and(
-              eq(wikiPages.org_id, org_id),
-              eq(wikiPages.is_deleted, false),
-              sql`${wikiPages.type} != 'decision'`,
-              eq(wikiPages.agent_employee_id, agent_employee_id),
-              sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
-            ),
-          )
-          .orderBy(
-            sql`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence} DESC`,
-          )
-          .limit(2),
-
-        // Tier 2: org-wide pages with no employee tag (limit 3).
-        db
-          .select({
-            id: wikiPages.id,
-            title: wikiPages.title,
-            content: wikiPages.content,
-            scope: wikiPages.scope,
-            confidence: wikiPages.confidence,
-            type: wikiPages.type,
-            rawScore: sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence}`,
-          })
-          .from(wikiPages)
-          .where(
-            and(
-              eq(wikiPages.org_id, org_id),
-              eq(wikiPages.is_deleted, false),
-              sql`${wikiPages.type} != 'decision'`,
-              sql`${wikiPages.agent_employee_id} IS NULL`,
-              sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
-            ),
-          )
-          .orderBy(
-            sql`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence} DESC`,
-          )
-          .limit(3),
-      ]);
-
-      const out: ContextResult[] = [];
-      for (const row of tier1Rows) {
-        out.push({
-          source_type: 'wiki_page',
-          source_id: row.id,
-          title: row.title,
-          content: row.content,
-          // +0.1 tier bonus so employee-tagged pages beat org-wide tiebreaks.
-          score: clampScore((row.rawScore ?? 0) + 0.1),
-          scope: row.scope,
-          confidence: row.confidence,
-          metadata: { type: row.type, tier: 'employee' },
-        });
+    const { tier1Rows, tier2Rows, singleRows } = await runWikiQuery(
+      org_id, forFTS, agent_employee_id, limit, scoreExpr, orderExpr,
+    );
+    return mapWikiRows(tier1Rows, tier2Rows, singleRows);
+  } catch (err) {
+    if (useHybrid && isVectorOperatorError(err)) {
+      // BYTEA fallback: pgvector <=> operator not available — retry with FTS only.
+      if (!_byteFallbackWarned) {
+        _byteFallbackWarned = true;
+        console.warn('[retrieveContext] pgvector <=> operator unavailable (BYTEA column?) — falling back to FTS-only for wiki queries');
       }
-      for (const row of tier2Rows) {
-        out.push({
-          source_type: 'wiki_page',
-          source_id: row.id,
-          title: row.title,
-          content: row.content,
-          score: clampScore(row.rawScore ?? 0),
-          scope: row.scope,
-          confidence: row.confidence,
-          metadata: { type: row.type, tier: 'org' },
-        });
+      try {
+        const ftsSE = ftsScoreExpr(forFTS);
+        const { tier1Rows: t1, tier2Rows: t2, singleRows: sr } = await runWikiQuery(
+          org_id, forFTS, agent_employee_id, limit, ftsSE, ftsSE,
+        );
+        return mapWikiRows(t1, t2, sr);
+      } catch (ftsErr) {
+        console.warn('[retrieveContext] wiki branch failed (FTS fallback):', (ftsErr as Error).message);
+        return [];
       }
-      return out;
     }
 
-    // Single-query path when no agent_employee_id is supplied.
-    const rows = await db
-      .select({
-        id: wikiPages.id,
-        title: wikiPages.title,
-        content: wikiPages.content,
-        scope: wikiPages.scope,
-        confidence: wikiPages.confidence,
-        type: wikiPages.type,
-        rawScore: sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence}`,
-      })
-      .from(wikiPages)
-      .where(
-        and(
-          eq(wikiPages.org_id, org_id),
-          eq(wikiPages.is_deleted, false),
-          // Exclude 'decision' type here — handled by the decisions branch.
-          sql`${wikiPages.type} != 'decision'`,
-          sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
-        ),
-      )
-      .orderBy(
-        sql`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence} DESC`,
-      )
-      .limit(limit);
-
-    return rows.map((row) => ({
-      source_type: 'wiki_page',
-      source_id: row.id,
-      title: row.title,
-      content: row.content,
-      score: clampScore(row.rawScore ?? 0),
-      scope: row.scope,
-      confidence: row.confidence,
-      metadata: { type: row.type },
-    }));
-  } catch (err) {
     console.warn('[retrieveContext] wiki branch failed:', (err as Error).message);
     return [];
   }
@@ -222,16 +371,21 @@ async function fetchDecisions(
   org_id: string,
   forFTS: string,
   limit: number,
+  queryEmbedding: number[] | null,
+  hybrid: boolean,
 ): Promise<ContextResult[]> {
-  try {
-    const rows = await db
+  const useHybrid = hybrid && queryEmbedding !== null;
+  const vectorLiteral = useHybrid ? `[${queryEmbedding!.join(',')}]` : '';
+
+  const buildQuery = (scoreExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>) =>
+    db
       .select({
         id: wikiPages.id,
         title: wikiPages.title,
         content: wikiPages.content,
         scope: wikiPages.scope,
         confidence: wikiPages.confidence,
-        rawScore: sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence}`,
+        rawScore: scoreExpr,
       })
       .from(wikiPages)
       .where(
@@ -242,12 +396,11 @@ async function fetchDecisions(
           sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
         ),
       )
-      .orderBy(
-        sql`ts_rank(search_vector, plainto_tsquery('english', ${forFTS})) * ${wikiPages.confidence} DESC`,
-      )
+      .orderBy(sql`${scoreExpr} DESC`)
       .limit(limit);
 
-    return rows.map((row) => ({
+  const mapRows = (rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; rawScore: number }>) =>
+    rows.map((row) => ({
       source_type: 'decision' as ContextSource,
       source_id: row.id,
       title: row.title,
@@ -256,7 +409,27 @@ async function fetchDecisions(
       scope: row.scope,
       confidence: row.confidence,
     }));
+
+  try {
+    const scoreExpr = useHybrid ? hybridScoreExpr(forFTS, vectorLiteral) : ftsScoreExpr(forFTS);
+    const rows = await buildQuery(scoreExpr);
+    return mapRows(rows);
   } catch (err) {
+    if (useHybrid && isVectorOperatorError(err)) {
+      // BYTEA fallback: retry with FTS only.
+      if (!_byteFallbackWarned) {
+        _byteFallbackWarned = true;
+        console.warn('[retrieveContext] pgvector <=> operator unavailable (BYTEA column?) — falling back to FTS-only for decisions queries');
+      }
+      try {
+        const rows = await buildQuery(ftsScoreExpr(forFTS));
+        return mapRows(rows);
+      } catch (ftsErr) {
+        console.warn('[retrieveContext] decisions branch failed (FTS fallback):', (ftsErr as Error).message);
+        return [];
+      }
+    }
+
     console.warn('[retrieveContext] decisions branch failed:', (err as Error).message);
     return [];
   }
@@ -395,6 +568,7 @@ export async function retrieveContext(
     agent_employee_id,
     types = ['wiki', 'memory', 'notes', 'decisions'],
     limit = 10,
+    hybrid = true,
   } = params;
 
   // 1. Clean the query into FTS and ILIKE forms.
@@ -406,30 +580,39 @@ export async function retrieveContext(
     return [];
   }
 
-  // 3. Run all requested branches concurrently; each returns its own array.
+  // 3. Generate query embedding once — reused by wiki and decisions branches.
+  //    Returns null when OPENAI_API_KEY is unset or the API call fails, which
+  //    causes both branches to fall back to FTS-only ranking transparently.
+  const needsEmbedding =
+    hybrid && (types.includes('wiki') || types.includes('decisions'));
+  const queryEmbedding = needsEmbedding
+    ? await generateQueryEmbedding(forFTS)
+    : null;
+
+  // 4. Run all requested branches concurrently; each returns its own array.
   const [wikiRows, decisionRows, memRows, noteRows] = await Promise.all([
     types.includes('wiki')
-      ? fetchWiki(org_id, forFTS, agent_employee_id, limit)
+      ? fetchWiki(org_id, forFTS, agent_employee_id, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
-    // 4. Decisions branch: queries wikiPages WHERE type='decision'. Forward-
+    // 5. Decisions branch: queries wikiPages WHERE type='decision'. Forward-
     //    compatible path — Task 2.3 migrates the legacy decisions table here.
     types.includes('decisions')
-      ? fetchDecisions(org_id, forFTS, limit)
+      ? fetchDecisions(org_id, forFTS, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
     types.includes('memory')
       ? fetchMemory(org_id, user_id, conversation_id, forIlike, words, limit)
       : Promise.resolve([]),
 
-    // 5. Notes are always user-scoped. Skip without user_id to avoid exposing
+    // 6. Notes are always user-scoped. Skip without user_id to avoid exposing
     //    all users' private notes. Task 5.1 adds org-visibility column.
     types.includes('notes') && user_id
       ? fetchNotes(org_id, user_id, forIlike, words, limit)
       : Promise.resolve([]),
   ]);
 
-  // 6. Merge, sort by score DESC, return top `limit`.
+  // 7. Merge, sort by score DESC, return top `limit`.
   const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows];
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit);

@@ -1,5 +1,6 @@
 /**
  * Task 1.1 — retrieveContext gateway integration tests.
+ * Task 1.2 — hybrid FTS + pgvector ranking tests appended below.
  *
  * Run: pnpm --filter @deft/api test -- retrieve-context
  *
@@ -10,6 +11,9 @@
  *   4. Org isolation — results only contain rows from the correct org
  *   5. Notes branch returns nothing when user_id is absent
  *   6. Employee-tagged wiki pages rank higher than org-wide pages (two-tier)
+ *   7. hybrid: false param bypasses vector search (pure FTS path)
+ *   8. Hybrid falls back to FTS when OPENAI_API_KEY is unset
+ *   9. NULL-embedding pages still appear in hybrid results alongside embedded pages
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -248,5 +252,135 @@ describe('retrieveContext', () => {
       topEmpScore > topOrgScore,
       `Employee-tier score (${topEmpScore}) should exceed org-tier score (${topOrgScore})`,
     );
+  });
+
+  // ─── Task 1.2: Hybrid FTS + vector ranking ─────────────────────────────────
+
+  test('7. hybrid: false bypasses vector search and returns FTS-only results', async () => {
+    // With hybrid:false the code must not call fetch (no embedding generated).
+    // We verify by saving/replacing globalThis.fetch and asserting it was never
+    // called with the OpenAI embeddings URL.
+    const savedFetch = globalThis.fetch;
+    let openaiCallCount = 0;
+    globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+      if (String(url).includes('openai.com/v1/embeddings')) {
+        openaiCallCount++;
+      }
+      return savedFetch(url as RequestInfo, opts);
+    };
+
+    try {
+      const results = await retrieveContext({
+        query: 'billing decision',
+        org_id: ORG_ID,
+        user_id: USER_ID,
+        types: ['wiki', 'decisions'],
+        hybrid: false,
+      });
+
+      assert.strictEqual(openaiCallCount, 0, 'OpenAI embeddings API must NOT be called when hybrid:false');
+      assert.ok(results.length >= 1, 'Should still return FTS results when hybrid:false');
+      for (const r of results) {
+        assert.ok(r.score >= 0 && r.score <= 1, `score out of range: ${r.score}`);
+      }
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test('8. hybrid falls back to FTS when OPENAI_API_KEY is unset', async () => {
+    const savedKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = '';
+
+    try {
+      // Should not throw; should return FTS-based results.
+      const results = await retrieveContext({
+        query: 'billing decision',
+        org_id: ORG_ID,
+        user_id: USER_ID,
+        types: ['wiki', 'decisions'],
+        hybrid: true, // explicitly request hybrid — should degrade gracefully
+      });
+
+      // At least 1 result expected from FTS path.
+      assert.ok(results.length >= 1, `Expected >=1 FTS results, got ${results.length}`);
+      for (const r of results) {
+        assert.ok(r.score >= 0 && r.score <= 1, `score out of range: ${r.score}`);
+      }
+    } finally {
+      process.env.OPENAI_API_KEY = savedKey;
+    }
+  });
+
+  test('9. NULL-embedding pages still appear in hybrid results', async () => {
+    // Seed two wiki pages with the same unique query term.
+    // One has NULL embedding (no backfill), the other is left NULL too —
+    // both should appear via FTS even in hybrid mode.
+    // This exercises the coalesce(1 - (embedding <=> ?::vector), 0) path.
+    const HYBRID_TERM = `xyzhydridbenchmark${Date.now()}`;
+    const pageId1 = `rctest-hybrid-null-${Date.now()}`;
+    const pageId2 = `rctest-hybrid-null2-${Date.now() + 1}`;
+
+    await withClient(async (c) => {
+      await c.query(
+        `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, is_deleted, created_at, updated_at)
+         VALUES ($1, $2, 'concept', 'org', $3, $4, $5, 1.0, false, NOW(), NOW())`,
+        [pageId1, ORG_ID, `NullEmbed ${HYBRID_TERM} Page`, `null-embed-${Date.now()}`, `The ${HYBRID_TERM} process is described here.`],
+      );
+      await c.query(
+        `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, is_deleted, created_at, updated_at)
+         VALUES ($1, $2, 'concept', 'org', $3, $4, $5, 1.0, false, NOW(), NOW())`,
+        [pageId2, ORG_ID, `NullEmbed ${HYBRID_TERM} Overview`, `null-embed2-${Date.now()}`, `The ${HYBRID_TERM} overview for the organisation.`],
+      );
+    });
+
+    try {
+      // Stub fetch to return a fake embedding so we exercise the hybrid SQL path.
+      // If pgvector is not installed the SQL will throw and fall back to FTS —
+      // either way both pages should be returned.
+      const savedFetch = globalThis.fetch;
+      const MOCK_EMBEDDING = Array(1536).fill(0.05);
+      globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+        if (String(url).includes('openai.com/v1/embeddings')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ data: [{ embedding: MOCK_EMBEDDING }] }),
+            text: async () => '{}',
+          } as unknown as Response;
+        }
+        return savedFetch(url as RequestInfo, opts);
+      };
+
+      // Set a key so generateQueryEmbedding doesn't bail early.
+      const savedKey = process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = 'sk-test-hybrid';
+
+      try {
+        const results = await retrieveContext({
+          query: HYBRID_TERM,
+          org_id: ORG_ID,
+          types: ['wiki'],
+          hybrid: true,
+          limit: 10,
+        });
+
+        // Both NULL-embedding pages must appear (FTS drives their score).
+        const ids = results.map((r) => r.source_id);
+        assert.ok(ids.includes(pageId1), 'NULL-embedding page 1 should appear in hybrid results');
+        assert.ok(ids.includes(pageId2), 'NULL-embedding page 2 should appear in hybrid results');
+        for (const r of results) {
+          assert.ok(r.score >= 0 && r.score <= 1, `score out of range: ${r.score}`);
+        }
+      } finally {
+        globalThis.fetch = savedFetch;
+        process.env.OPENAI_API_KEY = savedKey;
+      }
+    } finally {
+      await withClient(async (c) => {
+        await c.query(`DELETE FROM wiki_pages WHERE id = $1`, [pageId1]);
+        await c.query(`DELETE FROM wiki_pages WHERE id = $1`, [pageId2]);
+      });
+    }
   });
 });
