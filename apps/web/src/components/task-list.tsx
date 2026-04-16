@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type Task = {
   id: string;
@@ -48,12 +49,12 @@ type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'due_
 type SortDir = 'asc' | 'desc';
 
 const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
-  { value: 'done', label: 'Done' },
-  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'backlog', label: statusLabel('backlog') },
+  { value: 'todo', label: statusLabel('todo') },
+  { value: 'in_progress', label: statusLabel('in_progress') },
+  { value: 'in_review', label: statusLabel('in_review') },
+  { value: 'done', label: statusLabel('done') },
+  { value: 'cancelled', label: statusLabel('cancelled') },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -178,7 +179,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
           const priority = PRIORITY_STYLES[task.priority];
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
-          const statusLabel = STATUS_OPTIONS.find((s) => s.value === task.status)?.label || task.status;
+          const taskStatusLabel = statusLabel(task.status);
           const dueInfo = formatDueDate(task.due_date, task.status);
 
           return (
@@ -233,7 +234,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     {task.assignee_name && <span style={{ color: 'var(--border)' }}>·</span>}
                     <span className="flex items-center gap-1">
                       <div className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                      {statusLabel}
+                      {taskStatusLabel}
                     </span>
                     {dueInfo && (
                       <>

@@ -33,6 +33,7 @@ import {
   Upload,
   Trash2,
 } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type Task = {
   id: string;
@@ -140,12 +141,12 @@ type Props = {
 };
 
 const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
-  { value: 'done', label: 'Done' },
-  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'backlog', label: statusLabel('backlog') },
+  { value: 'todo', label: statusLabel('todo') },
+  { value: 'in_progress', label: statusLabel('in_progress') },
+  { value: 'in_review', label: statusLabel('in_review') },
+  { value: 'done', label: statusLabel('done') },
+  { value: 'cancelled', label: statusLabel('cancelled') },
 ];
 
 const PRIORITY_OPTIONS = [
@@ -165,11 +166,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function formatStatusLabel(status: string): string {
-  const map: Record<string, string> = {
-    backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress',
-    in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-  };
-  return map[status] || status;
+  return statusLabel(status);
 }
 
 function formatPriorityLabel(priority: string): string {

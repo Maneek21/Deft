@@ -9,6 +9,7 @@ import { TaskList } from '@/components/task-list';
 import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
+import { statusLabel } from '@/lib/task-status-labels';
 import {
   ChevronDown,
   LayoutGrid,
@@ -68,21 +69,12 @@ type Project = {
   done_tasks: number;
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog',
-  todo: 'Todo',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  done: 'Done',
-  cancelled: 'Cancelled',
-};
-
 const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
-  { value: 'done', label: 'Done' },
+  { value: 'backlog', label: statusLabel('backlog') },
+  { value: 'todo', label: statusLabel('todo') },
+  { value: 'in_progress', label: statusLabel('in_progress') },
+  { value: 'in_review', label: statusLabel('in_review') },
+  { value: 'done', label: statusLabel('done') },
 ];
 
 const PRIORITY_OPTIONS = [
@@ -249,8 +241,7 @@ export default function TasksPage() {
       setSelectionMode(false);
       setBulkActionDropdown(null);
       await loadTasks();
-      const statusLabel = STATUS_LABELS[status] || status;
-      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} moved to ${statusLabel}`);
+      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} moved to ${statusLabel(status)}`);
     }
   };
 

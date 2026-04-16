@@ -8,6 +8,7 @@ import {
   Sun, Moon, Plus, Settings, X, Bot, Tag, CalendarDays,
   BookOpen, FileText, Scale,
 } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
 type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
@@ -30,13 +31,8 @@ type Command = {
   action: () => void;
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress',
-  in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-};
-
 function formatStatus(status: string): string {
-  return STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return statusLabel(status);
 }
 
 export function CommandPalette() {

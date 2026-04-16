@@ -11,6 +11,7 @@ import {
   LayoutDashboard, ArrowRight, ChevronLeft, ChevronRight, FileText, ExternalLink,
 } from 'lucide-react';
 import { CalTask, CalEvent, CalNote, DayBucket, toDateKey, buildMonthGrid, bucketByDay, CAL_DAYS_SHORT, ITEM_COLORS } from '@/lib/calendar';
+import { statusLabel } from '@/lib/task-status-labels';
 
 // ═══ Types (self-contained) ═══
 
@@ -128,15 +129,11 @@ const PRIORITY_COLORS: Record<string, string> = {
   p0: 'var(--status-red)', p1: 'var(--status-amber)', p2: 'var(--status-blue)', p3: 'var(--status-gray)',
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress', in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-};
-
 function formatActivity(a: ActivityEntry): string {
   const task = a.task_prefix && a.task_number ? `${a.task_prefix}-${a.task_number}` : '';
   const who = a.user_name?.split(' ')[0] || 'Someone';
   if (a.action === 'created') return `${who} created ${task}`;
-  if (a.action === 'status_changed') return `${who} moved ${task} to ${STATUS_LABELS[a.new_value || ''] || a.new_value}`;
+  if (a.action === 'status_changed') return `${who} moved ${task} to ${statusLabel(a.new_value || '')}`;
   if (a.action === 'assigned') return `${who} assigned ${task}`;
   if (a.action === 'priority_changed') return `${who} changed ${task} priority`;
   if (a.action === 'commented') return `${who} commented on ${task}`;
@@ -719,7 +716,7 @@ export default function Dashboard3Page() {
                         status === 'in_review' ? 'var(--status-blue)' : 'var(--text-tertiary)',
                     }} />
                     <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-tertiary)' }}>
-                      {STATUS_LABELS[status]}
+                      {statusLabel(status)}
                     </span>
                     <span className="text-[9px] font-mono" style={{ color: 'var(--text-tertiary)' }}>
                       {(kanban[status] || []).length}

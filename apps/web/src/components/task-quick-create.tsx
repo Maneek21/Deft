@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
 import { X, ChevronDown } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type Props = {
   projectId: string;
@@ -15,10 +16,10 @@ type Props = {
 };
 
 const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
+  { value: 'backlog', label: statusLabel('backlog') },
+  { value: 'todo', label: statusLabel('todo') },
+  { value: 'in_progress', label: statusLabel('in_progress') },
+  { value: 'in_review', label: statusLabel('in_review') },
 ];
 
 const PRIORITY_OPTIONS = [

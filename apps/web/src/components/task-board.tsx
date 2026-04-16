@@ -18,6 +18,7 @@ import {
 } from '@dnd-kit/sortable';
 import { TaskCard } from './task-card';
 import { BoardColumn } from './board-column';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type Task = {
   id: string;
@@ -66,19 +67,11 @@ type Props = {
 
 const COLUMNS = [
   { id: 'backlog', label: 'Backlog' },
-  { id: 'todo', label: 'Todo' },
+  { id: 'todo', label: 'To Do' },
   { id: 'in_progress', label: 'In Progress' },
   { id: 'in_review', label: 'In Review' },
   { id: 'done', label: 'Done' },
 ] as const;
-
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog',
-  todo: 'Todo',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  done: 'Done',
-};
 
 export function TaskBoard({
   tasks,
@@ -213,7 +206,7 @@ export function TaskBoard({
                 transition: 'all 150ms',
               }}
             >
-              {STATUS_LABELS[col.id] || col.label} ({(columnTasks[col.id] || []).length})
+              {statusLabel(col.id)} ({(columnTasks[col.id] || []).length})
             </button>
           ))}
         </div>
@@ -221,7 +214,7 @@ export function TaskBoard({
         <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2">
           {mobileColTasks.length === 0 && (
             <div className="flex items-center justify-center py-12" style={{ color: 'var(--muted)' }}>
-              <p className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks in {STATUS_LABELS[mobileColumn]}</p>
+              <p className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks in {statusLabel(mobileColumn)}</p>
             </div>
           )}
           {mobileColTasks.map((task) => (
