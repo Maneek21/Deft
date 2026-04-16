@@ -1,15 +1,45 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { api } from '@/lib/api';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginContent />
+    </Suspense>
+  );
+}
+
+function LoginContent() {
   const { login } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Handle OAuth callback tokens from URL
+  useEffect(() => {
+    const accessToken = searchParams.get('accessToken');
+    const refreshToken = searchParams.get('refreshToken');
+    const oauthError = searchParams.get('error');
+
+    if (oauthError) {
+      setError('Google sign-in failed. Please try again.');
+      window.history.replaceState({}, '', '/login');
+    } else if (accessToken && refreshToken) {
+      api.setTokens(accessToken, refreshToken);
+      window.history.replaceState({}, '', '/login');
+      router.push('/chat');
+    }
+  }, [searchParams, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,10 +112,10 @@ export default function LoginPage() {
                 placeholder="name@company.com"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={{
-                  background: 'var(--surface-container-low)',
+                  background: 'var(--surface-container)',
                   border: '1px solid var(--outline-variant)',
                   borderRadius: '0.5rem',
-                  color: 'var(--on-surface)',
+                  color: 'var(--foreground)',
                 }}
                 required />
             </div>
@@ -96,18 +126,18 @@ export default function LoginPage() {
                   style={{ color: 'var(--on-surface-variant)', letterSpacing: '0.05em' }}>
                   Password
                 </label>
-                <span className="text-[0.75rem] cursor-default" style={{ color: 'var(--outline)' }}>
+                <Link href="/forgot-password" className="text-[0.75rem]" style={{ color: 'var(--primary)' }}>
                   Forgot?
-                </span>
+                </Link>
               </div>
               <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={{
-                  background: 'var(--surface-container-low)',
+                  background: 'var(--surface-container)',
                   border: '1px solid var(--outline-variant)',
                   borderRadius: '0.5rem',
-                  color: 'var(--on-surface)',
+                  color: 'var(--foreground)',
                 }}
                 required />
             </div>
@@ -135,13 +165,16 @@ export default function LoginPage() {
           </div>
 
           {/* Google SSO */}
-          <button type="button" disabled
-            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 opacity-50 cursor-not-allowed"
+          <button type="button"
+            onClick={() => { window.location.href = `${API_URL}/api/auth/google`; }}
+            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 active:scale-[0.98]"
             style={{
               background: 'var(--surface-container-low)',
               color: 'var(--on-surface)',
               border: '1px solid var(--ghost-border)',
               borderRadius: '0.5rem',
+              transition: 'all 150ms',
+              cursor: 'pointer',
             }}>
             <svg className="w-4 h-4" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
