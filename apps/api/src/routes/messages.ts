@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions } from '@deft/db/schema';
+import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, messageClassifications } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -85,6 +85,67 @@ async function getReplyStats(messageIds: string[]) {
 
   return result;
 }
+
+// POST /forward — forward a message to another space (must be before /:spaceId)
+messageRoutes.post('/forward', async (c) => {
+  try {
+    const user = c.get('user');
+    const { message_id, target_space_id } = await c.req.json();
+
+    if (!message_id || !target_space_id) {
+      return c.json({ error: 'message_id and target_space_id required', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const [original] = await db.select({
+      content: messages.content,
+      user_id: messages.user_id,
+      space_id: messages.space_id,
+    }).from(messages)
+      .where(eq(messages.id, message_id))
+      .limit(1);
+
+    if (!original) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, original.user_id)).limit(1);
+    const [sourceSpace] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, original.space_id)).limit(1);
+
+    const forwardedContent = `<blockquote>${original.content}</blockquote><p><em>Forwarded from #${sourceSpace?.name || 'unknown'} by ${author?.name || 'unknown'}</em></p>`;
+
+    const [forwarded] = await db.insert(messages).values({
+      org_id: user.org_id,
+      space_id: target_space_id,
+      user_id: user.id,
+      content: forwardedContent,
+      metadata: { forwarded_from: { message_id, space_id: original.space_id, space_name: sourceSpace?.name } },
+    }).returning();
+
+    const io = getIO();
+    if (io && forwarded) {
+      const [full] = await db.select({
+        id: messages.id,
+        content: messages.content,
+        user_id: messages.user_id,
+        space_id: messages.space_id,
+        created_at: messages.created_at,
+        user_name: users.name,
+        user_avatar: users.avatar_url,
+        metadata: messages.metadata,
+      }).from(messages)
+        .innerJoin(users, eq(messages.user_id, users.id))
+        .where(eq(messages.id, forwarded.id))
+        .limit(1);
+
+      io.to(`space:${target_space_id}`).emit('message:new', full);
+    }
+
+    return c.json(forwarded, 201);
+  } catch (err) {
+    console.error('Failed to forward message:', err);
+    return c.json({ error: 'Failed to forward', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
 
 // GET /api/messages/:spaceId — paginated top-level messages
 messageRoutes.get('/:spaceId', async (c) => {
@@ -434,6 +495,34 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
+    // Detect agent-employee mentions → enqueue agent-employee-message per employee
+    if (mentionedUserIds.length > 0 && env.ANTHROPIC_API_KEY) {
+      try {
+        const mentionedEmployees = await db.select({
+          id: agentEmployees.id,
+          user_id: agentEmployees.user_id,
+        })
+          .from(agentEmployees)
+          .where(and(
+            eq(agentEmployees.org_id, user.org_id),
+            eq(agentEmployees.is_active, true),
+            inArray(agentEmployees.user_id, mentionedUserIds),
+          ));
+
+        for (const emp of mentionedEmployees) {
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
+            messageId: message!.id,
+            spaceId,
+            orgId: user.org_id,
+            employeeId: emp.id,
+            isDM: false,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to enqueue agent-employee-message:', err);
+      }
+    }
+
     // Cross-reference detection — check for task identifier patterns like PROJ-42
     const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;
     if (TASK_ID_PATTERN.test(parsed.data.content)) {
@@ -454,6 +543,25 @@ messageRoutes.post('/:spaceId', async (c) => {
     (async () => {
       try {
         const classification = await classifyMessage(parsed.data.content, user.org_id);
+
+        // Persist classifier output for observability (Task 5.6)
+        try {
+          await db.insert(messageClassifications).values({
+            org_id: user.org_id,
+            message_id: message!.id,
+            intent: classification.intent,
+            confidence: classification.confidence,
+            agent_mentioned: classification.agent_mentioned,
+            blocked: classification.blocked,
+            task_references: classification.task_refs,
+            entities: classification.entities,
+            memorable_facts: classification.memorable_facts,
+            decision: classification.decision,
+          });
+        } catch (err) {
+          console.warn('[classifier-persist] failed:', err);
+        }
+
         if (
           (classification.intent === 'task_create' || classification.intent === 'actionable') &&
           classification.confidence > 0.7
@@ -794,5 +902,33 @@ messageRoutes.get('/:id/history', async (c) => {
   } catch (err) {
     console.error('Failed to fetch message history:', err);
     return c.json({ error: 'Failed to fetch history', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /:spaceId/read-receipts — get read positions for all members
+messageRoutes.get('/:spaceId/read-receipts', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('spaceId');
+
+    const receipts = await db.select({
+      user_id: spaceMembers.user_id,
+      user_name: users.name,
+      user_avatar: users.avatar_url,
+      last_read_at: spaceMembers.last_read_at,
+      last_read_message_id: spaceMembers.last_read_message_id,
+      show_read_receipts: users.show_read_receipts,
+    })
+      .from(spaceMembers)
+      .innerJoin(users, eq(spaceMembers.user_id, users.id))
+      .where(eq(spaceMembers.space_id, spaceId));
+
+    // Filter out users who have disabled read receipts
+    const visible = receipts.filter(r => r.show_read_receipts);
+
+    return c.json({ receipts: visible });
+  } catch (err) {
+    console.error('Failed to fetch read receipts:', err);
+    return c.json({ error: 'Failed to fetch read receipts', code: 'INTERNAL_ERROR' }, 500);
   }
 });

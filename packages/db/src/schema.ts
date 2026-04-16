@@ -1430,6 +1430,27 @@ export const providerInstances = pgTable('provider_instances', {
   index('provider_instances_org_idx').on(t.org_id),
 ]);
 
+// ═══ MESSAGE CLASSIFICATIONS (Task 5.6) ═══
+// Persisted output from the Haiku classifier that runs on every chat message.
+// Written by the fire-and-forget IIFE in routes/messages.ts immediately after
+// classifyMessage() returns, before any downstream job enqueues.
+export const messageClassifications = pgTable('message_classifications', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  org_id: text('org_id').notNull(),
+  message_id: text('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
+  intent: text('intent').notNull(),                        // task_create | question | discussion | actionable | none
+  confidence: real('confidence').notNull(),                // 0-1
+  agent_mentioned: boolean('agent_mentioned').notNull().default(false),
+  blocked: boolean('blocked').notNull().default(false),
+  task_references: text('task_references').array().default(sql`ARRAY[]::text[]`),
+  entities: jsonb('entities'),                             // { assignee?, project?, due_date? }
+  memorable_facts: text('memorable_facts').array().default(sql`ARRAY[]::text[]`),
+  decision: text('decision'),                              // nullable
+  created_at: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+  index('mc_org_msg_idx').on(t.org_id, t.message_id),
+]);
+
 // ═══ REVOKED TOKENS ═══
 // Server-side refresh token revocation (Option B — stateless JWTs, hash-based blacklist).
 // Logout inserts the sha256 hash; /refresh rejects any token whose hash is present.
