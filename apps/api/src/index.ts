@@ -47,6 +47,7 @@ import { agentPlanRoutes } from './routes/agent-plans.js';
 import { integrationsRoutes } from './routes/integrations.js';
 import { agentDeployRoutes } from './routes/agent-deploy.js';
 import { metricsRoutes } from './routes/metrics.js';
+import { skillsRoutes } from './routes/skills.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -114,6 +115,7 @@ app.route('/api/agent/followups', agentFollowupsRoutes);
 app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/integrations', integrationsRoutes);
 app.route('/api/agents/deploy', agentDeployRoutes);
+app.route('/api/skills', skillsRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
