@@ -103,6 +103,57 @@ async function getTaskForOrg(taskId: string, orgId: string) {
   return task ?? null;
 }
 
+/**
+ * Task 2.7 — detect cycles in the `blocks` dependency graph.
+ *
+ * Edges are stored exclusively as type=`blocks` (the POST handler normalizes
+ * `blocked_by` by flipping direction). To determine whether inserting a new
+ * edge `fromId -> toId` would create a cycle, we BFS forward through `blocks`
+ * edges starting at `toId`; if the traversal reaches `fromId`, a cycle exists.
+ *
+ * Scope is restricted to `blocks` edges — `relates_to` and `duplicates` are
+ * semantic pointers, not orderings, and cannot form cycles. Org isolation is
+ * enforced by joining source_task -> tasks and filtering on tasks.org_id.
+ *
+ * Safety cap: traversal aborts after visiting 1000 nodes.
+ */
+async function detectBlocksCycle(
+  fromId: string,
+  toId: string,
+  orgId: string,
+): Promise<boolean> {
+  // Self-loop is trivially a cycle. Caller already rejects this as
+  // VALIDATION_ERROR, but guard defensively.
+  if (fromId === toId) return true;
+
+  const visited = new Set<string>([toId]);
+  const queue: string[] = [toId];
+  const MAX_NODES = 1000;
+
+  while (queue.length > 0 && visited.size <= MAX_NODES) {
+    const current = queue.shift()!;
+    const rows = await db.select({ target: taskRelationships.target_task_id })
+      .from(taskRelationships)
+      .innerJoin(tasks, eq(taskRelationships.source_task_id, tasks.id))
+      .where(
+        and(
+          eq(taskRelationships.source_task_id, current),
+          eq(taskRelationships.type, 'blocks'),
+          eq(tasks.org_id, orgId),
+        )
+      );
+    for (const r of rows) {
+      const next = r.target;
+      if (next === fromId) return true;
+      if (!visited.has(next)) {
+        visited.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
 // GET /api/tasks/my — my tasks across all projects
 taskRoutes.get('/my', async (c) => {
   try {
@@ -1795,6 +1846,18 @@ taskRoutes.post('/:id/dependencies', async (c) => {
       source_task_id = parsed.data.target_task_id;
       target_task_id = taskId;
       type = 'blocks';
+    }
+
+    // Task 2.7 — reject cycles in the blocks graph before inserting.
+    // relates_to / duplicates are semantic pointers and cannot form cycles.
+    if (type === 'blocks') {
+      const cycle = await detectBlocksCycle(source_task_id, target_task_id, user.org_id);
+      if (cycle) {
+        return c.json(
+          { error: 'Would create a circular dependency', code: 'DEPENDENCY_CYCLE' },
+          400,
+        );
+      }
     }
 
     const [rel] = await db.insert(taskRelationships).values({
