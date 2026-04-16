@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, lazy, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
 
@@ -9,7 +10,7 @@ import {
   Loader2, BookOpen, ArrowLeft, Link2, ArrowUpRight,
   Brain, Users, Scale, LinkIcon, Cog, Heart, Lightbulb,
   Plus, Pencil, Trash2, X, Check, History, GitBranch,
-  Activity, Download, BarChart3, AlertTriangle,
+  Activity, Download, BarChart3, AlertTriangle, RotateCcw, RefreshCw,
 } from 'lucide-react';
 
 const TYPE_CONFIG: Record<string, { label: string; color: string; icon: React.ComponentType<any> }> = {
@@ -53,12 +54,18 @@ type WikiPage = {
   slug: string;
   summary: string | null;
   confidence: number;
+  tags?: string[] | null;
   version: number;
   space_id: string | null;
   created_at: string;
   updated_at: string;
   link_count: number;
 };
+
+/** Returns true if a decision wiki page has been reversed. */
+function isDecisionReversed(entry: Pick<WikiPage, 'confidence' | 'tags'>): boolean {
+  return entry.confidence < 0.5 || (entry.tags ?? []).includes('reversed');
+}
 
 type WikiPageDetail = WikiPage & {
   content: string;
@@ -213,9 +220,17 @@ function CreatePageModal({ onClose, onCreated }: { onClose: () => void; onCreate
 }
 
 export default function KnowledgePage() {
+  const searchParams = useSearchParams();
   const [pages, setPages] = useState<WikiPage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<string>('all');
+  const [filter, setFilter] = useState<string>(() => {
+    // Support ?type=decision (or any valid type) deep-link
+    const typeParam = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('type')
+      : null;
+    const validTypes = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'];
+    return typeParam && validTypes.includes(typeParam) ? typeParam : 'all';
+  });
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -243,6 +258,8 @@ export default function KnowledgePage() {
   const [activityLoading, setActivityLoading] = useState(false);
   const [stats, setStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [reversingId, setReversingId] = useState<string | null>(null);
+  const [reverseError, setReverseError] = useState<string | null>(null);
   const limit = 50;
 
   const fetchPages = () => {
@@ -260,6 +277,15 @@ export default function KnowledgePage() {
       }
     }).catch(() => {}).finally(() => setLoading(false));
   };
+
+  // Sync filter from URL ?type= param when searchParams change
+  useEffect(() => {
+    const typeParam = searchParams.get('type');
+    const validTypes = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'];
+    if (typeParam && validTypes.includes(typeParam)) {
+      setFilter(typeParam);
+    }
+  }, [searchParams]);
 
   // Fetch wiki pages list
   useEffect(() => {
@@ -368,6 +394,38 @@ export default function KnowledgePage() {
     } catch {
     } finally {
       setGraphLoading(false);
+    }
+  };
+
+  const reverseDecision = async (entry: WikiPage, targetReversed: boolean) => {
+    const confirmMsg = targetReversed
+      ? 'Mark this decision as reversed? This will lower its confidence and tag it as reversed.'
+      : 'Re-activate this decision? This will restore its confidence and remove the reversed tag.';
+    if (!window.confirm(confirmMsg)) return;
+
+    setReversingId(entry.id);
+    setReverseError(null);
+    try {
+      const res = await api.patch(`/api/decisions/${entry.id}`, { is_reversed: targetReversed });
+      if (res.ok) {
+        // Update the page in local state so badge refreshes immediately (no full refetch needed)
+        const data = await res.json();
+        setPages(prev => prev.map(p => {
+          if (p.id !== entry.id) return p;
+          return {
+            ...p,
+            confidence: data.confidence ?? p.confidence,
+            tags: data.tags ?? p.tags,
+          };
+        }));
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setReverseError(errData.error || 'Failed to update decision. Please try again.');
+      }
+    } catch {
+      setReverseError('Failed to update decision. Please try again.');
+    } finally {
+      setReversingId(null);
     }
   };
 
@@ -970,6 +1028,16 @@ export default function KnowledgePage() {
 
       {/* List View */}
       <div className="flex-1 overflow-y-auto space-y-2" style={{ display: (showGraph || viewMode !== 'pages') ? 'none' : undefined }}>
+        {/* Reverse action error banner */}
+        {reverseError && (
+          <div className="flex items-center justify-between p-2.5 rounded-lg mb-1"
+            style={{ background: '#EF444415', border: '1px solid #EF444440' }}>
+            <span className="text-[12px]" style={{ color: '#EF4444' }}>{reverseError}</span>
+            <button onClick={() => setReverseError(null)} className="ml-2 p-0.5 rounded hover:opacity-70">
+              <X size={13} style={{ color: '#EF4444' }} />
+            </button>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
@@ -991,52 +1059,90 @@ export default function KnowledgePage() {
           pages.map((entry) => {
             const config = TYPE_CONFIG[entry.type] || TYPE_CONFIG.fact!;
             const Icon = config.icon;
+            const isDecision = entry.type === 'decision';
+            const reversed = isDecision && isDecisionReversed(entry);
+            const isBeingReversed = reversingId === entry.id;
             return (
-              <button key={entry.id} onClick={() => setSelectedSlug(entry.slug)}
-                className="w-full text-left p-3 rounded-lg transition-colors"
+              <div key={entry.id} className="w-full rounded-lg transition-colors"
                 style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}
                 onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
                 onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-default)')}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ background: `${config.color}20` }}>
-                    <Icon size={14} style={{ color: config.color }} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                        {entry.title}
-                      </span>
-                      <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
-                        style={{ background: `${config.color}20`, color: config.color }}>
-                        {WIKI_TYPE_LABELS[entry.type]?.singular ?? config.label.replace(/s$/, '')}
-                      </span>
-                      {entry.scope !== 'org' && (
-                        <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full capitalize flex-shrink-0"
-                          style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
-                          {entry.scope}
-                        </span>
-                      )}
+                <button className="w-full text-left p-3" onClick={() => setSelectedSlug(entry.slug)}>
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ background: `${config.color}20` }}>
+                      <Icon size={14} style={{ color: config.color }} />
                     </div>
-                    {entry.summary && (
-                      <p className="text-[12px] line-clamp-2 mb-1" style={{ color: 'var(--text-secondary)' }}>
-                        {entry.summary}
-                      </p>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="text-[13px] font-medium" style={{ color: reversed ? 'var(--text-tertiary)' : 'var(--text-primary)', textDecoration: reversed ? 'line-through' : 'none' }}>
+                          {entry.title}
+                        </span>
+                        <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: `${config.color}20`, color: config.color }}>
+                          {WIKI_TYPE_LABELS[entry.type]?.singular ?? config.label.replace(/s$/, '')}
+                        </span>
+                        {isDecision && (
+                          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
+                            style={{
+                              background: reversed ? '#EF444420' : '#22C55E20',
+                              color: reversed ? '#EF4444' : '#22C55E',
+                              border: `1px solid ${reversed ? '#EF444440' : '#22C55E40'}`,
+                            }}>
+                            {reversed ? 'Reversed' : 'Active'}
+                          </span>
+                        )}
+                        {entry.scope !== 'org' && (
+                          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full capitalize flex-shrink-0"
+                            style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
+                            {entry.scope}
+                          </span>
+                        )}
+                      </div>
+                      {entry.summary && (
+                        <p className="text-[12px] line-clamp-2 mb-1" style={{ color: 'var(--text-secondary)' }}>
+                          {entry.summary}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-3 mt-1.5">
+                        <ConfidenceBar value={entry.confidence} />
+                        {entry.link_count > 0 && (
+                          <span className="text-[11px] flex items-center gap-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                            <Link2 size={10} /> {entry.link_count} links
+                          </span>
+                        )}
+                        <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                          {formatRelative(entry.updated_at)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+                {/* Decision reverse / re-activate actions */}
+                {isDecision && (
+                  <div className="px-3 pb-2.5 flex items-center gap-2">
+                    {!reversed ? (
+                      <button
+                        onClick={() => reverseDecision(entry, true)}
+                        disabled={isBeingReversed}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40"
+                        style={{ background: '#EF444415', color: '#EF4444', border: '1px solid #EF444430' }}>
+                        {isBeingReversed ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+                        Reverse
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => reverseDecision(entry, false)}
+                        disabled={isBeingReversed}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40"
+                        style={{ background: '#22C55E15', color: '#22C55E', border: '1px solid #22C55E30' }}>
+                        {isBeingReversed ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                        Re-activate
+                      </button>
                     )}
-                    <div className="flex items-center gap-3 mt-1.5">
-                      <ConfidenceBar value={entry.confidence} />
-                      {entry.link_count > 0 && (
-                        <span className="text-[11px] flex items-center gap-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                          <Link2 size={10} /> {entry.link_count} links
-                        </span>
-                      )}
-                      <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                        {formatRelative(entry.updated_at)}
-                      </span>
-                    </div>
                   </div>
-                </div>
-              </button>
+                )}
+              </div>
             );
           })
         )}
