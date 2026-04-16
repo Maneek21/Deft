@@ -141,7 +141,6 @@ async function buildStreamContext(
   // Load employee context if this is an employee conversation
   let employeePrompt: string | undefined;
   let employeeTrustLevel: string | undefined;
-  let employeeNativeTools: string[] | null = null;
 
   if (agentEmployeeId) {
     const [emp] = await db.select().from(agentEmployees)
@@ -149,7 +148,6 @@ async function buildStreamContext(
       .limit(1);
     if (emp) {
       employeeTrustLevel = emp.trust_level;
-      employeeNativeTools = emp.native_tools;
 
       // Build augmented system prompt
       employeePrompt = `${emp.system_prompt}
@@ -175,16 +173,11 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     SUPERINTENDENT_ACTION_TOOLS.forEach(t => allActionTools.add(t));
   }
 
-  // Filter tools by employee's allowed native tools
-  if (agentEmployeeId && employeeNativeTools) {
-    const allowed = new Set(employeeNativeTools);
-    // Keep system tools (create_plan) + employee's allowed tools + MCP tools
-    tools = tools.filter(t =>
-      t.name === 'create_plan' ||
-      t.name.startsWith('mcp__') ||
-      allowed.has(t.name)
-    );
-  }
+  // Task 4.12 — per-employee native-tool filtering previously read
+  // agent_employees.native_tools[]. The column was dropped (migration
+  // 0038) in favour of the skills primitive; employee tool selection now
+  // flows through agent_employee_skills + capability packs. No filter
+  // is applied here — scope enforcement lives in the skills loader.
 
   let connectionInfo = '';
   if (connectedProviders.includes('google_calendar')) {

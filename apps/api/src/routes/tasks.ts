@@ -651,6 +651,10 @@ taskRoutes.get('/:id', async (c) => {
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
       parent_task_id: tasks.parent_task_id,
+      // Task 4.12 — surface recurrence on GET so the detail UI can
+      // render the Repeats dropdown without a second fetch.
+      recurrence: tasks.recurrence,
+      recurrence_source_id: tasks.recurrence_source_id,
       is_deleted: tasks.is_deleted,
       created_at: tasks.created_at,
       updated_at: tasks.updated_at,
@@ -1428,8 +1432,11 @@ taskRoutes.patch('/:id', async (c) => {
           .from(tasks).where(eq(tasks.project_id, recurringTask.project_id));
         const nextNumber = (maxNum?.max || 0) + 1;
 
-        // Create next occurrence
-        await db.insert(tasks).values({
+        // Task 4.12 — clone-gap fix. The previous implementation only
+        // cloned scalar fields; we now also propagate parent_task_id and
+        // the full label set so the next occurrence inherits its full
+        // classification.
+        const [clone] = await db.insert(tasks).values({
           org_id: recurringTask.org_id,
           project_id: recurringTask.project_id,
           number: nextNumber,
@@ -1440,10 +1447,26 @@ taskRoutes.patch('/:id', async (c) => {
           assignee_id: recurringTask.assignee_id,
           due_date: nextDue,
           estimation: recurringTask.estimation,
+          parent_task_id: recurringTask.parent_task_id,
           recurrence: recurringTask.recurrence,
           recurrence_source_id: recurringTask.recurrence_source_id || recurringTask.id,
           created_by: user.id,
-        });
+        }).returning({ id: tasks.id });
+
+        // Clone labels via the (task_id, label_id) composite PK. The
+        // onConflictDoNothing is defensive — duplicates should be
+        // impossible for a brand-new clone, but we'd rather no-op than
+        // 500 if the surrounding flow is ever retried.
+        if (clone) {
+          const sourceLabels = await db.select({ label_id: taskLabels.label_id })
+            .from(taskLabels)
+            .where(eq(taskLabels.task_id, recurringTask.id));
+          if (sourceLabels.length > 0) {
+            await db.insert(taskLabels)
+              .values(sourceLabels.map((l) => ({ task_id: clone.id, label_id: l.label_id })))
+              .onConflictDoNothing();
+          }
+        }
 
         // Update project task counter
         await db.execute(sql`UPDATE projects SET task_counter = ${nextNumber} WHERE id = ${recurringTask.project_id}`);

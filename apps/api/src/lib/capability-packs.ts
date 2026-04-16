@@ -202,32 +202,11 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
   },
 ];
 
-/**
- * Default capability pack per first-party role template.
- *
- * @deprecated Phase 4 Task 4.4 — canonical home for capability packs is now
- * the `agent_employee_skills` junction (bundled skills seeded by
- * `seed-bundled-skills.ts`). The deploy flow and agent-capability loader
- * read packs via that junction, unioned with the legacy
- * `agent_employees.capability_packs[]` column during the transitional
- * dual-read window. This map survives only as a last-resort fallback for
- * template rows that pre-date migration 0016. Task 4.12 removes both this
- * map and the legacy inline column once every environment is re-seeded.
- *
- * Historical note: Phase 9 (migration 0016) moved the template defaults
- * into `agent_employee_templates.default_capability_packs`. The values
- * here are aligned with the §17 catalog.
- */
-export const TEMPLATE_DEFAULT_PACKS: Record<string, string[]> = {
-  'alex-pm': ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],
-  designer: ['deft-workspace', 'web-browsing', 'tavily'],
-  qa: ['deft-workspace', 'web-browsing', 'github'],
-  cs: ['deft-workspace', 'web-browsing'],
-  community: ['deft-workspace', 'web-browsing', 'tavily'],
-  'on-call': ['deft-workspace', 'web-browsing', 'tavily', 'github', 'shell-exec'],
-  cfo: ['deft-workspace', 'google-calendar'],
-  devops: ['deft-workspace', 'web-browsing', 'github', 'shell-exec'],
-};
+// Task 4.12 — `TEMPLATE_DEFAULT_PACKS` hashmap removed. Per-template
+// default capability packs are now the authoritative DB column
+// `agent_employee_templates.default_capability_packs` (seeded by
+// seed-templates.ts, introduced in migration 0016). Envs with pre-0016
+// template rows must run seed-templates.ts before wizard deploy.
 
 export function getCapabilityPack(slug: string): CapabilityPack | undefined {
   return CAPABILITY_PACKS.find((p) => p.slug === slug);

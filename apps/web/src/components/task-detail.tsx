@@ -33,6 +33,7 @@ import {
   Paperclip,
   Upload,
   Trash2,
+  Repeat,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 
@@ -63,6 +64,8 @@ type Task = {
   project_color: string | null;
   labels: { id: string; name: string; color: string }[];
   parent_task_id: string | null;
+  // Task 4.12 — recurrence cadence; null means "does not repeat".
+  recurrence: 'daily' | 'weekly' | 'biweekly' | 'monthly' | null;
   created_at: string;
   updated_at: string;
 };
@@ -1059,6 +1062,31 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     tabIndex={-1}
                   />
                 </div>
+
+                {/* Task 4.12 — Recurrence. Persists as tasks.recurrence via
+                    PATCH; the completion spawner on the API reads this to
+                    generate the next occurrence when status transitions to
+                    done/cancelled. */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Repeat size={12} className="inline mr-1" />
+                  Repeats
+                </span>
+                <select
+                  value={task.recurrence ?? ''}
+                  onChange={(e) => handleFieldUpdate('recurrence', e.target.value || null)}
+                  className="text-[13px] px-2 py-1 rounded-md bg-transparent"
+                  style={{
+                    color: task.recurrence ? 'var(--foreground)' : 'var(--muted)',
+                    fontFamily: 'var(--font-body)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <option value="">None</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Every 2 weeks</option>
+                  <option value="monthly">Monthly</option>
+                </select>
 
                 {/* Created date */}
                 <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>

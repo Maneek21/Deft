@@ -27,7 +27,6 @@ const ROLE_TEMPLATES = [
       'You are a project manager agent. Your primary responsibilities are sprint tracking, blocker detection, and team coordination. You proactively monitor task progress, identify blockers before they escalate, coordinate cross-functional work, and keep the team aligned on priorities. You communicate status updates clearly and escalate risks early.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Research external information relevant to tasks or projects\n  - Verify links or resources shared by team members\n  - Check project documentation on external sites\n- Always summarize what you find — don\'t dump raw page content.',
     expertise_description:
       'Sprint tracking, blocker detection, team coordination, status reporting, risk escalation',
-    native_tools: null,
     heartbeat_config:
       "### Every 30 minutes:\n- Check for tasks overdue by more than 24 hours. If found, post a summary in the task's project channel.\n- Check for tasks with status 'in_progress' that haven't been updated in 48+ hours. DM the assignee.\n\n### Every morning (if first heartbeat of the day):\n- Generate a brief standup summary from yesterday's task activity and post in #general.",
   },
@@ -38,7 +37,6 @@ const ROLE_TEMPLATES = [
       'You are an engineering lead agent. Your primary responsibilities are code review management, PR workflow, and velocity monitoring. You track pull request lifecycles, flag stale PRs, monitor team velocity and throughput, identify bottlenecks in the development pipeline, and ensure engineering best practices are followed.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Check npm package versions, security advisories, or documentation\n  - Review PR descriptions or CI status on GitHub (if not connected natively)\n  - Research technical solutions or library comparisons\n- Always summarize findings concisely with links.',
     expertise_description:
       'Code review management, PR lifecycle tracking, velocity monitoring, pipeline bottleneck detection',
-    native_tools: null,
     heartbeat_config:
       '### Every hour:\n- Check for open PRs with no review activity in 24+ hours. Post a reminder in #engineering.\n- Check for tasks blocked by code review. DM the reviewer.\n\n### Every morning:\n- Summarize merged PRs from yesterday and post in #engineering.',
   },
@@ -49,7 +47,6 @@ const ROLE_TEMPLATES = [
       'You are an executive assistant agent. Your primary responsibilities are calendar management, meeting preparation, and daily briefings. You organize schedules, prepare meeting agendas with relevant context, generate daily briefings summarizing key updates and upcoming commitments, and proactively manage time conflicts.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Research meeting attendees or their companies\n  - Check travel or venue information for upcoming meetings\n  - Verify links shared in conversations\n- Always provide actionable summaries.',
     expertise_description:
       'Calendar management, meeting preparation, daily briefings, schedule optimization',
-    native_tools: null,
     heartbeat_config:
       '### Every 30 minutes:\n- Check calendar for meetings in the next 30 minutes. If found, generate a prep brief and DM the attendee.\n- Check for calendar conflicts in today\'s schedule. If found, alert the affected person.',
   },
@@ -337,7 +334,8 @@ const createSchema = z.object({
   system_prompt: z.string().min(1),
   expertise_description: z.string().optional(),
   avatar_url: z.string().url().optional(),
-  native_tools: z.array(z.string()).nullable().optional(),
+  // native_tools dropped in Task 4.12 (skills primitive now owns per-employee
+  // tool selection).
   mcp_connection_ids: z.array(z.string()).nullable().optional(),
   disabled_tools: z.array(z.string()).nullable().optional(),
   space_ids: z.array(z.string()).nullable().optional(),
@@ -430,7 +428,6 @@ agentEmployeeRoutes.post('/', async (c) => {
         avatar_url: data.avatar_url || null,
         system_prompt: data.system_prompt,
         expertise_description: data.expertise_description || null,
-        native_tools: data.native_tools ?? null,
         mcp_connection_ids: data.mcp_connection_ids ?? null,
         disabled_tools: data.disabled_tools ?? null,
         space_ids: spaceIdsToJoin.length > 0 ? spaceIdsToJoin : null,
@@ -492,7 +489,7 @@ const updateSchema = z.object({
   system_prompt: z.string().min(1).optional(),
   expertise_description: z.string().optional(),
   avatar_url: z.string().url().nullable().optional(),
-  native_tools: z.array(z.string()).nullable().optional(),
+  // native_tools dropped in Task 4.12 (see createSchema note).
   mcp_connection_ids: z.array(z.string()).nullable().optional(),
   disabled_tools: z.array(z.string()).nullable().optional(),
   space_ids: z.array(z.string()).nullable().optional(),
@@ -535,7 +532,6 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (data.system_prompt !== undefined) updates.system_prompt = data.system_prompt;
     if (data.expertise_description !== undefined) updates.expertise_description = data.expertise_description;
     if (data.avatar_url !== undefined) updates.avatar_url = data.avatar_url;
-    if (data.native_tools !== undefined) updates.native_tools = data.native_tools;
     if (data.mcp_connection_ids !== undefined) updates.mcp_connection_ids = data.mcp_connection_ids;
     if (data.disabled_tools !== undefined) updates.disabled_tools = data.disabled_tools;
     if (data.space_ids !== undefined) updates.space_ids = data.space_ids;

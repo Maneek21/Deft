@@ -1294,7 +1294,8 @@ export const agentEmployees = pgTable('agent_employees', {
   system_prompt: text('system_prompt').notNull(),
   expertise_description: text('expertise_description'),
   starter_prompts: text('starter_prompts').array(),
-  native_tools: text('native_tools').array(),
+  // native_tools[] removed in Task 4.12 (migration 0038) — per-employee
+  // tool selection moved to the skills primitive (migrations 0035-0037).
   mcp_connection_ids: text('mcp_connection_ids').array(),
   disabled_tools: text('disabled_tools').array(),
   space_ids: text('space_ids').array(),

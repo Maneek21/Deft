@@ -66,6 +66,9 @@ export type UnifiedTask = {
   estimation?: string | null;
   is_blocked?: boolean;
   blocked_by_label?: string;
+  // Task 4.12 — recurrence cadence; when set, board variant renders a
+  // small "Recurring" chip.
+  recurrence?: 'daily' | 'weekly' | 'biweekly' | 'monthly' | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -406,8 +409,8 @@ function BoardVariant({
             {task.title}
           </p>
 
-          {/* Labels */}
-          {labels.length > 0 && (
+          {/* Labels + Task 4.12 recurring chip */}
+          {(labels.length > 0 || task.recurrence) && (
             <div className="flex flex-wrap gap-1 mt-1.5">
               {labels.map((label) => (
                 <span
@@ -418,6 +421,15 @@ function BoardVariant({
                   {label.name}
                 </span>
               ))}
+              {task.recurrence && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-full inline-flex items-center gap-0.5"
+                  style={{ background: 'var(--surface-container-low)', color: 'var(--muted)' }}
+                  title={`Repeats ${task.recurrence}`}
+                >
+                  {'\u21BB'} Recurring
+                </span>
+              )}
             </div>
           )}
 
