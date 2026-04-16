@@ -6,12 +6,13 @@ import { api } from '@/lib/api';
 import { formatRelativeCompact, formatFullDateLong, formatCurrentTime, formatEventTime, formatMessageTime } from '@/lib/time';
 import Link from 'next/link';
 import {
-  Clock, CheckCircle2, Circle, AlertCircle, MessageSquare,
+  Clock, CheckCircle2, Circle, MessageSquare,
   Plus, Bot, Sunrise, Loader2, X, Shield, Activity, Users,
   LayoutDashboard, ArrowRight, ChevronLeft, ChevronRight, FileText, ExternalLink,
 } from 'lucide-react';
 import { CalTask, CalEvent, CalNote, DayBucket, toDateKey, buildMonthGrid, bucketByDay, CAL_DAYS_SHORT, ITEM_COLORS } from '@/lib/calendar';
 import { statusLabel } from '@/lib/task-status-labels';
+import { TaskCardUnified, type UnifiedTask } from '@/components/task-card-unified';
 
 // ═══ Types (self-contained) ═══
 
@@ -512,28 +513,12 @@ export default function Dashboard3Page() {
                 {todayUnique.slice(0, 8).map(t => {
                   const isOverdue = d.overdue.some(o => o.id === t.id);
                   return (
-                    <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg -mx-2"
-                      onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
-                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                      {isOverdue
-                        ? <AlertCircle size={14} strokeWidth={1.5} style={{ color: 'var(--status-red)' }} />
-                        : <Circle size={14} strokeWidth={1.5} style={{ color: 'var(--text-tertiary)' }} />
-                      }
-                      <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-tertiary)' }}>
-                        {t.project_prefix}-{t.number}
-                      </span>
-                      <span className="text-[12px] font-medium flex-1 truncate"
-                        style={{ color: isOverdue ? 'var(--status-red)' : 'var(--text-primary)' }}>
-                        {t.title}
-                      </span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded font-medium flex-shrink-0"
-                        style={{ background: (PRIORITY_COLORS[t.priority]) + '15', color: PRIORITY_COLORS[t.priority] }}>
-                        {t.priority.toUpperCase()}
-                      </span>
-                      {isOverdue && (
-                        <span className="text-[9px] font-medium flex-shrink-0" style={{ color: 'var(--status-red)' }}>overdue</span>
-                      )}
+                    <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`} className="block">
+                      <TaskCardUnified
+                        variant="dashboard"
+                        task={t as UnifiedTask}
+                        isOverdue={isOverdue}
+                      />
                     </Link>
                   );
                 })}
@@ -724,23 +709,11 @@ export default function Dashboard3Page() {
                   </div>
                   <div className="space-y-1">
                     {(kanban[status] || []).slice(0, 3).map(t => (
-                      <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`}
-                        className="block p-2 rounded-lg"
-                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-default)' }}
-                        onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
-                        onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-default)')}>
-                        <span className="text-[11px] font-medium block truncate" style={{ color: 'var(--text-primary)' }}>
-                          {t.title}
-                        </span>
-                        <div className="flex items-center gap-1.5 mt-1">
-                          <span className="text-[9px] font-mono" style={{ color: 'var(--text-tertiary)' }}>
-                            {t.project_prefix}-{t.number}
-                          </span>
-                          <span className="text-[8px] px-1 py-0.5 rounded font-medium"
-                            style={{ background: (PRIORITY_COLORS[t.priority]) + '15', color: PRIORITY_COLORS[t.priority] }}>
-                            {t.priority.toUpperCase()}
-                          </span>
-                        </div>
+                      <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`} className="block">
+                        <TaskCardUnified
+                          variant="dashboard"
+                          task={t as UnifiedTask}
+                        />
                       </Link>
                     ))}
                     {(kanban[status] || []).length === 0 && (

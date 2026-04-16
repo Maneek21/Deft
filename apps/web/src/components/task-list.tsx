@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { TaskCardUnified } from './task-card-unified';
 
 type Task = {
   id: string;
@@ -176,79 +177,20 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
           </div>
         )}
         {sorted.map((task) => {
-          const priority = PRIORITY_STYLES[task.priority];
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
-          const taskStatusLabel = statusLabel(task.status);
-          const dueInfo = formatDueDate(task.due_date, task.status);
-
           return (
-            <div
+            <TaskCardUnified
               key={task.id}
-              onClick={() => {
-                if (selectionMode && onToggleSelect) {
-                  onToggleSelect(task.id);
-                } else {
-                  onTaskClick(task);
-                }
-              }}
-              className="rounded-lg p-3 cursor-pointer"
-              style={{
-                background: isChecked || isSelected ? 'var(--accent-subtle)' : 'var(--card-bg)',
-                border: `1px solid ${isChecked || isSelected ? 'var(--accent)' : 'var(--border)'}`,
-                transition: 'all 150ms',
-              }}
-            >
-              <div className="flex items-start gap-2">
-                {selectionMode && (
-                  <div
-                    className="mt-0.5 flex-shrink-0 w-5 h-5 md:w-4 md:h-4 min-w-[20px] min-h-[20px] rounded border flex items-center justify-center"
-                    style={{
-                      borderColor: isChecked ? 'var(--accent)' : 'var(--border)',
-                      background: isChecked ? 'var(--accent)' : 'transparent',
-                    }}
-                    onClick={(e) => { e.stopPropagation(); onToggleSelect?.(task.id); }}
-                  >
-                    {isChecked && <Check size={10} strokeWidth={3} style={{ color: 'white' }} />}
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
-                      style={{ background: priority.bg, color: priority.color, fontFamily: 'var(--font-heading)' }}
-                    >
-                      {priority.label}
-                    </span>
-                    <span className="text-[11px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-                      {projectPrefix || task.project_prefix}-{task.number}
-                    </span>
-                  </div>
-                  <p className="text-[13px] font-medium leading-snug mb-1.5 break-words" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', overflowWrap: 'anywhere' }}>
-                    {task.title}
-                  </p>
-                  <div className="flex items-center gap-2 flex-wrap text-[11px]" style={{ color: 'var(--muted)' }}>
-                    {task.assignee_name && (
-                      <span>{task.assignee_name}</span>
-                    )}
-                    {task.assignee_name && <span style={{ color: 'var(--border)' }}>·</span>}
-                    <span className="flex items-center gap-1">
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                      {taskStatusLabel}
-                    </span>
-                    {dueInfo && (
-                      <>
-                        <span style={{ color: 'var(--border)' }}>·</span>
-                        <span className="flex items-center gap-1" style={{ color: dueInfo.color }}>
-                          <Calendar size={10} strokeWidth={1.5} />
-                          {dueInfo.text}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
+              variant="list"
+              task={task}
+              projectPrefix={projectPrefix}
+              onClick={() => onTaskClick(task)}
+              isSelected={isSelected}
+              selectionMode={selectionMode}
+              isChecked={isChecked}
+              onToggleSelect={onToggleSelect}
+            />
           );
         })}
       </div>
