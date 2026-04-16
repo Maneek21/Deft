@@ -32,6 +32,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -43,6 +44,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   created_at: string;
   updated_at: string;
 };

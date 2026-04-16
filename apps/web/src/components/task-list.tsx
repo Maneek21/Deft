@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
 
 type Task = {
@@ -16,6 +16,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -27,6 +28,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -157,9 +159,12 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
     { field: 'status', label: 'Status', width: '130px' },
     { field: 'priority', label: 'Priority', width: '80px' },
     { field: 'assignee', label: 'Assignee', width: '140px' },
-    { field: 'due_date', label: 'Due Date', width: '110px' },
+    { field: 'due_date', label: 'Due', width: '110px' },
     { field: 'updated_at', label: 'Updated', width: '110px' },
   ];
+
+
+  const hasAnyEstimation = tasks.some(t => t.estimation);
 
   if (isMobile) {
     return (
@@ -268,23 +273,40 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
               />
             )}
             {columns.map((col) => (
-              <th
-                key={col.field}
-                onClick={() => handleSort(col.field)}
-                className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
-                style={{
-                  color: 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                  background: 'var(--surface)',
-                  borderBottom: '1px solid var(--border)',
-                  width: col.width === '1fr' ? undefined : col.width,
-                }}
-              >
-                <div className="flex items-center gap-1">
-                  {col.label}
-                  <SortIcon field={col.field} />
-                </div>
-              </th>
+              <React.Fragment key={col.field}>
+                <th
+                  onClick={() => handleSort(col.field)}
+                  className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
+                  style={{
+                    color: 'var(--muted)',
+                    fontFamily: 'var(--font-heading)',
+                    background: 'var(--surface)',
+                    borderBottom: '1px solid var(--border)',
+                    width: col.width === '1fr' ? undefined : col.width,
+                    whiteSpace: col.field === 'status' ? 'nowrap' : undefined,
+                    minWidth: col.field === 'status' ? '100px' : undefined,
+                  }}
+                >
+                  <div className="flex items-center gap-1">
+                    {col.label}
+                    <SortIcon field={col.field} />
+                  </div>
+                </th>
+                {col.field === 'priority' && hasAnyEstimation && (
+                  <th
+                    className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide select-none sticky top-0"
+                    style={{
+                      color: 'var(--muted)',
+                      fontFamily: 'var(--font-heading)',
+                      background: 'var(--surface)',
+                      borderBottom: '1px solid var(--border)',
+                      width: '60px',
+                    }}
+                  >
+                    Est.
+                  </th>
+                )}
+              </React.Fragment>
             ))}
           </tr>
         </thead>
@@ -378,7 +400,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                 {/* Status */}
                 <td
                   className="px-3 py-2.5"
-                  style={{ borderBottom: '1px solid var(--border)' }}
+                  style={{ borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', minWidth: '100px' }}
                 >
                   <div className="relative">
                     <button
@@ -448,6 +470,23 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     {priority.label}
                   </span>
                 </td>
+
+                {/* Est. */}
+                {hasAnyEstimation && (
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ borderBottom: '1px solid var(--border)' }}
+                  >
+                    {task.estimation ? (
+                      <span
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                        style={{ background: 'var(--surface-container-high)', color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+                      >
+                        {task.estimation.toUpperCase()}
+                      </span>
+                    ) : null}
+                  </td>
+                )}
 
                 {/* Assignee */}
                 <td

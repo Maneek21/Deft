@@ -18,6 +18,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -29,6 +30,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   is_blocked?: boolean;
   blocked_by_label?: string;
   created_at: string;
@@ -239,7 +241,7 @@ export function TaskCard({ task, projectPrefix, onClick, isSelected, isDragOverl
         )}
 
         <div className="flex-1 min-w-0">
-          {/* Top row: task ID + priority */}
+          {/* Top row: task ID + priority + estimation */}
           <div className="flex items-center justify-between mb-1">
             <span
               className="text-[11px] font-medium"
@@ -247,16 +249,26 @@ export function TaskCard({ task, projectPrefix, onClick, isSelected, isDragOverl
             >
               {projectPrefix || task.project_prefix}-{task.number}
             </span>
-            <span
-              className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
-              style={{
-                background: priority.bg,
-                color: priority.color,
-                fontFamily: 'var(--font-heading)',
-              }}
-            >
-              {priority.label}
-            </span>
+            <div className="flex items-center gap-1.5">
+              {task.estimation && (
+                <span
+                  className="text-[9px] font-medium px-1.5 py-0.5 rounded"
+                  style={{ background: 'var(--surface-container-high)', color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+                >
+                  {task.estimation.toUpperCase()}
+                </span>
+              )}
+              <span
+                className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
+                style={{
+                  background: priority.bg,
+                  color: priority.color,
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                {priority.label}
+              </span>
+            </div>
           </div>
 
           {/* Title */}

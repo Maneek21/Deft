@@ -72,6 +72,14 @@ export function BoardColumn({ id, label, count, onAdd, children }: Props) {
         ref={setNodeRef}
         className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-1.5 min-h-[60px]"
       >
+        {count === 0 && (
+          <p
+            className="text-[11px] text-center py-3"
+            style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
+          >
+            No tasks
+          </p>
+        )}
         {children}
       </div>
     </div>

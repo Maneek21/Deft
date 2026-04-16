@@ -8,6 +8,7 @@ type Props = {
   projectId: string;
   defaultStatus?: string;
   initialTitle?: string;
+  initialDescription?: string;
   sourceMessageId?: string;
   onClose: () => void;
   onCreated: () => void;
@@ -27,12 +28,12 @@ const PRIORITY_OPTIONS = [
   { value: 'p3', label: 'P3', color: '#6B7280' },
 ];
 
-export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, sourceMessageId, onClose, onCreated }: Props) {
+export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initialDescription, sourceMessageId, onClose, onCreated }: Props) {
   const [title, setTitle] = useState(initialTitle || '');
   const [status, setStatus] = useState(defaultStatus || 'backlog');
   const [priority, setPriority] = useState('p2');
   const [assigneeId, setAssigneeId] = useState<string | null>(null);
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(initialDescription || '');
   const [dueDate, setDueDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
