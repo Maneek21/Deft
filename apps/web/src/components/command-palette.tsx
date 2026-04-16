@@ -6,7 +6,12 @@ import { api } from '@/lib/api';
 import {
   Search, Hash, CheckSquare, User, MessageSquare,
   Sun, Moon, Plus, Settings, X, Bot, Tag, CalendarDays,
+  BookOpen, FileText, Scale,
 } from 'lucide-react';
+
+type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
+type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
+type DecisionResult = { id: string; title: string; summary: string | null; slug: string | null; source_id: string };
 
 type SearchResults = {
   spaces: { id: string; name: string; type: string }[];
@@ -14,6 +19,9 @@ type SearchResults = {
   people: { id: string; name: string; email: string }[];
   messages: { id: string; content: string; space_name: string; user_name: string }[];
   tags: { id: string; name: string; color: string | null }[];
+  wiki: WikiResult[];
+  privateNotes: NoteResult[];
+  decisions: DecisionResult[];
 };
 
 type Command = {
@@ -35,7 +43,7 @@ export function CommandPalette() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
@@ -54,7 +62,7 @@ export function CommandPalette() {
   const close = useCallback(() => {
     setOpen(false);
     setQuery('');
-    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
   }, []);
 
@@ -67,7 +75,7 @@ export function CommandPalette() {
           if (prev) {
             // closing
             setQuery('');
-            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
             setSelectedIndex(0);
           }
           return !prev;
@@ -88,14 +96,24 @@ export function CommandPalette() {
   // Debounced search
   useEffect(() => {
     if (!query || query.startsWith('>')) {
-      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
       return;
     }
     const timer = setTimeout(async () => {
       try {
         const res = await api.get(`/api/search?q=${encodeURIComponent(query)}`);
         if (res.ok) {
-          setResults(await res.json());
+          const data = await res.json();
+          setResults({
+            spaces: data.spaces ?? [],
+            tasks: data.tasks ?? [],
+            people: data.people ?? [],
+            messages: data.messages ?? [],
+            tags: data.tags ?? [],
+            wiki: data.wiki ?? [],
+            privateNotes: data.privateNotes ?? [],
+            decisions: data.decisions ?? [],
+          });
         }
       } catch {
         // silently fail
@@ -119,6 +137,9 @@ export function CommandPalette() {
     results.people.forEach((p) => items.push({ type: 'person', item: p, index: idx++ }));
     results.messages.forEach((m) => items.push({ type: 'message', item: m, index: idx++ }));
     results.tags.forEach((t) => items.push({ type: 'tag', item: t, index: idx++ }));
+    (results.wiki ?? []).forEach((w) => items.push({ type: 'wiki', item: w, index: idx++ }));
+    (results.privateNotes ?? []).forEach((n) => items.push({ type: 'privateNote', item: n, index: idx++ }));
+    (results.decisions ?? []).forEach((d) => items.push({ type: 'decision', item: d, index: idx++ }));
     return items;
   }, [mode, query, results, COMMANDS]);
 
@@ -166,6 +187,17 @@ export function CommandPalette() {
           close();
         } else if (selected.type === 'tag') {
           router.push(`/settings/tags?tag=${selected.item.id}`);
+          close();
+        } else if (selected.type === 'wiki') {
+          const slug = selected.item.slug;
+          router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
+          close();
+        } else if (selected.type === 'decision') {
+          const slug = selected.item.slug;
+          router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
+          close();
+        } else if (selected.type === 'privateNote') {
+          router.push(`/notes?id=${selected.item.id}`);
           close();
         }
       }
@@ -419,6 +451,81 @@ export function CommandPalette() {
                   >
                     <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: item.color || 'var(--outline)' }} />
                     <span className="text-[13px]">#{item.name}</span>
+                  </button>
+                )}
+              />
+              {/* Knowledge (Wiki) */}
+              <ResultGroup
+                title="Knowledge"
+                icon={BookOpen}
+                items={results.wiki ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: WikiResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(item.slug ? `/knowledge?slug=${item.slug}` : '/knowledge'); close(); }}
+                  >
+                    <BookOpen size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
+                    {item.type && (
+                      <span className="text-[11px]" style={{ color: 'var(--outline)' }}>{item.type}</span>
+                    )}
+                  </button>
+                )}
+              />
+              {/* Notes */}
+              <ResultGroup
+                title="Notes"
+                icon={FileText}
+                items={results.privateNotes ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: NoteResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(`/notes?id=${item.id}`); close(); }}
+                  >
+                    <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
+                  </button>
+                )}
+              />
+              {/* Decisions */}
+              <ResultGroup
+                title="Decisions"
+                icon={Scale}
+                items={results.decisions ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length + (results.privateNotes ?? []).length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: DecisionResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(item.slug ? `/knowledge?slug=${item.slug}` : '/knowledge'); close(); }}
+                  >
+                    <Scale size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
                   </button>
                 )}
               />

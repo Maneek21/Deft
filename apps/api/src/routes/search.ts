@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, ilike, desc, or, gte, lte } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes } from '@deft/db/schema';
+import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 
 export const searchRoutes = new Hono();
 
@@ -105,13 +106,56 @@ searchRoutes.get('/', async (c) => {
       .where(and(eq(tags.org_id, user.org_id), ilike(tags.name, `%${tagQuery}%`)))
       .limit(5);
 
-    // Search notes
+    // Search notes (existing DB query for backward compat)
     const noteResults = await db.select({
       id: notes.id, title: notes.title, icon: notes.icon, updated_at: notes.updated_at,
     }).from(notes)
       .where(and(eq(notes.org_id, user.org_id), eq(notes.is_deleted, false), or(ilike(notes.title, pattern), ilike(notes.content, pattern))))
       .orderBy(desc(notes.updated_at))
       .limit(5);
+
+    // ── Knowledge groups: wiki, notes (private), decisions ─────────────────────
+    // Call retrieveContext once for all three knowledge types. The gateway
+    // handles hybrid FTS + pgvector ranking internally.
+    const knowledgeResults: ContextResult[] = await retrieveContext({
+      query: q,
+      org_id: user.org_id,
+      user_id: user.id,
+      types: ['wiki', 'notes', 'decisions'],
+      limit: 5,
+      hybrid: true,
+    }).catch(() => []);
+
+    // Split by source_type into three display groups.
+    const wikiGroup = knowledgeResults
+      .filter((r) => r.source_type === 'wiki_page')
+      .map((r) => ({
+        id: r.source_id,
+        title: r.title,
+        summary: (r.metadata?.summary as string | null) ?? null,
+        slug: (r.metadata?.slug as string | null) ?? null,
+        type: (r.metadata?.type as string | null) ?? null,
+        source_id: r.source_id,
+      }));
+
+    const notesGroup = knowledgeResults
+      .filter((r) => r.source_type === 'note')
+      .map((r) => ({
+        id: r.source_id,
+        title: r.title,
+        summary: r.content ? r.content.slice(0, 120) : null,
+        source_id: r.source_id,
+      }));
+
+    const decisionsGroup = knowledgeResults
+      .filter((r) => r.source_type === 'decision')
+      .map((r) => ({
+        id: r.source_id,
+        title: r.title,
+        summary: (r.metadata?.summary as string | null) ?? null,
+        slug: (r.metadata?.slug as string | null) ?? null,
+        source_id: r.source_id,
+      }));
 
     return c.json({
       spaces: spaceResults,
@@ -120,6 +164,9 @@ searchRoutes.get('/', async (c) => {
       messages: messageResults,
       tags: tagResults,
       notes: noteResults,
+      wiki: wikiGroup,
+      privateNotes: notesGroup,
+      decisions: decisionsGroup,
     });
   } catch (err) {
     console.error('Search error:', err);
