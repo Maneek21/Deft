@@ -26,9 +26,16 @@ interface BurnoutSignal {
 
 interface AuthorshipOverloadSignal {
   name: 'authorship_overload';
-  weight: 0.15;
+  weight: 0.10;
   detected: boolean;
   detail: { recent_14d: number; baseline_14d: number; ratio: number } | string;
+}
+
+interface StalledCommitmentsSignal {
+  name: 'stalled_commitments';
+  weight: 0.10;
+  detected: boolean;
+  detail: { stalled_count: number; threshold: number };
 }
 
 /**
@@ -86,7 +93,7 @@ export async function detectAuthorshipOverload(
   if (baseline14d === 0 || recent14d < 3) {
     return {
       name: 'authorship_overload',
-      weight: 0.15,
+      weight: 0.10,
       detected: false,
       detail: {
         recent_14d: recent14d,
@@ -101,13 +108,49 @@ export async function detectAuthorshipOverload(
 
   return {
     name: 'authorship_overload',
-    weight: 0.15,
+    weight: 0.10,
     detected,
     detail: {
       recent_14d: recent14d,
       baseline_14d: Math.round(baseline14d * 100) / 100,
       ratio: Math.round(ratio * 100) / 100,
     },
+  };
+}
+
+/**
+ * Detects when a user has stalled commitments — wiki pages tagged 'commitment'
+ * that reference this user and have not been updated in 30+ days.
+ *
+ * Signal: detected = true when stalled_count >= 5
+ */
+export async function detectStalledCommitments(
+  userId: string,
+  orgId: string,
+): Promise<StalledCommitmentsSignal> {
+  const THRESHOLD = 5;
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.tags} @> ARRAY['commitment']::text[]`,
+        sql`${wikiPages.referenced_user_ids} @> ARRAY[${userId}]::text[]`,
+        sql`${wikiPages.updated_at} < NOW() - INTERVAL '30 days'`,
+      ),
+    );
+
+  const stalledCount = Number(row?.count ?? 0);
+  const detected = stalledCount >= THRESHOLD;
+
+  return {
+    name: 'stalled_commitments',
+    weight: 0.10,
+    detected,
+    detail: { stalled_count: stalledCount, threshold: THRESHOLD },
   };
 }
 
@@ -180,7 +223,7 @@ export async function detectBurnout(orgId: string): Promise<void> {
         detail: hoursShiftDetail,
       });
 
-      // --- SIGNAL 2: Declining sentiment (weight 0.25) ---
+      // --- SIGNAL 2: Declining sentiment (weight 0.15) ---
       // PRIVACY: Only analyze PUBLIC messages, NOT DMs
       const publicMessages = await db
         .select({ content: messages.content })
@@ -237,7 +280,7 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'declining_sentiment',
-        weight: 0.2,
+        weight: 0.15,
         detected: sentimentDetected,
         detail: sentimentDetail,
       });
@@ -365,9 +408,13 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
         detail: overworkDetail,
       });
 
-      // --- SIGNAL 6: Wiki authorship overload (weight 0.15) ---
+      // --- SIGNAL 6: Wiki authorship overload (weight 0.10) ---
       const authorshipSignal = await detectAuthorshipOverload(member.userId, orgId);
       signals.push(authorshipSignal);
+
+      // --- SIGNAL 7: Stalled commitments (weight 0.10) ---
+      const stalledCommitmentsSignal = await detectStalledCommitments(member.userId, orgId);
+      signals.push(stalledCommitmentsSignal);
 
       // --- 5B: Score Calculation ---
       const burnoutScore = signals.reduce(
