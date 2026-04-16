@@ -1,7 +1,7 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
@@ -270,7 +270,7 @@ export const taskLabels = pgTable('task_labels', {
   task_id: text('task_id').notNull().references(() => tasks.id),
   label_id: text('label_id').notNull().references(() => labels.id),
 }, (t) => [
-  uniqueIndex('task_label_unique').on(t.task_id, t.label_id),
+  primaryKey({ columns: [t.task_id, t.label_id] }),
 ]);
 
 // ═══ TASK COMMENTS ═══
