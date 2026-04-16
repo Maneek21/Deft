@@ -349,7 +349,7 @@ function buildOverdueMessage(prefix: string, number: number, dueDate: Date | nul
   return `${prefix}-${number} is overdue by ${diffDays} day${diffDays !== 1 ? 's' : ''}`;
 }
 
-async function checkWorkloadImbalance(): Promise<void> {
+export async function checkWorkloadImbalance(): Promise<void> {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
   try {
@@ -397,9 +397,82 @@ async function checkWorkloadImbalance(): Promise<void> {
       // Find anyone with 3x or more than average
       const overloaded = members.filter((m) => m.count >= avg * 3 && m.count >= 3);
 
+      if (overloaded.length === 0) continue;
+
+      // Find ALL org owners/admins to notify (per-admin dedup below)
+      const orgAdmins = await db
+        .select({ user_id: orgMembers.user_id })
+        .from(orgMembers)
+        .where(
+          and(
+            eq(orgMembers.org_id, orgId),
+            eq(orgMembers.is_active, true),
+            sql`${orgMembers.role} IN ('owner', 'admin')`,
+          ),
+        );
+
+      if (orgAdmins.length === 0) continue;
+
       for (const person of overloaded) {
-        // Deduplicate: check if we already sent a workload imbalance nudge for this org in the last 7 days
-        const existingNudge = await db
+        for (const admin of orgAdmins) {
+          // Dedup per (admin, overloaded_user) pair: skip if this admin has
+          // already been notified about THIS overloaded user in the last 7d.
+          // Key: notifications.user_id = admin, metadata.overloaded_user_id =
+          // overloaded user, metadata.nudge_type = 'workload_imbalance',
+          // metadata.admin_user_id = admin.
+          const existingNotification = await db
+            .select({ id: notifications.id })
+            .from(notifications)
+            .where(
+              and(
+                eq(notifications.org_id, orgId),
+                eq(notifications.user_id, admin.user_id),
+                gte(notifications.created_at, sevenDaysAgo),
+                sql`${notifications.metadata}->>'nudge_type' = 'workload_imbalance'`,
+                sql`${notifications.metadata}->>'overloaded_user_id' = ${person.assignee_id}`,
+                sql`${notifications.metadata}->>'admin_user_id' = ${admin.user_id}`,
+              ),
+            )
+            .limit(1);
+
+          if (existingNotification.length > 0) continue;
+
+          const message = `Workload imbalance: ${person.assignee_name} has ${person.count} open tasks while the team average is ${Math.round(avg)}. Consider redistributing.`;
+
+          // Create notification — one per (admin, overloaded user) pair.
+          const [notification] = await db
+            .insert(notifications)
+            .values({
+              org_id: orgId,
+              user_id: admin.user_id,
+              type: 'agent_suggestion',
+              title: 'Workload Imbalance',
+              body: message,
+              link: '/tasks',
+              metadata: {
+                nudge_type: 'workload_imbalance',
+                overloaded_user_id: person.assignee_id,
+                admin_user_id: admin.user_id,
+                task_count: person.count,
+                team_average: Math.round(avg),
+              },
+            })
+            .returning();
+
+          if (notification) {
+            emitToUser(admin.user_id, 'notification:new', notification);
+          }
+
+          console.log(
+            `[nudge-check] Sent workload imbalance alert for ${person.assignee_name} to admin ${admin.user_id} in org ${orgId}`,
+          );
+        }
+
+        // Separately keep an agent_nudges row per overloaded user (org-wide
+        // audit trail). Dedup on (org_id, user_id=overloaded, nudge_type,
+        // 7d window) so we don't spam this side-channel — the admin-facing
+        // notification dedup above is the load-bearing one.
+        const existingNudgeRow = await db
           .select({ id: agentNudges.id })
           .from(agentNudges)
           .where(
@@ -412,75 +485,30 @@ async function checkWorkloadImbalance(): Promise<void> {
           )
           .limit(1);
 
-        if (existingNudge.length > 0) continue;
+        if (existingNudgeRow.length === 0) {
+          const [firstTask] = await db
+            .select({ id: tasks.id })
+            .from(tasks)
+            .where(
+              and(
+                eq(tasks.org_id, orgId),
+                eq(tasks.assignee_id, person.assignee_id),
+                eq(tasks.is_deleted, false),
+                sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
+              ),
+            )
+            .limit(1);
 
-        // Find an org owner or admin to notify
-        const [orgAdmin] = await db
-          .select({ user_id: orgMembers.user_id })
-          .from(orgMembers)
-          .where(
-            and(
-              eq(orgMembers.org_id, orgId),
-              eq(orgMembers.is_active, true),
-              sql`${orgMembers.role} IN ('owner', 'admin')`,
-            ),
-          )
-          .limit(1);
-
-        if (!orgAdmin) continue;
-
-        const message = `Workload imbalance: ${person.assignee_name} has ${person.count} open tasks while the team average is ${Math.round(avg)}. Consider redistributing.`;
-
-        // Create notification
-        const [notification] = await db
-          .insert(notifications)
-          .values({
-            org_id: orgId,
-            user_id: orgAdmin.user_id,
-            type: 'agent_suggestion',
-            title: 'Workload Imbalance',
-            body: message,
-            link: '/tasks',
-            metadata: {
+          if (firstTask) {
+            await db.insert(agentNudges).values({
+              org_id: orgId,
+              user_id: person.assignee_id,
+              task_id: firstTask.id,
               nudge_type: 'workload_imbalance',
-              overloaded_user_id: person.assignee_id,
-              task_count: person.count,
-              team_average: Math.round(avg),
-            },
-          })
-          .returning();
-
-        // Use a dummy task_id — pick the first task of the overloaded person
-        const [firstTask] = await db
-          .select({ id: tasks.id })
-          .from(tasks)
-          .where(
-            and(
-              eq(tasks.org_id, orgId),
-              eq(tasks.assignee_id, person.assignee_id),
-              eq(tasks.is_deleted, false),
-              sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
-            ),
-          )
-          .limit(1);
-
-        if (firstTask) {
-          await db.insert(agentNudges).values({
-            org_id: orgId,
-            user_id: person.assignee_id,
-            task_id: firstTask.id,
-            nudge_type: 'workload_imbalance',
-            message,
-          });
+              message: `Workload imbalance: ${person.assignee_name} has ${person.count} open tasks while the team average is ${Math.round(avg)}. Consider redistributing.`,
+            });
+          }
         }
-
-        if (notification) {
-          emitToUser(orgAdmin.user_id, 'notification:new', notification);
-        }
-
-        console.log(
-          `[nudge-check] Sent workload imbalance alert for ${person.assignee_name} in org ${orgId}`,
-        );
       }
     }
   } catch (err) {
