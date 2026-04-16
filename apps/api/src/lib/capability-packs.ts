@@ -205,17 +205,18 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
 /**
  * Default capability pack per first-party role template.
  *
- * @deprecated Phase 9 moved the canonical defaults into the
- * `agent_employee_templates.default_capability_packs` column (migration 0016).
- * Read `agentEmployeeTemplates.default_capability_packs` from the DB instead.
- * This map is retained ONLY as a fallback so existing code paths don't break
- * during rolling deploys where a template row might predate migration 0016.
- * A later phase may remove it entirely once all environments are re-seeded.
+ * @deprecated Phase 4 Task 4.4 — canonical home for capability packs is now
+ * the `agent_employee_skills` junction (bundled skills seeded by
+ * `seed-bundled-skills.ts`). The deploy flow and agent-capability loader
+ * read packs via that junction, unioned with the legacy
+ * `agent_employees.capability_packs[]` column during the transitional
+ * dual-read window. This map survives only as a last-resort fallback for
+ * template rows that pre-date migration 0016. Task 4.12 removes both this
+ * map and the legacy inline column once every environment is re-seeded.
  *
- * NOTE: these values are intentionally aligned with the §17 catalog as of
- * Phase 9 — they differ from the Phase 8 v1 list (which included unavailable
- * packs like figma/playwright-mcp/pagerduty that are still marked
- * `coming_soon` in `CAPABILITY_PACKS`).
+ * Historical note: Phase 9 (migration 0016) moved the template defaults
+ * into `agent_employee_templates.default_capability_packs`. The values
+ * here are aligned with the §17 catalog.
  */
 export const TEMPLATE_DEFAULT_PACKS: Record<string, string[]> = {
   'alex-pm': ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],

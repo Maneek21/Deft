@@ -25,11 +25,14 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
   agentEmployees,
+  agentEmployeeSkills,
   integrations,
   providerInstances,
   orgs,
   agentEmployeeTemplates,
+  skills,
 } from '@deft/db/schema';
+import type { SkillAgentConfig } from '../../lib/skill-config.js';
 import { getProvider } from '../../lib/deployment/index.js';
 import type {
   DeployContext,
@@ -124,7 +127,7 @@ export async function handleDeployProvision(job: JobData): Promise<void> {
     gatewayToken: data.raw_gateway_token,
     deftMcpToken: data.raw_mcp_token,
     anthropicApiKey: data.anthropic_api_key,
-    capabilityPackSlugs: emp.capability_packs ?? [],
+    capabilityPackSlugs: await resolveCapabilityPackSlugs(emp),
     capabilityPackSecrets: data.capability_pack_secrets,
     deftApiUrl: data.deft_api_url,
     byoConnectionUrl: data.byo_connection_url ?? undefined,
@@ -165,6 +168,37 @@ export async function handleDeployProvision(job: JobData): Promise<void> {
       provider_instance_id: piId,
     })
     .where(eq(agentEmployees.id, emp.id));
+}
+
+/**
+ * Phase 4 Task 4.4 — dual-read shim for capability packs.
+ *
+ * Transitional helper: unions the legacy `agent_employees.capability_packs[]`
+ * inline column with packs derived from bundled skills installed via the
+ * `agent_employee_skills` junction (skills.agent_config.capability_packs[]).
+ *
+ * Background: before Phase 4 a deployment's capability packs lived as a
+ * text[] on the employee row. Phase 4 promoted packs to bundled skills so
+ * the same primitive can be composed, versioned, and extended by org-
+ * authored and marketplace skills. During the cut-over both sources are
+ * live; Task 4.12 deletes the legacy column and this shim collapses back
+ * to a single query.
+ */
+async function resolveCapabilityPackSlugs(emp: {
+  id: string;
+  capability_packs?: string[] | null;
+}): Promise<string[]> {
+  const inline = emp.capability_packs ?? [];
+  const skillRows = await db
+    .select({ cfg: skills.agent_config })
+    .from(agentEmployeeSkills)
+    .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id))
+    .where(eq(agentEmployeeSkills.agent_employee_id, emp.id));
+  const skillPacks = skillRows.flatMap((row) => {
+    const cfg = (row.cfg ?? {}) as SkillAgentConfig;
+    return cfg.capability_packs ?? [];
+  });
+  return [...new Set([...inline, ...skillPacks])];
 }
 
 async function markEmployeeError(employeeId: string, message: string) {
