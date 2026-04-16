@@ -10,7 +10,7 @@
  */
 
 import { db } from './db.js';
-import { agentPlans, agentEmployees, orgs } from '@deft/db/schema';
+import { agentPlans, agentEmployees, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from './agent-approval.js';
@@ -18,6 +18,7 @@ import { executeActionDirect } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import type { TrustLevel } from './agent-approval.js';
+import { getIO } from '../socket.js';
 
 // ─── Types ───
 
@@ -28,7 +29,19 @@ export interface PlanStep {
   params: Record<string, any>;
   depends_on?: string[];
   condition?: StepCondition;
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'waiting_approval';
+  status?:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'skipped'
+    | 'waiting_approval'
+    /**
+     * Task 3.9 — marked on every later step when fail_fast=true and an
+     * earlier step fails. Stored as a plain string in the steps jsonb
+     * array (step status is not a DB enum, so no migration needed).
+     */
+    | 'skipped_due_to_failure';
   result?: any;
   error?: string;
 }
@@ -167,6 +180,22 @@ export interface CreatePlanRowInput {
   title: string;
   description?: string | null;
   steps: PlanStep[];
+  /**
+   * Task 3.9 — stop on the first step failure and mark later steps
+   * 'skipped_due_to_failure' instead of invoking the agent-recovery path.
+   * Defaults to false.
+   */
+  fail_fast?: boolean;
+  /**
+   * Task 3.9 — when fail_fast is also true, reverse every successful
+   * write-action step before stopping. Defaults to false.
+   */
+  rollback_on_fail?: boolean;
+  /**
+   * Task 3.10 — if the plan is bound to a task, every step-progress
+   * event carries this id so the task-detail UI can render a live strip.
+   */
+  task_id?: string | null;
 }
 
 /**
@@ -186,6 +215,10 @@ export async function createPlanRow(
     status: 'pending' as const,
   }));
 
+  const initialContext: Record<string, unknown> = {};
+  if (input.source_message_id) initialContext.source_message_id = input.source_message_id;
+  if (input.task_id) initialContext.task_id = input.task_id;
+
   const [plan] = await db
     .insert(agentPlans)
     .values({
@@ -198,7 +231,9 @@ export async function createPlanRow(
       steps,
       status: 'draft',
       current_step: 0,
-      context: input.source_message_id ? { source_message_id: input.source_message_id } : {},
+      context: initialContext,
+      fail_fast: input.fail_fast ?? false,
+      rollback_on_fail: input.rollback_on_fail ?? false,
     })
     .returning({ id: agentPlans.id, status: agentPlans.status });
 
@@ -265,6 +300,32 @@ export async function executePlan(
   const steps = plan.steps as PlanStep[];
   const context: PlanContext = (plan.context as PlanContext) ?? {};
   const startIdx = plan.current_step ?? 0;
+  const failFast = plan.fail_fast === true;
+  const rollbackOnFail = plan.rollback_on_fail === true;
+  // Task 3.10 — if the plan is bound to a task, progress events carry the
+  // task_id so the task-detail UI can render a live status strip.
+  const planTaskId =
+    typeof (context as any)?.task_id === 'string' ? ((context as any).task_id as string) : null;
+  const totalSteps = steps.length;
+  const emitTaskProgress = (
+    stepIndex: number,
+    stepDescription: string,
+    status: 'started' | 'completed' | 'failed',
+    error?: string,
+  ) => {
+    if (!planTaskId) return;
+    const io = getIO();
+    if (!io) return;
+    io.to(`org:${orgId}`).emit('task:agent_progress', {
+      task_id: planTaskId,
+      agent_employee_id: plan.agent_employee_id ?? null,
+      step_index: stepIndex,
+      step_description: stepDescription,
+      status,
+      total_steps: totalSteps,
+      ...(error ? { error } : {}),
+    });
+  };
 
   for (let i = startIdx; i < steps.length; i++) {
     // Check if plan was paused externally
@@ -311,6 +372,7 @@ export async function executePlan(
     step.status = 'running';
     await updatePlanProgress(planId, steps, context, i);
     onEvent?.({ type: 'step:start', stepId: step.id });
+    emitTaskProgress(i, step.description, 'started');
 
     const resolvedParams = resolveStepReferences(step.params, context);
     const isWriteAction = ACTION_TOOLS.has(step.tool);
@@ -382,6 +444,7 @@ export async function executePlan(
 
       await updatePlanProgress(planId, steps, context, i + 1);
       onEvent?.({ type: 'step:complete', stepId: step.id, data: step.result });
+      emitTaskProgress(i, step.description, 'completed');
 
       // Increment daily action count for employee
       if (plan.agent_employee_id) {
@@ -391,6 +454,42 @@ export async function executePlan(
       }
     } catch (err) {
       const errorMsg = (err as Error).message;
+      emitTaskProgress(i, step.description, 'failed', errorMsg);
+
+      // Task 3.9 — fail-fast mode short-circuits the recovery path, marks
+      // every later step 'skipped_due_to_failure', and optionally rolls
+      // back successful writes before stopping.
+      if (failFast) {
+        step.status = 'failed';
+        step.error = errorMsg;
+        for (let j = i + 1; j < steps.length; j++) {
+          steps[j]!.status = 'skipped_due_to_failure';
+        }
+        if (rollbackOnFail) {
+          await rollbackCompletedSteps(steps.slice(0, i), orgId);
+        }
+        await db
+          .update(agentPlans)
+          .set({
+            steps,
+            context,
+            current_step: i,
+            status: 'failed',
+            error: errorMsg,
+            updated_at: new Date(),
+          })
+          .where(eq(agentPlans.id, planId));
+        onEvent?.({
+          type: 'plan:fail',
+          stepId: step.id,
+          data: {
+            reason: 'fail_fast',
+            error: errorMsg,
+            rolled_back: rollbackOnFail,
+          },
+        });
+        return;
+      }
 
       // Ask agent for alternative
       try {
@@ -454,6 +553,78 @@ export async function executePlan(
 }
 
 // ─── Helpers ───
+
+/**
+ * Task 3.9 — reverse successful write-action steps on fail-fast + rollback.
+ *
+ * Strategies per tool:
+ *   - create_task       → soft-delete the created task (is_deleted = true)
+ *   - post_message      → mark the created message deleted
+ *   - update_task_*     → no safe reversal without a pre-state snapshot; log
+ *                         a warning and skip
+ *
+ * Read-only steps are skipped. Non-completed steps are skipped. Errors during
+ * rollback are logged but never thrown — the plan is already failing and
+ * rollback is best-effort.
+ */
+async function rollbackCompletedSteps(
+  completedSteps: PlanStep[],
+  orgId: string,
+): Promise<void> {
+  // Walk backwards so later writes are undone before earlier ones — matches
+  // the normal "last-in, first-out" rollback ordering.
+  for (let i = completedSteps.length - 1; i >= 0; i--) {
+    const step = completedSteps[i]!;
+    if (step.status !== 'completed') continue;
+    if (!ACTION_TOOLS.has(step.tool)) continue;
+
+    try {
+      switch (step.tool) {
+        case 'create_task': {
+          const createdId = step.result?.task_id ?? step.result?.id;
+          if (!createdId) {
+            console.warn(
+              `[plan-rollback] create_task step ${step.id} has no task_id in result; skipping`,
+            );
+            break;
+          }
+          await db
+            .update(tasks)
+            .set({ is_deleted: true, updated_at: new Date() })
+            .where(and(eq(tasks.id, createdId), eq(tasks.org_id, orgId)));
+          break;
+        }
+        case 'post_message': {
+          const msgId = step.result?.message_id ?? step.result?.id;
+          if (!msgId) {
+            console.warn(
+              `[plan-rollback] post_message step ${step.id} has no message_id in result; skipping`,
+            );
+            break;
+          }
+          await db
+            .update(messages)
+            .set({ is_deleted: true, updated_at: new Date() })
+            .where(and(eq(messages.id, msgId), eq(messages.org_id, orgId)));
+          break;
+        }
+        default:
+          // update_task_status, assign_task, add_knowledge, wiki_write,
+          // set_due_date, set_priority, add_label, close_task, reopen_task,
+          // add_dependency, remove_dependency — none of these can be safely
+          // reversed without a pre-state snapshot we don't currently capture.
+          console.warn(
+            `[plan-rollback] tool "${step.tool}" has no safe reversal; leaving step ${step.id} as-is`,
+          );
+      }
+    } catch (err) {
+      console.warn(
+        `[plan-rollback] step ${step.id} (${step.tool}) rollback failed:`,
+        (err as Error).message,
+      );
+    }
+  }
+}
 
 async function updatePlanProgress(
   planId: string,

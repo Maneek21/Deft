@@ -1315,6 +1315,21 @@ export const agentPlans = pgTable('agent_plans', {
   current_step: integer('current_step').default(0).notNull(),
   context: jsonb('context'),
   error: text('error'),
+  /**
+   * Task 3.9 — fail-fast mode. When true, the executor marks every later
+   * step 'skipped_due_to_failure' and stops as soon as any step fails,
+   * instead of asking the agent for an alternative path. Default false
+   * preserves existing recovery-and-continue behavior.
+   */
+  fail_fast: boolean('fail_fast').default(false).notNull(),
+  /**
+   * Task 3.9 — rollback-on-fail mode. Only meaningful when fail_fast=true.
+   * When set, successful write-action steps taken earlier in the plan are
+   * reversed on failure (create_task → soft-delete, post_message →
+   * mark deleted). Steps without a safe reversal (update_task_*) log a
+   * warning and are left as-is.
+   */
+  rollback_on_fail: boolean('rollback_on_fail').default(false).notNull(),
   ...timestamps(),
 }, (t) => [
   index('agent_plan_org_idx').on(t.org_id),
