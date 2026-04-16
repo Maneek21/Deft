@@ -96,6 +96,7 @@ export default function TasksPage() {
   const [filters, setFilters] = useState<Filters>({
     assigneeIds: [],
     priorities: [],
+    status: [],
     labels: [],
     dueDate: null,
     dateFrom: null,
@@ -357,6 +358,7 @@ export default function TasksPage() {
       }
       if (filters.assigneeIds.length > 0 && !filters.assigneeIds.includes(task.assignee_id || '')) return false;
       if (filters.priorities.length > 0 && !filters.priorities.includes(task.priority)) return false;
+      if (filters.status.length > 0 && !filters.status.includes(task.status)) return false;
       if (filters.labels.length > 0 && !task.labels.some((l) => filters.labels.includes(l.id))) return false;
       if (filters.projectId && task.project_id !== filters.projectId) return false;
       if (filters.dueDate || filters.dateFrom || filters.dateTo) {

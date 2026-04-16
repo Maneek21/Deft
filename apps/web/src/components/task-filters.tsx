@@ -3,11 +3,13 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal } from 'lucide-react';
+import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed } from 'lucide-react';
+import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 
 export type Filters = {
   assigneeIds: string[];
   priorities: string[];
+  status: string[];
   labels: string[];
   dueDate: 'overdue' | 'today' | 'this_week' | null;
   dateFrom: string | null;
@@ -30,6 +32,11 @@ const PRIORITY_OPTIONS = [
   { value: 'p2', label: 'P2 — Medium', color: '#3B82F6' },
   { value: 'p3', label: 'P3 — Low', color: '#6B7280' },
 ];
+
+const STATUS_OPTIONS = (Object.keys(STATUS_LABELS) as (keyof typeof STATUS_LABELS)[]).map(value => ({
+  value,
+  label: statusLabel(value),
+}));
 
 const DUE_DATE_OPTIONS = [
   { value: 'overdue', label: 'Overdue' },
@@ -90,6 +97,7 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
   const hasActive =
     filters.assigneeIds.length > 0 ||
     filters.priorities.length > 0 ||
+    filters.status.length > 0 ||
     filters.labels.length > 0 ||
     filters.dueDate !== null ||
     filters.dateFrom !== null ||
@@ -99,11 +107,12 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
   const activeFilterCount =
     filters.assigneeIds.length +
     filters.priorities.length +
+    filters.status.length +
     (filters.dueDate ? 1 : 0) +
     (filters.projectId ? 1 : 0);
 
   const clearAll = () => {
-    onChange({ assigneeIds: [], priorities: [], labels: [], dueDate: null, dateFrom: null, dateTo: null, projectId: null });
+    onChange({ assigneeIds: [], priorities: [], status: [], labels: [], dueDate: null, dateFrom: null, dateTo: null, projectId: null });
   };
 
   const togglePriority = (p: string) => {
@@ -111,6 +120,13 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
       ? filters.priorities.filter((x) => x !== p)
       : [...filters.priorities, p];
     onChange({ ...filters, priorities: next });
+  };
+
+  const toggleStatus = (s: string) => {
+    const next = filters.status.includes(s)
+      ? filters.status.filter((x) => x !== s)
+      : [...filters.status, s];
+    onChange({ ...filters, status: next });
   };
 
   const toggleAssignee = (id: string) => {
@@ -234,6 +250,42 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
                       )}
                     </div>
                     <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: opt.color }} />
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border)' }} className="my-1" />
+
+              {/* Status section */}
+              <div className="px-3 py-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Status</p>
+                {STATUS_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => toggleStatus(opt.value)}
+                    className="w-full text-left px-2 py-1.5 flex items-center gap-2 text-[12px] rounded-md"
+                    style={{
+                      color: filters.status.includes(opt.value) ? 'var(--accent)' : 'var(--foreground)',
+                      fontFamily: 'var(--font-body)',
+                      background: filters.status.includes(opt.value) ? 'var(--accent-subtle)' : 'transparent',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = filters.status.includes(opt.value) ? 'var(--accent-subtle)' : 'transparent')}
+                  >
+                    <div
+                      className="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0"
+                      style={{
+                        borderColor: filters.status.includes(opt.value) ? 'var(--accent)' : 'var(--border)',
+                        background: filters.status.includes(opt.value) ? 'var(--accent)' : 'transparent',
+                      }}
+                    >
+                      {filters.status.includes(opt.value) && (
+                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                          <path d="M1 4L3 6L7 2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </div>
                     {opt.label}
                   </button>
                 ))}
@@ -441,6 +493,65 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
           )}
         </div>
 
+        {/* Status dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setOpenDropdown(openDropdown === 'status' ? null : 'status')}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            style={{
+              background: filters.status.length > 0 ? 'var(--accent-subtle)' : 'transparent',
+              color: filters.status.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
+              border: `1px solid ${filters.status.length > 0 ? 'var(--accent)' : 'var(--border)'}`,
+              fontFamily: 'var(--font-heading)',
+              transition: 'all 150ms',
+            }}
+          >
+            <CircleDashed size={12} />
+            Status
+            {filters.status.length > 0 && (
+              <span className="text-[10px] px-1 rounded-full" style={{ background: 'var(--accent)', color: 'white' }}>
+                {filters.status.length}
+              </span>
+            )}
+            <ChevronDown size={11} />
+          </button>
+          {openDropdown === 'status' && (
+            <div
+              className="absolute top-full left-0 mt-1 w-48 rounded-lg py-1 z-20"
+              style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+            >
+              {STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => toggleStatus(opt.value)}
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-[12px]"
+                  style={{
+                    color: filters.status.includes(opt.value) ? 'var(--accent)' : 'var(--foreground)',
+                    fontFamily: 'var(--font-body)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div
+                    className="w-3.5 h-3.5 rounded border flex items-center justify-center"
+                    style={{
+                      borderColor: filters.status.includes(opt.value) ? 'var(--accent)' : 'var(--border)',
+                      background: filters.status.includes(opt.value) ? 'var(--accent)' : 'transparent',
+                    }}
+                  >
+                    {filters.status.includes(opt.value) && (
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path d="M1 4L3 6L7 2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </div>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Project dropdown */}
         {projects && projects.length > 0 && (
           <div className="relative">
@@ -593,6 +704,20 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
               </div>
             );
           })}
+
+        {filters.status.length > 0 &&
+          filters.status.map((s) => (
+            <div
+              key={s}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+              style={{ background: 'var(--hover-tint)', color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}
+            >
+              {statusLabel(s)}
+              <button onClick={() => toggleStatus(s)} style={{ color: 'var(--muted)' }} className="ml-0.5">
+                <X size={10} />
+              </button>
+            </div>
+          ))}
 
         {filters.projectId && projects && (
           <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
