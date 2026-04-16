@@ -230,8 +230,6 @@ importers:
         specifier: ^6.0.2
         version: 6.0.2
 
-  packages/ai: {}
-
   packages/db:
     dependencies:
       '@neondatabase/serverless':

@@ -17,8 +17,7 @@ deft/
 │   └── api/          # Hono (TypeScript, REST endpoints, WebSocket via Socket.io)
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + client + migrations
-│   ├── shared/       # Shared types, Zod schemas, constants
-│   └── ai/           # Agent engine (planner, tool registry, observation pipeline)
+│   └── shared/       # Shared types, Zod schemas, constants
 ├── docker-compose.yml  # Self-host: postgres + redis + app
 ├── .env.example
 ├── LICENSE             # BSL 1.1
@@ -62,6 +61,8 @@ deft/
 ## Agent Architecture
 
 The agent is NOT a chatbot. It's a workflow engine.
+
+Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
 
