@@ -311,7 +311,7 @@ function mapWikiRows(
         title: row.title,
         content: row.content,
         score: clampScore((row.rawScore ?? 0) + 0.1),
-        scope: row.scope,
+        scope: row.scope ?? undefined,
         confidence: row.confidence,
         metadata: {
           type: row.type,
@@ -329,7 +329,7 @@ function mapWikiRows(
         title: row.title,
         content: row.content,
         score: clampScore(row.rawScore ?? 0),
-        scope: row.scope,
+        scope: row.scope ?? undefined,
         confidence: row.confidence,
         metadata: {
           type: row.type,
@@ -348,7 +348,7 @@ function mapWikiRows(
         title: row.title,
         content: row.content,
         score: clampScore(row.rawScore ?? 0),
-        scope: row.scope,
+        scope: row.scope ?? undefined,
         confidence: row.confidence,
         metadata: {
           type: row.type,
@@ -445,7 +445,7 @@ async function fetchDecisions(
       title: row.title,
       content: row.content,
       score: clampScore(row.rawScore ?? 0),
-      scope: row.scope,
+      scope: row.scope ?? undefined,
       confidence: row.confidence,
     }));
 
