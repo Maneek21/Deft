@@ -10,6 +10,7 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'manager-pulse', 'cron:manager-pulse');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'burnout-detect', 'cron:burnout-detect');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'wiki-lint', 'cron:wiki-lint');
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'deprecation-warning', 'cron:deprecation-warning');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'weekly-digest', 'cron:weekly-digest');
   // Phase 11 — Gateway connectivity ping (distinct from agent-heartbeat).
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'gateway-ping', 'gateway-ping');

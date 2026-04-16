@@ -12,6 +12,7 @@ const CRON_DELAYS: Record<string, number> = {
   'burnout-detect': 86400000,     // 24 hours
   'weekly-digest': 604800000,     // 7 days
   'wiki-lint': 86400000,          // 24 hours
+  'deprecation-warning': 86400000, // 24 hours
   'agent-daily-reset': 86400000,  // 24 hours
   'agent-heartbeat': 60000,       // 60 seconds
   'gateway-ping': 60000,          // 60 seconds — Phase 11
@@ -26,6 +27,7 @@ const CRON_KEYS: Record<string, string> = {
   'burnout-detect': 'cron:burnout-detect',
   'weekly-digest': 'cron:weekly-digest',
   'wiki-lint': 'cron:wiki-lint',
+  'deprecation-warning': 'cron:deprecation-warning',
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
   'gateway-ping': 'gateway-ping',
@@ -134,6 +136,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'wiki-lint': {
       const mod = await import('./handlers/wiki-lint.js');
       return mod.handleWikiLint;
+    }
+    case 'deprecation-warning': {
+      const mod = await import('./handlers/deprecation-warning.js');
+      return mod.handleDeprecationWarning as JobHandler;
     }
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');

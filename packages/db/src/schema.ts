@@ -538,6 +538,12 @@ export const canvases = pgTable('canvases', {
 });
 
 // ═══ SPACE KNOWLEDGE ═══
+/**
+ * @deprecated Migrated to wikiPages in feat/phase2-4-mcp-agents-plans (2026-04-16).
+ * Writes stopped in Phase 2 (Tasks 2.2 and 2.3). Reads migrated.
+ * Safe to drop after 30 days (2026-05-16) if the deprecation-warning cron
+ * continues to report zero new rows. No remaining legitimate consumers.
+ */
 export const spaceKnowledge = pgTable('space_knowledge', {
   ...id(),
   ...orgId(),
@@ -652,6 +658,13 @@ export const standups = pgTable('standups', {
 });
 
 // ═══ AGENT: MEMORY ═══
+/**
+ * @deprecated Migrated to wikiPages in feat/phase2-4-mcp-agents-plans (2026-04-16).
+ * Writes stopped in Phase 2 (Tasks 2.2 and 2.3). Reads migrated.
+ * Safe to drop after 30 days (2026-05-16) if the deprecation-warning cron
+ * continues to report zero new rows. Conversation-scoped agentMemory rows
+ * from the native `remember` tool still use this table legitimately.
+ */
 export const agentMemory = pgTable('agent_memory', {
   ...id(),
   ...orgId(),
@@ -666,6 +679,12 @@ export const agentMemory = pgTable('agent_memory', {
 ]);
 
 // ═══ DECISIONS ═══
+/**
+ * @deprecated Migrated to wikiPages in feat/phase2-4-mcp-agents-plans (2026-04-16).
+ * Writes stopped in Phase 2 (Tasks 2.2 and 2.3). Reads migrated.
+ * Safe to drop after 30 days (2026-05-16) if the deprecation-warning cron
+ * continues to report zero new rows. No remaining legitimate consumers.
+ */
 export const decisions = pgTable('decisions', {
   ...id(),
   ...orgId(),
