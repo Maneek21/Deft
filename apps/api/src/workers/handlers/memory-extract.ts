@@ -28,6 +28,38 @@ interface WikiIngestResult {
 }
 
 /**
+ * Compute Jaccard-like token overlap between two strings after stripping
+ * non-alphanumerics and lowercasing. Returns a fraction in [0, 1].
+ */
+function tokenOverlap(a: string, b: string): number {
+  const norm = (s: string) =>
+    new Set(
+      s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((t) => t.length >= 3),
+    );
+  const A = norm(a);
+  const B = norm(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let intersection = 0;
+  for (const t of A) if (B.has(t)) intersection += 1;
+  const union = A.size + B.size - intersection;
+  return intersection / union;
+}
+
+/**
+ * Classifier defense-in-depth: Haiku sometimes returns the decision verbatim
+ * in `memorable_facts` too, causing duplicate wiki pages per chat message.
+ * Drop any fact whose token overlap with the decision exceeds the threshold.
+ */
+export function dedupeFactsAgainstDecision(
+  facts: string[],
+  decision: string | null,
+): string[] {
+  if (!decision) return facts;
+  const threshold = 0.5;
+  return facts.filter((f) => tokenOverlap(f, decision) < threshold);
+}
+
+/**
  * Return true if the fact text looks like a commitment/pledge.
  * Uses a lightweight keyword heuristic — fast, no LLM round-trip needed.
  */
@@ -456,9 +488,13 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
     .orderBy(desc(wikiPages.updated_at))
     .limit(50);
 
+  // Defense-in-depth: drop any memorable_fact that duplicates the decision
+  // (Haiku occasionally returns the same content in both fields, producing two wiki pages)
+  const dedupedFacts = dedupeFactsAgainstDecision(facts ?? [], decision ?? null);
+
   // Process each fact through the wiki ingest pipeline
   const allItems: { text: string; isDecision: boolean }[] = [
-    ...facts.map(f => ({ text: f, isDecision: false })),
+    ...dedupedFacts.map(f => ({ text: f, isDecision: false })),
   ];
   if (decision) {
     allItems.push({ text: decision, isDecision: true });

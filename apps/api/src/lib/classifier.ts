@@ -37,8 +37,8 @@ Fields:
 - blocked: boolean (true if the message indicates the author is blocked, stuck, or unable to proceed. Signals: "blocked", "stuck", "can't proceed", "waiting on", "dependency", "blocker", "can't move forward", "held up")
 - task_refs: array of task references like "DEFT-5", "PROJ-12"
 - entities: { assignee?: string, project?: string, due_date?: string }
-- memorable_facts: array of strings — extract any memorable facts worth remembering (team preferences, tool choices, process decisions, personal preferences, workflow conventions). Examples: "Rahul prefers async standups", "team uses Stripe for payments". Return empty array if nothing memorable.
-- decision: string or null — if the message contains a clear team decision (e.g., "Let's go with Postgres instead of MongoDB"), extract it as a concise statement. Return null if no decision.
+- memorable_facts: array of strings — extract any memorable NON-DECISION facts worth remembering (team preferences, tool choices, personal preferences, workflow conventions, org/process details). Examples: "Rahul prefers async standups", "team uses Stripe for payments". Return empty array if nothing memorable. CRITICAL: If a clear team decision is present and you are setting the "decision" field, DO NOT also duplicate that same statement in "memorable_facts". The "decision" field and "memorable_facts" must describe DIFFERENT underlying content.
+- decision: string or null — if the message contains a clear team decision (e.g., "Let's go with Postgres instead of MongoDB"), extract it as a concise statement. Return null if no decision. When set, exclude this content from "memorable_facts".
 
 Rules:
 - "task_create": message explicitly asks to create/add a task or todo
@@ -47,7 +47,7 @@ Rules:
 - "discussion": general conversation, opinions, updates
 - "none": greetings, reactions, very short messages with no substance
 
-Also extract any memorable facts (team preferences, tool choices, process decisions, personal preferences) as an array. If the message contains a clear team decision, extract it separately.
+Also extract any memorable facts (team preferences, tool choices, personal preferences) as an array. If the message contains a clear team decision, extract it separately into "decision" and do NOT repeat it inside "memorable_facts".
 
 Return ONLY valid JSON, no markdown fences.`;
 
