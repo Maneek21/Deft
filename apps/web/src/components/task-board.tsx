@@ -71,7 +71,10 @@ const COLUMNS = [
   { id: 'in_progress', label: 'In Progress' },
   { id: 'in_review', label: 'In Review' },
   { id: 'done', label: 'Done' },
+  { id: 'cancelled', label: statusLabel('cancelled') },
 ] as const;
+
+const CANCELLED_COLLAPSED_KEY = 'tasks:cancelled-collapsed';
 
 export function TaskBoard({
   tasks,
@@ -91,6 +94,12 @@ export function TaskBoard({
   const [pendingStatus, setPendingStatus] = useState<Record<string, string>>({});
   const [isMobile, setIsMobile] = useState(false);
   const [mobileColumn, setMobileColumn] = useState<string>('in_progress');
+  const [cancelledCollapsed, setCancelledCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(CANCELLED_COLLAPSED_KEY);
+    if (stored === null) return true;
+    return stored === 'true';
+  });
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -98,6 +107,16 @@ export function TaskBoard({
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  function toggleCancelledCollapsed() {
+    setCancelledCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(CANCELLED_COLLAPSED_KEY, String(next));
+      }
+      return next;
+    });
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -247,6 +266,7 @@ export function TaskBoard({
       <div className="flex h-full overflow-x-auto px-4 py-4 gap-3">
         {COLUMNS.map((col) => {
           const colItems = columnTasks[col.id];
+          const isCancelled = col.id === 'cancelled';
           return (
             <BoardColumn
               key={col.id}
@@ -254,6 +274,9 @@ export function TaskBoard({
               label={col.label}
               count={colItems.length}
               onAdd={() => onColumnAdd(col.id)}
+              collapsible={isCancelled}
+              collapsed={isCancelled ? cancelledCollapsed : false}
+              onToggleCollapse={isCancelled ? toggleCancelledCollapsed : undefined}
             >
               <SortableContext
                 items={colItems.map((t) => t.id)}
