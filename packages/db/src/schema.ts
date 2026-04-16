@@ -1062,11 +1062,15 @@ export const wikiPages = pgTable('wiki_pages', {
   previous_content: text('previous_content'),
   is_deleted: boolean('is_deleted').default(false).notNull(),
   embedding: vector('embedding', { dimensions: 1536 }),
+  tags: text('tags').array().default(sql`ARRAY[]::text[]`),
+  referenced_user_ids: text('referenced_user_ids').array().default(sql`ARRAY[]::text[]`),
   ...timestamps(),
 }, (t) => [
   uniqueIndex('wiki_pages_org_slug').on(t.org_id, t.slug),
   index('wiki_pages_org_type').on(t.org_id, t.type),
   index('wiki_pages_org_scope').on(t.org_id, t.scope),
+  index('wiki_pages_tags_gin').on(t.tags),
+  index('wiki_pages_ref_users_gin').on(t.referenced_user_ids),
 ]);
 
 export const wikiLinks = pgTable('wiki_links', {

@@ -9,7 +9,7 @@ import {
   peoplePatterns,
   peopleInteractions,
   peopleRelationships,
-  agentMemory,
+  wikiPages,
   oneonePreps,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, desc } from 'drizzle-orm';
@@ -191,18 +191,32 @@ export async function generateOneOnePrep(
       ),
     );
 
-  // Agent memory — commitments
-  const commitments = await db
-    .select({ key: agentMemory.key, value: agentMemory.value })
-    .from(agentMemory)
+  // Commitments — read from wiki_pages tagged 'commitment' that reference the report
+  const commitmentPages = await db
+    .select({
+      id: wikiPages.id,
+      title: wikiPages.title,
+      content: wikiPages.content,
+      summary: wikiPages.summary,
+      created_at: wikiPages.created_at,
+    })
+    .from(wikiPages)
     .where(
       and(
-        eq(agentMemory.org_id, orgId),
-        eq(agentMemory.user_id, reportId),
-        eq(agentMemory.scope, 'user'),
-        sql`${agentMemory.key} LIKE '%commitment%'`,
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.tags} @> ARRAY['commitment']::text[]`,
+        sql`${wikiPages.referenced_user_ids} @> ARRAY[${reportId}]::text[]`,
       ),
-    );
+    )
+    .orderBy(desc(wikiPages.created_at))
+    .limit(10);
+
+  // Map to the shape the rest of the function expects (value = content summary)
+  const commitments = commitmentPages.map((p) => ({
+    key: p.title,
+    value: p.summary ?? p.content.slice(0, 200),
+  }));
 
   // --- 4C: Prep Generation ---
   const collectedData = {

@@ -28,6 +28,25 @@ interface WikiIngestResult {
 }
 
 /**
+ * Return true if the fact text looks like a commitment/pledge.
+ * Uses a lightweight keyword heuristic — fast, no LLM round-trip needed.
+ */
+function isCommitmentFact(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    /\bwill\s+(do|fix|handle|address|look|follow|check|send|get|make|finish|complete|review|update|reach)\b/.test(lower) ||
+    /\bcommitt?ed?\s+to\b/.test(lower) ||
+    /\bagreed?\s+to\b/.test(lower) ||
+    /\bpromised?\s+to\b/.test(lower) ||
+    /\btaking\s+ownership\b/.test(lower) ||
+    /\baction\s+item\b/.test(lower) ||
+    /\bfollowing?\s+up\b/.test(lower) ||
+    /\bresponsible\s+for\b/.test(lower) ||
+    /\bowing\s+to\b/.test(lower)
+  );
+}
+
+/**
  * Generate a kebab-case slug from a title.
  */
 function slugify(title: string): string {
@@ -141,6 +160,8 @@ async function executeWikiIngest(
   orgId: string,
   userId: string,
   messageId: string,
+  extraTags: string[] = [],
+  referencedUserIds: string[] = [],
 ): Promise<void> {
   if (result.action === 'update' && result.slug) {
     // Find the existing page
@@ -226,6 +247,8 @@ async function executeWikiIngest(
       summary: result.summary || null,
       content: result.content || '',
       confidence: 0.9, // auto-extracted, slightly below human-created (1.0)
+      tags: extraTags.length > 0 ? extraTags : [],
+      referenced_user_ids: referencedUserIds.length > 0 ? referencedUserIds : [],
     }).returning();
 
     // Add citation
@@ -432,7 +455,12 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
     try {
       // LLM-powered wiki ingest
       const result = await decideWikiAction(item.text, item.isDecision, existingPages);
-      await executeWikiIngest(result, orgId, userId, messageId);
+
+      // Determine tags and referenced_user_ids for commitment facts.
+      const extraTags: string[] = isCommitmentFact(item.text) ? ['commitment'] : [];
+      const referencedUserIds: string[] = isCommitmentFact(item.text) ? [userId] : [];
+
+      await executeWikiIngest(result, orgId, userId, messageId, extraTags, referencedUserIds);
 
       // Cascade ingest: update related pages (Karpathy pattern)
       const triggerSlug = result.slug || (result.title ? slugify(result.title) : null);
