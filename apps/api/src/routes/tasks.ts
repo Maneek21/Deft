@@ -1863,7 +1863,7 @@ taskRoutes.post('/:id/dependencies', async (c) => {
     const [rel] = await db.insert(taskRelationships).values({
       source_task_id,
       target_task_id,
-      type,
+      type: type as 'blocks' | 'blocked_by' | 'relates_to' | 'duplicates',
     }).returning();
 
     return c.json(rel, 201);

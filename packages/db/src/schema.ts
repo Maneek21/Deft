@@ -39,6 +39,7 @@ export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', [
 ]);
 export const planStatusEnum = pgEnum('plan_status', ['draft', 'approved', 'executing', 'paused', 'completed', 'failed']);
 export const planStepStatusEnum = pgEnum('plan_step_status', ['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval']);
+export const taskRelationshipTypeEnum = pgEnum('task_relationship_type', ['blocks', 'blocked_by', 'relates_to', 'duplicates']);
 
 // ═══ ORGS ═══
 export const orgs = pgTable('orgs', {
@@ -286,7 +287,7 @@ export const taskRelationships = pgTable('task_relationships', {
   ...id(),
   source_task_id: text('source_task_id').notNull().references(() => tasks.id),
   target_task_id: text('target_task_id').notNull().references(() => tasks.id),
-  type: text('type').notNull(), // 'blocks', 'relates_to', 'duplicates'
+  type: taskRelationshipTypeEnum('type').notNull(),
   ...timestamps(),
 });
 
