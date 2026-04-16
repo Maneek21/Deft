@@ -9,6 +9,7 @@ import {
   agentNudges,
   users,
   orgMembers,
+  taskComments,
 } from '@deft/db/schema';
 import { eq, and, lt, sql, gte, inArray, isNotNull } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -37,6 +38,63 @@ async function findNudgeEmployee(orgId: string, triggerKind: string) {
     )
     .limit(1);
   return row ?? null;
+}
+
+// Task 3.11 — proactive agent comment on a task, authored by the given
+// employee's shadow user. Dedups within 7d: we only post one agent comment
+// per task per week across any proactive-comment source. Silently no-ops on
+// DB errors so a failed comment never blocks the rest of the nudge pass.
+const PROACTIVE_COMMENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function buildProactiveCommentBody(
+  nudgeType: 'stalled' | 'overdue' | 'workload_imbalance',
+  taskIdentifier: string,
+): string {
+  switch (nudgeType) {
+    case 'stalled':
+      return `Noticed ${taskIdentifier} has been In Progress for 48h without updates — is there a blocker?`;
+    case 'overdue':
+      return `Heads up: ${taskIdentifier} is past its due date. Can we push it forward or replan?`;
+    case 'workload_imbalance':
+      return `Flagging ${taskIdentifier} — the assignee's queue looks heavy this week. Consider reassigning or deferring.`;
+  }
+}
+
+export async function postProactiveAgentComment(params: {
+  orgId: string;
+  taskId: string;
+  agentUserId: string;
+  body: string;
+}): Promise<void> {
+  const { orgId, taskId, agentUserId, body } = params;
+  try {
+    const since = new Date(Date.now() - PROACTIVE_COMMENT_WINDOW_MS);
+    const existing = await db
+      .select({ id: taskComments.id })
+      .from(taskComments)
+      .where(
+        and(
+          eq(taskComments.task_id, taskId),
+          eq(taskComments.user_id, agentUserId),
+          eq(taskComments.is_deleted, false),
+          gte(taskComments.created_at, since),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) return;
+
+    await db.insert(taskComments).values({
+      org_id: orgId,
+      task_id: taskId,
+      user_id: agentUserId,
+      content: body,
+    });
+  } catch (err) {
+    console.error(
+      `[nudge-check] Failed to post proactive comment on task ${taskId}:`,
+      (err as Error).message,
+    );
+  }
 }
 
 export async function handleNudgeCheck(_job: JobData): Promise<void> {
@@ -149,6 +207,18 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
           'employee-trigger',
           invocation as unknown as Record<string, unknown>,
         );
+        // Task 3.11 — drop a proactive, agent-authored comment on the task
+        // so the assignee sees the nudge in-context (not just via DM). The
+        // helper dedups within 7d so repeated cron passes do not spam.
+        await postProactiveAgentComment({
+          orgId: task.org_id,
+          taskId: task.id,
+          agentUserId: subscribed.user_id,
+          body: buildProactiveCommentBody(
+            'stalled',
+            `${task.project_prefix}-${task.number}`,
+          ),
+        });
         continue;
       }
       await processNudge({
@@ -188,6 +258,17 @@ export async function handleNudgeCheck(_job: JobData): Promise<void> {
           'employee-trigger',
           invocation as unknown as Record<string, unknown>,
         );
+        // Task 3.11 — proactive, in-task comment on the overdue card so
+        // the assignee gets context where they work. 7d dedup via helper.
+        await postProactiveAgentComment({
+          orgId: task.org_id,
+          taskId: task.id,
+          agentUserId: subscribed.user_id,
+          body: buildProactiveCommentBody(
+            'overdue',
+            `${task.project_prefix}-${task.number}`,
+          ),
+        });
         continue;
       }
       await processNudge({
