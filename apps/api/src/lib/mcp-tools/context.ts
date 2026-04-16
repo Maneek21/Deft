@@ -197,7 +197,6 @@ export async function platformContext(
           agent_employee_id: ctx.employee_id,
           types: ['wiki'],
           limit: 5,
-          hybrid: false,
         });
         wikiSnippets = results.map((r) => ({
           slug: String(r.metadata?.slug ?? ''),
