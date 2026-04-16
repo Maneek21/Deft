@@ -96,6 +96,25 @@ export default function CalendarPage() {
     return () => { socket.off('meeting-brief:new', handler); };
   }, []);
 
+  // Socket listener for task events — refetch calendar data so due-date changes,
+  // new tasks, and deletions appear without a manual reload.
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    if (!token) return;
+    const socket = getSocket(token);
+    const onTaskChange = () => {
+      refetchCalData();
+    };
+    socket.on('task:created', onTaskChange);
+    socket.on('task:updated', onTaskChange);
+    socket.on('task:deleted', onTaskChange);
+    return () => {
+      socket.off('task:created', onTaskChange);
+      socket.off('task:updated', onTaskChange);
+      socket.off('task:deleted', onTaskChange);
+    };
+  }, [refetchCalData]);
+
   // ── Toast auto-dismiss ──
 
   useEffect(() => {

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { TaskBoard } from '@/components/task-board';
 import { TaskList } from '@/components/task-list';
@@ -185,6 +186,59 @@ export default function TasksPage() {
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  // Socket: live updates for task list (task:created / task:updated / task:deleted)
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    if (!token) return;
+    const socket = getSocket(token);
+
+    const isInScope = (t: Partial<Task>): boolean => {
+      if (isMyTasksView) {
+        return !!t.assignee_id && t.assignee_id === user?.id;
+      }
+      if (selectedProject) {
+        return t.project_id === selectedProject.id;
+      }
+      return false;
+    };
+
+    const onCreated = (payload: Task) => {
+      if (!isInScope(payload)) return;
+      setTasks((prev) => (prev.some((t) => t.id === payload.id) ? prev : [...prev, payload]));
+    };
+
+    const onUpdated = (payload: Partial<Task> & { id: string }) => {
+      setTasks((prev) => {
+        const idx = prev.findIndex((t) => t.id === payload.id);
+        if (idx === -1) {
+          // Not in list — if it became in-scope, refetch to pick up full shape
+          if (isInScope(payload)) {
+            loadTasks();
+          }
+          return prev;
+        }
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...payload } as Task;
+        return next;
+      });
+    };
+
+    const onDeleted = (payload: { id: string }) => {
+      setTasks((prev) => prev.filter((t) => t.id !== payload.id));
+      setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
+    };
+
+    socket.on('task:created', onCreated);
+    socket.on('task:updated', onUpdated);
+    socket.on('task:deleted', onDeleted);
+
+    return () => {
+      socket.off('task:created', onCreated);
+      socket.off('task:updated', onUpdated);
+      socket.off('task:deleted', onDeleted);
+    };
+  }, [selectedProject, isMyTasksView, user?.id, loadTasks]);
 
   // Load org members for assignee dropdown in bulk actions
   useEffect(() => {

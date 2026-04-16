@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -323,6 +324,30 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   useEffect(() => {
     loadTask();
   }, [loadTask]);
+
+  // Socket: live updates for the currently-open task
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    if (!token) return;
+    const socket = getSocket(token);
+
+    const onUpdated = (payload: { id: string } & Record<string, unknown>) => {
+      if (payload.id !== taskId) return;
+      // Refetch for canonical shape (includes joined fields like assignee_name, labels, subtasks)
+      loadTask();
+    };
+    const onDeleted = (payload: { id: string }) => {
+      if (payload.id !== taskId) return;
+      onClose();
+    };
+
+    socket.on('task:updated', onUpdated);
+    socket.on('task:deleted', onDeleted);
+    return () => {
+      socket.off('task:updated', onUpdated);
+      socket.off('task:deleted', onDeleted);
+    };
+  }, [taskId, loadTask, onClose]);
 
   // Load tags for this task
   const loadTaskTags = useCallback(async () => {
