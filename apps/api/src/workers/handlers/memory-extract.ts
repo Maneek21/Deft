@@ -2,7 +2,7 @@
 // and stores them as wiki pages (LLM Wiki pattern).
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { decisions, wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
+import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
@@ -460,21 +460,4 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
     }
   }
 
-  // COMPAT: Also store decision in decisions table (remove after wiki migration complete)
-  if (decision) {
-    try {
-      await db.insert(decisions).values({
-        org_id: orgId,
-        space_id: spaceId,
-        message_id: messageId,
-        decision_text: decision,
-        decided_by: userId,
-        context: content.slice(0, 500),
-        tags: null,
-        is_reversed: false,
-      });
-    } catch (err) {
-      console.error('[memory-extract] Failed to store legacy decision:', (err as Error).message);
-    }
-  }
 }

@@ -11,7 +11,7 @@ import {
   orgMembers,
   events,
   agentMemory,
-  decisions,
+
   peopleExpertise,
   peopleInteractions,
   peoplePatterns,
@@ -818,58 +818,56 @@ export async function executeToolCall(
     }
 
     case 'search_decisions': {
-      const decisionConditions: any[] = [eq(decisions.org_id, orgId)];
+      const decisionConditions: any[] = [
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.type, 'decision'),
+        eq(wikiPages.is_deleted, false),
+      ];
 
       if (params.query) {
         decisionConditions.push(
-          sql`(${ilike(decisions.decision_text, `%${params.query}%`)} OR ${ilike(decisions.context, `%${params.query}%`)})`,
+          sql`(${ilike(wikiPages.title, `%${params.query}%`)} OR ${ilike(wikiPages.content, `%${params.query}%`)})`,
         );
       }
 
+      // space_name filter: wiki pages may have a space_id; resolve and filter if provided
       if (params.space_name) {
         const [space] = await db
           .select({ id: spaces.id })
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
           .limit(1);
-        if (space) decisionConditions.push(eq(decisions.space_id, space.id));
+        if (space) decisionConditions.push(eq(wikiPages.space_id, space.id));
       }
 
       const decisionResults = await db
         .select({
-          id: decisions.id,
-          decision_text: decisions.decision_text,
-          decided_by_name: users.name,
-          space_name: spaces.name,
-          message_id: decisions.message_id,
-          context: decisions.context,
-          is_reversed: decisions.is_reversed,
-          tags: decisions.tags,
-          created_at: decisions.created_at,
+          id: wikiPages.id,
+          title: wikiPages.title,
+          content: wikiPages.content,
+          confidence: wikiPages.confidence,
+          tags: wikiPages.tags,
+          created_at: wikiPages.created_at,
         })
-        .from(decisions)
-        .innerJoin(users, eq(decisions.decided_by, users.id))
-        .innerJoin(spaces, eq(decisions.space_id, spaces.id))
+        .from(wikiPages)
         .where(and(...decisionConditions))
-        .orderBy(desc(decisions.created_at))
+        .orderBy(desc(wikiPages.created_at))
         .limit(20);
 
       decisionResults.forEach((d) => {
         citations.push({
           type: 'decision',
           id: d.id,
-          title: d.decision_text.slice(0, 80),
+          title: d.title.slice(0, 80),
         });
       });
 
       const formatted = decisionResults.map((d) => ({
         id: d.id,
-        decision: d.decision_text,
-        decided_by: d.decided_by_name,
-        channel: d.space_name,
-        message_id: d.message_id,
-        context: d.context,
-        is_reversed: d.is_reversed,
+        decision: d.title,
+        context: d.content,
+        // A decision is "reversed" if confidence < 0.5 OR the 'reversed' tag is present
+        is_reversed: d.confidence < 0.5 || (d.tags ?? []).includes('reversed'),
         tags: d.tags,
         when: d.created_at,
       }));

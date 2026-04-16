@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { eq, and, desc, ilike, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { decisions, users, spaces } from '@deft/db/schema';
+import { wikiPages } from '@deft/db/schema';
 
 export const decisionRoutes = new Hono();
 
-// GET /api/decisions — list decisions for the org
+// GET /api/decisions — list decisions for the org (backed by wiki_pages type='decision')
 decisionRoutes.get('/', async (c) => {
   const user = c.get('user');
   const query = c.req.query('query');
@@ -14,42 +14,46 @@ decisionRoutes.get('/', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 100);
   const offset = (page - 1) * limit;
 
-  const conditions: any[] = [eq(decisions.org_id, user.org_id)];
+  const conditions: any[] = [
+    eq(wikiPages.org_id, user.org_id),
+    eq(wikiPages.type, 'decision'),
+    eq(wikiPages.is_deleted, false),
+  ];
 
   if (query) {
     conditions.push(
-      sql`(${ilike(decisions.decision_text, `%${query}%`)} OR ${ilike(decisions.context, `%${query}%`)})`,
+      sql`(${ilike(wikiPages.title, `%${query}%`)} OR ${ilike(wikiPages.content, `%${query}%`)})`,
     );
   }
 
   if (spaceId) {
-    conditions.push(eq(decisions.space_id, spaceId));
+    conditions.push(eq(wikiPages.space_id, spaceId));
   }
 
   const results = await db
     .select({
-      id: decisions.id,
-      decision_text: decisions.decision_text,
-      decided_by: decisions.decided_by,
-      decided_by_name: users.name,
-      space_id: decisions.space_id,
-      space_name: spaces.name,
-      message_id: decisions.message_id,
-      context: decisions.context,
-      tags: decisions.tags,
-      is_reversed: decisions.is_reversed,
-      created_at: decisions.created_at,
-      updated_at: decisions.updated_at,
+      id: wikiPages.id,
+      decision_text: wikiPages.title,
+      space_id: wikiPages.space_id,
+      tags: wikiPages.tags,
+      confidence: wikiPages.confidence,
+      // is_reversed derived: confidence < 0.5 OR 'reversed' in tags
+      created_at: wikiPages.created_at,
+      updated_at: wikiPages.updated_at,
     })
-    .from(decisions)
-    .innerJoin(users, eq(decisions.decided_by, users.id))
-    .innerJoin(spaces, eq(decisions.space_id, spaces.id))
+    .from(wikiPages)
     .where(and(...conditions))
-    .orderBy(desc(decisions.created_at))
+    .orderBy(desc(wikiPages.created_at))
     .limit(limit)
     .offset(offset);
 
-  return c.json({ decisions: results, page, limit });
+  // Map to stable response shape (consumers expect is_reversed boolean)
+  const decisions = results.map((r) => ({
+    ...r,
+    is_reversed: r.confidence < 0.5 || (r.tags ?? []).includes('reversed'),
+  }));
+
+  return c.json({ decisions, page, limit });
 });
 
 // GET /api/decisions/:id — get single decision
@@ -57,44 +61,54 @@ decisionRoutes.get('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
-  const [decision] = await db
+  const [row] = await db
     .select({
-      id: decisions.id,
-      decision_text: decisions.decision_text,
-      decided_by: decisions.decided_by,
-      decided_by_name: users.name,
-      space_id: decisions.space_id,
-      space_name: spaces.name,
-      message_id: decisions.message_id,
-      context: decisions.context,
-      tags: decisions.tags,
-      is_reversed: decisions.is_reversed,
-      created_at: decisions.created_at,
-      updated_at: decisions.updated_at,
+      id: wikiPages.id,
+      decision_text: wikiPages.title,
+      space_id: wikiPages.space_id,
+      tags: wikiPages.tags,
+      confidence: wikiPages.confidence,
+      created_at: wikiPages.created_at,
+      updated_at: wikiPages.updated_at,
     })
-    .from(decisions)
-    .innerJoin(users, eq(decisions.decided_by, users.id))
-    .innerJoin(spaces, eq(decisions.space_id, spaces.id))
-    .where(and(eq(decisions.id, id), eq(decisions.org_id, user.org_id)))
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.id, id),
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.type, 'decision'),
+        eq(wikiPages.is_deleted, false),
+      ),
+    )
     .limit(1);
 
-  if (!decision) {
+  if (!row) {
     return c.json({ error: 'Decision not found', code: 'NOT_FOUND' }, 404);
   }
 
-  return c.json(decision);
+  return c.json({
+    ...row,
+    is_reversed: row.confidence < 0.5 || (row.tags ?? []).includes('reversed'),
+  });
 });
 
-// PATCH /api/decisions/:id — mark as reversed
+// PATCH /api/decisions/:id — mark as reversed / re-activate (updates wiki_pages)
 decisionRoutes.patch('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
   const body = await c.req.json();
 
   const [existing] = await db
-    .select({ id: decisions.id })
-    .from(decisions)
-    .where(and(eq(decisions.id, id), eq(decisions.org_id, user.org_id)))
+    .select({ id: wikiPages.id, tags: wikiPages.tags, confidence: wikiPages.confidence })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.id, id),
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.type, 'decision'),
+        eq(wikiPages.is_deleted, false),
+      ),
+    )
     .limit(1);
 
   if (!existing) {
@@ -102,21 +116,58 @@ decisionRoutes.patch('/:id', async (c) => {
   }
 
   const updates: Record<string, any> = {};
+
   if (typeof body.is_reversed === 'boolean') {
-    updates.is_reversed = body.is_reversed;
+    if (body.is_reversed) {
+      // Reversing: lower confidence, ensure 'reversed' tag is present (idempotent)
+      updates.confidence = 0.2;
+      const currentTags: string[] = existing.tags ?? [];
+      updates.tags = currentTags.includes('reversed')
+        ? currentTags
+        : [...currentTags, 'reversed'];
+    } else {
+      // Re-activating: restore confidence, remove 'reversed' tag
+      updates.confidence = 0.9;
+      const currentTags: string[] = existing.tags ?? [];
+      updates.tags = currentTags.filter((t) => t !== 'reversed');
+    }
   }
+
   if (body.tags !== undefined) {
-    updates.tags = body.tags;
+    // Union provided tags with existing (after applying is_reversed mutation above)
+    const base: string[] = updates.tags ?? existing.tags ?? [];
+    const incoming: string[] = body.tags;
+    const merged = Array.from(new Set([...base, ...incoming]));
+    updates.tags = merged;
   }
 
   if (Object.keys(updates).length === 0) {
     return c.json({ error: 'No valid fields to update', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  await db
-    .update(decisions)
-    .set(updates)
-    .where(eq(decisions.id, id));
+  updates.updated_at = new Date();
 
-  return c.json({ success: true });
+  await db
+    .update(wikiPages)
+    .set(updates)
+    .where(eq(wikiPages.id, id));
+
+  const [updated] = await db
+    .select({
+      id: wikiPages.id,
+      decision_text: wikiPages.title,
+      space_id: wikiPages.space_id,
+      tags: wikiPages.tags,
+      confidence: wikiPages.confidence,
+      created_at: wikiPages.created_at,
+      updated_at: wikiPages.updated_at,
+    })
+    .from(wikiPages)
+    .where(eq(wikiPages.id, id))
+    .limit(1);
+
+  return c.json({
+    ...updated,
+    is_reversed: updated.confidence < 0.5 || (updated.tags ?? []).includes('reversed'),
+  });
 });
