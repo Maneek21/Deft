@@ -466,7 +466,14 @@ taskRoutes.delete('/saved-views/:id', async (c) => {
 // GET /api/tasks/:id/watchers — list watchers for a task
 taskRoutes.get('/:id/watchers', async (c) => {
   try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
     const taskId = c.req.param('id');
+    const taskRow = await db.select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
+      .limit(1);
+    if (!taskRow[0]) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     const watchers = await db.select({
       id: taskWatchers.id,
       user_id: taskWatchers.user_id,
@@ -549,7 +556,14 @@ taskRoutes.delete('/:id/assignees/:userId', async (c) => {
 // GET /api/tasks/:id/assignees — list all assignees
 taskRoutes.get('/:id/assignees', async (c) => {
   try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
     const taskId = c.req.param('id');
+    const taskRow = await db.select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
+      .limit(1);
+    if (!taskRow[0]) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     const assignees = await db.select({
       id: taskAssignees.id,
       user_id: taskAssignees.user_id,
