@@ -10,6 +10,8 @@ import { TaskList } from '@/components/task-list';
 import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
+import { TaskCalendarView } from '@/components/task-calendar-view';
+import { TaskPipelineView } from '@/components/task-pipeline-view';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import {
@@ -25,6 +27,8 @@ import {
   X,
   Trash2,
   CalendarRange,
+  CalendarDays,
+  GitBranch,
 } from 'lucide-react';
 
 const TaskTimeline = lazy(() => import('./timeline'));
@@ -709,6 +713,30 @@ export default function TasksPage() {
                 <CalendarRange size={13} />
                 Timeline
               </button>
+              <button
+                onClick={() => { setView('calendar'); setUserSelectedView(true); }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                style={{
+                  background: view === 'calendar' ? 'var(--accent)' : 'transparent',
+                  color: view === 'calendar' ? 'white' : 'var(--muted)',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                <CalendarDays size={13} />
+                Calendar
+              </button>
+              <button
+                onClick={() => { setView('pipeline'); setUserSelectedView(true); }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                style={{
+                  background: view === 'pipeline' ? 'var(--accent)' : 'transparent',
+                  color: view === 'pipeline' ? 'white' : 'var(--muted)',
+                  fontFamily: 'var(--font-heading)',
+                }}
+              >
+                <GitBranch size={13} />
+                Pipeline
+              </button>
             </div>
 
             {/* Select toggle */}
@@ -850,6 +878,31 @@ export default function TasksPage() {
                 statuses={resolvedConfig?.statuses}
                 hidePrefixIds={resolvedConfig?.hide_prefix_ids}
                 priorityVocab={resolvedConfig?.priority_vocab}
+              />
+            ) : view === 'calendar' ? (
+              <TaskCalendarView
+                tasks={filteredTasks}
+                projectPrefix={selectedProject?.prefix || ''}
+                hidePrefixIds={resolvedConfig?.hide_prefix_ids}
+                onTaskClick={handleTaskClick}
+                onAddOnDate={(iso) => {
+                  setQuickCreateStatus(undefined);
+                  setQuickCreateOpen(true);
+                  // Best-effort: seed the quick-create modal with due_date via
+                  // a global setter would be invasive; the user can set it
+                  // manually after click. Follow-up can thread a
+                  // `defaultDueDate` prop through TaskQuickCreate.
+                  void iso;
+                }}
+              />
+            ) : view === 'pipeline' ? (
+              <TaskPipelineView
+                tasks={filteredTasks}
+                projectPrefix={selectedProject?.prefix || ''}
+                statuses={resolvedConfig?.statuses}
+                hidePrefixIds={resolvedConfig?.hide_prefix_ids}
+                priorityVocab={resolvedConfig?.priority_vocab}
+                onTaskClick={handleTaskClick}
               />
             ) : (
               view === 'timeline' && selectedProject && (
