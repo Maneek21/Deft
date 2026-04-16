@@ -452,19 +452,42 @@ export const agentActions = pgTable('agent_actions', {
 ]);
 
 // ═══ AGENT: SKILLS ═══
+// Phase 4 — Unified skill primitive. A skill is a named bundle that can be
+// attached to an agent (tools, capability packs, trigger subs, prompt adds)
+// and/or a project (status vocab, priority vocab, board view, templates).
+// `source` distinguishes bundled (first-party, org_id NULL), marketplace
+// (third-party, org_id NULL), and org (custom per-tenant). See
+// `apps/api/src/lib/skill-config.ts` for the jsonb shapes.
 export const skills = pgTable('skills', {
   ...id(),
-  ...orgId(),
+  // org_id is nullable: bundled + marketplace skills are cross-tenant.
+  org_id: text('org_id'),
   name: text('name').notNull(),
   description: text('description'),
   slug: text('slug').notNull(), // /slug to invoke
-  system_prompt: text('system_prompt').notNull(),
-  param_schema: jsonb('param_schema'), // JSON schema for params
-  created_by: text('created_by').notNull().references(() => users.id),
+  // `system_prompt` + `param_schema` retained for back-compat with pre-Phase-4
+  // rows. Canonical home for both is now `agent_config` (see skill-config.ts).
+  system_prompt: text('system_prompt'),
+  param_schema: jsonb('param_schema'),
+  source: text('source').$type<'bundled' | 'marketplace' | 'org'>().default('org').notNull(),
+  version: text('version').default('1.0.0').notNull(),
+  icon: text('icon'),
+  agent_config: jsonb('agent_config').default({}).notNull(),
+  project_config: jsonb('project_config').default({}).notNull(),
+  source_url: text('source_url'),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  default_agent_employee_id: text('default_agent_employee_id'),
+  created_by: text('created_by').references(() => users.id),
   usage_count: integer('usage_count').default(0).notNull(),
   ...timestamps(),
 }, (t) => [
-  uniqueIndex('skill_slug_unique').on(t.org_id, t.slug),
+  // Unique (source, org_id, slug) — partial on is_deleted=false. The raw SQL
+  // migration uses COALESCE(org_id,'') so NULL orgs collide correctly; the
+  // Drizzle introspector can't express that, so we keep the declarative
+  // unique index simple and rely on the SQL file for production truth.
+  uniqueIndex('skills_source_org_slug_idx').on(t.source, t.org_id, t.slug),
+  index('skills_source_idx').on(t.source),
+  index('skills_org_idx').on(t.org_id),
 ]);
 
 // ═══ AGENT: TOOL REGISTRY ═══
