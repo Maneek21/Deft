@@ -33,7 +33,11 @@ const updateTaskSchema = z.object({
   start_date: z.string().nullable().optional(),
   estimation: z.string().nullable().optional(),
   sort_order: z.number().optional(),
-  project_id: z.string().optional(),
+  // Task 0.6 — project_id intentionally omitted. Tasks cannot be moved across
+  // projects via PATCH because cross-references (PREFIX-N) in chat messages,
+  // comments, wiki citations, etc. would silently break. The handler also has
+  // an explicit 400 PROJECT_CHANGE_UNSUPPORTED branch as belt-and-suspenders
+  // in case the field bypasses Zod (e.g. passthrough elsewhere).
   parent_task_id: z.string().nullable().optional(),
   recurrence: z.enum(['daily', 'weekly', 'biweekly', 'monthly']).nullable().optional(),
 });
@@ -1242,6 +1246,28 @@ taskRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
+    // Task 0.6 — reject cross-project moves.
+    // Cross-references (PREFIX-N) are keyed to the project. Changing project_id
+    // would silently break every chat message / comment / wiki citation that
+    // references the task. Safer default: reject, and require delete+recreate.
+    // Zod strips project_id above, but we re-check the raw body in case a
+    // caller bypasses Zod or we later add passthrough.
+    if (
+      body &&
+      typeof body === 'object' &&
+      'project_id' in body &&
+      body.project_id !== undefined &&
+      body.project_id !== existingTask.project_id
+    ) {
+      return c.json(
+        {
+          error: 'Project change is not supported — delete and recreate the task in the target project',
+          code: 'PROJECT_CHANGE_UNSUPPORTED',
+        },
+        400,
+      );
+    }
+
     const updateData: Record<string, any> = {};
     const activityEntries: { action: string; field: string; old_value: string | null; new_value: string | null }[] = [];
 
@@ -1327,25 +1353,10 @@ taskRoutes.patch('/:id', async (c) => {
       updateData.recurrence = parsed.data.recurrence;
     }
 
-    if (parsed.data.project_id !== undefined && parsed.data.project_id !== existingTask.project_id) {
-      // Verify new project belongs to same org
-      const [newProject] = await db.select({ id: projects.id })
-        .from(projects)
-        .where(
-          and(
-            eq(projects.id, parsed.data.project_id),
-            eq(projects.org_id, user.org_id),
-          )
-        )
-        .limit(1);
-
-      if (!newProject) {
-        return c.json({ error: 'Target project not found', code: 'NOT_FOUND' }, 404);
-      }
-
-      updateData.project_id = parsed.data.project_id;
-      activityEntries.push({ action: 'moved', field: 'project_id', old_value: existingTask.project_id, new_value: parsed.data.project_id });
-    }
+    // Task 0.6 — project_id moves are rejected earlier in the handler with
+    // 400 PROJECT_CHANGE_UNSUPPORTED. If a same-project project_id slipped
+    // through, Zod has already stripped it from parsed.data, so there's
+    // nothing to handle here.
 
     if (Object.keys(updateData).length === 0) {
       return c.json({ error: 'No fields to update', code: 'VALIDATION_ERROR' }, 400);
