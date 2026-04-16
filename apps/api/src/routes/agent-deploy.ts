@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or, isNull, desc, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentEmployees,
@@ -26,6 +26,7 @@ import {
   users,
   agentEmployeeTemplates,
   orgs,
+  skills,
 } from '@deft/db/schema';
 import { encrypt, decrypt } from '../lib/encryption.js';
 import { CAPABILITY_PACKS, getCapabilityPack } from '../lib/capability-packs.js';
@@ -53,6 +54,33 @@ function resolveTemplateRole(templateSlug: string): AgentEmployeeRole {
 }
 
 export const agentDeployRoutes = new Hono();
+
+// ─── Wizard skill picker (bundled + org only — marketplace excluded by design) ──
+// Task 4.7/4.8 frontends call this URL; Task 4.13 landed /api/skills with a
+// richer filter. We keep this narrow alias so the deploy wizard can't surface
+// marketplace skills without the explicit security prompt.
+agentDeployRoutes.get('/skills', async (c) => {
+  try {
+    const user = c.get('user');
+    const rows = await db
+      .select()
+      .from(skills)
+      .where(
+        and(
+          or(
+            and(eq(skills.source, 'bundled'), isNull(skills.org_id)),
+            and(eq(skills.source, 'org'), eq(skills.org_id, user.org_id)),
+          ),
+          eq(skills.is_deleted, false),
+        ),
+      )
+      .orderBy(desc(skills.source), skills.name);
+    return c.json(rows);
+  } catch (err) {
+    console.error('Failed to list wizard skills:', err);
+    return c.json({ error: 'Failed to list skills', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
 
 // ─── Wizard config ───────────────────────────────────────────────────
 agentDeployRoutes.get('/wizard-config', async (c) => {
