@@ -6,6 +6,10 @@ import {
   spaces,
   agentActions,
   taskActivity,
+  taskComments,
+  taskLabels,
+  labels,
+  taskRelationships,
   users,
   spaceKnowledge,
   wikiPages,
@@ -21,6 +25,38 @@ import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 
 const AGENT_EMAIL = 'deft-agent@system.local';
+
+/**
+ * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
+ * the internal task uuid for the given org. Returns null if not found.
+ */
+async function resolveTaskIdentifier(
+  identifier: string,
+  orgId: string,
+): Promise<string | null> {
+  const m = identifier.match(/^([A-Z]+)-(\d+)$/);
+  if (m) {
+    const [proj] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.org_id, orgId), eq(projects.prefix, m[1]!)))
+      .limit(1);
+    if (!proj) return null;
+    const [t] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.project_id, proj.id), eq(tasks.number, parseInt(m[2]!))))
+      .limit(1);
+    return t?.id ?? null;
+  }
+  // Assume raw uuid — verify it exists in this org
+  const [t] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(and(eq(tasks.id, identifier), eq(tasks.org_id, orgId)))
+    .limit(1);
+  return t?.id ?? null;
+}
 
 export async function ensureAgentUser(): Promise<string> {
   const [existing] = await db
@@ -643,6 +679,281 @@ export async function executeAction(
 
           return { success: true, result: { slug, page_id: page!.id, action: 'created' } };
         }
+      }
+
+      case 'comment_on_task': {
+        // Task 3.4 — add a comment to a task.
+        const taskId = await resolveTaskIdentifier(params.task_identifier, orgId);
+        if (!taskId) return { success: false, result: null, error: 'Task not found' };
+
+        const content = typeof params.content === 'string' ? params.content.trim() : '';
+        if (!content) {
+          return { success: false, result: null, error: 'Comment content is required' };
+        }
+
+        const [comment] = await db
+          .insert(taskComments)
+          .values({
+            org_id: orgId,
+            task_id: taskId,
+            user_id: userId,
+            content,
+          })
+          .returning();
+
+        await db.insert(taskActivity).values({
+          org_id: orgId,
+          task_id: taskId,
+          user_id: userId,
+          action: 'commented',
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
+        });
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { comment_id: comment!.id, task_id: taskId },
+            before_state: null,
+            after_state: { comment_id: comment!.id, content },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`org:${orgId}`).emit('task:updated', {
+            id: taskId,
+            comment_added: { id: comment!.id, content, user_id: userId },
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'comment_on_task',
+          entityType: 'task',
+          entityId: taskId,
+          beforeState: null,
+          afterState: { comment_id: comment!.id },
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { comment_id: comment!.id, task_id: taskId } };
+      }
+
+      case 'set_due_date': {
+        // Task 3.4 — set/clear task due_date.
+        const taskId = await resolveTaskIdentifier(params.task_identifier, orgId);
+        if (!taskId) return { success: false, result: null, error: 'Task not found' };
+
+        const [existing] = await db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
+          .limit(1);
+        if (!existing) return { success: false, result: null, error: 'Task not found' };
+
+        const oldDue = existing.due_date;
+        let newDue: Date | null = null;
+        if (params.due_date) {
+          const parsed = new Date(params.due_date);
+          if (isNaN(parsed.getTime())) {
+            return { success: false, result: null, error: `Invalid due_date: ${params.due_date}` };
+          }
+          newDue = parsed;
+        }
+
+        await db.update(tasks).set({ due_date: newDue }).where(eq(tasks.id, taskId));
+
+        await db.insert(taskActivity).values({
+          org_id: orgId,
+          task_id: taskId,
+          user_id: userId,
+          action: 'field_changed',
+          field: 'due_date',
+          old_value: oldDue ? oldDue.toISOString() : null,
+          new_value: newDue ? newDue.toISOString() : null,
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
+        });
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { task_id: taskId, due_date: newDue },
+            before_state: { due_date: oldDue },
+            after_state: { due_date: newDue },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`org:${orgId}`).emit('task:updated', {
+            id: taskId,
+            due_date: newDue,
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'set_due_date',
+          entityType: 'task',
+          entityId: taskId,
+          beforeState: { due_date: oldDue },
+          afterState: { due_date: newDue },
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { task_id: taskId, due_date: newDue } };
+      }
+
+      case 'set_priority': {
+        // Task 3.4 — change task priority (p0..p3).
+        const taskId = await resolveTaskIdentifier(params.task_identifier, orgId);
+        if (!taskId) return { success: false, result: null, error: 'Task not found' };
+
+        const priority = params.priority;
+        if (!['p0', 'p1', 'p2', 'p3'].includes(priority)) {
+          return { success: false, result: null, error: `Invalid priority: ${priority}` };
+        }
+
+        const [existing] = await db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
+          .limit(1);
+        if (!existing) return { success: false, result: null, error: 'Task not found' };
+
+        const oldPriority = existing.priority;
+        await db.update(tasks).set({ priority }).where(eq(tasks.id, taskId));
+
+        await db.insert(taskActivity).values({
+          org_id: orgId,
+          task_id: taskId,
+          user_id: userId,
+          action: 'priority_changed',
+          field: 'priority',
+          old_value: oldPriority,
+          new_value: priority,
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
+        });
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { task_id: taskId, priority },
+            before_state: { priority: oldPriority },
+            after_state: { priority },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`org:${orgId}`).emit('task:updated', {
+            id: taskId,
+            priority,
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'set_priority',
+          entityType: 'task',
+          entityId: taskId,
+          beforeState: { priority: oldPriority },
+          afterState: { priority },
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { task_id: taskId, old_priority: oldPriority, new_priority: priority } };
+      }
+
+      case 'add_label': {
+        // Task 3.4 — attach a label to a task. Label is resolved by name in
+        // this org; if it doesn't exist yet we create it with a default color.
+        const taskId = await resolveTaskIdentifier(params.task_identifier, orgId);
+        if (!taskId) return { success: false, result: null, error: 'Task not found' };
+
+        const labelName = typeof params.label_name === 'string' ? params.label_name.trim() : '';
+        if (!labelName) {
+          return { success: false, result: null, error: 'label_name is required' };
+        }
+
+        let [label] = await db
+          .select()
+          .from(labels)
+          .where(and(eq(labels.org_id, orgId), ilike(labels.name, labelName)))
+          .limit(1);
+
+        if (!label) {
+          const color = typeof params.color === 'string' ? params.color : '#94a3b8';
+          [label] = await db
+            .insert(labels)
+            .values({ org_id: orgId, name: labelName, color })
+            .returning();
+        }
+
+        // task_labels uses composite PK (task_id, label_id); swallow duplicate.
+        try {
+          await db.insert(taskLabels).values({ task_id: taskId, label_id: label!.id });
+        } catch (err: any) {
+          if (err?.code !== '23505') throw err;
+        }
+
+        await db.insert(taskActivity).values({
+          org_id: orgId,
+          task_id: taskId,
+          user_id: userId,
+          action: 'field_changed',
+          field: 'label',
+          new_value: label!.name,
+          agent_action_id: actionId,
+          acting_agent_employee_id: agentEmployeeId,
+        });
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { task_id: taskId, label_id: label!.id, label_name: label!.name },
+            before_state: null,
+            after_state: { label_id: label!.id, name: label!.name },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`org:${orgId}`).emit('task:updated', {
+            id: taskId,
+            label_added: { id: label!.id, name: label!.name, color: label!.color },
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'add_label',
+          entityType: 'task',
+          entityId: taskId,
+          beforeState: null,
+          afterState: { label_id: label!.id, name: label!.name },
+          metadata: { action_id: actionId },
+        });
+
+        return {
+          success: true,
+          result: { task_id: taskId, label_id: label!.id, label_name: label!.name },
+        };
       }
 
       default:

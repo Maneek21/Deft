@@ -67,6 +67,12 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   space_memory_set: 'auto',
   space_memory_get: 'auto',
   delegation_self_report: 'auto',
+
+  // ─── Task 3.4 — new task-mutation tools ─────────────────────────────
+  comment_on_task: 'quick',
+  set_due_date: 'auto',
+  set_priority: 'auto',
+  add_label: 'auto',
 };
 
 /** Returns true if the action should be auto-executed (no user approval needed). */

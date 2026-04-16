@@ -106,6 +106,61 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'comment_on_task',
+    description:
+      'Add a comment to a task. Use this to share an update, note a blocker, or answer a question visible on the task card.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5 or the task UUID' },
+        content: { type: 'string', description: 'Comment body (markdown)' },
+      },
+      required: ['task_identifier', 'content'],
+    },
+  },
+  {
+    name: 'set_due_date',
+    description:
+      'Set or clear a task due date. Pass an ISO date string (YYYY-MM-DD) or omit due_date to clear.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5' },
+        due_date: {
+          type: 'string',
+          description: 'Due date in YYYY-MM-DD or ISO-8601 format. Omit or empty to clear.',
+        },
+      },
+      required: ['task_identifier'],
+    },
+  },
+  {
+    name: 'set_priority',
+    description: 'Change the priority of a task (p0 = urgent through p3 = low).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5' },
+        priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
+      },
+      required: ['task_identifier', 'priority'],
+    },
+  },
+  {
+    name: 'add_label',
+    description:
+      'Attach a label to a task. If the label does not exist yet it is created with a default color.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5' },
+        label_name: { type: 'string', description: 'Label text' },
+        color: { type: 'string', description: 'Optional hex color for new labels' },
+      },
+      required: ['task_identifier', 'label_name'],
+    },
+  },
+  {
     name: 'post_message',
     description: 'Post a message in a chat space. REQUIRES USER APPROVAL.',
     input_schema: {
@@ -407,6 +462,11 @@ export const ACTION_TOOLS = new Set([
   'post_message',
   'add_knowledge',
   'wiki_write',
+  // Task 3.4 — new task-mutation tools
+  'comment_on_task',
+  'set_due_date',
+  'set_priority',
+  'add_label',
 ]);
 
 // Calendar tools (only added when calendar is connected)

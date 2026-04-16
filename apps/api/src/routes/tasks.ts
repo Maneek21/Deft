@@ -8,6 +8,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
+import { detectBlocksCycle } from '../lib/task-dependency.js';
 
 export const taskRoutes = new Hono();
 
@@ -117,42 +118,9 @@ async function getTaskForOrg(taskId: string, orgId: string) {
  *
  * Safety cap: traversal aborts after visiting 1000 nodes.
  */
-async function detectBlocksCycle(
-  fromId: string,
-  toId: string,
-  orgId: string,
-): Promise<boolean> {
-  // Self-loop is trivially a cycle. Caller already rejects this as
-  // VALIDATION_ERROR, but guard defensively.
-  if (fromId === toId) return true;
-
-  const visited = new Set<string>([toId]);
-  const queue: string[] = [toId];
-  const MAX_NODES = 1000;
-
-  while (queue.length > 0 && visited.size <= MAX_NODES) {
-    const current = queue.shift()!;
-    const rows = await db.select({ target: taskRelationships.target_task_id })
-      .from(taskRelationships)
-      .innerJoin(tasks, eq(taskRelationships.source_task_id, tasks.id))
-      .where(
-        and(
-          eq(taskRelationships.source_task_id, current),
-          eq(taskRelationships.type, 'blocks'),
-          eq(tasks.org_id, orgId),
-        )
-      );
-    for (const r of rows) {
-      const next = r.target;
-      if (next === fromId) return true;
-      if (!visited.has(next)) {
-        visited.add(next);
-        queue.push(next);
-      }
-    }
-  }
-  return false;
-}
+// Cycle detector for task dependency graphs lives in
+// apps/api/src/lib/task-dependency.ts (shared with the agent add_dependency
+// tool). Imported at top of file.
 
 // GET /api/tasks/my — my tasks across all projects
 taskRoutes.get('/my', async (c) => {
