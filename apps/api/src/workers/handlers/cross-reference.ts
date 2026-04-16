@@ -95,6 +95,7 @@ export async function handleCrossReference(job: JobData): Promise<void> {
       // Add a comment on the task
       const excerpt = plainContent.slice(0, 120);
       await db.insert(taskComments).values({
+        org_id: orgId,
         task_id: task.id,
         user_id: userId,
         content: `Discussed in #${spaceName}: "${excerpt}"`,

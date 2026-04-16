@@ -276,16 +276,20 @@ export const taskLabels = pgTable('task_labels', {
 // ═══ TASK COMMENTS ═══
 export const taskComments = pgTable('task_comments', {
   ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id),
   task_id: text('task_id').notNull().references(() => tasks.id),
   user_id: text('user_id').notNull().references(() => users.id),
   content: text('content').notNull(),
   is_deleted: boolean('is_deleted').default(false).notNull(),
   ...timestamps(),
-});
+}, (t) => [
+  index('task_comments_org_task_idx').on(t.org_id, t.task_id),
+]);
 
 // ═══ TASK ACTIVITY LOG ═══
 export const taskActivity = pgTable('task_activity', {
   ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id),
   task_id: text('task_id').notNull().references(() => tasks.id),
   user_id: text('user_id').references(() => users.id), // null = agent
   action: text('action').notNull(), // 'status_changed', 'assigned', 'priority_changed', 'commented', 'created'
@@ -295,6 +299,7 @@ export const taskActivity = pgTable('task_activity', {
   ...timestamps(),
 }, (t) => [
   index('activity_task_idx').on(t.task_id),
+  index('task_activity_org_task_idx').on(t.org_id, t.task_id),
 ]);
 
 // ═══ TASK RELATIONSHIPS ═══

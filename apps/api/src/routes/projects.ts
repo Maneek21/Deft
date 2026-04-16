@@ -403,6 +403,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
 
     // Create activity log entry
     await db.insert(taskActivity).values({
+      org_id: user.org_id,
       task_id: task!.id,
       user_id: user.id,
       action: 'created',

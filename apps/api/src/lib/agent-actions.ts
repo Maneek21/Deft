@@ -128,6 +128,7 @@ export async function executeAction(
           .returning();
 
         await db.insert(taskActivity).values({
+          org_id: orgId,
           task_id: task!.id,
           user_id: userId,
           action: 'created',
@@ -217,6 +218,7 @@ export async function executeAction(
         await db.update(tasks).set({ status: params.new_status }).where(eq(tasks.id, taskId));
 
         await db.insert(taskActivity).values({
+          org_id: orgId,
           task_id: taskId,
           user_id: userId,
           action: 'status_changed',
@@ -339,6 +341,7 @@ export async function executeAction(
           .where(eq(users.id, newAssigneeId)).limit(1);
 
         await db.insert(taskActivity).values({
+          org_id: orgId,
           task_id: taskId,
           user_id: userId,
           action: 'field_changed',

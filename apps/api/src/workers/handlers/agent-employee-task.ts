@@ -94,6 +94,7 @@ You have been assigned the following task:
   // 6. Post result as task activity comment
   if (result.text) {
     await db.insert(taskActivity).values({
+      org_id: orgId,
       task_id: taskId,
       user_id: employee.user_id,
       action: 'commented',
@@ -109,6 +110,7 @@ You have been assigned the following task:
 
   // 8. Log status change in taskActivity
   await db.insert(taskActivity).values({
+    org_id: orgId,
     task_id: taskId,
     user_id: employee.user_id,
     action: 'status_changed',

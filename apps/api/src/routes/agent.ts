@@ -774,6 +774,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         if (taskId) {
           await db.update(tasks).set({ is_deleted: true }).where(eq(tasks.id, taskId));
           await db.insert(taskActivity).values({
+            org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'deleted',
@@ -799,6 +800,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         if (taskId && oldStatus) {
           await db.update(tasks).set({ status: oldStatus }).where(eq(tasks.id, taskId));
           await db.insert(taskActivity).values({
+            org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'status_changed',
@@ -827,6 +829,7 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
         if (taskId) {
           await db.update(tasks).set({ assignee_id: oldAssigneeId }).where(eq(tasks.id, taskId));
           await db.insert(taskActivity).values({
+            org_id: user.org_id,
             task_id: taskId,
             user_id: user.id,
             action: 'field_changed',

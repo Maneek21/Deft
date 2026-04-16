@@ -360,6 +360,7 @@ taskRoutes.patch('/bulk', async (c) => {
     for (const taskId of task_ids) {
       if (updates.status) {
         await db.insert(taskActivity).values({
+          org_id: user.org_id,
           task_id: taskId,
           user_id: user.id,
           action: 'status_changed',
@@ -369,6 +370,7 @@ taskRoutes.patch('/bulk', async (c) => {
       }
       if (updates.assignee_id !== undefined) {
         await db.insert(taskActivity).values({
+          org_id: user.org_id,
           task_id: taskId,
           user_id: user.id,
           action: 'assigned',
@@ -378,6 +380,7 @@ taskRoutes.patch('/bulk', async (c) => {
       }
       if (updates.priority) {
         await db.insert(taskActivity).values({
+          org_id: user.org_id,
           task_id: taskId,
           user_id: user.id,
           action: 'priority_changed',
@@ -426,6 +429,7 @@ taskRoutes.post('/bulk-delete', async (c) => {
 
     for (const taskId of task_ids) {
       await db.insert(taskActivity).values({
+        org_id: user.org_id,
         task_id: taskId,
         user_id: user.id,
         action: 'deleted',
@@ -849,6 +853,7 @@ taskRoutes.post('/:id/comments', async (c) => {
     }
 
     const [comment] = await db.insert(taskComments).values({
+      org_id: user.org_id,
       task_id: taskId,
       user_id: user.id,
       content: parsed.data.content,
@@ -856,6 +861,7 @@ taskRoutes.post('/:id/comments', async (c) => {
 
     // Create activity log entry
     await db.insert(taskActivity).values({
+      org_id: user.org_id,
       task_id: taskId,
       user_id: user.id,
       action: 'commented',
@@ -1223,6 +1229,7 @@ taskRoutes.post('/project/:projectId', async (c) => {
 
     // Create activity log entry
     await db.insert(taskActivity).values({
+      org_id: user.org_id,
       task_id: task!.id,
       user_id: user.id,
       action: 'created',
@@ -1422,6 +1429,7 @@ taskRoutes.patch('/:id', async (c) => {
     if (activityEntries.length > 0) {
       await db.insert(taskActivity).values(
         activityEntries.map((entry) => ({
+          org_id: user.org_id,
           task_id: taskId,
           user_id: user.id,
           action: entry.action,
@@ -1631,6 +1639,7 @@ taskRoutes.delete('/:id', async (c) => {
 
     // Create activity log entry
     await db.insert(taskActivity).values({
+      org_id: user.org_id,
       task_id: taskId,
       user_id: user.id,
       action: 'deleted',
@@ -1687,7 +1696,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       await db.insert(taskLabels).values({ task_id: dup!.id, label_id: label.label_id }).catch(() => {});
     }
 
-    await db.insert(taskActivity).values({ task_id: dup!.id, user_id: user.id, action: 'created' });
+    await db.insert(taskActivity).values({ org_id: user.org_id, task_id: dup!.id, user_id: user.id, action: 'created' });
 
     return c.json({
       ...dup,
