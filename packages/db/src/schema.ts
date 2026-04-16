@@ -1335,6 +1335,38 @@ export const agentEmployees = pgTable('agent_employees', {
   index('agent_employee_org_idx').on(t.org_id),
 ]);
 
+// ═══ AGENT: SKILL JUNCTIONS ═══
+// Phase 4 Task 4.2 — link skills to the two surfaces that consume them.
+
+// agent_employee_skills: "installed" skills grant the employee tools,
+// capability packs, triggers, and prompt additions (per skills.agent_config).
+export const agentEmployeeSkills = pgTable('agent_employee_skills', {
+  agent_employee_id: text('agent_employee_id').notNull()
+    .references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  skill_id: text('skill_id').notNull()
+    .references(() => skills.id, { onDelete: 'restrict' }),
+  installed_at: timestamp('installed_at').defaultNow().notNull(),
+  installed_version: text('installed_version').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.agent_employee_id, t.skill_id] }),
+  index('aes_skill_idx').on(t.skill_id),
+]);
+
+// project_skills: "attached" skills compose the project's status, priority,
+// view, and template vocabulary (per skills.project_config).
+export const projectSkills = pgTable('project_skills', {
+  project_id: text('project_id').notNull()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  skill_id: text('skill_id').notNull()
+    .references(() => skills.id, { onDelete: 'restrict' }),
+  attachment_order: integer('attachment_order').default(0).notNull(),
+  attached_at: timestamp('attached_at').defaultNow().notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.project_id, t.skill_id] }),
+  index('ps_skill_idx').on(t.skill_id),
+  index('ps_project_order_idx').on(t.project_id, t.attachment_order),
+]);
+
 // ═══ AGENT PLANS ═══
 export const agentPlans = pgTable('agent_plans', {
   ...id(),
