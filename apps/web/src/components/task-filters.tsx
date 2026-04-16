@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed } from 'lucide-react';
+import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag } from 'lucide-react';
 import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 
 export type Filters = {
@@ -24,6 +24,7 @@ type Props = {
 };
 
 type Member = { id: string; name: string; email: string; avatar_url: string | null };
+type Label = { id: string; name: string; color: string };
 type SavedView = { id: string; name: string; config: any };
 
 const PRIORITY_OPTIONS = [
@@ -49,6 +50,8 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [memberSearch, setMemberSearch] = useState('');
+  const [availableLabels, setAvailableLabels] = useState<Label[]>([]);
+  const [labelSearch, setLabelSearch] = useState('');
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [saveViewName, setSaveViewName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
@@ -64,6 +67,9 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
   useEffect(() => {
     api.get('/api/members').then(async res => {
       if (res.ok) setMembers(await res.json());
+    }).catch(() => {});
+    api.get('/api/tasks/labels').then(async res => {
+      if (res.ok) setAvailableLabels(await res.json());
     }).catch(() => {});
     api.get('/api/tasks/saved-views').then(async res => {
       if (res.ok) setSavedViews(await res.json());
@@ -108,7 +114,9 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
     filters.assigneeIds.length +
     filters.priorities.length +
     filters.status.length +
+    filters.labels.length +
     (filters.dueDate ? 1 : 0) +
+    (filters.dateFrom || filters.dateTo ? 1 : 0) +
     (filters.projectId ? 1 : 0);
 
   const clearAll = () => {
@@ -136,15 +144,26 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
     onChange({ ...filters, assigneeIds: next });
   };
 
+  const toggleLabel = (id: string) => {
+    const next = filters.labels.includes(id)
+      ? filters.labels.filter(x => x !== id)
+      : [...filters.labels, id];
+    onChange({ ...filters, labels: next });
+  };
+
   const filteredMembers = members.filter(m =>
     m.name.toLowerCase().includes(memberSearch.toLowerCase()) ||
     m.email.toLowerCase().includes(memberSearch.toLowerCase())
   );
 
+  const filteredLabels = availableLabels.filter(l =>
+    l.name.toLowerCase().includes(labelSearch.toLowerCase())
+  );
+
   // Mobile: single "Filters" button with stacked dropdown
   const mobileFilterBar = (
     <>
-      {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); }} />}
+      {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); setLabelSearch(''); setShowSaveInput(false); }} />}
       <div
         className="flex items-center gap-2 px-4 py-2 flex-shrink-0"
         style={{ borderBottom: '1px solid var(--border)' }}
@@ -293,6 +312,48 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
 
               <div style={{ borderTop: '1px solid var(--border)' }} className="my-1" />
 
+              {/* Labels section */}
+              {availableLabels.length > 0 && (
+                <>
+                  <div className="px-3 py-1.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Labels</p>
+                    <div className="max-h-32 overflow-y-auto">
+                      {availableLabels.map(l => (
+                        <button
+                          key={l.id}
+                          onClick={() => toggleLabel(l.id)}
+                          className="w-full text-left px-2 py-1.5 flex items-center gap-2 text-[12px] rounded-md"
+                          style={{
+                            color: filters.labels.includes(l.id) ? 'var(--accent)' : 'var(--foreground)',
+                            fontFamily: 'var(--font-body)',
+                            background: filters.labels.includes(l.id) ? 'var(--accent-subtle)' : 'transparent',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = filters.labels.includes(l.id) ? 'var(--accent-subtle)' : 'transparent')}
+                        >
+                          <div
+                            className="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0"
+                            style={{
+                              borderColor: filters.labels.includes(l.id) ? 'var(--accent)' : 'var(--border)',
+                              background: filters.labels.includes(l.id) ? 'var(--accent)' : 'transparent',
+                            }}
+                          >
+                            {filters.labels.includes(l.id) && (
+                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                <path d="M1 4L3 6L7 2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </div>
+                          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: l.color }} />
+                          <span className="truncate">{l.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ borderTop: '1px solid var(--border)' }} className="my-1" />
+                </>
+              )}
+
               {/* Due date section */}
               <div className="px-3 py-1.5">
                 <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Due date</p>
@@ -314,6 +375,78 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
                     {opt.label}
                   </button>
                 ))}
+                {/* Custom date range (mobile) */}
+                <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                  <p className="text-[10px] font-medium mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Custom range</p>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="date"
+                      value={filters.dateFrom || ''}
+                      onChange={e => onChange({ ...filters, dateFrom: e.target.value || null, dueDate: null })}
+                      className="flex-1 px-1.5 py-1 text-[11px] rounded outline-none"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                    />
+                    <input
+                      type="date"
+                      value={filters.dateTo || ''}
+                      onChange={e => onChange({ ...filters, dateTo: e.target.value || null, dueDate: null })}
+                      className="flex-1 px-1.5 py-1 text-[11px] rounded outline-none"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border)' }} className="my-1" />
+
+              {/* Saved views (mobile) */}
+              <div className="px-3 py-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Saved views</p>
+                {savedViews.map(v => (
+                  <div
+                    key={v.id}
+                    className="flex items-center px-2 py-1.5 text-[12px] rounded-md"
+                    style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <button onClick={() => handleLoadView(v)} className="flex-1 text-left truncate flex items-center gap-2">
+                      <Bookmark size={12} />
+                      {v.name}
+                    </button>
+                    <button onClick={(e) => handleDeleteView(v.id, e)} className="ml-1 p-0.5" style={{ color: 'var(--muted)' }}>
+                      <X size={10} />
+                    </button>
+                  </div>
+                ))}
+                {hasActive && (
+                  <div className="mt-1">
+                    {showSaveInput ? (
+                      <div className="flex gap-1">
+                        <input
+                          value={saveViewName}
+                          onChange={e => setSaveViewName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleSaveView(); }}
+                          placeholder="View name..."
+                          className="flex-1 px-2 py-1 text-[11px] rounded outline-none"
+                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                          autoFocus
+                        />
+                        <button onClick={handleSaveView} className="p-1" style={{ color: 'var(--accent)' }}>
+                          <Save size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowSaveInput(true)}
+                        className="w-full text-left px-2 py-1.5 text-[11px] font-medium rounded-md"
+                        style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}
+                      >
+                        + Save current filters
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -338,7 +471,7 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
     <>
       {isMobile ? mobileFilterBar : (
       <>
-      {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); }} />}
+      {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); setLabelSearch(''); setShowSaveInput(false); }} />}
 
       <div
         className="flex items-center gap-2 px-6 py-2 flex-shrink-0 flex-wrap"
@@ -552,6 +685,92 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
           )}
         </div>
 
+        {/* Labels dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setOpenDropdown(openDropdown === 'labels' ? null : 'labels')}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            style={{
+              background: filters.labels.length > 0 ? 'var(--accent-subtle)' : 'transparent',
+              color: filters.labels.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
+              border: `1px solid ${filters.labels.length > 0 ? 'var(--accent)' : 'var(--border)'}`,
+              fontFamily: 'var(--font-heading)',
+              transition: 'all 150ms',
+            }}
+          >
+            <Tag size={12} />
+            Labels
+            {filters.labels.length > 0 && (
+              <span className="text-[10px] px-1 rounded-full" style={{ background: 'var(--accent)', color: 'white' }}>
+                {filters.labels.length}
+              </span>
+            )}
+            <ChevronDown size={11} />
+          </button>
+          {openDropdown === 'labels' && (
+            <div
+              className="absolute top-full left-0 mt-1 w-56 rounded-lg py-1 z-20"
+              style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+            >
+              {availableLabels.length > 0 ? (
+                <>
+                  <div className="px-2 py-1.5">
+                    <input
+                      value={labelSearch}
+                      onChange={e => setLabelSearch(e.target.value)}
+                      placeholder="Search labels..."
+                      className="w-full px-2 py-1 text-[12px] rounded outline-none"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {filteredLabels.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                        No labels match
+                      </div>
+                    ) : (
+                      filteredLabels.map(l => (
+                        <button
+                          key={l.id}
+                          onClick={() => toggleLabel(l.id)}
+                          className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-[12px]"
+                          style={{
+                            color: filters.labels.includes(l.id) ? 'var(--accent)' : 'var(--foreground)',
+                            fontFamily: 'var(--font-body)',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div
+                            className="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0"
+                            style={{
+                              borderColor: filters.labels.includes(l.id) ? 'var(--accent)' : 'var(--border)',
+                              background: filters.labels.includes(l.id) ? 'var(--accent)' : 'transparent',
+                            }}
+                          >
+                            {filters.labels.includes(l.id) && (
+                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                <path d="M1 4L3 6L7 2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </div>
+                          <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: l.color }} />
+                          <span className="truncate">{l.name}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                  No labels yet. Create one from a task.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Project dropdown */}
         {projects && projects.length > 0 && (
           <div className="relative">
@@ -719,6 +938,24 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
             </div>
           ))}
 
+        {filters.labels.length > 0 &&
+          filters.labels.map((id) => {
+            const l = availableLabels.find(x => x.id === id);
+            return (
+              <div
+                key={id}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+                style={{ background: 'var(--hover-tint)', color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full" style={{ background: l?.color || 'var(--muted)' }} />
+                {l?.name || 'Label'}
+                <button onClick={() => toggleLabel(id)} style={{ color: 'var(--muted)' }} className="ml-0.5">
+                  <X size={10} />
+                </button>
+              </div>
+            );
+          })}
+
         {filters.projectId && projects && (
           <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
             style={{ background: 'var(--hover-tint)', color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
@@ -751,28 +988,37 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
           </div>
         )}
 
-        {/* Saved views — only shown when saved views exist */}
-        {savedViews.length > 0 && (
-          <div className="relative ml-auto">
-            <button
-              onClick={() => setOpenDropdown(openDropdown === 'views' ? null : 'views')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
-              style={{
-                background: 'transparent',
-                color: 'var(--foreground-secondary)',
-                border: '1px solid var(--border)',
-                fontFamily: 'var(--font-heading)',
-                transition: 'all 150ms',
-              }}
-            >
-              <Bookmark size={12} />
-              Views
-              <ChevronDown size={11} />
-            </button>
-            {openDropdown === 'views' && (
-              <div className="absolute right-0 top-full mt-1 w-56 rounded-lg py-1 z-20"
-                style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
-                {savedViews.map(v => (
+        {/* Saved views */}
+        <div className="relative ml-auto">
+          <button
+            onClick={() => setOpenDropdown(openDropdown === 'views' ? null : 'views')}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            style={{
+              background: 'transparent',
+              color: 'var(--foreground-secondary)',
+              border: '1px solid var(--border)',
+              fontFamily: 'var(--font-heading)',
+              transition: 'all 150ms',
+            }}
+          >
+            <Bookmark size={12} />
+            Views
+            {savedViews.length > 0 && (
+              <span className="text-[10px] px-1 rounded-full" style={{ background: 'var(--muted)', color: 'white' }}>
+                {savedViews.length}
+              </span>
+            )}
+            <ChevronDown size={11} />
+          </button>
+          {openDropdown === 'views' && (
+            <div className="absolute right-0 top-full mt-1 w-64 rounded-lg py-1 z-20"
+              style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
+              {savedViews.length === 0 ? (
+                <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                  No saved views yet.
+                </div>
+              ) : (
+                savedViews.map(v => (
                   <div key={v.id} className="flex items-center px-3 py-1.5 text-[12px]"
                     style={{ color: 'var(--foreground)' }}
                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover-tint)')}
@@ -784,37 +1030,41 @@ export function TaskFilters({ filters, onChange, projects }: Props) {
                       <X size={10} />
                     </button>
                   </div>
-                ))}
-                {/* Save current */}
-                {hasActive && (
-                  <div className="px-3 py-2" style={{ borderTop: '1px solid var(--border)' }}>
-                    {showSaveInput ? (
-                      <div className="flex gap-1">
-                        <input
-                          value={saveViewName}
-                          onChange={e => setSaveViewName(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') handleSaveView(); }}
-                          placeholder="View name..."
-                          className="flex-1 px-2 py-1 text-[11px] rounded outline-none"
-                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
-                          autoFocus
-                        />
-                        <button onClick={handleSaveView} className="p-1" style={{ color: 'var(--accent)' }}>
-                          <Save size={12} />
-                        </button>
-                      </div>
-                    ) : (
-                      <button onClick={() => setShowSaveInput(true)}
-                        className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
-                        + Save current filters
+                ))
+              )}
+              {/* Save current */}
+              <div className="px-3 py-2" style={{ borderTop: '1px solid var(--border)' }}>
+                {hasActive ? (
+                  showSaveInput ? (
+                    <div className="flex gap-1">
+                      <input
+                        value={saveViewName}
+                        onChange={e => setSaveViewName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleSaveView(); }}
+                        placeholder="Save current filter set as..."
+                        className="flex-1 px-2 py-1 text-[11px] rounded outline-none"
+                        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                        autoFocus
+                      />
+                      <button onClick={handleSaveView} className="p-1" style={{ color: 'var(--accent)' }}>
+                        <Save size={12} />
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowSaveInput(true)}
+                      className="text-[11px] font-medium" style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}>
+                      + Save current filter set as...
+                    </button>
+                  )
+                ) : (
+                  <p className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                    Apply a filter to save a view.
+                  </p>
                 )}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
 
         {/* Clear all */}
         {hasActive && (
