@@ -4,13 +4,16 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { TaskCardUnified } from './task-card-unified';
+import type { ResolvedStatus, PriorityVocab, CanonicalPriority } from '@/hooks/use-project-resolved-config';
+import { priorityLabel } from '@/hooks/use-project-resolved-config';
 
 type Task = {
   id: string;
   number: number;
   title: string;
   description: string | null;
-  status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
+  // Resolved-config driven; wide string (e.g. 'lead' / 'qualified' for Sales).
+  status: string;
   priority: 'p0' | 'p1' | 'p2' | 'p3';
   assignee_id: string | null;
   assignee_name: string | null;
@@ -44,18 +47,22 @@ type Props = {
   selectionMode?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelect?: (taskId: string) => void;
+  /** Task 4.9 — resolved skill config drives status dropdown + prefix + priority labels. */
+  statuses?: ResolvedStatus[];
+  hidePrefixIds?: boolean;
+  priorityVocab?: PriorityVocab;
 };
 
 type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'due_date' | 'updated_at';
 type SortDir = 'asc' | 'desc';
 
-const STATUS_OPTIONS = [
-  { value: 'backlog', label: statusLabel('backlog') },
-  { value: 'todo', label: statusLabel('todo') },
-  { value: 'in_progress', label: statusLabel('in_progress') },
-  { value: 'in_review', label: statusLabel('in_review') },
-  { value: 'done', label: statusLabel('done') },
-  { value: 'cancelled', label: statusLabel('cancelled') },
+const DEFAULT_STATUS_OPTIONS = [
+  { value: 'backlog', label: statusLabel('backlog'), color: '#6b7280' },
+  { value: 'todo', label: statusLabel('todo'), color: '#3b82f6' },
+  { value: 'in_progress', label: statusLabel('in_progress'), color: '#f59e0b' },
+  { value: 'in_review', label: statusLabel('in_review'), color: '#8b5cf6' },
+  { value: 'done', label: statusLabel('done'), color: '#10b981' },
+  { value: 'cancelled', label: statusLabel('cancelled'), color: '#ef4444' },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -68,19 +75,12 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const PRIORITY_ORDER = { p0: 0, p1: 1, p2: 2, p3: 3 };
-const PRIORITY_STYLES: Record<string, { bg: string; color: string; label: string }> = {
-  p0: { bg: 'rgba(220, 38, 38, 0.15)', color: '#DC2626', label: 'P0' },
-  p1: { bg: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B', label: 'P1' },
-  p2: { bg: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6', label: 'P2' },
-  p3: { bg: 'rgba(107, 114, 128, 0.15)', color: '#6B7280', label: 'P3' },
+const PRIORITY_STYLES: Record<string, { bg: string; color: string }> = {
+  p0: { bg: 'rgba(220, 38, 38, 0.15)', color: '#DC2626' },
+  p1: { bg: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B' },
+  p2: { bg: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6' },
+  p3: { bg: 'rgba(107, 114, 128, 0.15)', color: '#6B7280' },
 };
-
-const PRIORITY_OPTIONS = [
-  { value: 'p0', label: 'P0' },
-  { value: 'p1', label: 'P1' },
-  { value: 'p2', label: 'P2' },
-  { value: 'p3', label: 'P3' },
-];
 
 function formatDueDate(dateStr: string | null, status?: string): { text: string; color: string; badge?: string; badgeBg?: string } | null {
   if (!dateStr) return null;
@@ -112,7 +112,16 @@ function formatDueDate(dateStr: string | null, status?: string): { text: string;
   return { text: dateText, color: 'var(--foreground-secondary)' };
 }
 
-export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect }: Props) {
+export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab }: Props) {
+  const STATUS_OPTIONS = useMemo(() => {
+    if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
+    return [...statuses]
+      .sort((a, b) => a.order - b.order)
+      .map((s) => ({ value: s.id, label: s.label, color: s.color }));
+  }, [statuses]);
+
+  const statusColorFor = (id: string): string =>
+    STATUS_OPTIONS.find((s) => s.value === id)?.color || STATUS_COLORS[id] || 'var(--muted)';
   const [sortField, setSortField] = useState<SortField>('number');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
@@ -183,13 +192,14 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
             <TaskCardUnified
               key={task.id}
               variant="list"
-              task={task}
+              task={task as any}
               projectPrefix={projectPrefix}
               onClick={() => onTaskClick(task)}
               isSelected={isSelected}
               selectionMode={selectionMode}
               isChecked={isChecked}
               onToggleSelect={onToggleSelect}
+              hidePrefixIds={hidePrefixIds}
             />
           );
         })}
@@ -255,7 +265,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
         </thead>
         <tbody>
           {sorted.map((task) => {
-            const priority = PRIORITY_STYLES[task.priority];
+            const priorityStyle = PRIORITY_STYLES[task.priority];
+            const priorityText = priorityLabel(task.priority as CanonicalPriority, priorityVocab);
             const isSelected = task.id === selectedTaskId;
             const isChecked = selectionMode && selectedTaskIds?.has(task.id);
 
@@ -309,7 +320,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                   className="px-3 py-2.5 text-[12px] font-medium"
                   style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)' }}
                 >
-                  {projectPrefix || task.project_prefix}-{task.number}
+                  {hidePrefixIds ? '' : `${projectPrefix || task.project_prefix}-${task.number}`}
                 </td>
 
                 {/* Title */}
@@ -364,8 +375,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                      {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
+                      <div className="w-2 h-2 rounded-full" style={{ background: statusColorFor(task.status) }} />
+                      {STATUS_OPTIONS.find((s) => s.value === task.status)?.label ?? statusLabel(task.status)}
                     </button>
                     {inlineDropdown?.taskId === task.id && inlineDropdown?.field === 'status' && (
                       <div
@@ -388,7 +399,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                           >
-                            <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[opt.value] }} />
+                            <div className="w-2 h-2 rounded-full" style={{ background: statusColorFor(opt.value) }} />
                             {opt.label}
                           </button>
                         ))}
@@ -405,12 +416,12 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                   <span
                     className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
                     style={{
-                      background: priority.bg,
-                      color: priority.color,
+                      background: priorityStyle.bg,
+                      color: priorityStyle.color,
                       fontFamily: 'var(--font-heading)',
                     }}
                   >
-                    {priority.label}
+                    {priorityText}
                   </span>
                 </td>
 

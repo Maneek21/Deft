@@ -11,6 +11,7 @@ import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
 import { statusLabel } from '@/lib/task-status-labels';
+import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import {
   ChevronDown,
   LayoutGrid,
@@ -35,7 +36,9 @@ type Task = {
   number: number;
   title: string;
   description: string | null;
-  status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
+  // Wide string — resolved skill configs define arbitrary status IDs
+  // (e.g. 'lead' / 'qualified' for Sales).
+  status: string;
   priority: 'p0' | 'p1' | 'p2' | 'p3';
   assignee_id: string | null;
   assignee_name: string | null;
@@ -93,7 +96,10 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [view, setView] = useState<'board' | 'list' | 'timeline'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'timeline' | 'calendar' | 'pipeline'>('board');
+  // Task 4.9 — once the user toggles the view manually, we stop auto-selecting
+  // the resolved-config default so their preference wins.
+  const [userSelectedView, setUserSelectedView] = useState(false);
   const [filters, setFilters] = useState<Filters>({
     assigneeIds: [],
     priorities: [],
@@ -126,6 +132,20 @@ export default function TasksPage() {
   const currentView = searchParams.get('view');
   const currentProjectId = searchParams.get('project');
   const isMyTasksView = currentView === 'my';
+
+  // Task 4.9 — resolved skill config drives status/vocab/view/prefix
+  const { config: resolvedConfig } = useProjectResolvedConfig(selectedProject?.id ?? null);
+
+  // Auto-select the project's default view once when the config loads, unless
+  // the user has already picked a view. "timeline" is kept engineering-only
+  // (not a valid skill default today but guarded anyway).
+  useEffect(() => {
+    if (!resolvedConfig || userSelectedView || isMyTasksView) return;
+    const dv = resolvedConfig.default_view;
+    if (dv && dv !== view && (dv === 'board' || dv === 'list' || dv === 'timeline' || dv === 'calendar' || dv === 'pipeline')) {
+      setView(dv);
+    }
+  }, [resolvedConfig, userSelectedView, isMyTasksView]);
 
   // Load projects
   useEffect(() => {
@@ -512,6 +532,8 @@ export default function TasksPage() {
     setSelectedProject(project);
     setProjectDropdownOpen(false);
     setSelectedTask(null);
+    // Task 4.9 — re-enable auto-default-view for the new project's skill config.
+    setUserSelectedView(false);
     router.push(`/tasks?project=${project.id}`);
   };
 
@@ -652,7 +674,7 @@ export default function TasksPage() {
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
             >
               <button
-                onClick={() => setView('board')}
+                onClick={() => { setView('board'); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'board' ? 'var(--accent)' : 'transparent',
@@ -664,7 +686,7 @@ export default function TasksPage() {
                 Board
               </button>
               <button
-                onClick={() => setView('list')}
+                onClick={() => { setView('list'); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'list' ? 'var(--accent)' : 'transparent',
@@ -676,7 +698,7 @@ export default function TasksPage() {
                 List
               </button>
               <button
-                onClick={() => setView('timeline')}
+                onClick={() => { setView('timeline'); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'timeline' ? 'var(--accent)' : 'transparent',
@@ -730,7 +752,13 @@ export default function TasksPage() {
         </div>
 
         {/* Filter bar */}
-        <TaskFilters filters={filters} onChange={setFilters} projects={projects} />
+        <TaskFilters
+          filters={filters}
+          onChange={setFilters}
+          projects={projects}
+          statuses={resolvedConfig?.statuses}
+          priorityVocab={resolvedConfig?.priority_vocab}
+        />
 
         {/* Board or List view */}
         <div className="flex-1 overflow-hidden">
@@ -806,6 +834,8 @@ export default function TasksPage() {
                 selectionMode={selectionMode}
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={handleToggleSelect}
+                statuses={resolvedConfig?.statuses}
+                hidePrefixIds={resolvedConfig?.hide_prefix_ids}
               />
             ) : view === 'list' ? (
               <TaskList
@@ -817,6 +847,9 @@ export default function TasksPage() {
                 selectionMode={selectionMode}
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={handleToggleSelect}
+                statuses={resolvedConfig?.statuses}
+                hidePrefixIds={resolvedConfig?.hide_prefix_ids}
+                priorityVocab={resolvedConfig?.priority_vocab}
               />
             ) : (
               view === 'timeline' && selectedProject && (

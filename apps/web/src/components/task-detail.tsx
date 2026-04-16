@@ -36,6 +36,7 @@ import {
   Repeat,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type CanonicalPriority } from '@/hooks/use-project-resolved-config';
 
 type Task = {
   id: string;
@@ -238,6 +239,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const { user } = useAuth();
   const router = useRouter();
   const [task, setTask] = useState<Task | null>(null);
+  const { config: resolvedConfig } = useProjectResolvedConfig(task?.project_id ?? null);
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
@@ -621,6 +623,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }
 
   const priorityInfo = PRIORITY_OPTIONS.find((p) => p.value === task.priority);
+  const hidePrefixIds = resolvedConfig?.hide_prefix_ids ?? false;
+  const priorityDisplay = priorityInfo
+    ? { ...priorityInfo, label: priorityFullLabel(task.priority as CanonicalPriority, resolvedConfig?.priority_vocab) }
+    : undefined;
+  const resolvedStatusOptions =
+    resolvedConfig && resolvedConfig.statuses && resolvedConfig.statuses.length > 0
+      ? [...resolvedConfig.statuses]
+          .sort((a, b) => a.order - b.order)
+          .map((s) => ({ value: s.id, label: s.label, color: s.color }))
+      : STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label, color: STATUS_COLORS[s.value] ?? 'var(--muted)' }));
+  const currentStatusOption = resolvedStatusOptions.find((s) => s.value === task.status);
 
   return (
     <>
@@ -654,12 +667,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 <ArrowLeft size={18} strokeWidth={1.5} />
               </button>
             )}
-            <span
-              className="text-[12px] font-semibold"
-              style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-            >
-              {projectPrefix || task.project_prefix}-{task.number}
-            </span>
+            {!hidePrefixIds && (
+              <span
+                className="text-[12px] font-semibold"
+                style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+              >
+                {projectPrefix || task.project_prefix}-{task.number}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {task.source_message_id && (
@@ -782,8 +797,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
-                <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
+                <div className="w-2 h-2 rounded-full" style={{ background: currentStatusOption?.color || 'var(--muted)' }} />
+                {currentStatusOption?.label ?? statusLabel(task.status)}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
               {openDropdown === 'status' && (
@@ -791,7 +806,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   className="absolute top-full left-0 mt-1 w-44 rounded-lg py-1 z-20"
                   style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
                 >
-                  {STATUS_OPTIONS.map((opt) => (
+                  {resolvedStatusOptions.map((opt) => (
                     <button
                       key={opt.value}
                       onClick={() => handleFieldUpdate('status', opt.value)}
@@ -803,7 +818,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[opt.value] }} />
+                      <div className="w-2 h-2 rounded-full" style={{ background: opt.color || 'var(--muted)' }} />
                       {opt.label}
                     </button>
                   ))}
@@ -828,7 +843,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
                 <div className="w-2 h-2 rounded-full" style={{ background: priorityInfo?.color }} />
-                {priorityInfo?.label}
+                {priorityDisplay?.label}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
               {openDropdown === 'priority' && (
@@ -849,7 +864,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
                       <div className="w-2 h-2 rounded-full" style={{ background: opt.color }} />
-                      {opt.label}
+                      {priorityFullLabel(opt.value as CanonicalPriority, resolvedConfig?.priority_vocab)}
                     </button>
                   ))}
                 </div>

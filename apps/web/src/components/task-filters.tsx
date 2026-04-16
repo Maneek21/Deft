@@ -5,6 +5,8 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag } from 'lucide-react';
 import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
+import type { PriorityVocab, ResolvedStatus, CanonicalPriority } from '@/hooks/use-project-resolved-config';
+import { priorityFullLabel } from '@/hooks/use-project-resolved-config';
 
 export type Filters = {
   assigneeIds: string[];
@@ -21,21 +23,24 @@ type Props = {
   filters: Filters;
   onChange: (filters: Filters) => void;
   projects?: { id: string; name: string; prefix: string; color: string | null }[];
+  /** Task 4.9 — resolved skill config drives status chips + priority labels. */
+  statuses?: ResolvedStatus[];
+  priorityVocab?: PriorityVocab;
 };
 
 type Member = { id: string; name: string; email: string; avatar_url: string | null };
 type Label = { id: string; name: string; color: string };
 type SavedView = { id: string; name: string; config: any };
 
-const PRIORITY_OPTIONS = [
-  { value: 'p0', label: 'P0 — Urgent', color: '#DC2626' },
-  { value: 'p1', label: 'P1 — High', color: '#F59E0B' },
-  { value: 'p2', label: 'P2 — Medium', color: '#3B82F6' },
-  { value: 'p3', label: 'P3 — Low', color: '#6B7280' },
-];
+const PRIORITY_COLORS: Record<string, string> = {
+  p0: '#DC2626',
+  p1: '#F59E0B',
+  p2: '#3B82F6',
+  p3: '#6B7280',
+};
 
-const STATUS_OPTIONS = (Object.keys(STATUS_LABELS) as (keyof typeof STATUS_LABELS)[]).map(value => ({
-  value,
+const DEFAULT_STATUS_OPTIONS = (Object.keys(STATUS_LABELS) as (keyof typeof STATUS_LABELS)[]).map(value => ({
+  value: value as string,
   label: statusLabel(value),
 }));
 
@@ -45,8 +50,16 @@ const DUE_DATE_OPTIONS = [
   { value: 'this_week', label: 'This week' },
 ];
 
-export function TaskFilters({ filters, onChange, projects }: Props) {
+export function TaskFilters({ filters, onChange, projects, statuses, priorityVocab }: Props) {
   const { user } = useAuth();
+  const PRIORITY_OPTIONS = (['p0', 'p1', 'p2', 'p3'] as CanonicalPriority[]).map((value) => ({
+    value,
+    label: priorityFullLabel(value, priorityVocab),
+    color: PRIORITY_COLORS[value],
+  }));
+  const STATUS_OPTIONS = statuses && statuses.length > 0
+    ? [...statuses].sort((a, b) => a.order - b.order).map((s) => ({ value: s.id, label: s.label }))
+    : DEFAULT_STATUS_OPTIONS;
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [memberSearch, setMemberSearch] = useState('');

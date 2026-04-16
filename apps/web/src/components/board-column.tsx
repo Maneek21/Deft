@@ -12,6 +12,8 @@ type Props = {
   collapsible?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  /** Task 4.9 — dot color from resolved skill config. */
+  color?: string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -32,6 +34,7 @@ export function BoardColumn({
   collapsible = false,
   collapsed = false,
   onToggleCollapse,
+  color,
 }: Props) {
   const { setNodeRef, isOver } = useDroppable({ id });
   const isCollapsed = collapsible && collapsed;
@@ -69,7 +72,7 @@ export function BoardColumn({
           )}
           <div
             className="w-2 h-2 rounded-full flex-shrink-0"
-            style={{ background: STATUS_COLORS[id] || 'var(--muted)' }}
+            style={{ background: color || STATUS_COLORS[id] || 'var(--muted)' }}
           />
           <span
             className="text-[12px] font-semibold uppercase tracking-wide"

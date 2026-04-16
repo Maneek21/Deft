@@ -29,7 +29,17 @@ import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, MoreHorizontal, Calendar, Check, Lock, ListChecks } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 
-export type UnifiedTaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
+// Canonical engineering statuses; kept as a named export so older callers
+// still get auto-complete, but skill-driven configs (Sales pipeline etc.)
+// can supply arbitrary status IDs — the card accepts any string.
+export type UnifiedTaskStatus =
+  | 'backlog'
+  | 'todo'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
+  | 'cancelled'
+  | (string & {});
 export type UnifiedTaskPriority = 'p0' | 'p1' | 'p2' | 'p3';
 
 /**
@@ -139,7 +149,7 @@ const PRIORITY_STYLES: Record<UnifiedTaskPriority, { bg: string; color: string; 
   p3: { bg: 'rgba(107, 114, 128, 0.15)', color: '#6B7280', label: 'P3' },
 };
 
-const STATUS_COLORS: Record<UnifiedTaskStatus, string> = {
+const STATUS_COLORS: Record<string, string> = {
   backlog: 'var(--muted)',
   todo: 'var(--foreground-secondary)',
   in_progress: 'var(--accent)',
@@ -147,6 +157,10 @@ const STATUS_COLORS: Record<UnifiedTaskStatus, string> = {
   done: 'var(--success)',
   cancelled: 'var(--danger)',
 };
+
+function statusColor(status: string): string {
+  return STATUS_COLORS[status] ?? 'var(--muted)';
+}
 
 type DueInfo = { text: string; color: string; badge?: string; badgeBg?: string };
 
@@ -621,7 +635,7 @@ function ListVariant({
             {task.assignee_name && <span>{task.assignee_name}</span>}
             {task.assignee_name && <span style={{ color: 'var(--border)' }}>·</span>}
             <span className="flex items-center gap-1">
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(task.status) }} />
               {label}
             </span>
             {dueInfo && (
@@ -657,9 +671,9 @@ function ChatVariant({ task, projectPrefix, onClick, hidePrefixIds, asLink = tru
       <span className="truncate max-w-[180px]">{task.title}</span>
       <span
         className="text-[10px] font-medium px-1 py-0.5 rounded flex items-center gap-1 flex-shrink-0"
-        style={{ background: 'var(--card-bg)', color: STATUS_COLORS[task.status] }}
+        style={{ background: 'var(--card-bg)', color: statusColor(task.status) }}
       >
-        <div className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
+        <div className="w-1.5 h-1.5 rounded-full" style={{ background: statusColor(task.status) }} />
         {statusText}
       </span>
     </>

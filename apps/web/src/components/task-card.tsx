@@ -9,10 +9,17 @@
 
 import { TaskCardUnified, type UnifiedTask } from './task-card-unified';
 
-type Task = UnifiedTask & {
-  // The board-specific call sites pass the full Task shape — these fields
-  // are non-optional at the data source, so we keep them surfaced here for
-  // call-site type safety even though `UnifiedTask` treats them as optional.
+/**
+ * Board-variant task shape. We keep fields the board surfaces (labels,
+ * project_color, creator_name, sort_order, etc.) typed even though
+ * `UnifiedTask` treats them as optional. `status` is widened to `string`
+ * because resolved-config skills can define arbitrary status IDs
+ * (e.g. 'lead', 'qualified') that don't fit the core `UnifiedTaskStatus`
+ * union — the card only consumes the value for display + STATUS_COLORS
+ * lookup, both of which degrade gracefully.
+ */
+type Task = Omit<UnifiedTask, 'status'> & {
+  status: string;
   description: string | null;
   assignee_id: string | null;
   assignee_name: string | null;
@@ -46,8 +53,12 @@ type Props = {
   selectionMode?: boolean;
   isChecked?: boolean;
   onToggleSelect?: (taskId: string) => void;
+  hidePrefixIds?: boolean;
 };
 
 export function TaskCard(props: Props) {
-  return <TaskCardUnified {...props} variant="board" />;
+  // Cast because resolved-config statuses extend beyond the UnifiedTaskStatus
+  // union; the unified renderer tolerates unknown values (STATUS_COLORS
+  // falls back to var(--muted)).
+  return <TaskCardUnified {...(props as any)} variant="board" />;
 }
