@@ -5,6 +5,7 @@ import {
   tasks,
   projects,
   notifications,
+  duplicateFlags,
 } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -95,6 +96,32 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
 
       if (similarity > 0.5 && existing.created_by !== newTask.created_by) {
         const existingIdentifier = `${existing.project_prefix}-${existing.number}`;
+
+        // Atomic dedup: sort the pair lexicographically so (a, b) and (b, a)
+        // map to the same row, then INSERT ... ON CONFLICT DO NOTHING. If
+        // the insert returned no row the pair was already flagged — skip
+        // the notification to avoid double-alerts across worker retries.
+        const [taskA, taskB] = taskId < existing.id
+          ? [taskId, existing.id]
+          : [existing.id, taskId];
+
+        const flagInsert = await db
+          .insert(duplicateFlags)
+          .values({
+            org_id: orgId,
+            task_a_id: taskA,
+            task_b_id: taskB,
+            similarity: similarity.toFixed(4),
+          })
+          .onConflictDoNothing()
+          .returning({ id: duplicateFlags.id });
+
+        if (flagInsert.length === 0) {
+          console.log(
+            `[duplicate-detect] Pair ${newIdentifier} ↔ ${existingIdentifier} already flagged, skipping notification`,
+          );
+          break;
+        }
 
         const message = `Possible duplicate: ${newIdentifier} '${title}' may overlap with ${existingIdentifier} '${existing.title}'`;
 

@@ -1,7 +1,7 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey, numeric } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
@@ -748,6 +748,27 @@ export const crossReferences = pgTable('cross_references', {
 }, (t) => [
   index('cross_ref_source_idx').on(t.source_type, t.source_id),
   index('cross_ref_target_idx').on(t.target_type, t.target_id),
+]);
+
+// ═══ DUPLICATE FLAGS ═══
+/**
+ * Dedup table for duplicate-detect worker. The pair (task_a_id, task_b_id)
+ * is stored in lexicographic order (task_a_id < task_b_id) so a single
+ * unique constraint covers both orderings. Insert with onConflictDoNothing
+ * to atomically claim a flag — the "no row returned" signal tells the
+ * worker the pair was already flagged and to skip the notification.
+ */
+export const duplicateFlags = pgTable('duplicate_flags', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id),
+  task_a_id: text('task_a_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  task_b_id: text('task_b_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  similarity: numeric('similarity'),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('duplicate_flags_pair_unique').on(t.task_a_id, t.task_b_id),
+  index('duplicate_flags_org_idx').on(t.org_id),
+  check('duplicate_flags_order_check', sql`${t.task_a_id} < ${t.task_b_id}`),
 ]);
 
 // ═══ AUDIT LOG ═══
