@@ -37,6 +37,7 @@ import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
+import { resolveAssignee } from './resolve-assignee.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -170,15 +171,8 @@ export async function executeToolCall(
         conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
       }
       if (params.assignee_name) {
-        const [assignee] = await db
-          .select({ id: users.id })
-          .from(users)
-          .innerJoin(orgMembers, eq(users.id, orgMembers.user_id))
-          .where(
-            and(eq(orgMembers.org_id, orgId), ilike(users.name, `%${params.assignee_name}%`)),
-          )
-          .limit(1);
-        if (assignee) conditions.push(eq(tasks.assignee_id, assignee.id));
+        const resolved = await resolveAssignee(params.assignee_name, orgId);
+        if (resolved) conditions.push(eq(tasks.assignee_id, resolved.id));
       }
       if (params.project_name) {
         const [proj] = await db

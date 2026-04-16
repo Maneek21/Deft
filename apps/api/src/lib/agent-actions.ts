@@ -7,7 +7,6 @@ import {
   agentActions,
   taskActivity,
   users,
-  orgMembers,
   spaceKnowledge,
   wikiPages,
   wikiLinks,
@@ -19,6 +18,7 @@ import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
 import { mcpClientManager } from '@deft/mcp';
 import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
+import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 
 const AGENT_EMAIL = 'deft-agent@system.local';
 
@@ -35,16 +35,6 @@ export async function ensureAgentUser(): Promise<string> {
     .values({ email: AGENT_EMAIL, name: 'Deft', email_verified: true })
     .returning();
   return created!.id;
-}
-
-async function resolveUser(orgId: string, name: string): Promise<string | null> {
-  const [u] = await db
-    .select({ id: users.id })
-    .from(users)
-    .innerJoin(orgMembers, eq(users.id, orgMembers.user_id))
-    .where(and(eq(orgMembers.org_id, orgId), ilike(users.name, `%${name}%`)))
-    .limit(1);
-  return u?.id || null;
 }
 
 export async function executeAction(
@@ -88,9 +78,22 @@ export async function executeAction(
           .limit(1);
         if (!project) return { success: false, result: null, error: 'Project not found' };
 
-        const assigneeId = params.assignee_name
-          ? await resolveUser(orgId, params.assignee_name)
-          : null;
+        let assigneeId: string | null = null;
+        if (params.assignee_name) {
+          const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId);
+          if (!resolved.ok) {
+            if (resolved.ambiguous) {
+              return {
+                success: false,
+                result: null,
+                error: `Ambiguous name "${params.assignee_name}". Matches: ${resolved.matches.map((m) => m.name).join(', ')}`,
+              };
+            }
+            // Non-ambiguous miss: leave assignee null (matches legacy behavior).
+          } else {
+            assigneeId = resolved.value.id;
+          }
+        }
 
         // Smart priority detection if not explicitly set
         let priority = params.priority || 'p2';
@@ -321,10 +324,19 @@ export async function executeAction(
           .limit(1);
         if (!existing) return { success: false, result: null, error: 'Task not found' };
 
-        const newAssigneeId = await resolveUser(orgId, params.assignee_name);
-        if (!newAssigneeId) {
+        const resolved = await resolveAssigneeWithMatches(params.assignee_name, orgId);
+        if (!resolved.ok) {
+          if (resolved.ambiguous) {
+            return {
+              success: false,
+              result: null,
+              error: `Ambiguous name "${params.assignee_name}". Matches: ${resolved.matches.map((m) => m.name).join(', ')}`,
+            };
+          }
           return { success: false, result: null, error: `User "${params.assignee_name}" not found in this org` };
         }
+        const newAssigneeId = resolved.value.id;
+        const newAssigneeName = resolved.value.name;
 
         const oldAssigneeId = existing.assignee_id;
 
@@ -337,8 +349,6 @@ export async function executeAction(
             .where(eq(users.id, oldAssigneeId)).limit(1);
           oldAssigneeName = oldUser?.name || null;
         }
-        const [newUser] = await db.select({ name: users.name }).from(users)
-          .where(eq(users.id, newAssigneeId)).limit(1);
 
         await db.insert(taskActivity).values({
           org_id: orgId,
@@ -347,7 +357,7 @@ export async function executeAction(
           action: 'field_changed',
           field: 'assignee',
           old_value: oldAssigneeName,
-          new_value: newUser?.name || params.assignee_name,
+          new_value: newAssigneeName,
         });
 
         await db
@@ -365,7 +375,7 @@ export async function executeAction(
           io.to(`org:${orgId}`).emit('task:updated', {
             id: taskId,
             assignee_id: newAssigneeId,
-            assignee_name: newUser?.name || params.assignee_name,
+            assignee_name: newAssigneeName,
           });
         }
 
@@ -378,7 +388,7 @@ export async function executeAction(
           entityId: taskId,
           beforeState: { assignee_id: oldAssigneeId },
           afterState: { assignee_id: newAssigneeId },
-          metadata: { action_id: actionId, assignee_name: newUser?.name },
+          metadata: { action_id: actionId, assignee_name: newAssigneeName },
         });
 
         return {
@@ -386,7 +396,7 @@ export async function executeAction(
           result: {
             task_id: taskId,
             old_assignee: oldAssigneeName,
-            new_assignee: newUser?.name || params.assignee_name,
+            new_assignee: newAssigneeName,
           },
         };
       }
