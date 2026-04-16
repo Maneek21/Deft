@@ -1,5 +1,49 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+// ── Concurrency-guarded token refresh ────────────────────────────────────────
+// A burst of concurrent 401 responses must only trigger ONE refresh call.
+// Subsequent callers await the same in-flight promise and share the result.
+let _refreshPromise: Promise<string | null> | null = null;
+
+/**
+ * Silently refresh the access token using the stored refresh token.
+ * Updates both the in-memory ApiClient singleton and localStorage.
+ * Returns the new access token, or null if refresh failed (caller should
+ * treat null as "session expired — redirect to /login").
+ *
+ * Exported so socket.ts can import it directly without coupling to the class.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = (async () => {
+    const refresh = typeof window !== 'undefined'
+      ? localStorage.getItem('deft-refresh-token')
+      : null;
+    if (!refresh) return null;
+    try {
+      const r = await fetch(`${API_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: refresh }),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!j.accessToken) return null;
+      // Mirror into the singleton instance and localStorage.
+      // `api` is initialised before this closure ever runs (module-level const).
+      api.setTokens(j.accessToken, j.refreshToken ?? refresh);
+      return j.accessToken as string;
+    } catch {
+      return null;
+    }
+  })();
+  try {
+    return await _refreshPromise;
+  } finally {
+    _refreshPromise = null;
+  }
+}
+
 class ApiClient {
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
@@ -49,19 +93,7 @@ class ApiClient {
     // (e.g. cold page load after access token expired), refresh upfront
     // so the initial request doesn't 401 and force a retry.
     if (!this.accessToken && this.refreshToken) {
-      try {
-        const r = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: this.refreshToken }),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          this.setTokens(data.accessToken, data.refreshToken);
-        }
-      } catch {
-        // Fall through — the 401-retry logic below will handle any failure
-      }
+      await refreshAccessToken();
     }
 
     if (this.accessToken) {
@@ -71,28 +103,22 @@ class ApiClient {
 
     let response = await this.fetchWithRetry(`${API_URL}${path}`, { ...options, headers });
 
-    // If 401, try refresh
-    if (response.status === 401 && this.refreshToken) {
-      const refreshRes = await fetch(`${API_URL}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: this.refreshToken }),
-      });
-
-      if (refreshRes.ok) {
-        const data = await refreshRes.json();
-        this.setTokens(data.accessToken, data.refreshToken);
-        headers.set('Authorization', `Bearer ${data.accessToken}`);
+    // Reactive 401 interceptor: access token was present but has since expired.
+    // Attempt a silent refresh (concurrency-guarded) and retry the original
+    // request exactly once. If the refresh also fails, clear tokens and redirect.
+    if (response.status === 401) {
+      const fresh = await refreshAccessToken();
+      if (fresh) {
+        headers.set('Authorization', `Bearer ${fresh}`);
         response = await this.fetchWithRetry(`${API_URL}${path}`, { ...options, headers });
       } else {
         this.clearTokens();
         // Store current path for post-login redirect
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('deft-redirect-after-login', window.location.pathname);
-          // Brief notification before redirect
           console.warn('[auth] Session expired, redirecting to login');
+          window.location.href = '/login?expired=1';
         }
-        window.location.href = '/login?expired=1';
       }
     }
 
@@ -128,19 +154,7 @@ class ApiClient {
     // (e.g. cold page load after access token expired), refresh upfront
     // so the initial request doesn't 401 and force a retry.
     if (!this.accessToken && this.refreshToken) {
-      try {
-        const r = await fetch(`${API_URL}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: this.refreshToken }),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          this.setTokens(data.accessToken, data.refreshToken);
-        }
-      } catch {
-        // Fall through — the 401-retry logic below will handle any failure
-      }
+      await refreshAccessToken();
     }
 
     if (this.accessToken) {
@@ -156,24 +170,18 @@ class ApiClient {
       body: formData,
     });
 
-    // If 401, try refresh
-    if (response.status === 401 && this.refreshToken) {
-      const refreshRes = await fetch(`${API_URL}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: this.refreshToken }),
-      });
-      if (refreshRes.ok) {
-        const data = await refreshRes.json();
-        this.setTokens(data.accessToken, data.refreshToken);
-        headers.set('Authorization', `Bearer ${data.accessToken}`);
+    // Reactive 401 interceptor (same pattern as fetch() above)
+    if (response.status === 401) {
+      const fresh = await refreshAccessToken();
+      if (fresh) {
+        headers.set('Authorization', `Bearer ${fresh}`);
         response = await this.fetchWithRetry(`${API_URL}${path}`, { method: 'POST', headers, body: formData });
       } else {
         this.clearTokens();
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('deft-redirect-after-login', window.location.pathname);
+          window.location.href = '/login?expired=1';
         }
-        window.location.href = '/login?expired=1';
       }
     }
 
