@@ -553,7 +553,7 @@ async function fetchMemory(
 
 async function fetchNotes(
   org_id: string,
-  user_id: string,
+  user_id: string | undefined,
   forIlike: string,
   words: string[],
   limit: number,
@@ -561,6 +561,11 @@ async function fetchNotes(
   try {
     // NOTE: trigram index (pg_trgm) on notes.content is planned (Task 1.4)
     // to avoid sequential scans on ILIKE. Until then this will scan.
+    //
+    // Task 5.2: include org-visible notes for all callers. When user_id is
+    // present we return the user's own notes (any visibility) plus org-visible
+    // notes from other users. When user_id is absent (system queries) we return
+    // only org-visible notes so private notes are never leaked.
     const rows = await db
       .select({
         id: notes.id,
@@ -571,8 +576,11 @@ async function fetchNotes(
       .where(
         and(
           eq(notes.org_id, org_id),
-          eq(notes.user_id, user_id),
           eq(notes.is_deleted, false),
+          or(
+            user_id ? eq(notes.user_id, user_id) : undefined,
+            eq(notes.visibility, 'org'),
+          ),
           sql`${notes.content} ILIKE ${`%${forIlike}%`}`,
         ),
       )
@@ -644,9 +652,11 @@ export async function retrieveContext(
       ? fetchMemory(org_id, user_id, conversation_id, forIlike, words, limit)
       : Promise.resolve([]),
 
-    // 6. Notes are always user-scoped. Skip without user_id to avoid exposing
-    //    all users' private notes. Task 5.1 adds org-visibility column.
-    types.includes('notes') && user_id
+    // 6. Notes branch respects visibility (Task 5.2). When user_id is present,
+    //    returns the user's own notes plus org-visible notes. When user_id is
+    //    absent (system queries), returns only org-visible notes — private notes
+    //    are never leaked.
+    types.includes('notes')
       ? fetchNotes(org_id, user_id, forIlike, words, limit)
       : Promise.resolve([]),
   ]);

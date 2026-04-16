@@ -1,6 +1,7 @@
 /**
  * Task 1.1 — retrieveContext gateway integration tests.
  * Task 1.2 — hybrid FTS + pgvector ranking tests appended below.
+ * Task 5.2 — notes visibility tests appended below.
  *
  * Run: pnpm --filter @deft/api test -- retrieve-context
  *
@@ -9,11 +10,13 @@
  *   2. types: ['wiki'] only returns source_type === 'wiki_page'
  *   3. Short/empty query returns []
  *   4. Org isolation — results only contain rows from the correct org
- *   5. Notes branch returns nothing when user_id is absent
+ *   5. Notes branch: without user_id only org-visible notes are returned
  *   6. Employee-tagged wiki pages rank higher than org-wide pages (two-tier)
  *   7. hybrid: false param bypasses vector search (pure FTS path)
  *   8. Hybrid falls back to FTS when OPENAI_API_KEY is unset
  *   9. NULL-embedding pages still appear in hybrid results alongside embedded pages
+ *  10. Org-visible note from user-A appears in user-B's results; private note does not
+ *  11. System query (no user_id) returns only org-visible notes
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -217,13 +220,19 @@ describe('retrieveContext', () => {
     assert.strictEqual(results.length, 0);
   });
 
-  test('5. notes branch returns nothing when user_id is absent', async () => {
+  test('5. notes branch: without user_id only org-visible notes are returned', async () => {
+    // The note seeded in before() has default visibility ('private'), so a
+    // system query (no user_id) should not return it.
     const results = await retrieveContext({
       query: 'billing decision',
       org_id: ORG_ID,
       types: ['notes'],
     });
-    assert.strictEqual(results.length, 0, 'notes branch must produce no results without user_id');
+    // The seeded note is private — it must not appear in a system query.
+    const seededNoteReturned = results.some(
+      (r) => r.source_type === 'note' && r.content.includes('billing decision agreed upon in Q2'),
+    );
+    assert.ok(!seededNoteReturned, 'Private note must not appear in a system query without user_id');
   });
 
   test('6. employee-tagged wiki pages rank higher than org-wide pages (two-tier)', async () => {
@@ -380,6 +389,122 @@ describe('retrieveContext', () => {
       await withClient(async (c) => {
         await c.query(`DELETE FROM wiki_pages WHERE id = $1`, [pageId1]);
         await c.query(`DELETE FROM wiki_pages WHERE id = $1`, [pageId2]);
+      });
+    }
+  });
+
+  // ─── Task 5.2: notes visibility ────────────────────────────────────────────
+
+  test('10. org-visible note from user-A appears for user-B; private note does not', async () => {
+    // Use a unique term to avoid collisions with other seeded data.
+    const TERM = `xyzvisibilitytest${Date.now()}`;
+    const USER_A_ID = `rctest-vis-usera-${Date.now()}`;
+    const USER_B_ID = `rctest-vis-userb-${Date.now()}`;
+    const noteOrgId = `rctest-vis-org-note-${Date.now()}`;
+    const notePrivateId = `rctest-vis-priv-note-${Date.now()}`;
+
+    await withClient(async (c) => {
+      // Create user-A and user-B.
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, 'Vis User A', false)`,
+        [USER_A_ID, `vis-usera-${Date.now()}@test.local`],
+      );
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, 'Vis User B', false)`,
+        [USER_B_ID, `vis-userb-${Date.now()}@test.local`],
+      );
+      await c.query(
+        `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', true) ON CONFLICT DO NOTHING`,
+        [ORG_ID, USER_A_ID],
+      );
+      await c.query(
+        `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', true) ON CONFLICT DO NOTHING`,
+        [ORG_ID, USER_B_ID],
+      );
+      // user-A's org-visible note.
+      await c.query(
+        `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Org note', $4, 'org', false, false, false, 1, NOW(), NOW())`,
+        [noteOrgId, ORG_ID, USER_A_ID, `The ${TERM} org-visible content.`],
+      );
+      // user-A's private note (must NOT appear for user-B).
+      await c.query(
+        `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Private note', $4, 'private', false, false, false, 1, NOW(), NOW())`,
+        [notePrivateId, ORG_ID, USER_A_ID, `The ${TERM} private content only user-A can see.`],
+      );
+    });
+
+    try {
+      const results = await retrieveContext({
+        query: TERM,
+        org_id: ORG_ID,
+        user_id: USER_B_ID,
+        types: ['notes'],
+        limit: 20,
+      });
+
+      const ids = results.map((r) => r.source_id);
+      assert.ok(ids.includes(noteOrgId), 'Org-visible note from user-A must appear for user-B');
+      assert.ok(!ids.includes(notePrivateId), 'Private note from user-A must NOT appear for user-B');
+    } finally {
+      await withClient(async (c) => {
+        await c.query(`DELETE FROM notes WHERE id IN ($1, $2)`, [noteOrgId, notePrivateId]);
+        await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2)`, [USER_A_ID, USER_B_ID]);
+        await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_A_ID, USER_B_ID]);
+      });
+    }
+  });
+
+  test('11. system query (no user_id) returns only org-visible notes', async () => {
+    const TERM = `xyzsystemquery${Date.now()}`;
+    const USER_C_ID = `rctest-vis-userc-${Date.now()}`;
+    const noteOrgId2 = `rctest-sys-org-note-${Date.now()}`;
+    const notePrivateId2 = `rctest-sys-priv-note-${Date.now()}`;
+
+    await withClient(async (c) => {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, 'Vis User C', false)`,
+        [USER_C_ID, `vis-userc-${Date.now()}@test.local`],
+      );
+      await c.query(
+        `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', true) ON CONFLICT DO NOTHING`,
+        [ORG_ID, USER_C_ID],
+      );
+      // org-visible note.
+      await c.query(
+        `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Sys org note', $4, 'org', false, false, false, 1, NOW(), NOW())`,
+        [noteOrgId2, ORG_ID, USER_C_ID, `The ${TERM} org-visible system note.`],
+      );
+      // private note — must NOT appear in system query.
+      await c.query(
+        `INSERT INTO notes (id, org_id, user_id, title, content, visibility, is_deleted, is_pinned, is_template, version, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Sys priv note', $4, 'private', false, false, false, 1, NOW(), NOW())`,
+        [notePrivateId2, ORG_ID, USER_C_ID, `The ${TERM} private system note.`],
+      );
+    });
+
+    try {
+      const results = await retrieveContext({
+        query: TERM,
+        org_id: ORG_ID,
+        // no user_id — system query
+        types: ['notes'],
+        limit: 20,
+      });
+
+      const ids = results.map((r) => r.source_id);
+      assert.ok(ids.includes(noteOrgId2), 'Org-visible note must appear in system query (no user_id)');
+      assert.ok(!ids.includes(notePrivateId2), 'Private note must NOT appear in system query (no user_id)');
+    } finally {
+      await withClient(async (c) => {
+        await c.query(`DELETE FROM notes WHERE id IN ($1, $2)`, [noteOrgId2, notePrivateId2]);
+        await c.query(`DELETE FROM org_members WHERE user_id = $1`, [USER_C_ID]);
+        await c.query(`DELETE FROM users WHERE id = $1`, [USER_C_ID]);
       });
     }
   });
