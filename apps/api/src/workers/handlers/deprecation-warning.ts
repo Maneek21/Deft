@@ -20,11 +20,14 @@ export async function handleDeprecationWarning(): Promise<void> {
     .from(spaceKnowledge)
     .where(eq(spaceKnowledge.is_deleted, false));
 
+  const amCount = am?.count ?? 0;
+  const decCount = dec?.count ?? 0;
+  const skCount = sk?.count ?? 0;
   console.warn(
-    `[deprecation] legacy tables: agentMemory(user+org)=${am.count}, decisions=${dec.count}, spaceKnowledge(not-deleted)=${sk.count}`,
+    `[deprecation] legacy tables: agentMemory(user+org)=${amCount}, decisions=${decCount}, spaceKnowledge(not-deleted)=${skCount}`,
   );
 
-  if ((am?.count ?? 0) + (dec?.count ?? 0) + (sk?.count ?? 0) === 0) {
+  if (amCount + decCount + skCount === 0) {
     console.warn('[deprecation] ALL legacy tables empty — safe to drop in next migration');
   }
 }

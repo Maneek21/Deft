@@ -166,6 +166,9 @@ decisionRoutes.patch('/:id', async (c) => {
     .where(eq(wikiPages.id, id))
     .limit(1);
 
+  if (!updated) {
+    return c.json({ error: 'Decision not found after update', code: 'NOT_FOUND' }, 404);
+  }
   return c.json({
     ...updated,
     is_reversed: updated.confidence < 0.5 || (updated.tags ?? []).includes('reversed'),
