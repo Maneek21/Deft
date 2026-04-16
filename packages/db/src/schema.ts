@@ -246,7 +246,7 @@ export const tasks = pgTable('tasks', {
   recurrence_source_id: text('recurrence_source_id'), // links to original recurring task
   sort_order: real('sort_order').default(0).notNull(),
   source_message_id: text('source_message_id').references(() => messages.id),
-  parent_task_id: text('parent_task_id'),  // self-reference for subtasks (one level deep)
+  parent_task_id: text('parent_task_id').references((): any => tasks.id, { onDelete: 'set null' }),  // self-reference for subtasks (one level deep)
   is_deleted: boolean('is_deleted').default(false).notNull(),
   ...timestamps(),
 }, (t) => [
