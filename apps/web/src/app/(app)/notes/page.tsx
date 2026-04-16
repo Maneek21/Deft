@@ -25,7 +25,7 @@ import {
   Table as TableIcon, ImageIcon, CheckSquare, Highlighter,
   Underline as UnderlineIcon, Download, BookOpen,
   FolderPlus, Folder, ChevronRight, LayoutTemplate,
-  History, Share2, Maximize2, Minimize2, Users,
+  History, Share2, Maximize2, Minimize2, Users, Globe, Lock,
 } from 'lucide-react';
 import { EmojiPicker } from '@/components/emoji-picker';
 
@@ -50,6 +50,8 @@ type Note = {
   icon: string | null;
   is_pinned: boolean;
   folder_id: string | null;
+  visibility: 'private' | 'org' | 'space';
+  user_id: string;
   created_at: string;
   updated_at: string;
 };
@@ -180,6 +182,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [title, setTitle] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
+  const [visibility, setVisibility] = useState<'private' | 'org'>('private');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
   const [promoteType, setPromoteType] = useState('concept');
@@ -198,8 +201,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const initialContentSet = useRef(false);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  const isNoteOwner = !note || note.user_id === user?.id;
+
   const editor = useEditor({
     immediatelyRender: false,
+    editable: isNoteOwner,
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2] },
@@ -363,8 +369,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         setNote(data);
         setTitle(data.title);
         setIcon(data.icon);
+        setVisibility(data.visibility === 'org' ? 'org' : 'private');
         if (editor) {
           editor.commands.setContent(data.content || '');
+          // Set editable based on ownership
+          editor.setEditable(data.user_id === user?.id);
           setTimeout(() => { initialContentSet.current = true; }, 50);
         }
       }
@@ -399,11 +408,18 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     await api.patch(`/api/daily-notes/${noteId}`, { is_pinned: pinned });
   };
 
+  const handleVisibilityChange = async (newVisibility: 'private' | 'org') => {
+    setVisibility(newVisibility);
+    await api.patch(`/api/daily-notes/${noteId}`, { visibility: newVisibility });
+  };
+
   const handleDelete = async () => {
     if (!window.confirm('Delete this note? This cannot be undone.')) return;
     await api.delete(`/api/daily-notes/${noteId}`);
     onDeleted();
   };
+
+  const isOwner = !note || note.user_id === user?.id;
 
   if (loading) {
     return (
@@ -434,14 +450,39 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <Check size={11} /> Saved
               </span>
             )}
+            {/* Visibility selector — owner only */}
+            {isOwner ? (
+              <select
+                value={visibility}
+                onChange={e => handleVisibilityChange(e.target.value as 'private' | 'org')}
+                className="text-[11px] px-2 py-1 rounded-lg border outline-none"
+                style={{
+                  color: visibility === 'org' ? 'var(--accent)' : 'var(--muted)',
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  cursor: 'pointer',
+                }}
+                title="Note visibility">
+                <option value="private">Private</option>
+                <option value="org">Org</option>
+              </select>
+            ) : (
+              <span className="text-[11px] flex items-center gap-1 px-2 py-1 rounded-lg"
+                style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                title="Shared with your org (read-only — you are not the owner)">
+                <Globe size={11} /> Shared (read-only)
+              </span>
+            )}
             <button onClick={() => setFocusMode(!focusMode)} className="p-1.5 rounded-lg"
               style={{ color: focusMode ? 'var(--accent)' : 'var(--muted)' }} title={focusMode ? 'Exit focus mode' : 'Focus mode'}>
               {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
-            <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="p-1.5 rounded-lg"
-              style={{ color: 'var(--muted)' }} title="Share note">
-              <Share2 size={15} />
-            </button>
+            {isOwner && (
+              <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="p-1.5 rounded-lg"
+                style={{ color: 'var(--muted)' }} title="Share note">
+                <Share2 size={15} />
+              </button>
+            )}
             <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="p-1.5 rounded-lg"
               style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
               <History size={15} />
@@ -450,14 +491,18 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               style={{ color: 'var(--muted)' }} title="Promote to Wiki">
               <BookOpen size={15} />
             </button>
-            <button onClick={handlePin} className="p-1.5 rounded-lg"
-              style={{ color: note?.is_pinned ? 'var(--accent)' : 'var(--muted)' }} title={note?.is_pinned ? 'Unpin' : 'Pin'}>
-              {note?.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}
-            </button>
-            <button onClick={handleDelete} className="p-1.5 rounded-lg"
-              style={{ color: 'var(--muted)' }} title="Delete note">
-              <Trash2 size={15} />
-            </button>
+            {isOwner && (
+              <>
+                <button onClick={handlePin} className="p-1.5 rounded-lg"
+                  style={{ color: note?.is_pinned ? 'var(--accent)' : 'var(--muted)' }} title={note?.is_pinned ? 'Unpin' : 'Pin'}>
+                  {note?.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                </button>
+                <button onClick={handleDelete} className="p-1.5 rounded-lg"
+                  style={{ color: 'var(--muted)' }} title="Delete note">
+                  <Trash2 size={15} />
+                </button>
+              </>
+            )}
           </div>
 
           {/* Promote to Wiki Modal */}
@@ -562,10 +607,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               </>
             )}
           </div>
-          <input value={title} onChange={e => handleTitleChange(e.target.value)}
+          <input value={title} onChange={e => isOwner && handleTitleChange(e.target.value)}
+            readOnly={!isOwner}
             placeholder="Untitled"
             className="flex-1 text-[24px] font-bold bg-transparent outline-none mt-0.5"
-            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em' }} />
+            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em', cursor: isOwner ? 'text' : 'default' }} />
         </div>
 
         {/* Editor with toolbar */}

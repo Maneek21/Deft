@@ -850,7 +850,7 @@ export const peopleRelationships = pgTable('people_relationships', {
   ...orgId(),
   user_a_id: text('user_a_id').notNull().references(() => users.id),
   user_b_id: text('user_b_id').notNull().references(() => users.id),
-  relationship_type: text('relationship_type').notNull(), // 'close_collaborator' | 'mentor_mentee' | 'tension' | 'delegation_chain' | 'cross_team_bridge'
+  relationship_type: text('relationship_type').notNull(), // 'close_collaborator' | 'mentor_mentee' | 'tension' | 'delegation_chain' | 'cross_team_bridge' | 'knowledge_dependency'
   strength: real('strength'),
   direction: text('direction'), // 'bidirectional' | 'a_to_b' | 'b_to_a'
   evidence: jsonb('evidence'),
@@ -858,6 +858,7 @@ export const peopleRelationships = pgTable('people_relationships', {
   updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
 }, (t) => [
   index('people_relationship_org_idx').on(t.org_id),
+  uniqueIndex('people_relationships_pair_type_unique').on(t.user_a_id, t.user_b_id, t.relationship_type),
 ]);
 
 // ═══ PEOPLE GRAPH: TEAM HEALTH SNAPSHOTS ═══
@@ -932,12 +933,15 @@ export const notes = pgTable('notes', {
   is_template: boolean('is_template').default(false).notNull(),
   is_deleted: boolean('is_deleted').default(false).notNull(),
   version: integer('version').default(1).notNull(),
+  visibility: text('visibility').default('private').notNull(), // 'private' | 'org' | 'space'
+  visibility_space_id: text('visibility_space_id').references(() => spaces.id, { onDelete: 'set null' }),
   ...timestamps(),
 }, (t) => [
   index('note_org_idx').on(t.org_id),
   index('note_user_idx').on(t.user_id),
   index('note_updated_idx').on(t.updated_at),
   index('note_folder_idx').on(t.folder_id),
+  index('note_visibility_idx').on(t.visibility),
 ]);
 
 // ═══ NOTE VERSIONS ═══

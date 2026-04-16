@@ -15,6 +15,7 @@ import {
   peoplePatterns,
   peopleRelationships,
   wikiPages,
+  wikiLinks,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, inArray, ne, desc } from 'drizzle-orm';
 
@@ -978,7 +979,69 @@ export async function detectRelationships(orgId: string): Promise<void> {
     }
   }
 
-  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed`);
+  // ─── Wiki citation → knowledge_dependency edges ───────────────────────────
+  // When user-A's wiki page links to user-B's wiki page (via wikiLinks),
+  // that signals user-A relies on user-B's documented knowledge.
+  const citationPairs = await db
+    .select({
+      user_a: wikiPages.user_id,
+      user_b: sql<string>`cited.user_id`,
+      strength: sql<number>`count(*)::int`,
+    })
+    .from(wikiLinks)
+    .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
+    .innerJoin(
+      sql`wiki_pages AS cited`,
+      sql`cited.id = ${wikiLinks.target_page_id}`,
+    )
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        sql`cited.org_id = ${orgId}`,
+        sql`${wikiPages.user_id} IS NOT NULL`,
+        sql`cited.user_id IS NOT NULL`,
+        sql`${wikiPages.user_id} != cited.user_id`,
+        eq(wikiPages.is_deleted, false),
+        sql`cited.is_deleted = false`,
+      ),
+    )
+    .groupBy(wikiPages.user_id, sql`cited.user_id`)
+    .having(sql`count(*) >= 2`);
+
+  for (const pair of citationPairs) {
+    if (!pair.user_a || !pair.user_b) continue;
+    const normalizedStrength = Math.min(1, Number(pair.strength) / 10);
+
+    await db
+      .insert(peopleRelationships)
+      .values({
+        org_id: orgId,
+        user_a_id: pair.user_a,
+        user_b_id: pair.user_b,
+        relationship_type: 'knowledge_dependency',
+        strength: normalizedStrength,
+        direction: 'a_to_b',
+        evidence: {
+          wiki_citation_count: Number(pair.strength),
+        },
+      })
+      .onConflictDoUpdate({
+        target: [
+          peopleRelationships.user_a_id,
+          peopleRelationships.user_b_id,
+          peopleRelationships.relationship_type,
+        ],
+        set: {
+          strength: normalizedStrength,
+          evidence: {
+            wiki_citation_count: Number(pair.strength),
+          },
+          updated_at: now,
+        },
+      });
+  }
+
+  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed, ${citationPairs.length} knowledge_dependency edges`);
 }
 
 // ═══ FULL PIPELINE ═══
