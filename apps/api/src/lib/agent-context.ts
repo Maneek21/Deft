@@ -156,10 +156,46 @@ export async function executeToolCall(
     }
 
     case 'search_tasks': {
+      // Task 3.8 — consult retrieveContext for fuzzy/semantic hits first, then
+      // merge with SQL-filtered (status/priority/assignee/etc.) results by id.
+      // Semantic pass only runs when a query string is provided; structural-only
+      // filters fall straight through to the SQL path below.
+      const semanticIds: string[] = [];
+      if (typeof params.query === 'string' && params.query.trim().length >= 2) {
+        try {
+          const ctx = await retrieveContext({
+            query: params.query,
+            org_id: orgId,
+            user_id: _userId,
+            conversation_id: conversationId,
+            agent_employee_id: agentEmployeeId,
+            types: ['tasks'],
+            limit: 10,
+          });
+          for (const row of ctx) {
+            if (row.source_type === 'task') semanticIds.push(row.source_id);
+          }
+        } catch (err) {
+          // Non-fatal: semantic search is a best-effort enhancement.
+          console.warn('[search_tasks] retrieveContext failed, falling back to SQL-only:', (err as Error).message);
+        }
+      }
+
       const conditions: any[] = [eq(tasks.org_id, orgId), eq(tasks.is_deleted, false)];
 
       if (params.query) {
-        conditions.push(ilike(tasks.title, `%${params.query}%`));
+        // Union: literal-title ILIKE OR semantic id match. When semantic had no
+        // hits this collapses to the old behaviour (title ILIKE only).
+        if (semanticIds.length) {
+          conditions.push(
+            or(
+              ilike(tasks.title, `%${params.query}%`),
+              inArray(tasks.id, semanticIds),
+            ),
+          );
+        } else {
+          conditions.push(ilike(tasks.title, `%${params.query}%`));
+        }
       }
       if (params.status) {
         conditions.push(eq(tasks.status, params.status));

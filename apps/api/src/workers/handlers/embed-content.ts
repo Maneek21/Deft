@@ -61,7 +61,7 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
   }
   const { source_type, source_id } = data as EmbedContentJobData;
 
-  if (source_type !== 'wiki_page') {
+  if (source_type !== 'wiki_page' && source_type !== 'task') {
     console.warn(
       `[embed-content] Unknown source_type="${source_type}" (job ${job.id}) — skipping`,
     );
@@ -74,6 +74,11 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
     console.warn(
       `[embed-content] OPENAI_API_KEY is unset — skipping embedding for ${source_type}:${source_id}`,
     );
+    return;
+  }
+
+  if (source_type === 'task') {
+    await embedTask(job, source_id, apiKey);
     return;
   }
 
@@ -147,5 +152,75 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
 
   console.log(
     `[embed-content] wrote ${EMBED_DIMS}-dim embedding for wiki_page ${page.id} (job ${job.id})${usedFallback ? ' [bytea-fallback: pgvector not available]' : ''}`,
+  );
+}
+
+/**
+ * Task 3.8 — embed a task's title + description and write to tasks.embedding.
+ * Mirrors the wiki_page branch: hard-throws on OpenAI errors (so BullMQ retries),
+ * soft-returns on "task not found / deleted", and falls back to BYTEA on
+ * environments without the pgvector extension.
+ */
+async function embedTask(job: JobData, source_id: string, apiKey: string): Promise<void> {
+  const rows = await db.execute(
+    sql`SELECT id, title, description
+        FROM tasks
+        WHERE id = ${source_id}
+          AND is_deleted = false
+        LIMIT 1`,
+  );
+  const pending = (
+    rows as unknown as { rows?: Array<Record<string, unknown>> }
+  ).rows ?? (rows as unknown as Array<Record<string, unknown>>);
+
+  if (!pending.length) {
+    console.warn(
+      `[embed-content] task ${source_id} not found or deleted — skipping (job ${job.id})`,
+    );
+    return;
+  }
+
+  const task = pending[0] as {
+    id: string;
+    title: string;
+    description: string | null;
+  };
+
+  if (!task.title?.trim() && !task.description?.trim()) {
+    console.warn(`[embed-content] task ${task.id} has empty title+description — skipping (job ${job.id})`);
+    return;
+  }
+
+  const inputText = `${task.title}\n${task.description ?? ''}`.trim();
+  const embedding = await embedText(inputText, apiKey);
+
+  const literal = `[${embedding.join(',')}]`;
+  let usedFallback = false;
+  try {
+    await db.execute(
+      sql`UPDATE tasks
+          SET embedding = ${literal}::vector
+          WHERE id = ${task.id}`,
+    );
+  } catch (err: unknown) {
+    const msg = (err as Error)?.message ?? '';
+    const cause = (err as { cause?: { code?: string } })?.cause;
+    const isNoVector =
+      msg.includes('type "vector" does not exist') ||
+      cause?.code === '42704';
+    if (!isNoVector) {
+      throw err;
+    }
+    usedFallback = true;
+    const jsonBytes = Buffer.from(JSON.stringify(embedding));
+    await db.execute(
+      sql`UPDATE tasks
+          SET embedding = ${jsonBytes}
+          WHERE id = ${task.id}`,
+    );
+  }
+
+  console.log(
+    `[embed-content] wrote ${EMBED_DIMS}-dim embedding for task ${task.id} (job ${job.id})${usedFallback ? ' [bytea-fallback: pgvector not available]' : ''}`,
   );
 }

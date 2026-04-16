@@ -11,11 +11,11 @@
 
 import { eq, and, or, sql } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes } from '@deft/db/schema';
+import { wikiPages, agentMemory, notes, tasks } from '@deft/db/schema';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
-export type ContextSource = 'wiki_page' | 'agent_memory' | 'note' | 'decision';
+export type ContextSource = 'wiki_page' | 'agent_memory' | 'note' | 'decision' | 'task';
 
 export interface ContextResult {
   source_type: ContextSource;
@@ -34,7 +34,7 @@ export interface RetrieveContextParams {
   user_id?: string;
   conversation_id?: string;
   agent_employee_id?: string;
-  types?: Array<'wiki' | 'memory' | 'notes' | 'decisions'>;
+  types?: Array<'wiki' | 'memory' | 'notes' | 'decisions' | 'tasks'>;
   limit?: number;
   /**
    * When true (default), combine FTS score with cosine similarity when an
@@ -602,6 +602,101 @@ async function fetchNotes(
   }
 }
 
+async function fetchTasks(
+  org_id: string,
+  forFTS: string,
+  limit: number,
+  queryEmbedding: number[] | null,
+  hybrid: boolean,
+): Promise<ContextResult[]> {
+  // Task 3.8 — hybrid FTS + pgvector ranking over tasks.title + tasks.description.
+  // Mirrors fetchDecisions. search_vector is a GENERATED STORED tsvector column
+  // added in migration 0033; we reference it via sql literal since Drizzle
+  // doesn't have a first-class generated-column type.
+  const useHybrid = hybrid && queryEmbedding !== null;
+  const vectorLiteral = useHybrid ? `[${queryEmbedding!.join(',')}]` : '';
+
+  // Score expressions (taskwise — no confidence column, so plain ts_rank).
+  const taskFtsScore = (fts: string) =>
+    sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${fts}))`;
+  const taskHybridScore = (fts: string, vec: string) =>
+    sql<number>`0.4 * ts_rank(search_vector, plainto_tsquery('english', ${fts})) + 0.6 * coalesce(1 - (embedding <=> ${vec}::vector), 0)`;
+
+  const buildQuery = (scoreExpr: ReturnType<typeof taskFtsScore> | ReturnType<typeof taskHybridScore>) =>
+    db
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        description: tasks.description,
+        status: tasks.status,
+        priority: tasks.priority,
+        assignee_id: tasks.assignee_id,
+        project_id: tasks.project_id,
+        rawScore: scoreExpr,
+      })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.org_id, org_id),
+          eq(tasks.is_deleted, false),
+          sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
+        ),
+      )
+      .orderBy(sql`${scoreExpr} DESC`)
+      .limit(limit);
+
+  const mapRows = (
+    rows: Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      status: string;
+      priority: string;
+      assignee_id: string | null;
+      project_id: string;
+      rawScore: number;
+    }>,
+  ) =>
+    rows.map((row) => ({
+      source_type: 'task' as ContextSource,
+      source_id: row.id,
+      title: row.title,
+      content: row.description ?? '',
+      score: clampScore(row.rawScore ?? 0),
+      metadata: {
+        status: row.status,
+        priority: row.priority,
+        assignee_id: row.assignee_id ?? null,
+        project_id: row.project_id,
+      },
+    }));
+
+  try {
+    const scoreExpr = useHybrid
+      ? taskHybridScore(forFTS, vectorLiteral)
+      : taskFtsScore(forFTS);
+    const rows = await buildQuery(scoreExpr);
+    return mapRows(rows);
+  } catch (err) {
+    if (useHybrid && isVectorOperatorError(err)) {
+      if (!_byteFallbackWarned) {
+        _byteFallbackWarned = true;
+        console.warn('[retrieveContext] pgvector <=> operator unavailable (BYTEA column?) — falling back to FTS-only for tasks queries');
+      }
+      try {
+        const rows = await buildQuery(taskFtsScore(forFTS));
+        return mapRows(rows);
+      } catch (ftsErr) {
+        console.warn('[retrieveContext] tasks branch failed (FTS fallback):', (ftsErr as Error).message);
+        return [];
+      }
+    }
+
+    console.warn('[retrieveContext] tasks branch failed:', (err as Error).message);
+    return [];
+  }
+}
+
 // ─── Main gateway ─────────────────────────────────────────────────────────────
 
 export async function retrieveContext(
@@ -613,7 +708,7 @@ export async function retrieveContext(
     user_id,
     conversation_id,
     agent_employee_id,
-    types = ['wiki', 'memory', 'notes', 'decisions'],
+    types = ['wiki', 'memory', 'notes', 'decisions', 'tasks'],
     limit = 10,
     hybrid = true,
   } = params;
@@ -631,13 +726,13 @@ export async function retrieveContext(
   //    Returns null when OPENAI_API_KEY is unset or the API call fails, which
   //    causes both branches to fall back to FTS-only ranking transparently.
   const needsEmbedding =
-    hybrid && (types.includes('wiki') || types.includes('decisions'));
+    hybrid && (types.includes('wiki') || types.includes('decisions') || types.includes('tasks'));
   const queryEmbedding = needsEmbedding
     ? await generateQueryEmbedding(forFTS)
     : null;
 
   // 4. Run all requested branches concurrently; each returns its own array.
-  const [wikiRows, decisionRows, memRows, noteRows] = await Promise.all([
+  const [wikiRows, decisionRows, memRows, noteRows, taskRows] = await Promise.all([
     types.includes('wiki')
       ? fetchWiki(org_id, forFTS, agent_employee_id, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
@@ -659,10 +754,17 @@ export async function retrieveContext(
     types.includes('notes')
       ? fetchNotes(org_id, user_id, forIlike, words, limit)
       : Promise.resolve([]),
+
+    // 7. Tasks branch (Task 3.8): hybrid FTS + pgvector over title + description,
+    //    filtered by org_id + is_deleted. Backing store is tasks.search_vector
+    //    (generated tsvector) + tasks.embedding (pgvector).
+    types.includes('tasks')
+      ? fetchTasks(org_id, forFTS, limit, queryEmbedding, hybrid)
+      : Promise.resolve([]),
   ]);
 
-  // 7. Merge, sort by score DESC, return top `limit`.
-  const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows];
+  // 8. Merge, sort by score DESC, return top `limit`.
+  const results = [...wikiRows, ...decisionRows, ...memRows, ...noteRows, ...taskRows];
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit);
 }

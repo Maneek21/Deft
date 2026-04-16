@@ -248,7 +248,18 @@ export const tasks = pgTable('tasks', {
   source_message_id: text('source_message_id').references(() => messages.id),
   parent_task_id: text('parent_task_id').references((): any => tasks.id, { onDelete: 'set null' }),  // self-reference for subtasks (one level deep)
   is_deleted: boolean('is_deleted').default(false).notNull(),
+  /**
+   * Task 3.8 — pgvector embedding over (title + description) for semantic
+   * search via retrieveContext({ types: ['tasks'] }). Populated by the
+   * embed-content worker (source_type: 'task') and backfilled via
+   * backfill-task-embeddings.ts.
+   */
+  embedding: vector('embedding', { dimensions: 1536 }),
   ...timestamps(),
+  // NOTE: tasks.search_vector is a GENERATED ALWAYS column declared in
+  // migration 0033. Drizzle does not have a first-class generated-column
+  // builder, so it is intentionally omitted from the schema — SQL code paths
+  // that need it reference it via `sql` literals (see retrieve-context.ts).
 }, (t) => [
   index('task_project_idx').on(t.project_id),
   index('task_assignee_idx').on(t.assignee_id),
