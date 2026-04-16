@@ -17,6 +17,21 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'list_my_tasks',
+    description:
+      "Return tasks assigned to the current caller (primary assignee or in task_assignees). Defaults to active tasks only (excludes done and cancelled); pass a status to override.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status: {
+          type: 'string',
+          description: 'Optional status filter (backlog, todo, in_progress, in_review, done, cancelled)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'search_tasks',
     description:
       'Search tasks across all projects. Use for questions about work items, their status, assignments, etc.',

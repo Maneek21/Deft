@@ -3,6 +3,7 @@ import {
   messages,
   users,
   tasks,
+  taskAssignees,
   projects,
   taskComments,
   taskActivity,
@@ -213,6 +214,57 @@ export async function executeToolCall(
       });
 
       return { result: results, citations };
+    }
+
+    case 'list_my_tasks': {
+      // Task 3.7 — caller-scoped task list. Matches search_tasks shape but
+      // fixes assignee to ctx.userId and pulls in additional assignees
+      // via task_assignees so tasks that are only shared (not primary)
+      // still surface.
+      const statusFilter = typeof params.status === 'string' ? params.status : null;
+      const conditions: any[] = [
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        or(
+          eq(tasks.assignee_id, _userId),
+          sql`EXISTS (SELECT 1 FROM ${taskAssignees} WHERE ${taskAssignees.task_id} = ${tasks.id} AND ${taskAssignees.user_id} = ${_userId})`,
+        ),
+      ];
+      if (statusFilter) {
+        conditions.push(eq(tasks.status, statusFilter as any));
+      } else {
+        // Default: exclude done + cancelled.
+        conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
+      }
+
+      const myResults = await db
+        .select({
+          id: tasks.id,
+          number: tasks.number,
+          title: tasks.title,
+          status: tasks.status,
+          priority: tasks.priority,
+          due_date: tasks.due_date,
+          assignee_name: users.name,
+          project_name: projects.name,
+          project_prefix: projects.prefix,
+        })
+        .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
+        .leftJoin(users, eq(tasks.assignee_id, users.id))
+        .where(and(...conditions))
+        .orderBy(desc(tasks.updated_at))
+        .limit(50);
+
+      myResults.forEach((t) => {
+        citations.push({
+          type: 'task',
+          id: t.id,
+          title: `${t.project_prefix}-${t.number}: ${t.title}`,
+        });
+      });
+
+      return { result: myResults, citations };
     }
 
     case 'get_task_detail': {
