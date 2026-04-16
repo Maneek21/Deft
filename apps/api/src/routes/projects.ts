@@ -1,10 +1,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, sql, inArray, isNull } from 'drizzle-orm';
+import { eq, and, asc, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskLabels, labels, users, taskActivity, notifications } from '@deft/db/schema';
+import { projects, tasks, taskLabels, labels, users, taskActivity, notifications, projectSkills, skills } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import {
+  getProjectResolvedConfig,
+  invalidateProjectResolvedConfig,
+} from '../lib/project-resolved-config.js';
 
 export const projectRoutes = new Hono();
 
@@ -456,5 +460,267 @@ projectRoutes.post('/:id/tasks', async (c) => {
   } catch (err) {
     console.error('Failed to create task:', err);
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ═══ PROJECT SKILL ATTACHMENT ROUTES (Task 4.5) ═══
+
+// Helper: verify a project belongs to the caller's org. Returns project row
+// or null. Keeps each handler short.
+async function verifyProjectForOrg(projectId: string, orgId: string) {
+  const [row] = await db.select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.org_id, orgId)))
+    .limit(1);
+  return row ?? null;
+}
+
+// GET /api/projects/:id/skills — list attached skills in attachment_order
+projectRoutes.get('/:id/skills', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const project = await verifyProjectForOrg(projectId, user.org_id);
+    if (!project) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const rows = await db.select({
+      skill_id: projectSkills.skill_id,
+      attachment_order: projectSkills.attachment_order,
+      attached_at: projectSkills.attached_at,
+      skill_name: skills.name,
+      skill_slug: skills.slug,
+      skill_description: skills.description,
+      skill_icon: skills.icon,
+      skill_source: skills.source,
+      skill_version: skills.version,
+      skill_project_config: skills.project_config,
+    })
+      .from(projectSkills)
+      .innerJoin(skills, eq(projectSkills.skill_id, skills.id))
+      .where(eq(projectSkills.project_id, projectId))
+      .orderBy(asc(projectSkills.attachment_order));
+
+    const resolved = await getProjectResolvedConfig(projectId);
+
+    const attached_skills = rows.map((r) => ({
+      skill_id: r.skill_id,
+      attachment_order: r.attachment_order,
+      attached_at: r.attached_at,
+      name: r.skill_name,
+      slug: r.skill_slug,
+      description: r.skill_description,
+      icon: r.skill_icon,
+      source: r.skill_source,
+      version: r.skill_version,
+      project_config: r.skill_project_config,
+    }));
+
+    return c.json({ attached_skills, resolved_config: resolved });
+  } catch (err) {
+    console.error('Failed to list project skills:', err);
+    return c.json({ error: 'Failed to list skills', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/projects/:id/skills — attach a skill (appends to end of order)
+const attachSkillSchema = z.object({
+  skill_id: z.string().min(1),
+});
+
+projectRoutes.post('/:id/skills', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = attachSkillSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const project = await verifyProjectForOrg(projectId, user.org_id);
+    if (!project) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    // Resolve skill: must be bundled/marketplace (org_id NULL) OR belong to
+    // this org. Prevents cross-tenant attachment.
+    const [skill] = await db.select({
+      id: skills.id,
+      org_id: skills.org_id,
+      source: skills.source,
+    })
+      .from(skills)
+      .where(eq(skills.id, parsed.data.skill_id))
+      .limit(1);
+
+    if (!skill) {
+      return c.json({ error: 'Skill not found', code: 'SKILL_NOT_FOUND' }, 404);
+    }
+    if (skill.org_id !== null && skill.org_id !== user.org_id) {
+      return c.json({ error: 'Skill not accessible', code: 'FORBIDDEN' }, 403);
+    }
+
+    // Already attached? Return 409.
+    const existing = await db.select({ skill_id: projectSkills.skill_id })
+      .from(projectSkills)
+      .where(and(
+        eq(projectSkills.project_id, projectId),
+        eq(projectSkills.skill_id, skill.id),
+      ))
+      .limit(1);
+    if (existing.length > 0) {
+      return c.json({ error: 'Skill already attached', code: 'ALREADY_ATTACHED' }, 409);
+    }
+
+    // Compute next attachment_order = max + 1 (or 0 if empty).
+    const [maxRow] = await db.select({
+      max_order: sql<number | null>`max(${projectSkills.attachment_order})`,
+    })
+      .from(projectSkills)
+      .where(eq(projectSkills.project_id, projectId));
+
+    const nextOrder = maxRow?.max_order == null ? 0 : Number(maxRow.max_order) + 1;
+
+    await db.insert(projectSkills).values({
+      project_id: projectId,
+      skill_id: skill.id,
+      attachment_order: nextOrder,
+    });
+
+    invalidateProjectResolvedConfig(projectId);
+
+    return c.json({
+      project_id: projectId,
+      skill_id: skill.id,
+      attachment_order: nextOrder,
+    }, 201);
+  } catch (err) {
+    console.error('Failed to attach skill:', err);
+    return c.json({ error: 'Failed to attach skill', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/projects/:id/skills/:skill_id — detach + renumber remainder
+projectRoutes.delete('/:id/skills/:skill_id', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const skillId = c.req.param('skill_id');
+
+    const project = await verifyProjectForOrg(projectId, user.org_id);
+    if (!project) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const deleted = await db.delete(projectSkills)
+      .where(and(
+        eq(projectSkills.project_id, projectId),
+        eq(projectSkills.skill_id, skillId),
+      ))
+      .returning({ skill_id: projectSkills.skill_id });
+
+    if (deleted.length === 0) {
+      return c.json({ error: 'Skill not attached', code: 'NOT_FOUND' }, 404);
+    }
+
+    // Renumber remaining rows to be contiguous 0..n-1, preserving order.
+    const remaining = await db.select({ skill_id: projectSkills.skill_id })
+      .from(projectSkills)
+      .where(eq(projectSkills.project_id, projectId))
+      .orderBy(asc(projectSkills.attachment_order));
+
+    for (let i = 0; i < remaining.length; i++) {
+      await db.update(projectSkills)
+        .set({ attachment_order: i })
+        .where(and(
+          eq(projectSkills.project_id, projectId),
+          eq(projectSkills.skill_id, remaining[i]!.skill_id),
+        ));
+    }
+
+    invalidateProjectResolvedConfig(projectId);
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to detach skill:', err);
+    return c.json({ error: 'Failed to detach skill', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// PATCH /api/projects/:id/skills/reorder — replace the full ordering
+const reorderSkillsSchema = z.object({
+  // Ordered list of skill_ids. Must equal the current attached set.
+  attachment_order: z.array(z.string().min(1)),
+});
+
+projectRoutes.patch('/:id/skills/reorder', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = reorderSkillsSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const project = await verifyProjectForOrg(projectId, user.org_id);
+    if (!project) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const current = await db.select({ skill_id: projectSkills.skill_id })
+      .from(projectSkills)
+      .where(eq(projectSkills.project_id, projectId));
+
+    const currentSet = new Set(current.map((r) => r.skill_id));
+    const desired = parsed.data.attachment_order;
+    const desiredSet = new Set(desired);
+
+    if (
+      desired.length !== current.length ||
+      desiredSet.size !== desired.length ||
+      [...currentSet].some((s) => !desiredSet.has(s))
+    ) {
+      return c.json({
+        error: 'attachment_order must match currently attached skill set exactly (no duplicates, no missing, no extras)',
+        code: 'INVALID_REORDER',
+      }, 400);
+    }
+
+    for (let i = 0; i < desired.length; i++) {
+      await db.update(projectSkills)
+        .set({ attachment_order: i })
+        .where(and(
+          eq(projectSkills.project_id, projectId),
+          eq(projectSkills.skill_id, desired[i]!),
+        ));
+    }
+
+    invalidateProjectResolvedConfig(projectId);
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to reorder skills:', err);
+    return c.json({ error: 'Failed to reorder skills', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/projects/:id/resolved-config — the merged config used by UI
+projectRoutes.get('/:id/resolved-config', async (c) => {
+  try {
+    const user = c.get('user');
+    const projectId = c.req.param('id');
+    const project = await verifyProjectForOrg(projectId, user.org_id);
+    if (!project) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const resolved = await getProjectResolvedConfig(projectId);
+    return c.json(resolved);
+  } catch (err) {
+    console.error('Failed to fetch resolved config:', err);
+    return c.json({ error: 'Failed to fetch resolved config', code: 'INTERNAL_ERROR' }, 500);
   }
 });
