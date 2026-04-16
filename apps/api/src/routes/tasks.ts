@@ -22,12 +22,14 @@ const createTaskSchema = z.object({
   sort_order: z.number().nullable().optional(),
   source_message_id: z.string().nullable().optional(),
   parent_task_id: z.string().nullable().optional(),
+  // Task 4.11 — free-form skill-defined custom fields keyed by field id.
+  metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 const updateTaskSchema = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional(),
-  status: z.enum(['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']).optional(),
+  status: z.string().optional(),
   priority: z.enum(['p0', 'p1', 'p2', 'p3']).optional(),
   assignee_id: z.string().nullable().optional(),
   due_date: z.string().nullable().optional(),
@@ -41,6 +43,8 @@ const updateTaskSchema = z.object({
   // in case the field bypasses Zod (e.g. passthrough elsewhere).
   parent_task_id: z.string().nullable().optional(),
   recurrence: z.enum(['daily', 'weekly', 'biweekly', 'monthly']).nullable().optional(),
+  // Task 4.11 — partial-update of skill-defined custom fields.
+  metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 const createDependencySchema = z.object({
@@ -1197,6 +1201,8 @@ taskRoutes.post('/project/:projectId', async (c) => {
       sort_order: parsed.data.sort_order ?? 0,
       source_message_id: parsed.data.source_message_id || undefined,
       parent_task_id: parsed.data.parent_task_id || undefined,
+      // Task 4.11 — skill-defined custom fields.
+      metadata: parsed.data.metadata ?? undefined,
     }).returning();
 
     // Create activity log entry
@@ -1381,6 +1387,18 @@ taskRoutes.patch('/:id', async (c) => {
 
     if (parsed.data.recurrence !== undefined) {
       updateData.recurrence = parsed.data.recurrence;
+    }
+
+    if (parsed.data.metadata !== undefined) {
+      // Task 4.11 — shallow-merge custom field updates into existing metadata
+      // so the UI can PATCH a single field without clobbering the others.
+      // Pass null explicitly to clear all custom fields.
+      if (parsed.data.metadata === null) {
+        updateData.metadata = null;
+      } else {
+        const existing = (existingTask as any).metadata ?? {};
+        updateData.metadata = { ...existing, ...parsed.data.metadata };
+      }
     }
 
     // Task 0.6 — project_id moves are rejected earlier in the handler with

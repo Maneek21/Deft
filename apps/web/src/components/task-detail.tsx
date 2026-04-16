@@ -67,6 +67,8 @@ type Task = {
   parent_task_id: string | null;
   // Task 4.12 — recurrence cadence; null means "does not repeat".
   recurrence: 'daily' | 'weekly' | 'biweekly' | 'monthly' | null;
+  // Task 4.11 — skill-defined custom field payload (deal_value, contact, etc).
+  metadata?: Record<string, any> | null;
   created_at: string;
   updated_at: string;
 };
@@ -198,6 +200,150 @@ function formatActivityValue(field: string, value: string | null, members?: { id
     return member ? member.name : value;
   }
   return value;
+}
+
+/**
+ * Task 4.11 — Renders a label/input pair for one skill-defined custom field.
+ * Sits inside the task-detail 2-column grid so its children live in the same
+ * row as the other metadata fields. Auto-saves on blur (text / textarea /
+ * url / number) or on change (select / date / user) via the `onChange` prop,
+ * which the caller debounces + merges into `tasks.metadata` JSONB.
+ */
+function CustomFieldRow({
+  field,
+  value,
+  onChange,
+  members,
+}: {
+  field: { id: string; label: string; type: string; options?: string[] };
+  value: any;
+  onChange: (v: any) => void | Promise<void>;
+  members: { id: string; name: string; avatar_url: string | null }[];
+}) {
+  const labelCell = (
+    <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+      {field.label}
+    </span>
+  );
+
+  const inputStyle: React.CSSProperties = {
+    background: 'transparent',
+    border: '1px solid var(--border)',
+    color: 'var(--foreground)',
+    fontFamily: 'var(--font-body)',
+    borderRadius: '6px',
+    padding: '4px 8px',
+    fontSize: '13px',
+    outline: 'none',
+    width: '100%',
+  };
+
+  let inputCell: React.ReactNode;
+
+  switch (field.type) {
+    case 'textarea':
+      inputCell = (
+        <textarea
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical' }}
+          placeholder="—"
+        />
+      );
+      break;
+    case 'select':
+      inputCell = (
+        <select
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        >
+          <option value="">—</option>
+          {(field.options ?? []).map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    case 'date':
+      inputCell = (
+        <input
+          type="date"
+          value={value ? String(value).slice(0, 10) : ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        />
+      );
+      break;
+    case 'number':
+    case 'currency':
+      inputCell = (
+        <input
+          type="number"
+          defaultValue={value ?? ''}
+          onBlur={(e) => {
+            const raw = e.target.value;
+            if (raw === '') {
+              onChange(null);
+            } else {
+              const n = Number(raw);
+              if (!Number.isNaN(n)) onChange(n);
+            }
+          }}
+          style={inputStyle}
+          placeholder={field.type === 'currency' ? '0' : '—'}
+        />
+      );
+      break;
+    case 'url':
+      inputCell = (
+        <input
+          type="url"
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+          placeholder="https://…"
+        />
+      );
+      break;
+    case 'user':
+      inputCell = (
+        <select
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        >
+          <option value="">Unassigned</option>
+          {members.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    case 'text':
+    default:
+      inputCell = (
+        <input
+          type="text"
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+          placeholder="—"
+        />
+      );
+  }
+
+  return (
+    <>
+      {labelCell}
+      {inputCell}
+    </>
+  );
 }
 
 function DescriptionEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
@@ -1146,6 +1292,31 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     </span>
                   )}
                 </div>
+
+                {/* Task 4.11 — Custom fields from resolved skill config */}
+                {(resolvedConfig?.custom_fields ?? []).map((field) => {
+                  const value = task.metadata?.[field.id];
+                  const handleChange = async (newVal: any) => {
+                    const res = await api.patch(`/api/tasks/${taskId}`, {
+                      metadata: { [field.id]: newVal },
+                    });
+                    if (res.ok) {
+                      const apiResult = await res.json();
+                      const merged = { ...task, ...apiResult };
+                      setTask(merged);
+                      onUpdated(merged);
+                    }
+                  };
+                  return (
+                    <CustomFieldRow
+                      key={field.id}
+                      field={field}
+                      value={value}
+                      onChange={handleChange}
+                      members={members}
+                    />
+                  );
+                })}
 
                 {/* Tags */}
                 <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>

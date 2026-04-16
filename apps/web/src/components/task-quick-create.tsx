@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
 import { X, ChevronDown } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 
 type Props = {
   projectId: string;
@@ -15,7 +16,7 @@ type Props = {
   onCreated: () => void;
 };
 
-const STATUS_OPTIONS = [
+const DEFAULT_STATUS_OPTIONS = [
   { value: 'backlog', label: statusLabel('backlog') },
   { value: 'todo', label: statusLabel('todo') },
   { value: 'in_progress', label: statusLabel('in_progress') },
@@ -40,6 +41,27 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
   const [error, setError] = useState<string | null>(null);
   const [members, setMembers] = useState<{ id: string; name: string }[]>([]);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  // Task 4.11 — resolved skill config drives custom fields + status vocab.
+  const { config: resolvedConfig } = useProjectResolvedConfig(projectId);
+  const [metadata, setMetadata] = useState<Record<string, any>>({});
+  const STATUS_OPTIONS = resolvedConfig?.statuses && resolvedConfig.statuses.length > 0
+    ? [...resolvedConfig.statuses]
+        .filter((s) => s.id !== 'done' && s.id !== 'cancelled' && s.id !== 'won' && s.id !== 'lost')
+        .sort((a, b) => a.order - b.order)
+        .map((s) => ({ value: s.id, label: s.label }))
+    : DEFAULT_STATUS_OPTIONS;
+  const customFields = resolvedConfig?.custom_fields ?? [];
+
+  // If the user hasn't explicitly picked a status and the current value is
+  // not in the resolved-config list (e.g. Sales skill has 'new' instead of
+  // 'backlog'), fall back to the first status.
+  useEffect(() => {
+    if (!resolvedConfig) return;
+    if (!STATUS_OPTIONS.some((s) => s.value === status)) {
+      setStatus(STATUS_OPTIONS[0]?.value || 'backlog');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedConfig]);
 
   const titleRef = useRef<HTMLInputElement>(null);
 
@@ -78,6 +100,12 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
       if (assigneeId) body.assignee_id = assigneeId;
       if (dueDate) body.due_date = dueDate;
       if (sourceMessageId) body.source_message_id = sourceMessageId;
+      // Task 4.11 — include skill-defined custom fields.
+      const filledMetadata: Record<string, any> = {};
+      for (const [k, v] of Object.entries(metadata)) {
+        if (v !== '' && v !== null && v !== undefined) filledMetadata[k] = v;
+      }
+      if (Object.keys(filledMetadata).length > 0) body.metadata = filledMetadata;
       // Strip any null/undefined values to avoid Zod validation issues
       for (const key of Object.keys(body)) {
         if (body[key] === null || body[key] === undefined) {
@@ -343,6 +371,65 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                 />
               </div>
             </div>
+
+            {/* Task 4.11 — Custom fields from the resolved skill config */}
+            {customFields.length > 0 && (
+              <div className="px-5 pb-4 pt-1 grid grid-cols-[100px_1fr] gap-x-3 gap-y-2 items-center">
+                {customFields.map((field) => {
+                  const val = metadata[field.id] ?? '';
+                  const setVal = (v: any) => setMetadata((m) => ({ ...m, [field.id]: v }));
+                  const baseStyle: React.CSSProperties = {
+                    border: '1px solid var(--border)',
+                    borderRadius: '6px',
+                    padding: '4px 8px',
+                    fontSize: '12px',
+                    color: 'var(--foreground)',
+                    fontFamily: 'var(--font-body)',
+                    background: 'transparent',
+                    outline: 'none',
+                    width: '100%',
+                  };
+                  let input: React.ReactNode;
+                  if (field.type === 'textarea') {
+                    input = <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={2} style={baseStyle} />;
+                  } else if (field.type === 'select') {
+                    input = (
+                      <select value={val} onChange={(e) => setVal(e.target.value)} style={baseStyle}>
+                        <option value="">—</option>
+                        {(field.options ?? []).map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    );
+                  } else if (field.type === 'date') {
+                    input = <input type="date" value={val} onChange={(e) => setVal(e.target.value)} style={baseStyle} />;
+                  } else if (field.type === 'number' || field.type === 'currency') {
+                    input = <input type="number" value={val} onChange={(e) => setVal(e.target.value === '' ? '' : Number(e.target.value))} style={baseStyle} placeholder={field.type === 'currency' ? '0' : ''} />;
+                  } else if (field.type === 'url') {
+                    input = <input type="url" value={val} onChange={(e) => setVal(e.target.value)} style={baseStyle} placeholder="https://…" />;
+                  } else if (field.type === 'user') {
+                    input = (
+                      <select value={val} onChange={(e) => setVal(e.target.value)} style={baseStyle}>
+                        <option value="">Unassigned</option>
+                        {members.map((m) => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                    );
+                  } else {
+                    input = <input type="text" value={val} onChange={(e) => setVal(e.target.value)} style={baseStyle} />;
+                  }
+                  return (
+                    <div key={field.id} className="contents">
+                      <span className="text-[11px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                        {field.label}
+                      </span>
+                      {input}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Error */}
             {error && (

@@ -29,6 +29,7 @@ import {
   CalendarRange,
   CalendarDays,
   GitBranch,
+  FileText,
 } from 'lucide-react';
 
 const TaskTimeline = lazy(() => import('./timeline'));
@@ -117,6 +118,7 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [templatesDropdownOpen, setTemplatesDropdownOpen] = useState(false);
   const [quickCreateStatus, setQuickCreateStatus] = useState<string | undefined>(undefined);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -759,23 +761,81 @@ export default function TasksPage() {
           </div>
 
           {!isMyTasksView && (
-            <button
-              onClick={() => {
-                setQuickCreateStatus(undefined);
-                setQuickCreateOpen(true);
-              }}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium text-white"
-              style={{
-                background: 'var(--accent)',
-                fontFamily: 'var(--font-heading)',
-                transition: 'opacity 150ms',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.9')}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
-            >
-              <Plus size={14} />
-              New task
-            </button>
+            <div className="hidden md:flex items-center gap-2">
+              {selectedProject && (resolvedConfig?.task_templates?.length ?? 0) > 0 && (
+                <div className="relative">
+                  <button
+                    onClick={() => setTemplatesDropdownOpen((v) => !v)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium"
+                    style={{
+                      background: 'var(--surface)',
+                      color: 'var(--foreground-secondary)',
+                      border: '1px solid var(--border)',
+                      fontFamily: 'var(--font-heading)',
+                    }}
+                  >
+                    <FileText size={13} />
+                    Templates
+                    <ChevronDown size={12} />
+                  </button>
+                  {templatesDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setTemplatesDropdownOpen(false)} />
+                      <div
+                        className="absolute right-0 top-full mt-1 w-64 rounded-lg py-1 z-20"
+                        style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+                      >
+                        {resolvedConfig!.task_templates.map((tpl) => (
+                          <button
+                            key={tpl.id}
+                            onClick={async () => {
+                              setTemplatesDropdownOpen(false);
+                              const res = await api.post(
+                                `/api/projects/${selectedProject.id}/apply-template`,
+                                { template_id: tpl.id },
+                              );
+                              if (res.ok) {
+                                const data = await res.json();
+                                await loadTasks();
+                                setToast(`${data.count} task${data.count === 1 ? '' : 's'} created from "${tpl.name}"`);
+                              } else {
+                                setToast('Failed to apply template');
+                              }
+                            }}
+                            className="w-full text-left px-3 py-2 text-[12px]"
+                            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                          >
+                            <div className="font-medium">{tpl.name}</div>
+                            <div className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                              {tpl.tasks.length} task{tpl.tasks.length === 1 ? '' : 's'}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  setQuickCreateStatus(undefined);
+                  setQuickCreateOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium text-white"
+                style={{
+                  background: 'var(--accent)',
+                  fontFamily: 'var(--font-heading)',
+                  transition: 'opacity 150ms',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.9')}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
+              >
+                <Plus size={14} />
+                New task
+              </button>
+            </div>
           )}
         </div>
 

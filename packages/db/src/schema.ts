@@ -259,6 +259,14 @@ export const tasks = pgTable('tasks', {
    * backfill-task-embeddings.ts.
    */
   embedding: vector('embedding', { dimensions: 1536 }),
+  /**
+   * Task 4.11 — skill-defined custom-field payload. Keys match the `id`s
+   * in the resolved skill config's `custom_fields[]` (e.g. Sales skill
+   * stores `deal_value`, `contact_name`). Null for tasks in projects with
+   * no custom fields. Not covered by tasks.search_vector (FTS still scans
+   * title + description only).
+   */
+  metadata: jsonb('metadata'),
   ...timestamps(),
   // NOTE: tasks.search_vector is a GENERATED ALWAYS column declared in
   // migration 0033. Drizzle does not have a first-class generated-column

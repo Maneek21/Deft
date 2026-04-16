@@ -48,6 +48,7 @@ import { integrationsRoutes } from './routes/integrations.js';
 import { agentDeployRoutes } from './routes/agent-deploy.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
+import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
 
 const app = new Hono();
@@ -116,6 +117,8 @@ app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/integrations', integrationsRoutes);
 app.route('/api/agents/deploy', agentDeployRoutes);
 app.route('/api/skills', skillsRoutes);
+// Task 4.11 — /api/projects/:id/apply-template (template bulk-create)
+app.route('/api/projects', taskTemplateRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
