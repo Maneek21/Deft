@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
-import { Bell, Check, MessageSquare, AtSign, CheckSquare, AlertCircle, Clock, Headphones } from 'lucide-react';
+import { Bell, Check, MessageSquare, AtSign, CheckSquare, AlertCircle, Clock, Headphones, Sparkles } from 'lucide-react';
 
 type Notification = {
   id: string;
@@ -14,6 +14,7 @@ type Notification = {
   is_read: boolean;
   link: string | null;
   created_at: string;
+  metadata?: Record<string, unknown> | null;
 };
 
 // relativeTime imported as formatRelative from @/lib/time
@@ -27,8 +28,25 @@ function notificationIcon(type: string) {
     case 'task_updated': return CheckSquare;
     case 'reminder': return Clock;
     case 'huddle_started': return Headphones;
+    case 'agent_suggestion': return Sparkles;
     default: return AlertCircle;
   }
+}
+
+function notificationHref(n: Notification): string | null {
+  if (n.type === 'agent_suggestion') {
+    const meta = (n.metadata ?? {}) as Record<string, unknown>;
+    const messageId =
+      (typeof meta.source_message_id === 'string' && meta.source_message_id) ||
+      (typeof meta.message_id === 'string' && meta.message_id) ||
+      (typeof meta.messageId === 'string' && meta.messageId) ||
+      null;
+    if (messageId) return `/chat?messageId=${encodeURIComponent(messageId)}`;
+    // Fallback: if link points at chat already, honor it; otherwise route to chat
+    if (n.link && n.link.startsWith('/chat')) return n.link;
+    return '/chat';
+  }
+  return n.link;
 }
 
 type Props = {
@@ -101,8 +119,9 @@ export function NotificationPanel({ onClose, onCountSync }: Props) {
 
   const handleClick = (n: Notification) => {
     if (!n.is_read) handleMarkRead(n.id);
-    if (n.link) {
-      router.push(n.link);
+    const href = notificationHref(n);
+    if (href) {
+      router.push(href);
     }
     onClose();
   };
