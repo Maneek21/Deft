@@ -40,6 +40,21 @@ export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', [
 export const planStatusEnum = pgEnum('plan_status', ['draft', 'approved', 'executing', 'paused', 'completed', 'failed']);
 export const planStepStatusEnum = pgEnum('plan_step_status', ['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval']);
 export const taskRelationshipTypeEnum = pgEnum('task_relationship_type', ['blocks', 'blocked_by', 'relates_to', 'duplicates']);
+export const notificationTypeEnum = pgEnum('notification_type', [
+  'task',
+  'task_assigned',
+  'task_updated',
+  'agent_suggestion',
+  'mention',
+  'message',
+  'reminder',
+  'huddle_started',
+  'system',
+  'blocked',
+  'cross_reference',
+  'workload_imbalance',
+  'wiki_update',
+]);
 
 // ═══ ORGS ═══
 export const orgs = pgTable('orgs', {
@@ -323,7 +338,7 @@ export const notifications = pgTable('notifications', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
-  type: text('type').notNull(), // 'mention', 'task_assigned', 'task_updated', 'agent_suggestion', 'system'
+  type: notificationTypeEnum('type').notNull(),
   title: text('title').notNull(),
   body: text('body'),
   link: text('link'), // URL to navigate to
