@@ -12,6 +12,9 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'wiki-lint', 'cron:wiki-lint');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'deprecation-warning', 'cron:deprecation-warning');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'weekly-digest', 'cron:weekly-digest');
+  // Task 4.14 — daily sweep that turns newer skill versions into
+  // `skill_update_available` notifications for the employee's owner.
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'skill-update-check', 'cron:skill-update-check');
   // Phase 11 — Gateway connectivity ping (distinct from agent-heartbeat).
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'gateway-ping', 'gateway-ping');
   console.log('[scheduler] Cron jobs registered');

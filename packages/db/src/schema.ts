@@ -54,6 +54,10 @@ export const notificationTypeEnum = pgEnum('notification_type', [
   'cross_reference',
   'workload_imbalance',
   'wiki_update',
+  // Task 4.14 — daily cron surfaces when an installed skill has a newer
+  // version in the registry; one notification per (employee, skill,
+  // target_version) tuple, re-surfaces on the next version bump.
+  'skill_update_available',
 ]);
 
 // ═══ ORGS ═══

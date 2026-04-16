@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
-import { Bell, Check, MessageSquare, AtSign, CheckSquare, AlertCircle, Clock, Headphones, Sparkles } from 'lucide-react';
+import { Bell, Check, MessageSquare, AtSign, CheckSquare, AlertCircle, Clock, Headphones, Sparkles, ArrowUp } from 'lucide-react';
 
 type Notification = {
   id: string;
@@ -29,6 +29,8 @@ function notificationIcon(type: string) {
     case 'reminder': return Clock;
     case 'huddle_started': return Headphones;
     case 'agent_suggestion': return Sparkles;
+    // Task 4.14 — skill version update available for an installed agent skill.
+    case 'skill_update_available': return ArrowUp;
     default: return AlertCircle;
   }
 }

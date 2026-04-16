@@ -13,6 +13,7 @@ const CRON_DELAYS: Record<string, number> = {
   'weekly-digest': 604800000,     // 7 days
   'wiki-lint': 86400000,          // 24 hours
   'deprecation-warning': 86400000, // 24 hours
+  'skill-update-check': 86400000, // 24 hours — Task 4.14
   'agent-daily-reset': 86400000,  // 24 hours
   'agent-heartbeat': 60000,       // 60 seconds
   'gateway-ping': 60000,          // 60 seconds — Phase 11
@@ -28,6 +29,7 @@ const CRON_KEYS: Record<string, string> = {
   'weekly-digest': 'cron:weekly-digest',
   'wiki-lint': 'cron:wiki-lint',
   'deprecation-warning': 'cron:deprecation-warning',
+  'skill-update-check': 'cron:skill-update-check',
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
   'gateway-ping': 'gateway-ping',
@@ -140,6 +142,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     case 'deprecation-warning': {
       const mod = await import('./handlers/deprecation-warning.js');
       return mod.handleDeprecationWarning as JobHandler;
+    }
+    case 'skill-update-check': {
+      // Task 4.14 — daily sweep that compares installed_version in
+      // agent_employee_skills against skills.version and emits a
+      // `skill_update_available` notification for the owner when they
+      // diverge. Dedup lives inside the handler.
+      const mod = await import('./handlers/skill-update-check.js');
+      return mod.handleSkillUpdateCheck;
     }
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');
