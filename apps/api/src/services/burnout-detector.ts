@@ -12,15 +12,103 @@ import {
   burnoutAlerts,
   managerSettings,
   notifications,
+  wikiPages,
 } from '@deft/db/schema';
-import { eq, and, gte, sql, desc, ne } from 'drizzle-orm';
+import { eq, and, gte, lt, sql, desc, ne, isNotNull } from 'drizzle-orm';
 import { emitToUser } from '../socket.js';
 
 interface BurnoutSignal {
   name: string;
   weight: number;
   detected: boolean;
-  detail: string;
+  detail: string | Record<string, unknown>;
+}
+
+interface AuthorshipOverloadSignal {
+  name: 'authorship_overload';
+  weight: 0.15;
+  detected: boolean;
+  detail: { recent_14d: number; baseline_14d: number; ratio: number } | string;
+}
+
+/**
+ * Detects when a user has authored an unusual burst of wiki pages in the
+ * last 14 days compared to their rolling baseline.
+ *
+ * Signal: detected = true when recent_count > 3 × baseline_14d AND recent_count >= 3
+ */
+export async function detectAuthorshipOverload(
+  userId: string,
+  orgId: string,
+): Promise<AuthorshipOverloadSignal> {
+  const now = new Date();
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+  const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  // Count wiki pages authored in the last 14 days
+  const [recentRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        isNotNull(wikiPages.user_id),
+        eq(wikiPages.user_id, userId),
+        eq(wikiPages.is_deleted, false),
+        gte(wikiPages.created_at, fourteenDaysAgo),
+      ),
+    );
+  const recent14d = Number(recentRow?.count ?? 0);
+
+  // Count wiki pages authored in the prior 30-day window (15–44 days ago)
+  // We use a fixed prior-30-day window for baseline to avoid including the
+  // recent spike in the baseline calculation.
+  const [baselineRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        isNotNull(wikiPages.user_id),
+        eq(wikiPages.user_id, userId),
+        eq(wikiPages.is_deleted, false),
+        gte(wikiPages.created_at, sixtyDaysAgo),
+        lt(wikiPages.created_at, thirtyDaysAgo),
+      ),
+    );
+  const baseline30d = Number(baselineRow?.count ?? 0);
+
+  // Normalize 30-day baseline to a 14-day equivalent
+  const baseline14d = baseline30d / 2.14;
+
+  // Avoid noise: only fire when we have meaningful recent activity
+  if (baseline14d === 0 || recent14d < 3) {
+    return {
+      name: 'authorship_overload',
+      weight: 0.15,
+      detected: false,
+      detail: {
+        recent_14d: recent14d,
+        baseline_14d: Math.round(baseline14d * 100) / 100,
+        ratio: 0,
+      },
+    };
+  }
+
+  const ratio = recent14d / baseline14d;
+  const detected = ratio > 3;
+
+  return {
+    name: 'authorship_overload',
+    weight: 0.15,
+    detected,
+    detail: {
+      recent_14d: recent14d,
+      baseline_14d: Math.round(baseline14d * 100) / 100,
+      ratio: Math.round(ratio * 100) / 100,
+    },
+  };
 }
 
 export async function detectBurnout(orgId: string): Promise<void> {
@@ -87,7 +175,7 @@ export async function detectBurnout(orgId: string): Promise<void> {
 
       signals.push({
         name: 'working_hours_shift',
-        weight: 0.2,
+        weight: 0.15,
         detected: hoursShiftDetected,
         detail: hoursShiftDetail,
       });
@@ -149,7 +237,7 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'declining_sentiment',
-        weight: 0.25,
+        weight: 0.2,
         detected: sentimentDetected,
         detail: sentimentDetail,
       });
@@ -200,7 +288,7 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'social_withdrawal',
-        weight: 0.15,
+        weight: 0.1,
         detected: socialWithdrawalDetected,
         detail: socialWithdrawalDetail,
       });
@@ -276,6 +364,10 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
         detected: overworkDetected,
         detail: overworkDetail,
       });
+
+      // --- SIGNAL 6: Wiki authorship overload (weight 0.15) ---
+      const authorshipSignal = await detectAuthorshipOverload(member.userId, orgId);
+      signals.push(authorshipSignal);
 
       // --- 5B: Score Calculation ---
       const burnoutScore = signals.reduce(
