@@ -255,6 +255,15 @@ input:focus, textarea:focus {
 .deft-editor ol { list-style: decimal; padding-left: 20px; margin: 4px 0; }
 .deft-editor li { margin: 2px 0; }
 .deft-editor .deft-link { color: var(--primary); text-decoration: underline; cursor: pointer; }
+.deft-mention-pill {
+  display: inline-block;
+  background: rgba(212,168,83,0.15);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 500;
+  font-size: 0.8125rem;
+}
 .deft-editor h1 { font-size: 1.5rem; font-weight: 700; margin: 16px 0 8px; line-height: 1.3; letter-spacing: -0.02em; }
 .deft-editor h2 { font-size: 1.2rem; font-weight: 600; margin: 12px 0 6px; line-height: 1.35; letter-spacing: -0.01em; }
 .deft-editor h3 { font-size: 1rem; font-weight: 600; margin: 10px 0 4px; line-height: 1.4; }

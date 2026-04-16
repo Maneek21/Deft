@@ -26,6 +26,9 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   if (pathname.startsWith('/tasks')) breadcrumb = 'Tasks';
   if (pathname.startsWith('/agent')) breadcrumb = 'Agent';
   if (pathname.startsWith('/settings')) breadcrumb = 'Settings';
+  if (pathname.startsWith('/notes')) breadcrumb = 'Notes';
+  if (pathname.startsWith('/knowledge')) breadcrumb = 'Knowledge';
+  if (pathname.startsWith('/calendar')) breadcrumb = 'Calendar';
 
   // Fetch unread notification count on mount
   useEffect(() => {

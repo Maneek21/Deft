@@ -12,7 +12,7 @@ const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
 const createSpaceSchema = z.object({
   name: z.string().min(1),
   type: z.string().optional().default('public'),
-  description: z.string().optional(),
+  description: z.string().nullable().optional(),
   user_ids: z.array(z.string()).optional(), // For DMs: array of user IDs to include
 });
 
@@ -472,5 +472,104 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
   } catch (err) {
     console.error('Failed to leave space:', err);
     return c.json({ error: 'Failed to leave space', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/spaces/:id — archive (soft delete) a space
+spaceRoutes.delete('/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+
+    const [space] = await db.select()
+      .from(spaces)
+      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
+      .limit(1);
+
+    if (!space) {
+      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    if (space.is_default) {
+      return c.json({ error: 'Cannot delete the default space', code: 'FORBIDDEN' }, 403);
+    }
+
+    // Only creator or admin can delete
+    if (space.created_by !== user.id) {
+      return c.json({ error: 'Only the space creator can delete it', code: 'FORBIDDEN' }, 403);
+    }
+
+    await db.update(spaces)
+      .set({ is_archived: true })
+      .where(eq(spaces.id, spaceId));
+
+    // Notify connected clients
+    try {
+      const io = getIO();
+      if (io) io.to(`org:${user.org_id}`).emit('space:deleted', { id: spaceId });
+    } catch {}
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to delete space:', err);
+    return c.json({ error: 'Failed to delete space', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /:id/mark-unread — mark a message as unread (resets read position)
+spaceRoutes.post('/:id/mark-unread', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+    const { message_id } = await c.req.json();
+
+    if (!message_id) {
+      return c.json({ error: 'message_id required', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    // Get the message's created_at, then set read position to 1ms before it
+    const [msg] = await db.select({ created_at: messages.created_at })
+      .from(messages)
+      .where(eq(messages.id, message_id))
+      .limit(1);
+
+    if (!msg) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const unreadAt = new Date(msg.created_at!.getTime() - 1);
+    await db.update(spaceMembers)
+      .set({ last_read_at: unreadAt, last_read_message_id: null })
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)));
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('Failed to mark unread:', err);
+    return c.json({ error: 'Failed to mark unread', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// PATCH /:id/notification-level — set per-channel notification level
+spaceRoutes.patch('/:id/notification-level', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('id');
+    const { level } = await c.req.json();
+
+    if (!['all', 'mentions', 'nothing'].includes(level)) {
+      return c.json({ error: 'level must be all, mentions, or nothing', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    await db.update(spaceMembers)
+      .set({
+        notification_level: level,
+        is_muted: level === 'nothing',
+      })
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)));
+
+    return c.json({ success: true, level });
+  } catch (err) {
+    console.error('Failed to set notification level:', err);
+    return c.json({ error: 'Failed to set notification level', code: 'INTERNAL_ERROR' }, 500);
   }
 });
