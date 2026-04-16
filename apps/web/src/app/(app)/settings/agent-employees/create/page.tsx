@@ -51,8 +51,42 @@ type Template = {
   name: string;
   system_prompt: string;
   expertise_description: string;
-  native_tools: string[] | null;
   heartbeat_config?: string;
+};
+
+// Task 4.7 — Skill shape for the picker step. Mirrors GET /api/agents/deploy/skills.
+// Task 4.13 will promote that endpoint to /api/skills; the shape is stable.
+type Skill = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  source: 'bundled' | 'marketplace' | 'org';
+  version: string;
+  agent_config: {
+    tools?: string[];
+    capability_packs?: string[];
+    triggers?: string[];
+  } | null;
+};
+
+// Task 4.7 — default capability-pack slugs per role. Kept inline here as
+// a UX convenience to pre-check bundled skills in the skill picker step.
+// Canonical defaults live in
+// `agent_employee_templates.default_capability_packs` (seeded by
+// seed-templates.ts); the server-side TEMPLATE_DEFAULT_PACKS hashmap was
+// deleted in Task 4.12.
+const ROLE_DEFAULT_PACK_SLUGS: Record<string, string[]> = {
+  project_manager: ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],
+  engineering_lead: ['deft-workspace', 'web-browsing', 'github', 'shell-exec'],
+  executive_assistant: ['deft-workspace', 'google-calendar'],
+  product_designer: ['deft-workspace', 'web-browsing', 'tavily'],
+  qa_engineer: ['deft-workspace', 'web-browsing', 'github'],
+  customer_success: ['deft-workspace', 'web-browsing'],
+  community_manager: ['deft-workspace', 'web-browsing', 'tavily'],
+  cfo: ['deft-workspace', 'google-calendar'],
+  custom: [],
 };
 
 const isSelfHosted = process.env.NEXT_PUBLIC_DEFT_SELF_HOSTED === 'true';
@@ -73,11 +107,15 @@ export default function CreateAgentEmployeePage() {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [expertiseDescription, setExpertiseDescription] = useState('');
 
-  // Step 3 — Tools & Trust
+  // Step 3 — Skills (Task 4.7)
+  const [skillsCatalog, setSkillsCatalog] = useState<Skill[]>([]);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+
+  // Step 4 — Tools & Trust
   const [trustLevel, setTrustLevel] = useState('conservative');
   const [maxDailyActions, setMaxDailyActions] = useState(50);
 
-  // Step 4 — Heartbeat
+  // Step 5 — Heartbeat
   const [heartbeatEnabled, setHeartbeatEnabled] = useState(false);
   const [heartbeatInterval, setHeartbeatInterval] = useState(30);
   const [heartbeatConfig, setHeartbeatConfig] = useState('');
@@ -90,6 +128,15 @@ export default function CreateAgentEmployeePage() {
     api.get('/api/agent-employees/templates').then(async (res) => {
       if (res.ok) {
         setTemplates(await res.json());
+      }
+    });
+    // Task 4.7 — skill catalog. Uses the deploy router endpoint until
+    // Task 4.13 promotes it to /api/skills. Bundled + org skills only;
+    // marketplace is filtered out server-side.
+    api.get('/api/agents/deploy/skills').then(async (res) => {
+      if (res.ok) {
+        const body = (await res.json()) as { skills: Skill[] };
+        setSkillsCatalog(body.skills ?? []);
       }
     });
   }, []);
@@ -113,6 +160,21 @@ export default function CreateAgentEmployeePage() {
         setHeartbeatEnabled(false);
       }
     }
+    // Task 4.7 — pre-check bundled skills whose slug matches this role's
+    // default capability packs. Bundled capability-pack skills were seeded
+    // with slug === pack.slug (see seed-bundled-skills.ts), so slug is an
+    // exact key.
+    const defaults = new Set(ROLE_DEFAULT_PACK_SLUGS[newRole] ?? []);
+    const preselected = skillsCatalog
+      .filter((s) => s.source === 'bundled' && defaults.has(s.slug))
+      .map((s) => s.id);
+    setSelectedSkillIds(preselected);
+  };
+
+  const toggleSkill = (id: string) => {
+    setSelectedSkillIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
   };
 
   const canProceedStep1 = name.trim().length > 0 && role.length > 0;
@@ -133,6 +195,12 @@ export default function CreateAgentEmployeePage() {
         heartbeat_enabled: heartbeatEnabled,
         heartbeat_interval_min: heartbeatInterval,
         heartbeat_config: heartbeatConfig || undefined,
+        // Task 4.7 — ship selected skill ids. Today the native POST endpoint
+        // strips unknown fields (Zod); /api/agents/deploy/start is the
+        // canonical writer into agent_employee_skills. A follow-up will
+        // teach this endpoint to stage junction rows so both paths persist
+        // skills uniformly.
+        skill_ids: selectedSkillIds,
       });
 
       if (!res.ok) {
@@ -164,6 +232,15 @@ export default function CreateAgentEmployeePage() {
 
   const avatarLetter = name.trim().charAt(0).toUpperCase() || '?';
 
+  // Task 4.7 — grouped skill list for the picker step.
+  const skillGroups = (['bundled', 'org'] as const)
+    .map((src) => ({
+      src,
+      label: src === 'bundled' ? 'Bundled (first-party)' : 'Your organization',
+      items: skillsCatalog.filter((s) => s.source === src),
+    }))
+    .filter((g) => g.items.length > 0);
+
   return (
     <div className="p-6 max-w-[520px]">
       {/* Header */}
@@ -185,7 +262,7 @@ export default function CreateAgentEmployeePage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-6">
-        {[1, 2, 3, 4].map((s) => (
+        {[1, 2, 3, 4, 5].map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div
               className="w-2 h-2 rounded-full transition-colors"
@@ -194,7 +271,7 @@ export default function CreateAgentEmployeePage() {
                 opacity: s <= step ? 1 : 0.5,
               }}
             />
-            {s < 4 && (
+            {s < 5 && (
               <div
                 className="w-6 h-px"
                 style={{ background: s < step ? 'var(--accent)' : 'var(--border)' }}
@@ -203,7 +280,7 @@ export default function CreateAgentEmployeePage() {
           </div>
         ))}
         <span className="text-[11px] ml-2" style={{ color: 'var(--muted)' }}>
-          Step {step} of 4
+          Step {step} of 5
         </span>
       </div>
 
@@ -368,8 +445,112 @@ export default function CreateAgentEmployeePage() {
         </div>
       )}
 
-      {/* Step 3: Tools & Trust */}
+      {/* Step 3: Skills (Task 4.7) */}
       {step === 3 && (
+        <div
+          className="rounded-xl p-5"
+          style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
+          data-testid="wizard-skills"
+        >
+          <h3
+            className="text-[13px] font-semibold uppercase tracking-wide mb-1"
+            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+          >
+            Skills
+          </h3>
+          <p className="text-[12px] mb-4" style={{ color: 'var(--muted)' }}>
+            Which skills does this employee start with? Skills bundle tools,
+            triggers, and capability packs. Your role selection pre-selects the
+            recommended set — add or remove as needed.
+          </p>
+
+          {skillGroups.length === 0 && (
+            <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+              No skills available. Seed bundled skills with{' '}
+              <code>pnpm tsx apps/api/src/scripts/seed-bundled-skills.ts</code>.
+            </p>
+          )}
+
+          {skillGroups.map((group) => (
+            <div key={group.src} className="mb-4">
+              <div
+                className="text-[10px] font-medium uppercase tracking-wide mb-2"
+                style={{ color: 'var(--muted)' }}
+              >
+                {group.label}
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                {group.items.map((s) => {
+                  const checked = selectedSkillIds.includes(s.id);
+                  const toolCount = s.agent_config?.tools?.length ?? 0;
+                  const triggerCount = s.agent_config?.triggers?.length ?? 0;
+                  return (
+                    <button
+                      type="button"
+                      key={s.id}
+                      onClick={() => toggleSkill(s.id)}
+                      data-testid={`wizard-skill-${s.slug}`}
+                      className="text-left p-3 rounded-lg transition-colors"
+                      style={{
+                        background: checked ? 'var(--surface)' : 'transparent',
+                        border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                        borderRadius: 8,
+                      }}
+                    >
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          readOnly
+                          className="mt-0.5 accent-current"
+                          style={{ accentColor: 'var(--accent)' }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            {s.icon && (
+                              <span className="text-[13px]" aria-hidden>
+                                {s.icon}
+                              </span>
+                            )}
+                            <span
+                              className="text-[13px] font-medium"
+                              style={{ color: 'var(--foreground)' }}
+                            >
+                              {s.name}
+                            </span>
+                          </div>
+                          {s.description && (
+                            <p
+                              className="text-[11px] mt-0.5"
+                              style={{ color: 'var(--muted)' }}
+                            >
+                              {s.description}
+                            </p>
+                          )}
+                          <div
+                            className="mt-1 text-[10px] flex gap-3"
+                            style={{ color: 'var(--muted)' }}
+                          >
+                            <span>
+                              {toolCount} tool{toolCount === 1 ? '' : 's'}
+                            </span>
+                            <span>
+                              {triggerCount} trigger{triggerCount === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Step 4: Tools & Trust */}
+      {step === 4 && (
         <div
           className="rounded-xl p-5"
           style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
@@ -451,8 +632,8 @@ export default function CreateAgentEmployeePage() {
         </div>
       )}
 
-      {/* Step 4: Heartbeat */}
-      {step === 4 && (
+      {/* Step 5: Heartbeat */}
+      {step === 5 && (
         <div
           className="rounded-xl p-5"
           style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
@@ -556,7 +737,7 @@ export default function CreateAgentEmployeePage() {
           )}
         </div>
         <div>
-          {step < 4 ? (
+          {step < 5 ? (
             <button
               onClick={() => setStep(step + 1)}
               disabled={step === 1 ? !canProceedStep1 : step === 2 ? !canProceedStep2 : false}

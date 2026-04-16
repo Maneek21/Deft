@@ -19,6 +19,11 @@ const FEATURE_OPENCLAW_EMPLOYEES =
  *      is non-null or status == 'error'
  *   4. Click "Run handshake": POST /api/agents/deploy/:id/handshake
  *   5. Click "Finish": redirect to /settings/agent
+ *
+ * Task 4.7 — step 2 now renders a SkillPicker above the CapabilityPicker.
+ * Selected skills go out as `skill_ids[]`; the backend inserts one row per
+ * skill into agent_employee_skills and unions the derived capability_packs
+ * into the employee column.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -37,7 +42,130 @@ type WizardConfig = {
   providers: ProviderCard[];
 };
 
+// Task 4.7 — skill picker shape. Returned by GET /api/agents/deploy/skills.
+// Task 4.13 will promote this to /api/skills with the same shape.
+type WizardSkill = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  source: 'bundled' | 'marketplace' | 'org';
+  version: string;
+  agent_config: {
+    tools?: string[];
+    capability_packs?: string[];
+    triggers?: string[];
+  } | null;
+};
+
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+// Task 4.7 — Inline skill picker. Inline rather than a new file because the
+// task scopes us to this wizard page. Groups bundled + org skills, shows
+// tool/trigger counts, and emits a toggle event per card click. Marketplace
+// skills are filtered out server-side so they never reach this list.
+function SkillPicker({
+  skills,
+  selected,
+  onToggle,
+}: {
+  skills: WizardSkill[];
+  selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  const groups = (['bundled', 'org'] as const)
+    .map((src) => ({
+      src,
+      label: src === 'bundled' ? 'Bundled (first-party)' : 'Your organization',
+      items: skills.filter((s) => s.source === src),
+    }))
+    .filter((g) => g.items.length > 0);
+
+  return (
+    <section data-testid="wizard-skills">
+      <h3 className="text-[14px] font-semibold mb-1" style={{ color: 'var(--foreground)' }}>
+        Which skills does this employee start with?
+      </h3>
+      <p className="text-[12px] mb-4" style={{ color: 'var(--muted)' }}>
+        Skills bundle tools, triggers, and capability packs. Your template
+        pre-selects its recommended skills — add or remove as needed.
+      </p>
+
+      {groups.length === 0 && (
+        <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+          No skills available. Seed bundled skills with{' '}
+          <code>pnpm tsx apps/api/src/scripts/seed-bundled-skills.ts</code>.
+        </p>
+      )}
+
+      {groups.map((group) => (
+        <div key={group.src} className="mb-5">
+          <div
+            className="text-[11px] font-medium uppercase tracking-wide mb-2"
+            style={{ color: 'var(--muted)' }}
+          >
+            {group.label}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {group.items.map((s) => {
+              const checked = selected.includes(s.id);
+              const toolCount = s.agent_config?.tools?.length ?? 0;
+              const triggerCount = s.agent_config?.triggers?.length ?? 0;
+              return (
+                <button
+                  type="button"
+                  key={s.id}
+                  onClick={() => onToggle(s.id)}
+                  data-testid={`wizard-skill-${s.slug}`}
+                  className="text-left p-3 rounded-lg transition-colors"
+                  style={{
+                    background: checked ? 'var(--surface-container-high)' : 'var(--surface-container)',
+                    border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
+                  }}
+                >
+                  <div className="flex items-start gap-2">
+                    <input type="checkbox" checked={checked} readOnly className="mt-1" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        {s.icon && (
+                          <span className="text-[14px]" aria-hidden>
+                            {s.icon}
+                          </span>
+                        )}
+                        <span
+                          className="text-[13px] font-medium truncate"
+                          style={{ color: 'var(--foreground)' }}
+                        >
+                          {s.name}
+                        </span>
+                      </div>
+                      {s.description && (
+                        <p
+                          className="text-[11px] mt-0.5 line-clamp-2"
+                          style={{ color: 'var(--muted)' }}
+                        >
+                          {s.description}
+                        </p>
+                      )}
+                      <div
+                        className="mt-1 text-[10px] flex gap-3"
+                        style={{ color: 'var(--muted)' }}
+                      >
+                        <span>{toolCount} tool{toolCount === 1 ? '' : 's'}</span>
+                        <span>{triggerCount} trigger{triggerCount === 1 ? '' : 's'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
 
 function DeployDisabled() {
   return (
@@ -80,6 +208,12 @@ function DeployEmployeePageInner() {
   const [slug, setSlug] = useState('alex-pm');
   const [capabilityPacks, setCapabilityPacks] = useState<string[]>([]);
   const [packSecrets, setPackSecrets] = useState<Record<string, string>>({});
+  // Task 4.7 — skill picker. Skills are fetched once on mount; selection
+  // is the set of skill ids sent to /start as `skill_ids[]`. When a template
+  // is chosen we pre-check bundled skills whose slug matches the template's
+  // default_capability_packs entries.
+  const [skillsCatalog, setSkillsCatalog] = useState<WizardSkill[]>([]);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [provider, setProvider] = useState<string | null>(null);
   const [selectedIntegrationId, setSelectedIntegrationId] = useState<string | null>(null);
   const [byoConnectionUrl, setByoConnectionUrl] = useState('');
@@ -100,15 +234,18 @@ function DeployEmployeePageInner() {
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ─── Fetch wizard config + integrations ───
+  // ─── Fetch wizard config + integrations + skills ───
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        const [configRes, intRes] = await Promise.all([
+        const [configRes, intRes, skillsRes] = await Promise.all([
           api.fetch('/api/agents/deploy/wizard-config'),
           api.fetch('/api/integrations'),
+          // Task 4.7 — skill catalog. Lives on the deploy router for now;
+          // Task 4.13 will promote this to /api/skills.
+          api.fetch('/api/agents/deploy/skills'),
         ]);
         if (cancelled) return;
         if (configRes.ok) {
@@ -117,6 +254,10 @@ function DeployEmployeePageInner() {
         }
         if (intRes.ok) {
           setIntegrations(await intRes.json());
+        }
+        if (skillsRes.ok) {
+          const body = (await skillsRes.json()) as { skills: WizardSkill[] };
+          setSkillsCatalog(body.skills ?? []);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -143,7 +284,7 @@ function DeployEmployeePageInner() {
     }
   }, [searchParams]);
 
-  // ─── When template changes, seed capability packs + triggers ───
+  // ─── When template changes, seed capability packs + triggers + skills ───
   const onSelectTemplate = useCallback(
     (newSlug: string) => {
       setTemplateSlug(newSlug);
@@ -153,14 +294,29 @@ function DeployEmployeePageInner() {
         setTriggers(t.default_trigger_subscriptions ?? []);
         setName(t.name);
         setSlug(t.slug);
+        // Task 4.7 — pre-check bundled skills whose slug matches the
+        // template's default_capability_packs entries. Each capability-pack
+        // bundled skill was seeded with slug === pack.slug (see
+        // seed-bundled-skills.ts), so slug is an exact key.
+        const defaults = new Set(t.default_capability_packs ?? []);
+        const preselected = skillsCatalog
+          .filter((s) => s.source === 'bundled' && defaults.has(s.slug))
+          .map((s) => s.id);
+        setSelectedSkillIds(preselected);
       }
     },
-    [config],
+    [config, skillsCatalog],
   );
 
   const onTogglePack = useCallback((s: string) => {
     setCapabilityPacks((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
+    );
+  }, []);
+
+  const onToggleSkill = useCallback((id: string) => {
+    setSelectedSkillIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   }, []);
 
@@ -176,6 +332,10 @@ function DeployEmployeePageInner() {
       name,
       slug,
       capability_packs: capabilityPacks,
+      // Task 4.7 — ship selected skill ids. The backend inserts one row per
+      // skill into agent_employee_skills and unions the skills' derived
+      // capability_packs into the employee column.
+      skill_ids: selectedSkillIds,
       capability_pack_secrets: packSecrets,
       provider,
       trigger_subscriptions: triggers,
@@ -213,6 +373,7 @@ function DeployEmployeePageInner() {
     name,
     slug,
     capabilityPacks,
+    selectedSkillIds,
     packSecrets,
     provider,
     selectedIntegrationId,
@@ -365,13 +526,24 @@ function DeployEmployeePageInner() {
         />
       )}
       {step === 2 && (
-        <CapabilityPicker
-          packs={config.capability_packs}
-          selected={capabilityPacks}
-          secrets={packSecrets}
-          onToggle={onTogglePack}
-          onSecretChange={(env, v) => setPackSecrets((prev) => ({ ...prev, [env]: v }))}
-        />
+        <>
+          <SkillPicker
+            skills={skillsCatalog}
+            selected={selectedSkillIds}
+            onToggle={onToggleSkill}
+          />
+          <div className="mt-6">
+            <CapabilityPicker
+              packs={config.capability_packs}
+              selected={capabilityPacks}
+              secrets={packSecrets}
+              onToggle={onTogglePack}
+              onSecretChange={(env, v) =>
+                setPackSecrets((prev) => ({ ...prev, [env]: v }))
+              }
+            />
+          </div>
+        </>
       )}
       {step === 3 && (
         <ProviderPicker

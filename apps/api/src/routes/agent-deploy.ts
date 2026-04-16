@@ -28,11 +28,7 @@ import {
   orgs,
 } from '@deft/db/schema';
 import { encrypt, decrypt } from '../lib/encryption.js';
-import {
-  CAPABILITY_PACKS,
-  TEMPLATE_DEFAULT_PACKS,
-  getCapabilityPack,
-} from '../lib/capability-packs.js';
+import { CAPABILITY_PACKS, getCapabilityPack } from '../lib/capability-packs.js';
 import { listWizardProviders, getProvider } from '../lib/deployment/index.js';
 import { enqueue } from '../lib/queues.js';
 import { env } from '../lib/env.js';
@@ -96,10 +92,9 @@ agentDeployRoutes.get('/wizard-config', async (c) => {
   const templateCards = templates.map((t) => ({
     ...t,
     ready_in_phase_8: true,
-    // Prefer the DB column; fall back to the Phase 8 hashmap for rows
-    // that predate migration 0016 and haven't been re-seeded yet.
-    default_capability_packs:
-      t.default_capability_packs ?? TEMPLATE_DEFAULT_PACKS[t.slug] ?? [],
+    // Task 4.12 — TEMPLATE_DEFAULT_PACKS fallback removed. The DB column
+    // is authoritative; envs with pre-0016 rows must run seed-templates.ts.
+    default_capability_packs: t.default_capability_packs ?? [],
   }));
 
   return c.json({
