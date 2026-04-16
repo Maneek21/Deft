@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth-context';
 import { getSocket } from '@/lib/socket';
 import {
   X, Plus, BookOpen, Scale, Link2, CheckSquare, StickyNote,
-  Pencil, Trash2, ExternalLink, ChevronDown,
+  Pencil, Trash2, ExternalLink, ChevronDown, Lightbulb, User, Heart,
 } from 'lucide-react';
 
 function useIsMobile(breakpoint = 768) {
@@ -19,9 +19,12 @@ function useIsMobile(breakpoint = 768) {
   return isMobile;
 }
 
+// Wiki's 7 canonical types
+type KnowledgeType = 'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact';
+
 type KnowledgeEntry = {
   id: string;
-  type: 'decision' | 'resource' | 'action_item' | 'note';
+  type: KnowledgeType;
   title: string;
   content: string | null;
   metadata: any;
@@ -31,23 +34,30 @@ type KnowledgeEntry = {
   updated_at: string;
   author_name: string | null;
   author_avatar: string | null;
+  slug?: string;
+  scope?: string;
+  space_id?: string | null;
 };
-
-type KnowledgeType = KnowledgeEntry['type'];
 
 const TYPE_CONFIG: Record<KnowledgeType, { icon: typeof Scale; label: string; color: string }> = {
   decision: { icon: Scale, label: 'Decision', color: 'var(--status-purple, #a78bfa)' },
   resource: { icon: Link2, label: 'Resource', color: 'var(--status-blue, #60a5fa)' },
-  action_item: { icon: CheckSquare, label: 'Action Item', color: 'var(--status-orange, #fb923c)' },
-  note: { icon: StickyNote, label: 'Note', color: 'var(--status-green, #4ade80)' },
+  procedure: { icon: CheckSquare, label: 'Procedure', color: 'var(--status-orange, #fb923c)' },
+  fact: { icon: StickyNote, label: 'Fact', color: 'var(--status-green, #4ade80)' },
+  concept: { icon: Lightbulb, label: 'Concept', color: 'var(--status-yellow, #facc15)' },
+  entity: { icon: User, label: 'Entity', color: 'var(--status-teal, #2dd4bf)' },
+  preference: { icon: Heart, label: 'Preference', color: 'var(--status-pink, #f472b6)' },
 };
 
 const FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'decision', label: 'Decisions' },
   { value: 'resource', label: 'Resources' },
-  { value: 'action_item', label: 'Actions' },
-  { value: 'note', label: 'Notes' },
+  { value: 'procedure', label: 'Procedures' },
+  { value: 'fact', label: 'Facts' },
+  { value: 'concept', label: 'Concepts' },
+  { value: 'entity', label: 'Entities' },
+  { value: 'preference', label: 'Preferences' },
 ];
 
 function timeAgo(dateStr: string): string {
@@ -207,8 +217,11 @@ export function KnowledgePanel({ spaceId, onClose }: Props) {
 }
 
 // ── Add Form ────────────────────────────────────────────────
+// Types shown in the create form (most commonly used)
+const CREATE_TYPES: KnowledgeType[] = ['decision', 'resource', 'procedure', 'fact', 'concept', 'entity', 'preference'];
+
 function AddForm({ spaceId, onDone, onCancel }: { spaceId: string; onDone: () => void; onCancel: () => void }) {
-  const [type, setType] = useState<KnowledgeType>('note');
+  const [type, setType] = useState<KnowledgeType>('fact');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [url, setUrl] = useState('');
@@ -220,7 +233,7 @@ function AddForm({ spaceId, onDone, onCancel }: { spaceId: string; onDone: () =>
     const metadata: any = {};
     if (type === 'resource' && url) metadata.url = url;
     if (type === 'decision') metadata.status = 'accepted';
-    if (type === 'action_item') metadata.status = 'open';
+    if (type === 'procedure') metadata.status = 'open';
 
     await api.post(`/api/spaces/${spaceId}/knowledge`, {
       type, title: title.trim(), content: content.trim() || null, metadata,
@@ -229,16 +242,21 @@ function AddForm({ spaceId, onDone, onCancel }: { spaceId: string; onDone: () =>
     onDone();
   };
 
+  const contentPlaceholder = type === 'decision' ? 'Context and reasoning...'
+    : type === 'resource' ? 'Description...'
+    : type === 'procedure' ? 'Steps or details...'
+    : 'Details...';
+
   return (
     <div className="px-3 py-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface-container)' }}>
-      {/* Type selector */}
-      <div className="flex items-center gap-1 mb-2">
-        {(['decision', 'resource', 'action_item', 'note'] as KnowledgeType[]).map(t => {
+      {/* Type selector — scrollable row */}
+      <div className="flex items-center gap-1 mb-2 overflow-x-auto">
+        {CREATE_TYPES.map(t => {
           const cfg = TYPE_CONFIG[t];
           const Icon = cfg.icon;
           return (
             <button key={t} onClick={() => setType(t)}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors"
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap"
               style={{
                 color: type === t ? cfg.color : 'var(--muted)',
                 background: type === t ? 'var(--surface-container-highest)' : 'transparent',
@@ -261,7 +279,7 @@ function AddForm({ spaceId, onDone, onCancel }: { spaceId: string; onDone: () =>
         />
       )}
       <textarea value={content} onChange={e => setContent(e.target.value)}
-        placeholder={type === 'decision' ? 'Context and reasoning...' : type === 'resource' ? 'Description...' : 'Details...'}
+        placeholder={contentPlaceholder}
         rows={2}
         className="w-full text-[12px] bg-transparent outline-none resize-none mb-2 px-1"
         style={{ color: 'var(--foreground)', lineHeight: '1.5' }}
@@ -308,7 +326,7 @@ function EntryCard({
             <span className="text-[13px] font-medium truncate" style={{ color: 'var(--foreground)' }}>
               {entry.title}
             </span>
-            {entry.type === 'action_item' && entry.metadata?.status === 'done' && (
+            {entry.type === 'procedure' && entry.metadata?.status === 'done' && (
               <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
                 style={{ background: 'var(--status-green)', color: '#000', opacity: 0.8 }}>Done</span>
             )}
@@ -358,6 +376,12 @@ function EntryCard({
               style={{ color: 'var(--status-red, #f87171)' }}>
               <Trash2 size={9} /> Delete
             </button>
+            {entry.slug && (
+              <a href={`/knowledge?slug=${entry.slug}`} className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1"
+                style={{ color: 'var(--accent)' }}>
+                <ExternalLink size={9} /> View in Wiki
+              </a>
+            )}
           </div>
         </div>
       )}
@@ -405,7 +429,7 @@ function EditForm({ entry, spaceId, onDone, onCancel }: { entry: KnowledgeEntry;
       <textarea value={content} onChange={e => setContent(e.target.value)}
         rows={3} className="w-full text-[12px] bg-transparent outline-none resize-none mb-1.5"
         style={{ color: 'var(--foreground)', lineHeight: '1.5' }} />
-      {(entry.type === 'decision' || entry.type === 'action_item') && (
+      {(entry.type === 'decision' || entry.type === 'procedure') && (
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[10px]" style={{ color: 'var(--muted)' }}>Status:</span>
           {entry.type === 'decision' ? (

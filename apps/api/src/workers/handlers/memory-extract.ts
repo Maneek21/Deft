@@ -141,6 +141,9 @@ function fallbackCreate(fact: string, isDecision: boolean): WikiIngestResult {
 
 /**
  * Execute the wiki ingest: create or update a page based on the LLM decision.
+ * spaceId is the origin space — stored as a hint on the page so the in-chat
+ * knowledge panel can surface pages extracted from that space's conversation.
+ * scope stays 'org' for memory-extracted facts (they are org-wide knowledge).
  */
 async function executeWikiIngest(
   result: WikiIngestResult,
@@ -149,6 +152,7 @@ async function executeWikiIngest(
   messageId: string,
   extraTags: string[] = [],
   referencedUserIds: string[] = [],
+  spaceId?: string,
 ): Promise<void> {
   if (result.action === 'update' && result.slug) {
     // Find the existing page
@@ -225,9 +229,12 @@ async function executeWikiIngest(
     const validTypes = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'] as const;
     const pageType = validTypes.includes(result.type as any) ? (result.type as typeof validTypes[number]) : 'fact';
 
-    const [page] = await db.insert(wikiPages).values({
+    // Build insert values — space_id is an origin hint for the in-chat panel.
+    // If the space doesn't exist (FK violation), fall back to null gracefully.
+    const insertValues = {
       org_id: orgId,
-      scope: 'org',
+      scope: 'org' as const, // memory-extracted facts are org-wide knowledge
+      space_id: spaceId || null,
       type: pageType,
       title: result.title || slug.replace(/-/g, ' '),
       slug,
@@ -236,7 +243,26 @@ async function executeWikiIngest(
       confidence: 0.9, // auto-extracted, slightly below human-created (1.0)
       tags: extraTags.length > 0 ? extraTags : [],
       referenced_user_ids: referencedUserIds.length > 0 ? referencedUserIds : [],
-    }).returning();
+    };
+
+    let pageResult: typeof wikiPages.$inferSelect | undefined;
+    try {
+      [pageResult] = await db.insert(wikiPages).values(insertValues).returning();
+    } catch (err: any) {
+      // FK violation on space_id (e.g. space deleted, test fixture, or non-existent space)
+      // Drizzle wraps the pg error — check original cause or message for FK code 23503.
+      const cause = err?.cause ?? err;
+      const isFkViolation = cause?.code === '23503'
+        || (typeof err?.message === 'string' && err.message.includes('23503'))
+        || (typeof err?.message === 'string' && err.message.includes('space_id'));
+      if (isFkViolation && spaceId) {
+        console.warn(`[memory-extract] space_id "${spaceId}" not found (FK violation), creating page without space hint`);
+        [pageResult] = await db.insert(wikiPages).values({ ...insertValues, space_id: null }).returning();
+      } else {
+        throw err;
+      }
+    }
+    const page = pageResult;
 
     // Add citation
     await db.insert(wikiCitations).values({
@@ -447,7 +473,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
       const extraTags: string[] = isCommitmentFact(item.text) ? ['commitment'] : [];
       const referencedUserIds: string[] = isCommitmentFact(item.text) ? [userId] : [];
 
-      await executeWikiIngest(result, orgId, userId, messageId, extraTags, referencedUserIds);
+      await executeWikiIngest(result, orgId, userId, messageId, extraTags, referencedUserIds, spaceId);
 
       // Cascade ingest: update related pages (Karpathy pattern)
       const triggerSlug = result.slug || (result.title ? slugify(result.title) : null);
