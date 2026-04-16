@@ -267,6 +267,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }, [taskId]);
   const [taskTags, setTaskTags] = useState<{ id: string; name: string; color: string | null }[]>([]);
 
+  // Task 3.10 — live agent progress strip. Populated by `task:agent_progress`
+  // socket events scoped to this open task. Only the most recent agent's
+  // state is kept; if another agent takes over (rare), the latest event wins.
+  const [agentProgress, setAgentProgress] = useState<{
+    agent_employee_id: string | null;
+    step_index: number;
+    step_description: string;
+    status: 'started' | 'completed' | 'failed';
+    total_steps: number;
+    error?: string;
+  } | null>(null);
+
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
     check();
@@ -341,13 +353,54 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       onClose();
     };
 
+    // Task 3.10 — live agent progress. The server emits to `org:${orgId}`,
+    // so we filter by task_id here.
+    const onAgentProgress = (payload: {
+      task_id: string;
+      agent_employee_id: string | null;
+      step_index: number;
+      step_description: string;
+      status: 'started' | 'completed' | 'failed';
+      total_steps: number;
+      error?: string;
+    }) => {
+      if (payload.task_id !== taskId) return;
+      setAgentProgress({
+        agent_employee_id: payload.agent_employee_id,
+        step_index: payload.step_index,
+        step_description: payload.step_description,
+        status: payload.status,
+        total_steps: payload.total_steps,
+        error: payload.error,
+      });
+    };
+
     socket.on('task:updated', onUpdated);
     socket.on('task:deleted', onDeleted);
+    socket.on('task:agent_progress', onAgentProgress);
     return () => {
       socket.off('task:updated', onUpdated);
       socket.off('task:deleted', onDeleted);
+      socket.off('task:agent_progress', onAgentProgress);
     };
   }, [taskId, loadTask, onClose]);
+
+  // Task 3.10 — auto-dismiss the agent progress strip once the agent has
+  // finished. Completed steps clear after 5s; failed steps linger 30s so the
+  // user has time to read the error before it disappears.
+  useEffect(() => {
+    if (!agentProgress) return;
+    if (agentProgress.status !== 'completed' && agentProgress.status !== 'failed') return;
+    const delayMs = agentProgress.status === 'failed' ? 30_000 : 5_000;
+    const timer = setTimeout(() => setAgentProgress(null), delayMs);
+    return () => clearTimeout(timer);
+  }, [agentProgress]);
+
+  // Clear the progress strip when we switch to a different task so state
+  // from the previous task doesn't bleed across.
+  useEffect(() => {
+    setAgentProgress(null);
+  }, [taskId]);
 
   // Load tags for this task
   const loadTaskTags = useCallback(async () => {
@@ -1079,6 +1132,53 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               }
             </button>
           )}
+
+          {/* Task 3.10 — live agent progress strip */}
+          {agentProgress && (() => {
+            const employee = agentEmployees.find(
+              (e) => e.id === agentProgress.agent_employee_id,
+            );
+            const agentLabel = employee?.name ? `${employee.name} (AI)` : 'Agent';
+            const stepNum = agentProgress.step_index + 1;
+            const total = agentProgress.total_steps;
+            const isFailed = agentProgress.status === 'failed';
+            const isDone = agentProgress.status === 'completed';
+            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : 'var(--muted-bg, #f3f4f6)';
+            const fg = isFailed ? '#991b1b' : isDone ? '#166534' : 'var(--foreground)';
+            const border = isFailed ? '#fecaca' : isDone ? '#bbf7d0' : 'var(--border)';
+            return (
+              <div
+                className="mx-5 mb-3 px-3 py-2 rounded-md text-[12px] flex items-center gap-2"
+                style={{
+                  background: bg,
+                  color: fg,
+                  border: `1px solid ${border}`,
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                <span aria-hidden className="inline-block">
+                  {isFailed ? '!' : isDone ? '✓' : '•'}
+                </span>
+                <span className="flex-1 truncate">
+                  {isFailed ? (
+                    <>
+                      <strong>{agentLabel}</strong> hit an error:{' '}
+                      {agentProgress.error || agentProgress.step_description}
+                    </>
+                  ) : isDone ? (
+                    <>
+                      <strong>{agentLabel}</strong> finished: {agentProgress.step_description}
+                    </>
+                  ) : (
+                    <>
+                      <strong>{agentLabel}</strong> is on step {stepNum} of {total}:{' '}
+                      {agentProgress.step_description}
+                    </>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
 
           {/* Description */}
           <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>

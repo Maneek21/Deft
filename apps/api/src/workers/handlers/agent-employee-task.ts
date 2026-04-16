@@ -4,6 +4,7 @@ import { db } from '../../lib/db.js';
 import { agentEmployees, tasks, taskActivity, orgs, users } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { runAgentQuery } from '../../lib/agent-runner.js';
+import { getIO } from '../../socket.js';
 
 interface AgentEmployeeTaskData {
   taskId: string;
@@ -80,16 +81,50 @@ You have been assigned the following task:
 
   const taskPrompt = `I've been assigned task "${task.title}". ${task.description || ''}\n\nLet me work on this now.`;
 
+  // Task 3.10 — emit the initial "started" event so the task-detail UI can
+  // show the strip before the first agent iteration finishes.
+  const io = getIO();
+  if (io) {
+    io.to(`org:${orgId}`).emit('task:agent_progress', {
+      task_id: taskId,
+      agent_employee_id: employeeId,
+      step_index: 0,
+      step_description: `${employee.name} is starting work on this task`,
+      status: 'started',
+      total_steps: 25,
+    });
+  }
+
   // 5. Call agent runner
-  const result = await runAgentQuery({
-    content: taskPrompt,
-    orgId,
-    userId: employee.user_id,
-    orgName,
-    mode: 'background',
-    systemPromptOverride: systemPrompt,
-    trustLevelOverride: employee.trust_level,
-  });
+  let result;
+  try {
+    result = await runAgentQuery({
+      content: taskPrompt,
+      orgId,
+      userId: employee.user_id,
+      orgName,
+      mode: 'background',
+      systemPromptOverride: systemPrompt,
+      trustLevelOverride: employee.trust_level,
+      agentEmployeeId: employeeId,
+      // Task 3.10 — bind runner progress events to this task
+      taskId,
+    });
+  } catch (err) {
+    const io2 = getIO();
+    if (io2) {
+      io2.to(`org:${orgId}`).emit('task:agent_progress', {
+        task_id: taskId,
+        agent_employee_id: employeeId,
+        step_index: 0,
+        step_description: `${employee.name} hit an error while working`,
+        status: 'failed',
+        total_steps: 25,
+        error: (err as Error).message,
+      });
+    }
+    throw err;
+  }
 
   // 6. Post result as task activity comment
   if (result.text) {
@@ -123,6 +158,20 @@ You have been assigned the following task:
   await db.execute(
     sql`UPDATE agent_employees SET daily_action_count = daily_action_count + 1 WHERE id = ${employeeId} AND daily_action_count < max_daily_actions`
   );
+
+  // Task 3.10 — emit the final "completed" event so the task-detail UI can
+  // auto-dismiss the progress strip after 5s.
+  const ioDone = getIO();
+  if (ioDone) {
+    ioDone.to(`org:${orgId}`).emit('task:agent_progress', {
+      task_id: taskId,
+      agent_employee_id: employeeId,
+      step_index: 0,
+      step_description: `${employee.name} finished and moved this task to In Review`,
+      status: 'completed',
+      total_steps: 25,
+    });
+  }
 
   console.log(`[agent-employee-task] Completed task ${taskId}, status set to in_review`);
 }

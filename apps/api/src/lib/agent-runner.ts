@@ -14,6 +14,7 @@ import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
+import { getIO } from '../socket.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -103,6 +104,12 @@ export async function runAgentQuery(params: {
    * know about or pass it. See Task 3.2 of the task-management overhaul plan.
    */
   sourceMessageId?: string;
+  /**
+   * Task 3.10 — if the agent is working on a specific task, emit
+   * task:agent_progress to `org:${orgId}` on each reasoning iteration so the
+   * task-detail UI can render a live status strip. No-op when unset.
+   */
+  taskId?: string;
 }): Promise<{
   text: string;
   citations: any[];
@@ -265,8 +272,38 @@ export async function runAgentQuery(params: {
 
   let iterations = 0;
   const maxIterations = params.mode === 'background' ? 25 : 8;
+
+  // Task 3.10 — emit live step progress to the org room so the task-detail
+  // UI can render a strip while the agent works. We don't know the true
+  // total step count in advance (it depends on how many tool-use rounds the
+  // LLM takes), so we use maxIterations as the ceiling.
+  const emitTaskProgress = (
+    stepIndex: number,
+    stepDescription: string,
+    status: 'started' | 'completed' | 'failed',
+    error?: string,
+  ): void => {
+    if (!params.taskId) return;
+    const io = getIO();
+    if (!io) return;
+    io.to(`org:${orgId}`).emit('task:agent_progress', {
+      task_id: params.taskId,
+      agent_employee_id: agentEmployeeId ?? null,
+      step_index: stepIndex,
+      step_description: stepDescription,
+      status,
+      total_steps: maxIterations,
+      ...(error ? { error } : {}),
+    });
+  };
+
   while (iterations < maxIterations) {
     iterations++;
+    emitTaskProgress(
+      iterations - 1,
+      iterations === 1 ? 'Reading the task and gathering context' : 'Thinking and using tools',
+      'started',
+    );
 
     // Prompt caching: wrap system prompt and mark the last tool with
     // cache_control so both blocks read at 10% cost on subsequent
@@ -316,6 +353,7 @@ export async function runAgentQuery(params: {
     if (toolUseBlocks.length === 0 || response.stop_reason === 'end_turn') {
       // This is the final response — use this text
       finalText = newText;
+      emitTaskProgress(iterations - 1, 'Wrapping up and posting results', 'completed');
       break;
     }
 
@@ -324,6 +362,17 @@ export async function runAgentQuery(params: {
     if (newText) {
       intermediateText += (intermediateText ? '\n\n' : '') + newText;
     }
+
+    // Emit a "completed" event for this reasoning iteration with a
+    // human-readable summary of the tools the agent is running.
+    const toolsLabel = toolUseBlocks.map((b) => b.name).slice(0, 3).join(', ');
+    emitTaskProgress(
+      iterations - 1,
+      toolUseBlocks.length === 1
+        ? `Using ${toolsLabel}`
+        : `Using ${toolUseBlocks.length} tools (${toolsLabel}${toolUseBlocks.length > 3 ? '…' : ''})`,
+      'completed',
+    );
 
     // Execute tool calls
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
