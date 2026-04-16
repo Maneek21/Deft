@@ -183,6 +183,39 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'add_dependency',
+    description:
+      'Link two tasks with a relationship. "blocks" / "blocked_by" are orderings (A must finish before B); "relates_to" and "duplicates" are semantic pointers. Refuses edges that would close a cycle.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        source_task_identifier: { type: 'string', description: 'From task ID like DEFT-5' },
+        target_task_identifier: { type: 'string', description: 'To task ID like DEFT-9' },
+        type: {
+          type: 'string',
+          enum: ['blocks', 'blocked_by', 'relates_to', 'duplicates'],
+        },
+      },
+      required: ['source_task_identifier', 'target_task_identifier', 'type'],
+    },
+  },
+  {
+    name: 'remove_dependency',
+    description: 'Remove a previously-added task relationship.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        source_task_identifier: { type: 'string' },
+        target_task_identifier: { type: 'string' },
+        type: {
+          type: 'string',
+          enum: ['blocks', 'blocked_by', 'relates_to', 'duplicates'],
+        },
+      },
+      required: ['source_task_identifier', 'target_task_identifier', 'type'],
+    },
+  },
+  {
     name: 'post_message',
     description: 'Post a message in a chat space. REQUIRES USER APPROVAL.',
     input_schema: {
@@ -492,6 +525,9 @@ export const ACTION_TOOLS = new Set([
   // Task 3.5 — status shortcuts
   'close_task',
   'reopen_task',
+  // Task 3.6 — dependency tools
+  'add_dependency',
+  'remove_dependency',
 ]);
 
 // Calendar tools (only added when calendar is connected)

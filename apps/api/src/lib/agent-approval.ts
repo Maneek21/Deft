@@ -77,6 +77,10 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // ─── Task 3.5 — status shortcuts ────────────────────────────────────
   close_task: 'auto',
   reopen_task: 'auto',
+
+  // ─── Task 3.6 — dependency tools ────────────────────────────────────
+  add_dependency: 'quick',
+  remove_dependency: 'quick',
 };
 
 /** Returns true if the action should be auto-executed (no user approval needed). */

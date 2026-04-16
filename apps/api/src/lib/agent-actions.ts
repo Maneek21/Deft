@@ -23,6 +23,7 @@ import { logAuditEvent } from './audit.js';
 import { mcpClientManager } from '@deft/mcp';
 import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
+import { detectBlocksCycle } from './task-dependency.js';
 
 const AGENT_EMAIL = 'deft-agent@system.local';
 
@@ -965,6 +966,163 @@ export async function executeAction(
         return {
           success: true,
           result: { task_id: taskId, label_id: label!.id, label_name: label!.name },
+        };
+      }
+
+      case 'add_dependency': {
+        // Task 3.6 — add a task_relationships row with cycle guard.
+        const sourceId = await resolveTaskIdentifier(params.source_task_identifier, orgId);
+        const targetId = await resolveTaskIdentifier(params.target_task_identifier, orgId);
+        if (!sourceId) return { success: false, result: null, error: 'Source task not found' };
+        if (!targetId) return { success: false, result: null, error: 'Target task not found' };
+        if (sourceId === targetId) {
+          return { success: false, result: null, error: 'Cannot create dependency to self' };
+        }
+
+        const type = params.type;
+        if (!['blocks', 'blocked_by', 'relates_to', 'duplicates'].includes(type)) {
+          return { success: false, result: null, error: `Invalid type: ${type}` };
+        }
+
+        // Normalize blocked_by -> blocks by flipping direction.
+        let srcId = sourceId;
+        let tgtId = targetId;
+        let normalizedType: 'blocks' | 'blocked_by' | 'relates_to' | 'duplicates' = type;
+        if (type === 'blocked_by') {
+          srcId = targetId;
+          tgtId = sourceId;
+          normalizedType = 'blocks';
+        }
+
+        // Cycle guard applies only to blocks edges (orderings).
+        if (normalizedType === 'blocks') {
+          const cycle = await detectBlocksCycle(srcId, tgtId, orgId);
+          if (cycle) {
+            return {
+              success: false,
+              result: null,
+              error: 'Would create a circular dependency (cycle detected)',
+            };
+          }
+        }
+
+        try {
+          const [rel] = await db
+            .insert(taskRelationships)
+            .values({ source_task_id: srcId, target_task_id: tgtId, type: normalizedType })
+            .returning();
+
+          await db
+            .update(agentActions)
+            .set({
+              result: { relationship_id: rel!.id, source_task_id: srcId, target_task_id: tgtId, type: normalizedType },
+              before_state: null,
+              after_state: { id: rel!.id, source_task_id: srcId, target_task_id: tgtId, type: normalizedType },
+              executed_at: new Date(),
+            })
+            .where(eq(agentActions.id, actionId));
+
+          const io = getIO();
+          if (io) {
+            io.to(`org:${orgId}`).emit('task:updated', {
+              id: srcId,
+              dependency_added: { target: tgtId, type: normalizedType },
+            });
+          }
+
+          await logAuditEvent({
+            orgId,
+            actorType: 'agent',
+            actorId: userId,
+            action: 'add_dependency',
+            entityType: 'task',
+            entityId: srcId,
+            beforeState: null,
+            afterState: { target: tgtId, type: normalizedType },
+            metadata: { action_id: actionId },
+          });
+
+          return {
+            success: true,
+            result: { relationship_id: rel!.id, source_task_id: srcId, target_task_id: tgtId, type: normalizedType },
+          };
+        } catch (err: any) {
+          if (err?.code === '23505') {
+            return { success: false, result: null, error: 'Dependency already exists' };
+          }
+          throw err;
+        }
+      }
+
+      case 'remove_dependency': {
+        // Task 3.6 — delete a task_relationships row (no cycle check needed).
+        const sourceId = await resolveTaskIdentifier(params.source_task_identifier, orgId);
+        const targetId = await resolveTaskIdentifier(params.target_task_identifier, orgId);
+        if (!sourceId) return { success: false, result: null, error: 'Source task not found' };
+        if (!targetId) return { success: false, result: null, error: 'Target task not found' };
+
+        const type = params.type;
+        if (!['blocks', 'blocked_by', 'relates_to', 'duplicates'].includes(type)) {
+          return { success: false, result: null, error: `Invalid type: ${type}` };
+        }
+
+        let srcId = sourceId;
+        let tgtId = targetId;
+        let normalizedType: 'blocks' | 'blocked_by' | 'relates_to' | 'duplicates' = type;
+        if (type === 'blocked_by') {
+          srcId = targetId;
+          tgtId = sourceId;
+          normalizedType = 'blocks';
+        }
+
+        const deleted = await db
+          .delete(taskRelationships)
+          .where(
+            and(
+              eq(taskRelationships.source_task_id, srcId),
+              eq(taskRelationships.target_task_id, tgtId),
+              eq(taskRelationships.type, normalizedType),
+            ),
+          )
+          .returning();
+
+        if (deleted.length === 0) {
+          return { success: false, result: null, error: 'Dependency not found' };
+        }
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { source_task_id: srcId, target_task_id: tgtId, type: normalizedType, removed: true },
+            before_state: { source_task_id: srcId, target_task_id: tgtId, type: normalizedType },
+            after_state: null,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`org:${orgId}`).emit('task:updated', {
+            id: srcId,
+            dependency_removed: { target: tgtId, type: normalizedType },
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'remove_dependency',
+          entityType: 'task',
+          entityId: srcId,
+          beforeState: { target: tgtId, type: normalizedType },
+          afterState: null,
+          metadata: { action_id: actionId },
+        });
+
+        return {
+          success: true,
+          result: { source_task_id: srcId, target_task_id: tgtId, type: normalizedType, removed: true },
         };
       }
 
