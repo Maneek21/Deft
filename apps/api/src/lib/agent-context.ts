@@ -32,6 +32,7 @@ import { mcpClientManager } from '@deft/mcp';
 import { decrypt } from './encryption.js';
 import { env } from './env.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
+import { retrieveContext } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
@@ -818,51 +819,107 @@ export async function executeToolCall(
     }
 
     case 'search_decisions': {
-      const decisionConditions: any[] = [
-        eq(wikiPages.org_id, orgId),
-        eq(wikiPages.type, 'decision'),
-        eq(wikiPages.is_deleted, false),
-      ];
+      // If no query, fall back to listing all org decisions ordered by created_at DESC.
+      if (!params.query) {
+        const decisionConditions: any[] = [
+          eq(wikiPages.org_id, orgId),
+          eq(wikiPages.type, 'decision'),
+          eq(wikiPages.is_deleted, false),
+        ];
 
-      if (params.query) {
-        decisionConditions.push(
-          sql`(${ilike(wikiPages.title, `%${params.query}%`)} OR ${ilike(wikiPages.content, `%${params.query}%`)})`,
-        );
+        // space_name filter for empty-query path
+        if (params.space_name) {
+          const [space] = await db
+            .select({ id: spaces.id })
+            .from(spaces)
+            .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
+            .limit(1);
+          if (space) decisionConditions.push(eq(wikiPages.space_id, space.id));
+        }
+
+        const allDecisions = await db
+          .select({
+            id: wikiPages.id,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            confidence: wikiPages.confidence,
+            tags: wikiPages.tags,
+            space_id: wikiPages.space_id,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(and(...decisionConditions))
+          .orderBy(desc(wikiPages.created_at))
+          .limit(20);
+
+        allDecisions.forEach((d) => {
+          citations.push({ type: 'decision', id: d.id, title: d.title.slice(0, 80) });
+        });
+
+        const formatted = allDecisions.map((d) => ({
+          id: d.id,
+          decision: d.title,
+          context: d.content,
+          is_reversed: d.confidence < 0.5 || (d.tags ?? []).includes('reversed'),
+          tags: d.tags,
+          when: d.created_at,
+        }));
+
+        return { result: formatted, citations };
       }
 
-      // space_name filter: wiki pages may have a space_id; resolve and filter if provided
+      // Query provided — use retrieveContext for hybrid FTS + vector ranking.
+      const contextResults = await retrieveContext({
+        query: params.query,
+        org_id: orgId,
+        agent_employee_id: agentEmployeeId,
+        types: ['decisions'],
+        limit: 20,
+      });
+
+      // Post-filter by space_name if provided.
+      let filteredResults = contextResults;
       if (params.space_name) {
         const [space] = await db
           .select({ id: spaces.id })
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
           .limit(1);
-        if (space) decisionConditions.push(eq(wikiPages.space_id, space.id));
+        if (space) {
+          filteredResults = contextResults.filter(
+            (r) => (r as any).space_id === space.id,
+          );
+        }
       }
 
-      const decisionResults = await db
-        .select({
-          id: wikiPages.id,
-          title: wikiPages.title,
-          content: wikiPages.content,
-          confidence: wikiPages.confidence,
-          tags: wikiPages.tags,
-          created_at: wikiPages.created_at,
-        })
-        .from(wikiPages)
-        .where(and(...decisionConditions))
-        .orderBy(desc(wikiPages.created_at))
-        .limit(20);
+      // Re-fetch full fields (tags, confidence, created_at) for matched IDs.
+      const matchedIds = filteredResults.map((r) => r.source_id);
+      let fullRows: Array<{ id: string; title: string; content: string; confidence: number; tags: string[] | null; created_at: Date }> = [];
+      if (matchedIds.length > 0) {
+        fullRows = await db
+          .select({
+            id: wikiPages.id,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            confidence: wikiPages.confidence,
+            tags: wikiPages.tags,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(inArray(wikiPages.id, matchedIds));
+      }
 
-      decisionResults.forEach((d) => {
-        citations.push({
-          type: 'decision',
-          id: d.id,
-          title: d.title.slice(0, 80),
-        });
+      // Preserve the ranking order from retrieveContext.
+      const rowMap = new Map(fullRows.map((r) => [r.id, r]));
+      const orderedRows = matchedIds
+        .map((id) => rowMap.get(id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined);
+
+      orderedRows.forEach((d) => {
+        citations.push({ type: 'decision', id: d.id, title: d.title.slice(0, 80) });
       });
 
-      const formatted = decisionResults.map((d) => ({
+      const formatted = orderedRows.map((d) => ({
         id: d.id,
         decision: d.title,
         context: d.content,
@@ -1165,67 +1222,129 @@ export async function executeToolCall(
     case 'search_knowledge': {
       const query = params.query as string;
       const limit = (params.limit as number) || 10;
-      const pattern = `%${query}%`;
 
-      const conditions: any[] = [
-        eq(spaceKnowledge.org_id, orgId),
-        eq(spaceKnowledge.is_deleted, false),
-        or(ilike(spaceKnowledge.title, pattern), ilike(spaceKnowledge.content, pattern)),
-      ];
+      // Determine which wiki types to query based on params.type filter.
+      // 'decision' → types:['decisions'], others → types:['wiki'] with optional
+      // post-filter on metadata.type for resource / action_item / note.
+      let retrieveTypes: Array<'wiki' | 'decisions'> = ['wiki', 'decisions'];
+      let metadataTypeFilter: string | null = null;
 
       if (params.type) {
-        conditions.push(eq(spaceKnowledge.type, params.type as any));
+        switch (params.type) {
+          case 'decision':
+            retrieveTypes = ['decisions'];
+            break;
+          case 'resource':
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'resource';
+            break;
+          case 'action_item':
+            // Closest wiki equivalent is 'procedure'
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'procedure';
+            break;
+          case 'note':
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'fact';
+            break;
+          default:
+            retrieveTypes = ['wiki', 'decisions'];
+        }
       }
 
-      // If space_name provided, resolve to space_id
+      // Use retrieveContext for FTS + hybrid ranking.
+      const contextResults = await retrieveContext({
+        query,
+        org_id: orgId,
+        agent_employee_id: agentEmployeeId,
+        types: retrieveTypes,
+        limit,
+      });
+
+      // Post-filter by metadata.type if a type mapping requires it.
+      let filteredResults = contextResults;
+      if (metadataTypeFilter) {
+        filteredResults = contextResults.filter(
+          (r) => r.metadata?.type === metadataTypeFilter,
+        );
+      }
+
+      // Post-filter by space_name if provided.
       if (params.space_name) {
-        const [space] = await db.select({ id: spaces.id })
+        const [space] = await db
+          .select({ id: spaces.id })
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, `%${params.space_name}%`)))
           .limit(1);
         if (space) {
-          conditions.push(eq(spaceKnowledge.space_id, space.id));
+          filteredResults = filteredResults.filter(
+            (r) => (r as any).space_id === space.id,
+          );
         }
       }
 
-      const results = await db
-        .select({
-          id: spaceKnowledge.id,
-          type: spaceKnowledge.type,
-          title: spaceKnowledge.title,
-          content: spaceKnowledge.content,
-          metadata: spaceKnowledge.metadata,
-          space_id: spaceKnowledge.space_id,
-          created_at: spaceKnowledge.created_at,
-          author_name: users.name,
-        })
-        .from(spaceKnowledge)
-        .leftJoin(users, eq(spaceKnowledge.created_by, users.id))
-        .where(and(...conditions))
-        .orderBy(desc(spaceKnowledge.created_at))
-        .limit(limit);
-
-      // Resolve space names
-      const knowledgeSpaceIds = [...new Set(results.map(r => r.space_id))];
-      const knowledgeSpaceMap = new Map<string, string>();
-      if (knowledgeSpaceIds.length > 0) {
-        const spaceRows = await db.select({ id: spaces.id, name: spaces.name })
-          .from(spaces).where(inArray(spaces.id, knowledgeSpaceIds));
-        spaceRows.forEach(s => knowledgeSpaceMap.set(s.id, s.name));
+      // Re-fetch full wiki_pages fields (space_id, user_id, created_at, tags) for
+      // matched IDs so we can return the expected response shape.
+      const matchedIds = filteredResults.map((r) => r.source_id);
+      let wikiRows: Array<{
+        id: string;
+        type: string;
+        title: string;
+        content: string;
+        tags: string[] | null;
+        space_id: string | null;
+        user_id: string | null;
+        created_at: Date;
+      }> = [];
+      if (matchedIds.length > 0) {
+        wikiRows = await db
+          .select({
+            id: wikiPages.id,
+            type: wikiPages.type,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            tags: wikiPages.tags,
+            space_id: wikiPages.space_id,
+            user_id: wikiPages.user_id,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(inArray(wikiPages.id, matchedIds));
       }
 
-      const formatted = results.map(r => ({
+      // Resolve space names for wiki rows that have a space_id.
+      const wikiSpaceIds = [...new Set(wikiRows.map((r) => r.space_id).filter(Boolean))] as string[];
+      const wikiSpaceMap = new Map<string, string>();
+      if (wikiSpaceIds.length > 0) {
+        const spaceRows = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(inArray(spaces.id, wikiSpaceIds));
+        spaceRows.forEach((s) => wikiSpaceMap.set(s.id, s.name));
+      }
+
+      // Preserve ranking order from retrieveContext.
+      const wikiRowMap = new Map(wikiRows.map((r) => [r.id, r]));
+      const orderedRows = matchedIds
+        .map((id) => wikiRowMap.get(id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined);
+
+      const formatted = orderedRows.map((r) => ({
         id: r.id,
         type: r.type,
         title: r.title,
         content: r.content,
-        metadata: r.metadata,
-        space: knowledgeSpaceMap.get(r.space_id) || 'unknown',
-        author: r.author_name,
+        // metadata: expose tags as metadata for consistency; wiki pages don't have
+        // a separate metadata JSON column, so we synthesize a minimal object.
+        metadata: { tags: r.tags ?? [] },
+        space: r.space_id ? (wikiSpaceMap.get(r.space_id) ?? null) : null,
+        // author_name is not stored on wiki_pages directly; return null honestly
+        // rather than synthesizing a false value.
+        author: null as string | null,
         created_at: r.created_at,
       }));
 
-      formatted.forEach(k => {
+      formatted.forEach((k) => {
         citations.push({ type: 'knowledge', id: k.id, title: `${k.type}: ${k.title}` });
       });
 
