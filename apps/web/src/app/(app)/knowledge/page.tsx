@@ -278,12 +278,16 @@ export default function KnowledgePage() {
     }).catch(() => {}).finally(() => setLoading(false));
   };
 
-  // Sync filter from URL ?type= param when searchParams change
+  // Sync filter from URL ?type= param, open detail from ?slug= param
   useEffect(() => {
     const typeParam = searchParams.get('type');
     const validTypes = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'];
     if (typeParam && validTypes.includes(typeParam)) {
       setFilter(typeParam);
+    }
+    const slugParam = searchParams.get('slug');
+    if (slugParam) {
+      setSelectedSlug(slugParam);
     }
   }, [searchParams]);
 

@@ -376,12 +376,10 @@ function EntryCard({
               style={{ color: 'var(--status-red, #f87171)' }}>
               <Trash2 size={9} /> Delete
             </button>
-            {entry.slug && (
-              <a href={`/knowledge?slug=${entry.slug}`} className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1"
-                style={{ color: 'var(--accent)' }}>
-                <ExternalLink size={9} /> View in Wiki
-              </a>
-            )}
+            <a href={`/knowledge?slug=${entry.slug}`} className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1"
+              style={{ color: 'var(--accent)' }}>
+              <ExternalLink size={9} /> View in Wiki
+            </a>
           </div>
         </div>
       )}
