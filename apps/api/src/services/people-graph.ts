@@ -14,6 +14,7 @@ import {
   peopleExpertise,
   peoplePatterns,
   peopleRelationships,
+  wikiPages,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, inArray, ne, desc } from 'drizzle-orm';
 
@@ -410,7 +411,64 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
     WHERE org_id = ${orgId}
   `);
 
-  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs`);
+  // ── Wiki authorship signal ──────────────────────────────────────────────────
+  // Users who author wiki pages tagged with topic X get +5 × confidence added
+  // to their expertise score on X. Covers pages created in the last 24 hours
+  // (matches the existing extraction cadence).
+  //
+  // We pull all recent pages for the org (not per-user) to avoid N+1 queries,
+  // then accumulate per-user/topic deltas and upsert in one pass.
+  const recentWikiPages = await db
+    .select({
+      user_id: wikiPages.user_id,
+      tags: wikiPages.tags,
+      confidence: wikiPages.confidence,
+    })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.created_at} > NOW() - INTERVAL '24 hours'`,
+      ),
+    );
+
+  // Accumulate wiki score deltas: key = "userId:topic", value = score delta
+  const wikiScoreDeltas = new Map<string, number>();
+  for (const page of recentWikiPages) {
+    if (!page.user_id) continue; // agent-authored pages have no user_id
+    for (const tag of page.tags ?? []) {
+      if (!tag || tag === 'commitment' || tag === 'reversed') continue;
+      const key = `${page.user_id}:${tag}`;
+      wikiScoreDeltas.set(key, (wikiScoreDeltas.get(key) ?? 0) + 5 * (page.confidence ?? 1));
+    }
+  }
+
+  // Upsert wiki-derived expertise rows and apply the score boost
+  for (const [key, scoreDelta] of wikiScoreDeltas) {
+    const colonIdx = key.indexOf(':');
+    const userId = key.slice(0, colonIdx);
+    const topic = key.slice(colonIdx + 1);
+    const now = new Date();
+
+    await db
+      .insert(peopleExpertise)
+      .values({
+        org_id: orgId,
+        user_id: userId,
+        topic,
+        expertise_score: scoreDelta,
+      })
+      .onConflictDoUpdate({
+        target: [peopleExpertise.org_id, peopleExpertise.user_id, peopleExpertise.topic],
+        set: {
+          expertise_score: sql`${peopleExpertise.expertise_score} + ${scoreDelta}`,
+          updated_at: now,
+        },
+      });
+  }
+
+  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs`);
 }
 
 // ═══ PATTERN ANALYSIS ═══
