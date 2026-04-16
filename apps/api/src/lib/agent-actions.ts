@@ -113,6 +113,18 @@ export async function executeAction(
       return { success: true, result: mcpResult.content };
     }
 
+    // Task 3.5 — close_task / reopen_task are thin wrappers over
+    // update_task_status. Normalize to the canonical action here so the
+    // existing case below handles the DB write, activity row, audit log,
+    // and chat broadcast without duplication.
+    if (action === 'close_task') {
+      action = 'update_task_status';
+      params = { task_identifier: params.task_identifier, new_status: 'done' };
+    } else if (action === 'reopen_task') {
+      action = 'update_task_status';
+      params = { task_identifier: params.task_identifier, new_status: 'todo' };
+    }
+
     switch (action) {
       case 'create_task': {
         const [project] = await db

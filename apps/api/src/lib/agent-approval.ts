@@ -73,6 +73,10 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   set_due_date: 'auto',
   set_priority: 'auto',
   add_label: 'auto',
+
+  // ─── Task 3.5 — status shortcuts ────────────────────────────────────
+  close_task: 'auto',
+  reopen_task: 'auto',
 };
 
 /** Returns true if the action should be auto-executed (no user approval needed). */

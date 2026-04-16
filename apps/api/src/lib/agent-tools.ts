@@ -161,6 +161,28 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'close_task',
+    description: 'Mark a task as done. Thin wrapper over update_task_status.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5' },
+      },
+      required: ['task_identifier'],
+    },
+  },
+  {
+    name: 'reopen_task',
+    description: 'Move a done/cancelled task back to todo.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifier: { type: 'string', description: 'Task ID like DEFT-5' },
+      },
+      required: ['task_identifier'],
+    },
+  },
+  {
     name: 'post_message',
     description: 'Post a message in a chat space. REQUIRES USER APPROVAL.',
     input_schema: {
@@ -467,6 +489,9 @@ export const ACTION_TOOLS = new Set([
   'set_due_date',
   'set_priority',
   'add_label',
+  // Task 3.5 — status shortcuts
+  'close_task',
+  'reopen_task',
 ]);
 
 // Calendar tools (only added when calendar is connected)
