@@ -17,7 +17,7 @@
  * Phase 3 MVP the cache is write-through only.
  */
 import { createHash } from 'node:crypto';
-import { sql, and, eq, or, isNull, desc } from 'drizzle-orm';
+import { sql, and, eq, desc } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   orgs,
@@ -28,6 +28,7 @@ import {
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+import { retrieveContext } from '../retrieve-context.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -176,10 +177,11 @@ export async function platformContext(
     }
 
     // ─── relevant wiki snippets ──────────────────────────────────
-    // Scoping: employee-tagged pages OR org-wide pages (agent_employee_id IS NULL).
-    // Ranking: ts_rank × confidence when we have a query, else confidence desc.
-    // Embedding is deferred — see plan: pgvector is NULL in local dev and we
-    // must degrade gracefully to FTS only.
+    // When there is a triggering message, delegate to the retrieveContext
+    // gateway (FTS + hybrid ranking, two-tier employee/org scoping).
+    // When there is no query text, fall back to top-confidence pages
+    // (the gateway requires a non-empty query string, so we keep the
+    // direct DB read for the no-query case).
     let wikiSnippets: Array<{
       slug: string;
       title: string;
@@ -189,36 +191,20 @@ export async function platformContext(
     }> = [];
     try {
       if (queryText.trim().length > 0) {
-        const rows = await db
-          .select({
-            slug: wikiPages.slug,
-            title: wikiPages.title,
-            summary: wikiPages.summary,
-            type: wikiPages.type,
-            confidence: wikiPages.confidence,
-          })
-          .from(wikiPages)
-          .where(
-            and(
-              eq(wikiPages.org_id, ctx.org_id),
-              eq(wikiPages.is_deleted, false),
-              or(
-                eq(wikiPages.agent_employee_id, ctx.employee_id),
-                isNull(wikiPages.agent_employee_id),
-              ),
-              sql`search_vector @@ plainto_tsquery('english', ${queryText})`,
-            ),
-          )
-          .orderBy(
-            sql`ts_rank(search_vector, plainto_tsquery('english', ${queryText})) * ${wikiPages.confidence} DESC`,
-          )
-          .limit(5);
-        wikiSnippets = rows.map((r) => ({
-          slug: r.slug,
+        const results = await retrieveContext({
+          query: queryText,
+          org_id: ctx.org_id,
+          agent_employee_id: ctx.employee_id,
+          types: ['wiki'],
+          limit: 5,
+          hybrid: false,
+        });
+        wikiSnippets = results.map((r) => ({
+          slug: String(r.metadata?.slug ?? ''),
           title: r.title,
-          summary: r.summary,
-          type: r.type as string,
-          confidence: r.confidence,
+          summary: (r.metadata?.summary as string | null) ?? null,
+          type: String(r.metadata?.type ?? 'fact'),
+          confidence: r.confidence ?? 0,
         }));
       } else {
         const rows = await db
@@ -234,10 +220,7 @@ export async function platformContext(
             and(
               eq(wikiPages.org_id, ctx.org_id),
               eq(wikiPages.is_deleted, false),
-              or(
-                eq(wikiPages.agent_employee_id, ctx.employee_id),
-                isNull(wikiPages.agent_employee_id),
-              ),
+              sql`(${wikiPages.agent_employee_id} = ${ctx.employee_id} OR ${wikiPages.agent_employee_id} IS NULL)`,
             ),
           )
           .orderBy(desc(wikiPages.confidence), desc(wikiPages.updated_at))
