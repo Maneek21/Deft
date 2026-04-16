@@ -1,12 +1,21 @@
 // Handler: agent-employee-message — processes DMs and @mentions directed at agent employees
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { agentEmployees, messages, users, orgs } from '@deft/db/schema';
+import {
+  agentEmployees,
+  messages,
+  users,
+  orgs,
+  projectSpaces,
+  projectSkills,
+  notifications,
+} from '@deft/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { sql } from 'drizzle-orm';
 import { dispatchViaOpenClaw } from '../../lib/openclaw-dispatch.js';
+import { ensureSkillInstalled } from '../../lib/skill-install.js';
 
 interface AgentEmployeeMessageData {
   messageId: string;
@@ -41,6 +50,39 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   if (!employee) {
     console.warn(`[agent-employee-message] Employee ${employeeId} not found or inactive, skipping`);
     return;
+  }
+
+  // ─── Phase 4 Task 4.6 — JIT-install required skills ──────────────────
+  // Only applies when the space is linked to a project. If no project is
+  // linked, there are no project_skills to install — skip the loop entirely.
+  const [linkedProject] = await db
+    .select({ project_id: projectSpaces.project_id })
+    .from(projectSpaces)
+    .where(eq(projectSpaces.space_id, spaceId))
+    .limit(1);
+
+  if (linkedProject) {
+    const projectSkillRows = await db
+      .select({ skill_id: projectSkills.skill_id })
+      .from(projectSkills)
+      .where(eq(projectSkills.project_id, linkedProject.project_id));
+
+    for (const { skill_id } of projectSkillRows) {
+      const result = await ensureSkillInstalled(employee.id, skill_id);
+      if (result.status === 'requires_approval') {
+        await createSkillInstallApprovalNotification({
+          orgId,
+          ownerUserId: employee.created_by,
+          employeeId: employee.id,
+          employeeName: employee.name,
+          skill: result.skill,
+        });
+        console.warn(
+          `[agent-employee-message] Marketplace skill ${result.skill.name} requires approval; skipping dispatch for message ${messageId}`,
+        );
+        return;
+      }
+    }
   }
 
   // ─── OpenClaw dispatch branch ────────────────────────────────────────
@@ -247,4 +289,34 @@ You have ${dailyActionsRemaining} actions remaining today out of ${employee.max_
   }
 
   console.log(`[agent-employee-message] Posted reply ${agentMessage!.id} from employee ${employee.name} in space ${spaceId}`);
+}
+
+/**
+ * Phase 4 Task 4.6 — surface a "skill install pending approval" notification
+ * to the employee's owner. The `skill_install_approval` type isn't yet in
+ * the notification_type enum, so we re-use `agent_suggestion` and stash the
+ * real payload in `metadata` for the UI to pick up.
+ */
+async function createSkillInstallApprovalNotification(args: {
+  orgId: string;
+  ownerUserId: string;
+  employeeId: string;
+  employeeName: string;
+  skill: { id: string; name: string; source: 'marketplace' };
+}): Promise<void> {
+  const { orgId, ownerUserId, employeeId, employeeName, skill } = args;
+  await db.insert(notifications).values({
+    org_id: orgId,
+    user_id: ownerUserId,
+    type: 'agent_suggestion',
+    title: `Approve ${skill.name} for ${employeeName}`,
+    body: `${employeeName} needs the marketplace skill "${skill.name}" to answer in this space. Review and approve the install.`,
+    metadata: {
+      kind: 'skill_install_approval',
+      skill_id: skill.id,
+      skill_name: skill.name,
+      skill_source: skill.source,
+      agent_employee_id: employeeId,
+    },
+  });
 }
