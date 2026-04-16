@@ -72,7 +72,14 @@ export async function classifyMessage(
       maxTokens: 512,
     });
 
-    const parsed = JSON.parse(response.text);
+    // Haiku sometimes wraps JSON in ```json ... ``` fences despite the prompt
+    // instruction. Strip them defensively before parsing.
+    const cleaned = response.text
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .trim();
+    const parsed = JSON.parse(cleaned);
 
     return {
       intent: parsed.intent ?? 'none',
