@@ -206,10 +206,13 @@ async function runWikiQuery(
         .select({
           id: wikiPages.id,
           title: wikiPages.title,
+          slug: wikiPages.slug,
+          summary: wikiPages.summary,
           content: wikiPages.content,
           scope: wikiPages.scope,
           confidence: wikiPages.confidence,
           type: wikiPages.type,
+          agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
         })
         .from(wikiPages)
@@ -229,10 +232,13 @@ async function runWikiQuery(
         .select({
           id: wikiPages.id,
           title: wikiPages.title,
+          slug: wikiPages.slug,
+          summary: wikiPages.summary,
           content: wikiPages.content,
           scope: wikiPages.scope,
           confidence: wikiPages.confidence,
           type: wikiPages.type,
+          agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
         })
         .from(wikiPages)
@@ -255,10 +261,13 @@ async function runWikiQuery(
     .select({
       id: wikiPages.id,
       title: wikiPages.title,
+      slug: wikiPages.slug,
+      summary: wikiPages.summary,
       content: wikiPages.content,
       scope: wikiPages.scope,
       confidence: wikiPages.confidence,
       type: wikiPages.type,
+      agent_employee_id: wikiPages.agent_employee_id,
       rawScore: scoreExpr,
     })
     .from(wikiPages)
@@ -275,10 +284,23 @@ async function runWikiQuery(
   return { tier1Rows: null, tier2Rows: null, singleRows };
 }
 
+type WikiRow = {
+  id: string;
+  title: string;
+  slug: string;
+  summary: string | null;
+  content: string;
+  scope: string | null;
+  confidence: number;
+  type: string;
+  agent_employee_id: string | null;
+  rawScore: number;
+};
+
 function mapWikiRows(
-  tier1Rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
-  tier2Rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
-  singleRows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; type: string; rawScore: number }> | null,
+  tier1Rows: WikiRow[] | null,
+  tier2Rows: WikiRow[] | null,
+  singleRows: WikiRow[] | null,
 ): ContextResult[] {
   const out: ContextResult[] = [];
   if (tier1Rows && tier2Rows) {
@@ -291,7 +313,13 @@ function mapWikiRows(
         score: clampScore((row.rawScore ?? 0) + 0.1),
         scope: row.scope,
         confidence: row.confidence,
-        metadata: { type: row.type, tier: 'employee' },
+        metadata: {
+          type: row.type,
+          tier: 'employee',
+          slug: row.slug,
+          summary: row.summary ?? null,
+          agent_employee_id: row.agent_employee_id ?? null,
+        },
       });
     }
     for (const row of tier2Rows) {
@@ -303,7 +331,13 @@ function mapWikiRows(
         score: clampScore(row.rawScore ?? 0),
         scope: row.scope,
         confidence: row.confidence,
-        metadata: { type: row.type, tier: 'org' },
+        metadata: {
+          type: row.type,
+          tier: 'org',
+          slug: row.slug,
+          summary: row.summary ?? null,
+          agent_employee_id: row.agent_employee_id ?? null,
+        },
       });
     }
   } else if (singleRows) {
@@ -316,7 +350,12 @@ function mapWikiRows(
         score: clampScore(row.rawScore ?? 0),
         scope: row.scope,
         confidence: row.confidence,
-        metadata: { type: row.type },
+        metadata: {
+          type: row.type,
+          slug: row.slug,
+          summary: row.summary ?? null,
+          agent_employee_id: row.agent_employee_id ?? null,
+        },
       });
     }
   }

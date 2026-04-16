@@ -1,12 +1,7 @@
 /**
  * memory_recall / memory_write / memory_list MCP tools.
  *
- * Phase 3 scope: FTS only. pgvector is an optional ranking boost added in a
- * follow-up once the `vector` extension is enabled on local dev Postgres.
- * The `embedding` column on wiki_pages is nullable and is ignored here —
- * ranking is `ts_rank × confidence DESC`, scoped to the caller's employee +
- * org-wide pages.
- *
+ * memory_recall delegates to the retrieveContext gateway (Task 1.4).
  * memory_write inserts a wiki_pages row with `agent_employee_id = ctx.employee_id`
  * and `scope = 'user'` for now. Phase 4 adds `memory_update` with approval
  * gating for cross-scope promotion.
@@ -18,6 +13,7 @@ import { wikiPages } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
+import { retrieveContext } from '../retrieve-context.js';
 
 const VALID_TYPES = new Set([
   'concept',
@@ -47,48 +43,39 @@ export async function memoryRecall(
     return errorResult('memory_recall requires a non-empty query');
   }
   const limit = Math.min(Math.max(1, args.limit ?? 5), 25);
+  const scope = args.scope ?? 'all';
 
   try {
-    // Scope filter: employee-tagged + org-wide by default; `own` excludes org-wide.
-    const scope = args.scope ?? 'all';
-    const scopeCondition =
-      scope === 'own'
-        ? eq(wikiPages.agent_employee_id, ctx.employee_id)
-        : scope === 'org'
-          ? isNull(wikiPages.agent_employee_id)
-          : or(
-              eq(wikiPages.agent_employee_id, ctx.employee_id),
-              isNull(wikiPages.agent_employee_id),
-            );
+    // Fetch from the unified gateway — always pass agent_employee_id so
+    // the two-tier employee+org split is applied inside fetchWiki.
+    const contextResults = await retrieveContext({
+      query,
+      org_id: ctx.org_id,
+      agent_employee_id: ctx.employee_id,
+      types: ['wiki'],
+      limit,
+      hybrid: false, // FTS-only; pgvector is a separate phase
+    });
 
-    const rows = await db
-      .select({
-        slug: wikiPages.slug,
-        title: wikiPages.title,
-        summary: wikiPages.summary,
-        type: wikiPages.type,
-        confidence: wikiPages.confidence,
-      })
-      .from(wikiPages)
-      .where(
-        and(
-          eq(wikiPages.org_id, ctx.org_id),
-          eq(wikiPages.is_deleted, false),
-          scopeCondition,
-          sql`search_vector @@ plainto_tsquery('english', ${query})`,
-        ),
-      )
-      .orderBy(
-        sql`ts_rank(search_vector, plainto_tsquery('english', ${query})) * ${wikiPages.confidence} DESC`,
-      )
-      .limit(limit);
+    // Post-filter by scope using agent_employee_id stored in metadata:
+    //   'own'  → only pages tagged to this employee (tier: 'employee')
+    //   'org'  → only org-wide pages (agent_employee_id is null)
+    //   'all'  → both tiers, no filter
+    const filtered = contextResults.filter((r) => {
+      if (r.source_type !== 'wiki_page') return false;
+      const empId = r.metadata?.agent_employee_id as string | null | undefined;
+      if (scope === 'own') return empId === ctx.employee_id;
+      if (scope === 'org') return empId == null;
+      return true; // 'all'
+    });
 
-    const result = rows.map((r) => ({
-      slug: r.slug,
+    // Map ContextResult back to the shape clients expect.
+    const result = filtered.map((r) => ({
+      slug: (r.metadata?.slug as string) ?? '',
       title: r.title,
-      summary: r.summary,
-      type: r.type,
-      confidence: r.confidence,
+      summary: (r.metadata?.summary as string | null) ?? null,
+      type: (r.metadata?.type as string) ?? '',
+      confidence: r.confidence ?? 1.0,
     }));
 
     return textResult(result);
