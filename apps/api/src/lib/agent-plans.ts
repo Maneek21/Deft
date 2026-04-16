@@ -158,6 +158,12 @@ export interface CreatePlanRowInput {
   user_id: string;
   conversation_id?: string | null;
   agent_employee_id?: string | null;
+  /**
+   * Task 3.2 — if the plan was created in response to a chat message,
+   * this id threads through to every write-action step as
+   * params.source_message_id so the created tasks/messages link back.
+   */
+  source_message_id?: string | null;
   title: string;
   description?: string | null;
   steps: PlanStep[];
@@ -192,7 +198,7 @@ export async function createPlanRow(
       steps,
       status: 'draft',
       current_step: 0,
-      context: {},
+      context: input.source_message_id ? { source_message_id: input.source_message_id } : {},
     })
     .returning({ id: agentPlans.id, status: agentPlans.status });
 
@@ -308,6 +314,19 @@ export async function executePlan(
 
     const resolvedParams = resolveStepReferences(step.params, context);
     const isWriteAction = ACTION_TOOLS.has(step.tool);
+
+    // Task 3.2 — if the plan was created in response to a chat message,
+    // the triggering message id was stashed in context at createPlanRow
+    // time. Thread it into every write-action step so created tasks etc
+    // link back to the source message without the planner having to echo
+    // it in every step's params.
+    const planSourceMessageId =
+      typeof (context as any)?.source_message_id === 'string'
+        ? ((context as any).source_message_id as string)
+        : null;
+    if (isWriteAction && planSourceMessageId && !resolvedParams.source_message_id) {
+      resolvedParams.source_message_id = planSourceMessageId;
+    }
 
     try {
       if (!isWriteAction) {

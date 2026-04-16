@@ -66,6 +66,11 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
         assignee_name: { type: 'string', description: 'Assignee name' },
         due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
         description: { type: 'string', description: 'Task description' },
+        source_message_id: {
+          type: 'string',
+          description:
+            'Optional — id of the chat message that prompted this task. Usually set automatically; leave empty unless you are linking to a specific different message.',
+        },
       },
       required: ['title', 'project_name'],
     },

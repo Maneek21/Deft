@@ -97,6 +97,12 @@ export async function runAgentQuery(params: {
   agentEmployeeId?: string;
   /** Skip the self-verification pass. Defaults to true for chat_mention, false for background. */
   skipVerification?: boolean;
+  /**
+   * Triggering message id. When set, write actions that accept source_message_id
+   * (e.g. create_task) inherit it automatically — the LLM does not need to
+   * know about or pass it. See Task 3.2 of the task-management overhaul plan.
+   */
+  sourceMessageId?: string;
 }): Promise<{
   text: string;
   citations: any[];
@@ -328,9 +334,16 @@ export async function runAgentQuery(params: {
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel)) {
           // Background mode: auto-execute if trust level permits
           const approvalTier = getApprovalTier(tool.name);
+          // Thread the triggering message id into write actions that understand
+          // source_message_id. The LLM never has to know about it — we inject
+          // it here for create_task and similar tools.
+          const toolInput = { ...(tool.input as Record<string, any>) };
+          if (params.sourceMessageId && !toolInput.source_message_id) {
+            toolInput.source_message_id = params.sourceMessageId;
+          }
           const { actionId, success, result, error } = await executeActionDirect(
             tool.name,
-            tool.input as Record<string, any>,
+            toolInput,
             orgId,
             userId,
             null, // no conversation_id for background actions
@@ -347,10 +360,16 @@ export async function runAgentQuery(params: {
             ),
           });
         } else {
-          // Chat mention mode or trust level requires approval: skip write actions
+          // Chat mention mode or trust level requires approval: skip write actions.
+          // Thread the source message id through so the approval UI can persist
+          // it when the action is executed later.
+          const pendingParams = { ...(tool.input as Record<string, any>) };
+          if (params.sourceMessageId && !pendingParams.source_message_id) {
+            pendingParams.source_message_id = params.sourceMessageId;
+          }
           pendingActions.push({
             action: tool.name,
-            params: tool.input,
+            params: pendingParams,
           });
           toolResults.push({
             type: 'tool_result' as const,

@@ -127,6 +127,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         userId,
         orgName,
         conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        // Task 3.2 — thread the triggering message id so write actions like
+        // create_task can inherit source_message_id without the LLM having
+        // to know about it.
+        sourceMessageId: messageId,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),

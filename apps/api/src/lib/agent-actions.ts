@@ -127,6 +127,9 @@ export async function executeAction(
             assignee_id: assigneeId,
             created_by: userId,
             due_date: params.due_date ? new Date(params.due_date) : null,
+            // Task 3.2 — if the agent was invoked by a message, link the
+            // created task back to it so the UI can show "from chat".
+            source_message_id: params.source_message_id || null,
           })
           .returning();
 
