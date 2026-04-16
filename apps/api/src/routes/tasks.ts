@@ -2,9 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations, orgMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { canDeleteTask } from '../lib/task-permissions.js';
+import { isValidTransition } from '../lib/task-status-machine.js';
+import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 
 export const taskRoutes = new Hono();
 
@@ -1233,6 +1236,10 @@ taskRoutes.patch('/:id', async (c) => {
     }
 
     if (parsed.data.status !== undefined && parsed.data.status !== existingTask.status) {
+      const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
+      if (!isValidTransition(existingTask.status, parsed.data.status, resolvedConfig)) {
+        return c.json({ error: 'Invalid status transition', code: 'INVALID_TRANSITION' }, 400);
+      }
       updateData.status = parsed.data.status;
       activityEntries.push({ action: 'status_changed', field: 'status', old_value: existingTask.status, new_value: parsed.data.status });
     }
@@ -1518,6 +1525,15 @@ taskRoutes.delete('/:id', async (c) => {
     const existingTask = await getTaskForOrg(taskId, user.org_id);
     if (!existingTask) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const [member] = await db.select({ role: orgMembers.role })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, user.id)))
+      .limit(1);
+
+    if (!canDeleteTask(user, existingTask, member?.role ?? null)) {
+      return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
     }
 
     await db.update(tasks)
