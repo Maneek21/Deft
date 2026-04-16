@@ -60,34 +60,37 @@ export async function handleCrossReference(job: JobData): Promise<void> {
         .where(and(eq(tasks.project_id, project.id), eq(tasks.number, number)))
         .limit(1);
 
-      if (!task) continue;
+      if (!task) {
+        console.warn(
+          `[cross-reference] unresolved-ref messageId=${messageId} prefix=${prefix} number=${number}`,
+        );
+        continue;
+      }
 
-      // Check for duplicate cross-reference (source_id + target_id)
-      const [existing] = await db
-        .select({ id: crossReferences.id })
-        .from(crossReferences)
-        .where(
-          and(
-            eq(crossReferences.source_type, 'message'),
-            eq(crossReferences.source_id, messageId),
-            eq(crossReferences.target_type, 'task'),
-            eq(crossReferences.target_id, task.id),
-          ),
-        )
-        .limit(1);
+      // Atomic insert — relies on unique index (source_type, source_id, target_type, target_id).
+      // Returns empty array if a matching row already exists (duplicate); otherwise returns the inserted row.
+      const inserted = await db
+        .insert(crossReferences)
+        .values({
+          org_id: orgId,
+          source_type: 'message',
+          source_id: messageId,
+          target_type: 'task',
+          target_id: task.id,
+          context: contextSnippet,
+          created_by: userId,
+        })
+        .onConflictDoNothing({
+          target: [
+            crossReferences.source_type,
+            crossReferences.source_id,
+            crossReferences.target_type,
+            crossReferences.target_id,
+          ],
+        })
+        .returning({ id: crossReferences.id });
 
-      if (existing) continue;
-
-      // Insert cross-reference
-      await db.insert(crossReferences).values({
-        org_id: orgId,
-        source_type: 'message',
-        source_id: messageId,
-        target_type: 'task',
-        target_id: task.id,
-        context: contextSnippet,
-        created_by: userId,
-      });
+      if (inserted.length === 0) continue;
 
       // Add a comment on the task
       const excerpt = plainContent.slice(0, 120);
