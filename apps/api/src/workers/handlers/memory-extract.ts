@@ -1,8 +1,8 @@
 // Handler: memory-extract — extracts memorable facts and decisions from classified messages
-// and stores them as wiki pages (LLM Wiki pattern). Also writes to legacy agentMemory for compat.
+// and stores them as wiki pages (LLM Wiki pattern).
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { agentMemory, decisions, wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
+import { decisions, wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
@@ -56,19 +56,6 @@ function slugify(title: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 80);
-}
-
-/**
- * Generate a snake_case key from a fact string (legacy compat).
- */
-function generateKeyFromFact(fact: string): string {
-  const words = fact
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .split(/\s+/)
-    .filter((w) => w.length > 1)
-    .slice(0, 4);
-  return words.join('_') || 'fact';
 }
 
 /**
@@ -468,25 +455,6 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
         await cascadeIngest(triggerSlug, result.content, orgId, messageId);
       }
 
-      // COMPAT: Also write to legacy agentMemory (remove after wiki migration complete)
-      const key = item.isDecision
-        ? 'decision:' + generateKeyFromFact(item.text)
-        : generateKeyFromFact(item.text);
-
-      await db
-        .insert(agentMemory)
-        .values({
-          org_id: orgId,
-          user_id: userId,
-          conversation_id: null,
-          scope: 'org',
-          key,
-          value: item.text,
-        })
-        .onConflictDoUpdate({
-          target: [agentMemory.user_id, agentMemory.conversation_id, agentMemory.key],
-          set: { value: item.text, updated_at: new Date() },
-        });
     } catch (err) {
       console.error(`[memory-extract] Failed to process "${item.text.slice(0, 50)}":`, (err as Error).message);
     }
