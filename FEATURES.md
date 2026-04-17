@@ -528,6 +528,35 @@ Named groups (e.g., @engineering, @design) with handle/slug. Add/remove members.
 
 ---
 
+## 12. Security & Hardening
+
+### XSS Prevention
+- DOMPurify sanitization on all `dangerouslySetInnerHTML` call sites (space-chat, thread-panel, task-detail comments, notes version history, dashboard standup)
+- HTML entity escaping in `inlineFormat()` markdown renderer before regex processing
+- Centralized `sanitizeHtml()` utility at `apps/web/src/lib/sanitize.ts` with explicit tag/attribute allowlists
+
+### Access Control — IDOR Fixes
+- Workflow run deletion: ownership verified before cascade delete
+- Agent conversation deletion: user ownership verified before message purge
+- Wiki citation deletion: task org_id + scoped citation delete (source_id match)
+
+### Space Membership Enforcement
+- All space endpoints (GET members, POST members) require space membership
+- Message listing (GET /:spaceId) requires space membership
+- Message forwarding checks both source and target space membership
+- Pin/unpin operations require space membership
+- WebSocket `space:join` validates membership before joining room
+- Shared `requireSpaceMembership()` utility at `apps/api/src/lib/space-membership.ts`
+
+### Upload Safety
+- Filename sanitized with `path.basename()` + special character stripping on upload
+- Content-Disposition header uses `attachment` (not `inline`) + URI-encoded filename
+
+### Data Integrity
+- Daily notes PATCH uses optimistic locking (CAS version check) — returns 409 Conflict on concurrent edits
+
+---
+
 ## Next Milestone — Phase 8 (OpenClaw autonomy)
 
 Flagged as explicitly NOT shipped yet:
