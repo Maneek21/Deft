@@ -887,3 +887,50 @@ Baseline Playwright walkthrough covering core surfaces. Use as a regression base
 | Trusted Tester (Phases 0-6) | | | | |
 | Marketing persona | | | | |
 | Sales persona | | | | |
+
+## Security & Access Control Testing
+
+### XSS Prevention
+- [ ] Post a chat message containing `<img src=x onerror="alert('xss')">` — should render as escaped text, not execute
+- [ ] Create a task comment with `<script>alert(1)</script>` — should render as text
+- [ ] Edit a daily note with HTML tags in content — verify they are sanitized on version history view
+- [ ] Check dashboard standup summary renders safely (no raw HTML execution)
+
+### IDOR — Unauthorized Access
+- [ ] Attempt DELETE /api/workflows/:id with an ID from another org — should return 404, workflow runs should NOT be deleted
+- [ ] Attempt DELETE /api/agent/conversations/:id with another user's conversation ID — should return success but delete nothing
+- [ ] Attempt DELETE /api/tasks/:id/wiki-links/:citationId with a task from another org — should return 404
+
+### Space Membership Enforcement
+- [ ] As a non-member, attempt GET /api/spaces/:id/members on a private space — should return 403
+- [ ] As a non-member, attempt to read messages from a private space — should return 403
+- [ ] As a non-member, attempt to join a space via WebSocket `space:join` — should silently fail (no messages received)
+- [ ] As a non-member, attempt to pin a message in another space — should return 403
+- [ ] As a non-member, attempt POST /api/spaces/:id/members to add yourself — should return 403
+
+### Upload Safety
+- [ ] Upload a file with name `../../etc/passwd` — filename should be sanitized to safe characters
+- [ ] Upload a file with special characters in name — should be stored with sanitized name
+- [ ] Download a file — Content-Disposition should be `attachment`, not `inline`
+
+### Daily Notes Concurrency
+- [ ] Open same note in two browser tabs, edit both simultaneously — second save should return 409 Conflict
+
+## UI Regression Tests
+
+### Sidebar Three-Dot Menu
+- [ ] Click the three-dot (⋯) menu in the sidebar bottom — menu should open
+- [ ] Click "Log out" — should log out (not close menu without action)
+- [ ] Click "Settings" — should navigate to /settings
+- [ ] Click "Set status" — should open status modal
+- [ ] Click "Dark mode" / "Light mode" — should toggle theme
+- [ ] Hover over menu items — should show hover feedback
+
+### Settings Page Scroll
+- [ ] Navigate to /settings/integrations — page should scroll if content overflows
+- [ ] Navigate to /settings/agent — page should scroll
+- [ ] Navigate to /settings/members — page should scroll
+- [ ] Navigate to /settings/agent-employees — page should scroll
+- [ ] Navigate to /settings/agent-employees/create — page should scroll (especially Step 3 skills list)
+- [ ] Navigate to /settings/api-access — page should scroll
+- [ ] Navigate to /settings/groups — page should scroll
