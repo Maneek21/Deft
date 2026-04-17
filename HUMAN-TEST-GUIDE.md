@@ -839,7 +839,7 @@ Baseline Playwright walkthrough covering core surfaces. Use as a regression base
 | Project selector | PASS | Dropdown works across views |
 | Skills page breadcrumb | PASS | Fixed: was "Dashboard", now "Skills" |
 
-### Bugs Found (5 total — 5 fixed, 0 blocking)
+### Bugs Found (6 total — 6 fixed, 0 blocking)
 
 | # | Bug | Severity | Fix |
 |---|-----|----------|-----|
@@ -848,6 +848,7 @@ Baseline Playwright walkthrough covering core surfaces. Use as a regression base
 | 3 | Pipeline view "No deals" copy in Engineering projects | Medium | `73946cf` |
 | 4 | Skills page breadcrumb said "Dashboard" | Low | `73946cf` |
 | 5 | Skills wizard fetch error not caught | Low | `73946cf` |
+| 6 | Agent wizard Step 3 (Skills) overflows viewport — Back/Next buttons pushed off-screen with 9 skills | High | `1639dd7` — added `max-h-[45vh] overflow-y-auto` scroll container |
 
 ### Known Remaining Issues (not fixed — document for future sprints)
 
