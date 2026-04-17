@@ -311,6 +311,22 @@ export const taskComments = pgTable('task_comments', {
   index('task_comments_org_task_idx').on(t.org_id, t.task_id),
 ]);
 
+// ═══ TASK REACTIONS ═══
+// Task 6.3 — Slack-style emoji reactions on tasks. A (task, user, emoji)
+// tuple is unique; duplicate POST toggles off, DELETE removes explicitly.
+export const taskReactions = pgTable('task_reactions', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  task_id: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  emoji: text('emoji').notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('task_reactions_unique').on(t.task_id, t.user_id, t.emoji),
+  index('task_reactions_task_idx').on(t.task_id),
+  index('task_reactions_org_idx').on(t.org_id),
+]);
+
 // ═══ TASK ACTIVITY LOG ═══
 export const taskActivity = pgTable('task_activity', {
   ...id(),

@@ -22,12 +22,13 @@
  * reads the fields each variant actually needs.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, MoreHorizontal, Calendar, Check, Lock, ListChecks } from 'lucide-react';
+import { GripVertical, MoreHorizontal, Calendar, Check, Lock, ListChecks, Smile } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { api } from '@/lib/api';
 
 // Canonical engineering statuses; kept as a named export so older callers
 // still get auto-complete, but skill-driven configs (Sales pipeline etc.)
@@ -79,6 +80,10 @@ export type UnifiedTask = {
   // Task 4.12 — recurrence cadence; when set, board variant renders a
   // small "Recurring" chip.
   recurrence?: 'daily' | 'weekly' | 'biweekly' | 'monthly' | null;
+  // Task 6.3 — optional pre-hydrated reaction summary. When supplied
+  // (by a caller that batched reactions into the task list) the board
+  // variant renders the reaction bar without its own network fetch.
+  reactions?: { emoji: string; count: number; mine: boolean }[];
   created_at?: string;
   updated_at?: string;
 };
@@ -551,6 +556,14 @@ function BoardVariant({
               );
             })()}
           </div>
+
+          {/* Task 6.3 — reaction bar. Only rendered when the caller
+              pre-hydrates with `initialReactions` so we avoid a network
+              round-trip per card on the board. Task detail renders the
+              full (non-compact) bar below. */}
+          {task.reactions !== undefined && (
+            <TaskReactionBar taskId={task.id} initialReactions={task.reactions} compact />
+          )}
         </div>
       </div>
     </div>
@@ -836,6 +849,162 @@ function NotificationVariant({ task, onClick, onView }: NotificationProps) {
           View
         </button>
       )}
+    </div>
+  );
+}
+
+// ── Task 6.3 — Task reactions bar ───────────────────────────────────────────
+//
+// Slack-style emoji reactions. Predefined quick reacts + a `+` picker from a
+// small curated set. Renders grouped counts (one chip per emoji) with a
+// caller-selected highlight. Fetches its own state from /api/tasks/:id/reactions
+// on mount; optimistic toggles on click with rollback on failure.
+
+const QUICK_REACTIONS = ['\uD83D\uDC4D', '\uD83D\uDC40', '\uD83C\uDF89', '\uD83D\uDD25'];
+const PICKER_REACTIONS = [
+  '\uD83D\uDC4D', '\uD83D\uDC40', '\uD83C\uDF89', '\uD83D\uDD25',
+  '\u2764\uFE0F', '\uD83D\uDE2C', '\uD83D\uDE80', '\uD83D\uDC4F',
+  '\u2705', '\u274C', '\uD83D\uDCA1', '\uD83D\uDE44',
+];
+
+type ReactionSummary = { emoji: string; count: number; mine: boolean };
+
+export function TaskReactionBar({
+  taskId,
+  compact = false,
+  initialReactions,
+}: {
+  taskId: string;
+  compact?: boolean;
+  /** When provided, skips the initial network fetch. Pass the same shape
+   *  the GET /api/tasks/:id/reactions endpoint returns. */
+  initialReactions?: ReactionSummary[];
+}) {
+  const [reactions, setReactions] = useState<ReactionSummary[]>(initialReactions ?? []);
+  const [loaded, setLoaded] = useState(initialReactions !== undefined);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (initialReactions !== undefined) return;
+    let cancelled = false;
+    api.get(`/api/tasks/${taskId}/reactions`).then(async (res) => {
+      if (!res.ok) return;
+      const data: ReactionSummary[] = await res.json();
+      if (!cancelled) {
+        setReactions(data);
+        setLoaded(true);
+      }
+    }).catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+    // initialReactions is an entry point; fetches only run on first mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+
+  const toggle = async (emoji: string) => {
+    const existing = reactions.find((r) => r.emoji === emoji);
+    const mine = existing?.mine ?? false;
+    // Optimistic update
+    setReactions((prev) => {
+      const idx = prev.findIndex((r) => r.emoji === emoji);
+      if (idx === -1) return [...prev, { emoji, count: 1, mine: true }];
+      const next = [...prev];
+      const row = next[idx];
+      const updated = { ...row, mine: !mine, count: row.count + (mine ? -1 : 1) };
+      if (updated.count <= 0) next.splice(idx, 1);
+      else next[idx] = updated;
+      return next;
+    });
+    try {
+      const res = mine
+        ? await api.delete(`/api/tasks/${taskId}/reactions/${encodeURIComponent(emoji)}`)
+        : await api.post(`/api/tasks/${taskId}/reactions`, { emoji });
+      if (!res.ok) throw new Error('reaction failed');
+    } catch {
+      // Rollback by re-fetching the canonical list.
+      const res = await api.get(`/api/tasks/${taskId}/reactions`);
+      if (res.ok) setReactions(await res.json());
+    }
+  };
+
+  if (!loaded && reactions.length === 0) return null;
+
+  const existingEmojis = new Set(reactions.map((r) => r.emoji));
+  const quickExtras = QUICK_REACTIONS.filter((e) => !existingEmojis.has(e));
+
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${compact ? '' : 'mt-2'}`}>
+      {reactions.map((r) => (
+        <button
+          key={r.emoji}
+          onClick={(e) => { e.stopPropagation(); toggle(r.emoji); }}
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full"
+          style={{
+            background: r.mine ? 'var(--accent-subtle)' : 'var(--surface-container-high)',
+            color: r.mine ? 'var(--accent)' : 'var(--foreground)',
+            border: `1px solid ${r.mine ? 'var(--accent)' : 'transparent'}`,
+            fontFamily: 'var(--font-body)',
+            transition: 'background 150ms',
+          }}
+          title={r.mine ? 'Remove reaction' : 'Add reaction'}
+        >
+          <span>{r.emoji}</span>
+          <span>{r.count}</span>
+        </button>
+      ))}
+      {/* Predefined quick-reacts shown only when not already present */}
+      {!compact && quickExtras.map((emoji) => (
+        <button
+          key={emoji}
+          onClick={(e) => { e.stopPropagation(); toggle(emoji); }}
+          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full opacity-60 hover:opacity-100"
+          style={{ background: 'transparent', transition: 'opacity 150ms' }}
+          title={`React with ${emoji}`}
+        >
+          {emoji}
+        </button>
+      ))}
+      <div className="relative">
+        <button
+          onClick={(e) => { e.stopPropagation(); setPickerOpen((v) => !v); }}
+          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full"
+          style={{
+            color: 'var(--muted)',
+            background: 'var(--surface-container-low)',
+            transition: 'background 150ms',
+          }}
+          title="Add reaction"
+        >
+          <Smile size={11} />
+          <span>+</span>
+        </button>
+        {pickerOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); setPickerOpen(false); }} />
+            <div
+              className="absolute bottom-full mb-1 left-0 rounded-lg p-1.5 z-20 flex flex-wrap gap-1 w-[180px]"
+              style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-md)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {PICKER_REACTIONS.map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggle(emoji);
+                    setPickerOpen(false);
+                  }}
+                  className="w-7 h-7 rounded text-[14px] flex items-center justify-center"
+                  style={{ transition: 'background 100ms' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

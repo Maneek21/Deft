@@ -9,6 +9,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import { TagPicker } from './tag-picker';
+import { TaskReactionBar } from './task-card-unified';
 import {
   X,
   ChevronDown,
@@ -1085,6 +1086,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 {task.title}
               </h2>
             )}
+            {/* Task 6.3 — reaction bar sits under the title so it stays
+                visible regardless of which tab is active. */}
+            <div className="mt-2">
+              <TaskReactionBar taskId={taskId} />
+            </div>
           </div>
 
           {/* Fields grid */}

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations, orgMembers, workflowRules } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -2097,6 +2097,106 @@ taskRoutes.get('/:id/subtree', async (c) => {
   } catch (err) {
     console.error('Failed to fetch subtree:', err);
     return c.json({ error: 'Failed to fetch subtree', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ═══ TASK REACTIONS (Task 6.3) ═══
+
+const reactionSchema = z.object({
+  emoji: z.string().min(1).max(32),
+});
+
+// GET /api/tasks/:id/reactions — list reactions grouped by emoji, with
+// counts + the caller's selection flag so the client can toggle highlighted
+// buttons without a follow-up fetch.
+taskRoutes.get('/:id/reactions', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    const task = await getTaskForOrg(taskId, user.org_id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
+    const rows = await db.select({
+      emoji: taskReactions.emoji,
+      user_id: taskReactions.user_id,
+      user_name: users.name,
+    })
+      .from(taskReactions)
+      .leftJoin(users, eq(taskReactions.user_id, users.id))
+      .where(eq(taskReactions.task_id, taskId))
+      .orderBy(asc(taskReactions.created_at));
+
+    const byEmoji = new Map<string, { emoji: string; count: number; mine: boolean; users: { id: string; name: string | null }[] }>();
+    for (const r of rows) {
+      const entry = byEmoji.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false, users: [] };
+      entry.count += 1;
+      if (r.user_id === user.id) entry.mine = true;
+      entry.users.push({ id: r.user_id, name: r.user_name });
+      byEmoji.set(r.emoji, entry);
+    }
+    return c.json(Array.from(byEmoji.values()));
+  } catch (err) {
+    console.error('Failed to list task reactions:', err);
+    return c.json({ error: 'Failed to list reactions', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/:id/reactions — upsert (task, user, emoji). The unique
+// index makes duplicates a no-op; we return the current reaction summary.
+taskRoutes.post('/:id/reactions', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    const body = await c.req.json();
+    const parsed = reactionSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const task = await getTaskForOrg(taskId, user.org_id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
+    await db.execute(sql`
+      INSERT INTO task_reactions (id, org_id, task_id, user_id, emoji)
+      VALUES (${crypto.randomUUID()}, ${user.org_id}, ${taskId}, ${user.id}, ${parsed.data.emoji})
+      ON CONFLICT (task_id, user_id, emoji) DO NOTHING
+    `);
+
+    try {
+      getIO()?.to(`org:${user.org_id}`).emit('task:reaction_changed', { task_id: taskId });
+    } catch { /* ignore */ }
+
+    return c.json({ ok: true }, 201);
+  } catch (err) {
+    console.error('Failed to add task reaction:', err);
+    return c.json({ error: 'Failed to add reaction', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/tasks/:id/reactions/:emoji — remove the caller's reaction.
+taskRoutes.delete('/:id/reactions/:emoji', async (c) => {
+  try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
+    const emoji = decodeURIComponent(c.req.param('emoji'));
+
+    const task = await getTaskForOrg(taskId, user.org_id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
+    await db.delete(taskReactions).where(and(
+      eq(taskReactions.task_id, taskId),
+      eq(taskReactions.user_id, user.id),
+      eq(taskReactions.emoji, emoji),
+    ));
+
+    try {
+      getIO()?.to(`org:${user.org_id}`).emit('task:reaction_changed', { task_id: taskId });
+    } catch { /* ignore */ }
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to remove task reaction:', err);
+    return c.json({ error: 'Failed to remove reaction', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
