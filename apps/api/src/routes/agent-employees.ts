@@ -7,6 +7,7 @@ import { db } from '../lib/db.js';
 import {
   agentEmployees,
   agentEmployeeSkills,
+  agentHeartbeatTurns,
   agentSessionTurns,
   users,
   orgMembers,
@@ -233,6 +234,85 @@ agentEmployeeRoutes.get('/:id/turns', async (c) => {
   } catch (err) {
     console.error('Failed to list employee turns:', err);
     return c.json({ error: 'Failed to list employee turns', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// Task 8.4 — heartbeat turn feed for the agent-employee detail page.
+// Distinct from /turns (which covers chat + trigger session turns) because
+// heartbeat outcomes use their own vocabulary (no_op, skipped_*, error).
+agentEmployeeRoutes.get('/:id/heartbeats', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [existing] = await db
+      .select({ id: agentEmployees.id, org_id: agentEmployees.org_id })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, id))
+      .limit(1);
+    if (!existing) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (existing.org_id !== user.org_id) {
+      return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
+    }
+
+    const limitRaw = c.req.query('limit');
+    let limit = 50;
+    if (limitRaw !== undefined) {
+      const n = parseInt(limitRaw, 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        return c.json({ error: 'Invalid limit', code: 'VALIDATION_ERROR' }, 400);
+      }
+      limit = Math.min(n, 200);
+    }
+    const outcome = c.req.query('outcome');
+
+    const conds = [eq(agentHeartbeatTurns.agent_employee_id, id)];
+    if (outcome) conds.push(eq(agentHeartbeatTurns.outcome, outcome));
+
+    const turns = await db
+      .select({
+        id: agentHeartbeatTurns.id,
+        fired_at: agentHeartbeatTurns.fired_at,
+        cadence_minutes: agentHeartbeatTurns.cadence_minutes,
+        prompt_sha: agentHeartbeatTurns.prompt_sha,
+        action_count: agentHeartbeatTurns.action_count,
+        tokens_in: agentHeartbeatTurns.tokens_in,
+        tokens_out: agentHeartbeatTurns.tokens_out,
+        cost_cents: agentHeartbeatTurns.cost_cents,
+        outcome: agentHeartbeatTurns.outcome,
+        outcome_reason: agentHeartbeatTurns.outcome_reason,
+        summary: agentHeartbeatTurns.summary,
+      })
+      .from(agentHeartbeatTurns)
+      .where(and(...conds))
+      .orderBy(desc(agentHeartbeatTurns.fired_at))
+      .limit(limit);
+
+    // Cost summary — sum of cost_cents over the last 24h.
+    const [costSummary] = await db
+      .select({
+        total_cents: sql<number>`COALESCE(SUM(${agentHeartbeatTurns.cost_cents}), 0)::int`,
+        total_actions: sql<number>`COALESCE(SUM(${agentHeartbeatTurns.action_count}), 0)::int`,
+        turn_count: sql<number>`COUNT(*)::int`,
+      })
+      .from(agentHeartbeatTurns)
+      .where(
+        and(
+          eq(agentHeartbeatTurns.agent_employee_id, id),
+          sql`${agentHeartbeatTurns.fired_at} > NOW() - INTERVAL '24 hours'`,
+        ),
+      );
+
+    return c.json({
+      turns,
+      limit,
+      cost_summary_24h: costSummary ?? { total_cents: 0, total_actions: 0, turn_count: 0 },
+    });
+  } catch (err) {
+    console.error('Failed to list heartbeat turns:', err);
+    return c.json({ error: 'Failed to list heartbeat turns', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

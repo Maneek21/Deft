@@ -4,17 +4,32 @@
 //   - native / claude_sdk → `runAgentQuery` in background mode (legacy path)
 //   - openclaw / custom_mcp → `dispatchHeartbeat` over the Gateway SSE channel
 //
-// The poller still walks every due employee in one sweep. The caller's cron
-// name (`heartbeat-native` vs `heartbeat-openclaw`) filters the SQL so the
-// two cadences can be tuned independently without clobbering each other.
+// Task 8.4 adds per-tick logging into `agent_heartbeat_turns` (the session
+// inspector's Heartbeats feed), and a `agent:heartbeat:turn` socket event
+// so the UI refreshes live. Task 8.5 layers the cost + action caps +
+// unhealthy circuit breaker. Task 8.6 layers idempotency + loop detection.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { agentEmployees, orgs } from '@deft/db/schema';
-import { eq, and, or, inArray, sql } from 'drizzle-orm';
+import {
+  agentEmployees,
+  agentHeartbeatTurns,
+  orgs,
+} from '@deft/db/schema';
+import { eq, and, or, desc, inArray, sql } from 'drizzle-orm';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { dispatchHeartbeat } from '../../lib/openclaw-dispatch.js';
+import { getIO } from '../../socket.js';
 
 type HeartbeatScope = 'native' | 'openclaw' | 'all';
+
+export type HeartbeatOutcome =
+  | 'dispatched'
+  | 'no_op'
+  | 'skipped_budget'
+  | 'skipped_idempotent'
+  | 'skipped_unhealthy'
+  | 'skipped_disconnected'
+  | 'error';
 
 function scopeFromJob(job: JobData): HeartbeatScope {
   if (job.name === 'heartbeat-native') return 'native';
@@ -22,9 +37,104 @@ function scopeFromJob(job: JobData): HeartbeatScope {
   return 'all';
 }
 
+/**
+ * Task 8.4 — persist the turn row + broadcast `agent:heartbeat:turn` for
+ * the UI feed. Swallows errors so a bad insert never cancels the dispatch
+ * loop (the dispatch itself has already run by the time we get here).
+ */
+async function logHeartbeatTurn(params: {
+  orgId: string;
+  employeeId: string;
+  cadenceMinutes: number;
+  promptSha: string;
+  outcome: HeartbeatOutcome;
+  outcomeReason?: string;
+  actionCount?: number;
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  costCents?: number | null;
+  summary?: string | null;
+  rawResponse?: unknown;
+}): Promise<void> {
+  try {
+    const [row] = await db
+      .insert(agentHeartbeatTurns)
+      .values({
+        org_id: params.orgId,
+        agent_employee_id: params.employeeId,
+        cadence_minutes: params.cadenceMinutes,
+        prompt_sha: params.promptSha,
+        action_count: params.actionCount ?? 0,
+        tokens_in: params.tokensIn ?? null,
+        tokens_out: params.tokensOut ?? null,
+        cost_cents: params.costCents ?? null,
+        outcome: params.outcome,
+        outcome_reason: params.outcomeReason ?? null,
+        summary: params.summary ?? null,
+        raw_response: params.rawResponse ?? null,
+      })
+      .returning();
+    const io = getIO();
+    if (io && row) {
+      io.to(`org:${params.orgId}`).emit('agent:heartbeat:turn', {
+        id: row.id,
+        agent_employee_id: row.agent_employee_id,
+        fired_at: row.fired_at,
+        outcome: row.outcome,
+        summary: row.summary,
+        cadence_minutes: row.cadence_minutes,
+      });
+    }
+  } catch (err) {
+    console.error('[heartbeat] logHeartbeatTurn failed:', err);
+  }
+}
+
+/**
+ * Task 8.6 — check the previous turn for idempotency. If the last turn's
+ * `prompt_sha` matches AND its outcome was `no_op`, the agent hasn't seen
+ * anything new since then, so a re-dispatch would just burn budget.
+ */
+async function lastTurnFor(employeeId: string): Promise<
+  typeof agentHeartbeatTurns.$inferSelect | null
+> {
+  const [row] = await db
+    .select()
+    .from(agentHeartbeatTurns)
+    .where(eq(agentHeartbeatTurns.agent_employee_id, employeeId))
+    .orderBy(desc(agentHeartbeatTurns.fired_at))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Task 8.5 / 8.6 — bump the consecutive-error counter or trip the
+ * breaker. The counter is inferred from the last N rows (no dedicated
+ * column) so we stay additive.
+ */
+async function trackConsecutiveOutcome(params: {
+  employeeId: string;
+  orgId: string;
+  outcome: HeartbeatOutcome;
+  lookback: number;
+}): Promise<{ consecutive: number }> {
+  const rows = await db
+    .select({ outcome: agentHeartbeatTurns.outcome })
+    .from(agentHeartbeatTurns)
+    .where(eq(agentHeartbeatTurns.agent_employee_id, params.employeeId))
+    .orderBy(desc(agentHeartbeatTurns.fired_at))
+    .limit(params.lookback);
+
+  let consecutive = 0;
+  for (const r of rows) {
+    if (r.outcome === params.outcome) consecutive += 1;
+    else break;
+  }
+  return { consecutive };
+}
+
 export async function handleAgentEmployeeHeartbeat(job: JobData): Promise<void> {
   const scope = scopeFromJob(job);
-  const now = new Date();
 
   const kindFilter =
     scope === 'native'
@@ -56,25 +166,78 @@ export async function handleAgentEmployeeHeartbeat(job: JobData): Promise<void> 
   );
 
   for (const employee of dueEmployees) {
-    // ─── Guards that apply to every kind ────────────────────────────────
-    if (employee.daily_action_count >= employee.max_daily_actions) {
-      console.log(
-        `[heartbeat] ${employee.slug}: daily action limit reached, skipping`,
-      );
-      continue;
-    }
-
+    const cadenceMinutes = employee.heartbeat_interval_min;
     const isOpenClawShaped =
       employee.kind === 'openclaw' || employee.kind === 'custom_mcp';
 
-    // Gateway-connected kinds must be `connected` before we ping. A
-    // Gateway in `error`/`revoked`/`pending` will only produce failures
-    // that spam the inspector. The `gateway-ping` cron is the authority
-    // for when this flips back.
+    // ─── Guard: unhealthy circuit breaker (Task 8.5) ────────────────────
+    if (employee.unhealthy) {
+      await logHeartbeatTurn({
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        cadenceMinutes,
+        promptSha: 'n/a',
+        outcome: 'skipped_unhealthy',
+        outcomeReason: employee.unhealthy_reason ?? 'unhealthy flag set',
+      });
+      await db
+        .update(agentEmployees)
+        .set({ last_heartbeat_at: new Date() })
+        .where(eq(agentEmployees.id, employee.id));
+      continue;
+    }
+
+    // ─── Guard: daily action cap (all kinds) ────────────────────────────
+    if (employee.daily_action_count >= employee.max_daily_actions) {
+      await logHeartbeatTurn({
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        cadenceMinutes,
+        promptSha: 'n/a',
+        outcome: 'skipped_budget',
+        outcomeReason: `daily_action_count ${employee.daily_action_count}/${employee.max_daily_actions}`,
+      });
+      await db
+        .update(agentEmployees)
+        .set({ last_heartbeat_at: new Date() })
+        .where(eq(agentEmployees.id, employee.id));
+      continue;
+    }
+
+    // ─── Guard: daily cost cap (Task 8.5) ───────────────────────────────
+    if (
+      typeof employee.daily_budget_cents === 'number' &&
+      employee.daily_cost_cents >= employee.daily_budget_cents
+    ) {
+      await logHeartbeatTurn({
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        cadenceMinutes,
+        promptSha: 'n/a',
+        outcome: 'skipped_budget',
+        outcomeReason: `daily_cost_cents ${employee.daily_cost_cents}/${employee.daily_budget_cents}`,
+      });
+      await db
+        .update(agentEmployees)
+        .set({ last_heartbeat_at: new Date() })
+        .where(eq(agentEmployees.id, employee.id));
+      continue;
+    }
+
+    // ─── Guard: Gateway connection (openclaw only) ──────────────────────
     if (isOpenClawShaped && employee.connection_status !== 'connected') {
-      console.log(
-        `[heartbeat] ${employee.slug}: connection_status=${employee.connection_status}, skipping`,
-      );
+      await logHeartbeatTurn({
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        cadenceMinutes,
+        promptSha: 'n/a',
+        outcome: 'skipped_disconnected',
+        outcomeReason: `connection_status=${employee.connection_status}`,
+      });
+      await db
+        .update(agentEmployees)
+        .set({ last_heartbeat_at: new Date() })
+        .where(eq(agentEmployees.id, employee.id));
       continue;
     }
 
@@ -87,14 +250,46 @@ export async function handleAgentEmployeeHeartbeat(job: JobData): Promise<void> 
 
     try {
       if (isOpenClawShaped) {
-        // Task 8.2 gives us a richer prompt composer. For 8.1 we fall
-        // back to the existing checklist → template path so the
-        // dispatcher branch is exercisable in isolation.
         const { buildHeartbeatPrompt } = await import(
           '../../lib/heartbeat-prompt.js'
         );
-        const { prompt, context } = await buildHeartbeatPrompt(employee.id);
+        const { prompt, context, prompt_sha } = await buildHeartbeatPrompt(
+          employee.id,
+        );
+
+        // ─── Task 8.6 — idempotency skip ───────────────────────────────
+        const last = await lastTurnFor(employee.id);
+        if (
+          last &&
+          last.prompt_sha === prompt_sha &&
+          last.outcome === 'no_op'
+        ) {
+          await logHeartbeatTurn({
+            orgId: employee.org_id,
+            employeeId: employee.id,
+            cadenceMinutes,
+            promptSha: prompt_sha,
+            outcome: 'skipped_idempotent',
+            outcomeReason: 'prompt unchanged since last no_op',
+          });
+          await db
+            .update(agentEmployees)
+            .set({ last_heartbeat_at: new Date() })
+            .where(eq(agentEmployees.id, employee.id));
+          continue;
+        }
+
         await dispatchHeartbeat({ employee, prompt, context });
+
+        await logHeartbeatTurn({
+          orgId: employee.org_id,
+          employeeId: employee.id,
+          cadenceMinutes,
+          promptSha: prompt_sha,
+          outcome: 'dispatched',
+          actionCount: 1,
+          summary: prompt.slice(0, 200),
+        });
       } else {
         const heartbeatConfig =
           typeof employee.heartbeat_config === 'string'
@@ -132,25 +327,59 @@ ${employee.expertise_description ? `Your expertise: ${employee.expertise_descrip
           agentEmployeeId: employee.id,
         });
 
-        if (result.text?.trim() !== 'HEARTBEAT_OK') {
-          console.log(
-            `[heartbeat] ${employee.slug}: ${result.text?.slice(0, 100)}`,
-          );
-        }
+        const text = (result.text ?? '').trim();
+        const noOp = text === 'HEARTBEAT_OK' || text === '';
+        await logHeartbeatTurn({
+          orgId: employee.org_id,
+          employeeId: employee.id,
+          cadenceMinutes,
+          promptSha: 'native:' + employee.id,
+          outcome: noOp ? 'no_op' : 'dispatched',
+          actionCount: noOp ? 0 : 1,
+          summary: text.slice(0, 200),
+        });
       }
 
       await db
         .update(agentEmployees)
-        .set({ last_heartbeat_at: now })
+        .set({ last_heartbeat_at: new Date() })
         .where(eq(agentEmployees.id, employee.id));
     } catch (err) {
-      console.error(`[heartbeat] Error for ${employee.slug}:`, err);
-      // Still stamp last_heartbeat_at to prevent retry storms — the
-      // gateway-ping loop or the unhealthy flag (task 8.5) will flag
-      // persistent failures.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[heartbeat] Error for ${employee.slug}:`, msg);
+      await logHeartbeatTurn({
+        orgId: employee.org_id,
+        employeeId: employee.id,
+        cadenceMinutes,
+        promptSha: 'n/a',
+        outcome: 'error',
+        outcomeReason: msg.slice(0, 500),
+      });
+
+      // ─── Task 8.5 — 3 consecutive errors → trip the breaker ────────
+      const { consecutive } = await trackConsecutiveOutcome({
+        employeeId: employee.id,
+        orgId: employee.org_id,
+        outcome: 'error',
+        lookback: 5,
+      });
+      if (consecutive >= 3) {
+        await db
+          .update(agentEmployees)
+          .set({
+            unhealthy: true,
+            unhealthy_reason: `3 consecutive heartbeat errors; last: ${msg.slice(0, 200)}`,
+          })
+          .where(eq(agentEmployees.id, employee.id));
+        console.warn(
+          `[heartbeat] ${employee.slug}: tripped unhealthy flag after ${consecutive} consecutive errors`,
+        );
+      }
+
+      // Still stamp last_heartbeat_at to prevent retry storms.
       await db
         .update(agentEmployees)
-        .set({ last_heartbeat_at: now })
+        .set({ last_heartbeat_at: new Date() })
         .where(eq(agentEmployees.id, employee.id));
     }
   }
@@ -161,10 +390,8 @@ ${employee.expertise_description ? `Your expertise: ${employee.expertise_descrip
 export const HEARTBEAT_OPENCLAW_KINDS = ['openclaw', 'custom_mcp'] as const;
 export const HEARTBEAT_NATIVE_KINDS = ['native', 'claude_sdk'] as const;
 
-// Re-export so tests + future callers can import a stable symbol even if
-// the local helper is renamed.
+// Re-export so tests + future callers can import a stable symbol.
 export { dispatchHeartbeat };
 
-// Silence unused-import warning from `inArray` — retained for future use
-// by task 8.7 (trigger-dispatch's batch scan).
+// Kept for task 8.7's batch scan.
 void inArray;

@@ -1342,6 +1342,23 @@ export const agentEmployees = pgTable('agent_employees', {
    *   }
    */
   heartbeat_overrides: jsonb('heartbeat_overrides'),
+  /**
+   * Task 8.5 — daily cost guardrails. `daily_cost_cents` is reset at UTC
+   * midnight alongside `daily_action_count`; `daily_budget_cents` is the
+   * soft cap enforced by the heartbeat + trigger dispatchers. Default
+   * 10000 (=$100/day) mirrors the PR plan, tunable per-employee via the
+   * PATCH endpoint.
+   */
+  daily_budget_cents: integer('daily_budget_cents').default(10000).notNull(),
+  daily_cost_cents: integer('daily_cost_cents').default(0).notNull(),
+  /**
+   * Task 8.5 / 8.6 — circuit breaker. Set by the heartbeat handler after
+   * 3 consecutive errors OR by Task 8.6's loop detector; cleared via
+   * PATCH { mark_healthy: true }. Blocks every autonomous dispatcher
+   * from firing until cleared.
+   */
+  unhealthy: boolean('unhealthy').default(false).notNull(),
+  unhealthy_reason: text('unhealthy_reason'),
   last_heartbeat_at: timestamp('last_heartbeat_at'),
   is_active: boolean('is_active').default(true).notNull(),
   is_byoa: boolean('is_byoa').default(false).notNull(),
@@ -1524,6 +1541,45 @@ export const agentSessionTurns = pgTable('agent_session_turns', {
 }, (t) => [
   index('ast_employee_idx').on(t.employee_id, t.created_at),
   index('ast_org_idx').on(t.org_id, t.created_at),
+]);
+
+// ═══ AGENT HEARTBEAT TURNS (Phase 8 Task 8.4) ═══
+//
+// One row per heartbeat tick — whether it dispatched, was skipped for
+// budget/idempotency, or errored. The session inspector uses this feed
+// to surface the "Heartbeats" tab on the agent-employee detail page.
+// `prompt_sha` is the normalized-prompt digest from `heartbeat-prompt.ts`
+// used by Task 8.6 idempotency.
+export const agentHeartbeatTurns = pgTable('agent_heartbeat_turns', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id')
+    .notNull()
+    .references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  fired_at: timestamp('fired_at').defaultNow().notNull(),
+  cadence_minutes: integer('cadence_minutes').notNull(),
+  prompt_sha: text('prompt_sha').notNull(),
+  action_count: integer('action_count').default(0).notNull(),
+  tokens_in: integer('tokens_in'),
+  tokens_out: integer('tokens_out'),
+  cost_cents: integer('cost_cents'),
+  /**
+   * Outcome vocabulary:
+   *   - 'dispatched'          — succeeded, agent ran
+   *   - 'no_op'               — agent returned HEARTBEAT_OK
+   *   - 'skipped_budget'      — daily action / cost cap hit
+   *   - 'skipped_idempotent'  — same prompt_sha as last no_op
+   *   - 'skipped_unhealthy'   — circuit breaker tripped
+   *   - 'skipped_disconnected'— Gateway not connected
+   *   - 'error'               — dispatcher threw
+   */
+  outcome: text('outcome').notNull(),
+  outcome_reason: text('outcome_reason'),
+  summary: text('summary'),
+  raw_response: jsonb('raw_response'),
+}, (t) => [
+  index('aht_employee_fired_idx').on(t.agent_employee_id, t.fired_at),
+  index('aht_org_fired_idx').on(t.org_id, t.fired_at),
 ]);
 
 // ═══ ACTION RECEIPTS (Phase 2) ═══
