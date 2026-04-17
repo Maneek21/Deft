@@ -100,13 +100,12 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
   // Auto-generate prefix from name
   useEffect(() => {
     if (name && !prefixManuallyEdited) {
-      const auto = name
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((w) => w[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 4);
+      const words = name.split(/\s+/).filter(Boolean);
+      let auto = words.map((w) => w[0]).join('').toUpperCase().slice(0, 4);
+      // API requires min 2 chars — pad with next letters from the first word
+      if (auto.length < 2 && words[0]) {
+        auto = words[0].slice(0, 4).toUpperCase();
+      }
       setPrefix(auto);
     }
   }, [name, prefixManuallyEdited]);
@@ -186,7 +185,15 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
 
   const handleStep1Continue = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !prefix.trim()) return;
+    if (!name.trim()) return;
+    if (prefix.trim().length < 2) {
+      setError('Prefix must be at least 2 characters');
+      return;
+    }
+    if (prefix.trim().length > 6) {
+      setError('Prefix must be 6 characters or fewer');
+      return;
+    }
     setError(null);
     setStep(2);
   };
