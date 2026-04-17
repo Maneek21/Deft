@@ -83,7 +83,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 **Event-driven triggers (BullMQ crons):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
-- PR merged → move task to Done + post in space
+- PR merged → parse `PREFIX-N` refs in title/body, move each matched task (in `todo`, `in_progress`, or `in_review`) to `done` and leave an attribution comment linking the PR. Wired into the GitHub sync path (`apps/api/src/workers/github-sync.ts` → `closeTasksForMergedPR`); runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire. Tasks already `done` or `cancelled` are never touched.
 - Meeting in 15min → generate prep briefing
 - 9am daily → auto-generate standup from activity
 
