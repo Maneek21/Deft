@@ -69,6 +69,7 @@ export default function MembersPage() {
   };
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[600px]">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[18px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
@@ -225,6 +226,7 @@ export default function MembersPage() {
           </div>
         ))}
       </div>
+    </div>
     </div>
   );
 }

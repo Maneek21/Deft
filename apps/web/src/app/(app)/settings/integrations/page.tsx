@@ -255,6 +255,7 @@ export default function IntegrationsPage() {
   };
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[640px]">
       <h2 className="text-[1.125rem] font-semibold mb-1" style={{ color: 'var(--on-surface)' }}>
         Integrations
@@ -648,6 +649,7 @@ export default function IntegrationsPage() {
           onSaved={() => { setShowMcpForm(false); setEditingMcp(null); setMcpPrefill(null); loadMcpConnections(); }}
         />
       )}
+    </div>
     </div>
   );
 }

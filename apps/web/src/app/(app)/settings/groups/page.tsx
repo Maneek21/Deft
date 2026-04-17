@@ -38,6 +38,7 @@ export default function GroupsPage() {
   };
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[640px]">
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -90,6 +91,7 @@ export default function GroupsPage() {
           <p className="text-center py-8 text-[0.75rem]" style={{ color: 'var(--outline)' }}>No groups yet</p>
         )}
       </div>
+    </div>
     </div>
   );
 }

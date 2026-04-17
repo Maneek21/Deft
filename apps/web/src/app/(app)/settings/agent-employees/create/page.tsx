@@ -243,6 +243,7 @@ export default function CreateAgentEmployeePage() {
     .filter((g) => g.items.length > 0);
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[520px]">
       {/* Header */}
       <button
@@ -837,6 +838,7 @@ export default function CreateAgentEmployeePage() {
           </div>
         </div>
       )}
+    </div>
     </div>
   );
 }

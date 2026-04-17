@@ -128,6 +128,7 @@ export default function HeartbeatsPage() {
   }, [load]);
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-5xl mx-auto px-6 py-8">
       <Link
         href="/settings/agent-employees"
@@ -315,6 +316,7 @@ export default function HeartbeatsPage() {
           );
         })}
       </div>
+    </div>
     </div>
   );
 }

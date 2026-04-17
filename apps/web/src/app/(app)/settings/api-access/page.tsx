@@ -134,6 +134,7 @@ export default function ApiAccessPage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[700px]">
       <div className="flex items-center justify-between mb-4">
         <h2
@@ -408,6 +409,7 @@ export default function ApiAccessPage() {
           ))}
         </div>
       )}
+    </div>
     </div>
   );
 }

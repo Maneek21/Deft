@@ -348,6 +348,7 @@ export default function AgentSettingsPage() {
   const employeeById = new Map(employees.map((e) => [e.id, e]));
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[900px]">
       <h2
         className="text-[18px] font-semibold mb-6"
@@ -1213,6 +1214,7 @@ export default function AgentSettingsPage() {
           </div>
         ))}
       </div>
+    </div>
     </div>
   );
 }

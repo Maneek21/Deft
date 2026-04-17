@@ -478,6 +478,7 @@ function DeployEmployeePageInner() {
     config.templates.find((t) => t.slug === templateSlug)?.default_capability_packs ?? [];
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-3xl mx-auto p-6" data-testid="deploy-wizard">
       <div className="mb-6 flex items-center justify-between">
         <h2
@@ -694,6 +695,7 @@ function DeployEmployeePageInner() {
           </button>
         )}
       </div>
+    </div>
     </div>
   );
 }
