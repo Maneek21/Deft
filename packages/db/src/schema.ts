@@ -209,6 +209,8 @@ export const projects = pgTable('projects', {
   color: text('color'),
   lead_id: text('lead_id').references(() => users.id),
   is_archived: boolean('is_archived').default(false).notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
   task_counter: integer('task_counter').default(0).notNull(), // auto-increment for task IDs
   ...timestamps(),
 }, (t) => [
