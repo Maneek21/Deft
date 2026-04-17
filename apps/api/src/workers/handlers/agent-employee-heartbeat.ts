@@ -11,6 +11,7 @@
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
+  agentActions,
   agentEmployees,
   agentHeartbeatTurns,
   orgs,
@@ -105,6 +106,71 @@ async function lastTurnFor(employeeId: string): Promise<
     .orderBy(desc(agentHeartbeatTurns.fired_at))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Task 8.6 — loop detector. Looks at the most recent N `agent_actions`
+ * attributed to the employee (where `action` is a create/post shape) and
+ * compares the canonical payload. If five in a row produce the same
+ * task title OR the same message text, the employee is trapped in a
+ * feedback loop (e.g. a heartbeat that always fires the same nudge
+ * because the state it checks never changes). Trip the breaker in that
+ * case so a human has to unwedge it.
+ *
+ * Returns `{ loop: true, reason }` when a loop is detected; `{ loop:
+ * false }` otherwise. Swallow DB errors — a loop detector that crashes
+ * the handler would be worse than one that occasionally misses.
+ */
+async function detectActionLoop(
+  employeeId: string,
+): Promise<{ loop: true; reason: string } | { loop: false }> {
+  try {
+    const rows = await db
+      .select({
+        action: agentActions.action,
+        params: agentActions.params,
+      })
+      .from(agentActions)
+      .where(eq(agentActions.agent_employee_id, employeeId))
+      .orderBy(desc(agentActions.created_at))
+      .limit(5);
+
+    if (rows.length < 5) return { loop: false };
+
+    // Bucket by the loop signal: tasks share title; messages share
+    // normalized content prefix. Anything else (status changes, reads) is
+    // ignored — a loop of reads isn't costing real actions.
+    const signals: string[] = [];
+    for (const row of rows) {
+      const params = (row.params ?? {}) as Record<string, unknown>;
+      if (row.action === 'create_task' || row.action === 'task_create') {
+        const title = typeof params.title === 'string' ? params.title : '';
+        if (!title) return { loop: false };
+        signals.push(`task::${title.trim().toLowerCase()}`);
+      } else if (
+        row.action === 'post_message' ||
+        row.action === 'message_post'
+      ) {
+        const content = typeof params.content === 'string' ? params.content : '';
+        if (!content) return { loop: false };
+        signals.push(`msg::${content.trim().slice(0, 120).toLowerCase()}`);
+      } else {
+        return { loop: false };
+      }
+    }
+
+    const unique = new Set(signals);
+    if (unique.size === 1) {
+      return {
+        loop: true,
+        reason: `loop detected: 5 consecutive identical actions (${[...unique][0]})`,
+      };
+    }
+    return { loop: false };
+  } catch (err) {
+    console.warn('[heartbeat] detectActionLoop failed:', err);
+    return { loop: false };
+  }
 }
 
 /**
@@ -290,6 +356,23 @@ export async function handleAgentEmployeeHeartbeat(job: JobData): Promise<void> 
           actionCount: 1,
           summary: prompt.slice(0, 200),
         });
+
+        // Task 8.6 — loop detector. Check whether the last five actions
+        // point at the same task title or message text; if so, trip the
+        // breaker so a human can unwedge the agent.
+        const loop = await detectActionLoop(employee.id);
+        if (loop.loop) {
+          await db
+            .update(agentEmployees)
+            .set({
+              unhealthy: true,
+              unhealthy_reason: loop.reason,
+            })
+            .where(eq(agentEmployees.id, employee.id));
+          console.warn(
+            `[heartbeat] ${employee.slug}: ${loop.reason}`,
+          );
+        }
       } else {
         const heartbeatConfig =
           typeof employee.heartbeat_config === 'string'
