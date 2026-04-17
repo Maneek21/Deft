@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { useTheme } from '@/components/theme-provider';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { formatRelativeCompact, formatFullDateLong, formatMessageTime } from '@/lib/time';
@@ -14,22 +15,38 @@ import {
 import { CalTask, CalEvent, CalNote, DayBucket, toDateKey, buildMonthGrid, bucketByDay, CAL_DAYS_SHORT, ITEM_COLORS } from '@/lib/calendar';
 import { statusLabel } from '@/lib/task-status-labels';
 
-// ─── Design tokens (from Stitch) ─────────────────────────────────────────────
-const T = {
+// ─── Design tokens (from Stitch) — dark + light ───────────────────────────────
+const DARK_T = {
   bgBase:      '#09090b',
   bgSurface:   '#111113',
   bgCard:      '#0e0e10',
   border:      'rgba(255,255,255,0.08)',
-  borderHover: 'rgba(255,255,255,0.15)',
+  borderHover: 'rgba(255,255,255,0.16)',
   textMain:    '#e5e1e4',
   textMuted:   '#c9c4d5',
-  textFaint:   'rgba(229,225,228,0.4)',
+  textFaint:   'rgba(229,225,228,0.38)',
   accent:      '#9080fa',
   primary:     '#c8bfff',
   urgent:      '#ffb4ab',
   success:     '#22c55e',
   warning:     '#eab308',
   blue:        '#60a5fa',
+};
+const LIGHT_T = {
+  bgBase:      '#f8f8fa',
+  bgSurface:   '#ffffff',
+  bgCard:      '#f1f1f4',
+  border:      'rgba(0,0,0,0.07)',
+  borderHover: 'rgba(0,0,0,0.14)',
+  textMain:    '#18181b',
+  textMuted:   '#52525b',
+  textFaint:   'rgba(24,24,27,0.38)',
+  accent:      '#6d28d9',
+  primary:     '#7c3aed',
+  urgent:      '#dc2626',
+  success:     '#16a34a',
+  warning:     '#b45309',
+  blue:        '#1d4ed8',
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -112,10 +129,6 @@ function renderSimpleMarkdown(text: string): string {
   return html;
 }
 
-const PRIORITY_COLOR: Record<string, string> = {
-  p0: T.urgent, p1: T.warning, p2: T.blue, p3: T.textFaint,
-};
-
 function formatActivity(a: ActivityEntry): string {
   const task = a.task_prefix && a.task_number ? `${a.task_prefix}-${a.task_number}` : '';
   const who = a.user_name?.split(' ')[0] || 'Someone';
@@ -145,117 +158,125 @@ function getLocalGreeting(): string {
   return 'Good evening';
 }
 
-// ─── Card wrapper ─────────────────────────────────────────────────────────────
-function Card({ title, children, headerRight }: {
-  title: string; children: React.ReactNode; headerRight?: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col rounded-xl p-4" style={{ background: T.bgCard, border: `1px solid ${T.border}` }}>
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-[12px] font-semibold uppercase tracking-wider"
-          style={{ color: T.textMain, opacity: 0.6 }}>{title}</span>
-        {headerRight}
-      </div>
-      <div className="flex-1 min-h-0">{children}</div>
-    </div>
-  );
-}
-
-// ─── Progress ring ────────────────────────────────────────────────────────────
-function ProgressRing({ percent, color, size = 36 }: { percent: number; color: string; size?: number }) {
-  const r = (size - 6) / 2;
-  const circ = 2 * Math.PI * r;
-  return (
-    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', flexShrink: 0 }}>
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={3} />
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={3}
-        strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - (percent/100)*circ} />
-    </svg>
-  );
-}
-
-// ─── Calendar widget ──────────────────────────────────────────────────────────
-function CalendarWidget() {
-  const today = toDateKey(new Date());
-  const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [calData, setCalData] = useState<{ tasks: CalTask[]; events: CalEvent[]; notes: CalNote[] }|null>(null);
-  const [selectedDay, setSelectedDay] = useState<string|null>(null);
-  const grid = buildMonthGrid(month);
-  const dayBuckets = calData ? bucketByDay(calData) : new Map<string, DayBucket>();
-
-  useEffect(() => {
-    const from = new Date(grid[0]); from.setHours(0,0,0,0);
-    const to = new Date(grid[grid.length-1]); to.setHours(23,59,59,999);
-    api.get(`/api/calendar?from=${from.toISOString()}&to=${to.toISOString()}`).then(async r => {
-      if (r.ok) setCalData(await r.json());
-    });
-  }, [grid[0].getTime()]);
-
-  const selBucket = selectedDay ? dayBuckets.get(selectedDay) : null;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <button onClick={() => { const d = new Date(month); d.setMonth(d.getMonth()-1); setMonth(d); setSelectedDay(null); }}
-          className="p-0.5" style={{ color: T.textMuted }}><ChevronLeft size={13} /></button>
-        <span className="text-[11px] font-semibold" style={{ color: T.textMain }}>
-          {month.toLocaleDateString('en-US', { month:'long', year:'numeric' })}
-        </span>
-        <button onClick={() => { const d = new Date(month); d.setMonth(d.getMonth()+1); setMonth(d); setSelectedDay(null); }}
-          className="p-0.5" style={{ color: T.textMuted }}><ChevronRight size={13} /></button>
-      </div>
-      <div className="grid grid-cols-7 mb-1">
-        {CAL_DAYS_SHORT.map((d,i) => (
-          <div key={i} className="text-center text-[9px] font-semibold py-0.5" style={{ color: T.textMuted }}>{d}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-px">
-        {grid.map((date, i) => {
-          const key = toDateKey(date);
-          const isToday = key === today;
-          const isSelected = key === selectedDay;
-          const bucket = dayBuckets.get(key);
-          const hasItems = bucket && (bucket.tasks.length + bucket.events.length + bucket.notes.length) > 0;
-          return (
-            <button key={i} onClick={() => setSelectedDay(isSelected ? null : key)}
-              className="relative flex flex-col items-center py-1.5 rounded transition-colors"
-              style={{
-                background: isSelected ? `${T.accent}25` : isToday ? `${T.accent}18` : 'transparent',
-                opacity: date.getMonth() === month.getMonth() ? 1 : 0.3,
-              }}>
-              <span className="text-[10px] font-medium" style={{ color: isToday ? T.accent : T.textMain }}>
-                {date.getDate()}
-              </span>
-              {hasItems && <div className="mt-0.5 w-1 h-1 rounded-full" style={{ background: T.accent }} />}
-            </button>
-          );
-        })}
-      </div>
-      {selectedDay && selBucket && (selBucket.tasks.length + selBucket.events.length + selBucket.notes.length) > 0 && (
-        <div className="mt-2 pt-2 space-y-1" style={{ borderTop: `1px solid ${T.border}` }}>
-          {selBucket.events.map(e => (
-            <div key={e.id} className="flex items-center gap-2 text-[10px]">
-              <div className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: ITEM_COLORS.event }} />
-              <span className="truncate flex-1" style={{ color: T.textMain }}>{e.title}</span>
-              <span style={{ color: T.textMuted }}>{new Date(e.timestamp).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</span>
-            </div>
-          ))}
-          {selBucket.tasks.map(t => (
-            <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`}
-              className="flex items-center gap-2 text-[10px]">
-              <Circle size={9} style={{ color: PRIORITY_COLOR[t.priority] || T.textMuted, flexShrink: 0 }} />
-              <span className="truncate flex-1" style={{ color: T.textMain }}>{t.title}</span>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function Dashboard6Page() {
   const { user } = useAuth();
+  const { theme } = useTheme();
+  const T = theme === 'dark' ? DARK_T : LIGHT_T;
+
+  // ─── Design-token-aware helpers (close over T) ───────────────────────────
+  const PRIORITY_COLOR: Record<string, string> = {
+    p0: T.urgent, p1: T.warning, p2: T.blue, p3: T.textFaint,
+  };
+
+  // ─── Card wrapper ──────────────────────────────────────────────────────────
+  function Card({ title, children, headerRight }: {
+    title: string; children: React.ReactNode; headerRight?: React.ReactNode;
+  }) {
+    return (
+      <div className="flex flex-col rounded-xl p-4" style={{ background: T.bgCard, border: `1px solid ${T.border}` }}>
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-[12px] font-semibold uppercase tracking-wider"
+            style={{ color: T.textMain, opacity: 0.6 }}>{title}</span>
+          {headerRight}
+        </div>
+        <div className="flex-1 min-h-0">{children}</div>
+      </div>
+    );
+  }
+
+  // ─── Progress ring ─────────────────────────────────────────────────────────
+  function ProgressRing({ percent, color, size = 36 }: { percent: number; color: string; size?: number }) {
+    const r = (size - 6) / 2;
+    const circ = 2 * Math.PI * r;
+    return (
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', flexShrink: 0 }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={3} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={3}
+          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - (percent/100)*circ} />
+      </svg>
+    );
+  }
+
+  // ─── Calendar widget ───────────────────────────────────────────────────────
+  function CalendarWidget() {
+    const today = toDateKey(new Date());
+    const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const [calData, setCalData] = useState<{ tasks: CalTask[]; events: CalEvent[]; notes: CalNote[] }|null>(null);
+    const [selectedDay, setSelectedDay] = useState<string|null>(null);
+    const grid = buildMonthGrid(month);
+    const dayBuckets = calData ? bucketByDay(calData) : new Map<string, DayBucket>();
+
+    useEffect(() => {
+      const from = new Date(grid[0]); from.setHours(0,0,0,0);
+      const to = new Date(grid[grid.length-1]); to.setHours(23,59,59,999);
+      api.get(`/api/calendar?from=${from.toISOString()}&to=${to.toISOString()}`).then(async r => {
+        if (r.ok) setCalData(await r.json());
+      });
+    }, [grid[0].getTime()]);
+
+    const selBucket = selectedDay ? dayBuckets.get(selectedDay) : null;
+
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <button onClick={() => { const d = new Date(month); d.setMonth(d.getMonth()-1); setMonth(d); setSelectedDay(null); }}
+            className="p-0.5" style={{ color: T.textMuted }}><ChevronLeft size={13} /></button>
+          <span className="text-[11px] font-semibold" style={{ color: T.textMain }}>
+            {month.toLocaleDateString('en-US', { month:'long', year:'numeric' })}
+          </span>
+          <button onClick={() => { const d = new Date(month); d.setMonth(d.getMonth()+1); setMonth(d); setSelectedDay(null); }}
+            className="p-0.5" style={{ color: T.textMuted }}><ChevronRight size={13} /></button>
+        </div>
+        <div className="grid grid-cols-7 mb-1">
+          {CAL_DAYS_SHORT.map((d,i) => (
+            <div key={i} className="text-center text-[9px] font-semibold py-0.5" style={{ color: T.textMuted }}>{d}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-px">
+          {grid.map((date, i) => {
+            const key = toDateKey(date);
+            const isToday = key === today;
+            const isSelected = key === selectedDay;
+            const bucket = dayBuckets.get(key);
+            const hasItems = bucket && (bucket.tasks.length + bucket.events.length + bucket.notes.length) > 0;
+            return (
+              <button key={i} onClick={() => setSelectedDay(isSelected ? null : key)}
+                className="relative flex flex-col items-center py-1.5 rounded transition-colors"
+                style={{
+                  background: isSelected ? `${T.accent}25` : isToday ? `${T.accent}18` : 'transparent',
+                  opacity: date.getMonth() === month.getMonth() ? 1 : 0.3,
+                }}>
+                <span className="text-[10px] font-medium" style={{ color: isToday ? T.accent : T.textMain }}>
+                  {date.getDate()}
+                </span>
+                {hasItems && <div className="mt-0.5 w-1 h-1 rounded-full" style={{ background: T.accent }} />}
+              </button>
+            );
+          })}
+        </div>
+        {selectedDay && selBucket && (selBucket.tasks.length + selBucket.events.length + selBucket.notes.length) > 0 && (
+          <div className="mt-2 pt-2 space-y-1" style={{ borderTop: `1px solid ${T.border}` }}>
+            {selBucket.events.map(e => (
+              <div key={e.id} className="flex items-center gap-2 text-[10px]">
+                <div className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: ITEM_COLORS.event }} />
+                <span className="truncate flex-1" style={{ color: T.textMain }}>{e.title}</span>
+                <span style={{ color: T.textMuted }}>{new Date(e.timestamp).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</span>
+              </div>
+            ))}
+            {selBucket.tasks.map(t => (
+              <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`}
+                className="flex items-center gap-2 text-[10px]">
+                <Circle size={9} style={{ color: PRIORITY_COLOR[t.priority] || T.textMuted, flexShrink: 0 }} />
+                <span className="truncate flex-1" style={{ color: T.textMain }}>{t.title}</span>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const [data, setData] = useState<DashboardData|null>(null);
   const [loading, setLoading] = useState(true);
   const [clientGreeting, setClientGreeting] = useState<string|null>(null);
@@ -574,6 +595,23 @@ export default function Dashboard6Page() {
                 </div>
               )}
             </Card>
+
+            {/* Recent Activity — fills bottom of left column */}
+            {(d.recent_activity||[]).length > 0 && (
+              <Card title="Recent Activity">
+                <div className="space-y-3">
+                  {(d.recent_activity||[]).slice(0,7).map(a => (
+                    <div key={a.id} className="flex items-start gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ background:T.borderHover }} />
+                      <span className="text-[12px] flex-1 leading-snug" style={{ color:T.textMuted }}>{formatActivity(a)}</span>
+                      <span className="text-[9px] font-mono shrink-0" style={{ color:T.textFaint }}>
+                        {formatRelativeCompact(a.created_at)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
 
           </div>
 
