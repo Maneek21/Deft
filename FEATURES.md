@@ -569,6 +569,46 @@ Flagged as explicitly NOT shipped yet:
 
 ---
 
+## Tested & Verified (Playwright E2E — 2026-04-16)
+
+The following surfaces were tested end-to-end via Playwright automation on April 16, 2026. All items below passed unless noted.
+
+### Confirmed Working
+- Dashboard with all 10+ bento-grid widgets rendering correctly
+- Task board with 6 columns (Backlog, To Do, In Progress, In Review, Done, Cancelled collapsed)
+- Task list view with sortable columns and inline status editing
+- Calendar view with tasks placed on due dates
+- Pipeline view (renders correctly after copy fix)
+- Task detail panel: Description, Subtasks, Dependencies, Comments, Activity tabs
+- Task reactions bar (emoji toggle on task detail)
+- Recurrence dropdown (None / Daily / Weekly / Biweekly / Monthly)
+- Priority mapping (p1 displays as "High", etc.)
+- Status labels standardized ("To Do" not "Todo")
+- Filter bar: Assignee, Priority, Status, Labels, Project, Due date, Views
+- Skills library page: 3 tabs (Bundled 9 / Marketplace 0 / Your org 0)
+- Skills cards: View / Install / Attach / Fork actions, context-bloat indicator
+- Agent Employees list with seeded Alex PM employee
+- Create Agent wizard: 5 steps with Skills picker showing all 9 bundled skills
+- Project selector dropdown across views
+
+### Bugs Found & Fixed During Testing
+1. `/api/agent-employees` 500 — schema/DB mismatch from 20 unapplied migrations (0025-0044). Fixed by applying all migrations + seeding 9 bundled skills.
+2. Skills wizard "No skills available" — 3 frontend callers expected `{skills:[...]}` wrapper but endpoint returns raw array. Fixed in `fd2cb3f`.
+3. Pipeline view "No deals" copy — sales-specific empty text leaked to Engineering projects. Fixed in `73946cf`.
+4. Skills page breadcrumb said "Dashboard" instead of "Skills". Fixed in `73946cf`.
+5. Skills wizard fetch — added error swallow on fetch failure. Fixed in `73946cf`.
+
+### Known Limitations (not yet fixed)
+- **Postgres status enum constraint** — `tasks.status` column uses a Postgres enum with 6 Engineering values (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`). Marketing/Sales statuses will fail at the DB layer until the column is changed from enum to text.
+- **`tasks.completed_at` column missing** — people-graph worker uses `updated_at` as fallback for task completion time.
+- **Chat task-reference pills** don't respect `hide_prefix_ids` skill config (would need per-message task lookup to suppress prefix display).
+- **Notification panel rows** cannot render `variant="notification"` TaskCard because list endpoints don't embed the full Task payload.
+- **Board-card reactions** only visible when task data is pre-hydrated (list endpoints don't hydrate reaction counts).
+- **Drizzle `_journal.json`** stale since migration 0017 — production deploy must apply migrations 0025-0044 manually via `drizzle-kit push` or direct SQL.
+- **Sidebar wiring** for archived projects not implemented (backend archive/restore is ready, no UI entry point in sidebar).
+
+---
+
 ## Stats Summary
 
 | Metric | Count |

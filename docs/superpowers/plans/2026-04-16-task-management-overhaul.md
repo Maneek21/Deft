@@ -1455,6 +1455,48 @@ Note: `orgs.timezone` column already exists (`schema.ts:49`) — Task 1.6 needs 
 
 ---
 
+## Post-Implementation Testing (2026-04-16)
+
+End-to-end Playwright walkthrough performed after Phases 0-6 shipped. Covers core task-management surfaces, Skills library, and Agent Employees UI.
+
+### Test Date
+April 16, 2026
+
+### Surfaces Tested
+- Dashboard (all 10+ bento-grid widgets)
+- Task board (6 columns including collapsed Cancelled), list view, calendar view, pipeline view
+- Task detail panel: Description, Subtasks, Dependencies, Comments, Activity tabs
+- Task reactions, recurrence dropdown, priority/status label mapping
+- Filter bar (Assignee, Priority, Status, Labels, Project, Due date, Views)
+- Skills library (3 tabs: Bundled / Marketplace / Your org), skills cards with actions
+- Agent Employees list, Create Agent wizard (5-step flow with Skills picker)
+- Project selector across views
+
+### Bugs Found & Fixed (5)
+1. `/api/agent-employees` 500 — 20 unapplied migrations (0025-0044) caused schema/DB mismatch. Fixed by applying all migrations + running `seed-bundled-skills.ts`.
+2. Skills wizard "No skills available" — frontend expected `{skills:[...]}` wrapper but endpoint returns raw array (`fd2cb3f`).
+3. Pipeline view "No deals" — sales-specific empty copy in Engineering projects (`73946cf`).
+4. Skills page breadcrumb "Dashboard" instead of "Skills" (`73946cf`).
+5. Skills wizard fetch error not caught (`73946cf`).
+
+### Known Issues Remaining
+- **Postgres status enum** — `tasks.status` column constrains to 6 Engineering values. Marketing/Sales statuses will fail at DB layer until changed from enum to text.
+- **`tasks.completed_at` missing** — people-graph uses `updated_at` fallback.
+- **Chat task-reference pills** don't respect `hide_prefix_ids`.
+- **Notification panel** can't render `variant="notification"` TaskCard (no embedded Task payload).
+- **Board-card reactions** only show when pre-hydrated.
+- **Drizzle `_journal.json`** stale since 0017. Migrations 0025-0044 must be applied manually.
+- **Archived projects sidebar** — backend ready, no UI entry point.
+
+### Migration Apply Instructions (for prod deploy)
+Migrations 0025-0044 are NOT tracked in the Drizzle journal. To apply on a fresh or production database:
+1. Run `drizzle-kit push` against the target database, OR
+2. Apply the SQL files in `packages/db/drizzle/` in order (0025 through 0044) directly.
+3. After schema is current, run `pnpm tsx apps/api/src/scripts/seed-bundled-skills.ts` to seed the 9 bundled skills.
+4. Verify with `SELECT count(*) FROM skills WHERE source = 'bundled';` — expect 9 rows.
+
+---
+
 ## Execution handoff
 
 **Plan complete and saved to `docs/superpowers/plans/2026-04-16-task-management-overhaul.md`.** Two execution options:

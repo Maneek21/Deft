@@ -128,6 +128,11 @@ The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop
 6. Product works fully without AI. If LLM is down, chat + tasks function normally.
 7. Multi-tenant from day 1. org_id on every query. No shortcuts.
 
+## Known Limitations (deployment blockers)
+
+- **Postgres status enum constraint.** The `tasks.status` column is a Postgres enum with 6 Engineering values (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`). Any project using Marketing or Sales skill statuses will fail at the DB layer with an invalid enum value error. Fix: migrate the column from enum to text. This blocks non-Engineering skill adoption.
+- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0044 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0044 applied.
+
 ## What NOT To Do
 
 - Don't build features we don't need yet (sprints, burndown, Gantt, huddles, CRM)

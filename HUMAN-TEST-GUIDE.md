@@ -803,6 +803,64 @@ Validates that non-technical skill project_config actually drives the UI.
 
 ---
 
+## Playwright E2E Test Results (2026-04-16)
+
+Baseline Playwright walkthrough covering core surfaces. Use as a regression baseline for future test runs.
+
+### Test Environment
+- Branch: `feat/phase2-4-mcp-agents-plans`
+- Migrations applied: 0001-0044
+- Seeds: 9 bundled skills, 1 agent employee (Alex PM)
+- Test user: maneek@test.com (owner role)
+
+### Surface Coverage
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| Dashboard (10+ widgets) | PASS | All bento-grid cards render |
+| Task Board (6 columns) | PASS | Cancelled column renders collapsed |
+| Task List view | PASS | Sortable columns, inline status edit |
+| Calendar view | PASS | Tasks on correct due dates |
+| Pipeline view | PASS | Fixed: was showing "No deals" instead of "No tasks" |
+| Task Detail — Description tab | PASS | TipTap editor renders and saves |
+| Task Detail — Subtasks tab | PASS | |
+| Task Detail — Dependencies tab | PASS | |
+| Task Detail — Comments tab | PASS | |
+| Task Detail — Activity tab | PASS | Diff view renders old->new |
+| Task Reactions bar | PASS | Emoji toggle works |
+| Recurrence dropdown | PASS | None/Daily/Weekly/Biweekly/Monthly |
+| Priority labels | PASS | P1 -> "High" mapping correct |
+| Status labels | PASS | "To Do" (not "Todo") |
+| Filter bar | PASS | Assignee, Priority, Status, Labels, Project, Due date, Views |
+| Skills library (3 tabs) | PASS | Bundled 9 / Marketplace 0 / Your org 0 |
+| Skills cards (actions) | PASS | View/Install/Attach/Fork + context-bloat indicator |
+| Agent Employees list | PASS | Alex PM visible after migration fix |
+| Create Agent wizard (5 steps) | PASS | Skills picker shows all 9 bundled skills |
+| Project selector | PASS | Dropdown works across views |
+| Skills page breadcrumb | PASS | Fixed: was "Dashboard", now "Skills" |
+
+### Bugs Found (5 total — 5 fixed, 0 blocking)
+
+| # | Bug | Severity | Fix |
+|---|-----|----------|-----|
+| 1 | `/api/agent-employees` 500 — 20 unapplied migrations (0025-0044) | Critical | Applied all migrations + seeded 9 bundled skills |
+| 2 | Skills wizard "No skills available" — frontend expected `{skills:[...]}` wrapper, API returns raw array | High | `fd2cb3f` |
+| 3 | Pipeline view "No deals" copy in Engineering projects | Medium | `73946cf` |
+| 4 | Skills page breadcrumb said "Dashboard" | Low | `73946cf` |
+| 5 | Skills wizard fetch error not caught | Low | `73946cf` |
+
+### Known Remaining Issues (not fixed — document for future sprints)
+
+1. **Postgres status enum** — column uses enum with 6 Engineering values; Marketing/Sales statuses will fail at DB layer until changed to text.
+2. **`tasks.completed_at` column missing** — people-graph uses `updated_at` fallback.
+3. **Chat task-reference pills** don't respect `hide_prefix_ids` (would need per-message task lookup).
+4. **Notification panel rows** can't render `variant="notification"` TaskCard (no embedded Task payload).
+5. **Board-card reactions** only show when task data is pre-hydrated (list endpoints don't hydrate reactions).
+6. **Drizzle `_journal.json`** stale since migration 0017 — prod deploy must apply 0025-0044 manually.
+7. **Sidebar wiring** for archived projects not implemented (backend ready, no UI entry point).
+
+---
+
 ## Sign-off
 
 | Area | Tester | Date | Pass/Fail | Notes |
