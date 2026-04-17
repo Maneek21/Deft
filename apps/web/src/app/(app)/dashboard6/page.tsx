@@ -536,45 +536,37 @@ export default function Dashboard6Page() {
               ))}
             </div>
 
-            {/* GitHub Activity */}
-            <Card title="GitHub" headerRight={
-              d.github_activity.length > 0 ? (
-                <span className="text-[10px] font-mono" style={{ color:T.textFaint }}>{d.github_activity.length} events</span>
+            {/* Agent Activity — card in left column, keeps columns balanced */}
+            <Card title="Agent Activity" headerRight={
+              pendingApprovals.length > 0 ? (
+                <Link href="/agent" className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                  style={{ background:`${T.urgent}15`, color:T.urgent, border:`1px solid ${T.urgent}25` }}>
+                  {pendingApprovals.length} pending
+                </Link>
               ) : null
             }>
-              {d.github_activity.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-6 gap-2">
-                  <GitBranch size={18} style={{ color:T.textFaint, opacity:0.4 }} />
-                  <p className="text-[11px]" style={{ color:T.textFaint }}>No GitHub activity</p>
-                  <Link href="/settings/integrations" className="text-[10px]" style={{ color:T.accent }}>Connect GitHub →</Link>
-                </div>
+              {agentActivity.length === 0 ? (
+                <p className="text-[11px] py-2" style={{ color:T.textFaint }}>No recent agent activity</p>
               ) : (
-                <div className="space-y-2">
-                  {d.github_activity.slice(0,6).map(e => {
-                    const isMerged = e.metadata.merged;
-                    const badgeColor = isMerged ? '#a78bfa' : e.metadata.state==='open' ? T.success : T.textFaint;
-                    const badgeBg = isMerged ? 'rgba(167,139,250,0.12)' : e.metadata.state==='open' ? `${T.success}12` : 'rgba(255,255,255,0.05)';
-                    const badgeLabel = isMerged ? 'merged' : e.metadata.state || '';
+                <div className="relative pl-5 space-y-4">
+                  <div className="absolute left-[9px] top-1 bottom-1 w-px" style={{ background:'rgba(255,255,255,0.07)' }} />
+                  {agentActivity.slice(0,6).map((a, i) => {
+                    const dotBg = a.approval_status==='pending' ? T.warning : a.error ? T.urgent : T.success;
                     return (
-                      <div key={e.id} className="flex items-start gap-3 px-2 py-2 rounded-lg transition-colors hover:bg-white/5">
-                        {ghIcon(e)}
-                        <div className="flex-1 min-w-0">
-                          {e.url ? (
-                            <a href={e.url} target="_blank" rel="noopener noreferrer"
-                              className="text-[12px] truncate block hover:underline" style={{ color:T.textMain }}>{e.title}</a>
-                          ) : (
-                            <span className="text-[12px] truncate block" style={{ color:T.textMain }}>{e.title}</span>
-                          )}
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            {e.metadata.repo && <span className="text-[9px] font-mono" style={{ color:T.textFaint }}>{e.metadata.repo}</span>}
-                            {badgeLabel && (
-                              <span className="text-[9px] font-semibold px-1 py-px rounded"
-                                style={{ background:badgeBg, color:badgeColor }}>{badgeLabel}</span>
+                      <div key={a.id} className="relative flex items-start gap-3">
+                        <div className="absolute -left-[17px] w-2 h-2 rounded-full"
+                          style={{ top:'3px', background: i===0 ? T.accent : dotBg, boxShadow:`0 0 0 3px ${T.bgCard}` }} />
+                        <div className="flex-1 flex items-start justify-between gap-3 min-w-0">
+                          <div className="min-w-0">
+                            <span className="text-[12px] block truncate" style={{ color:T.textMain }}>{formatAgentAction(a)}</span>
+                            {a.approval_status==='pending' && (
+                              <Link href="/agent" className="text-[9px] font-semibold mt-0.5 inline-block"
+                                style={{ color:T.urgent }}>→ Review</Link>
                             )}
-                            <span className="text-[9px] font-mono ml-auto" style={{ color:T.textFaint }}>
-                              {formatRelativeCompact(e.timestamp)}
-                            </span>
                           </div>
+                          <span className="text-[9px] font-mono shrink-0 mt-0.5" style={{ color:T.textFaint }}>
+                            {formatRelativeCompact(a.executed_at||a.created_at)}
+                          </span>
                         </div>
                       </div>
                     );
@@ -629,27 +621,6 @@ export default function Dashboard6Page() {
               <CalendarWidget />
             </Card>
 
-            {/* Signal velocity (pace) */}
-            {myInsights && myInsights.pace.length > 0 && (
-              <Card title="Signal Velocity">
-                <div className="flex items-end gap-1 h-14 mt-1">
-                  {myInsights.pace.map((w,i) => {
-                    const max = Math.max(...myInsights.pace.map(p=>p.completed), 1);
-                    const isLast = i === myInsights.pace.length-1;
-                    return (
-                      <div key={i} className="flex-1 rounded-t-sm transition-all hover:brightness-125"
-                        style={{ height:`${Math.max((w.completed/max)*100,8)}%`, background: isLast ? T.accent : `${T.accent}50` }}
-                        title={`${w.completed} tasks`}
-                      />
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between mt-2 text-[9px] font-mono" style={{ color:T.textFaint }}>
-                  <span>{myInsights.pace.length}w ago</span><span>this week</span>
-                </div>
-              </Card>
-            )}
-
             {/* Top Collaborators */}
             {myInsights && myInsights.top_collaborators.length > 0 && (
               <Card title="Top Collaborators" headerRight={<TrendingUp size={12} style={{ color:T.textFaint }} />}>
@@ -674,6 +645,25 @@ export default function Dashboard6Page() {
                       </div>
                     );
                   })}
+                </div>
+              </Card>
+            )}
+
+            {/* Signal Velocity */}
+            {myInsights && myInsights.pace.length > 0 && (
+              <Card title="Signal Velocity">
+                <div className="flex items-end gap-1 h-12 mt-1">
+                  {myInsights.pace.map((w,i) => {
+                    const max = Math.max(...myInsights.pace.map(p=>p.completed), 1);
+                    return (
+                      <div key={i} className="flex-1 rounded-t-sm hover:brightness-125 transition-all"
+                        style={{ height:`${Math.max((w.completed/max)*100,8)}%`, background: i===myInsights.pace.length-1 ? T.accent : `${T.accent}50` }}
+                        title={`${w.completed} tasks`} />
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between mt-2 text-[9px] font-mono" style={{ color:T.textFaint }}>
+                  <span>{myInsights.pace.length}w ago</span><span>this week</span>
                 </div>
               </Card>
             )}
@@ -742,64 +732,6 @@ export default function Dashboard6Page() {
           </div>
         </div>
 
-        {/* ── Agent Activity timeline (full width) ── */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider" style={{ color:T.textMain, opacity:0.6 }}>Agent Activity</h3>
-            {pendingApprovals.length > 0 && (
-              <Link href="/agent" className="text-[11px] font-semibold px-2.5 py-1 rounded-lg"
-                style={{ background:`${T.urgent}15`, color:T.urgent, border:`1px solid ${T.urgent}25` }}>
-                {pendingApprovals.length} pending approval
-              </Link>
-            )}
-          </div>
-          {agentActivity.length === 0 ? (
-            <div className="p-6 rounded-xl text-center" style={{ border:`1px solid ${T.border}` }}>
-              <p className="text-[12px]" style={{ color:T.textFaint }}>No recent agent activity</p>
-            </div>
-          ) : (
-            <div className="relative pl-6 space-y-5" style={{
-              ['--before-left' as string]: '11px',
-            }}>
-              <div className="absolute left-[11px] top-2 bottom-2 w-px" style={{ background:'rgba(255,255,255,0.08)' }} />
-              {agentActivity.slice(0,8).map((a, i) => {
-                const dotBg = a.approval_status==='pending' ? T.warning : a.error ? T.urgent : T.success;
-                return (
-                  <div key={a.id} className="relative flex items-start gap-4">
-                    <div className="absolute -left-[19px] w-2 h-2 rounded-full"
-                      style={{ top:'4px', background: i===0 ? T.accent : dotBg, boxShadow:`0 0 0 3px ${T.bgBase}` }} />
-                    <div className="flex-1 flex items-start justify-between gap-4">
-                      <div>
-                        <span className="text-[13px]" style={{ color:T.textMain }}>{formatAgentAction(a)}</span>
-                        {a.approval_status === 'pending' && (
-                          <Link href="/agent" className="ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded"
-                            style={{ background:`${T.urgent}15`, color:T.urgent }}>Review</Link>
-                        )}
-                      </div>
-                      <span className="text-[10px] font-mono shrink-0 mt-0.5" style={{ color:T.textFaint }}>
-                        {formatRelativeCompact(a.executed_at||a.created_at)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-              {/* Activity entries interspersed */}
-              {(d.recent_activity||[]).slice(0,4).map((a,i) => (
-                <div key={a.id} className="relative flex items-start gap-4">
-                  <div className="absolute -left-[19px] w-2 h-2 rounded-full"
-                    style={{ top:'4px', background:'rgba(255,255,255,0.2)', boxShadow:`0 0 0 3px ${T.bgBase}` }} />
-                  <div className="flex-1 flex items-start justify-between gap-4">
-                    <span className="text-[13px]" style={{ color:T.textMuted }}>{formatActivity(a)}</span>
-                    <span className="text-[10px] font-mono shrink-0 mt-0.5" style={{ color:T.textFaint }}>
-                      {formatRelativeCompact(a.created_at)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
         {/* ── Projects (full-width bottom) ── */}
         <section>
           <div className="flex items-center justify-between mb-4">
@@ -834,6 +766,43 @@ export default function Dashboard6Page() {
             </div>
           )}
         </section>
+
+        {/* ── GitHub (full-width, only when connected) ── */}
+        {d.github_activity.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[12px] font-semibold uppercase tracking-wider" style={{ color:T.textMain, opacity:0.6 }}>GitHub</h3>
+              <span className="text-[10px] font-mono" style={{ color:T.textFaint }}>{d.github_activity.length} events</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {d.github_activity.slice(0,6).map(e => {
+                const isMerged = e.metadata.merged;
+                const badgeColor = isMerged ? '#a78bfa' : e.metadata.state==='open' ? T.success : T.textFaint;
+                const badgeBg = isMerged ? 'rgba(167,139,250,0.12)' : e.metadata.state==='open' ? `${T.success}12` : 'rgba(255,255,255,0.05)';
+                const badgeLabel = isMerged ? 'merged' : e.metadata.state || '';
+                return (
+                  <div key={e.id} className="flex items-start gap-3 p-3 rounded-xl border"
+                    style={{ background:T.bgCard, borderColor:T.border }}>
+                    {ghIcon(e)}
+                    <div className="flex-1 min-w-0">
+                      {e.url ? (
+                        <a href={e.url} target="_blank" rel="noopener noreferrer"
+                          className="text-[12px] truncate block hover:underline font-medium" style={{ color:T.textMain }}>{e.title}</a>
+                      ) : (
+                        <span className="text-[12px] truncate block font-medium" style={{ color:T.textMain }}>{e.title}</span>
+                      )}
+                      <div className="flex items-center gap-1.5 mt-1">
+                        {e.metadata.repo && <span className="text-[9px] font-mono" style={{ color:T.textFaint }}>{e.metadata.repo}</span>}
+                        {badgeLabel && <span className="text-[9px] font-semibold px-1 py-px rounded" style={{ background:badgeBg, color:badgeColor }}>{badgeLabel}</span>}
+                        <span className="text-[9px] font-mono ml-auto" style={{ color:T.textFaint }}>{formatRelativeCompact(e.timestamp)}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
       </main>
 
