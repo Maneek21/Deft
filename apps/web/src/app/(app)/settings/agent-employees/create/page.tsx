@@ -139,7 +139,7 @@ export default function CreateAgentEmployeePage() {
         const list = Array.isArray(body) ? body : (body.skills ?? []);
         setSkillsCatalog(list as Skill[]);
       }
-    });
+    }).catch(() => {});
   }, []);
 
   const handleRoleChange = (newRole: string) => {

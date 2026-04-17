@@ -135,7 +135,7 @@ export function TaskPipelineView<T extends PipelineTask>({
                   className="text-[11px] text-center py-3"
                   style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
                 >
-                  No deals
+                  No tasks
                 </p>
               )}
               {items.map((t) => {
