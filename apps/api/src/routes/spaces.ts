@@ -4,6 +4,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages } from '@deft/db/schema';
 import { getIO } from '../socket.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
 
 export const spaceRoutes = new Hono();
 
@@ -276,6 +277,9 @@ spaceRoutes.get('/:id/members', async (c) => {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
     const members = await db.select({
       id: users.id,
       name: users.name,
@@ -319,6 +323,9 @@ spaceRoutes.post('/:id/members', async (c) => {
     if (!space) {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     // Check if already a member
     const [existing] = await db.select()

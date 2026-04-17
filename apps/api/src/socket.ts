@@ -103,8 +103,14 @@ export function setupSocket(server: HTTPServer) {
     socket.emit('presence:init', presenceList);
 
     // Space rooms
-    socket.on('space:join', (spaceId: string) => {
-      socket.join(`space:${spaceId}`);
+    socket.on('space:join', async (spaceId: string) => {
+      const [member] = await db.select({ id: spaceMembers.id })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
+        .limit(1);
+      if (member) {
+        socket.join(`space:${spaceId}`);
+      }
     });
 
     socket.on('space:leave', (spaceId: string) => {

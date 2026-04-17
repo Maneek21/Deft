@@ -9,6 +9,7 @@ import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-pre
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { env } from '../lib/env.js';
 import { classifyMessage } from '../lib/classifier.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
 
 export const messageRoutes = new Hono();
 
@@ -108,6 +109,12 @@ messageRoutes.post('/forward', async (c) => {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const isSourceMember = await requireSpaceMembership(original.space_id, user.id);
+    if (!isSourceMember) return c.json({ error: 'No access to source message', code: 'FORBIDDEN' }, 403);
+
+    const isTargetMember = await requireSpaceMembership(target_space_id, user.id);
+    if (!isTargetMember) return c.json({ error: 'No access to target space', code: 'FORBIDDEN' }, 403);
+
     const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, original.user_id)).limit(1);
     const [sourceSpace] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, original.space_id)).limit(1);
 
@@ -152,6 +159,10 @@ messageRoutes.get('/:spaceId', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
     const cursor = c.req.query('cursor');
     const around = c.req.query('around');
     const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
