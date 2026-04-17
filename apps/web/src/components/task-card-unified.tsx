@@ -121,6 +121,11 @@ type ChatProps = CommonProps & {
   /** When false, the pill is rendered as a plain span (e.g. inside an existing anchor). */
   asLink?: boolean;
 };
+// Task 6.6 audit note: the chat variant ships but isn't wired because
+// space-chat resolves `PREFIX-N` task mentions via a pure regex replace
+// inside the rendered message HTML — there's no task fetch on the chat
+// pipeline, so we'd need a new bulk-resolver keyed on prefix+number before
+// the chat variant can render. Left as-is to avoid scope creep.
 
 type CalendarProps = CommonProps & {
   variant: 'calendar';
@@ -136,6 +141,11 @@ type NotificationProps = CommonProps & {
   variant: 'notification';
   onView?: () => void;
 };
+// Task 6.6 audit note: the notification variant is defined but not wired
+// in notification-panel.tsx. Notification rows carry only title + body +
+// link; surfacing the target task as a card would require fetching task
+// data per notification (or embedding task fields into the notifications
+// payload). Left for a follow-up that can batch-resolve targets.
 
 export type TaskCardUnifiedProps =
   | BoardProps

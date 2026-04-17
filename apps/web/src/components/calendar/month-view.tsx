@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { CalEvent, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS } from '@/lib/calendar';
+import { CalEvent, CalTask, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS } from '@/lib/calendar';
 import { CalendarItem } from './calendar-item';
+import { TaskCardUnified } from '@/components/task-card-unified';
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
   useDroppable, useDraggable,
@@ -107,9 +108,23 @@ export function MonthView({
                 {/* Items (hidden on mobile) */}
                 <div className="hidden md:flex flex-col gap-0.5 flex-1 min-h-0 overflow-hidden">
                   {items.slice(0, MAX_ITEMS).map((item) => (
-                    item.type === 'task' ? (
+                    item.type === 'task' && item.task ? (
+                      // Task 6.6 — tasks use the calendar variant of
+                      // TaskCardUnified so status/priority dots stay
+                      // consistent with the board + dashboard surfaces.
                       <DraggableTask key={item.id} id={item.id}>
-                        <CalendarItem type={item.type} title={item.title} time={item.time} hasBrief={item.hasBrief} />
+                        <TaskCardUnified
+                          variant="calendar"
+                          task={{
+                            id: item.task.id,
+                            number: item.task.number,
+                            title: item.task.title,
+                            status: item.task.status,
+                            priority: item.task.priority as 'p0' | 'p1' | 'p2' | 'p3',
+                            project_prefix: item.task.project_prefix,
+                            due_date: item.task.due_date,
+                          }}
+                        />
                       </DraggableTask>
                     ) : (
                       <CalendarItem
@@ -190,7 +205,7 @@ function DraggableTask({ id, children }: { id: string; children: React.ReactNode
 
 // ── Helpers ──
 
-type FlatItem = { id: string; type: 'event' | 'task' | 'note' | 'reminder'; title: string; time?: string; hasBrief?: boolean; event?: CalEvent };
+type FlatItem = { id: string; type: 'event' | 'task' | 'note' | 'reminder'; title: string; time?: string; hasBrief?: boolean; event?: CalEvent; task?: CalTask };
 
 function getItems(bucket: DayBucket | undefined, briefs?: Map<string, string>): FlatItem[] {
   if (!bucket) return [];
@@ -200,7 +215,7 @@ function getItems(bucket: DayBucket | undefined, briefs?: Map<string, string>): 
     items.push({ id: e.id, type: 'event', title: e.title, time, hasBrief: briefs?.has(e.id), event: e });
   }
   for (const t of bucket.tasks) {
-    items.push({ id: t.id, type: 'task', title: t.title });
+    items.push({ id: t.id, type: 'task', title: t.title, task: t });
   }
   for (const r of bucket.reminders) {
     const time = new Date(r.remind_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
