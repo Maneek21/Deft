@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -807,7 +808,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                   <div className="mt-2 p-3 rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}>
                     <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>v{selectedVersion.version} content:</div>
                     <div className="text-[12px] whitespace-pre-wrap" style={{ color: 'var(--foreground)', opacity: 0.8 }}
-                      dangerouslySetInnerHTML={{ __html: selectedVersion.content || '<em>Empty</em>' }} />
+                      dangerouslySetInnerHTML={{ __html: sanitizeHtml(selectedVersion.content || '<em>Empty</em>') }} />
                   </div>
                 )}
               </div>

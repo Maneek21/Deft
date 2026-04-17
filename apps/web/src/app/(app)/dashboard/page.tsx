@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { formatRelativeCompact, formatFullDateLong, formatCurrentTime, formatEventTime, formatMessageTime } from '@/lib/time';
 import Link from 'next/link';
@@ -904,7 +905,7 @@ export default function Dashboard3Page() {
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {d.standup ? (
                 <div className="text-[0.8125rem] leading-relaxed message-content" style={{ color: 'var(--on-surface-variant)' }}
-                  dangerouslySetInnerHTML={{ __html: renderSimpleMarkdown(d.standup.summary) }} />
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimpleMarkdown(d.standup.summary)) }} />
               ) : standupGenerating ? (
                 <div className="flex items-center justify-center py-12 gap-2" style={{ color: 'var(--outline)' }}>
                   <Loader2 size={16} className="animate-spin" />

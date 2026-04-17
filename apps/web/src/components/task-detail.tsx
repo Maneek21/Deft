@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -2394,7 +2395,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         </div>
                         <div
                           className="deft-editor text-[13px] mt-0.5"
-                          dangerouslySetInnerHTML={{ __html: c.content }}
+                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(c.content) }}
                         />
                       </div>
                     </div>
