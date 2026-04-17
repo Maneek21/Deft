@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations, orgMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, wikiPages, wikiCitations, orgMembers, workflowRules } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -1602,6 +1602,33 @@ taskRoutes.patch('/:id', async (c) => {
           project_prefix: project?.prefix,
           project_name: project?.name,
         });
+      }
+
+      // Task 5.7 — enqueue workflow-execute for rules matching this
+      // status change (trigger_type='task.status_changed' +
+      // trigger_config.to_status === new status).
+      try {
+        const matchingRules = await db
+          .select({ id: workflowRules.id, trigger_config: workflowRules.trigger_config })
+          .from(workflowRules)
+          .where(and(
+            eq(workflowRules.org_id, user.org_id),
+            eq(workflowRules.trigger_type, 'task.status_changed'),
+            eq(workflowRules.is_active, true),
+          ));
+
+        for (const rule of matchingRules) {
+          const cfg = (rule.trigger_config ?? {}) as Record<string, unknown>;
+          const toStatus = (cfg as any).to_status;
+          if (toStatus && toStatus !== parsed.data.status) continue;
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'workflow-execute', {
+            workflow_id: rule.id,
+            task_id: taskId,
+            actor_user_id: user.id,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to enqueue workflow-execute:', (err as Error).message);
       }
 
       // Post system message in linked spaces

@@ -100,6 +100,13 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/deploy-provision.js');
       return mod.handleDeployProvision;
     }
+    case 'workflow-execute': {
+      // Task 5.7 — basic workflows executor. Runs the actions for a
+      // workflow_rule whose trigger matched (currently only
+      // task.status_changed) against a single task.
+      const mod = await import('./handlers/workflow-execute.js');
+      return mod.handleWorkflowExecute;
+    }
     default:
       return null;
   }
