@@ -26,6 +26,17 @@ type CostSummary = {
   turn_count: number;
 };
 
+type EmployeeSummary = {
+  id: string;
+  name: string;
+  daily_action_count: number;
+  max_daily_actions: number;
+  daily_cost_cents: number;
+  daily_budget_cents: number;
+  unhealthy: boolean;
+  unhealthy_reason: string | null;
+};
+
 const OUTCOME_LABELS: Record<string, { label: string; tone: string }> = {
   dispatched: { label: 'Dispatched', tone: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
   no_op: { label: 'No-op', tone: 'text-slate-600 bg-slate-50 border-slate-200' },
@@ -55,10 +66,12 @@ export default function HeartbeatsPage() {
   const id = params?.id;
   const [turns, setTurns] = useState<HeartbeatTurn[]>([]);
   const [summary, setSummary] = useState<CostSummary | null>(null);
+  const [employee, setEmployee] = useState<EmployeeSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filterOutcome, setFilterOutcome] = useState<string>('all');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [markHealing, setMarkHealing] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -67,14 +80,30 @@ export default function HeartbeatsPage() {
     try {
       const qs = new URLSearchParams({ limit: '100' });
       if (filterOutcome !== 'all') qs.set('outcome', filterOutcome);
-      const res = await api.get(`/api/agent-employees/${id}/heartbeats?${qs.toString()}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed with ${res.status}`);
+      const [turnsRes, empRes] = await Promise.all([
+        api.get(`/api/agent-employees/${id}/heartbeats?${qs.toString()}`),
+        api.get(`/api/agent-employees/${id}`),
+      ]);
+      if (!turnsRes.ok) {
+        const body = await turnsRes.json().catch(() => ({}));
+        throw new Error(body.error ?? `Request failed with ${turnsRes.status}`);
       }
-      const data = await res.json();
+      const data = await turnsRes.json();
       setTurns(data.turns ?? []);
       setSummary(data.cost_summary_24h ?? null);
+      if (empRes.ok) {
+        const emp = await empRes.json();
+        setEmployee({
+          id: emp.id,
+          name: emp.name,
+          daily_action_count: emp.daily_action_count ?? 0,
+          max_daily_actions: emp.max_daily_actions ?? 0,
+          daily_cost_cents: emp.daily_cost_cents ?? 0,
+          daily_budget_cents: emp.daily_budget_cents ?? 0,
+          unhealthy: !!emp.unhealthy,
+          unhealthy_reason: emp.unhealthy_reason ?? null,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -133,6 +162,59 @@ export default function HeartbeatsPage() {
           <option value="error">Error</option>
         </select>
       </div>
+
+      {employee && (
+        <div className="border border-slate-200 rounded-lg p-4 bg-white mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-medium text-slate-900">
+              Today&apos;s usage
+            </div>
+            {employee.unhealthy && (
+              <button
+                disabled={markHealing}
+                onClick={async () => {
+                  if (!id) return;
+                  setMarkHealing(true);
+                  try {
+                    await api.patch(`/api/agent-employees/${id}`, {
+                      mark_healthy: true,
+                    });
+                    await load();
+                  } finally {
+                    setMarkHealing(false);
+                  }
+                }}
+                className="text-xs px-3 py-1 border border-red-300 text-red-700 bg-white rounded-md hover:bg-red-50 disabled:opacity-50"
+              >
+                {markHealing ? 'Clearing...' : 'Mark healthy'}
+              </button>
+            )}
+          </div>
+          {employee.unhealthy && (
+            <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+              Circuit breaker tripped
+              {employee.unhealthy_reason ? `: ${employee.unhealthy_reason}` : '.'}
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-slate-500">Actions</div>
+              <div className="text-lg font-semibold mt-0.5">
+                {employee.daily_action_count} / {employee.max_daily_actions}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 flex items-center">
+                <DollarSign size={11} className="mr-0.5" />
+                Cost
+              </div>
+              <div className="text-lg font-semibold mt-0.5">
+                {fmtCost(employee.daily_cost_cents)} / {fmtCost(employee.daily_budget_cents)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {summary && (
         <div className="grid grid-cols-3 gap-4 mb-6">

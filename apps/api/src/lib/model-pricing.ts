@@ -39,3 +39,18 @@ export function computeTurnCostUsd(
   const tout = typeof tokensOut === 'number' ? tokensOut : 0;
   return (tin / 1_000_000) * price.input + (tout / 1_000_000) * price.output;
 }
+
+/**
+ * Task 8.5 — integer-cents helper for counter accumulation. Rounds up so
+ * the soft cap errs on the side of stopping early. Returns 0 when the
+ * model is unknown (so we don't block progress on a pricing gap).
+ */
+export function computeTurnCostCents(
+  modelName: string | null | undefined,
+  tokensIn: number | null | undefined,
+  tokensOut: number | null | undefined,
+): number {
+  const usd = computeTurnCostUsd(modelName, tokensIn, tokensOut);
+  if (usd == null) return 0;
+  return Math.ceil(usd * 100);
+}

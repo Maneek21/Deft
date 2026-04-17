@@ -37,6 +37,7 @@ import {
 } from './openclaw-chat-envelope.js';
 import { chatCompletion as openclawChatCompletion } from './openclaw-client.js';
 import { decrypt } from './encryption.js';
+import { computeTurnCostCents } from './model-pricing.js';
 
 export type OpenClawDispatchParams = {
   employee: typeof agentEmployees.$inferSelect;
@@ -357,9 +358,24 @@ export async function dispatchViaOpenClaw(
     return;
   }
 
-  // ─── 8. Increment daily action count ──────────────────────────────────
+  // ─── 8. Increment daily action + cost counters ───────────────────────
+  //
+  // Task 8.5 — action + cost budgets share the same `agent_employees`
+  // row so we bump both in one UPDATE. The action counter is guarded by
+  // `max_daily_actions` so it never wraps past the soft cap; the cost
+  // counter is unguarded (a single turn rarely jumps from under-budget
+  // to massively over, and the pre-flight gate in the heartbeat handler
+  // stops the NEXT dispatch).
+  const costCents = computeTurnCostCents(
+    turn.model_name,
+    turn.tokens_in,
+    turn.tokens_out,
+  );
   await db.execute(
-    sql`UPDATE agent_employees SET daily_action_count = daily_action_count + 1 WHERE id = ${employee.id} AND daily_action_count < max_daily_actions`,
+    sql`UPDATE agent_employees
+          SET daily_action_count = LEAST(daily_action_count + 1, max_daily_actions),
+              daily_cost_cents = daily_cost_cents + ${costCents}
+        WHERE id = ${employee.id}`,
   );
 
   // ─── 9. Broadcast via socket.io ───────────────────────────────────────
