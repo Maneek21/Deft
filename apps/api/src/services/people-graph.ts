@@ -16,6 +16,8 @@ import {
   peopleRelationships,
   wikiPages,
   wikiLinks,
+  labels,
+  taskLabels,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, inArray, ne, desc } from 'drizzle-orm';
 
@@ -469,7 +471,68 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
       });
   }
 
-  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs`);
+  // ── Task-completion signal (label-driven) ─────────────────────────────────
+  // When a user's task transitions to status='done' within the last 24h,
+  // each label on that task becomes a topic for the assignee with a
+  // `+3 × label_weight` contribution to their expertise score.
+  //
+  // NOTE: the `tasks` table does not carry a `completed_at` column today
+  // (see packages/db/src/schema.ts). Falling back to `updated_at` with
+  // `status='done'` is a close proxy — it overcounts only when a done task
+  // is edited after completion, which is rare in practice. The `labels`
+  // table likewise has no `weight` column, so `label_weight` defaults to 1.
+  const completedTaskLabelRows = await db
+    .select({
+      assignee_id: tasks.assignee_id,
+      label_name: labels.name,
+    })
+    .from(tasks)
+    .innerJoin(taskLabels, eq(taskLabels.task_id, tasks.id))
+    .innerJoin(labels, eq(labels.id, taskLabels.label_id))
+    .where(
+      and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.status, 'done'),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.updated_at} > NOW() - INTERVAL '24 hours'`,
+      ),
+    );
+
+  // Accumulate: key = "userId:topic", value = +3 × label_weight per completion.
+  const taskLabelScoreDeltas = new Map<string, number>();
+  for (const row of completedTaskLabelRows) {
+    if (!row.assignee_id) continue; // unassigned → no-one gets credit
+    const topic = row.label_name?.toLowerCase().trim();
+    if (!topic || topic.length > 50) continue;
+    const key = `${row.assignee_id}:${topic}`;
+    const labelWeight = 1; // labels table has no weight column → default 1
+    taskLabelScoreDeltas.set(key, (taskLabelScoreDeltas.get(key) ?? 0) + 3 * labelWeight);
+  }
+
+  for (const [key, scoreDelta] of taskLabelScoreDeltas) {
+    const colonIdx = key.indexOf(':');
+    const userId = key.slice(0, colonIdx);
+    const topic = key.slice(colonIdx + 1);
+    const now = new Date();
+
+    await db
+      .insert(peopleExpertise)
+      .values({
+        org_id: orgId,
+        user_id: userId,
+        topic,
+        expertise_score: scoreDelta,
+      })
+      .onConflictDoUpdate({
+        target: [peopleExpertise.org_id, peopleExpertise.user_id, peopleExpertise.topic],
+        set: {
+          expertise_score: sql`${peopleExpertise.expertise_score} + ${scoreDelta}`,
+          updated_at: now,
+        },
+      });
+  }
+
+  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs; task-completion label signal applied for ${taskLabelScoreDeltas.size} topic-user pairs`);
 }
 
 // ═══ PATTERN ANALYSIS ═══
