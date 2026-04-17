@@ -105,8 +105,11 @@ Tasks are the agent's primary output surface and the product's action surface. P
 - **Project archive + soft-delete** (Task 5.8) — settings modal with 7-day recovery window. Soft-deleted projects hide from views but preserve tasks for audit.
 - **Task 0.1 security fix (resolved)** — watchers + assignees routes enforce `org_id` + auth.
 - **Task 0.4 dashboard fix (resolved)** — "My Work" filter on the bento dashboard now scopes to the current user.
+- **Security hardening (Phase 7, resolved)** — 10 vulnerabilities fixed: XSS prevention via DOMPurify on all `dangerouslySetInnerHTML` sites (6 components), IDOR fixes on workflow-run/agent-message/wiki-citation deletes (verify ownership before delete), space membership enforcement on all space/message/pin endpoints + WebSocket `space:join`, upload path traversal fix (`path.basename` + Content-Disposition `attachment`), daily notes optimistic locking (CAS version check, 409 on conflict).
 
 Dead primitives retired: the `native_tools[]` agent column was dropped (migration 0038) and the `TEMPLATE_DEFAULT_PACKS` constant removed. Capability packs are now expressed as bundled skills and installed via `agent_employee_skills`.
+
+- **UI fixes (Phase 7)** — sidebar three-dot menu portal click propagation fixed (menu items now respond to clicks). Scroll containers added to 9 settings pages that were clipping content.
 
 ## Next Milestone — Phase 8 (OpenClaw autonomy)
 
