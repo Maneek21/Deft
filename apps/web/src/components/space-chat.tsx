@@ -533,8 +533,6 @@ export function SpaceChat({
   const [profileCard, setProfileCard] = useState<{ userId: string; rect: { top: number; left: number; bottom: number } } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
-  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
-  const headerMenuBtnRef = useRef<HTMLButtonElement>(null);
 
   // Load user's saved/bookmarked message IDs for this space
   useEffect(() => {
@@ -732,17 +730,6 @@ export function SpaceChat({
     }
     load();
   }, [spaceId, scrollToBottom, highlightMessageId]);
-
-  useEffect(() => {
-    if (!headerMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (headerMenuBtnRef.current && !headerMenuBtnRef.current.contains(e.target as Node)) {
-        setHeaderMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [headerMenuOpen]);
 
   useEffect(() => {
     const token = localStorage.getItem('deft-access-token');
@@ -1101,9 +1088,9 @@ export function SpaceChat({
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Pin count — only when there are pins */}
+            {/* Pin count */}
             {pinCount > 0 && (
-              <button className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px] hover:opacity-70"
+              <button className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px]"
                 style={{ color: 'var(--on-surface-variant)' }}
                 title={`${pinCount} pinned messages`}>
                 <Pin size={12} strokeWidth={1.5} />
@@ -1122,7 +1109,21 @@ export function SpaceChat({
               <span>{memberCount}</span>
             </button>
 
-            {/* Huddle — kept visible, has important live state */}
+            {/* Mute toggle */}
+            <button
+              onClick={async () => {
+                const newMuted = !isMuted;
+                setIsMuted(newMuted);
+                await api.patch(`/api/spaces/${spaceId}/mute`, { muted: newMuted });
+              }}
+              className="p-1.5 rounded-md hover:opacity-70"
+              style={{ color: isMuted ? 'var(--status-red)' : 'var(--on-surface-variant)' }}
+              title={isMuted ? 'Unmute channel' : 'Mute channel'}
+            >
+              {isMuted ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />}
+            </button>
+
+            {/* Huddle button */}
             {!isDm && (() => {
               const inThisHuddle = huddleSpaceId === spaceId;
               const huddleHere = activeHuddles.get(spaceId);
@@ -1159,72 +1160,34 @@ export function SpaceChat({
               );
             })()}
 
-            {/* ••• overflow menu: mute, catch-up, knowledge */}
-            <div className="relative">
-              <button
-                ref={headerMenuBtnRef}
-                onClick={() => setHeaderMenuOpen(prev => !prev)}
-                className="p-1.5 rounded-md hover:opacity-70"
-                style={{ color: 'var(--on-surface-variant)' }}
-                title="More options"
-              >
-                <MoreHorizontal size={15} strokeWidth={1.5} />
-              </button>
-              {headerMenuOpen && typeof document !== 'undefined' && createPortal(
-                <div
-                  className="fixed py-1 rounded-lg z-[100] w-44"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  style={{
-                    background: 'var(--surface-container-highest)',
-                    boxShadow: 'var(--glass-shadow)',
-                    top: `${(headerMenuBtnRef.current?.getBoundingClientRect().bottom ?? 0) + 6}px`,
-                    right: `${window.innerWidth - (headerMenuBtnRef.current?.getBoundingClientRect().right ?? 0)}px`,
-                  }}
-                >
-                  <button
-                    onClick={async () => {
-                      const newMuted = !isMuted;
-                      setIsMuted(newMuted);
-                      setHeaderMenuOpen(false);
-                      await api.patch(`/api/spaces/${spaceId}/mute`, { muted: newMuted });
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                    style={{ color: isMuted ? 'var(--status-red)' : 'var(--on-surface-variant)' }}
-                  >
-                    {isMuted ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />}
-                    {isMuted ? 'Unmute channel' : 'Mute channel'}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      setHeaderMenuOpen(false);
-                      setRecapLoading(true);
-                      try {
-                        const res = await api.post(`/api/spaces/${spaceId}/recap`);
-                        const data = await res.json();
-                        if (res.ok) setRecapSummary(data.summary);
-                        else setRecapSummary(`Failed to generate summary: ${data.error || 'Unknown error'}`);
-                      } catch { setRecapSummary('Failed to connect to the server.'); }
-                      setRecapLoading(false);
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                    style={{ color: 'var(--on-surface-variant)' }}
-                    disabled={recapLoading}
-                  >
-                    <MailOpen size={14} strokeWidth={1.5} />
-                    {recapLoading ? 'Reading...' : 'Catch Up'}
-                  </button>
-                  <button
-                    onClick={() => { setShowKnowledge(!showKnowledge); setHeaderMenuOpen(false); }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                    style={{ color: showKnowledge ? 'var(--primary)' : 'var(--on-surface-variant)' }}
-                  >
-                    <BookOpen size={14} strokeWidth={1.5} />
-                    {showKnowledge ? 'Hide knowledge' : 'Knowledge'}
-                  </button>
-                </div>,
-                document.body
-              )}
-            </div>
+            {/* Catch Up */}
+            <button
+              onClick={async () => {
+                setRecapLoading(true);
+                try {
+                  const res = await api.post(`/api/spaces/${spaceId}/recap`);
+                  const data = await res.json();
+                  if (res.ok) setRecapSummary(data.summary);
+                  else setRecapSummary(`Failed to generate summary: ${data.error || 'Unknown error'}`);
+                } catch { setRecapSummary('Failed to connect to the server.'); }
+                setRecapLoading(false);
+              }}
+              className="flex items-center gap-1 px-2.5 h-7 rounded-md text-[11px] font-medium"
+              style={{ background: 'var(--accent-muted)', color: 'var(--primary)' }}
+              disabled={recapLoading}
+            >
+              {recapLoading ? 'Reading...' : 'Catch Up'}
+            </button>
+
+            {/* Knowledge */}
+            <button
+              onClick={() => setShowKnowledge(!showKnowledge)}
+              className="p-1.5 rounded-md hover:opacity-70"
+              style={{ color: 'var(--outline)' }}
+              title="Knowledge"
+            >
+              <BookOpen size={14} strokeWidth={1.5} />
+            </button>
           </div>
 
           {/* Row 2: Description (collapsible, only if exists) */}
@@ -1292,19 +1255,17 @@ export function SpaceChat({
               <div key={msg.id} data-message-id={msg.id}>
                 {/* Day separator */}
                 {showDaySeparator && (
-                  <div className="flex items-center gap-3 my-3 px-2">
-                    <div className="flex-1 h-px" style={{ background: 'var(--outline-variant)', opacity: 0.3 }} />
+                  <div className="flex items-center justify-center my-6">
                     <span
-                      className="text-[10px] font-semibold uppercase flex-shrink-0"
+                      className="text-[11px] font-semibold uppercase"
                       style={{
                         color: 'var(--outline-variant)',
-                        letterSpacing: '0.06em',
+                        letterSpacing: '0.05em',
                         fontFamily: 'var(--font-mono)',
                       }}
                     >
                       {formatDayLabel(msg.created_at)}
                     </span>
-                    <div className="flex-1 h-px" style={{ background: 'var(--outline-variant)', opacity: 0.3 }} />
                   </div>
                 )}
 
@@ -1787,7 +1748,7 @@ export function SpaceChat({
                           )}
                         </div>
                         {msg.is_deleted ? (
-                          <p className="text-[13px] italic mt-1" style={{ color: 'var(--muted)' }}>This message was deleted</p>
+                          <p className="text-[13px] italic mt-0.5" style={{ color: 'var(--muted)' }}>This message was deleted</p>
                         ) : editingId === msg.id ? (
                           <EditBox content={editContent} onChange={setEditContent} onSave={() => handleEdit(msg.id)} onCancel={() => setEditingId(null)} />
                         ) : (
@@ -1809,7 +1770,7 @@ export function SpaceChat({
                               }
                               return (
                                 <>
-                                  <div className="text-[13px] whitespace-pre-wrap break-words mt-1" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
+                                  <div className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
                                   </div>
