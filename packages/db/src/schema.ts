@@ -1333,6 +1333,15 @@ export const agentEmployees = pgTable('agent_employees', {
   heartbeat_enabled: boolean('heartbeat_enabled').default(false).notNull(),
   heartbeat_interval_min: integer('heartbeat_interval_min').default(30).notNull(),
   heartbeat_config: jsonb('heartbeat_config'),
+  /**
+   * Task 8.2 — per-employee overlay for the heartbeat prompt builder.
+   * Shape (all fields optional):
+   *   {
+   *     checklist?: string[];          // extra checklist items
+   *     cadence_minutes?: number;      // per-employee cadence override (Task 8.3)
+   *   }
+   */
+  heartbeat_overrides: jsonb('heartbeat_overrides'),
   last_heartbeat_at: timestamp('last_heartbeat_at'),
   is_active: boolean('is_active').default(true).notNull(),
   is_byoa: boolean('is_byoa').default(false).notNull(),
