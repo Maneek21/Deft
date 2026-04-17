@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 import { X, Send, Smile, ArrowLeft } from 'lucide-react';
@@ -53,7 +54,12 @@ function displayEmoji(emoji: string): string {
 }
 
 function inlineFormat(text: string): string {
-  return text
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return escaped
     .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
@@ -120,7 +126,7 @@ function renderContent(content: string) {
         '<span class="px-1 py-0.5 rounded text-[13px] font-medium" style="background:rgba(144,128,250,0.15);color:var(--primary)">@$2</span>')
       .replace(/<@([^|]+)\|([^>]+)>/g,
         '<span class="px-1 py-0.5 rounded text-[13px] font-medium" style="background:rgba(144,128,250,0.15);color:var(--primary)">@$2</span>');
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: processed }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
   // Plain text / markdown (agent replies, seed data)
@@ -130,7 +136,7 @@ function renderContent(content: string) {
       '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>')
     .replace(/([A-Z]{2,6})-(\d+)/g,
       '<span style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1-$2</span>');
-  return <span className="message-content" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
 }
 
 type Props = {

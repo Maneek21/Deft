@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -165,7 +166,12 @@ function renderSimpleMarkdown(text: string): string {
 }
 
 function inlineFormat(text: string): string {
-  return text
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return escaped
     .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
@@ -377,7 +383,7 @@ function renderContent(content: string) {
       /@(here|all|channel)\b/g,
       '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
     );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: processed }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
   // Plain text with markdown (agent replies, seed data, non-TipTap messages)
@@ -403,7 +409,7 @@ function renderContent(content: string) {
       /@(here|all|channel)\b/g,
       '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
     );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: html }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
   }
 
   const parts = text.split(/(<@[^>]+>|#[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
@@ -1219,7 +1225,7 @@ export function SpaceChat({
                   <X size={12} strokeWidth={1.5} />
                 </button>
               </div>
-              <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: renderSimpleMarkdown(recapSummary) }} />
+              <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimpleMarkdown(recapSummary)) }} />
             </div>
           )}
           {messages.length === 0 && (
