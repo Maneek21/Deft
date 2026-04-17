@@ -466,7 +466,7 @@ export default function Dashboard6Page() {
                     {kanban[status].slice(0,3).map(t => (
                       <Link key={t.id} href={`/tasks?task=${t.project_prefix}-${t.number}`}
                         className="p-2 rounded-lg border transition-colors"
-                        style={{ background:'#0a0a0d', borderColor:'transparent' }}
+                        style={{ background:T.bgBase, borderColor:'transparent' }}
                         onMouseEnter={e=>(e.currentTarget.style.borderColor=T.borderHover)}
                         onMouseLeave={e=>(e.currentTarget.style.borderColor='transparent')}>
                         <div className="flex items-center gap-1.5 mb-1">
