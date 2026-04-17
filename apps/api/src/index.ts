@@ -50,6 +50,7 @@ import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
+import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
 
@@ -74,6 +75,11 @@ app.route('/api/mcp/v1', mcpServerV1Routes);
 // Phase 10 — Prometheus metrics export, own bearer scheme, mounted before
 // authMiddleware so scrapers don't need a JWT.
 app.route('/api/metrics', metricsRoutes);
+
+// Task 8.7 — external webhook endpoints (GitHub). Verified via provider-
+// specific HMAC header (GITHUB_WEBHOOK_SECRET), not JWT — mounted before
+// authMiddleware.
+app.route('/api/webhooks', githubWebhookRoutes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);
