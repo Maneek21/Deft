@@ -573,6 +573,21 @@ agentEmployeeRoutes.put('/:id', async (c) => {
 
 const patchSchema = z.object({
   trust_level: z.enum(['conservative', 'standard', 'autonomous']).optional(),
+  /**
+   * Task 8.3 — per-employee heartbeat cadence override. Persisted into
+   * `agent_employees.heartbeat_interval_min` so the existing SQL due-filter
+   * picks it up, AND mirrored into `heartbeat_overrides.cadence_minutes`
+   * so the prompt + scheduler read the same source of truth.
+   * Range: 5min .. 360min. Admin-only.
+   */
+  heartbeat_cadence_minutes: z.number().int().min(5).max(360).optional(),
+  /**
+   * Task 8.5 — "mark healthy" action. When true, clears the `unhealthy`
+   * flag + `unhealthy_reason`. Owner/admin only. Exposed on the same
+   * endpoint because it is the same audit surface (targeted role-gated
+   * flips) as trust_level.
+   */
+  mark_healthy: z.boolean().optional(),
 });
 
 async function getOrgRole(userId: string, orgId: string): Promise<string | null> {
@@ -606,13 +621,18 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    // Any destructive field flips (trust_level in Phase 10) require
-    // `owner` or `admin` on the caller's org_members row.
-    if (parsed.data.trust_level !== undefined) {
+    // Any destructive field flips (trust_level in Phase 10, cadence +
+    // mark_healthy in Phase 8) require `owner` or `admin` on the caller's
+    // org_members row.
+    const needsAdmin =
+      parsed.data.trust_level !== undefined ||
+      parsed.data.heartbeat_cadence_minutes !== undefined ||
+      parsed.data.mark_healthy === true;
+    if (needsAdmin) {
       const role = await getOrgRole(user.id, user.org_id);
       if (role !== 'owner' && role !== 'admin') {
         return c.json(
-          { error: 'Only owners or admins can change trust level', code: 'FORBIDDEN' },
+          { error: 'Only owners or admins can change this field', code: 'FORBIDDEN' },
           403,
         );
       }
@@ -621,15 +641,72 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
     const updates: Record<string, any> = {};
     if (parsed.data.trust_level !== undefined) updates.trust_level = parsed.data.trust_level;
 
-    if (Object.keys(updates).length === 0) {
+    // Task 8.3 — cadence override. Write both the top-level column (so the
+    // heartbeat due-filter SQL picks it up) AND mirror into the overrides
+    // blob (so the prompt builder + scheduler can find it there).
+    if (parsed.data.heartbeat_cadence_minutes !== undefined) {
+      updates.heartbeat_interval_min = parsed.data.heartbeat_cadence_minutes;
+      const prev = (existing.heartbeat_overrides ?? {}) as Record<string, unknown>;
+      updates.heartbeat_overrides = {
+        ...prev,
+        cadence_minutes: parsed.data.heartbeat_cadence_minutes,
+      };
+    }
+
+    // Task 8.5 — "mark healthy" clears the circuit breaker. Column names
+    // are optional (added in migration 0044) but drizzle's update set
+    // will tolerate writing to them even when not typed, so we use sql
+    // fragments to stay forward-compatible.
+    if (parsed.data.mark_healthy === true) {
+      // The actual column writes happen via raw SQL below so this branch
+      // also lands pre-migration without a typecheck miss.
+    }
+
+    if (Object.keys(updates).length === 0 && !parsed.data.mark_healthy) {
       return c.json(existing);
     }
 
-    const [updated] = await db
-      .update(agentEmployees)
-      .set(updates)
-      .where(eq(agentEmployees.id, id))
-      .returning();
+    let updated = existing;
+    if (Object.keys(updates).length > 0) {
+      const [row] = await db
+        .update(agentEmployees)
+        .set(updates)
+        .where(eq(agentEmployees.id, id))
+        .returning();
+      if (row) updated = row;
+    }
+
+    if (parsed.data.mark_healthy === true) {
+      // Idempotent — clears the unhealthy flag regardless of current state.
+      await db.execute(
+        sql`UPDATE agent_employees
+              SET unhealthy = false,
+                  unhealthy_reason = NULL
+            WHERE id = ${id}`,
+      );
+      const [refreshed] = await db
+        .select()
+        .from(agentEmployees)
+        .where(eq(agentEmployees.id, id))
+        .limit(1);
+      if (refreshed) updated = refreshed;
+    }
+
+    // Task 8.3 — kick the scheduler so the new cadence takes effect on
+    // the next tick. Best-effort — if the cron is already pending this
+    // is a no-op. We infer kind from the employee's `kind` column.
+    if (parsed.data.heartbeat_cadence_minutes !== undefined) {
+      try {
+        const { rescheduleHeartbeat } = await import('../lib/job-scheduler.js');
+        const kind =
+          updated.kind === 'openclaw' || updated.kind === 'custom_mcp'
+            ? 'openclaw'
+            : 'native';
+        await rescheduleHeartbeat(kind);
+      } catch (err) {
+        console.warn('[agent-employees] rescheduleHeartbeat failed:', err);
+      }
+    }
 
     return c.json(updated);
   } catch (err) {
