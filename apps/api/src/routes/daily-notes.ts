@@ -283,8 +283,12 @@ dailyNoteRoutes.patch('/:id', async (c) => {
 
   const [updated] = await db.update(notes)
     .set(updates)
-    .where(eq(notes.id, noteId))
+    .where(and(eq(notes.id, noteId), eq(notes.version, full.version)))
     .returning();
+
+  if (!updated) {
+    return c.json({ error: 'Note was modified by another session. Please refresh and try again.', code: 'CONFLICT' }, 409);
+  }
 
   // Task 5.1 — enqueue cross-reference scan whenever content changes
   if (updated && parsed.data.content !== undefined) {
