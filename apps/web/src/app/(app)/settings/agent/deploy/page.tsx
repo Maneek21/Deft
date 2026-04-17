@@ -256,8 +256,9 @@ function DeployEmployeePageInner() {
           setIntegrations(await intRes.json());
         }
         if (skillsRes.ok) {
-          const body = (await skillsRes.json()) as { skills: WizardSkill[] };
-          setSkillsCatalog(body.skills ?? []);
+          const body = await skillsRes.json();
+          const list = Array.isArray(body) ? body : (body.skills ?? []);
+          setSkillsCatalog(list as WizardSkill[]);
         }
       } finally {
         if (!cancelled) setLoading(false);

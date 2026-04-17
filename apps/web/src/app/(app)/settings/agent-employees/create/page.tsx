@@ -135,8 +135,9 @@ export default function CreateAgentEmployeePage() {
     // marketplace is filtered out server-side.
     api.get('/api/agents/deploy/skills').then(async (res) => {
       if (res.ok) {
-        const body = (await res.json()) as { skills: Skill[] };
-        setSkillsCatalog(body.skills ?? []);
+        const body = await res.json();
+        const list = Array.isArray(body) ? body : (body.skills ?? []);
+        setSkillsCatalog(list as Skill[]);
       }
     });
   }, []);

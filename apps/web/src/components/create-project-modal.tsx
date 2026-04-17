@@ -128,8 +128,8 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
           setCatalogLoaded(true);
           return;
         }
-        const body = (await res.json()) as { skills?: CatalogSkill[] };
-        const all = body.skills ?? [];
+        const body = await res.json();
+        const all = (Array.isArray(body) ? body : (body.skills ?? [])) as CatalogSkill[];
         const projectSkills = all.filter((s) => {
           const pc = s.project_config;
           if (!pc || typeof pc !== 'object') return false;
