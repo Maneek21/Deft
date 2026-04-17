@@ -99,6 +99,7 @@ function SkillPicker({
         </p>
       )}
 
+      <div className="max-h-[45vh] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
       {groups.map((group) => (
         <div key={group.src} className="mb-5">
           <div
@@ -163,6 +164,7 @@ function SkillPicker({
           </div>
         </div>
       ))}
+      </div>
     </section>
   );
 }

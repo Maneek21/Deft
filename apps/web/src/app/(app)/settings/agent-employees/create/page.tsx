@@ -472,6 +472,7 @@ export default function CreateAgentEmployeePage() {
             </p>
           )}
 
+          <div className="max-h-[45vh] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
           {skillGroups.map((group) => (
             <div key={group.src} className="mb-4">
               <div
@@ -547,6 +548,7 @@ export default function CreateAgentEmployeePage() {
               </div>
             </div>
           ))}
+          </div>
         </div>
       )}
 
