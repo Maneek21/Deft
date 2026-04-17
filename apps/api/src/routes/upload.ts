@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { files } from '@deft/db/schema';
 import { writeFile, mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const uploadRoutes = new Hono();
@@ -26,7 +26,7 @@ uploadRoutes.post('/', async (c) => {
       return c.json({ error: 'File too large (max 50MB)', code: 'FILE_TOO_LARGE' }, 400);
     }
 
-    const originalName = file.name;
+    const originalName = basename(file.name).replace(/[^\w.\-]/g, '_');
     const uniqueName = `${randomUUID()}-${originalName}`;
     const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -84,7 +84,7 @@ fileServingRoutes.get('/:id', async (c) => {
       return new Response(data, {
         headers: {
           'Content-Type': fileRecord.mime_type,
-          'Content-Disposition': `inline; filename="${fileRecord.filename}"`,
+          'Content-Disposition': `attachment; filename="${encodeURIComponent(fileRecord.filename)}"`,
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       });
