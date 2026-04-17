@@ -201,7 +201,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
       const res = await api.post('/api/projects', {
         name: name.trim(),
         prefix: prefix.trim().toUpperCase(),
-        description: description.trim() || null,
+        description: description.trim() || undefined,
         color,
       });
 
