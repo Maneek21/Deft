@@ -15,8 +15,20 @@ const CRON_DELAYS: Record<string, number> = {
   'deprecation-warning': 86400000, // 24 hours
   'skill-update-check': 86400000, // 24 hours — Task 4.14
   'agent-daily-reset': 86400000,  // 24 hours
-  'agent-heartbeat': 60000,       // 60 seconds
+  'agent-heartbeat': 60000,       // 60 seconds (legacy — kept for rollout)
+  // Task 8.1 — split heartbeat cron by kind. The handler ignores the
+  // poll frequency and re-derives the per-employee due set from the
+  // `last_heartbeat_at + heartbeat_interval_min` SQL filter, so these
+  // numbers are the _scan_ cadence not the _fire_ cadence. We keep the
+  // openclaw scan at 30min to avoid hammering the Gateway with empty
+  // work, and the native scan at 5min so a fresh BullMQ-less self-host
+  // picks up changes quickly.
+  'heartbeat-native': 5 * 60_000,
+  'heartbeat-openclaw': 30 * 60_000,
   'gateway-ping': 60000,          // 60 seconds — Phase 11
+  // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
+  // fire close to their scheduled time without swamping the Gateway.
+  'trigger-dispatch': 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -32,7 +44,10 @@ const CRON_KEYS: Record<string, string> = {
   'skill-update-check': 'cron:skill-update-check',
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
+  'heartbeat-native': 'cron:heartbeat-native',
+  'heartbeat-openclaw': 'cron:heartbeat-openclaw',
   'gateway-ping': 'gateway-ping',
+  'trigger-dispatch': 'cron:trigger-dispatch',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -162,9 +177,18 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/agent-daily-reset.js');
       return mod.handleAgentDailyReset;
     }
-    case 'agent-heartbeat': {
+    case 'agent-heartbeat':
+    case 'heartbeat-native':
+    case 'heartbeat-openclaw': {
+      // Task 8.1 — same handler, job name switches the kind filter.
       const mod = await import('./handlers/agent-employee-heartbeat.js');
       return mod.handleAgentEmployeeHeartbeat;
+    }
+    case 'trigger-dispatch': {
+      // Task 8.7 — cron/webhook/event fan-out for employees subscribed
+      // to a given trigger_kind.
+      const mod = await import('./handlers/trigger-dispatch.js');
+      return mod.handleTriggerDispatch;
     }
     case 'gateway-ping': {
       // Phase 11 — per-Gateway connectivity ping. Distinct from the

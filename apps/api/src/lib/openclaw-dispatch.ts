@@ -70,6 +70,84 @@ export type OpenClawDispatchParams = {
   };
 };
 
+/**
+ * Task 8.1 — dedicated entry point for heartbeat ticks.
+ *
+ * Builds a one-shot synthetic trigger with `kind='heartbeat'` and routes
+ * through `dispatchViaOpenClaw`. The `spaceId` resolves to the org's default
+ * space (the heartbeat has no natural target). If no space exists the
+ * dispatch is skipped with a warning — the caller (the heartbeat handler) is
+ * responsible for logging a `skipped_no_space` turn row.
+ *
+ * The prompt is opaque to the dispatcher — it is passed verbatim as the
+ * trigger envelope `content`/`goal` string so the OpenClaw-side agent sees
+ * exactly what the prompt builder composed (checklist + context digest).
+ */
+export type DispatchHeartbeatParams = {
+  employee: typeof agentEmployees.$inferSelect;
+  prompt: string;
+  /**
+   * Optional override for the target space. When omitted we look up the
+   * employee's org default space. Exposed so callers with a preferred space
+   * (e.g. a chosen #ops channel) can route without a second query.
+   */
+  targetSpaceId?: string;
+  /**
+   * Optional machine-readable context blob appended to the trigger envelope.
+   * Heartbeat callers pass the already-loaded context (recent messages, open
+   * tasks, etc.) so the OpenClaw side can reason without its own fetch.
+   */
+  context?: Record<string, unknown>;
+};
+
+export async function dispatchHeartbeat(
+  params: DispatchHeartbeatParams,
+): Promise<void> {
+  const { employee, prompt, context } = params;
+
+  // Resolve a target space — prefer the caller override, fall back to the
+  // org default space. Imported lazily to avoid a circular import with the
+  // spaces table at module load time.
+  const { spaces } = await import('@deft/db/schema');
+  let spaceId = params.targetSpaceId ?? null;
+  if (!spaceId) {
+    const [defaultSpace] = await db
+      .select({ id: spaces.id })
+      .from(spaces)
+      .where(
+        and(
+          eq(spaces.org_id, employee.org_id),
+          eq(spaces.is_default, true),
+        ),
+      )
+      .limit(1);
+    spaceId = defaultSpace?.id ?? null;
+  }
+
+  if (!spaceId) {
+    console.warn(
+      `[openclaw-dispatch] dispatchHeartbeat: no target space for employee ${employee.slug}, skipping`,
+    );
+    return;
+  }
+
+  await dispatchViaOpenClaw({
+    employee,
+    orgId: employee.org_id,
+    spaceId,
+    // Correlation id — not a real message row. Keeps inspector rows greppable.
+    messageId: `heartbeat:${employee.id}:${Date.now()}`,
+    isDM: false,
+    overrideTrigger: {
+      kind: 'heartbeat',
+      content: prompt,
+      author_name: 'Deft Heartbeat',
+      goal: 'Run the heartbeat checklist and only act on items needing attention.',
+      context,
+    },
+  });
+}
+
 export async function dispatchViaOpenClaw(
   params: OpenClawDispatchParams,
 ): Promise<void> {
