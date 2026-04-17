@@ -2210,8 +2210,22 @@ taskRoutes.post('/:id/wiki-links', async (c) => {
 // DELETE /api/tasks/:id/wiki-links/:citationId — unlink task from wiki page
 taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
   try {
+    const user = c.get('user');
+    const taskId = c.req.param('id');
     const citationId = c.req.param('citationId');
-    await db.delete(wikiCitations).where(eq(wikiCitations.id, citationId));
+
+    const [task] = await db.select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
+      .limit(1);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    await db.delete(wikiCitations).where(
+      and(eq(wikiCitations.id, citationId), eq(wikiCitations.task_id, taskId))
+    );
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to unlink task from wiki:', err);

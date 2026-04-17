@@ -376,12 +376,17 @@ agentRoutes.patch('/conversations/:id', async (c) => {
 agentRoutes.delete('/conversations/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
+  const [conv] = await db.select({ id: agentConversations.id })
+    .from(agentConversations)
+    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
+    .limit(1);
+
+  if (!conv) {
+    return c.json({ success: true });
+  }
+
   await db.delete(agentMessages).where(eq(agentMessages.conversation_id, id));
-  await db
-    .delete(agentConversations)
-    .where(
-      and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)),
-    );
+  await db.delete(agentConversations).where(eq(agentConversations.id, id));
   return c.json({ success: true });
 });
 

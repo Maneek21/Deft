@@ -116,16 +116,18 @@ workflowRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
-  // Delete runs first
-  await db.delete(workflowRuns).where(eq(workflowRuns.rule_id, id));
-
-  const [deleted] = await db.delete(workflowRules)
+  // Verify ownership FIRST
+  const [rule] = await db.select({ id: workflowRules.id })
+    .from(workflowRules)
     .where(and(eq(workflowRules.id, id), eq(workflowRules.org_id, user.org_id)))
-    .returning();
+    .limit(1);
 
-  if (!deleted) {
+  if (!rule) {
     return c.json({ error: 'Workflow rule not found', code: 'NOT_FOUND' }, 404);
   }
+
+  await db.delete(workflowRuns).where(eq(workflowRuns.rule_id, id));
+  await db.delete(workflowRules).where(eq(workflowRules.id, id));
 
   return c.json({ success: true });
 });
