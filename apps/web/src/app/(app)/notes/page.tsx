@@ -195,6 +195,15 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   const [showShareModal, setShowShareModal] = useState(false);
   const [shares, setShares] = useState<any[]>([]);
   const [members, setMembers] = useState<any[]>([]);
+  // Task 5.1 — inline list of tasks this note references (PREFIX-N chips)
+  const [references, setReferences] = useState<Array<{
+    id: string;
+    target_id: string;
+    task_title: string | null;
+    task_identifier: string | null;
+    task_status: string | null;
+    task_priority: string | null;
+  }>>([]);
   const iconBtnRef = useRef<HTMLButtonElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -380,6 +389,28 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       setLoading(false);
     });
   }, [noteId, editor]);
+
+  // Task 5.1 — load note -> tasks references sidebar
+  const fetchReferences = useCallback(async () => {
+    if (!noteId) return;
+    try {
+      const res = await api.get(`/api/notes/${noteId}/references`);
+      if (res.ok) {
+        const data = await res.json();
+        setReferences(data.references || []);
+      }
+    } catch {}
+  }, [noteId]);
+
+  useEffect(() => {
+    fetchReferences();
+    // refetch after a short delay whenever save completes, giving the
+    // cross-reference worker time to process new PREFIX-N matches.
+    if (saveStatus === 'saved') {
+      const t = setTimeout(fetchReferences, 1500);
+      return () => clearTimeout(t);
+    }
+  }, [fetchReferences, saveStatus]);
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -710,6 +741,43 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
             </div>
           )}
         </div>
+
+        {/* Task 5.1 — References tasks sidebar */}
+        {references.length > 0 && (
+          <div className="mt-4 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+            <h3 className="text-[13px] font-semibold mb-2" style={{ color: 'var(--foreground)' }}>
+              References tasks
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {references.map((ref) => (
+                <a
+                  key={ref.id}
+                  href={`/tasks?task=${ref.task_identifier || ''}`}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-[12px] font-medium"
+                  style={{
+                    background: 'var(--accent-subtle)',
+                    color: 'var(--accent)',
+                    textDecoration: 'none',
+                    border: '1px solid var(--border)',
+                  }}
+                  title={ref.task_title || ''}
+                >
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{ref.task_identifier}</span>
+                  {ref.task_title ? (
+                    <span style={{ color: 'var(--foreground)', fontWeight: 400 }}>
+                      {ref.task_title.length > 40 ? `${ref.task_title.slice(0, 40)}…` : ref.task_title}
+                    </span>
+                  ) : null}
+                  {ref.task_status ? (
+                    <span className="text-[10px] px-1 rounded" style={{ background: 'var(--surface-container-low)', color: 'var(--muted)' }}>
+                      {ref.task_status}
+                    </span>
+                  ) : null}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Version History Panel */}
         {showHistory && (

@@ -3,6 +3,31 @@ import { z } from 'zod';
 import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notes, noteFolders, noteVersions, noteShares, users } from '@deft/db/schema';
+import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+
+const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
+
+async function enqueueNoteCrossReference(
+  noteId: string,
+  content: string,
+  orgId: string,
+  userId: string,
+): Promise<void> {
+  if (!content) return;
+  const plain = content.replace(/<[^>]+>/g, '');
+  if (!TASK_ID_PATTERN.test(plain)) return;
+  try {
+    await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
+      sourceType: 'note',
+      sourceId: noteId,
+      content,
+      orgId,
+      userId,
+    });
+  } catch (err) {
+    console.error('Failed to enqueue note cross-reference job:', (err as Error).message);
+  }
+}
 
 export const dailyNoteRoutes = new Hono();
 
@@ -173,6 +198,11 @@ dailyNoteRoutes.post('/', async (c) => {
     visibility: parsed.success && parsed.data.visibility ? parsed.data.visibility : 'private',
   }).returning();
 
+  // Task 5.1 — scan note content for PREFIX-N task refs on create
+  if (note && note.content) {
+    await enqueueNoteCrossReference(note.id, note.content, user.org_id, user.id);
+  }
+
   return c.json(note, 201);
 });
 
@@ -255,6 +285,11 @@ dailyNoteRoutes.patch('/:id', async (c) => {
     .set(updates)
     .where(eq(notes.id, noteId))
     .returning();
+
+  // Task 5.1 — enqueue cross-reference scan whenever content changes
+  if (updated && parsed.data.content !== undefined) {
+    await enqueueNoteCrossReference(noteId, updated.content || '', user.org_id, user.id);
+  }
 
   return c.json(updated);
 });
