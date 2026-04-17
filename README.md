@@ -49,11 +49,10 @@ pnpm dev        # Starts web (3000) + API (3001)
 deft/
 ├── apps/
 │   ├── web/          # Next.js 14 (App Router, TypeScript)
-│   └── api/          # Hono on Node.js (REST + WebSocket)
+│   └── api/          # Hono on Node.js (REST + WebSocket + agent engine)
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + migrations
-│   ├── shared/       # Shared types and constants
-│   └── ai/           # Agent engine (planner, tools, context)
+│   └── shared/       # Shared types and constants
 ├── docker-compose.yml
 └── pnpm-workspace.yaml
 ```
@@ -79,10 +78,14 @@ The agent has **direct SQL access** to your data — no API middleman. It can:
 - Answer questions about tasks, conversations, and team activity
 - Create and assign tasks from natural language
 - Summarize conversation threads and spaces
-- Execute multi-step plans with approval gates
+- Execute multi-step plans with approval gates and live progress streaming
 - Post messages and updates across spaces
+- Leave proactive comments on stalled or overdue tasks
+- Offer inline task suggestions from actionable chat messages
 
 Every write action goes through an approval flow. The user sees what the agent wants to do, approves or rejects, and can undo after execution.
+
+Agent capabilities and project workflows are expressed through a unified **Skills primitive** — 9 bundled skills ship day-one (engineering, marketing, sales + 6 capability packs), with marketplace and org-authored tiers on top.
 
 **Bring your own API key.** Self-hosted, your data stays with you.
 
@@ -99,14 +102,18 @@ Every write action goes through an approval flow. The user sees what the agent w
 - Unread badges and mark-as-read
 
 ### Tasks
-- Kanban board with drag-and-drop
-- List view with sortable columns
+- Kanban, List, Calendar, and Pipeline views — view mode driven by the project's attached skill
+- Skill-driven project config: statuses, priority vocab, custom fields, task templates
+- Drag-and-drop across columns
 - Task detail panel with full editing
-- Priority levels (P0-P3) with color coding
-- Labels, due dates, assignments
-- Comments and activity log
+- Emoji reactions on tasks
+- @mentions in task descriptions and comments with notification dispatch
+- Activity diff view (old → new) on the activity log
+- Comments + full activity log
+- Labels, due dates, assignments, recurrence (daily/weekly/biweekly/monthly)
 - Quick-create (press C)
-- Task search and filters
+- Project archive + soft-delete with 7-day recovery
+- GitHub PR → Done on merge (parses `PREFIX-N` in PR title/body)
 
 ### Dashboard
 - Personalized greeting with morning pulse

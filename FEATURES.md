@@ -1,7 +1,7 @@
 # Deft — Complete Feature Inventory
 
-> Last updated: April 8, 2026
-> Verified against codebase: 66 database tables, 32 route files, 32+ agent tools, 17 background workers, 23 pages, 47+ components
+> Last updated: April 16, 2026 (Phases 0-6 of the task-management overhaul shipped; Phase 8 is the next milestone)
+> Verified against codebase: 66+ database tables, 35+ route files, 40+ agent tools, 17+ background workers, 23 pages, 50+ components
 
 ---
 
@@ -135,9 +135,79 @@ Keyword detection in messages ("blocked", "stuck", "waiting on"). Background wor
 ### Chat ↔ Tasks Bridge
 Create task from message (hover menu → "Create task" → pre-filled modal). Task mentions in chat (#DEFT-1 autocomplete → styled chip). Status changes auto-post system messages in linked spaces.
 
+### Inline Agent Task-Suggestion Cards
+When the message classifier flags a chat message as actionable, an inline suggestion card appears under the message offering one-click task creation (pre-filled with extracted title, assignee, due date). Dismissable; creates a real `taskActivity` entry on accept (Task 3.12).
+
+### Recurrence
+Recurring tasks with `daily | weekly | biweekly | monthly` patterns. `recurrence_source_id` links generated copies back to the original, so the board shows a family rather than orphans. Clone-gap bug fixed (Task 4.12).
+
+### Task Reactions
+Emoji reactions on tasks (same palette as chat). Unique `(task, user, emoji)` constraint. Visible on task cards + detail panel. Real-time via Socket.io (Task 6.3).
+
+### @Mentions on Tasks
+Type `@` in task description or comments → autocomplete dropdown with org members. Mentioned user receives a notification and the activity log records the mention event (Task 6.4).
+
+### Activity Diff View
+Task activity log renders field changes inline as `old → new` diffs (status, priority, assignee, labels, due date, title) instead of flat strings. Bulk changes grouped (Task 6.2).
+
+### Live Agent Progress on Tasks
+When an agent is executing a plan that touches a task, the detail panel streams each step (tool call + result) live. Completed plans leave a condensed receipt on the task (Task 3.10).
+
+### Proactive Agent Comments
+The nudge-check worker posts agent-authored comments on stalled or overdue tasks and on auto-accepted task extractions — deduped to one proactive comment per task per 7 days (Task 3.11).
+
+### Project Archive + Soft-Delete
+Per-project settings modal exposes Archive (hide from lists, keep tasks active) and Delete (soft-delete with a 7-day recovery window). Deleted projects are restorable from Settings → Recently deleted until the window closes (Task 5.8).
+
+### GitHub PR → Done
+When GitHub sync (polling, not webhook) sees a PR transition to `merged`, it parses `PREFIX-N` task refs in the PR title + body and moves each referenced task (in `todo`, `in_progress`, or `in_review`) to `done`, leaving an attribution comment linking the PR. Tasks already `done` or `cancelled` are never touched. Runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire (Task 5.6).
+
 ---
 
-## 3. Knowledge & Documentation
+## 3. Skills Primitive (unified agent + project capabilities)
+
+Deft ships a single `skills` table that unifies two previously separate primitives (agent capability packs + project workflow templates) into one resource. A skill carries both an `agent_config` JSONB (capability packs, triggers, tools, prompt additions) and a `project_config` JSONB (statuses, priority vocab, default view, custom fields, task templates, allowed transitions). Either half can be empty — a skill can be agent-only, project-only, or both.
+
+### Three Source Tiers
+- **`bundled`** — first-party skills shipped with Deft. `org_id IS NULL`. Upserted idempotently by `seed-bundled-skills.ts` against a partial unique index on `(source, COALESCE(org_id,''), slug)`.
+- **`marketplace`** — installable catalog rows (future: remote registry). Discoverable via the Skills Marketplace browser. Include OpenClaw markdown import for installing a skill from a `.md` manifest.
+- **`org`** — tenant-authored skills. Scoped to a single `org_id`. Authored in the Skills library page.
+
+### 9 Day-One Bundled Skills
+**6 capability-pack skills** (agent-only, one per available capability pack from `CAPABILITY_PACKS`): `deft-workspace`, `tasks-core`, `google-calendar`, `github`, `slack-outbound`, `knowledge-wiki`. Each grants its matching pack slug and leaves `project_config` empty.
+
+**3 project-workflow skills** (project-only):
+- `engineering` — statuses `backlog/todo/in_progress/in_review/done/cancelled`, numbered priorities `p0/p1/p2/p3`, kanban default view, the 9 Phase-3 task tools (`comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`) pre-wired.
+- `marketing-campaign` — named priorities `High/Medium/Low`, calendar view default, campaign-oriented custom fields (channel, budget, launch_date, etc.).
+- `sales-pipeline` — temperature priorities `Hot/Warm/Cold`, pipeline view default, deal-oriented custom fields (stage, ACV, probability, etc.).
+
+### Junction Tables
+- `agent_employee_skills` — which skills an employee has installed. JIT-install on agent invocation re-provisions OpenClaw instances with the updated skill manifest.
+- `project_skills` — which skills a project has attached, with ordering.
+
+### Multi-Skill Per Project (first-attached-wins)
+A project can attach multiple skills. The UI resolver walks the ordered `project_skills` list and returns the first non-null value for each field — so attaching `engineering` + a lightweight company-specific skill lets a team override individual fields without cloning the whole template.
+
+### Skill Source Drives UX
+- **Bundled skills** cannot be edited or deleted by orgs. They update only via server redeploy.
+- **Marketplace skills** can be installed, updated (opt-in adoption when a new version ships — in-app notification prompts the user), and uninstalled.
+- **Org skills** are fully editable in the Skills library page.
+
+### Trigger Conflict Resolution
+Skills can declare triggers (e.g. `cron:standup`). Triggers are unique per-org across employees. On install, if a conflict is detected the UI prompts the user to reassign — the skill can still install, but the existing owner has to release the trigger first.
+
+### Version Update Notifications
+When a new version of an installed skill lands (bundled redeploy or marketplace update), affected orgs get an in-app notification with opt-in adoption. Prevents silent behaviour drift.
+
+### Skills Library + Marketplace Browser
+`/skills` page: library of installed skills, marketplace browser, OpenClaw markdown import, retry-provision button for stuck installs.
+
+### Unified Agent Deploy Wizard
+Agent deploy flow uses the skill picker for capability packs — the `capability_packs[]` array is gone (migration 0038) and `TEMPLATE_DEFAULT_PACKS` constant was removed. Everything flows through skills.
+
+---
+
+## 4. Knowledge & Documentation
 
 ### Wiki Pages
 Structured knowledge base with 7 page types: concept, entity, decision, resource, procedure, preference, fact. 3 scopes: org-wide, space-scoped, user-private. Auto-generated slugs with collision avoidance. Full-text search and type/scope filtering. Pagination (50 items/page).
@@ -171,7 +241,7 @@ Org-wide colored tags. Apply tags to multiple entity types: messages, tasks, cli
 
 ---
 
-## 4. AI Agent
+## 5. AI Agent
 
 ### Conversational Interface
 Dedicated AI chat page with streaming SSE responses. Multi-turn conversations with history. Auto-titled from first message. Thinking indicator (bouncing dots). Auto-scroll with manual scroll-up respect. Empty state with 5 suggestion cards. Markdown rendering for responses.
@@ -249,7 +319,7 @@ Every chat message classified by Haiku for: intent (task_create, question, discu
 
 ---
 
-## 5. Dashboard & Analytics
+## 6. Dashboard & Analytics
 
 ### Bento Grid Home View
 Responsive card-based dashboard (1 col mobile, 2 col tablet, 3 col desktop). Cards: Today (tasks due, span 2), Quick Stats (4-stat grid: overdue/due today/in progress/completed), Unread (space notifications), Projects (progress rings), Activity (recent feed), Calendar (mini widget with day bucketing), My Work (kanban-lite: todo/in_progress/in_review columns), Team (manager-only health cards), My Insights (personal metrics).
@@ -301,7 +371,7 @@ Weekly org-wide summary for managers. Aggregates: velocity, task completion, dec
 
 ---
 
-## 6. Calendar & Scheduling
+## 7. Calendar & Scheduling
 
 ### Multi-View Calendar
 Three views: month (day buckets with event dots), week (7-day horizontal), day (hourly timeline). Event creation/edit modals. Day detail panel showing all events. Navigation between dates.
@@ -317,10 +387,13 @@ AI-generated pre-meeting summaries. Links to calendar event. Prep content stored
 
 ---
 
-## 7. Automation & Background Intelligence
+## 8. Automation & Background Intelligence
 
 ### Workflow Rules
-User-created automation rules. Trigger types: keyword_in_message, new_member_joins, reaction_added. Action types: create_task, send_message, notify_user. Flexible JSON config for triggers and actions. Enable/disable rules. Run history with results log.
+User-created automation rules. Trigger types: keyword_in_message, new_member_joins, reaction_added, `task.status_changed`. Action types: create_task, send_message, notify_user. Flexible JSON config for triggers and actions. Enable/disable rules. Run history with results log.
+
+### Workflow Executor (basic)
+First production workflow runner (Task 5.7). Listens for `task.status_changed` transitions and executes any matching workflow_rule with four supported actions: `add_comment`, `assign_to`, `add_label`, `notify`. Action results are logged back to the rule's run history. Broader trigger coverage + skill-defined triggers land in Phase 8.
 
 ### 17 Background Workers
 All powered by Postgres-based job queue (no external Redis required). Atomic job claiming with `SELECT FOR UPDATE SKIP LOCKED`. Exponential backoff on retry.
@@ -353,7 +426,7 @@ Smart reminders for: stalled tasks (no update in X days), overdue tasks, unassig
 
 ---
 
-## 8. Search & Navigation
+## 9. Search & Navigation
 
 ### Global Search (Cmd+K)
 Unified search across spaces, tasks, people, messages, notes, tags. Glassmorphism overlay with backdrop blur. Results grouped by type. Task search supports title or PREFIX-NUMBER (e.g., "DEFT-1"). 200ms debounced.
@@ -384,7 +457,7 @@ Type `>` in search bar for actions: Create task, New space, Toggle dark mode, Op
 
 ---
 
-## 9. Integrations
+## 10. Integrations
 
 ### Google Calendar — Working
 OAuth 2.0 flow with token refresh. Polling sync worker syncs events to local events table. Agent can read events (`check_calendar`) and create events (`create_calendar_event`). Connection status, errors, and last sync time shown in settings.
@@ -403,7 +476,7 @@ All external data normalized into single `events` table. Sources: native, google
 
 ---
 
-## 10. Platform & Infrastructure
+## 11. Platform & Infrastructure
 
 ### Multi-Tenant Architecture
 `org_id` on every table (66 tables). All queries filter by org_id. Row-level isolation. No cross-org data leakage.
@@ -455,6 +528,16 @@ Named groups (e.g., @engineering, @design) with handle/slug. Add/remove members.
 
 ---
 
+## Next Milestone — Phase 8 (OpenClaw autonomy)
+
+Flagged as explicitly NOT shipped yet:
+
+- OpenClaw autonomous heartbeat lifecycle (long-running employees with scheduled self-wake).
+- Skill-defined trigger dispatcher (arbitrary triggers from skill manifests beyond the current `cron:standup`).
+- Heartbeat cost guardrails (per-turn + per-day caps, circuit-breakers).
+
+---
+
 ## What Does NOT Exist
 
 - Mobile app (iOS / Android) — web-only
@@ -472,7 +555,6 @@ Named groups (e.g., @engineering, @design) with handle/slug. Add/remove members.
 - Portfolio management
 - Custom report builder
 - Timeline / Gantt view
-- Calendar view for tasks
 - Sprints / cycles
 - Roadmap view
 - Guest access (external collaborators outside org)
@@ -491,14 +573,15 @@ Named groups (e.g., @engineering, @design) with handle/slug. Add/remove members.
 
 | Metric | Count |
 |--------|-------|
-| Database tables | 66 |
-| API route files | 32 |
-| API endpoints | 100+ |
-| React components | 47+ |
+| Database tables | 66+ |
+| API route files | 35+ |
+| API endpoints | 110+ |
+| React components | 50+ |
 | Pages | 23 |
 | Socket.io event types | 15+ |
-| Agent tools | 32+ |
-| Background workers | 17 |
+| Agent tools | 40+ |
+| Background workers | 17+ |
 | Cron jobs | 7 (hourly to weekly) |
 | LLM providers supported | 4 |
 | Keyboard shortcuts | 18 |
+| Day-one bundled skills | 9 (6 capability-pack + 3 project-workflow) |

@@ -661,6 +661,148 @@ Before testing, ensure:
 
 ---
 
+## 20. Trusted Tester Flow — Phases 0-6 Smoke
+
+Fast end-to-end walk for verifying Phases 0-6 of the task-management overhaul. Takes ~15 minutes once you have a seeded org. Do this on a fresh login as an admin/owner.
+
+### 20.1 Create a project with a skill
+- [ ] Navigate to `/tasks` → "New project" → wizard opens
+- [ ] Step 1: name + prefix (e.g. "Smoke Test", prefix `SMOK`)
+- [ ] Step 2: skill picker — verify all 9 bundled skills render. Three should carry the "Project" badge (engineering, marketing-campaign, sales-pipeline). Six should carry the "Agent" badge (capability-pack skills)
+- [ ] Pick `engineering` → Create
+- [ ] Board renders with columns `backlog / todo / in_progress / in_review / done / cancelled` and priority labels `p0/p1/p2/p3`
+- [ ] Go back to project settings → Skills tab → verify `engineering` is attached
+
+### 20.2 Attach a second skill (multi-skill, first-attached-wins)
+- [ ] Add the `github` capability-pack skill on top — no column re-order, since project_config only lives on `engineering`
+- [ ] Swap order: drag `github` above `engineering` → page still renders (github has empty project_config so resolver falls through)
+- [ ] Swap back
+
+### 20.3 Assign an agent employee
+- [ ] Create or reuse `Alex PM`. Attach him to the project (Project settings → Team → Add Alex PM)
+- [ ] Verify his drawer now shows the project in context
+
+### 20.4 Add a task + basic fields
+- [ ] Press `C` → quick-create "Ship SMOK smoke" with priority `p1`, assignee self, due date tomorrow
+- [ ] Drag from Backlog → In Progress — activity log records the transition
+
+### 20.5 React to the task (Task 6.3)
+- [ ] Open the task detail → click the emoji button at the top of the task card → add `🚀`
+- [ ] Reaction pill shows `🚀 1` with your name on hover
+- [ ] React again with `🚀` — pill removed (toggle semantics)
+- [ ] React with `🔥` and `👀` — both appear
+
+### 20.6 @mention in comments + description (Task 6.4)
+- [ ] Open task description → type `@` → autocomplete dropdown renders org members
+- [ ] Pick a teammate → mention chip inserted
+- [ ] Save → teammate receives a notification (check their bell or psql `SELECT * FROM notifications ORDER BY created_at DESC LIMIT 3`)
+- [ ] Same flow in Comments tab
+
+### 20.7 Activity diff view (Task 6.2)
+- [ ] Change task title from "Ship SMOK smoke" to "Ship SMOK smoke v2"
+- [ ] Change priority from `p1` → `p0`
+- [ ] Open Activity tab — rows render as `title: "Ship SMOK smoke" → "Ship SMOK smoke v2"` and `priority: p1 → p0`, not flat "changed title"
+- [ ] Bulk-move several tasks in one action (from list view select + bulk edit) — activity groups the bulk change
+
+### 20.8 Recurrence (Task 4.12)
+- [ ] Quick-create a task "Weekly report"
+- [ ] Open detail → enable `weekly` recurrence
+- [ ] Complete the task → new copy auto-generated with `recurrence_source_id` pointing to the original (check psql)
+- [ ] Clone a recurring task manually → the clone should NOT inherit the recurrence pattern (the clone-gap fix)
+
+### 20.9 Workflow executor (Task 5.7)
+- [ ] Settings → Workflows → New rule: trigger `task.status_changed → in_review`, action `add_comment` body `"auto-review triggered"`
+- [ ] Save → enable
+- [ ] Move any task into `in_review` → a new comment appears authored by the system user with the configured body
+- [ ] Check the rule's run history — one successful row
+
+### 20.10 Live agent progress (Task 3.10)
+- [ ] Ask Defty to "Update task SMOK-1 status to done and assign to @teammate"
+- [ ] Open the task detail in a second tab while the plan executes
+- [ ] Tool-call receipts stream into the activity area: `update_task_status` → `assign_task` each with a tick once complete
+
+### 20.11 Proactive agent comment (Task 3.11)
+- [ ] Set a task's due date to yesterday, leave it in `in_progress`
+- [ ] Manually trigger nudge-check (`pnpm tsx apps/api/src/scripts/check-queue.ts run nudge-check`) or wait for the hourly cron
+- [ ] Within a minute, a proactive comment authored by the org's default agent shadow user appears on the task
+- [ ] Trigger again immediately — no duplicate comment (7d dedup)
+
+### 20.12 Inline suggestion card (Task 3.12)
+- [ ] In `#general` send a message like "we should follow up with Acme on the contract tomorrow"
+- [ ] Within a few seconds an inline suggestion card appears under the message offering to create a task
+- [ ] Click Create — task lands in the default project, detail panel opens with the extracted fields pre-filled
+- [ ] Dismiss card on a different actionable message — no task created
+
+### 20.13 PR → Done (Task 5.6) — only if GitHub is connected
+- [ ] Create a test PR with `SMOK-1` in the title
+- [ ] Merge it
+- [ ] Within one GitHub sync poll interval, `SMOK-1` moves to `done` with an attribution comment linking the PR
+- [ ] Tasks already in `done` or `cancelled` are never bumped
+
+### 20.14 Project archive + soft-delete (Task 5.8)
+- [ ] Project settings → Archive → project vanishes from active lists but tasks remain queryable
+- [ ] Unarchive → reappears
+- [ ] Project settings → Delete → ConfirmDangerous modal → soft-delete
+- [ ] Navigate to Settings → Recently deleted → within 7 days, "Restore" is available
+- [ ] Restore → project reappears with all tasks intact
+
+### 20.15 Security sanity (Task 0.1)
+- [ ] Log out. Call `curl -i http://localhost:3001/api/tasks/<id>/watchers` with no auth → 401
+- [ ] Same for `/assignees`, `/assignees/:userId` (POST + DELETE) → all 401
+- [ ] With a different org's token, try to watch a task in Org A → 404 (not found in caller's org)
+
+### 20.16 Dashboard "My Work" (Task 0.4)
+- [ ] Go to `/dashboard`
+- [ ] "My Work" card lists only tasks where you are assignee, split into To Do / In Progress / In Review
+- [ ] Assign a teammate a task in a status you watch — it does NOT appear in your "My Work" card
+
+---
+
+## 21. Persona Flow — Marketing (marketing-campaign skill)
+
+Validates that non-technical skill project_config actually drives the UI.
+
+### 21.1 Create a marketing project
+- [ ] New project "Q2 Campaigns" with the `marketing-campaign` skill attached
+- [ ] Board renders with named priority pills `High / Medium / Low` (NOT `p0/p1/p2/p3`)
+- [ ] Default view is Calendar (not Kanban)
+- [ ] Custom fields include campaign-specific entries (channel, launch_date, budget, etc.)
+
+### 21.2 Create a campaign task
+- [ ] New task "Launch spring newsletter" → calendar view places it on its launch_date
+- [ ] Priority picker shows `High / Medium / Low`
+- [ ] Custom fields panel lets you set channel=email, budget=5000
+- [ ] Switch to list view → custom fields render as sortable columns
+
+### 21.3 Task template
+- [ ] Verify the skill's bundled task template is available in the quick-create dropdown (e.g. "New campaign brief") and prefills the custom fields
+
+### 21.4 Agent familiarity
+- [ ] Ask Defty "what campaigns are High priority due this month?" — should use `search_tasks` scoped to the marketing project and return a list with the correct named priorities
+
+---
+
+## 22. Persona Flow — Sales (sales-pipeline skill)
+
+### 22.1 Create a sales project
+- [ ] New project "Pipeline FY26" with the `sales-pipeline` skill attached
+- [ ] Board renders with temperature priorities `Hot / Warm / Cold`
+- [ ] Default view is Pipeline (pipeline-style board, not Kanban)
+- [ ] Custom fields include deal-specific entries (stage, ACV, probability, close_date, account)
+
+### 22.2 Create a deal
+- [ ] New task "Acme — Enterprise renewal" → stage=Proposal, ACV=50000, probability=60
+- [ ] Drag across pipeline columns — stage updates inline and activity log records the transition with diff
+- [ ] Priority Hot → Warm works
+
+### 22.3 Reporting
+- [ ] Ask Defty "what's in Proposal stage with ACV over $25k?" — should return matching deals using `search_tasks` + custom field filter
+
+### 22.4 Multi-skill for a hybrid team
+- [ ] Attach both `sales-pipeline` and `marketing-campaign` to a single project — verify the first-attached-wins resolver: the project takes its UI from whichever skill sits at position 0, and reordering in project settings immediately flips the board rendering
+
+---
+
 ## Sign-off
 
 | Area | Tester | Date | Pass/Fail | Notes |
@@ -683,3 +825,6 @@ Before testing, ensure:
 | Theme/Responsive | | | | |
 | Edge Cases | | | | |
 | Performance | | | | |
+| Trusted Tester (Phases 0-6) | | | | |
+| Marketing persona | | | | |
+| Sales persona | | | | |
