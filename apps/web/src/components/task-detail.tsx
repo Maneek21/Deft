@@ -618,6 +618,16 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   // Attachments state
   const [attachments, setAttachments] = useState<{ id: string; filename: string; mime_type: string; size_bytes: number; storage_key: string; created_at: string }[]>([]);
   const attachFileRef = useRef<HTMLInputElement>(null);
+  // Task 6.5 — upload state: progress percent (0–100), the last failed file
+  // (so we can render a Retry button), and the in-flight XHR (cancel-on-unmount).
+  const [uploadState, setUploadState] = useState<{
+    status: 'idle' | 'uploading' | 'error';
+    filename?: string;
+    progress?: number;
+    error?: string;
+  }>({ status: 'idle' });
+  const pendingUploadRef = useRef<File | null>(null);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
   // References state (backlinks)
   const [references, setReferences] = useState<{
@@ -916,6 +926,86 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     }
     setSubmittingComment(false);
   };
+
+  /**
+   * Task 6.5 — upload with progress. `fetch` doesn't expose upload progress,
+   * so we drop down to XHR. On completion we append the parsed metadata to
+   * local state; on failure we surface an inline error with a retry button.
+   * Large files (>10MB) prompt before firing the request.
+   */
+  const LARGE_FILE_BYTES = 10 * 1024 * 1024;
+  const performUpload = useCallback((file: File) => {
+    if (!task) return;
+    const accessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    const xhr = new XMLHttpRequest();
+    uploadXhrRef.current = xhr;
+    pendingUploadRef.current = file;
+    setUploadState({ status: 'uploading', filename: file.name, progress: 0 });
+    xhr.open('POST', `${apiBase}/api/upload?task_id=${task.id}`);
+    if (accessToken) xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.upload.addEventListener('progress', (evt) => {
+      if (evt.lengthComputable) {
+        const pct = Math.round((evt.loaded / evt.total) * 100);
+        setUploadState((s) => (s.status === 'uploading' ? { ...s, progress: pct } : s));
+      }
+    });
+    xhr.addEventListener('load', () => {
+      uploadXhrRef.current = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          setAttachments((prev) => [...prev, {
+            id: data.id,
+            filename: data.name || file.name,
+            mime_type: data.type || file.type,
+            size_bytes: data.size || file.size,
+            storage_key: data.url || data.id,
+            created_at: new Date().toISOString(),
+          }]);
+          pendingUploadRef.current = null;
+          setUploadState({ status: 'idle' });
+        } catch (err) {
+          setUploadState({ status: 'error', filename: file.name, error: 'Bad server response' });
+        }
+      } else {
+        setUploadState({ status: 'error', filename: file.name, error: `Upload failed (${xhr.status})` });
+      }
+    });
+    xhr.addEventListener('error', () => {
+      uploadXhrRef.current = null;
+      setUploadState({ status: 'error', filename: file.name, error: 'Network error' });
+    });
+    xhr.addEventListener('abort', () => {
+      uploadXhrRef.current = null;
+    });
+    const formData = new FormData();
+    formData.append('file', file);
+    xhr.send(formData);
+  }, [task]);
+
+  const startUpload = useCallback((file: File) => {
+    if (file.size > LARGE_FILE_BYTES) {
+      const mb = (file.size / (1024 * 1024)).toFixed(1);
+      const ok = typeof window !== 'undefined'
+        ? window.confirm(`"${file.name}" is ${mb}MB — larger than 10MB. Upload anyway?`)
+        : true;
+      if (!ok) return;
+    }
+    performUpload(file);
+  }, [performUpload, LARGE_FILE_BYTES]);
+
+  const retryUpload = useCallback(() => {
+    const file = pendingUploadRef.current;
+    if (file) performUpload(file);
+  }, [performUpload]);
+
+  // Abort any in-flight upload on unmount so we don't leak the request.
+  useEffect(() => {
+    return () => {
+      uploadXhrRef.current?.abort();
+    };
+  }, []);
 
   if (loading || !task) {
     return (
@@ -1650,30 +1740,64 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}>
                 <Upload size={11} /> Add file
               </button>
-              <input ref={attachFileRef} type="file" className="hidden" onChange={async (e) => {
+              <input ref={attachFileRef} type="file" className="hidden" onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (!file || !task) return;
-                try {
-                  const res = await api.upload(`/api/upload?task_id=${task.id}`, file);
-                  if (res.ok) {
-                    const data = await res.json();
-                    setAttachments(prev => [...prev, {
-                      id: data.id,
-                      filename: data.name || file.name,
-                      mime_type: data.type || file.type,
-                      size_bytes: data.size || file.size,
-                      storage_key: data.url || data.id,
-                      created_at: new Date().toISOString(),
-                    }]);
-                  } else {
-                    console.error('Upload failed:', await res.text());
-                  }
-                } catch (err) {
-                  console.error('Upload error:', err);
-                }
+                if (!file) return;
+                startUpload(file);
                 e.target.value = '';
               }} />
             </div>
+            {/* Task 6.5 — upload progress / error strip */}
+            {uploadState.status === 'uploading' && (
+              <div className="mb-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 text-[11px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
+                  <Loader2 size={11} className="animate-spin" style={{ color: 'var(--accent)' }} />
+                  <span className="flex-1 truncate">{uploadState.filename}</span>
+                  <span style={{ color: 'var(--muted)' }}>{uploadState.progress ?? 0}%</span>
+                </div>
+                <div className="h-1 mt-1 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${uploadState.progress ?? 0}%`,
+                      background: 'var(--accent)',
+                      transition: 'width 150ms',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            {uploadState.status === 'error' && (
+              <div
+                className="mb-2 px-2 py-1.5 rounded-md flex items-center gap-2 text-[11px]"
+                style={{
+                  background: 'rgba(220, 38, 38, 0.08)',
+                  border: '1px solid rgba(220, 38, 38, 0.3)',
+                  color: 'var(--danger)',
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                <span className="flex-1 truncate">
+                  {uploadState.filename ? `"${uploadState.filename}" — ` : ''}
+                  {uploadState.error || 'Upload failed'}
+                </span>
+                <button
+                  onClick={retryUpload}
+                  className="px-2 py-0.5 rounded font-medium"
+                  style={{ background: 'var(--accent)', color: 'white', fontFamily: 'var(--font-heading)' }}
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => { pendingUploadRef.current = null; setUploadState({ status: 'idle' }); }}
+                  className="p-0.5 rounded"
+                  style={{ color: 'var(--muted)' }}
+                  title="Dismiss"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            )}
             {attachments.length > 0 ? (
               <div className="space-y-1.5">
                 {attachments.map((file) => (
