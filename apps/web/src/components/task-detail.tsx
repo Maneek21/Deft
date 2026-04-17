@@ -344,6 +344,128 @@ function CustomFieldRow({
   );
 }
 
+/**
+ * Task 6.2 — Activity diff view.
+ *
+ * For short/simple fields (status, priority, assignee, title, due_date,
+ * etc.) we render `old` → `new` inline with a subtle strikethrough on the
+ * old value so the transition reads at a glance.
+ *
+ * For `description` changes the values can be multi-paragraph HTML, so we
+ * strip tags, split by newline, and run a minimal longest-common-subsequence
+ * line diff inline (no external dep). The diff starts collapsed and toggles
+ * on click.
+ */
+function htmlToLines(html: string | null): string[] {
+  if (!html) return [];
+  // Strip tags; preserve paragraph/line breaks as newlines.
+  const withBreaks = html
+    .replace(/<br\s*\/?>(?=)/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  const decoded = withBreaks
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  return decoded.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+type DiffOp = { op: 'eq' | 'add' | 'del'; text: string };
+
+function lineDiff(oldLines: string[], newLines: string[]): DiffOp[] {
+  // Classic LCS table; O(N*M) is fine — activity diffs are small by nature.
+  const n = oldLines.length;
+  const m = newLines.length;
+  const table: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0),
+  );
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      table[i][j] =
+        oldLines[i - 1] === newLines[j - 1]
+          ? table[i - 1][j - 1] + 1
+          : Math.max(table[i - 1][j], table[i][j - 1]);
+    }
+  }
+  const out: DiffOp[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (oldLines[i - 1] === newLines[j - 1]) {
+      out.push({ op: 'eq', text: oldLines[i - 1] });
+      i--;
+      j--;
+    } else if (table[i - 1][j] >= table[i][j - 1]) {
+      out.push({ op: 'del', text: oldLines[i - 1] });
+      i--;
+    } else {
+      out.push({ op: 'add', text: newLines[j - 1] });
+      j--;
+    }
+  }
+  while (i > 0) {
+    out.push({ op: 'del', text: oldLines[i - 1] });
+    i--;
+  }
+  while (j > 0) {
+    out.push({ op: 'add', text: newLines[j - 1] });
+    j--;
+  }
+  return out.reverse();
+}
+
+function DescriptionDiff({ oldValue, newValue }: { oldValue: string | null; newValue: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const diff = lineDiff(htmlToLines(oldValue), htmlToLines(newValue));
+  const adds = diff.filter((d) => d.op === 'add').length;
+  const dels = diff.filter((d) => d.op === 'del').length;
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-[11px] font-medium px-1.5 py-0.5 rounded inline-flex items-center gap-1"
+        style={{
+          color: 'var(--muted)',
+          background: 'var(--surface-container-high)',
+          fontFamily: 'var(--font-heading)',
+        }}
+      >
+        {expanded ? 'Hide diff' : 'Show diff'}
+        <span style={{ color: 'var(--success)' }}>+{adds}</span>
+        <span style={{ color: 'var(--danger)' }}>-{dels}</span>
+      </button>
+      {expanded && (
+        <pre
+          className="mt-1 rounded-md p-2 overflow-x-auto text-[11px] leading-relaxed"
+          style={{
+            background: 'var(--surface-container-low)',
+            border: '1px solid var(--border)',
+            fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, monospace)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {diff.map((d, idx) => {
+            const marker = d.op === 'add' ? '+' : d.op === 'del' ? '-' : ' ';
+            const color = d.op === 'add' ? 'var(--success)' : d.op === 'del' ? 'var(--danger)' : 'var(--foreground-secondary)';
+            const bg =
+              d.op === 'add' ? 'rgba(34, 197, 94, 0.08)'
+              : d.op === 'del' ? 'rgba(220, 38, 38, 0.08)'
+              : 'transparent';
+            return (
+              <div key={idx} style={{ color, background: bg, padding: '0 4px' }}>
+                {marker} {d.text}
+              </div>
+            );
+          })}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function DescriptionEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
   const editor = useEditor({
     immediatelyRender: false,
@@ -2205,6 +2327,12 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     : a.field === 'priority' ? '#F97316'
                     : a.field === 'comment' ? '#22C55E'
                     : 'var(--muted)';
+                  const isDescription = a.field === 'description';
+                  // Task 6.2 — inline old → new with strikethrough on the
+                  // outgoing value. Description rows get a collapsible
+                  // line-level diff rendered below the one-liner summary.
+                  const oldLabel = formatActivityValue(a.field, a.old_value, members);
+                  const newLabel = formatActivityValue(a.field, a.new_value, members);
                   return (
                   <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
                     <div
@@ -2216,10 +2344,23 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         {a.user_name}
                       </span>{' '}
                       <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
-                        changed {formatFieldName(a.field)} from{' '}
-                        <span style={{ color: 'var(--muted)' }}>{formatActivityValue(a.field, a.old_value, members)}</span> to{' '}
-                        <span style={{ color: 'var(--foreground)' }}>{formatActivityValue(a.field, a.new_value, members)}</span>
+                        changed {formatFieldName(a.field)}
+                        {!isDescription && (
+                          <>
+                            {': '}
+                            <span style={{ color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'var(--muted)' }}>
+                              {oldLabel}
+                            </span>
+                            {' → '}
+                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>
+                              {newLabel}
+                            </span>
+                          </>
+                        )}
                       </span>
+                      {isDescription && (
+                        <DescriptionDiff oldValue={a.old_value} newValue={a.new_value} />
+                      )}
                       <div className="mt-0.5" style={{ color: 'var(--muted)' }}>
                         {new Date(a.created_at).toLocaleDateString('en-US', {
                           month: 'short',
