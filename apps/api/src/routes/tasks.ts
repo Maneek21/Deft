@@ -2224,7 +2224,7 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
     }
 
     await db.delete(wikiCitations).where(
-      and(eq(wikiCitations.id, citationId), eq(wikiCitations.task_id, taskId))
+      and(eq(wikiCitations.id, citationId), eq(wikiCitations.source_id, taskId))
     );
     return c.json({ success: true });
   } catch (err) {
