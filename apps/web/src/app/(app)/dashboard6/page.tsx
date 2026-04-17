@@ -363,7 +363,17 @@ export default function Dashboard6Page() {
             </h1>
             <p className="text-[11px] font-mono mt-0.5" style={{ color: T.textMuted, opacity:0.6 }}>{todayDate}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            {[
+              { href:'/tasks', icon:FilePlus, label:'New Task' },
+              { href:'/chat', icon:MessageSquare, label:'New Message' },
+            ].map(a => (
+              <Link key={a.label} href={a.href}
+                className="px-3 py-1.5 rounded-lg flex items-center gap-2 text-[12px] font-medium"
+                style={{ border:`1px solid ${T.border}`, color:T.textMain }}>
+                <a.icon size={13} /> {a.label}
+              </Link>
+            ))}
             <button
               onClick={() => { if (!d.standup) handleGenerateStandup(); setStandupOpen(true); }}
               disabled={standupGenerating}
@@ -431,25 +441,27 @@ export default function Dashboard6Page() {
           </div>
         </section>
 
-        {/* ── Quick actions ── */}
-        <section className="flex flex-wrap gap-3">
-          {[
-            { href:'/tasks', icon:FilePlus, label:'New Task' },
-            { href:'/chat', icon:MessageSquare, label:'New Message' },
-          ].map(a => (
-            <Link key={a.label} href={a.href}
-              className="px-4 py-2 rounded-lg flex items-center gap-2 text-[12px] font-medium transition-colors hover:bg-white/[0.03]"
-              style={{ border:`1px solid ${T.border}`, color:T.textMain }}>
-              <a.icon size={14} /> {a.label}
-            </Link>
-          ))}
-        </section>
-
         {/* ── Main 12-col grid ── */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
 
           {/* LEFT: span-7 */}
           <div className="col-span-1 md:col-span-7 flex flex-col gap-6">
+
+            {/* Stats row — at top so numbers are immediately visible */}
+            <div className="grid grid-cols-4 gap-3">
+              {[
+                { label:'Overdue',   value:overdueTasks.length,    color:T.urgent },
+                { label:'Due Today', value:d.due_today.length,     color:T.warning },
+                { label:'Active',    value:d.in_progress.length,   color:T.primary },
+                { label:'Done',      value:doneThisWeek,            color:T.success },
+              ].map(s => (
+                <div key={s.label} className="p-3 rounded-lg border text-center flex flex-col justify-center"
+                  style={{ background:`${s.color}0a`, borderColor:`${s.color}1a` }}>
+                  <span className="text-[22px] font-bold font-mono" style={{ color:s.color }}>{s.value}</span>
+                  <span className="text-[9px] uppercase font-semibold mt-1" style={{ color:s.color, opacity:0.7 }}>{s.label}</span>
+                </div>
+              ))}
+            </div>
 
             {/* My Work kanban */}
             <Card title="My Work">
@@ -539,22 +551,6 @@ export default function Dashboard6Page() {
                   </div>
                 )}
               </Card>
-            </div>
-
-            {/* Stats row */}
-            <div className="grid grid-cols-4 gap-3">
-              {[
-                { label:'Overdue',   value:overdueTasks.length,    color:T.urgent },
-                { label:'Due Today', value:d.due_today.length,     color:T.warning },
-                { label:'Active',    value:d.in_progress.length,   color:T.primary },
-                { label:'Done',      value:doneThisWeek,            color:T.success },
-              ].map(s => (
-                <div key={s.label} className="p-3 rounded-lg border text-center flex flex-col justify-center"
-                  style={{ background:`${s.color}0a`, borderColor:`${s.color}1a` }}>
-                  <span className="text-[22px] font-bold font-mono" style={{ color:s.color }}>{s.value}</span>
-                  <span className="text-[9px] uppercase font-semibold mt-1" style={{ color:s.color, opacity:0.7 }}>{s.label}</span>
-                </div>
-              ))}
             </div>
 
             {/* Agent Activity — card in left column, keeps columns balanced */}
@@ -768,42 +764,41 @@ export default function Dashboard6Page() {
             )}
 
           </div>
-        </div>
 
-        {/* ── Projects (full-width bottom) ── */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider" style={{ color:T.textMain, opacity:0.6 }}>Projects</h3>
-          </div>
-          {(d.projects||[]).length === 0 ? (
-            <p className="text-[12px]" style={{ color:T.textFaint }}>No projects yet.</p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {(d.projects||[]).map((p,i) => {
-                const pct = p.total_tasks > 0 ? Math.round((p.done_tasks/p.total_tasks)*100) : 0;
-                const colors = [T.accent, T.primary, T.warning, '#60a5fa'];
-                const c = p.color || colors[i%colors.length];
-                return (
-                  <Link key={p.id} href={`/tasks?project=${p.id}`}
-                    className="p-4 rounded-xl border flex items-center gap-4 transition-colors"
-                    style={{ background:T.bgCard, borderColor:T.border }}
-                    onMouseEnter={e=>(e.currentTarget.style.borderColor=T.borderHover)}
-                    onMouseLeave={e=>(e.currentTarget.style.borderColor=T.border)}>
-                    <ProgressRing percent={pct} color={c} size={38} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-bold truncate mb-0.5" style={{ color:T.textMain }}>{p.name}</div>
-                      <div className="text-[10px]" style={{ color:T.textFaint }}>
-                        {p.done_tasks}/{p.total_tasks} done
-                        {p.my_tasks > 0 && <span className="ml-1.5 font-semibold" style={{ color:T.accent }}>· {p.my_tasks} mine</span>}
+          {/* Projects — full-width row inside the grid */}
+          {(d.projects||[]).length > 0 && (
+            <div className="col-span-1 md:col-span-12">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-[12px] font-semibold uppercase tracking-wider" style={{ color:T.textMain, opacity:0.6 }}>Projects</h3>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {(d.projects||[]).map((p,i) => {
+                  const pct = p.total_tasks > 0 ? Math.round((p.done_tasks/p.total_tasks)*100) : 0;
+                  const colors = [T.accent, T.primary, T.warning, T.blue];
+                  const c = p.color || colors[i%colors.length];
+                  return (
+                    <Link key={p.id} href={`/tasks?project=${p.id}`}
+                      className="p-4 rounded-xl border flex items-center gap-4 transition-colors"
+                      style={{ background:T.bgCard, borderColor:T.border }}
+                      onMouseEnter={e=>(e.currentTarget.style.borderColor=T.borderHover)}
+                      onMouseLeave={e=>(e.currentTarget.style.borderColor=T.border)}>
+                      <ProgressRing percent={pct} color={c} size={38} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[13px] font-bold truncate mb-0.5" style={{ color:T.textMain }}>{p.name}</div>
+                        <div className="text-[10px]" style={{ color:T.textFaint }}>
+                          {p.done_tasks}/{p.total_tasks} done
+                          {p.my_tasks > 0 && <span className="ml-1.5 font-semibold" style={{ color:T.accent }}>· {p.my_tasks} mine</span>}
+                        </div>
                       </div>
-                    </div>
-                    <span className="text-[13px] font-bold font-mono flex-shrink-0" style={{ color:c }}>{pct}%</span>
-                  </Link>
-                );
-              })}
+                      <span className="text-[13px] font-bold font-mono flex-shrink-0" style={{ color:c }}>{pct}%</span>
+                    </Link>
+                  );
+                })}
+              </div>
             </div>
           )}
-        </section>
+
+        </div>
 
         {/* ── GitHub (full-width, only when connected) ── */}
         {d.github_activity.length > 0 && (
