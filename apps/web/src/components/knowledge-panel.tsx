@@ -134,7 +134,7 @@ export function KnowledgePanel({ spaceId, onClose }: Props) {
 
   return (
     <div
-      className={isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'w-[400px] h-full flex flex-col flex-shrink-0'}
+      className={isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'w-[360px] h-full flex flex-col flex-shrink-0'}
       style={{ background: 'var(--surface-container-low)', borderLeft: isMobile ? 'none' : '1px solid var(--border)' }}
     >
       {/* Header */}

@@ -391,7 +391,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     <div
       className={isMobile
         ? "fixed inset-0 z-50 flex flex-col"
-        : "w-[400px] h-full flex flex-col flex-shrink-0"
+        : "w-[360px] h-full flex flex-col flex-shrink-0"
       }
       style={{ background: 'var(--surface)', borderLeft: isMobile ? undefined : '1px solid var(--border)' }}
     >

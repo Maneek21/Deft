@@ -363,7 +363,7 @@ export function RichComposer({
   const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
 
   return (
-    <div className="px-6 py-3 flex-shrink-0 relative" ref={composerRef}>
+    <div className="px-4 py-3 flex-shrink-0 relative" ref={composerRef}>
       {showSlashCommands && (
         <SlashCommandAutocomplete
           query={slashQuery}
@@ -407,7 +407,8 @@ export function RichComposer({
           transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
         }}
       >
-        {/* Formatting toolbar */}
+        {/* Formatting toolbar — visible when composing */}
+        {(focused || (editor && !editor.isEmpty)) && (
         <div
           className="flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
         >
@@ -488,6 +489,7 @@ export function RichComposer({
             <LinkIcon size={14} strokeWidth={1.5} />
           </ToolbarBtn>
         </div>
+        )}
 
         {/* Editor area */}
         <div
