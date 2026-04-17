@@ -908,6 +908,7 @@ export function Sidebar({
           {userMenuOpen && typeof document !== 'undefined' && createPortal(
             <div
               className="fixed w-48 py-1 rounded-lg z-[100]"
+              onMouseDown={(e) => e.stopPropagation()}
               style={{
                 background: 'var(--surface-container-highest)',
                 boxShadow: 'var(--glass-shadow)',
@@ -929,35 +930,35 @@ export function Sidebar({
                 </div>
               ) : null}
               <button onClick={() => { setUserMenuOpen(false); setStatusModalOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Smile size={14} strokeWidth={1.5} /> Set status
               </button>
               <button onClick={() => { setUserMenuOpen(false); setSavedOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Bookmark size={14} strokeWidth={1.5} /> Saved messages
               </button>
               <button onClick={() => { toggleDnd(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: dnd ? 'var(--status-amber)' : 'var(--on-surface-variant)' }}>
                 {dnd ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />}
                 {dnd ? 'Disable Do Not Disturb' : 'Do Not Disturb'}
               </button>
               <button onClick={() => { toggleTheme(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 {theme === 'dark' ? <Sun size={14} strokeWidth={1.5} /> : <Moon size={14} strokeWidth={1.5} />}
                 {theme === 'dark' ? 'Light mode' : 'Dark mode'}
               </button>
               <div className="my-1" style={{ borderTop: '1px solid var(--ghost-border)' }} />
               <Link href="/settings" onClick={() => setUserMenuOpen(false)}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Settings size={14} strokeWidth={1.5} /> Settings
               </Link>
               <button onClick={() => { setUserMenuOpen(false); logout(); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--status-red)' }}>
                 <LogOut size={14} strokeWidth={1.5} /> Log out
               </button>
