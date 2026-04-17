@@ -255,13 +255,40 @@ export default function TasksPage() {
       setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
     };
 
+    // Task 5.5 — batched updates from PATCH /bulk. Apply the shared `changes`
+    // to every task in scope and refetch if the target list may now have
+    // shifted (new in-scope items after bulk assign).
+    const onBulkUpdated = (payload: { task_ids: string[]; changes: Partial<Task> }) => {
+      if (!payload || !Array.isArray(payload.task_ids)) return;
+      const ids = new Set(payload.task_ids);
+      setTasks((prev) => {
+        let touched = false;
+        const next = prev.map((t) => {
+          if (!ids.has(t.id)) return t;
+          touched = true;
+          return { ...t, ...payload.changes } as Task;
+        });
+        return touched ? next : prev;
+      });
+      // If the bulk change may have pulled tasks in/out of scope
+      // (e.g. reassign to current user on my-tasks view), refresh.
+      if (
+        (isMyTasksView && 'assignee_id' in payload.changes) ||
+        ('status' in payload.changes)
+      ) {
+        loadTasks();
+      }
+    };
+
     socket.on('task:created', onCreated);
     socket.on('task:updated', onUpdated);
+    socket.on('task:bulk_updated', onBulkUpdated);
     socket.on('task:deleted', onDeleted);
 
     return () => {
       socket.off('task:created', onCreated);
       socket.off('task:updated', onUpdated);
+      socket.off('task:bulk_updated', onBulkUpdated);
       socket.off('task:deleted', onDeleted);
     };
   }, [selectedProject, isMyTasksView, user?.id, loadTasks]);

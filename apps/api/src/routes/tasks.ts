@@ -299,6 +299,9 @@ taskRoutes.post('/labels', async (c) => {
 // ═══ BULK OPERATIONS (must be before /:id to avoid route capture) ═══
 
 // PATCH /api/tasks/bulk — update multiple tasks at once
+// Task 5.5: instead of emitting N `task:updated` events + N notifications,
+// we emit a single `task:bulk_updated` and collapse per-assignee notifications
+// into a grouped "You were assigned N tasks" when ≥3 tasks go to the same user.
 taskRoutes.patch('/bulk', async (c) => {
   try {
     const user = c.get('user');
@@ -362,11 +365,38 @@ taskRoutes.patch('/bulk', async (c) => {
       }
     }
 
+    // Task 5.5 — grouped notification for bulk assign.
+    // When ≥3 tasks in one bulk op target the same user (excluding the
+    // actor), write one notification (type=task_assigned) with
+    // metadata.task_ids so the client can render a grouped chip +
+    // deep-link to the filtered list.
+    if (updates.assignee_id && updates.assignee_id !== user.id && task_ids.length >= 3) {
+      try {
+        await db.insert(notifications).values({
+          org_id: user.org_id,
+          user_id: updates.assignee_id,
+          type: 'task_assigned',
+          title: `You were assigned ${task_ids.length} tasks`,
+          body: null,
+          link: `/tasks?mine=1`,
+          metadata: { task_ids, grouped: true, kind: 'bulk_assign' },
+        });
+        emitToUser(updates.assignee_id, 'notification:new', {
+          type: 'task_assigned',
+          title: `You were assigned ${task_ids.length} tasks`,
+        });
+      } catch (err) {
+        console.error('Failed to write grouped bulk-assign notification:', err);
+      }
+    }
+
+    // Task 5.5 — single batched socket event instead of N per-task events.
     const io = getIO();
     if (io) {
-      for (const taskId of task_ids) {
-        io.to(`org:${user.org_id}`).emit('task:updated', { id: taskId, ...updateData });
-      }
+      io.to(`org:${user.org_id}`).emit('task:bulk_updated', {
+        task_ids,
+        changes: updateData,
+      });
     }
 
     return c.json({ success: true, updated: task_ids.length });
