@@ -18,8 +18,6 @@ import {
   Calendar,
   Tag,
   User,
-  MessageSquare,
-  Activity,
   ExternalLink,
   Loader2,
   MoreHorizontal,
@@ -390,7 +388,49 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const [descValue, setDescValue] = useState('');
-  const [activeTab, setActiveTab] = useState<'comments' | 'activity'>('comments');
+  // Task 6.1 — tabbed navigation. Description is the default surface; the
+  // other tabs host sections that used to stack in the flat layout. Top of
+  // modal (title + status + priority + assignee + due date) stays visible
+  // above the tab strip.
+  type TabKey = 'description' | 'subtasks' | 'dependencies' | 'comments' | 'activity' | 'attachments' | 'references';
+  const VALID_TABS: readonly TabKey[] = [
+    'description',
+    'subtasks',
+    'dependencies',
+    'comments',
+    'activity',
+    'attachments',
+    'references',
+  ] as const;
+  const initialTab = ((): TabKey => {
+    if (typeof window === 'undefined') return 'description';
+    const hash = window.location.hash.replace(/^#/, '') as TabKey;
+    return (VALID_TABS as readonly string[]).includes(hash) ? hash : 'description';
+  })();
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  const handleTabChange = useCallback((tab: TabKey) => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      // Update hash without re-triggering nav events.
+      const url = new URL(window.location.href);
+      url.hash = tab;
+      window.history.replaceState(null, '', url.toString());
+    }
+  }, []);
+  // React to external hash changes (deep-link or back/forward nav).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onHashChange = () => {
+      const hash = window.location.hash.replace(/^#/, '') as TabKey;
+      if ((VALID_TABS as readonly string[]).includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+    // VALID_TABS is module-constant; intentionally omitted from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [comments, setComments] = useState<Comment[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -701,7 +741,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
   useEffect(() => {
     if (activeTab === 'comments') loadComments();
-    else loadActivity();
+    if (activeTab === 'activity') loadActivity();
   }, [activeTab, loadComments, loadActivity]);
 
   // Title edit with debounce
@@ -1394,8 +1434,47 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             );
           })()}
 
-          {/* Description */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Task 6.1 — tab navigation strip */}
+          <div
+            className="flex px-3 overflow-x-auto"
+            style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
+          >
+            {([
+              { key: 'description', label: 'Description' },
+              { key: 'subtasks', label: task.parent_task_id ? 'Parent' : 'Subtasks', badge: task.parent_task_id ? undefined : subtasks.length || undefined },
+              { key: 'dependencies', label: 'Dependencies', badge: dependencies.blocks.length + dependencies.blocked_by.length + dependencies.relates_to.length || undefined },
+              { key: 'comments', label: 'Comments', badge: comments.length || undefined },
+              { key: 'activity', label: 'Activity' },
+              { key: 'attachments', label: 'Attachments', badge: attachments.length || undefined },
+              { key: 'references', label: 'References', badge: references.length || undefined },
+            ] as { key: TabKey; label: string; badge?: number }[]).map((t) => (
+              <button
+                key={t.key}
+                onClick={() => handleTabChange(t.key)}
+                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium whitespace-nowrap"
+                style={{
+                  color: activeTab === t.key ? 'var(--accent)' : 'var(--muted)',
+                  borderBottom: activeTab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+                  fontFamily: 'var(--font-heading)',
+                  transition: 'color 150ms',
+                }}
+              >
+                {t.label}
+                {typeof t.badge === 'number' && t.badge > 0 && (
+                  <span
+                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                    style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}
+                  >
+                    {t.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Description tab */}
+          {activeTab === 'description' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <h3
               className="text-[12px] font-semibold mb-2 uppercase tracking-wide"
               style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -1422,9 +1501,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               }}
             />
           </div>
+          )}
 
-          {/* Attachments */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Attachments tab */}
+          {activeTab === 'attachments' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
@@ -1494,10 +1575,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               </p>
             )}
           </div>
+          )}
 
-          {/* Subtasks section (only for non-subtasks) */}
-          {!task.parent_task_id && (
-            <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Subtasks tab (only for non-subtasks) */}
+          {activeTab === 'subtasks' && !task.parent_task_id && (
+            <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
               <div className="flex items-center justify-between mb-2">
                 <h3
                   className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
@@ -1657,9 +1739,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             </div>
           )}
 
-          {/* Parent task breadcrumb (if this is a subtask) */}
-          {parentTask && (
-            <div className="px-5 pb-3" style={{ borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
+          {/* Parent task breadcrumb (if this is a subtask) — lives on the
+              "subtasks" tab, where we relabel the tab to "Parent". */}
+          {activeTab === 'subtasks' && parentTask && (
+            <div className="px-5 pb-3" style={{ paddingTop: '12px' }}>
               <button
                 onClick={() => onTaskNavigate?.(parentTask.id)}
                 className="flex items-center gap-1.5 text-[12px] font-medium px-2 py-1 rounded-md"
@@ -1677,8 +1760,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             </div>
           )}
 
-          {/* Dependencies section */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Dependencies tab */}
+          {activeTab === 'dependencies' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <div className="flex items-center justify-between mb-2">
               <h3
                 className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
@@ -1966,86 +2050,65 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               </div>
             )}
           </div>
+          )}
 
-          {/* References (backlinks) */}
-          {references.length > 0 && (
-            <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* References tab */}
+          {activeTab === 'references' && (
+            <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
               <h3 className="text-[12px] font-semibold mb-2 uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
-                Referenced in {references.length} message{references.length !== 1 ? 's' : ''}
+                {references.length === 0
+                  ? 'No references'
+                  : `Referenced in ${references.length} message${references.length !== 1 ? 's' : ''}`}
               </h3>
-              <div className="space-y-1.5">
-                {references.map(ref => (
-                  <div key={ref.id}
-                    onClick={() => {
-                      if (ref.message_space_id) {
-                        router.push(`/chat?space=${ref.message_space_id}&message=${ref.source_id}`);
-                      }
-                    }}
-                    className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
-                    style={{ background: 'var(--surface-container)' }}>
-                    <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
-                      style={{ background: 'var(--primary-container)' }}>
-                      {ref.author_name?.charAt(0).toUpperCase() || '?'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
-                          {ref.author_name || 'Unknown'}
-                        </span>
-                        {ref.space_name && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded"
-                            style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
-                            #{ref.space_name}
+              {references.length === 0 ? (
+                <p className="text-[12px] px-2" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                  No messages or notes link to this task yet.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {references.map(ref => (
+                    <div key={ref.id}
+                      onClick={() => {
+                        if (ref.message_space_id) {
+                          router.push(`/chat?space=${ref.message_space_id}&message=${ref.source_id}`);
+                        }
+                      }}
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      style={{ background: 'var(--surface-container)' }}>
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
+                        style={{ background: 'var(--primary-container)' }}>
+                        {ref.author_name?.charAt(0).toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
+                            {ref.author_name || 'Unknown'}
                           </span>
+                          {ref.space_name && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded"
+                              style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
+                              #{ref.space_name}
+                            </span>
+                          )}
+                        </div>
+                        {ref.message_preview && (
+                          <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
+                            {ref.message_preview}
+                          </p>
                         )}
                       </div>
-                      {ref.message_preview && (
-                        <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
-                          {ref.message_preview}
-                        </p>
-                      )}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Tabs: Comments | Activity */}
-          <div style={{ borderTop: '1px solid var(--border)' }}>
-            <div className="flex px-5" style={{ borderBottom: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setActiveTab('comments')}
-                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium"
-                style={{
-                  color: activeTab === 'comments' ? 'var(--accent)' : 'var(--muted)',
-                  borderBottom: activeTab === 'comments' ? '2px solid var(--accent)' : '2px solid transparent',
-                  fontFamily: 'var(--font-heading)',
-                  transition: 'color 150ms',
-                }}
-              >
-                <MessageSquare size={13} />
-                Comments
-              </button>
-              <button
-                onClick={() => setActiveTab('activity')}
-                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium"
-                style={{
-                  color: activeTab === 'activity' ? 'var(--accent)' : 'var(--muted)',
-                  borderBottom: activeTab === 'activity' ? '2px solid var(--accent)' : '2px solid transparent',
-                  fontFamily: 'var(--font-heading)',
-                  transition: 'color 150ms',
-                }}
-              >
-                <Activity size={13} />
-                Activity
-              </button>
-            </div>
-
+          {/* Comments tab */}
+          {activeTab === 'comments' && (
             <div className="px-5 py-3">
-              {activeTab === 'comments' ? (
                 <div className="flex flex-col gap-3">
                   {comments.length === 0 && (
                     <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
@@ -2124,50 +2187,54 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     </div>
                   </div>
                 </div>
-              ) : (
-                <div className="flex flex-col gap-2.5">
-                  {activity.length === 0 && (
-                    <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                      No activity yet
-                    </p>
-                  )}
-                  {activity.map((a) => {
-                    const dotColor = a.field === 'status' ? '#3B82F6'
-                      : a.field === 'assignee_id' ? '#8B5CF6'
-                      : a.field === 'priority' ? '#F97316'
-                      : a.field === 'comment' ? '#22C55E'
-                      : 'var(--muted)';
-                    return (
-                    <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
-                      <div
-                        className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                        style={{ background: dotColor }}
-                      />
-                      <div>
-                        <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
-                          {a.user_name}
-                        </span>{' '}
-                        <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
-                          changed {formatFieldName(a.field)} from{' '}
-                          <span style={{ color: 'var(--muted)' }}>{formatActivityValue(a.field, a.old_value, members)}</span> to{' '}
-                          <span style={{ color: 'var(--foreground)' }}>{formatActivityValue(a.field, a.new_value, members)}</span>
-                        </span>
-                        <div className="mt-0.5" style={{ color: 'var(--muted)' }}>
-                          {new Date(a.created_at).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                          })}
-                        </div>
+            </div>
+          )}
+
+          {/* Activity tab */}
+          {activeTab === 'activity' && (
+            <div className="px-5 py-3">
+              <div className="flex flex-col gap-2.5">
+                {activity.length === 0 && (
+                  <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                    No activity yet
+                  </p>
+                )}
+                {activity.map((a) => {
+                  const dotColor = a.field === 'status' ? '#3B82F6'
+                    : a.field === 'assignee_id' ? '#8B5CF6'
+                    : a.field === 'priority' ? '#F97316'
+                    : a.field === 'comment' ? '#22C55E'
+                    : 'var(--muted)';
+                  return (
+                  <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                      style={{ background: dotColor }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
+                        {a.user_name}
+                      </span>{' '}
+                      <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
+                        changed {formatFieldName(a.field)} from{' '}
+                        <span style={{ color: 'var(--muted)' }}>{formatActivityValue(a.field, a.old_value, members)}</span> to{' '}
+                        <span style={{ color: 'var(--foreground)' }}>{formatActivityValue(a.field, a.new_value, members)}</span>
+                      </span>
+                      <div className="mt-0.5" style={{ color: 'var(--muted)' }}>
+                        {new Date(a.created_at).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
                       </div>
                     </div>
-                    );
-                  })}
-                </div>
-              )}
+                  </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </>
