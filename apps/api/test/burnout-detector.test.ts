@@ -154,7 +154,7 @@ test('1. detected:true when recent 14d count is >3x baseline', async () => {
     const signal = await detectAuthorshipOverload(USER_A, ORG_ID);
 
     assert.equal(signal.name, 'authorship_overload', 'signal name should be authorship_overload');
-    assert.equal(signal.weight, 0.10, 'signal weight should be 0.10');
+    assert.equal(signal.weight, 0.09, 'signal weight should be 0.09 (renormalized after task_overload added)');
     assert.equal(signal.detected, true, 'signal should be detected (10 recent vs ~0.47 baseline → ratio ≈ 21)');
 
     const detail = signal.detail as { recent_14d: number; baseline_14d: number; ratio: number };
@@ -193,7 +193,7 @@ test('2. detected:false when recent count is within normal range', async () => {
     const signal = await detectAuthorshipOverload(USER_B, ORG_ID);
 
     assert.equal(signal.name, 'authorship_overload');
-    assert.equal(signal.weight, 0.10);
+    assert.equal(signal.weight, 0.09);
     assert.equal(
       signal.detected,
       false,
@@ -233,7 +233,7 @@ test('3. detected:false when baseline is zero (no prior pages)', async () => {
     // (If leftover DB data caused a non-zero baseline we also accept that the
     // signal fires correctly — the key invariant is no throws and correct shape.)
     assert.equal(signal.name, 'authorship_overload');
-    assert.equal(signal.weight, 0.10);
+    assert.equal(signal.weight, 0.09);
     assert.ok(typeof signal.detected === 'boolean', 'detected should be a boolean');
 
     const detail = signal.detail as { recent_14d: number; baseline_14d: number; ratio: number };
@@ -267,7 +267,7 @@ test('4. detectStalledCommitments: detected:true when user has >= 5 stalled comm
     const signal = await detectStalledCommitments(USER_A, ORG_ID);
 
     assert.equal(signal.name, 'stalled_commitments', 'signal name should be stalled_commitments');
-    assert.equal(signal.weight, 0.10, 'signal weight should be 0.10');
+    assert.equal(signal.weight, 0.09, 'signal weight should be 0.09 (renormalized after task_overload added)');
     assert.equal(signal.detected, true, 'should be detected: 5 stalled commitments >= threshold of 5');
     assert.ok(signal.detail.stalled_count >= 5, `stalled_count should be >= 5, got ${signal.detail.stalled_count}`);
     assert.equal(signal.detail.threshold, 5, 'threshold should be 5');
@@ -296,7 +296,7 @@ test('5. detectStalledCommitments: detected:false when below threshold (2 stalle
     const signal = await detectStalledCommitments(USER_B, ORG_ID);
 
     assert.equal(signal.name, 'stalled_commitments');
-    assert.equal(signal.weight, 0.10);
+    assert.equal(signal.weight, 0.09);
     assert.equal(signal.detected, false, 'should not be detected: 2 stalled commitments < threshold of 5');
     assert.ok(signal.detail.stalled_count <= 2, `stalled_count should be <= 2, got ${signal.detail.stalled_count}`);
     assert.equal(signal.detail.threshold, 5);
@@ -325,7 +325,7 @@ test('6. detectStalledCommitments: detected:false when 10 commitments are recent
     const signal = await detectStalledCommitments(USER_C, ORG_ID);
 
     assert.equal(signal.name, 'stalled_commitments');
-    assert.equal(signal.weight, 0.10);
+    assert.equal(signal.weight, 0.09);
     assert.equal(signal.detected, false, 'should not be detected: commitments updated only 2 days ago, not stalled');
     assert.equal(signal.detail.threshold, 5);
   } finally {

@@ -13,8 +13,10 @@ import {
   managerSettings,
   notifications,
   wikiPages,
+  tasks,
+  taskAssignees,
 } from '@deft/db/schema';
-import { eq, and, gte, lt, sql, desc, ne, isNotNull } from 'drizzle-orm';
+import { eq, and, gte, lt, sql, desc, ne, isNotNull, or } from 'drizzle-orm';
 import { emitToUser } from '../socket.js';
 
 interface BurnoutSignal {
@@ -26,16 +28,23 @@ interface BurnoutSignal {
 
 interface AuthorshipOverloadSignal {
   name: 'authorship_overload';
-  weight: 0.10;
+  weight: 0.09;
   detected: boolean;
   detail: { recent_14d: number; baseline_14d: number; ratio: number } | string;
 }
 
 interface StalledCommitmentsSignal {
   name: 'stalled_commitments';
-  weight: 0.10;
+  weight: 0.09;
   detected: boolean;
   detail: { stalled_count: number; threshold: number };
+}
+
+interface TaskOverloadSignal {
+  name: 'task_overload';
+  weight: 0.10;
+  detected: boolean;
+  detail: { active_due_soon_count: number; threshold: number };
 }
 
 /**
@@ -93,7 +102,7 @@ export async function detectAuthorshipOverload(
   if (baseline14d === 0 || recent14d < 3) {
     return {
       name: 'authorship_overload',
-      weight: 0.10,
+      weight: 0.09,
       detected: false,
       detail: {
         recent_14d: recent14d,
@@ -108,7 +117,7 @@ export async function detectAuthorshipOverload(
 
   return {
     name: 'authorship_overload',
-    weight: 0.10,
+    weight: 0.09,
     detected,
     detail: {
       recent_14d: recent14d,
@@ -148,9 +157,52 @@ export async function detectStalledCommitments(
 
   return {
     name: 'stalled_commitments',
-    weight: 0.10,
+    weight: 0.09,
     detected,
     detail: { stalled_count: stalledCount, threshold: THRESHOLD },
+  };
+}
+
+/**
+ * Detects when a user has an overloaded task queue — active tasks (status
+ * todo/in_progress/in_review) with a due date in the next 14 days.
+ * Includes both primary assignees (tasks.assignee_id) and additional
+ * assignees (task_assignees — see Phase 0.3 model).
+ *
+ * Signal: detected = true when active-due-soon count > 15.
+ */
+export async function detectTaskOverload(
+  userId: string,
+  orgId: string,
+): Promise<TaskOverloadSignal> {
+  const THRESHOLD = 15;
+
+  const [row] = await db
+    .select({ count: sql<number>`count(DISTINCT ${tasks.id})::int` })
+    .from(tasks)
+    .leftJoin(taskAssignees, eq(taskAssignees.task_id, tasks.id))
+    .where(
+      and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.status} IN ('todo', 'in_progress', 'in_review')`,
+        isNotNull(tasks.due_date),
+        sql`${tasks.due_date} < NOW() + INTERVAL '14 days'`,
+        or(
+          eq(tasks.assignee_id, userId),
+          eq(taskAssignees.user_id, userId),
+        ),
+      ),
+    );
+
+  const activeDueSoonCount = Number(row?.count ?? 0);
+  const detected = activeDueSoonCount > THRESHOLD;
+
+  return {
+    name: 'task_overload',
+    weight: 0.10,
+    detected,
+    detail: { active_due_soon_count: activeDueSoonCount, threshold: THRESHOLD },
   };
 }
 
@@ -189,7 +241,20 @@ export async function detectBurnout(orgId: string): Promise<void> {
     try {
       const signals: BurnoutSignal[] = [];
 
-      // --- SIGNAL 1: Working hours shift (weight 0.2) ---
+      // Weights renormalized from the original 7-signal composite (summing to 1.0)
+      // after adding SIGNAL 8 (task_overload @ 0.10). Each existing signal is
+      // scaled by 0.9 to preserve proportions while carving out 0.10.
+      //   working_hours_shift        0.15 → 0.135
+      //   declining_sentiment        0.15 → 0.135
+      //   social_withdrawal          0.10 → 0.09
+      //   response_time_degradation  0.15 → 0.135
+      //   overwork                   0.25 → 0.225
+      //   authorship_overload        0.10 → 0.09
+      //   stalled_commitments        0.10 → 0.09
+      //   task_overload              (new) 0.10
+      // Total = 1.00
+
+      // --- SIGNAL 1: Working hours shift (weight 0.135) ---
       const activeHoursPattern = await db
         .select()
         .from(peoplePatterns)
@@ -218,12 +283,12 @@ export async function detectBurnout(orgId: string): Promise<void> {
 
       signals.push({
         name: 'working_hours_shift',
-        weight: 0.15,
+        weight: 0.135,
         detected: hoursShiftDetected,
         detail: hoursShiftDetail,
       });
 
-      // --- SIGNAL 2: Declining sentiment (weight 0.15) ---
+      // --- SIGNAL 2: Declining sentiment (weight 0.135) ---
       // PRIVACY: Only analyze PUBLIC messages, NOT DMs
       const publicMessages = await db
         .select({ content: messages.content })
@@ -280,12 +345,12 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'declining_sentiment',
-        weight: 0.15,
+        weight: 0.135,
         detected: sentimentDetected,
         detail: sentimentDetail,
       });
 
-      // --- SIGNAL 3: Social withdrawal (weight 0.15) ---
+      // --- SIGNAL 3: Social withdrawal (weight 0.09) ---
       // Count messages in social/non-work spaces
       const [recentSocialRow] = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -331,12 +396,12 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'social_withdrawal',
-        weight: 0.1,
+        weight: 0.09,
         detected: socialWithdrawalDetected,
         detail: socialWithdrawalDetail,
       });
 
-      // --- SIGNAL 4: Response time degradation (weight 0.15) ---
+      // --- SIGNAL 4: Response time degradation (weight 0.135) ---
       const responseTimePattern = await db
         .select()
         .from(peoplePatterns)
@@ -366,12 +431,12 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'response_time_degradation',
-        weight: 0.15,
+        weight: 0.135,
         detected: responseTimeDetected,
         detail: responseTimeDetail,
       });
 
-      // --- SIGNAL 5: Overwork (weight 0.25) ---
+      // --- SIGNAL 5: Overwork (weight 0.225) ---
       // Count days with messages after 10 PM in user's timezone
       const userTimezone = member.timezone ?? orgTimezone;
 
@@ -403,18 +468,22 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
 
       signals.push({
         name: 'overwork',
-        weight: 0.25,
+        weight: 0.225,
         detected: overworkDetected,
         detail: overworkDetail,
       });
 
-      // --- SIGNAL 6: Wiki authorship overload (weight 0.10) ---
+      // --- SIGNAL 6: Wiki authorship overload (weight 0.09) ---
       const authorshipSignal = await detectAuthorshipOverload(member.userId, orgId);
       signals.push(authorshipSignal);
 
-      // --- SIGNAL 7: Stalled commitments (weight 0.10) ---
+      // --- SIGNAL 7: Stalled commitments (weight 0.09) ---
       const stalledCommitmentsSignal = await detectStalledCommitments(member.userId, orgId);
       signals.push(stalledCommitmentsSignal);
+
+      // --- SIGNAL 8: Task overload (weight 0.10) ---
+      const taskOverloadSignal = await detectTaskOverload(member.userId, orgId);
+      signals.push(taskOverloadSignal);
 
       // --- 5B: Score Calculation ---
       const burnoutScore = signals.reduce(
