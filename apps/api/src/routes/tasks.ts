@@ -109,6 +109,108 @@ async function getTaskForOrg(taskId: string, orgId: string) {
 }
 
 /**
+ * Task 6.4 — extract `@name` / `@user_id` tokens from a free-form HTML/text
+ * payload and resolve them against the org's member roster. Case-insensitive
+ * partial match against `name`/`email`, first exact match wins; direct
+ * user_id matches short-circuit the name lookup so agents-as-users resolve
+ * without ambiguity. Returns the matched user_ids, de-duplicated.
+ */
+async function resolveMentions(content: string | null | undefined, orgId: string, authorId: string): Promise<string[]> {
+  if (!content) return [];
+  // Strip HTML tags so `@name` mentions inside TipTap paragraph markup still
+  // match the raw regex. TipTap wraps content in <p> / <span> / etc.
+  const plain = content.replace(/<[^>]+>/g, ' ');
+  const tokens = Array.from(plain.matchAll(/@([a-zA-Z0-9_.\-]+)/g))
+    .map((m) => m[1])
+    .filter((t): t is string => typeof t === 'string' && t.length > 0);
+  if (tokens.length === 0) return [];
+
+  // Pull the org's active member user list once; small N, much faster than
+  // one query per token.
+  const members = await db.select({
+    id: users.id,
+    name: users.name,
+    email: users.email,
+  })
+    .from(users)
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.user_id, users.id),
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.is_active, true),
+    ));
+
+  const resolved = new Set<string>();
+  for (const token of tokens) {
+    const lowerToken = token.toLowerCase();
+    // Direct id match first (handles @<uuid>-style references).
+    const byId = members.find((m) => m.id === token);
+    if (byId) {
+      if (byId.id !== authorId) resolved.add(byId.id);
+      continue;
+    }
+    // Exact name match (case-insensitive), prefer first exact hit.
+    const exact = members.find((m) => (m.name ?? '').toLowerCase() === lowerToken);
+    if (exact) {
+      if (exact.id !== authorId) resolved.add(exact.id);
+      continue;
+    }
+    // Exact email-local-part match.
+    const byEmail = members.find((m) => (m.email ?? '').toLowerCase().split('@')[0] === lowerToken);
+    if (byEmail) {
+      if (byEmail.id !== authorId) resolved.add(byEmail.id);
+      continue;
+    }
+    // Fall back to first case-insensitive partial match on name.
+    const partial = members.find((m) => (m.name ?? '').toLowerCase().includes(lowerToken));
+    if (partial && partial.id !== authorId) resolved.add(partial.id);
+  }
+
+  return Array.from(resolved);
+}
+
+/**
+ * Task 6.4 — create `mention` notifications for each resolved user + emit the
+ * socket event so their notification panel updates live. Silently no-ops when
+ * there are no mentions.
+ */
+async function dispatchMentionNotifications(params: {
+  content: string | null | undefined;
+  taskId: string;
+  orgId: string;
+  authorId: string;
+  authorName: string | null;
+  taskPrefix: string;
+  taskNumber: number;
+  surface: 'description' | 'comment';
+}) {
+  const { content, taskId, orgId, authorId, authorName, taskPrefix, taskNumber, surface } = params;
+  const mentionedIds = await resolveMentions(content, orgId, authorId);
+  if (mentionedIds.length === 0) return;
+
+  const taskRef = `${taskPrefix}-${taskNumber}`;
+  const link = `/tasks?task=${taskRef}`;
+  const plain = (content ?? '').replace(/<[^>]+>/g, ' ').trim();
+  const snippet = plain.slice(0, 200);
+
+  for (const userId of mentionedIds) {
+    try {
+      await db.insert(notifications).values({
+        org_id: orgId,
+        user_id: userId,
+        type: 'mention',
+        title: `${authorName || 'Someone'} mentioned you ${surface === 'comment' ? 'in a comment on' : 'in'} ${taskRef}`,
+        body: snippet,
+        link,
+        metadata: { task_id: taskId, surface },
+      });
+      emitToUser(userId, 'notification:new', { type: 'mention', title: `Mention on ${taskRef}` });
+    } catch (err) {
+      console.error('Failed to create mention notification:', err);
+    }
+  }
+}
+
+/**
  * Task 2.7 — detect cycles in the `blocks` dependency graph.
  *
  * Edges are stored exclusively as type=`blocks` (the POST handler normalizes
@@ -879,15 +981,20 @@ taskRoutes.post('/:id/comments', async (c) => {
       avatar_url: users.avatar_url,
     }).from(users).where(eq(users.id, user.id)).limit(1);
 
-    // Notify task assignee about the comment (if not the commenter)
+    // Notify task assignee about the comment (if not the commenter) and
+    // dispatch `mention` notifications for any @-mentions in the body.
     try {
       const [commentedTask] = await db.select({ assignee_id: tasks.assignee_id, number: tasks.number, title: tasks.title, project_id: tasks.project_id })
         .from(tasks).where(eq(tasks.id, taskId)).limit(1);
+      const [proj] = await db.select({ prefix: projects.prefix })
+        .from(projects)
+        .where(eq(projects.id, commentedTask?.project_id ?? ''))
+        .limit(1);
+      const prefix = proj?.prefix || '';
+      const number = commentedTask?.number ?? 0;
+      const taskId_str = `${prefix}-${number}`;
 
       if (commentedTask?.assignee_id && commentedTask.assignee_id !== user.id) {
-        const [proj] = await db.select({ prefix: projects.prefix }).from(projects).where(eq(projects.id, commentedTask.project_id)).limit(1);
-        const taskId_str = `${proj?.prefix || ''}-${commentedTask.number}`;
-
         await db.insert(notifications).values({
           org_id: user.org_id,
           user_id: commentedTask.assignee_id,
@@ -897,6 +1004,20 @@ taskRoutes.post('/:id/comments', async (c) => {
           link: `/tasks?task=${taskId_str}`,
         });
         emitToUser(commentedTask.assignee_id, 'notification:new', { type: 'task_updated', title: `Comment on ${taskId_str}` });
+      }
+
+      // Task 6.4 — mention notifications for this comment.
+      if (commentedTask) {
+        await dispatchMentionNotifications({
+          content: parsed.data.content,
+          taskId,
+          orgId: user.org_id,
+          authorId: user.id,
+          authorName: userData?.name ?? null,
+          taskPrefix: prefix,
+          taskNumber: number,
+          surface: 'comment',
+        });
       }
     } catch (err) {
       console.error('Comment notification error:', err);
@@ -1458,6 +1579,28 @@ taskRoutes.patch('/:id', async (c) => {
           new_value: entry.new_value,
         }))
       );
+    }
+
+    // Task 6.4 — dispatch mention notifications on description edits.
+    if (parsed.data.description !== undefined && parsed.data.description !== existingTask.description) {
+      try {
+        const [author] = await db.select({ name: users.name })
+          .from(users).where(eq(users.id, user.id)).limit(1);
+        const [proj] = await db.select({ prefix: projects.prefix })
+          .from(projects).where(eq(projects.id, existingTask.project_id)).limit(1);
+        await dispatchMentionNotifications({
+          content: parsed.data.description,
+          taskId,
+          orgId: user.org_id,
+          authorId: user.id,
+          authorName: author?.name ?? null,
+          taskPrefix: proj?.prefix ?? '',
+          taskNumber: existingTask.number,
+          surface: 'description',
+        });
+      } catch (err) {
+        console.error('Description mention dispatch error:', err);
+      }
     }
 
     // After the task update is committed, check for recurring task
