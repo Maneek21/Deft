@@ -34,6 +34,7 @@ import {
   Headphones,
   BookOpen,
   Smile,
+  Library,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
@@ -76,6 +77,7 @@ const navItems = [
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { name: 'Agent', href: '/agent', icon: Bot },
+  { name: 'Library', href: '/library', icon: Library },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
