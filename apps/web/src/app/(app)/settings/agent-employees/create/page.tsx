@@ -119,22 +119,15 @@ export default function CreateAgentEmployeePage() {
   const [role, setRole] = useState('');
   const [avatarColor, setAvatarColor] = useState(AVATAR_COLORS[0]);
 
-  // Step 2 — Instructions
+  // Step 2 — Behavior (Instructions + Tools & Trust merged)
   const [systemPrompt, setSystemPrompt] = useState('');
   const [expertiseDescription, setExpertiseDescription] = useState('');
+  const [trustLevel, setTrustLevel] = useState('conservative');
+  const [maxDailyActions, setMaxDailyActions] = useState(50);
 
   // Step 3 — Skills (Task 4.7)
   const [skillsCatalog, setSkillsCatalog] = useState<Skill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
-
-  // Step 4 — Tools & Trust
-  const [trustLevel, setTrustLevel] = useState('conservative');
-  const [maxDailyActions, setMaxDailyActions] = useState(50);
-
-  // Step 5 — Heartbeat
-  const [heartbeatEnabled, setHeartbeatEnabled] = useState(false);
-  const [heartbeatInterval, setHeartbeatInterval] = useState(30);
-  const [heartbeatConfig, setHeartbeatConfig] = useState('');
 
   // API key modal (BYOA)
   const [apiKeyModal, setApiKeyModal] = useState<string | null>(null);
@@ -164,17 +157,11 @@ export default function CreateAgentEmployeePage() {
     if (template) {
       setSystemPrompt(template.system_prompt);
       setExpertiseDescription(template.expertise_description || '');
-      if (template.heartbeat_config) {
-        setHeartbeatConfig(template.heartbeat_config);
-        setHeartbeatEnabled(true);
-      }
     } else {
       // Custom role — clear pre-fill
       if (newRole === 'custom') {
         setSystemPrompt('');
         setExpertiseDescription('');
-        setHeartbeatConfig('');
-        setHeartbeatEnabled(false);
       }
     }
     // Task 4.7 — pre-check bundled skills whose slug matches this role's
@@ -209,9 +196,6 @@ export default function CreateAgentEmployeePage() {
         trust_level: trustLevel,
         max_daily_actions: maxDailyActions,
         is_byoa: isSelfHosted,
-        heartbeat_enabled: heartbeatEnabled,
-        heartbeat_interval_min: heartbeatInterval,
-        heartbeat_config: heartbeatConfig || undefined,
         // Task 4.7 — ship selected skill ids. Today the native POST endpoint
         // strips unknown fields (Zod); /api/agents/deploy/start is the
         // canonical writer into agent_employee_skills. A follow-up will
@@ -283,7 +267,7 @@ export default function CreateAgentEmployeePage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-6">
-        {[1, 2, 3, 4, 5].map((s) => (
+        {[1, 2, 3].map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div
               className="w-2 h-2 rounded-full transition-colors"
@@ -292,7 +276,7 @@ export default function CreateAgentEmployeePage() {
                 opacity: s <= step ? 1 : 0.5,
               }}
             />
-            {s < 5 && (
+            {s < 3 && (
               <div
                 className="w-6 h-px"
                 style={{ background: s < step ? 'var(--accent)' : 'var(--border)' }}
@@ -301,7 +285,7 @@ export default function CreateAgentEmployeePage() {
           </div>
         ))}
         <span className="text-[11px] ml-2" style={{ color: 'var(--muted)' }}>
-          Step {step} of 5
+          Step {step} of 3
         </span>
       </div>
 
@@ -408,7 +392,7 @@ export default function CreateAgentEmployeePage() {
         </div>
       )}
 
-      {/* Step 2: Instructions */}
+      {/* Step 2: Behavior (Instructions + Tools & Trust) */}
       {step === 2 && (
         <div
           className="rounded-xl p-5"
@@ -418,7 +402,7 @@ export default function CreateAgentEmployeePage() {
             className="text-[13px] font-semibold uppercase tracking-wide mb-4"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
-            Instructions
+            Behavior
           </h3>
 
           {/* System prompt */}
@@ -455,7 +439,7 @@ export default function CreateAgentEmployeePage() {
             value={expertiseDescription}
             onChange={(e) => setExpertiseDescription(e.target.value)}
             placeholder="e.g. Sprint tracking, blocker detection, team coordination"
-            className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+            className="w-full h-9 px-3 text-[13px] rounded-md outline-none mb-5"
             style={{
               background: 'var(--surface)',
               border: '1px solid var(--border)',
@@ -463,6 +447,74 @@ export default function CreateAgentEmployeePage() {
               borderRadius: 4,
             }}
           />
+
+          {/* Trust level */}
+          <label
+            className="block text-[11px] font-medium mb-2"
+            style={{ color: 'var(--foreground-secondary)' }}
+          >
+            Trust Level
+          </label>
+          <div className="space-y-2 mb-5">
+            {TRUST_LEVELS.map((tl) => (
+              <label
+                key={tl.value}
+                className="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors"
+                style={{
+                  background: trustLevel === tl.value ? 'var(--surface)' : 'transparent',
+                  border: `1px solid ${trustLevel === tl.value ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 8,
+                }}
+              >
+                <input
+                  type="radio"
+                  name="trust_level"
+                  value={tl.value}
+                  checked={trustLevel === tl.value}
+                  onChange={() => setTrustLevel(tl.value)}
+                  className="mt-0.5 accent-current"
+                  style={{ accentColor: 'var(--accent)' }}
+                />
+                <div>
+                  <p
+                    className="text-[13px] font-medium"
+                    style={{ color: 'var(--foreground)' }}
+                  >
+                    {tl.label}
+                  </p>
+                  <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                    {tl.desc}
+                  </p>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          {/* Max daily actions */}
+          <label
+            className="block text-[11px] font-medium mb-1"
+            style={{ color: 'var(--foreground-secondary)' }}
+          >
+            Max Daily Actions
+          </label>
+          <input
+            type="number"
+            value={maxDailyActions}
+            onChange={(e) => setMaxDailyActions(Math.max(1, parseInt(e.target.value) || 1))}
+            min={1}
+            className="w-32 h-9 px-3 text-[13px] rounded-md outline-none mb-4"
+            style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              color: 'var(--foreground)',
+              borderRadius: 4,
+            }}
+          />
+
+          {/* Note */}
+          <p className="text-[11px] mt-2" style={{ color: 'var(--muted)' }}>
+            Tool and MCP configuration can be done after creation.
+          </p>
         </div>
       )}
 
@@ -572,173 +624,6 @@ export default function CreateAgentEmployeePage() {
         </div>
       )}
 
-      {/* Step 4: Tools & Trust */}
-      {step === 4 && (
-        <div
-          className="rounded-xl p-5"
-          style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
-        >
-          <h3
-            className="text-[13px] font-semibold uppercase tracking-wide mb-4"
-            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-          >
-            Tools & Trust
-          </h3>
-
-          {/* Trust level */}
-          <label
-            className="block text-[11px] font-medium mb-2"
-            style={{ color: 'var(--foreground-secondary)' }}
-          >
-            Trust Level
-          </label>
-          <div className="space-y-2 mb-5">
-            {TRUST_LEVELS.map((tl) => (
-              <label
-                key={tl.value}
-                className="flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors"
-                style={{
-                  background: trustLevel === tl.value ? 'var(--surface)' : 'transparent',
-                  border: `1px solid ${trustLevel === tl.value ? 'var(--accent)' : 'var(--border)'}`,
-                  borderRadius: 8,
-                }}
-              >
-                <input
-                  type="radio"
-                  name="trust_level"
-                  value={tl.value}
-                  checked={trustLevel === tl.value}
-                  onChange={() => setTrustLevel(tl.value)}
-                  className="mt-0.5 accent-current"
-                  style={{ accentColor: 'var(--accent)' }}
-                />
-                <div>
-                  <p
-                    className="text-[13px] font-medium"
-                    style={{ color: 'var(--foreground)' }}
-                  >
-                    {tl.label}
-                  </p>
-                  <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                    {tl.desc}
-                  </p>
-                </div>
-              </label>
-            ))}
-          </div>
-
-          {/* Max daily actions */}
-          <label
-            className="block text-[11px] font-medium mb-1"
-            style={{ color: 'var(--foreground-secondary)' }}
-          >
-            Max Daily Actions
-          </label>
-          <input
-            type="number"
-            value={maxDailyActions}
-            onChange={(e) => setMaxDailyActions(Math.max(1, parseInt(e.target.value) || 1))}
-            min={1}
-            className="w-32 h-9 px-3 text-[13px] rounded-md outline-none mb-4"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              color: 'var(--foreground)',
-              borderRadius: 4,
-            }}
-          />
-
-          {/* Note */}
-          <p className="text-[11px] mt-2" style={{ color: 'var(--muted)' }}>
-            Tool and MCP configuration can be done after creation.
-          </p>
-        </div>
-      )}
-
-      {/* Step 5: Heartbeat */}
-      {step === 5 && (
-        <div
-          className="rounded-xl p-5"
-          style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
-        >
-          <h3
-            className="text-[13px] font-semibold uppercase tracking-wide mb-1"
-            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-          >
-            Heartbeat
-          </h3>
-          <p className="text-[11px] mb-4" style={{ color: 'var(--muted)' }}>
-            Configure proactive monitoring. The agent wakes up at the specified interval and checks its task list. If nothing needs attention, it stays silent.
-          </p>
-
-          {/* Enable checkbox */}
-          <label
-            className="flex items-center gap-2 cursor-pointer mb-4"
-          >
-            <input
-              type="checkbox"
-              checked={heartbeatEnabled}
-              onChange={(e) => setHeartbeatEnabled(e.target.checked)}
-              className="accent-current"
-              style={{ accentColor: 'var(--accent)' }}
-            />
-            <span className="text-[13px]" style={{ color: 'var(--foreground)' }}>
-              Enable heartbeat monitoring
-            </span>
-          </label>
-
-          {heartbeatEnabled && (
-            <>
-              {/* Interval */}
-              <label
-                className="block text-[11px] font-medium mb-1"
-                style={{ color: 'var(--foreground-secondary)' }}
-              >
-                Check every (minutes)
-              </label>
-              <input
-                type="number"
-                value={heartbeatInterval}
-                onChange={(e) => setHeartbeatInterval(Math.max(5, Math.min(1440, parseInt(e.target.value) || 5)))}
-                min={5}
-                max={1440}
-                className="w-32 h-9 px-3 text-[13px] rounded-md outline-none mb-4"
-                style={{
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--foreground)',
-                  borderRadius: 4,
-                }}
-              />
-
-              {/* Heartbeat checklist */}
-              <label
-                className="block text-[11px] font-medium mb-1"
-                style={{ color: 'var(--foreground-secondary)' }}
-              >
-                Heartbeat Checklist
-              </label>
-              <textarea
-                value={heartbeatConfig}
-                onChange={(e) => setHeartbeatConfig(e.target.value)}
-                placeholder={"### Every 30 minutes:\n- Check for overdue tasks..."}
-                rows={8}
-                className="w-full px-3 py-2 text-[13px] rounded-md outline-none resize-y mb-2"
-                style={{
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--foreground)',
-                  borderRadius: 4,
-                  minHeight: 120,
-                }}
-              />
-              <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                Write in plain English. Use ### headings for different intervals.
-              </p>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Navigation */}
       <div className="flex items-center justify-between mt-5">
@@ -760,7 +645,7 @@ export default function CreateAgentEmployeePage() {
           )}
         </div>
         <div>
-          {step < 5 ? (
+          {step < 3 ? (
             <button
               onClick={() => setStep(step + 1)}
               disabled={step === 1 ? !canProceedStep1 : step === 2 ? !canProceedStep2 : false}
