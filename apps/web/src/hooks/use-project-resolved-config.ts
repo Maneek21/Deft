@@ -1,23 +1,20 @@
-'use client';
-
 /**
- * Task 4.9 — Client-side cache + fetch for the project's resolved skill
- * config. Exposes `{ config, loading, error, refresh }` to callers.
+ * Collapsed web resolver — synchronously returns hardcoded engineering
+ * defaults. Previously fetched `/api/projects/:id/resolved-config` and
+ * merged per-skill jsonb. That machinery retired in the
+ * Phase-4-reversal simplification (2026-04-18):
+ *   docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md
  *
- * Storage: sessionStorage keyed by project_id (keyed so switching projects
- * does not collide, and the cache dies with the tab so stale configs don't
- * outlive a skill-reattach flow on the server). The on-disk entry is
- * advisory — the hook always kicks off a fresh network fetch to replace it,
- * but the cached value is returned synchronously on mount so the UI doesn't
- * flash the engineering fallback for one render.
+ * Preserves the `{ config, loading, error, refresh }` return shape so
+ * consumers (task-board, task-card, task-list, task-filters,
+ * task-pipeline-view, task-quick-create, task-detail, tasks/page) keep
+ * compiling without changes. Every project renders the same engineering
+ * vocabulary and `config` is always non-null (fixes the Marketing board
+ * crash: "Cannot read properties of undefined (reading 'length')").
  *
- * There is no `project:skills_changed` socket event wired up server-side
- * yet (Phase 4.9 note — logged as a concern on the subagent report). When
- * it lands, the hook should subscribe and call `refresh()`.
+ * All exported types and utility functions are preserved because
+ * task-board, task-filters, and task-detail import them directly.
  */
-
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { api } from '@/lib/api';
 
 export type ResolvedStatus = {
   id: string;
@@ -54,98 +51,47 @@ export type ResolvedConfig = {
   allowed_transitions: Record<string, string[]> | null;
 };
 
-const STORAGE_KEY = (projectId: string) => `deft:resolved-config:${projectId}`;
+const ENGINEERING_STATUSES: ResolvedStatus[] = [
+  { id: 'backlog', label: 'Backlog', color: '#6b7280', order: 0 },
+  { id: 'todo', label: 'To Do', color: '#3b82f6', order: 1 },
+  { id: 'in_progress', label: 'In Progress', color: '#f59e0b', order: 2 },
+  { id: 'in_review', label: 'In Review', color: '#8b5cf6', order: 3 },
+  { id: 'done', label: 'Done', color: '#10b981', order: 4 },
+  { id: 'cancelled', label: 'Cancelled', color: '#ef4444', order: 5 },
+];
 
-function readCached(projectId: string): ResolvedConfig | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY(projectId));
-    if (!raw) return null;
-    return JSON.parse(raw) as ResolvedConfig;
-  } catch {
-    return null;
-  }
-}
-
-function writeCached(projectId: string, config: ResolvedConfig): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY(projectId), JSON.stringify(config));
-  } catch {
-    // sessionStorage can throw in private mode / quota errors — silently fall
-    // through; the in-memory state still holds the fresh config.
-  }
-}
+const HARDCODED: ResolvedConfig = {
+  statuses: ENGINEERING_STATUSES,
+  allowed_transitions: {
+    backlog: ['todo', 'in_progress', 'cancelled'],
+    todo: ['in_progress', 'backlog', 'cancelled'],
+    in_progress: ['in_review', 'done', 'backlog', 'cancelled'],
+    in_review: ['in_progress', 'done', 'cancelled'],
+    done: ['in_progress', 'backlog'],
+    cancelled: ['backlog'],
+  },
+  priority_vocab: { kind: 'numbered', labels: ['p0', 'p1', 'p2', 'p3'] },
+  default_view: 'board',
+  hide_prefix_ids: false,
+  custom_fields: [],
+  task_templates: [],
+};
 
 /**
- * Invalidate a cached config for a specific project. Call when the server
- * signals a skill change (future project:skills_changed socket event) or
- * immediately after a mutation that we know re-runs the resolver.
+ * No-op kept for call-site compatibility. The sessionStorage cache no
+ * longer exists so there is nothing to invalidate.
  */
-export function invalidateCachedResolvedConfig(projectId: string): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY(projectId));
-  } catch {
-    // ignore
-  }
+export function invalidateCachedResolvedConfig(_projectId: string): void {
+  // no-op
 }
 
-export function useProjectResolvedConfig(projectId: string | null | undefined) {
-  const [config, setConfig] = useState<ResolvedConfig | null>(() =>
-    projectId ? readCached(projectId) : null,
-  );
-  const [loading, setLoading] = useState<boolean>(!!projectId);
-  const [error, setError] = useState<string | null>(null);
-  const aliveRef = useRef(true);
-
-  const fetchConfig = useCallback(async () => {
-    if (!projectId) {
-      setConfig(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get(`/api/projects/${projectId}/resolved-config`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = (await res.json()) as ResolvedConfig;
-      if (!aliveRef.current) return;
-      setConfig(data);
-      writeCached(projectId, data);
-    } catch (err) {
-      if (!aliveRef.current) return;
-      setError(err instanceof Error ? err.message : 'Failed to fetch resolved config');
-    } finally {
-      if (aliveRef.current) setLoading(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    aliveRef.current = true;
-    if (projectId) {
-      // Seed synchronous cache hit if any, then revalidate.
-      const cached = readCached(projectId);
-      if (cached) setConfig(cached);
-      fetchConfig();
-    } else {
-      setConfig(null);
-      setLoading(false);
-    }
-    return () => {
-      aliveRef.current = false;
-    };
-  }, [projectId, fetchConfig]);
-
-  const refresh = useCallback(() => {
-    if (projectId) invalidateCachedResolvedConfig(projectId);
-    return fetchConfig();
-  }, [projectId, fetchConfig]);
-
-  return { config, loading, error, refresh };
+export function useProjectResolvedConfig(_projectId: string | null | undefined) {
+  return {
+    config: HARDCODED,
+    loading: false,
+    error: null as string | null,
+    refresh: (): Promise<void> => Promise.resolve(),
+  };
 }
 
 // ─── Priority label mapping (render-time only) ──────────────────────────────
