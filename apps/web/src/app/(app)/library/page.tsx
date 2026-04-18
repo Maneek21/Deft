@@ -3,8 +3,13 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import { BookOpen, Loader2, Layers, FileStack } from 'lucide-react';
+import { api } from '@/lib/api';
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const res = await api.get(url);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+};
 
 type Skill = {
   id: string;
@@ -29,13 +34,19 @@ type Template = {
 export default function LibraryPage() {
   const [tab, setTab] = useState<'skills' | 'templates'>('skills');
 
-  const { data: skillsData, error: skillsErr } = useSWR<{ skills: Skill[] }>(
+  // /api/skills returns a plain array; /api/task-templates returns { templates: [...] }.
+  const { data: skillsData, error: skillsErr } = useSWR<Skill[] | { skills: Skill[] }>(
     '/api/skills',
     fetcher,
   );
+  const skills: Skill[] = Array.isArray(skillsData)
+    ? skillsData
+    : (skillsData?.skills ?? []);
+
   const { data: templatesData, error: templatesErr } = useSWR<{
     templates: Template[];
   }>('/api/task-templates', fetcher);
+  const templates: Template[] = templatesData?.templates ?? [];
 
   return (
     <div className="flex flex-col h-full p-4 md:p-6 overflow-hidden">
@@ -94,7 +105,7 @@ export default function LibraryPage() {
               <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
             </div>
           )}
-          {skillsData?.skills?.length === 0 && (
+          {skills.length === 0 && (
             <div className="text-center py-12">
               <Layers size={24} style={{ color: 'var(--text-tertiary)', margin: '0 auto 8px' }} />
               <p className="text-[13px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -102,7 +113,7 @@ export default function LibraryPage() {
               </p>
             </div>
           )}
-          {(skillsData?.skills ?? []).map((s) => (
+          {skills.map((s) => (
             <div
               key={s.id}
               className="p-4 rounded-lg"
@@ -123,7 +134,7 @@ export default function LibraryPage() {
                     className="text-[10px] font-semibold uppercase tracking-wide mt-0.5"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
-                    {s.source ?? (s as any).org_id ? 'org' : 'bundled'}
+                    {s.source ?? ((s as any).org_id ? 'org' : 'bundled')}
                   </div>
                 </div>
                 <span
@@ -169,7 +180,7 @@ export default function LibraryPage() {
               <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
             </div>
           )}
-          {templatesData?.templates?.length === 0 && (
+          {templates.length === 0 && (
             <div className="text-center py-12">
               <FileStack size={24} style={{ color: 'var(--text-tertiary)', margin: '0 auto 8px' }} />
               <p className="text-[13px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -177,7 +188,7 @@ export default function LibraryPage() {
               </p>
             </div>
           )}
-          {(templatesData?.templates ?? []).map((t) => (
+          {templates.map((t) => (
             <div
               key={t.id}
               className="p-4 rounded-lg"
