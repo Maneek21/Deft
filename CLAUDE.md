@@ -64,7 +64,7 @@ The agent is NOT a chatbot. It's a workflow engine.
 
 Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
 
-**Skills primitive (unified agent + project capabilities).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored) — each carrying an `agent_config` JSONB (capability packs, triggers, tools, prompt additions) and a `project_config` JSONB (statuses, priority vocab, default view, custom fields, task templates, allowed transitions). Nine day-one bundled skills are seeded: six capability-pack skills (one per available pack) plus three project-workflow skills — `engineering`, `marketing-campaign`, `sales-pipeline`. Agents install skills via the `agent_employee_skills` junction (replacing the dropped `capability_packs[]` array); projects attach skills via `project_skills` with ordering. Projects support multi-skill attachments resolved first-attached-wins in the UI. The dead `native_tools[]` column and `TEMPLATE_DEFAULT_PACKS` constant were removed — everything now flows through skills.
+**Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Six day-one bundled skills ship: one per available capability pack (Deft Workspace carries the 9 task tools — `comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
 
@@ -95,7 +95,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 
 Tasks are the agent's primary output surface and the product's action surface. Post-Phase-6 they ship with:
 
-- **Skills primitive** drives per-project vocabulary: statuses, priority vocab, board columns, pipeline/calendar view modes, custom fields, and task templates all come from the project's resolved skill config (first-attached-wins across multi-skill).
+- **Fixed project defaults.** Every project uses the 6-status engineering vocabulary (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`), p0–p3 priority, and Kanban default view. View switcher (Board / List / Timeline / Calendar / Pipeline) remains a per-user selection. Per-project customization (`project_skills`, `skills.project_config`, first-attached-wins resolution, custom fields, allowed-transitions overrides) was retired 2026-04-18 — see `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 - **Recurrence UI + clone fix** (Task 4.12) — recurring task pattern stored on `tasks.recurrence` (`daily` | `weekly` | `biweekly` | `monthly`) with `recurrence_source_id` linking generated copies.
 - **Workflow executor (basic)** — BullMQ-backed runner supporting the `task.status_changed` trigger with four actions: `add_comment`, `assign_to`, `add_label`, `notify` (Task 5.7). Broader trigger coverage + skill-defined triggers land in Phase 8.
 - **Task reactions** (Task 6.3) — emoji reactions on task cards/detail (`task_reactions` table, upsert/delete endpoints).
@@ -107,7 +107,7 @@ Tasks are the agent's primary output surface and the product's action surface. P
 - **Task 0.4 dashboard fix (resolved)** — "My Work" filter on the bento dashboard now scopes to the current user.
 - **Security hardening (Phase 7, resolved)** — 10 vulnerabilities fixed: XSS prevention via DOMPurify on all `dangerouslySetInnerHTML` sites (6 components), IDOR fixes on workflow-run/agent-message/wiki-citation deletes (verify ownership before delete), space membership enforcement on all space/message/pin endpoints + WebSocket `space:join`, upload path traversal fix (`path.basename` + Content-Disposition `attachment`), daily notes optimistic locking (CAS version check, 409 on conflict).
 
-Dead primitives retired: the `native_tools[]` agent column was dropped (migration 0038) and the `TEMPLATE_DEFAULT_PACKS` constant removed. Capability packs are now expressed as bundled skills and installed via `agent_employee_skills`.
+Dead primitives retired: the `native_tools[]` agent column was dropped (migration 0038) and the `TEMPLATE_DEFAULT_PACKS` constant removed (2026-04-16). `project_config` JSONB, `project_skills` table, and the three project-workflow bundled skills (`engineering`, `marketing-campaign`, `sales-pipeline`) were retired 2026-04-18 — projects now use fixed engineering defaults. Capability packs remain expressed as bundled agent skills installed via `agent_employee_skills`.
 
 - **UI fixes (Phase 7)** — sidebar three-dot menu portal click propagation fixed (menu items now respond to clicks). Scroll containers added to 9 settings pages that were clipping content.
 
@@ -133,7 +133,6 @@ The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop
 
 ## Known Limitations (deployment blockers)
 
-- **Postgres status enum constraint.** The `tasks.status` column is a Postgres enum with 6 Engineering values (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`). Any project using Marketing or Sales skill statuses will fail at the DB layer with an invalid enum value error. Fix: migrate the column from enum to text. This blocks non-Engineering skill adoption.
 - **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0044 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0044 applied.
 
 ## What NOT To Do
