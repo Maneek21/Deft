@@ -520,6 +520,30 @@ export const skills = pgTable('skills', {
   index('skills_org_idx').on(t.org_id),
 ]);
 
+// ═══ TASK TEMPLATES ═══
+// First-class catalog. Not nested in skills. Bundled rows live cross-tenant
+// (org_id NULL); org rows have a real org_id. Instantiated into a project
+// via POST /api/projects/:id/apply-template.
+export const taskTemplates = pgTable('task_templates', {
+  ...id(),
+  org_id: text('org_id'),
+  name: text('name').notNull(),
+  description: text('description'),
+  icon: text('icon'),
+  slug: text('slug').notNull(),
+  source: text('source').$type<'bundled' | 'marketplace' | 'org'>().default('org').notNull(),
+  version: text('version').default('1.0.0').notNull(),
+  tasks: jsonb('tasks').notNull(),
+  created_by: text('created_by').references(() => users.id),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  usage_count: integer('usage_count').default(0).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('task_templates_source_org_slug_idx').on(t.source, t.org_id, t.slug),
+  index('task_templates_org_idx').on(t.org_id),
+  index('task_templates_source_idx').on(t.source),
+]);
+
 // ═══ AGENT: TOOL REGISTRY ═══
 export const tools = pgTable('tools', {
   ...id(),
