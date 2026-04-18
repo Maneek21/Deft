@@ -1,8 +1,10 @@
 /**
  * Phase 4 Task 4.3 — Bundled skills seed verification.
  *
- * Asserts the 9 day-one bundled skills land correctly and the seeder is
- * idempotent. Coming-soon capability-pack slugs must NOT appear.
+ * Asserts the 6 bundled skills (one per available capability pack) land
+ * correctly and the seeder is idempotent. Coming-soon capability-pack
+ * slugs must NOT appear. Project-workflow skills (engineering,
+ * marketing-campaign, sales-pipeline) were retired in Task 16.
  */
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,17 +17,13 @@ const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
 
 const EXPECTED_SLUGS = [
-  // 6 capability-pack skills
+  // 6 capability-pack skills (one per available pack)
   'deft-workspace',
   'web-browsing',
   'tavily',
   'github',
   'google-calendar',
   'shell-exec',
-  // 3 project-workflow skills
-  'engineering',
-  'marketing-campaign',
-  'sales-pipeline',
 ];
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
@@ -44,20 +42,20 @@ before(async () => {
   await seedBundledSkills({ silent: true });
 });
 
-test('BUNDLED_SKILLS has exactly 9 definitions matching expected slugs', () => {
-  assert.equal(BUNDLED_SKILLS.length, 9);
+test('BUNDLED_SKILLS has exactly 6 definitions matching expected slugs', () => {
+  assert.equal(BUNDLED_SKILLS.length, 6);
   const slugs = BUNDLED_SKILLS.map((s) => s.slug).sort();
   assert.deepEqual(slugs, [...EXPECTED_SLUGS].sort());
 });
 
-test('seed produces exactly 9 bundled rows', async () => {
+test('seed produces exactly 6 bundled rows', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ count: string }>(
       `SELECT count(*)::text FROM skills
        WHERE source = 'bundled' AND slug = ANY($1::text[]) AND is_deleted = false`,
       [EXPECTED_SLUGS],
     );
-    assert.equal(res.rows[0]!.count, '9');
+    assert.equal(res.rows[0]!.count, '6');
   });
 });
 
@@ -76,12 +74,13 @@ test('bundled skills have org_id NULL', async () => {
 
 // Task 14: engineering statuses test removed — project_config column dropped from skills table.
 // Engineering defaults now hardcoded in project-resolved-config.ts (see engineering-defaults.test.ts).
+// Task 16: engineering skill retired as a bundled skill. The 9 Phase-3 task tools moved to deft-workspace.
 
-test('engineering skill ships the 9 Phase-3 task tools', async () => {
+test('deft-workspace skill ships the 9 Phase-3 task tools', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ agent_config: unknown }>(
       `SELECT agent_config FROM skills
-       WHERE source = 'bundled' AND slug = 'engineering'`,
+       WHERE source = 'bundled' AND slug = 'deft-workspace'`,
     );
     const cfg = res.rows[0]!.agent_config as { tools?: string[] };
     assert.ok(Array.isArray(cfg.tools));
@@ -97,7 +96,7 @@ test('engineering skill ships the 9 Phase-3 task tools', async () => {
       'remove_dependency',
       'list_my_tasks',
     ]) {
-      assert.ok(cfg.tools!.includes(t), `engineering must include ${t}`);
+      assert.ok(cfg.tools!.includes(t), `deft-workspace must include ${t}`);
     }
   });
 });
@@ -141,4 +140,5 @@ test('coming-soon capability packs are NOT seeded as bundled skills', async () =
 
 // Task 14: marketing-campaign and sales-pipeline project_config tests removed —
 // project_config column dropped from skills table (migration 0046).
-// These workflow skills are retired in Task 16.
+// Task 16: engineering, marketing-campaign, and sales-pipeline bundled skill
+// definitions fully removed. Only 6 capability-pack skills remain.

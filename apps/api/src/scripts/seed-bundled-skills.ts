@@ -1,5 +1,8 @@
 /**
- * Phase 4 Task 4.3 — Seed the 9 day-one bundled skills.
+ * Phase 4 Task 4.3 — Seed the bundled skills (agent-only, one per capability pack).
+ *
+ * Task 16: project-workflow skills (engineering, marketing-campaign,
+ * sales-pipeline) retired — 6 bundled skills remain.
  *
  * Idempotent: uses the (source, COALESCE(org_id,''), slug) unique index
  * from migration 0035 as the conflict target. Re-running refreshes
