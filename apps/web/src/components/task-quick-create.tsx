@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { X, ChevronDown } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
+import { TemplatePickerModal } from './template-picker-modal';
 
 type Props = {
   projectId: string;
@@ -41,6 +42,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
   const [error, setError] = useState<string | null>(null);
   const [members, setMembers] = useState<{ id: string; name: string }[]>([]);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   // Task 4.11 — resolved skill config drives custom fields + status vocab.
   const { config: resolvedConfig } = useProjectResolvedConfig(projectId);
   const [metadata, setMetadata] = useState<Record<string, any>>({});
@@ -443,9 +445,21 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
               className="flex items-center justify-between px-5 py-3"
               style={{ borderTop: '1px solid var(--border)' }}
             >
-              <span className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                Press Enter to create
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                  Press Enter to create
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTemplatePickerOpen(true)}
+                  className="text-[11px] underline"
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)', transition: 'color 150ms' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--muted)')}
+                >
+                  + from template
+                </button>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -479,6 +493,20 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
           </form>
         </div>
       </div>
+
+      {templatePickerOpen && (
+        <TemplatePickerModal
+          projectId={projectId}
+          onClose={() => setTemplatePickerOpen(false)}
+          onApplied={(count) => {
+            setTemplatePickerOpen(false);
+            onCreated();
+            // Board re-renders via WebSocket task:created events.
+            // Inline success: close the quick-create modal too.
+            void count;
+          }}
+        />
+      )}
     </>
   );
 }
