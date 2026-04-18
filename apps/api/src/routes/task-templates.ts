@@ -13,9 +13,9 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskActivity } from '@deft/db/schema';
+import { projects, tasks, taskActivity, taskTemplates } from '@deft/db/schema';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { getIO } from '../socket.js';
 
@@ -50,6 +50,58 @@ export function resolveTemplateDueDate(
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed;
 }
+
+// GET /api/task-templates — list bundled + org templates for this tenant.
+taskTemplateRoutes.get('/', async (c) => {
+  try {
+    const user = c.get('user') as { id: string; org_id: string };
+    const rows = await db
+      .select()
+      .from(taskTemplates)
+      .where(
+        and(
+          eq(taskTemplates.is_deleted, false),
+          or(
+            isNull(taskTemplates.org_id),                  // bundled + marketplace
+            eq(taskTemplates.org_id, user.org_id),         // tenant-scoped
+          ),
+        ),
+      );
+    return c.json({ templates: rows });
+  } catch (err) {
+    console.error('Failed to list task templates:', err);
+    return c.json({ error: 'Failed to list templates', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /api/task-templates/:id — fetch one, org-scoped.
+taskTemplateRoutes.get('/:id', async (c) => {
+  try {
+    const user = c.get('user') as { id: string; org_id: string };
+    const id = c.req.param('id');
+    const [row] = await db
+      .select()
+      .from(taskTemplates)
+      .where(
+        and(
+          eq(taskTemplates.id, id),
+          eq(taskTemplates.is_deleted, false),
+          or(
+            isNull(taskTemplates.org_id),
+            eq(taskTemplates.org_id, user.org_id),
+          ),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      return c.json({ error: 'Template not found', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ template: row });
+  } catch (err) {
+    console.error('Failed to get task template:', err);
+    return c.json({ error: 'Failed to get template', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
 
 // POST /api/projects/:id/apply-template
 taskTemplateRoutes.post('/:id/apply-template', async (c) => {
