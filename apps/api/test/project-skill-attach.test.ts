@@ -135,7 +135,7 @@ function app(): Hono {
 
 // ─── Resolver tests ─────────────────────────────────────────────────────
 
-test('resolver: marketing (order 0) + engineering (order 1) — statuses from marketing, custom_fields union', async () => {
+test('resolver: attach marketing + engineering — resolver ignores attached skills, always returns engineering defaults', async () => {
   // Clean slate for this project in case a prior broken run left rows.
   await withClient(async (c) => {
     await c.query(`DELETE FROM project_skills WHERE project_id = $1`, [projectWithSkillsId]);
@@ -160,7 +160,8 @@ test('resolver: marketing (order 0) + engineering (order 1) — statuses from ma
   assert.equal(r2.status, 201, `attach engineering failed: ${JSON.stringify(attach2)}`);
   assert.equal(attach2.attachment_order, 1);
 
-  // Call the resolver directly; also invalidate stale cache to be safe.
+  // Call the resolver directly — collapsed resolver ignores project_skills,
+  // always returns engineering defaults regardless of attachment order.
   const {
     getProjectResolvedConfig,
     invalidateProjectResolvedConfig,
@@ -169,42 +170,32 @@ test('resolver: marketing (order 0) + engineering (order 1) — statuses from ma
 
   const resolved = (await getProjectResolvedConfig(projectWithSkillsId!)) as any;
 
-  // First-attached-wins: marketing statuses (not engineering's).
+  // Hardcoded engineering statuses — skill attachment order no longer affects this.
   const statusIds = resolved.statuses.map((s: any) => s.id);
   assert.deepEqual(
     statusIds,
-    ['ideas', 'drafting', 'in_review', 'approved', 'scheduled', 'live', 'archived'],
-    'statuses must come from marketing (order 0)',
+    ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'],
+    'resolver always returns engineering defaults (attachment order ignored)',
   );
 
-  // Marketing ships `allowed_transitions: null` → fluid any-to-any.
-  assert.equal(resolved.allowed_transitions, null);
+  // Engineering has transitions set (non-null).
+  assert.ok(resolved.allowed_transitions);
+  assert.deepEqual(resolved.allowed_transitions.backlog, ['todo', 'in_progress', 'cancelled']);
 
-  // priority_vocab also first-attached-wins: marketing's named High/Medium/Low.
-  assert.equal(resolved.priority_vocab.kind, 'named');
-  assert.deepEqual(resolved.priority_vocab.labels, ['High', 'Medium', 'Low']);
+  // priority_vocab is always numbered p0..p3.
+  assert.equal(resolved.priority_vocab.kind, 'numbered');
+  assert.deepEqual(resolved.priority_vocab.labels, ['p0', 'p1', 'p2', 'p3']);
 
-  // default_view + hide_prefix_ids also marketing.
-  assert.equal(resolved.default_view, 'calendar');
-  assert.equal(resolved.hide_prefix_ids, true);
+  // default_view is always board, hide_prefix_ids always false.
+  assert.equal(resolved.default_view, 'board');
+  assert.equal(resolved.hide_prefix_ids, false);
 
-  // custom_fields: union of both. Engineering has none, marketing has 5.
-  const fieldIds = (resolved.custom_fields as { id: string }[]).map((f) => f.id).sort();
-  assert.deepEqual(
-    fieldIds,
-    ['approver', 'asset_url', 'channel', 'content_type', 'publish_url'],
-    'custom_fields must be unioned from marketing',
-  );
-
-  // task_templates: marketing ships the launch template.
-  const templateIds = (resolved.task_templates as { id: string }[]).map((t) => t.id);
-  assert.ok(
-    templateIds.includes('new-launch-campaign'),
-    'new-launch-campaign template must be present in the union',
-  );
+  // custom_fields and task_templates are always empty (no per-project customization).
+  assert.deepEqual(resolved.custom_fields, []);
+  assert.deepEqual(resolved.task_templates, []);
 });
 
-test('GET /api/projects/:id/skills returns attached skills in order + resolved_config', async () => {
+test('GET /api/projects/:id/skills returns attached skills in order + resolved_config (engineering defaults)', async () => {
   const r = await app().request(`/api/projects/${projectWithSkillsId}/skills`);
   assert.equal(r.status, 200);
   const body = (await r.json()) as {
@@ -216,8 +207,8 @@ test('GET /api/projects/:id/skills returns attached skills in order + resolved_c
   assert.equal(body.attached_skills[0]!.attachment_order, 0);
   assert.equal(body.attached_skills[1]!.slug, 'engineering');
   assert.equal(body.attached_skills[1]!.attachment_order, 1);
-  // resolved_config mirrors marketing-first.
-  assert.equal(body.resolved_config.statuses[0]!.id, 'ideas');
+  // resolved_config always returns engineering defaults regardless of attachment order.
+  assert.equal(body.resolved_config.statuses[0]!.id, 'backlog');
 });
 
 test('PATCH /api/projects/:id/skills/reorder swaps order and re-resolves', async () => {
