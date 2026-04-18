@@ -23,7 +23,9 @@
  * place. Coming-soon capability packs are intentionally NOT seeded — they
  * will be added when they graduate out of coming_soon.
  */
-import type { SkillAgentConfig, SkillProjectConfig } from './skill-config.js';
+import type { SkillAgentConfig } from './skill-config.js';
+// Temporary shim — Task 16 will remove project_config from BundledSkill entirely.
+type SkillProjectConfig = Record<string, unknown>;
 import { getAvailableCapabilityPacks } from './capability-packs.js';
 
 export type BundledSkill = {
