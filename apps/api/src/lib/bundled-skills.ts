@@ -56,16 +56,24 @@ const PHASE3_TASK_TOOLS = [
 ];
 
 // ─── Capability-pack skills (1 per available pack) ────────────────────
-const capabilityPackSkills: BundledSkill[] = getAvailableCapabilityPacks().map((pack) => ({
-  id: `skill_bundled_${pack.slug}`,
-  slug: pack.slug,
-  name: pack.display_name,
-  description: pack.description,
-  icon: null,
-  version: DEFAULT_VERSION,
-  agent_config: { capability_packs: [pack.slug] },
-  project_config: {},
-}));
+const capabilityPackSkills: BundledSkill[] = getAvailableCapabilityPacks().map((pack) => {
+  const baseAgentConfig: BundledSkill['agent_config'] = {
+    capability_packs: [pack.slug],
+  };
+  if (pack.slug === 'deft-workspace') {
+    baseAgentConfig.tools = PHASE3_TASK_TOOLS;
+  }
+  return {
+    id: `skill_bundled_${pack.slug}`,
+    slug: pack.slug,
+    name: pack.display_name,
+    description: pack.description,
+    icon: null,
+    version: DEFAULT_VERSION,
+    agent_config: baseAgentConfig,
+    project_config: {},
+  };
+});
 
 // ─── Project-workflow skill 1: engineering ────────────────────────────
 const engineeringSkill: BundledSkill = {
