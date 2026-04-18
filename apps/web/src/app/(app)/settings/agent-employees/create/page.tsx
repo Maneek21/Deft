@@ -68,8 +68,24 @@ type Skill = {
     tools?: string[];
     capability_packs?: string[];
     triggers?: string[];
+    system_prompt_addition?: string;
+    heartbeat_checklist?: unknown[];
   } | null;
 };
+
+// Task 9 — Guard: only show skills that carry real agent capabilities.
+// Skills with only project_config (e.g. Marketing Campaign, Sales Pipeline)
+// have an empty agent_config and must not appear in the agent wizard picker.
+function hasInstallableAgentConfig(s: Pick<Skill, 'agent_config'>): boolean {
+  const cfg = s.agent_config ?? {};
+  return (
+    (cfg.tools?.length ?? 0) > 0 ||
+    (cfg.capability_packs?.length ?? 0) > 0 ||
+    (cfg.triggers?.length ?? 0) > 0 ||
+    (cfg.system_prompt_addition?.length ?? 0) > 0 ||
+    (cfg.heartbeat_checklist?.length ?? 0) > 0
+  );
+}
 
 // Task 4.7 — default capability-pack slugs per role. Kept inline here as
 // a UX convenience to pre-check bundled skills in the skill picker step.
@@ -234,11 +250,14 @@ export default function CreateAgentEmployeePage() {
   const avatarLetter = name.trim().charAt(0).toUpperCase() || '?';
 
   // Task 4.7 — grouped skill list for the picker step.
+  // Task 9 — filter to only skills with non-empty agent_config so that
+  // project-only skills (Marketing Campaign, Sales Pipeline) are hidden.
+  const installableSkills = skillsCatalog.filter(hasInstallableAgentConfig);
   const skillGroups = (['bundled', 'org'] as const)
     .map((src) => ({
       src,
       label: src === 'bundled' ? 'Bundled (first-party)' : 'Your organization',
-      items: skillsCatalog.filter((s) => s.source === src),
+      items: installableSkills.filter((s) => s.source === src),
     }))
     .filter((g) => g.items.length > 0);
 
