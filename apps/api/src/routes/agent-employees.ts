@@ -21,6 +21,39 @@ import type { SkillAgentConfig } from '../lib/skill-config.js';
 
 export const agentEmployeeRoutes = new Hono();
 
+// ═══ BYOA / provider readiness ═══
+
+/**
+ * Returns true when the org is allowed to create non-BYOA agents, OR when
+ * self-hosted mode is active AND the caller has already opted into BYOA.
+ * Exposed as a standalone helper so both the GET pre-flight and the POST
+ * defense-in-depth check share the same logic.
+ *
+ * "ready" means: the wizard can proceed. In cloud mode it is always true.
+ * In self-hosted mode it is true only when the caller intends is_byoa=true,
+ * but since the GET pre-flight doesn't know the caller's intent yet we
+ * return ready=false in self-hosted mode so the UI can surface the gate.
+ */
+function isOrgProviderReady(): boolean {
+  return process.env.DEFT_SELF_HOSTED !== 'true';
+}
+
+// GET /provider-readiness — wizard pre-flight. Returns { ready, reason? }.
+agentEmployeeRoutes.get('/provider-readiness', async (c) => {
+  try {
+    const ready = isOrgProviderReady();
+    if (ready) return c.json({ ready: true });
+    return c.json({
+      ready: false,
+      reason:
+        'Self-hosted mode requires a BYOA provider. Configure one in Settings → Integrations.',
+    });
+  } catch (err) {
+    console.error('provider-readiness failed:', err);
+    return c.json({ ready: false, reason: 'Failed to check provider readiness.' }, 500);
+  }
+});
+
 // ═══ TEMPLATES ═══
 
 const ROLE_TEMPLATES = [
@@ -451,8 +484,9 @@ agentEmployeeRoutes.post('/', async (c) => {
 
     const data = parsed.data;
 
-    // Block non-BYOA creation if self-hosted
-    if (process.env.DEFT_SELF_HOSTED === 'true' && !data.is_byoa) {
+    // Block non-BYOA creation if self-hosted (defense in depth — wizard
+    // also pre-flights this via GET /provider-readiness on step 1).
+    if (!isOrgProviderReady() && !data.is_byoa) {
       return c.json(
         { error: 'Self-hosted mode requires BYOA (Bring Your Own API) agents', code: 'SELF_HOSTED_BYOA_ONLY' },
         403,
