@@ -81,10 +81,10 @@ async function seed() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'bundled', '1.0.0',
          '{"triggers":["cron:standup"]}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO UPDATE SET
          agent_config = '{"triggers":["cron:standup"]}'::jsonb`,
       [
@@ -99,10 +99,10 @@ async function seed() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'bundled', '1.0.0',
          '{"triggers":["cron:weekly-burn-report"]}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO UPDATE SET
          agent_config = '{"triggers":["cron:weekly-burn-report"]}'::jsonb`,
       [
@@ -115,10 +115,10 @@ async function seed() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'bundled', '1.0.0',
          '{"triggers":["cron:weekly-burn-report"]}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO UPDATE SET
          agent_config = '{"triggers":["cron:weekly-burn-report"]}'::jsonb`,
       [

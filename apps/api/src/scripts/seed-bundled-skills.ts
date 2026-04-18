@@ -32,7 +32,7 @@ export async function seedBundledSkills(
     await db.execute(sql`
       INSERT INTO skills (
         id, org_id, source, slug, name, description, icon, version,
-        agent_config, project_config, is_deleted, usage_count
+        agent_config, is_deleted, usage_count
       ) VALUES (
         ${skill.id},
         NULL,
@@ -43,7 +43,6 @@ export async function seedBundledSkills(
         ${skill.icon},
         ${skill.version},
         ${JSON.stringify(skill.agent_config)}::jsonb,
-        ${JSON.stringify(skill.project_config)}::jsonb,
         false,
         0
       )
@@ -54,7 +53,6 @@ export async function seedBundledSkills(
         icon = EXCLUDED.icon,
         version = EXCLUDED.version,
         agent_config = EXCLUDED.agent_config,
-        project_config = EXCLUDED.project_config,
         updated_at = now()
     `);
     log(`  upserted ${skill.slug}`);

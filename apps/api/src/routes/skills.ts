@@ -25,7 +25,6 @@ import {
   skills,
   agentEmployees,
   agentEmployeeSkills,
-  projectSkills,
 } from '@deft/db/schema';
 import {
   importOpenclawSkill,
@@ -42,7 +41,6 @@ const createSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   icon: z.string().max(64).nullable().optional(),
   agent_config: z.record(z.string(), z.unknown()).optional(),
-  project_config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const patchSchema = z.object({
@@ -50,7 +48,6 @@ const patchSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   icon: z.string().max(64).nullable().optional(),
   agent_config: z.record(z.string(), z.unknown()).optional(),
-  project_config: z.record(z.string(), z.unknown()).optional(),
   version: z.string().max(32).optional(),
 });
 
@@ -149,7 +146,6 @@ skillsRoutes.post('/', async (c) => {
         source: 'org',
         version: '1.0.0',
         agent_config: data.agent_config ?? {},
-        project_config: data.project_config ?? {},
         created_by: user.id,
       })
       .returning();
@@ -214,7 +210,6 @@ skillsRoutes.post('/import', async (c) => {
         version: parsedSkill.version,
         system_prompt: parsedSkill.system_prompt || null,
         agent_config: parsedSkill.agent_config,
-        project_config: parsedSkill.project_config,
         source_url: parsedSkill.source_url,
       })
       .returning();
@@ -315,14 +310,9 @@ skillsRoutes.get('/:slug/stats', async (c) => {
       .from(agentEmployeeSkills)
       .where(eq(agentEmployeeSkills.skill_id, target.id));
 
-    const [projectRow] = await db
-      .select({ cnt: sql<number>`count(*)::int` })
-      .from(projectSkills)
-      .where(eq(projectSkills.skill_id, target.id));
-
     return c.json({
       installed_on_agents: Number(agentRow?.cnt ?? 0),
-      attached_to_projects: Number(projectRow?.cnt ?? 0),
+      attached_to_projects: 0, // project_skills table retired in Task 14
     });
   } catch (err) {
     console.error('Failed to get skill stats:', err);
@@ -446,8 +436,6 @@ skillsRoutes.patch('/:id', async (c) => {
     if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
     if (parsed.data.agent_config !== undefined)
       updates.agent_config = parsed.data.agent_config;
-    if (parsed.data.project_config !== undefined)
-      updates.project_config = parsed.data.project_config;
     if (parsed.data.version !== undefined) updates.version = parsed.data.version;
 
     if (Object.keys(updates).length === 0) {

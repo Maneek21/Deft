@@ -74,34 +74,8 @@ test('bundled skills have org_id NULL', async () => {
   });
 });
 
-test('engineering skill statuses match current hardcoded ENGINEERING_CONFIG', async () => {
-  await withClient(async (c) => {
-    const res = await c.query<{ project_config: unknown }>(
-      `SELECT project_config FROM skills
-       WHERE source = 'bundled' AND slug = 'engineering'`,
-    );
-    const cfg = res.rows[0]!.project_config as {
-      statuses: { id: string }[];
-      allowed_transitions: Record<string, string[]>;
-    };
-    const ids = cfg.statuses.map((s) => s.id);
-    assert.deepEqual(ids, [
-      'backlog',
-      'todo',
-      'in_progress',
-      'in_review',
-      'done',
-      'cancelled',
-    ]);
-    assert.deepEqual(cfg.allowed_transitions.backlog, ['todo', 'in_progress', 'cancelled']);
-    assert.deepEqual(cfg.allowed_transitions.in_progress, [
-      'in_review',
-      'done',
-      'backlog',
-      'cancelled',
-    ]);
-  });
-});
+// Task 14: engineering statuses test removed — project_config column dropped from skills table.
+// Engineering defaults now hardcoded in project-resolved-config.ts (see engineering-defaults.test.ts).
 
 test('engineering skill ships the 9 Phase-3 task tools', async () => {
   await withClient(async (c) => {
@@ -165,39 +139,6 @@ test('coming-soon capability packs are NOT seeded as bundled skills', async () =
   });
 });
 
-test('marketing-campaign default_view is calendar and has launch template', async () => {
-  await withClient(async (c) => {
-    const res = await c.query<{ project_config: unknown }>(
-      `SELECT project_config FROM skills
-       WHERE source = 'bundled' AND slug = 'marketing-campaign'`,
-    );
-    const cfg = res.rows[0]!.project_config as {
-      default_view: string;
-      task_templates: { id: string; tasks: unknown[] }[];
-    };
-    assert.equal(cfg.default_view, 'calendar');
-    const launch = cfg.task_templates.find((t) => t.id === 'new-launch-campaign');
-    assert.ok(launch, 'new-launch-campaign template present');
-    assert.equal(launch!.tasks.length, 7);
-  });
-});
-
-test('sales-pipeline default_view is pipeline with 5-step sequence', async () => {
-  await withClient(async (c) => {
-    const res = await c.query<{ project_config: unknown }>(
-      `SELECT project_config FROM skills
-       WHERE source = 'bundled' AND slug = 'sales-pipeline'`,
-    );
-    const cfg = res.rows[0]!.project_config as {
-      default_view: string;
-      priority_vocab: { kind: string; labels: string[] };
-      task_templates: { id: string; tasks: unknown[] }[];
-    };
-    assert.equal(cfg.default_view, 'pipeline');
-    assert.equal(cfg.priority_vocab.kind, 'temperature');
-    assert.deepEqual(cfg.priority_vocab.labels, ['Hot', 'Warm', 'Cold']);
-    const seq = cfg.task_templates.find((t) => t.id === '14-day-reengage-sequence');
-    assert.ok(seq, '14-day-reengage-sequence template present');
-    assert.equal(seq!.tasks.length, 5);
-  });
-});
+// Task 14: marketing-campaign and sales-pipeline project_config tests removed —
+// project_config column dropped from skills table (migration 0046).
+// These workflow skills are retired in Task 16.

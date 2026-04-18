@@ -503,7 +503,6 @@ export const skills = pgTable('skills', {
   version: text('version').default('1.0.0').notNull(),
   icon: text('icon'),
   agent_config: jsonb('agent_config').default({}).notNull(),
-  project_config: jsonb('project_config').default({}).notNull(),
   source_url: text('source_url'),
   is_deleted: boolean('is_deleted').default(false).notNull(),
   default_agent_employee_id: text('default_agent_employee_id'),
@@ -1431,21 +1430,6 @@ export const agentEmployeeSkills = pgTable('agent_employee_skills', {
 }, (t) => [
   primaryKey({ columns: [t.agent_employee_id, t.skill_id] }),
   index('aes_skill_idx').on(t.skill_id),
-]);
-
-// project_skills: "attached" skills compose the project's status, priority,
-// view, and template vocabulary (per skills.project_config).
-export const projectSkills = pgTable('project_skills', {
-  project_id: text('project_id').notNull()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  skill_id: text('skill_id').notNull()
-    .references(() => skills.id, { onDelete: 'restrict' }),
-  attachment_order: integer('attachment_order').default(0).notNull(),
-  attached_at: timestamp('attached_at').defaultNow().notNull(),
-}, (t) => [
-  primaryKey({ columns: [t.project_id, t.skill_id] }),
-  index('ps_skill_idx').on(t.skill_id),
-  index('ps_project_order_idx').on(t.project_id, t.attachment_order),
 ]);
 
 // ═══ AGENT PLANS ═══

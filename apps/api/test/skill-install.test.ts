@@ -87,9 +87,9 @@ async function seedFixtures() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'bundled', '1.0.0', '{}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO NOTHING`,
       [
         BUNDLED_SKILL_ID,
@@ -104,10 +104,10 @@ async function seedFixtures() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'bundled', '2.0.0',
          '{"capability_packs":["phase46-test-pack"]}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO NOTHING`,
       [
         BUNDLED_PACK_SKILL_ID,
@@ -121,9 +121,9 @@ async function seedFixtures() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, $2, $3, $4, $5, 'org', '1.2.3', '{}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO NOTHING`,
       [
         ORG_SKILL_ID,
@@ -138,9 +138,9 @@ async function seedFixtures() {
     await c.query(
       `INSERT INTO skills
         (id, org_id, name, description, slug, source, version, agent_config,
-         project_config, is_deleted)
+         is_deleted)
        VALUES ($1, NULL, $2, $3, $4, 'marketplace', '3.0.0', '{}'::jsonb,
-         '{}'::jsonb, false)
+         false)
        ON CONFLICT (id) DO NOTHING`,
       [
         MARKETPLACE_SKILL_ID,
