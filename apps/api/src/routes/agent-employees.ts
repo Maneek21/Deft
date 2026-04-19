@@ -16,6 +16,7 @@ import {
   skills,
   agentActions,
   apiKeys,
+  agentEmployeeTemplates,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 
@@ -1367,6 +1368,177 @@ agentEmployeeRoutes.get('/:id/files/:filename', async (c) => {
   } catch (err) {
     console.error('Failed to get agent file:', err);
     return c.json({ error: 'Failed to get file', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
+agentEmployeeRoutes.post('/:id/clone', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const cloneSchema = z.object({
+      name: z.string().min(1).max(200).optional(),
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).optional(),
+    });
+    const parsed = cloneSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+
+    const [source] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    // Build a fresh slug: caller override → sourceSlug-copy → -copy-2, etc.
+    let candidate = parsed.data.slug ?? `${source.slug}-copy`;
+    let attempt = 1;
+    while (attempt < 50) {
+      const [exists] = await db
+        .select({ id: agentEmployees.id })
+        .from(agentEmployees)
+        .where(and(eq(agentEmployees.org_id, user.org_id), eq(agentEmployees.slug, candidate)))
+        .limit(1);
+      if (!exists) break;
+      attempt += 1;
+      candidate = `${source.slug}-copy-${attempt}`;
+    }
+
+    const newId = crypto.randomUUID();
+    const newName = parsed.data.name ?? `${source.name} (copy)`;
+    const [inserted] = await db
+      .insert(agentEmployees)
+      .values({
+        id: newId,
+        org_id: source.org_id,
+        user_id: source.user_id,
+        name: newName,
+        slug: candidate,
+        role: source.role,
+        avatar_url: source.avatar_url,
+        system_prompt: source.system_prompt,
+        expertise_description: source.expertise_description,
+        starter_prompts: source.starter_prompts,
+        trust_level: source.trust_level,
+        max_daily_actions: source.max_daily_actions,
+        heartbeat_enabled: source.heartbeat_enabled,
+        heartbeat_interval_min: source.heartbeat_interval_min,
+        heartbeat_config: source.heartbeat_config,
+        daily_budget_cents: source.daily_budget_cents,
+        kind: source.kind,
+        template_slug: source.template_slug,
+        template_version: source.template_version,
+        trigger_subscriptions: source.trigger_subscriptions,
+        provider_hint: source.provider_hint,
+        capability_packs: source.capability_packs,
+        created_by: user.id,
+        // Intentionally NOT cloned: connection_url, gateway_token_encrypted,
+        // mcp_token_hash, provider_instance_id, connection_status,
+        // daily_action_count/cost, last_heartbeat_at. The clone is a fresh
+        // employee — provisioning produces its own credentials.
+        connection_status: 'pending',
+      })
+      .returning();
+
+    // Copy installed skills
+    const sourceSkills = await db
+      .select()
+      .from(agentEmployeeSkills)
+      .where(eq(agentEmployeeSkills.agent_employee_id, id));
+    if (sourceSkills.length > 0) {
+      await db.insert(agentEmployeeSkills).values(
+        sourceSkills.map((s) => ({
+          agent_employee_id: newId,
+          skill_id: s.skill_id,
+          installed_version: s.installed_version,
+        })),
+      );
+    }
+
+    return c.json({ employee: inserted, cloned_from: id }, 201);
+  } catch (err) {
+    console.error('Failed to clone agent employee:', err);
+    return c.json({ error: 'Failed to clone', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 3.1 — POST /:id/save-as-template  ──────────────────────────
+// Creates an agent_employee_templates row scoped to the caller's org.
+// The wizard step 1 already queries templates; this just gives orgs a
+// way to contribute their own entries.
+agentEmployeeRoutes.post('/:id/save-as-template', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const saveSchema = z.object({
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/),
+      name: z.string().min(1).max(200),
+      description: z.string().min(1).max(1000),
+      version: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.0.0'),
+    });
+    const parsed = saveSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+
+    const [source] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    // Pull linked skills for defaults
+    const joined = await db
+      .select({ slug: skills.slug })
+      .from(agentEmployeeSkills)
+      .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id))
+      .where(eq(agentEmployeeSkills.agent_employee_id, id));
+
+    const templateId = crypto.randomUUID();
+    try {
+      const [inserted] = await db
+        .insert(agentEmployeeTemplates)
+        .values({
+          id: templateId,
+          org_id: user.org_id,
+          slug: parsed.data.slug,
+          name: parsed.data.name,
+          description: parsed.data.description,
+          version: parsed.data.version,
+          role: source.role,
+          // Bootstrap markdown: minimal stubs so the wizard can instantiate.
+          soul_md: `# ${parsed.data.name}\n\n${source.system_prompt ?? ''}`,
+          agents_md: '# AGENTS\nCall deft_platform_context first.',
+          user_md_template: `# USER\nOrg: {{org_name}}`,
+          tools_md: '# TOOLS',
+          default_tools: [],
+          default_capability_packs: source.capability_packs ?? [],
+          default_trust_level: source.trust_level,
+          default_trigger_subscriptions: source.trigger_subscriptions ?? [],
+          model_recommendation: 'anthropic/claude-sonnet-4-6',
+          source: 'user',
+          source_attribution: `Saved by ${user.email ?? user.id} from employee ${source.slug}`,
+          is_public: false,
+          created_by: user.id,
+        })
+        .returning();
+
+      return c.json({ template: inserted, source_employee_id: id, linked_skill_slugs: joined.map((j) => j.slug) }, 201);
+    } catch (err) {
+      const pgCode = (err as any)?.code ?? (err as any)?.cause?.code;
+      if (pgCode === '23505') {
+        return c.json({ error: 'A template with this slug already exists in your org', code: 'DUPLICATE_SLUG' }, 409);
+      }
+      throw err;
+    }
+  } catch (err) {
+    console.error('Failed to save as template:', err);
+    return c.json({ error: 'Failed to save as template', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

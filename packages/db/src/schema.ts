@@ -1561,7 +1561,11 @@ export const apiKeys = pgTable('api_keys', {
 // the `agent_employee_templates_version_semver` CHECK constraint applied in migration 0009.
 export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
   ...id(),
-  slug: text('slug').notNull().unique(),
+  // Block 3.1 — nullable. NULL = first-party/community seed; non-NULL =
+  // org-scoped "Save as template" clone. Uniqueness is (org_id, slug)
+  // declared via the SQL migration's COALESCE-keyed partial index.
+  org_id: text('org_id').references(() => orgs.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull(),
   name: text('name').notNull(),
   version: text('version').notNull(),
   role: agentEmployeeRoleEnum('role').notNull(),
