@@ -134,15 +134,20 @@ export default function AgentSettingsPage() {
   const [rowActionError, setRowActionError] = useState<string | null>(null);
   const [saveTemplateFor, setSaveTemplateFor] = useState<Employee | null>(null);
 
-  // Close the kebab menu when clicking outside it.
+  // Close the kebab menu when clicking outside it OR pressing Escape.
   useEffect(() => {
     if (!rowMenuOpen) return undefined;
     const onDown = () => setRowMenuOpen(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRowMenuOpen(null);
+    };
     // Attach on the next tick so the click that opened doesn't instantly close.
     const t = setTimeout(() => document.addEventListener('click', onDown), 0);
+    document.addEventListener('keydown', onKey);
     return () => {
       clearTimeout(t);
       document.removeEventListener('click', onDown);
+      document.removeEventListener('keydown', onKey);
     };
   }, [rowMenuOpen]);
 
