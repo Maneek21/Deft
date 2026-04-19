@@ -543,6 +543,27 @@ export const taskTemplates = pgTable('task_templates', {
   index('task_templates_source_idx').on(t.source),
 ]);
 
+// ═══ CLAWHUB ALLOWLIST ═══
+// Community-curated list of vetted ClawHub skill slugs (primarily from
+// VoltAgent/awesome-openclaw-skills). Block 1 Library UI defaults to
+// showing only rows from this table; raw-ClawHub browse is behind an
+// org-admin Advanced toggle. Populated by the daily
+// `clawhub-allowlist-refresh` cron job — see
+// apps/api/src/workers/handlers/clawhub-allowlist-refresh.ts.
+export const clawhubAllowlist = pgTable('clawhub_allowlist', {
+  slug: text('slug').primaryKey(),
+  source: text('source')
+    .$type<'voltagent' | 'deft-bundled' | 'deft-verified'>()
+    .default('voltagent')
+    .notNull(),
+  description: text('description'),
+  homepage: text('homepage'),
+  last_seen_at: timestamp('last_seen_at').defaultNow().notNull(),
+  added_at: timestamp('added_at').defaultNow().notNull(),
+}, (t) => [
+  index('clawhub_allowlist_source_idx').on(t.source),
+]);
+
 // ═══ AGENT: TOOL REGISTRY ═══
 export const tools = pgTable('tools', {
   ...id(),

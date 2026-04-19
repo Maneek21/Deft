@@ -29,6 +29,8 @@ const CRON_DELAYS: Record<string, number> = {
   // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
   // fire close to their scheduled time without swamping the Gateway.
   'trigger-dispatch': 60_000,
+  // Block 0.11 — pulls VoltAgent awesome-openclaw-skills once a day.
+  'clawhub-allowlist-refresh': 86400000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -48,6 +50,7 @@ const CRON_KEYS: Record<string, string> = {
   'heartbeat-openclaw': 'cron:heartbeat-openclaw',
   'gateway-ping': 'gateway-ping',
   'trigger-dispatch': 'cron:trigger-dispatch',
+  'clawhub-allowlist-refresh': 'cron:clawhub-allowlist-refresh',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -172,6 +175,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       // diverge. Dedup lives inside the handler.
       const mod = await import('./handlers/skill-update-check.js');
       return mod.handleSkillUpdateCheck;
+    }
+    case 'clawhub-allowlist-refresh': {
+      // Block 0.11 — pulls VoltAgent/awesome-openclaw-skills markdown,
+      // parses skill slugs, upserts into clawhub_allowlist. Bundled
+      // static list used on network failure. Block 1 Library UI
+      // filters against this table.
+      const mod = await import('./handlers/clawhub-allowlist-refresh.js');
+      return mod.handleClawhubAllowlistRefresh;
     }
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');
