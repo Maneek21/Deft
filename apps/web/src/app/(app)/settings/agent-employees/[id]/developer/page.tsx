@@ -103,6 +103,27 @@ export default function DeveloperPage() {
           Raw credentials + copy-paste examples for connecting to this agent&apos;s OpenClaw gateway.
           Treat the gateway token like a password — it grants full WebSocket RPC access.
         </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          New to the gateway? Start with the{' '}
+          <a
+            href="https://docs.openclaw.ai/gateway/protocol"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-foreground"
+          >
+            OpenClaw Gateway protocol docs
+          </a>
+          {' '}—{' '}
+          <a
+            href="https://agentskills.io/spec"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-foreground"
+          >
+            Agent Skills spec
+          </a>
+          {' '}covers the SKILL.md + files.* surfaces.
+        </p>
       </div>
 
       {copyHint && (

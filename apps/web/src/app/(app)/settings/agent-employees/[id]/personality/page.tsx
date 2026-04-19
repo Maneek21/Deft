@@ -175,8 +175,9 @@ export default function PersonalityEditorPage() {
                 <button
                   type="button"
                   onClick={saveActive}
-                  disabled={saving || contentLoading}
-                  className="inline-flex items-center gap-1.5 rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  disabled={saving || contentLoading || gatewayUnreachable}
+                  title={gatewayUnreachable ? "Sidecar offline — changes can't be saved until it reconnects" : undefined}
+                  className="inline-flex items-center gap-1.5 rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
                   Save

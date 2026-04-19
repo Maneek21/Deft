@@ -1,5 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import { MoreHorizontal, User, Terminal, Webhook, Copy, FileText } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
@@ -125,6 +127,46 @@ export default function AgentSettingsPage() {
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeesLoading, setEmployeesLoading] = useState(true);
+  // Block UX-sweep — per-employee kebab menu state. Stores the id of the
+  // open menu, or null.
+  const [rowMenuOpen, setRowMenuOpen] = useState<string | null>(null);
+  const [rowActionBusy, setRowActionBusy] = useState<string | null>(null);
+  const [rowActionError, setRowActionError] = useState<string | null>(null);
+  const [saveTemplateFor, setSaveTemplateFor] = useState<Employee | null>(null);
+
+  // Close the kebab menu when clicking outside it.
+  useEffect(() => {
+    if (!rowMenuOpen) return undefined;
+    const onDown = () => setRowMenuOpen(null);
+    // Attach on the next tick so the click that opened doesn't instantly close.
+    const t = setTimeout(() => document.addEventListener('click', onDown), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('click', onDown);
+    };
+  }, [rowMenuOpen]);
+
+  const handleCloneEmployee = useCallback(async (emp: Employee) => {
+    setRowActionBusy(emp.id);
+    setRowActionError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${emp.id}/clone`, {});
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      await res.json();
+      // Refetch list so the new row appears
+      const listRes = await api.get('/api/agent-employees');
+      if (listRes.ok) setEmployees(await listRes.json());
+    } catch (err) {
+      setRowActionError(`Clone failed: ${(err as Error).message}`);
+      setTimeout(() => setRowActionError(null), 4000);
+    } finally {
+      setRowActionBusy(null);
+      setRowMenuOpen(null);
+    }
+  }, []);
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [pendingLoading, setPendingLoading] = useState(true);
 
@@ -475,6 +517,15 @@ export default function AgentSettingsPage() {
             No agent employees yet.
           </p>
         ) : (
+          <>
+          {rowActionError && (
+            <div
+              className="mb-2 rounded px-3 py-2 text-[12px]"
+              style={{ background: 'rgba(239,68,68,0.1)', color: '#EF4444' }}
+            >
+              {rowActionError}
+            </div>
+          )}
           <div className="space-y-2">
             {employees.map((emp) => {
               const kind = emp.kind ?? 'openclaw';
@@ -484,23 +535,29 @@ export default function AgentSettingsPage() {
               const triggers = emp.trigger_subscriptions ?? [];
               const pendingCount = emp.pending_action_count ?? 0;
               return (
-                <button
+                <div
                   key={emp.id}
-                  onClick={() => openDrawer(emp)}
                   data-testid={`employee-row-${emp.slug}`}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left hover:opacity-90"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg relative"
                   style={{
                     background: 'var(--card-bg)',
                     border: '1px solid var(--border)',
                   }}
                 >
+                  <button
+                    type="button"
+                    onClick={() => openDrawer(emp)}
+                    className="absolute inset-0 rounded-lg hover:opacity-90"
+                    style={{ zIndex: 0 }}
+                    aria-label={`Open drawer for ${emp.name}`}
+                  />
                   <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white flex-shrink-0"
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white flex-shrink-0 relative z-10 pointer-events-none"
                     style={{ background: 'var(--accent)' }}
                   >
                     {emp.name.charAt(0).toUpperCase()}
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 relative z-10 pointer-events-none">
                     <div className="flex items-center gap-2">
                       <p
                         className="text-[14px] font-medium truncate"
@@ -560,19 +617,20 @@ export default function AgentSettingsPage() {
                     </div>
                   </div>
                   <div
-                    className="text-right flex flex-col gap-0.5 flex-shrink-0 text-[10px]"
+                    className="text-right flex flex-col gap-0.5 flex-shrink-0 text-[10px] relative z-10 pointer-events-none"
                     style={{ color: 'var(--muted)' }}
                   >
                     <span>{emp.recent_turn_count_24h ?? 0} turns / 24h</span>
                     <span>heartbeat {formatRelative(emp.last_heartbeat_at)}</span>
                   </div>
                   {pendingCount > 0 && (
-                    <span
+                    <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         scrollToPending();
                       }}
-                      className="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                      className="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 relative z-10"
                       style={{
                         background: 'var(--accent)',
                         color: 'white',
@@ -580,12 +638,89 @@ export default function AgentSettingsPage() {
                       data-testid={`employee-pending-${emp.slug}`}
                     >
                       {pendingCount} pending
-                    </span>
+                    </button>
                   )}
-                </button>
+                  {/* UX sweep — per-employee kebab menu. Keeps the big-click
+                      drawer affordance AND surfaces the deep links that
+                      were previously URL-only. */}
+                  <div className="relative z-10 flex-shrink-0">
+                    <button
+                      type="button"
+                      aria-label={`More actions for ${emp.name}`}
+                      data-testid={`employee-menu-${emp.slug}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRowMenuOpen(rowMenuOpen === emp.id ? null : emp.id);
+                      }}
+                      className="p-1.5 rounded hover:bg-accent/60"
+                      style={{ color: 'var(--muted)' }}
+                    >
+                      <MoreHorizontal className="size-4" />
+                    </button>
+                    {rowMenuOpen === emp.id && (
+                      <div
+                        className="absolute right-0 top-full mt-1 w-56 rounded-md border py-1 shadow-lg"
+                        style={{
+                          background: 'var(--card-bg)',
+                          borderColor: 'var(--border)',
+                          zIndex: 30,
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Link
+                          href={`/settings/agent-employees/${emp.id}/personality`}
+                          className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-accent/40"
+                          style={{ color: 'var(--foreground)' }}
+                          onClick={() => setRowMenuOpen(null)}
+                        >
+                          <User className="size-3.5" /> Personality
+                        </Link>
+                        <Link
+                          href={`/settings/agent-employees/${emp.id}/developer`}
+                          className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-accent/40"
+                          style={{ color: 'var(--foreground)' }}
+                          onClick={() => setRowMenuOpen(null)}
+                        >
+                          <Terminal className="size-3.5" /> Developer
+                        </Link>
+                        <Link
+                          href={`/settings/agent-employees/${emp.id}/webhooks`}
+                          className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-accent/40"
+                          style={{ color: 'var(--foreground)' }}
+                          onClick={() => setRowMenuOpen(null)}
+                        >
+                          <Webhook className="size-3.5" /> Webhooks
+                        </Link>
+                        <div className="my-1 h-px" style={{ background: 'var(--border)' }} />
+                        <button
+                          type="button"
+                          onClick={() => handleCloneEmployee(emp)}
+                          disabled={rowActionBusy === emp.id}
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-accent/40 disabled:opacity-50"
+                          style={{ color: 'var(--foreground)' }}
+                        >
+                          <Copy className="size-3.5" />
+                          {rowActionBusy === emp.id ? 'Cloning…' : 'Clone agent'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSaveTemplateFor(emp);
+                            setRowMenuOpen(null);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-accent/40"
+                          style={{ color: 'var(--foreground)' }}
+                        >
+                          <FileText className="size-3.5" /> Save as template
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>
+          </>
         )}
       </div>
 
@@ -1207,6 +1342,131 @@ export default function AgentSettingsPage() {
         ))}
       </div>
     </div>
+    {/* UX sweep — save-as-template modal */}
+    {saveTemplateFor && (
+      <SaveAsTemplateModal
+        employee={saveTemplateFor}
+        onClose={() => setSaveTemplateFor(null)}
+        onSuccess={(msg) => {
+          flash('success', msg);
+          setSaveTemplateFor(null);
+        }}
+      />
+    )}
+    </div>
+  );
+}
+
+// UX sweep — modal that collects slug/name/description and POSTs
+// to /save-as-template.
+function SaveAsTemplateModal({
+  employee,
+  onClose,
+  onSuccess,
+}: {
+  employee: { id: string; name: string; slug: string };
+  onClose: () => void;
+  onSuccess: (msg: string) => void;
+}) {
+  const [slug, setSlug] = useState(`${employee.slug}-template`);
+  const [name, setName] = useState(`${employee.name} (template)`);
+  const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employee.id}/save-as-template`, {
+        slug,
+        name,
+        description: description.trim() || `Template seeded from ${employee.name}`,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      onSuccess(`Template "${name}" saved.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.5)', zIndex: 60 }}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-lg p-5"
+        style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-3 text-[15px] font-semibold" style={{ color: 'var(--foreground)' }}>
+          Save {employee.name} as template
+        </h3>
+        <p className="mb-3 text-[12px]" style={{ color: 'var(--muted)' }}>
+          Templates appear in the Deploy-new-employee wizard step 1 for everyone in your org.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Slug</label>
+            <input
+              type="text"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              pattern="[a-z0-9-]+"
+              className="mt-1 w-full rounded border px-2 py-1.5 text-[13px] font-mono"
+              style={{ background: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full rounded border px-2 py-1.5 text-[13px]"
+              style={{ background: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--muted)' }}>Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={2}
+              placeholder="Short description shown in the wizard"
+              className="mt-1 w-full rounded border px-2 py-1.5 text-[13px]"
+              style={{ background: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+            />
+          </div>
+        </div>
+        {error && <div className="mt-2 text-[12px]" style={{ color: '#EF4444' }}>{error}</div>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border px-3 py-1.5 text-[12px]"
+            style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving || !slug || !name}
+            className="rounded px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+            style={{ background: 'var(--accent)' }}
+          >
+            {saving ? 'Saving…' : 'Save template'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

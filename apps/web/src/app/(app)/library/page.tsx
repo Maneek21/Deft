@@ -289,7 +289,7 @@ export default function LibraryPage() {
           </p>
           {importMessage && (
             <div
-              className="mb-2 rounded px-3 py-2 text-[12px]"
+              className="mb-2 rounded px-3 py-2 text-[12px] flex items-center justify-between gap-3"
               style={{
                 background: importMessage.startsWith('Error')
                   ? 'rgba(239,68,68,0.1)'
@@ -297,7 +297,17 @@ export default function LibraryPage() {
                 color: importMessage.startsWith('Error') ? '#EF4444' : 'var(--accent)',
               }}
             >
-              {importMessage}
+              <span>{importMessage}</span>
+              {!importMessage.startsWith('Error') && (
+                <button
+                  type="button"
+                  onClick={() => setTab('skills')}
+                  className="px-2 py-0.5 rounded text-[11px] font-medium"
+                  style={{ background: 'var(--accent)', color: 'white' }}
+                >
+                  Attach to an agent →
+                </button>
+              )}
             </div>
           )}
           {clawhubErr && (

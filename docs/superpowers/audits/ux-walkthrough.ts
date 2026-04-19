@@ -114,15 +114,30 @@ async function main() {
     await page.waitForTimeout(500);
     await shot(page, '03-settings-agent');
 
-    // Does each employee row expose a link to Personality / Developer?
-    // If not, the user has to type the URL manually — big friction.
-    const personalityLinks = await page.locator('a[href*="/personality"]').count();
-    const developerLinks = await page.locator('a[href*="/developer"]').count();
-    if (personalityLinks === 0) {
-      flag('major', '1.2 personality', 'No link from the agent-employees list to the Personality editor — user has no way to discover it without knowing the URL.');
-    }
-    if (developerLinks === 0) {
-      flag('major', '3.2 developer', 'No link from the agent-employees list to the Developer credentials page — user has no way to discover it without knowing the URL.');
+    // Does each employee row expose a menu with Personality / Developer /
+    // Webhooks / Clone / Save-as-template? Click the first kebab to open it,
+    // then check the menu contents.
+    const kebabs = page.locator('[data-testid^="employee-menu-"]');
+    const kebabCount = await kebabs.count();
+    if (kebabCount === 0) {
+      flag('major', 'nav', 'No kebab menus on employee rows — deep-link navigation missing.');
+    } else {
+      await kebabs.first().click();
+      await page.waitForTimeout(300);
+      await shot(page, '03b-kebab-open');
+      const personalityLinks = await page.locator('a[href*="/personality"]').count();
+      const developerLinks = await page.locator('a[href*="/developer"]').count();
+      const webhooksLinks = await page.locator('a[href*="/webhooks"]').count();
+      const cloneBtn = await page.getByRole('button', { name: /^clone/i }).count();
+      const saveTplBtn = await page.getByRole('button', { name: /save as template/i }).count();
+      if (personalityLinks === 0) flag('major', '1.2 personality', 'Kebab menu missing Personality link');
+      if (developerLinks === 0) flag('major', '3.2 developer', 'Kebab menu missing Developer link');
+      if (webhooksLinks === 0) flag('major', '3.3 webhooks', 'Kebab menu missing Webhooks link');
+      if (cloneBtn === 0) flag('major', '3.1 clone', 'Kebab menu missing Clone button');
+      if (saveTplBtn === 0) flag('major', '3.1 save-as-template', 'Kebab menu missing Save as template button');
+      // Close the menu by clicking body
+      await page.locator('body').click({ position: { x: 10, y: 10 } }).catch(() => undefined);
+      await page.waitForTimeout(200);
     }
 
     // ───────────────────────────────────────────────────────────────
@@ -174,15 +189,16 @@ async function main() {
             await page.waitForTimeout(200);
             await shot(page, '06-heartbeat-filled');
           }
-          // Try to click Save — will it fail gracefully with no gateway?
+          // Save should be disabled + tooltip when gateway unreachable.
           const save = page.getByRole('button', { name: /^save$/i });
           if (await save.count() > 0) {
-            await save.click();
-            await page.waitForTimeout(1500);
-            await shot(page, '07-heartbeat-save-attempt');
-            const errorText = await page.getByText(/gateway|offline|unreachable|error/i).count();
-            if (errorText > 0) {
-              flag('minor', '1.2 save', 'Save attempt surfaces "gateway unreachable" as an error banner — correct, but the Save button is not disabled upfront when gateway_unreachable=true, so the user clicks before seeing the warning.');
+            const disabled = await save.isDisabled();
+            const title = await save.getAttribute('title');
+            if (!disabled) {
+              flag('minor', '1.2 save', 'Save button is enabled even with Gateway unreachable — it should be disabled upfront.');
+            }
+            if (!title || !/offline|unreachable/i.test(title)) {
+              flag('nit', '1.2 save', 'Disabled Save lacks a tooltip explaining why.');
             }
           }
         } else {
@@ -260,9 +276,9 @@ async function main() {
           flag('minor', '1.5 clawhub', 'After clicking Import, no visible success message — user can\'t tell if the action worked.');
         }
 
-        // "Then attach it from the Skills tab" — user has to switch tabs manually.
-        const attachHint = await page.getByText(/attach it from the skills tab/i).count();
-        if (attachHint === 0) {
+        // "Attach to an agent →" button should appear on the success banner.
+        const attachCta = await page.getByRole('button', { name: /attach to an agent/i }).count();
+        if (attachCta === 0) {
           flag('minor', '1.5 clawhub', 'After import, no direct "Attach to an agent" CTA — user has to context-switch to the Skills tab and find the new row.');
         }
       } else {
@@ -309,54 +325,36 @@ async function main() {
     // ───────────────────────────────────────────────────────────────
     log('\n═══ J6 — Features shipped as API-only ═══');
 
-    // Clone agent — is there a UI button?
-    // Look on the agent row in settings/agent
-    try {
-      await page.goto(`${WEB_URL}/settings/agent`, { waitUntil: 'load', timeout: 15_000 });
-    } catch {
-      await page.waitForTimeout(500);
-      await page.goto(`${WEB_URL}/settings/agent`, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
-    }
-    await page.waitForLoadState('networkidle').catch(() => undefined);
-    await page.waitForTimeout(500);
-    const cloneBtn = await page.getByRole('button', { name: /clone|duplicate/i }).count();
-    if (cloneBtn === 0) {
-      flag('major', '3.1 clone', 'POST /:id/clone endpoint exists but no UI affordance — the "Clone agent button" from the plan is missing. User must curl to use it.');
-    }
-    const saveTplBtn = await page.getByRole('button', { name: /save as template/i }).count();
-    if (saveTplBtn === 0) {
-      flag('major', '3.1 save-as-template', 'Save-as-template endpoint shipped but no UI button — wizard step 1 queries the template table so the saved rows would appear there, but user can\'t save one without an API call.');
-    }
-
-    // Webhooks — is there any UI?
-    const webhooksNav = await page.getByText(/webhook/i).count();
-    if (webhooksNav === 0) {
-      flag('major', '3.3 webhooks', 'agent_webhooks backend ships with full API + HMAC dispatch but no UI — users cannot create/revoke webhooks through the app. Biggest remaining gap for "power users" surface.');
-    }
-
-    // Trace export — any download button on the current page?
-    const traceExportBtn = await page.getByRole('button', { name: /export|download.*trace/i }).count();
-    if (traceExportBtn === 0) {
-      flag('minor', '3.8 trace export', 'GET /trace.json endpoint ships but no UI button — user has to construct the URL + auth themselves.');
-    }
+    // Clone / Save-as-template / Webhooks now live inside the kebab menu
+    // on each employee row (checked in J1). Trace export lives on the chat
+    // page (checked below). Nothing to re-verify here — J1 covered it.
 
     // Reasoning trace component exists but not wired into chat
     // Check any open chat page for a "Show trace" expander
     const spacesRes = await fetch(`${API_URL}/api/spaces`, { headers: { authorization: `Bearer ${auth.access_token}` } });
     const spacesBody = await spacesRes.json() as Array<{ id: string }>;
     const firstSpace = Array.isArray(spacesBody) ? spacesBody[0] : undefined;
-    if (firstSpace) {
-      try {
-        await page.goto(`${WEB_URL}/spaces/${firstSpace.id}`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-        await page.waitForTimeout(1200);
-        await shot(page, '15-chat');
-        const showTrace = await page.getByText(/show trace/i).count();
-        if (showTrace === 0) {
-          flag('major', '1.10 reasoning trace', 'ReasoningTrace component ships + hook subscribes to socket events but it is not wired into the chat message UI. Users cannot see tool-call trees until the chat component imports the expander.');
-        }
-      } catch (err) {
-        flag('note', '1.10 reasoning trace', `Could not load chat space: ${(err as Error).message}`);
+    // Agent chat with tool calls — should render Show trace + Export trace.
+    // Use /chat (the canonical Defty agent UI) since /spaces/:id is the
+    // workspace chat, not the agent chat.
+    try {
+      await page.goto(`${WEB_URL}/chat`, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      await page.waitForLoadState('networkidle').catch(() => undefined);
+      await page.waitForTimeout(1500);
+      await shot(page, '15-chat');
+      const exportTrace = await page.getByRole('button', { name: /export trace/i }).count();
+      if (exportTrace === 0) {
+        flag('minor', '3.8 trace export', 'Export trace button not found on chat page — may be below fold or needs an existing conversation.');
       }
+      // Show trace only appears on messages that have tool_calls, which
+      // requires an assistant response with tools. If present, great; if
+      // not, mark as a note (test env state, not a bug).
+      const showTrace = await page.getByText(/show trace/i).count();
+      if (showTrace === 0) {
+        flag('note', '1.10 reasoning trace', 'No "Show trace" expander visible on chat — needs an assistant message with tool_calls in this conversation to render.');
+      }
+    } catch (err) {
+      flag('note', '1.10 reasoning trace', `Could not load chat page: ${(err as Error).message}`);
     }
 
     // ───────────────────────────────────────────────────────────────
