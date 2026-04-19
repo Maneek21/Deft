@@ -9,12 +9,6 @@ import {
   type GatewayHealthMember,
 } from '@/components/gateway-health-card';
 
-// Phase 12 — feature flag gating the Deploy Employee wizard entry points.
-// Default off. Set `NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES=true` in .env to
-// surface the "Deploy new employee" link and the /settings/agent/deploy route.
-const FEATURE_OPENCLAW_EMPLOYEES =
-  process.env.NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES === 'true';
-
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -463,16 +457,14 @@ export default function AgentSettingsPage() {
           >
             Employees
           </h3>
-          {FEATURE_OPENCLAW_EMPLOYEES ? (
-            <a
-              href="/settings/agent/deploy"
-              data-testid="deploy-new-employee"
-              className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
-              style={{ background: 'var(--accent)', color: 'white' }}
-            >
-              Deploy new employee
-            </a>
-          ) : null}
+          <a
+            href="/settings/agent-employees/create"
+            data-testid="deploy-new-employee"
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+            style={{ background: 'var(--accent)', color: 'white' }}
+          >
+            Deploy new employee
+          </a>
         </div>
         {employeesLoading ? (
           <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
