@@ -48,6 +48,7 @@ import { integrationsRoutes } from './routes/integrations.js';
 import { agentDeployRoutes } from './routes/agent-deploy.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
+import { clawhubRoutes } from './routes/clawhub.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
@@ -123,6 +124,7 @@ app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/integrations', integrationsRoutes);
 app.route('/api/agents/deploy', agentDeployRoutes);
 app.route('/api/skills', skillsRoutes);
+app.route('/api/clawhub', clawhubRoutes);
 // Task 4.11 — /api/projects/:id/apply-template (template bulk-create)
 app.route('/api/projects', taskTemplateRoutes);
 // Task 3 — /api/task-templates list + detail (read-only catalog)
