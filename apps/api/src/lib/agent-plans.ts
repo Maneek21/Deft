@@ -402,7 +402,7 @@ export async function executePlan(
         const isDependency = steps.some(
           (s, idx) => idx > i && s.depends_on?.includes(step.id),
         );
-        const autoExec = shouldAutoExecute(step.tool, trustLevel);
+        const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams);
 
         if (autoExec || !isDependency) {
           // Auto-execute or non-blocking write

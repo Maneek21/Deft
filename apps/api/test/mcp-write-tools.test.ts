@@ -7,7 +7,7 @@
  *   1. task_create with standard-trust employee auto-executes
  *   2. task_create with conservative-trust employee queues for approval
  *   3. message_post with standard trust returns pseudo-result (full-review tier)
- *   4. message_post with autonomous trust auto-executes
+ *   4. message_post with autonomous trust auto-executes (full-tier unlocked)
  *   5. memory_update rejects cross-employee updates
  *   6. memory_update scope promotion returns pseudo-result for conservative
  *   7. space_memory_set → space_memory_get round-trip
@@ -311,16 +311,11 @@ test('3. message_post with standard trust returns pseudo-result (full tier)', as
   });
 });
 
-test('4. message_post with autonomous trust still queues (full-tier)', async () => {
-  // NOTE: The spec task description phrased this test as "autonomous
-  // auto-executes message_post", but the approval-tier matrix in
-  // agent-approval.ts puts message_post at tier=full, and shouldAutoExecute
-  // only auto-runs auto/quick tiers. So even autonomous trust queues this
-  // action. This is the intended behavior per §3.3 of the plan ("posting
-  // to shared chat is full-review because visible to humans"). The test
-  // therefore asserts the queue path for autonomous trust and relies on
-  // test 3 as the "standard queues" variant — together they cover the
-  // full-tier branch at both trust levels that Deft exposes.
+test('4. message_post with autonomous trust auto-executes (full-tier unlocked)', async () => {
+  // OpenClaw unlock (2026-04-18): Autonomous trust now auto-executes full-tier
+  // actions. message_post is full-tier but NOT in the destructive guard set,
+  // so it runs immediately instead of queuing.
+  // Standard trust still queues full-tier — that is covered by test 3.
   const content = `phase4 message auto ${Date.now()}`;
   const { status, body } = await mcpCall('message_post', {
     caller_employee_slug: EMP_AUTONOMOUS_SLUG,
@@ -328,13 +323,26 @@ test('4. message_post with autonomous trust still queues (full-tier)', async () 
     content,
   });
   assert.equal(status, 200);
-  assert.ok(!body.isError);
+  assert.ok(!body.isError, `message_post should not error: ${JSON.stringify(body)}`);
   const parsed = parseContent(body);
-  assert.equal(
+  assert.notEqual(
     parsed.status,
     'queued_for_approval',
-    'message_post is full-tier so even autonomous must queue'
+    'autonomous trust must not queue message_post — it should auto-execute',
   );
+  // The result should be the posted message row (id + content present)
+  assert.ok(parsed.id, `auto-executed message_post should return message id: ${JSON.stringify(parsed)}`);
+  assert.equal(parsed.content, content, 'returned content should match posted content');
+
+  // Verify the message row exists in the DB
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT id, content FROM messages WHERE id = $1`,
+      [parsed.id],
+    );
+    assert.equal(r.rows.length, 1, 'message row should have been inserted');
+    assert.equal(r.rows[0].content, content);
+  });
 });
 
 test('5. memory_update rejects cross-employee updates', async () => {

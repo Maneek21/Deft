@@ -4,7 +4,19 @@
  * Trust levels (set per org in Settings > Agent):
  *   conservative — every write action requires explicit user approval
  *   standard     — 'auto' and 'quick' execute immediately, only 'full' needs approval
- *   autonomous   — 'auto' and 'quick' execute immediately, only 'full' needs approval
+ *   autonomous   — 'auto', 'quick', AND 'full' execute immediately,
+ *                  EXCEPT destructive actions (admin tools, delete_* names, mode=delete/pause/revoke)
+ *
+ * Approval matrix (tier × trust):
+ *   tier \ trust  | conservative | standard | autonomous
+ *   auto          |    queue     |   exec   |    exec
+ *   quick         |    queue     |   exec   |    exec
+ *   full          |    queue     |   queue  |    exec (unless destructive)
+ *
+ * Destructive guard (still queues even under Autonomous):
+ *   - admin tool set: manage_agent_employee, manage_mcp_connection, remove_member
+ *   - tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.)
+ *   - params.mode matches /^(delete|pause|revoke)$/i
  *
  * Matrix update (task #58 / Option 2 — 2026-04-14):
  *   Previously `standard` was near-identical to `conservative` — it only
@@ -12,10 +24,14 @@
  *   all queued. The mental model in plan doc §0 was "routine stuff auto,
  *   risky stuff queued" which wasn't matching reality. Loosening standard
  *   to auto-exec quick-tier makes it behave like the plan promises.
- *   Autonomous and standard now share the same matrix; the distinction is
- *   primarily a UX affordance (autonomous implies "you read the receipts
- *   after the fact and trust the agent") vs standard (you still occasionally
- *   check the queue for full-tier actions). Receipts make both modes safe.
+ *
+ * Matrix update (OpenClaw unlock — 2026-04-18):
+ *   Autonomous was identical to Standard before this change. Now Autonomous
+ *   auto-executes full-tier actions (post_message, create_calendar_event,
+ *   create_github_issue, message_post) while still queuing destructive
+ *   admin operations (manage_agent_employee, manage_mcp_connection, remove_member)
+ *   and any tool whose name begins with "delete_" or whose params.mode is
+ *   delete/pause/revoke.
  *
  * Approval tiers (assigned per action tool):
  *   auto  — low-risk internal state changes (status update, assignment)
@@ -83,17 +99,55 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   remove_dependency: 'quick',
 };
 
+/**
+ * Admin-only tools that must always queue for human review, even under
+ * Autonomous trust. These carry org-wide side-effects that cannot be
+ * undone with a simple undo action.
+ */
+const DESTRUCTIVE_ADMIN_TOOLS = new Set([
+  'manage_agent_employee',
+  'manage_mcp_connection',
+  'remove_member',
+]);
+
+/**
+ * Returns true if the tool call should be treated as a destructive action
+ * and therefore queued for human review even under Autonomous trust.
+ *
+ * Three conditions (any one is sufficient):
+ *   1. Tool name is in the hardcoded admin set.
+ *   2. Tool name starts with "delete_" (future-proof for delete_task, delete_project, etc.).
+ *   3. params is an object with a `mode` string key matching delete|pause|revoke.
+ */
+export function isDestructiveAction(toolName: string, params?: unknown): boolean {
+  if (DESTRUCTIVE_ADMIN_TOOLS.has(toolName)) return true;
+  if (toolName.startsWith('delete_')) return true;
+  if (
+    params !== null &&
+    typeof params === 'object' &&
+    !Array.isArray(params) &&
+    typeof (params as Record<string, unknown>).mode === 'string' &&
+    /^(delete|pause|revoke)$/i.test((params as Record<string, unknown>).mode as string)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Returns true if the action should be auto-executed (no user approval needed). */
 export function shouldAutoExecute(
   action: string,
   trustLevel: TrustLevel,
+  params?: unknown,
 ): boolean {
-  if (trustLevel === 'conservative') return false;
-
   const tier = TOOL_APPROVAL_TIERS[action] || 'full';
 
+  if (trustLevel === 'conservative') return tier === 'auto';
   if (trustLevel === 'standard') return tier === 'auto' || tier === 'quick';
-  if (trustLevel === 'autonomous') return tier === 'auto' || tier === 'quick';
+  if (trustLevel === 'autonomous') {
+    if (isDestructiveAction(action, params)) return false;
+    return tier === 'auto' || tier === 'quick' || tier === 'full';
+  }
 
   return false;
 }

@@ -170,7 +170,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       const isAction = p.allActionTools.has(tool.name);
 
       if (isAction) {
-        if (shouldAutoExecute(tool.name, p.trustLevel)) {
+        if (shouldAutoExecute(tool.name, p.trustLevel, tool.input)) {
           try {
             const { result, citations } = await executeToolCall(
               tool.name, tool.input as any, p.orgId, p.userId, p.convoId, p.agentEmployeeId,

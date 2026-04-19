@@ -380,7 +380,7 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
-        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel)) {
+        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input)) {
           // Background mode: auto-execute if trust level permits
           const approvalTier = getApprovalTier(tool.name);
           // Thread the triggering message id into write actions that understand
