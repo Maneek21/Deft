@@ -20,7 +20,7 @@
  * would leak projects and services. The user clicks "Retry" in the wizard
  * which re-issues the job with a fresh employee row.
  */
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -49,6 +49,12 @@ type DeployProvisionJob = {
   capability_pack_secrets: Record<string, string>;
   anthropic_api_key: string;
   deft_api_url: string;
+  /**
+   * Phase 4 — flag passed by `ensureSkillInstalled` when re-provisioning
+   * an existing container after a capability pack change. `undefined` or
+   * 'create' means first-time provision.
+   */
+  mode?: 'create' | 'update';
 };
 
 export async function handleDeployProvision(job: JobData): Promise<void> {
@@ -132,6 +138,55 @@ export async function handleDeployProvision(job: JobData): Promise<void> {
     deftApiUrl: data.deft_api_url,
     byoConnectionUrl: data.byo_connection_url ?? undefined,
   };
+
+  // Block 1.11 — per-org gateway (new deploys only). Before spinning up
+  // a new container for this employee, check if the org already has a
+  // running provider_instance on the same provider. If yes, reuse its
+  // connection_url + gateway token instead of creating a second
+  // container. This makes new orgs use one gateway for many agents.
+  //
+  // Existing per-agent deploys (pre-Block-1.11 employees) are NOT
+  // migrated — their provider_instance_ids point at their own
+  // containers and stay that way. The reuse check is scoped to
+  // employees that (a) have `kind='openclaw'`, (b) match our
+  // `deployment_provider`, and (c) already report
+  // `connection_status='connected'`.
+  if (emp.kind === 'openclaw' && data.mode !== 'update') {
+    const [peer] = await db
+      .select({
+        id: agentEmployees.id,
+        connection_url: agentEmployees.connection_url,
+        gateway_token_encrypted: agentEmployees.gateway_token_encrypted,
+        provider_instance_id: agentEmployees.provider_instance_id,
+      })
+      .from(agentEmployees)
+      .where(
+        and(
+          eq(agentEmployees.org_id, emp.org_id),
+          eq(agentEmployees.kind, 'openclaw'),
+          eq(agentEmployees.deployment_provider, providerId),
+          eq(agentEmployees.connection_status, 'connected'),
+        ),
+      )
+      .limit(1);
+
+    if (peer && peer.id !== emp.id && peer.connection_url && peer.provider_instance_id) {
+      console.log(
+        `[deploy-provision] Block 1.11 reuse — employee ${emp.id} inherits gateway from peer ${peer.id}`,
+      );
+      await db
+        .update(agentEmployees)
+        .set({
+          connection_url: peer.connection_url,
+          gateway_token_encrypted: peer.gateway_token_encrypted,
+          connection_status: 'connected',
+          connection_error: null,
+          provider_instance_id: peer.provider_instance_id,
+        })
+        .where(eq(agentEmployees.id, emp.id));
+      return;
+    }
+  }
 
   let result: ProvisionResult;
   try {
