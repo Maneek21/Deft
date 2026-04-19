@@ -1371,6 +1371,81 @@ agentEmployeeRoutes.get('/:id/files/:filename', async (c) => {
   }
 });
 
+// ─── Block 3.2 — GET /:id/developer  → connection credentials ────────
+// Returns the connection URL + wscat one-liner + masked token. Full
+// token only revealed when ?reveal=1 and the caller is an admin/owner.
+agentEmployeeRoutes.get('/:id/developer', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const reveal = c.req.query('reveal') === '1';
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    let token: string | null = null;
+    if (employee.gateway_token_encrypted) {
+      try {
+        const { decrypt } = await import('../lib/encryption.js');
+        token = decrypt(employee.gateway_token_encrypted);
+      } catch {
+        token = null;
+      }
+    }
+
+    // Gate the full-reveal behind role=admin/owner.
+    if (reveal) {
+      const [member] = await db
+        .select({ role: orgMembers.role })
+        .from(orgMembers)
+        .where(and(eq(orgMembers.user_id, user.id), eq(orgMembers.org_id, user.org_id)))
+        .limit(1);
+      if (!member || !['admin', 'owner'].includes(member.role)) {
+        return c.json({ error: 'Only admins can reveal the gateway token', code: 'FORBIDDEN' }, 403);
+      }
+    }
+
+    const masked = token ? `${token.slice(0, 8)}…${token.slice(-4)}` : null;
+    const effectiveToken = reveal ? token : null;
+    const wscatCommand = employee.connection_url
+      ? `wscat -c "${employee.connection_url}?token=${reveal && token ? token : '$GATEWAY_TOKEN'}"`
+      : null;
+
+    return c.json({
+      employee: {
+        id: employee.id,
+        slug: employee.slug,
+        kind: employee.kind,
+        connection_status: employee.connection_status,
+        provider_instance_id: employee.provider_instance_id,
+      },
+      connection_url: employee.connection_url,
+      gateway_token_masked: masked,
+      gateway_token: effectiveToken,
+      wscat_command: wscatCommand,
+      examples: {
+        json_rpc_skills_status: {
+          frame: { jsonrpc: '2.0', id: 1, method: 'skills.status' },
+          expected_shape: { ready: true, count: 0 },
+        },
+        json_rpc_files_get: {
+          frame: {
+            jsonrpc: '2.0', id: 2, method: 'agents.files.get',
+            params: { agentId: employee.id, filename: 'SOUL.md' },
+          },
+        },
+      },
+    });
+  } catch (err) {
+    console.error('Failed to fetch developer credentials:', err);
+    return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
 agentEmployeeRoutes.post('/:id/clone', async (c) => {
   try {
