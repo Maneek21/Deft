@@ -100,6 +100,13 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
 
   // ─── Block 0.5 — reminder tool ──────────────────────────────────────
   create_reminder: 'quick',
+
+  // ─── Block 1.7 — runtime skill install ──────────────────────────────
+  // Always queues for approval regardless of trust level — installing a
+  // new ClawHub skill mid-turn is a security-sensitive action that ships
+  // code onto the agent sidecar. Full allowlist-auto semantics for
+  // Standard/Autonomous land in Block 2.
+  request_skill_install: 'full',
 };
 
 /**
@@ -111,6 +118,9 @@ const DESTRUCTIVE_ADMIN_TOOLS = new Set([
   'manage_agent_employee',
   'manage_mcp_connection',
   'remove_member',
+  // Block 1.7 — runtime skill install ships new code onto the sidecar;
+  // force a human approval even under Autonomous trust.
+  'request_skill_install',
 ]);
 
 /**
