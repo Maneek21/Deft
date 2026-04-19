@@ -16,7 +16,9 @@ import {
   wikiLinks,
   wikiOpsLog,
   mcpConnections,
+  reminders,
 } from '@deft/db/schema';
+import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
@@ -1123,6 +1125,77 @@ export async function executeAction(
         return {
           success: true,
           result: { source_task_id: srcId, target_task_id: tgtId, type: normalizedType, removed: true },
+        };
+      }
+
+      case 'create_reminder': {
+        // Block 0.5 — insert a reminder row, enqueue a durable scheduled
+        // job that fires a notification at remind_at. Handler is idempotent
+        // and the Postgres queue persists across restarts.
+        const content =
+          typeof params.content === 'string' ? params.content.trim() : '';
+        const remindAtRaw = params.remind_at;
+        if (!content) {
+          return { success: false, result: null, error: 'content is required' };
+        }
+        if (typeof remindAtRaw !== 'string' || !remindAtRaw) {
+          return { success: false, result: null, error: 'remind_at is required (ISO datetime)' };
+        }
+        const remindAt = new Date(remindAtRaw);
+        if (isNaN(remindAt.getTime()) || remindAt.getTime() <= Date.now()) {
+          return {
+            success: false,
+            result: null,
+            error: 'remind_at must be a valid future ISO datetime',
+          };
+        }
+
+        const [inserted] = await db
+          .insert(reminders)
+          .values({
+            org_id: orgId,
+            user_id: userId,
+            message: content,
+            remind_at: remindAt,
+          })
+          .returning();
+
+        const delay = Math.max(0, remindAt.getTime() - Date.now());
+        await enqueue(
+          QUEUE_NAMES.SCHEDULED_JOBS,
+          'reminder-fire',
+          { reminderId: inserted!.id },
+          { delay },
+        );
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { reminder_id: inserted!.id, fire_at: remindAt.toISOString() },
+            before_state: null,
+            after_state: { reminder_id: inserted!.id, content, fire_at: remindAt.toISOString() },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'create_reminder',
+          entityType: 'reminder',
+          entityId: inserted!.id,
+          beforeState: null,
+          afterState: { content, fire_at: remindAt.toISOString() },
+          metadata: { action_id: actionId },
+        });
+
+        return {
+          success: true,
+          result: {
+            reminder_id: inserted!.id,
+            fire_at: remindAt.toISOString(),
+          },
         };
       }
 

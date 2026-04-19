@@ -198,6 +198,27 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'create_reminder',
+    description:
+      'Set a durable reminder for the user. Fires a notification at remind_at. Reminder survives server restarts. Use for "remind me to ..." style requests.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Reminder text that will appear in the notification title + body.',
+        },
+        remind_at: {
+          type: 'string',
+          description:
+            'Fire time as ISO-8601 datetime (e.g. 2026-04-20T09:00:00Z). Must be in the future.',
+        },
+      },
+      required: ['content', 'remind_at'],
+    },
+  },
+  {
     name: 'add_dependency',
     description:
       'Link two tasks with a relationship. "blocks" / "blocked_by" are orderings (A must finish before B); "relates_to" and "duplicates" are semantic pointers. Refuses edges that would close a cycle.',

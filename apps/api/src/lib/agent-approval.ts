@@ -97,6 +97,9 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // ─── Task 3.6 — dependency tools ────────────────────────────────────
   add_dependency: 'quick',
   remove_dependency: 'quick',
+
+  // ─── Block 0.5 — reminder tool ──────────────────────────────────────
+  create_reminder: 'quick',
 };
 
 /**
