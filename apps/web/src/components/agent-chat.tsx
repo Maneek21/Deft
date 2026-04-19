@@ -6,7 +6,8 @@ import { api } from '@/lib/api';
 import { formatToolLabel, humanizeToolName } from '@/lib/tool-display';
 import { deriveConfidence } from '@/lib/confidence';
 import { useRouter } from 'next/navigation';
-import { Send, Square, Loader2, ExternalLink } from 'lucide-react';
+import { Send, Square, Loader2, ExternalLink, Download } from 'lucide-react';
+import { ReasoningTrace } from '@/components/reasoning-trace';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
@@ -719,17 +720,29 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                         </ReactMarkdown>
                       </div>
                       {msg.tool_calls && msg.tool_calls.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mt-2.5">
-                          {msg.tool_calls.map((tc, ti) => (
-                            <button
-                              key={ti}
-                              className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
-                              style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
-                            >
-                              💬 {formatToolLabel(tc.tool)}
-                            </button>
-                          ))}
-                        </div>
+                        <>
+                          <div className="flex flex-wrap gap-1.5 mt-2.5">
+                            {msg.tool_calls.map((tc, ti) => (
+                              <button
+                                key={ti}
+                                className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
+                                style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+                              >
+                                💬 {formatToolLabel(tc.tool)}
+                              </button>
+                            ))}
+                          </div>
+                          {/* UX sweep — expandable reasoning trace */}
+                          <ReasoningTrace
+                            events={msg.tool_calls.map((tc) => ({
+                              sessionId: activeConversationId ?? '',
+                              employee_id: agentEmployeeId ?? '',
+                              kind: 'session.tool' as const,
+                              payload: { tool_name: tc.tool, input: tc.params, result: tc.result },
+                              at: '',
+                            }))}
+                          />
+                        </>
                       )}
                       {msg.thinking && msg.tool_status && (
                         <AgentThinking toolStatus={msg.tool_status} />
@@ -898,6 +911,34 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
           <div ref={messagesEndRef} />
         </div>
       </div>
+
+      {/* UX sweep — trace export button above the composer */}
+      {activeConversationId && messages.length > 0 && (
+        <div className="px-4 md:px-6 pt-2 flex-shrink-0">
+          <div className="max-w-[700px] w-full mx-auto flex justify-end">
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await api.fetch(`/api/agent/conversations/${activeConversationId}/trace.json`);
+                if (!res.ok) { alert('Trace export failed: ' + res.status); return; }
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `agent-trace-${activeConversationId.slice(0, 8)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+              }}
+              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+              title="Download full turn trace as JSON"
+            >
+              <Download className="size-3" /> Export trace
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Composer */}
       <div className="px-4 md:px-6 py-4 flex-shrink-0">

@@ -48,6 +48,7 @@ import { integrationsRoutes } from './routes/integrations.js';
 import { agentDeployRoutes } from './routes/agent-deploy.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
+import { clawhubRoutes } from './routes/clawhub.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
@@ -81,8 +82,15 @@ app.route('/api/metrics', metricsRoutes);
 // authMiddleware.
 app.route('/api/webhooks', githubWebhookRoutes);
 
+// Block 3.3 — per-agent external webhooks. POST with secret in header,
+// no JWT. Management routes under /api/agent-webhooks are JWT-gated and
+// mounted AFTER authMiddleware below.
+const { publicAgentWebhookRoutes, agentWebhookRoutes } = await import('./routes/agent-webhooks.js');
+app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
+
 // Protected routes
 app.use('/api/*', authMiddleware);
+app.route('/api/agent-webhooks', agentWebhookRoutes);
 app.route('/api/spaces', spaceRoutes);
 app.route('/api/messages', messageRoutes);
 app.route('/api/notifications', notificationRoutes);
@@ -123,8 +131,11 @@ app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/integrations', integrationsRoutes);
 app.route('/api/agents/deploy', agentDeployRoutes);
 app.route('/api/skills', skillsRoutes);
+app.route('/api/clawhub', clawhubRoutes);
 // Task 4.11 — /api/projects/:id/apply-template (template bulk-create)
 app.route('/api/projects', taskTemplateRoutes);
+// Task 3 — /api/task-templates list + detail (read-only catalog)
+app.route('/api/task-templates', taskTemplateRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
@@ -151,21 +162,31 @@ app.get('/health/queue', async (c) => {
 // Prefer Railway/Fly's PORT env, then API_PORT, then local default.
 const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
 
-const server = serve({ fetch: app.fetch, port }, async (info) => {
-  console.log(`Deft API running on http://localhost:${info.port}`);
+// Guard: only start the HTTP server when running as the main entry point,
+// not when imported by tests (avoids EADDRINUSE in test environments).
+// In ESM, there's no require.main; we use process.argv[1] vs import.meta.url.
+const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/index.js') ||
+               process.argv[1]?.replace(/\\/g, '/').endsWith('/index.ts');
 
-  // Start background job workers — uses Postgres, no Redis needed
-  try {
-    const { startWorkers } = await import('./workers/index.js');
-    const { initScheduler } = await import('./lib/job-scheduler.js');
-    startWorkers();
-    await initScheduler();
-    console.log('[startup] Job workers and scheduler started');
-  } catch (err) {
-    console.warn('[startup] Job workers failed to start:', (err as Error).message);
-  }
-});
+let server: ReturnType<typeof serve> | null = null;
+if (isMain) {
+  server = serve({ fetch: app.fetch, port }, async (info) => {
+    console.log(`Deft API running on http://localhost:${info.port}`);
 
-setupSocket(server as unknown as Server);
+    // Start background job workers — uses Postgres, no Redis needed
+    try {
+      const { startWorkers } = await import('./workers/index.js');
+      const { initScheduler } = await import('./lib/job-scheduler.js');
+      startWorkers();
+      await initScheduler();
+      console.log('[startup] Job workers and scheduler started');
+    } catch (err) {
+      console.warn('[startup] Job workers failed to start:', (err as Error).message);
+    }
+  });
 
+  setupSocket(server as unknown as Server);
+}
+
+export { app };
 export default app;

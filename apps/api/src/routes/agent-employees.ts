@@ -16,10 +16,44 @@ import {
   skills,
   agentActions,
   apiKeys,
+  agentEmployeeTemplates,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 
 export const agentEmployeeRoutes = new Hono();
+
+// ═══ BYOA / provider readiness ═══
+
+/**
+ * Returns true when the org is allowed to create non-BYOA agents, OR when
+ * self-hosted mode is active AND the caller has already opted into BYOA.
+ * Exposed as a standalone helper so both the GET pre-flight and the POST
+ * defense-in-depth check share the same logic.
+ *
+ * "ready" means: the wizard can proceed. In cloud mode it is always true.
+ * In self-hosted mode it is true only when the caller intends is_byoa=true,
+ * but since the GET pre-flight doesn't know the caller's intent yet we
+ * return ready=false in self-hosted mode so the UI can surface the gate.
+ */
+function isOrgProviderReady(): boolean {
+  return process.env.DEFT_SELF_HOSTED !== 'true';
+}
+
+// GET /provider-readiness — wizard pre-flight. Returns { ready, reason? }.
+agentEmployeeRoutes.get('/provider-readiness', async (c) => {
+  try {
+    const ready = isOrgProviderReady();
+    if (ready) return c.json({ ready: true });
+    return c.json({
+      ready: false,
+      reason:
+        'Self-hosted mode requires a BYOA provider. Configure one in Settings → Integrations.',
+    });
+  } catch (err) {
+    console.error('provider-readiness failed:', err);
+    return c.json({ ready: false, reason: 'Failed to check provider readiness.' }, 500);
+  }
+});
 
 // ═══ TEMPLATES ═══
 
@@ -451,8 +485,9 @@ agentEmployeeRoutes.post('/', async (c) => {
 
     const data = parsed.data;
 
-    // Block non-BYOA creation if self-hosted
-    if (process.env.DEFT_SELF_HOSTED === 'true' && !data.is_byoa) {
+    // Block non-BYOA creation if self-hosted (defense in depth — wizard
+    // also pre-flights this via GET /provider-readiness on step 1).
+    if (!isOrgProviderReady() && !data.is_byoa) {
       return c.json(
         { error: 'Self-hosted mode requires BYOA (Bring Your Own API) agents', code: 'SELF_HOSTED_BYOA_ONLY' },
         403,
@@ -668,6 +703,17 @@ const patchSchema = z.object({
    * flips) as trust_level.
    */
   mark_healthy: z.boolean().optional(),
+  /**
+   * Block 0.3 — editable identity / behavior fields for the "edit agent"
+   * flow. Deft-side config only. OpenClaw-side markdown files (SOUL.md
+   * etc.) edit over Gateway RPC in Block 1.
+   */
+  name: z.string().min(1).max(100).optional(),
+  avatar_url: z.string().url().nullable().optional(),
+  starter_prompts: z.array(z.string().min(1).max(500)).max(6).optional(),
+  expertise_description: z.string().max(500).nullable().optional(),
+  max_daily_actions: z.number().int().min(1).max(1000).optional(),
+  heartbeat_enabled: z.boolean().optional(),
 });
 
 async function getOrgRole(userId: string, orgId: string): Promise<string | null> {
@@ -741,6 +787,16 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
       // The actual column writes happen via raw SQL below so this branch
       // also lands pre-migration without a typecheck miss.
     }
+
+    // Block 0.3 — identity + behavior fields. No role gating because
+    // these are per-employee cosmetic / configuration rather than
+    // destructive admin flips.
+    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+    if (parsed.data.avatar_url !== undefined) updates.avatar_url = parsed.data.avatar_url;
+    if (parsed.data.starter_prompts !== undefined) updates.starter_prompts = parsed.data.starter_prompts;
+    if (parsed.data.expertise_description !== undefined) updates.expertise_description = parsed.data.expertise_description;
+    if (parsed.data.max_daily_actions !== undefined) updates.max_daily_actions = parsed.data.max_daily_actions;
+    if (parsed.data.heartbeat_enabled !== undefined) updates.heartbeat_enabled = parsed.data.heartbeat_enabled;
 
     if (Object.keys(updates).length === 0 && !parsed.data.mark_healthy) {
       return c.json(existing);
@@ -1187,5 +1243,419 @@ agentEmployeeRoutes.post('/:id/retry-provision', async (c) => {
   } catch (err) {
     console.error('Failed to retry provision:', err);
     return c.json({ error: 'Failed to retry provision', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 1.2 — agents.files.* UI wiring ─────────────────────────────
+// GET  /:id/files           → list known personality files + existence
+// GET  /:id/files/:filename → fetch body from gateway
+// PUT  /:id/files/:filename → write body to gateway
+//
+// Canonical files (agentskills.io spec): SOUL.md (persona), AGENTS.md,
+// USER.md, TOOLS.md, IDENTITY.md, HEARTBEAT.md, BOOT.md. We accept any
+// *.md filename for forwards-compat.
+
+const PERSONALITY_FILES = [
+  'SOUL.md',
+  'AGENTS.md',
+  'USER.md',
+  'TOOLS.md',
+  'IDENTITY.md',
+  'HEARTBEAT.md',
+  'BOOT.md',
+] as const;
+
+function isSafeFilename(name: string): boolean {
+  // Must end in .md, no slashes, no '..', max 64 chars.
+  if (!name.endsWith('.md')) return false;
+  if (name.includes('/') || name.includes('\\')) return false;
+  if (name.includes('..')) return false;
+  if (name.length > 64) return false;
+  return /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+async function resolveOpenClawGatewayFor(
+  employeeRow: {
+    id: string;
+    connection_url: string | null;
+    gateway_token_encrypted: string | null;
+  },
+) {
+  const { decrypt } = await import('../lib/encryption.js');
+  const { getGatewayForDeployment } = await import('../lib/openclaw-gateway.js');
+  if (!employeeRow.connection_url || !employeeRow.gateway_token_encrypted) return null;
+  let token: string;
+  try { token = decrypt(employeeRow.gateway_token_encrypted); } catch { return null; }
+  return getGatewayForDeployment(employeeRow.id, employeeRow.connection_url, token);
+}
+
+agentEmployeeRoutes.get('/:id/files', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    if (employee.kind !== 'openclaw') {
+      return c.json({ error: 'files API only supported for openclaw employees', code: 'UNSUPPORTED' }, 400);
+    }
+
+    const gateway = await resolveOpenClawGatewayFor(employee);
+    if (!gateway) {
+      // Gateway unreachable — return canonical list without existence info.
+      return c.json({
+        files: PERSONALITY_FILES.map((f) => ({ filename: f, size: null, exists: null })),
+        canonical: PERSONALITY_FILES,
+        gateway_unreachable: true,
+      });
+    }
+
+    let listed: Array<{ filename: string; size: number }>;
+    try {
+      listed = await gateway.agents.files.list(employee.id);
+    } catch (err) {
+      return c.json({
+        files: PERSONALITY_FILES.map((f) => ({ filename: f, size: null, exists: null })),
+        canonical: PERSONALITY_FILES,
+        gateway_error: (err as Error).message,
+      });
+    }
+    const listedByName = new Map(listed.map((l) => [l.filename, l.size]));
+    const merged = Array.from(new Set([...PERSONALITY_FILES, ...listed.map((l) => l.filename)]));
+    return c.json({
+      files: merged.map((filename) => ({
+        filename,
+        size: listedByName.get(filename) ?? null,
+        exists: listedByName.has(filename),
+      })),
+      canonical: PERSONALITY_FILES,
+    });
+  } catch (err) {
+    console.error('Failed to list agent files:', err);
+    return c.json({ error: 'Failed to list files', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.get('/:id/files/:filename', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const filename = c.req.param('filename');
+    if (!isSafeFilename(filename)) {
+      return c.json({ error: 'Invalid filename', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    if (employee.kind !== 'openclaw') {
+      return c.json({ error: 'files API only supported for openclaw employees', code: 'UNSUPPORTED' }, 400);
+    }
+    const gateway = await resolveOpenClawGatewayFor(employee);
+    if (!gateway) return c.json({ error: 'Gateway unreachable', code: 'GATEWAY_UNREACHABLE' }, 503);
+
+    try {
+      const r = await gateway.agents.files.get(employee.id, filename);
+      return c.json({ filename, content: r.content, exists: r.exists });
+    } catch (err) {
+      return c.json({ error: `Gateway error: ${(err as Error).message}`, code: 'GATEWAY_ERROR' }, 502);
+    }
+  } catch (err) {
+    console.error('Failed to get agent file:', err);
+    return c.json({ error: 'Failed to get file', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 3.2 — GET /:id/developer  → connection credentials ────────
+// Returns the connection URL + wscat one-liner + masked token. Full
+// token only revealed when ?reveal=1 and the caller is an admin/owner.
+agentEmployeeRoutes.get('/:id/developer', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const reveal = c.req.query('reveal') === '1';
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    let token: string | null = null;
+    if (employee.gateway_token_encrypted) {
+      try {
+        const { decrypt } = await import('../lib/encryption.js');
+        token = decrypt(employee.gateway_token_encrypted);
+      } catch {
+        token = null;
+      }
+    }
+
+    // Gate the full-reveal behind role=admin/owner.
+    if (reveal) {
+      const [member] = await db
+        .select({ role: orgMembers.role })
+        .from(orgMembers)
+        .where(and(eq(orgMembers.user_id, user.id), eq(orgMembers.org_id, user.org_id)))
+        .limit(1);
+      if (!member || !['admin', 'owner'].includes(member.role)) {
+        return c.json({ error: 'Only admins can reveal the gateway token', code: 'FORBIDDEN' }, 403);
+      }
+    }
+
+    const masked = token ? `${token.slice(0, 8)}…${token.slice(-4)}` : null;
+    const effectiveToken = reveal ? token : null;
+    const wscatCommand = employee.connection_url
+      ? `wscat -c "${employee.connection_url}?token=${reveal && token ? token : '$GATEWAY_TOKEN'}"`
+      : null;
+
+    return c.json({
+      employee: {
+        id: employee.id,
+        slug: employee.slug,
+        kind: employee.kind,
+        connection_status: employee.connection_status,
+        provider_instance_id: employee.provider_instance_id,
+      },
+      connection_url: employee.connection_url,
+      gateway_token_masked: masked,
+      gateway_token: effectiveToken,
+      wscat_command: wscatCommand,
+      examples: {
+        json_rpc_skills_status: {
+          frame: { jsonrpc: '2.0', id: 1, method: 'skills.status' },
+          expected_shape: { ready: true, count: 0 },
+        },
+        json_rpc_files_get: {
+          frame: {
+            jsonrpc: '2.0', id: 2, method: 'agents.files.get',
+            params: { agentId: employee.id, filename: 'SOUL.md' },
+          },
+        },
+      },
+    });
+  } catch (err) {
+    console.error('Failed to fetch developer credentials:', err);
+    return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
+agentEmployeeRoutes.post('/:id/clone', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const cloneSchema = z.object({
+      name: z.string().min(1).max(200).optional(),
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).optional(),
+    });
+    const parsed = cloneSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+
+    const [source] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    // Build a fresh slug: caller override → sourceSlug-copy → -copy-2, etc.
+    let candidate = parsed.data.slug ?? `${source.slug}-copy`;
+    let attempt = 1;
+    while (attempt < 50) {
+      const [exists] = await db
+        .select({ id: agentEmployees.id })
+        .from(agentEmployees)
+        .where(and(eq(agentEmployees.org_id, user.org_id), eq(agentEmployees.slug, candidate)))
+        .limit(1);
+      if (!exists) break;
+      attempt += 1;
+      candidate = `${source.slug}-copy-${attempt}`;
+    }
+
+    const newId = crypto.randomUUID();
+    const newName = parsed.data.name ?? `${source.name} (copy)`;
+    const [inserted] = await db
+      .insert(agentEmployees)
+      .values({
+        id: newId,
+        org_id: source.org_id,
+        user_id: source.user_id,
+        name: newName,
+        slug: candidate,
+        role: source.role,
+        avatar_url: source.avatar_url,
+        system_prompt: source.system_prompt,
+        expertise_description: source.expertise_description,
+        starter_prompts: source.starter_prompts,
+        trust_level: source.trust_level,
+        max_daily_actions: source.max_daily_actions,
+        heartbeat_enabled: source.heartbeat_enabled,
+        heartbeat_interval_min: source.heartbeat_interval_min,
+        heartbeat_config: source.heartbeat_config,
+        daily_budget_cents: source.daily_budget_cents,
+        kind: source.kind,
+        template_slug: source.template_slug,
+        template_version: source.template_version,
+        trigger_subscriptions: source.trigger_subscriptions,
+        provider_hint: source.provider_hint,
+        capability_packs: source.capability_packs,
+        created_by: user.id,
+        // Intentionally NOT cloned: connection_url, gateway_token_encrypted,
+        // mcp_token_hash, provider_instance_id, connection_status,
+        // daily_action_count/cost, last_heartbeat_at. The clone is a fresh
+        // employee — provisioning produces its own credentials.
+        connection_status: 'pending',
+      })
+      .returning();
+
+    // Copy installed skills
+    const sourceSkills = await db
+      .select()
+      .from(agentEmployeeSkills)
+      .where(eq(agentEmployeeSkills.agent_employee_id, id));
+    if (sourceSkills.length > 0) {
+      await db.insert(agentEmployeeSkills).values(
+        sourceSkills.map((s) => ({
+          agent_employee_id: newId,
+          skill_id: s.skill_id,
+          installed_version: s.installed_version,
+        })),
+      );
+    }
+
+    return c.json({ employee: inserted, cloned_from: id }, 201);
+  } catch (err) {
+    console.error('Failed to clone agent employee:', err);
+    return c.json({ error: 'Failed to clone', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── Block 3.1 — POST /:id/save-as-template  ──────────────────────────
+// Creates an agent_employee_templates row scoped to the caller's org.
+// The wizard step 1 already queries templates; this just gives orgs a
+// way to contribute their own entries.
+agentEmployeeRoutes.post('/:id/save-as-template', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const saveSchema = z.object({
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/),
+      name: z.string().min(1).max(200),
+      description: z.string().min(1).max(1000),
+      version: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.0.0'),
+    });
+    const parsed = saveSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+
+    const [source] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    // Pull linked skills for defaults
+    const joined = await db
+      .select({ slug: skills.slug })
+      .from(agentEmployeeSkills)
+      .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id))
+      .where(eq(agentEmployeeSkills.agent_employee_id, id));
+
+    const templateId = crypto.randomUUID();
+    try {
+      const [inserted] = await db
+        .insert(agentEmployeeTemplates)
+        .values({
+          id: templateId,
+          org_id: user.org_id,
+          slug: parsed.data.slug,
+          name: parsed.data.name,
+          description: parsed.data.description,
+          version: parsed.data.version,
+          role: source.role,
+          // Bootstrap markdown: minimal stubs so the wizard can instantiate.
+          soul_md: `# ${parsed.data.name}\n\n${source.system_prompt ?? ''}`,
+          agents_md: '# AGENTS\nCall deft_platform_context first.',
+          user_md_template: `# USER\nOrg: {{org_name}}`,
+          tools_md: '# TOOLS',
+          default_tools: [],
+          default_capability_packs: source.capability_packs ?? [],
+          default_trust_level: source.trust_level,
+          default_trigger_subscriptions: source.trigger_subscriptions ?? [],
+          model_recommendation: 'anthropic/claude-sonnet-4-6',
+          source: 'user',
+          source_attribution: `Saved by ${user.email ?? user.id} from employee ${source.slug}`,
+          is_public: false,
+          created_by: user.id,
+        })
+        .returning();
+
+      return c.json({ template: inserted, source_employee_id: id, linked_skill_slugs: joined.map((j) => j.slug) }, 201);
+    } catch (err) {
+      const pgCode = (err as any)?.code ?? (err as any)?.cause?.code;
+      if (pgCode === '23505') {
+        return c.json({ error: 'A template with this slug already exists in your org', code: 'DUPLICATE_SLUG' }, 409);
+      }
+      throw err;
+    }
+  } catch (err) {
+    console.error('Failed to save as template:', err);
+    return c.json({ error: 'Failed to save as template', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.put('/:id/files/:filename', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const filename = c.req.param('filename');
+    if (!isSafeFilename(filename)) {
+      return c.json({ error: 'Invalid filename', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const contentSchema = z.object({ content: z.string().max(128 * 1024) });
+    const parsed = contentSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid body (expected { content: string, <=128KB })', code: 'VALIDATION_ERROR' },
+        400,
+      );
+    }
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    if (employee.kind !== 'openclaw') {
+      return c.json({ error: 'files API only supported for openclaw employees', code: 'UNSUPPORTED' }, 400);
+    }
+    const gateway = await resolveOpenClawGatewayFor(employee);
+    if (!gateway) return c.json({ error: 'Gateway unreachable', code: 'GATEWAY_UNREACHABLE' }, 503);
+
+    try {
+      const r = await gateway.agents.files.set(employee.id, filename, parsed.data.content);
+      return c.json({ filename, written: r.written, note: 'Changes take effect on the next session.' });
+    } catch (err) {
+      return c.json({ error: `Gateway error: ${(err as Error).message}`, code: 'GATEWAY_ERROR' }, 502);
+    }
+  } catch (err) {
+    console.error('Failed to set agent file:', err);
+    return c.json({ error: 'Failed to set file', code: 'INTERNAL_ERROR' }, 500);
   }
 });

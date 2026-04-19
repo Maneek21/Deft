@@ -678,6 +678,57 @@ export default function Dashboard3Page() {
                           month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
                         })}
                       </p>
+                      {/* Block 2.8 — inline approve/reject buttons when pending */}
+                      {a.approval_status === 'pending' && (
+                        <div className="flex gap-1.5 mt-1">
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const res = await api.post(`/api/agent/actions/${a.id}/approve`);
+                              if (res.ok) {
+                                const r = await api.get('/api/dashboard/agent-activity');
+                                if (r.ok) setAgentActivity(await r.json());
+                              }
+                            }}
+                            style={{
+                              fontSize: '10px',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              background: 'var(--status-green)',
+                              color: 'white',
+                              border: 'none',
+                              cursor: 'pointer',
+                              fontWeight: 500,
+                            }}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const res = await api.post(`/api/agent/actions/${a.id}/reject`);
+                              if (res.ok) {
+                                const r = await api.get('/api/dashboard/agent-activity');
+                                if (r.ok) setAgentActivity(await r.json());
+                              }
+                            }}
+                            style={{
+                              fontSize: '10px',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              background: 'transparent',
+                              color: 'var(--text-secondary)',
+                              border: '1px solid var(--border-default)',
+                              cursor: 'pointer',
+                              fontWeight: 500,
+                            }}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

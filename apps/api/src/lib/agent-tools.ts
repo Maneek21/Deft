@@ -198,6 +198,27 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'create_reminder',
+    description:
+      'Set a durable reminder for the user. Fires a notification at remind_at. Reminder survives server restarts. Use for "remind me to ..." style requests.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Reminder text that will appear in the notification title + body.',
+        },
+        remind_at: {
+          type: 'string',
+          description:
+            'Fire time as ISO-8601 datetime (e.g. 2026-04-20T09:00:00Z). Must be in the future.',
+        },
+      },
+      required: ['content', 'remind_at'],
+    },
+  },
+  {
     name: 'add_dependency',
     description:
       'Link two tasks with a relationship. "blocks" / "blocked_by" are orderings (A must finish before B); "relates_to" and "duplicates" are semantic pointers. Refuses edges that would close a cycle.',
@@ -522,6 +543,150 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['slug', 'suggested_content', 'reason'],
     },
   },
+  // ─── Block 2.6 — decision tools ─────────────────────────────────────
+  {
+    name: 'link_decision_to_tasks',
+    description:
+      'Link a decision to one or more tasks in your org. Creates `cross_references` rows (source=decision → target=task). Use when a conversation decision implies the team needs to act.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision_id: { type: 'string' },
+        task_ids: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        context: { type: 'string', description: 'Optional explanation of why these tasks implement this decision.' },
+      },
+      required: ['decision_id', 'task_ids'],
+    },
+  },
+  {
+    name: 'mark_decision_implemented',
+    description:
+      'Mark a decision as implemented (sets decisions.implemented_at = now()). Use after the linked tasks have been completed.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision_id: { type: 'string' },
+      },
+      required: ['decision_id'],
+    },
+  },
+  // ─── Block 2.3 — canvas tools ──────────────────────────────────────
+  {
+    name: 'read_canvas',
+    description:
+      'Read the shared canvas (TipTap JSON document) attached to a space. One canvas per space. Returns title + content.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        space_name: { type: 'string', description: 'Space name, e.g. "engineering".' },
+      },
+      required: ['space_name'],
+    },
+  },
+  {
+    name: 'write_canvas',
+    description:
+      'Replace the canvas content for a space. Upserts the canvas row (one per space). Pass the full next content as a TipTap JSON document or HTML string.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        space_name: { type: 'string' },
+        title: { type: 'string', description: 'Optional new title.' },
+        content: {
+          description: 'TipTap JSON document (object) or HTML string.',
+          oneOf: [{ type: 'string' }, { type: 'object' }],
+        },
+      },
+      required: ['space_name', 'content'],
+    },
+  },
+  // ─── Block 2.2 — thread reply ───────────────────────────────────────
+  {
+    name: 'post_thread_reply',
+    description:
+      'Reply to an existing message in its thread. Requires the parent message id; the reply inherits the parent\'s space. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        parent_message_id: {
+          type: 'string',
+          description: 'The id of the message to reply to (the thread parent).',
+        },
+        content: { type: 'string', description: 'Reply content (plain text or minimal markdown).' },
+      },
+      required: ['parent_message_id', 'content'],
+    },
+  },
+  // ─── Block 2.1 — note tools ─────────────────────────────────────────
+  {
+    name: 'search_notes',
+    description:
+      'Search the caller\'s private notes + org-visible notes by title/content. Returns up to `limit` matches (default 10).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search keywords' },
+        scope: {
+          type: 'string',
+          enum: ['mine', 'org', 'all'],
+          description: 'Restrict to your own notes, org-visible notes, or both (default).',
+        },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'create_note',
+    description:
+      'Create a new note owned by the caller. Defaults to private visibility. Use when the user asks you to "save this as a note" or "jot this down".',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Note title (required, may be short)' },
+        content: { type: 'string', description: 'HTML body (TipTap-compatible)' },
+        visibility: {
+          type: 'string',
+          enum: ['private', 'org', 'space'],
+          description: 'Default private. Use "org" for shareable, "space" to attach to a space.',
+        },
+        visibility_space_id: {
+          type: 'string',
+          description: 'Required when visibility="space". The target space id.',
+        },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'read_note',
+    description:
+      'Read a single note by id. Returns title, content (HTML), visibility, updated_at. Respects visibility: you can only read notes you own or are org-visible.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        note_id: { type: 'string', description: 'Note id' },
+      },
+      required: ['note_id'],
+    },
+  },
+  {
+    name: 'note_to_wiki',
+    description:
+      'Promote a note into a wiki page so it is durably searchable by every agent in the org. Creates a new wiki page seeded with the note\'s title + content; the original note stays put (this is a copy, not a move).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        note_id: { type: 'string', description: 'Note id to promote' },
+        type: {
+          type: 'string',
+          enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'],
+          description: 'Wiki page type. Default "fact".',
+        },
+      },
+      required: ['note_id'],
+    },
+  },
 ];
 
 /** Tool names that require user approval before execution */
@@ -543,6 +708,16 @@ export const ACTION_TOOLS = new Set([
   // Task 3.6 — dependency tools
   'add_dependency',
   'remove_dependency',
+  // ─── Block 2.1 — note writes ─────────────────────────────────────────
+  'create_note',
+  'note_to_wiki',
+  // ─── Block 2.2 — thread reply ────────────────────────────────────────
+  'post_thread_reply',
+  // ─── Block 2.3 — canvas write ────────────────────────────────────────
+  'write_canvas',
+  // ─── Block 2.6 — decision writes ────────────────────────────────────
+  'link_decision_to_tasks',
+  'mark_decision_implemented',
 ]);
 
 // Calendar tools (only added when calendar is connected)

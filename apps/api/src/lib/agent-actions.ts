@@ -16,7 +16,13 @@ import {
   wikiLinks,
   wikiOpsLog,
   mcpConnections,
+  reminders,
+  notes,
+  canvases,
+  decisions,
+  crossReferences,
 } from '@deft/db/schema';
+import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
@@ -1123,6 +1129,676 @@ export async function executeAction(
         return {
           success: true,
           result: { source_task_id: srcId, target_task_id: tgtId, type: normalizedType, removed: true },
+        };
+      }
+
+      case 'create_reminder': {
+        // Block 0.5 — insert a reminder row, enqueue a durable scheduled
+        // job that fires a notification at remind_at. Handler is idempotent
+        // and the Postgres queue persists across restarts.
+        const content =
+          typeof params.content === 'string' ? params.content.trim() : '';
+        const remindAtRaw = params.remind_at;
+        if (!content) {
+          return { success: false, result: null, error: 'content is required' };
+        }
+        if (typeof remindAtRaw !== 'string' || !remindAtRaw) {
+          return { success: false, result: null, error: 'remind_at is required (ISO datetime)' };
+        }
+        const remindAt = new Date(remindAtRaw);
+        if (isNaN(remindAt.getTime()) || remindAt.getTime() <= Date.now()) {
+          return {
+            success: false,
+            result: null,
+            error: 'remind_at must be a valid future ISO datetime',
+          };
+        }
+
+        const [inserted] = await db
+          .insert(reminders)
+          .values({
+            org_id: orgId,
+            user_id: userId,
+            message: content,
+            remind_at: remindAt,
+          })
+          .returning();
+
+        const delay = Math.max(0, remindAt.getTime() - Date.now());
+        await enqueue(
+          QUEUE_NAMES.SCHEDULED_JOBS,
+          'reminder-fire',
+          { reminderId: inserted!.id },
+          { delay },
+        );
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { reminder_id: inserted!.id, fire_at: remindAt.toISOString() },
+            before_state: null,
+            after_state: { reminder_id: inserted!.id, content, fire_at: remindAt.toISOString() },
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'create_reminder',
+          entityType: 'reminder',
+          entityId: inserted!.id,
+          beforeState: null,
+          afterState: { content, fire_at: remindAt.toISOString() },
+          metadata: { action_id: actionId },
+        });
+
+        return {
+          success: true,
+          result: {
+            reminder_id: inserted!.id,
+            fire_at: remindAt.toISOString(),
+          },
+        };
+      }
+
+      case 'link_decision_to_tasks': {
+        // Block 2.6 — create cross-reference edges decision→task.
+        const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+        const taskIds = Array.isArray(params.task_ids) ? params.task_ids.filter((x: any) => typeof x === 'string') : [];
+        const context = typeof params.context === 'string' ? params.context : null;
+        if (!decisionId) return { success: false, result: null, error: 'decision_id is required' };
+        if (taskIds.length === 0) return { success: false, result: null, error: 'task_ids must be a non-empty array' };
+
+        const [decision] = await db
+          .select({ id: decisions.id })
+          .from(decisions)
+          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .limit(1);
+        if (!decision) return { success: false, result: null, error: 'Decision not found' };
+
+        // Filter taskIds to ones that exist in this org
+        const { inArray } = await import('drizzle-orm');
+        const validTasks = await db
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(inArray(tasks.id, taskIds), eq(tasks.org_id, orgId)));
+        const validTaskIdSet = new Set(validTasks.map((t) => t.id));
+
+        const linked: string[] = [];
+        for (const taskId of taskIds) {
+          if (!validTaskIdSet.has(taskId)) continue;
+          // Skip duplicates silently.
+          const [existing] = await db
+            .select({ id: crossReferences.id })
+            .from(crossReferences)
+            .where(and(
+              eq(crossReferences.org_id, orgId),
+              eq(crossReferences.source_type, 'decision'),
+              eq(crossReferences.source_id, decisionId),
+              eq(crossReferences.target_type, 'task'),
+              eq(crossReferences.target_id, taskId),
+            ))
+            .limit(1);
+          if (existing) { linked.push(taskId); continue; }
+          await db.insert(crossReferences).values({
+            org_id: orgId,
+            source_type: 'decision',
+            source_id: decisionId,
+            target_type: 'task',
+            target_id: taskId,
+            context,
+            created_by: userId,
+          });
+          linked.push(taskId);
+        }
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { decision_id: decisionId, linked_task_ids: linked } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        return {
+          success: true,
+          result: {
+            decision_id: decisionId,
+            linked_task_ids: linked,
+            skipped: taskIds.filter((t: string) => !validTaskIdSet.has(t)),
+          },
+        };
+      }
+
+      case 'mark_decision_implemented': {
+        // Block 2.6 — stamp decisions.implemented_at.
+        const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+        if (!decisionId) return { success: false, result: null, error: 'decision_id is required' };
+
+        const [decision] = await db
+          .select()
+          .from(decisions)
+          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .limit(1);
+        if (!decision) return { success: false, result: null, error: 'Decision not found' };
+
+        if (decision.implemented_at) {
+          return {
+            success: true,
+            result: { decision_id: decisionId, implemented_at: decision.implemented_at, already_implemented: true },
+          };
+        }
+
+        const now = new Date();
+        await db
+          .update(decisions)
+          .set({ implemented_at: now })
+          .where(eq(decisions.id, decisionId));
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { decision_id: decisionId, implemented_at: now } as any,
+            executed_at: now,
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'mark_decision_implemented',
+          entityType: 'decision',
+          entityId: decisionId,
+          beforeState: null,
+          afterState: { implemented_at: now.toISOString() } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { decision_id: decisionId, implemented_at: now } };
+      }
+
+      case 'read_canvas': {
+        // Block 2.3 — read a space's shared canvas by space_name.
+        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
+        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+
+        const [space] = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
+          .limit(1);
+        if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
+
+        const [canvas] = await db
+          .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
+          .from(canvases)
+          .where(eq(canvases.space_id, space.id))
+          .limit(1);
+
+        if (!canvas) {
+          return { success: true, result: { space: space.name, canvas: null, exists: false } };
+        }
+
+        return {
+          success: true,
+          result: {
+            space: space.name,
+            canvas: {
+              id: canvas.id,
+              title: canvas.title,
+              content: canvas.content,
+              updated_at: canvas.updated_at,
+            },
+            exists: true,
+          },
+        };
+      }
+
+      case 'write_canvas': {
+        // Block 2.3 — upsert the canvas row for a space.
+        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
+        const content = params.content;
+        const title = typeof params.title === 'string' ? params.title.trim() : undefined;
+        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+        if (content === undefined || content === null) {
+          return { success: false, result: null, error: 'content is required' };
+        }
+
+        const [space] = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
+          .limit(1);
+        if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
+
+        const jsonContent: any = typeof content === 'string' ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: content }] }] } : content;
+
+        const [existing] = await db
+          .select({ id: canvases.id })
+          .from(canvases)
+          .where(eq(canvases.space_id, space.id))
+          .limit(1);
+
+        let resultRow;
+        if (existing) {
+          const [updated] = await db
+            .update(canvases)
+            .set({
+              content: jsonContent,
+              last_edited_by: userId,
+              last_edited_at: new Date(),
+              ...(title ? { title } : {}),
+            })
+            .where(eq(canvases.id, existing.id))
+            .returning();
+          resultRow = updated;
+        } else {
+          const [inserted] = await db
+            .insert(canvases)
+            .values({
+              org_id: orgId,
+              space_id: space.id,
+              title: title ?? 'Canvas',
+              content: jsonContent,
+              last_edited_by: userId,
+              last_edited_at: new Date(),
+            })
+            .returning();
+          resultRow = inserted;
+        }
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { canvas_id: resultRow!.id, space: space.name } as any,
+            after_state: { canvas_id: resultRow!.id, space_id: space.id, title: resultRow!.title } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'write_canvas',
+          entityType: 'canvas',
+          entityId: resultRow!.id,
+          beforeState: null,
+          afterState: { space_id: space.id, title: resultRow!.title } as any,
+          metadata: { action_id: actionId, space_name: space.name },
+        });
+
+        return { success: true, result: { canvas_id: resultRow!.id, space: space.name, title: resultRow!.title } };
+      }
+
+      case 'post_thread_reply': {
+        // Block 2.2 — reply to an existing message in its thread.
+        const parentId = typeof params.parent_message_id === 'string' ? params.parent_message_id : '';
+        const content = typeof params.content === 'string' ? params.content.trim() : '';
+        if (!parentId) return { success: false, result: null, error: 'parent_message_id is required' };
+        if (!content) return { success: false, result: null, error: 'content is required' };
+
+        const [parent] = await db
+          .select({ id: messages.id, space_id: messages.space_id, org_id: messages.org_id })
+          .from(messages)
+          .where(and(eq(messages.id, parentId), eq(messages.org_id, orgId), eq(messages.is_deleted, false)))
+          .limit(1);
+        if (!parent) {
+          return { success: false, result: null, error: 'Parent message not found in this org' };
+        }
+
+        const [msg] = await db
+          .insert(messages)
+          .values({
+            org_id: orgId,
+            space_id: parent.space_id,
+            user_id: userId,
+            content,
+            parent_id: parent.id,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { message_id: msg!.id, parent_id: parent.id, space_id: parent.space_id } as any,
+            after_state: { message_id: msg!.id, parent_id: parent.id, content } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`space:${parent.space_id}`).emit('message:new', {
+            ...msg,
+            user_name: 'Deft',
+            user_avatar: null,
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'post_thread_reply',
+          entityType: 'message',
+          entityId: msg!.id,
+          beforeState: null,
+          afterState: { message_id: msg!.id, parent_id: parent.id, space_id: parent.space_id } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { message_id: msg!.id, parent_id: parent.id } };
+      }
+
+      case 'search_notes': {
+        // Block 2.1 — search across user's own notes + org-visible notes.
+        const query = typeof params.query === 'string' ? params.query.trim() : '';
+        const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
+        const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
+        if (!query) {
+          return { success: false, result: null, error: 'query is required' };
+        }
+        const pattern = `%${query.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+        const scopeClause =
+          scope === 'mine'
+            ? eq(notes.user_id, userId)
+            : scope === 'org'
+              ? eq(notes.visibility, 'org')
+              : sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`;
+        const rows = await db
+          .select({
+            id: notes.id,
+            title: notes.title,
+            visibility: notes.visibility,
+            updated_at: notes.updated_at,
+            snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
+          })
+          .from(notes)
+          .where(
+            and(
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              scopeClause,
+              sql`(${notes.title} ILIKE ${pattern} OR coalesce(${notes.content}, '') ILIKE ${pattern})`,
+            ),
+          )
+          .orderBy(desc(notes.updated_at))
+          .limit(limit);
+        return { success: true, result: { notes: rows, count: rows.length } };
+      }
+
+      case 'read_note': {
+        const noteId = typeof params.note_id === 'string' ? params.note_id : '';
+        if (!noteId) return { success: false, result: null, error: 'note_id is required' };
+        const [row] = await db
+          .select()
+          .from(notes)
+          .where(
+            and(
+              eq(notes.id, noteId),
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          return { success: false, result: null, error: 'Note not found or not visible to caller' };
+        }
+        return {
+          success: true,
+          result: {
+            id: row.id,
+            title: row.title,
+            content: row.content ?? '',
+            visibility: row.visibility,
+            updated_at: row.updated_at,
+          },
+        };
+      }
+
+      case 'create_note': {
+        const title = typeof params.title === 'string' ? params.title.trim() : '';
+        const content = typeof params.content === 'string' ? params.content : '';
+        const visibility = ['private', 'org', 'space'].includes(params.visibility)
+          ? params.visibility
+          : 'private';
+        const spaceId =
+          typeof params.visibility_space_id === 'string' ? params.visibility_space_id : null;
+        if (!title) {
+          return { success: false, result: null, error: 'title is required' };
+        }
+        if (visibility === 'space' && !spaceId) {
+          return { success: false, result: null, error: 'visibility_space_id is required when visibility=space' };
+        }
+
+        const [inserted] = await db
+          .insert(notes)
+          .values({
+            org_id: orgId,
+            user_id: userId,
+            title,
+            content,
+            visibility,
+            visibility_space_id: visibility === 'space' ? spaceId : null,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { note_id: inserted!.id, title: inserted!.title } as any,
+            after_state: { note_id: inserted!.id, title, visibility } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'create_note',
+          entityType: 'note',
+          entityId: inserted!.id,
+          beforeState: null,
+          afterState: { title, visibility } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { note_id: inserted!.id, title: inserted!.title } };
+      }
+
+      case 'note_to_wiki': {
+        const noteId = typeof params.note_id === 'string' ? params.note_id : '';
+        const pageType = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(
+          params.type,
+        )
+          ? params.type
+          : 'fact';
+        if (!noteId) return { success: false, result: null, error: 'note_id is required' };
+
+        const [note] = await db
+          .select()
+          .from(notes)
+          .where(
+            and(
+              eq(notes.id, noteId),
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+            ),
+          )
+          .limit(1);
+        if (!note) {
+          return { success: false, result: null, error: 'Note not found or not visible to caller' };
+        }
+
+        // Build a unique slug from the title.
+        const baseSlug = note.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 60) || 'untitled-note';
+        let slug = baseSlug;
+        let suffix = 1;
+        // Collision loop (bounded)
+        while (suffix < 50) {
+          const [collision] = await db
+            .select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)))
+            .limit(1);
+          if (!collision) break;
+          suffix += 1;
+          slug = `${baseSlug}-${suffix}`;
+        }
+
+        const [page] = await db
+          .insert(wikiPages)
+          .values({
+            org_id: orgId,
+            scope: 'org',
+            user_id: userId,
+            type: pageType as any,
+            title: note.title,
+            slug,
+            content: note.content ?? '',
+            confidence: 0.8,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { wiki_page_id: page!.id, slug: page!.slug } as any,
+            after_state: { wiki_page_id: page!.id, source_note_id: noteId } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'note_to_wiki',
+          entityType: 'wiki_page',
+          entityId: page!.id,
+          beforeState: null,
+          afterState: { title: note.title, slug, source_note_id: noteId } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { wiki_page_id: page!.id, slug: page!.slug, title: page!.title } };
+      }
+
+      case 'request_skill_install': {
+        // Block 1.7 — runtime skill install flow. Agent asks for a skill
+        // mid-turn; this always queued for approval (see agent-approval.ts).
+        // On approval, we:
+        //   1. Resolve the slug → an existing marketplace skill row OR
+        //      create a new one from clawhub_allowlist.
+        //   2. Invoke the Block 1.6 pre-deploy flow (secret resolution +
+        //      gateway push + install) via
+        //      installMarketplaceSkillWithSecrets.
+        const slug = typeof params.slug === 'string' ? params.slug.trim() : '';
+        const targetEmployeeId =
+          typeof params.agent_employee_id === 'string'
+            ? params.agent_employee_id
+            : agentEmployeeId;
+        if (!slug) {
+          return { success: false, result: null, error: 'slug is required' };
+        }
+        if (!targetEmployeeId) {
+          return { success: false, result: null, error: 'agent_employee_id is required' };
+        }
+
+        // Load dependencies lazily so the routes file doesn't pull the
+        // gateway client at startup when no skill install is happening.
+        const { clawhubAllowlist } = await import('@deft/db/schema');
+        const { skills: skillsTable } = await import('@deft/db/schema');
+        const { installMarketplaceSkillWithSecrets } = await import('./skill-install.js');
+
+        // Find an org-visible skill with this slug first; create one from
+        // the allowlist if none exists.
+        const [existingSkill] = await db
+          .select()
+          .from(skillsTable)
+          .where(
+            and(
+              eq(skillsTable.slug, slug),
+              // marketplace slugs can be org-scoped or null
+              // (pre-import). Use loose match.
+            ),
+          )
+          .limit(1);
+
+        let resolvedSkillId: string;
+        if (existingSkill) {
+          resolvedSkillId = existingSkill.id;
+        } else {
+          const [allowed] = await db
+            .select()
+            .from(clawhubAllowlist)
+            .where(eq(clawhubAllowlist.slug, slug))
+            .limit(1);
+          if (!allowed) {
+            return {
+              success: false,
+              result: null,
+              error: `Slug "${slug}" is not on the ClawHub allowlist — admin-only install required`,
+            };
+          }
+          const newId = crypto.randomUUID();
+          const [inserted] = await db
+            .insert(skillsTable)
+            .values({
+              id: newId,
+              org_id: orgId,
+              name: allowed.description ? `${slug} — ${allowed.description.slice(0, 40)}` : slug,
+              slug,
+              description: allowed.description ?? null,
+              source: 'marketplace',
+              version: '1.0.0',
+              source_url: allowed.homepage ?? null,
+              created_by: userId,
+              agent_config: {} as any,
+            })
+            .returning();
+          resolvedSkillId = inserted!.id;
+        }
+
+        const install = await installMarketplaceSkillWithSecrets(targetEmployeeId, resolvedSkillId);
+
+        await db
+          .update(agentActions)
+          .set({
+            result: install as any,
+            after_state: { slug, skill_id: resolvedSkillId, status: install.status } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'request_skill_install',
+          entityType: 'skill',
+          entityId: resolvedSkillId,
+          beforeState: null,
+          afterState: { slug, status: install.status } as any,
+          metadata: { action_id: actionId, agent_employee_id: targetEmployeeId },
+        });
+
+        if (install.status === 'installed' || install.status === 'already_installed') {
+          return { success: true, result: install };
+        }
+        return {
+          success: false,
+          result: install,
+          error: install.status === 'missing_secrets'
+            ? `missing secrets: ${install.missing.join(', ')}`
+            : install.status,
         };
       }
 

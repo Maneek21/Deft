@@ -24,7 +24,7 @@
  * yaml lists, and inline `[a, b, c]` / `a, b, c` comma lists so a generic
  * OpenClaw skill file parses without js-yaml as a dependency.
  */
-import type { SkillAgentConfig, SkillProjectConfig } from './skill-config.js';
+import type { SkillAgentConfig } from './skill-config.js';
 
 export type OpenclawSkillImport = {
   name: string;
@@ -34,7 +34,6 @@ export type OpenclawSkillImport = {
   version: string;
   system_prompt: string;
   agent_config: SkillAgentConfig;
-  project_config: SkillProjectConfig;
   source_url: string;
 };
 
@@ -232,7 +231,6 @@ export function parseOpenclawMarkdown(
     version,
     system_prompt: systemPrompt,
     agent_config: agentConfig,
-    project_config: {},
     source_url: sourceUrl,
   };
 }

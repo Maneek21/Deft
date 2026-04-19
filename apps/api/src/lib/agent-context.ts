@@ -1780,46 +1780,68 @@ export async function executeToolCall(
     // ─── Wiki Tools ───
 
     case 'wiki_search': {
+      // Block 0.6 — semantic wiki search. Routes through retrieveContext
+      // which runs hybrid FTS (search_vector @@ plainto_tsquery) + pgvector
+      // cosine (embedding <=> queryVector) weighted 0.4 / 0.6 * confidence.
+      // Falls back to FTS-only when OPENAI_API_KEY is missing or the
+      // pgvector <=> operator is unavailable.
       const { query, type: pageType, scope: pageScope, limit: maxResults = 5 } = params;
-      const conditions: any[] = [
-        eq(wikiPages.org_id, orgId),
-        eq(wikiPages.is_deleted, false),
-      ];
+      const { retrieveContext } = await import('./retrieve-context.js');
+      const hits = await retrieveContext({
+        query,
+        org_id: orgId,
+        types: ['wiki'],
+        limit: Math.min(maxResults, 10),
+      });
 
-      if (pageType) conditions.push(eq(wikiPages.type, pageType));
-      if (pageScope) conditions.push(eq(wikiPages.scope, pageScope));
+      // Fetch the full wiki_pages row + linked pages for each hit so the
+      // tool output keeps the shape callers expect (title/slug/summary/
+      // type/scope/confidence/updated_at + linked_pages[]).
+      const hitIds = hits.map((h) => h.source_id);
+      const pages =
+        hitIds.length > 0
+          ? await db
+              .select({
+                id: wikiPages.id,
+                title: wikiPages.title,
+                slug: wikiPages.slug,
+                summary: wikiPages.summary,
+                type: wikiPages.type,
+                scope: wikiPages.scope,
+                confidence: wikiPages.confidence,
+                updated_at: wikiPages.updated_at,
+              })
+              .from(wikiPages)
+              .where(
+                and(
+                  eq(wikiPages.org_id, orgId),
+                  eq(wikiPages.is_deleted, false),
+                  sql`${wikiPages.id} = ANY(${hitIds})`,
+                  ...(pageType ? [eq(wikiPages.type, pageType)] : []),
+                  ...(pageScope ? [eq(wikiPages.scope, pageScope)] : []),
+                ),
+              )
+          : [];
 
-      // Full-text search with fallback to ilike
-      conditions.push(
-        sql`search_vector @@ plainto_tsquery('english', ${query})`,
+      // Preserve retrieveContext's ranking order.
+      const byId = new Map(pages.map((p) => [p.id, p]));
+      const ordered = hitIds
+        .map((id) => byId.get(id))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p));
+
+      const enriched = await Promise.all(
+        ordered.map(async (page) => {
+          const links = await db
+            .select({ title: wikiPages.title, slug: wikiPages.slug })
+            .from(wikiLinks)
+            .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
+            .where(eq(wikiLinks.source_page_id, page.id))
+            .limit(5);
+          return { ...page, linked_pages: links };
+        }),
       );
 
-      const results = await db.select({
-        id: wikiPages.id,
-        title: wikiPages.title,
-        slug: wikiPages.slug,
-        summary: wikiPages.summary,
-        type: wikiPages.type,
-        scope: wikiPages.scope,
-        confidence: wikiPages.confidence,
-        updated_at: wikiPages.updated_at,
-      })
-        .from(wikiPages)
-        .where(and(...conditions))
-        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${query})) DESC`)
-        .limit(Math.min(maxResults, 10));
-
-      // Get linked pages for each result
-      const enriched = await Promise.all(results.map(async (page) => {
-        const links = await db.select({ title: wikiPages.title, slug: wikiPages.slug })
-          .from(wikiLinks)
-          .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
-          .where(eq(wikiLinks.source_page_id, page.id))
-          .limit(5);
-        return { ...page, linked_pages: links };
-      }));
-
-      const citations: Citation[] = results.map(p => ({
+      const citations: Citation[] = ordered.map((p) => ({
         type: 'wiki',
         id: p.id,
         title: p.title,

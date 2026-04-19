@@ -12,6 +12,7 @@ import { db } from '../../lib/db.js';
 import {
   workflowRules, workflowRuns,
   tasks, taskComments, taskLabels, labels, notifications,
+  taskRelationships,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -26,7 +27,10 @@ type WorkflowAction =
   | { kind: 'add_comment'; template: string }
   | { kind: 'assign_to'; user_id: string }
   | { kind: 'add_label'; label_id: string }
-  | { kind: 'notify'; user_id: string; title?: string };
+  | { kind: 'notify'; user_id: string; title?: string }
+  // Block 2.5 — when the triggering task enters `done`, find every task
+  // that this one was blocking and notify that task's assignee.
+  | { kind: 'unblock_dependents' };
 
 export async function handleWorkflowExecute(job: JobData): Promise<void> {
   const { workflow_id, task_id, actor_user_id } =
@@ -103,6 +107,58 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
           }).returning();
           if (notif) emitToUser(action.user_id, 'notification:new', notif);
           results.push({ kind: 'notify', ok: true });
+          break;
+        }
+        case 'unblock_dependents': {
+          // Block 2.5 — find every task that THIS task was blocking
+          // (source_task_id = this task, type = 'blocks') and DM that
+          // task's assignee that their blocker is done. Skips tasks that
+          // have no assignee and tasks that are themselves done/cancelled.
+          const edges = await db
+            .select({
+              dependent_id: taskRelationships.target_task_id,
+            })
+            .from(taskRelationships)
+            .where(and(
+              eq(taskRelationships.source_task_id, task.id),
+              eq(taskRelationships.type, 'blocks' as any),
+            ));
+          if (edges.length === 0) {
+            results.push({ kind: 'unblock_dependents', ok: true });
+            break;
+          }
+          let notified = 0;
+          for (const edge of edges) {
+            const [dep] = await db
+              .select({
+                id: tasks.id, title: tasks.title, status: tasks.status,
+                assignee_id: tasks.assignee_id,
+              })
+              .from(tasks)
+              .where(and(eq(tasks.id, edge.dependent_id), eq(tasks.org_id, rule.org_id)))
+              .limit(1);
+            if (!dep || !dep.assignee_id) continue;
+            if (dep.status === 'done' || dep.status === 'cancelled') continue;
+            const [notif] = await db.insert(notifications).values({
+              org_id: rule.org_id,
+              user_id: dep.assignee_id,
+              type: 'system',
+              title: `Unblocked: ${dep.title}`,
+              body: `"${task.title}" is done — you can start on this now.`,
+              link: `/tasks`,
+              metadata: {
+                workflow_id,
+                task_id: dep.id,
+                unblocker_task_id: task.id,
+                subtype: 'unblocked',
+              },
+            }).returning();
+            if (notif) {
+              emitToUser(dep.assignee_id, 'notification:new', notif);
+              notified++;
+            }
+          }
+          results.push({ kind: 'unblock_dependents', ok: true, count: notified } as any);
           break;
         }
         default:

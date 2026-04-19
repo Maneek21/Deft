@@ -9,6 +9,7 @@ import {
   notifications,
   agentNudges,
   taskRelationships,
+  agentActions,
 } from '@deft/db/schema';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -77,6 +78,31 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
           eq(tasks.is_deleted, false),
         ),
       );
+
+    // Block 2.4 — queue a draft task_create proposal so the user can
+    // one-click approve "Yes, track this as a task" from the approval
+    // inbox. Independent of the lead-notification path below so it
+    // still fires for users with no in-progress tasks.
+    try {
+      const draftSnippet = content.length > 80 ? content.slice(0, 80) + '…' : content;
+      await db.insert(agentActions).values({
+        org_id: orgId,
+        user_id: userId,
+        action: 'create_task',
+        params: {
+          title: `Blocker: ${draftSnippet}`,
+          description: content,
+          source_message_id: messageId,
+          source_space_id: spaceId,
+        } as any,
+        approval_tier: 'quick',
+        approval_status: 'pending',
+        source: 'blocked_classifier',
+      });
+      console.log(`[blocked-alert] Queued create_task proposal for ${userId}`);
+    } catch (err) {
+      console.warn('[blocked-alert] failed to queue task-create proposal:', err);
+    }
 
     if (userTasks.length === 0) {
       console.log('[blocked-alert] No in-progress tasks for blocked user, skipping');

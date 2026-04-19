@@ -29,6 +29,8 @@ const CRON_DELAYS: Record<string, number> = {
   // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
   // fire close to their scheduled time without swamping the Gateway.
   'trigger-dispatch': 60_000,
+  // Block 0.11 — pulls VoltAgent awesome-openclaw-skills once a day.
+  'clawhub-allowlist-refresh': 86400000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -48,6 +50,7 @@ const CRON_KEYS: Record<string, string> = {
   'heartbeat-openclaw': 'cron:heartbeat-openclaw',
   'gateway-ping': 'gateway-ping',
   'trigger-dispatch': 'cron:trigger-dispatch',
+  'clawhub-allowlist-refresh': 'cron:clawhub-allowlist-refresh',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -173,9 +176,24 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/skill-update-check.js');
       return mod.handleSkillUpdateCheck;
     }
+    case 'clawhub-allowlist-refresh': {
+      // Block 0.11 — pulls VoltAgent/awesome-openclaw-skills markdown,
+      // parses skill slugs, upserts into clawhub_allowlist. Bundled
+      // static list used on network failure. Block 1 Library UI
+      // filters against this table.
+      const mod = await import('./handlers/clawhub-allowlist-refresh.js');
+      return mod.handleClawhubAllowlistRefresh;
+    }
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');
       return mod.handleAgentDailyReset;
+    }
+    case 'reminder-fire': {
+      // Block 0.4 — fires a single reminder row. Enqueued by
+      // POST /api/reminders with delay = remind_at - now. Rehydrated at
+      // startup for reminders that survived a restart.
+      const mod = await import('./handlers/reminder-fire.js');
+      return mod.reminderFireHandler;
     }
     case 'agent-heartbeat':
     case 'heartbeat-native':
@@ -219,6 +237,22 @@ export function startWorkers(): void {
   cleanupStaleJobs().then(count => {
     if (count > 0) console.log(`[workers] Recovered ${count} stale job(s) on startup`);
   }).catch(() => {});
+
+  // Block 0.4 — rehydrate pending reminders into the scheduled-jobs queue
+  // so sub-24h reminders scheduled before a restart still fire.
+  import('./handlers/reminder-fire.js')
+    .then((mod) => mod.rehydratePendingReminders())
+    .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
+
+  // Block 1.9 — subscribe to gateway exec/plugin approval events for every
+  // connected OpenClaw employee, mirror events into agent_actions so the
+  // existing approval-inbox UI renders them.
+  import('../lib/gateway-approval-subscriber.js')
+    .then((mod) => mod.startAllApprovalSubscribers())
+    .then((count) => {
+      if (count > 0) console.log(`[workers] Started gateway approval subscribers for ${count} employee(s)`);
+    })
+    .catch((err) => console.warn('[workers] gateway approval subscribers start failed:', err));
 
   // Run stale cleanup every 60 seconds
   setInterval(() => {

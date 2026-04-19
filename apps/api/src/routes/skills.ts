@@ -25,13 +25,13 @@ import {
   skills,
   agentEmployees,
   agentEmployeeSkills,
-  projectSkills,
 } from '@deft/db/schema';
 import {
   importOpenclawSkill,
   OpenclawImportError,
 } from '../lib/openclaw-skill-import.js';
-import { ensureSkillInstalled } from '../lib/skill-install.js';
+import { ensureSkillInstalled, removeSkillFromEmployee, installMarketplaceSkillWithSecrets } from '../lib/skill-install.js';
+import { setSecretForSkill } from '../lib/skill-secrets.js';
 
 export const skillsRoutes = new Hono();
 
@@ -42,7 +42,6 @@ const createSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   icon: z.string().max(64).nullable().optional(),
   agent_config: z.record(z.string(), z.unknown()).optional(),
-  project_config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const patchSchema = z.object({
@@ -50,7 +49,6 @@ const patchSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   icon: z.string().max(64).nullable().optional(),
   agent_config: z.record(z.string(), z.unknown()).optional(),
-  project_config: z.record(z.string(), z.unknown()).optional(),
   version: z.string().max(32).optional(),
 });
 
@@ -149,7 +147,6 @@ skillsRoutes.post('/', async (c) => {
         source: 'org',
         version: '1.0.0',
         agent_config: data.agent_config ?? {},
-        project_config: data.project_config ?? {},
         created_by: user.id,
       })
       .returning();
@@ -214,7 +211,6 @@ skillsRoutes.post('/import', async (c) => {
         version: parsedSkill.version,
         system_prompt: parsedSkill.system_prompt || null,
         agent_config: parsedSkill.agent_config,
-        project_config: parsedSkill.project_config,
         source_url: parsedSkill.source_url,
       })
       .returning();
@@ -315,14 +311,9 @@ skillsRoutes.get('/:slug/stats', async (c) => {
       .from(agentEmployeeSkills)
       .where(eq(agentEmployeeSkills.skill_id, target.id));
 
-    const [projectRow] = await db
-      .select({ cnt: sql<number>`count(*)::int` })
-      .from(projectSkills)
-      .where(eq(projectSkills.skill_id, target.id));
-
     return c.json({
       installed_on_agents: Number(agentRow?.cnt ?? 0),
-      attached_to_projects: Number(projectRow?.cnt ?? 0),
+      attached_to_projects: 0, // project_skills table retired in Task 14
     });
   } catch (err) {
     console.error('Failed to get skill stats:', err);
@@ -407,6 +398,120 @@ skillsRoutes.post('/:id/install', async (c) => {
   }
 });
 
+// ─── POST /:id/install/marketplace — Block 1.6 pre-deploy flow ─────────
+// Runs secret resolution (OAuth → skill_secrets) before install. Returns
+// `missing_secrets` with the key list so the UI can prompt; re-submit
+// after POSTing to /api/skills/:id/secrets.
+skillsRoutes.post('/:id/install/marketplace', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = installSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
+        400,
+      );
+    }
+    const [employee] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, parsed.data.agent_employee_id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    const result = await installMarketplaceSkillWithSecrets(employee.id, skillId);
+    if (result.status === 'missing_secrets') {
+      return c.json(result, 202);
+    }
+    if (result.status === 'installed' || result.status === 'already_installed') {
+      return c.json(result);
+    }
+    return c.json(result, 409);
+  } catch (err) {
+    console.error('Failed marketplace skill install:', err);
+    return c.json({ error: 'Failed to install', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── POST /:id/secrets — save a raw skill secret (Block 1.6) ───────────
+const secretSaveSchema = z.object({
+  key_name: z.string().min(1).max(128).regex(/^[A-Z][A-Z0-9_]*$/),
+  value: z.string().min(1).max(8192),
+});
+
+skillsRoutes.post('/:id/secrets', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = secretSaveSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+    // Confirm the skill is org-visible.
+    const [skill] = await db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(and(eq(skills.id, skillId), or(isNull(skills.org_id), eq(skills.org_id, user.org_id))))
+      .limit(1);
+    if (!skill) return c.json({ error: 'Skill not found', code: 'NOT_FOUND' }, 404);
+
+    await setSecretForSkill({
+      org_id: user.org_id,
+      skill_id: skillId,
+      key_name: parsed.data.key_name,
+      value: parsed.data.value,
+      created_by: user.id,
+    });
+    return c.json({ saved: true, key_name: parsed.data.key_name }, 201);
+  } catch (err) {
+    console.error('Failed to save skill secret:', err);
+    return c.json({ error: 'Failed to save secret', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── DELETE /:id/install?agent_employee_id=… — detach (Block 1.3) ─────
+// Removes the agent_employee_skills junction row and fires a live
+// `gateway.skills.remove(slug)` for connected openclaw employees.
+skillsRoutes.delete('/:id/install', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const employeeId = c.req.query('agent_employee_id');
+    if (!employeeId) {
+      return c.json(
+        { error: 'agent_employee_id query param required', code: 'VALIDATION_ERROR' },
+        400,
+      );
+    }
+
+    // Ownership check: employee must belong to caller's org.
+    const [employee] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, employeeId), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const result = await removeSkillFromEmployee(employeeId, skillId);
+    if (!result.removed && result.reason === 'not_installed') {
+      return c.json({ removed: false, reason: 'not_installed' }, 200);
+    }
+    if (!result.removed) {
+      return c.json({ error: 'Skill or employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ removed: true });
+  } catch (err) {
+    console.error('Failed to remove skill:', err);
+    return c.json({ error: 'Failed to remove skill', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // ─── PATCH /:id — edit (org skills only, must be caller's org) ────────
 skillsRoutes.patch('/:id', async (c) => {
   try {
@@ -446,8 +551,6 @@ skillsRoutes.patch('/:id', async (c) => {
     if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
     if (parsed.data.agent_config !== undefined)
       updates.agent_config = parsed.data.agent_config;
-    if (parsed.data.project_config !== undefined)
-      updates.project_config = parsed.data.project_config;
     if (parsed.data.version !== undefined) updates.version = parsed.data.version;
 
     if (Object.keys(updates).length === 0) {

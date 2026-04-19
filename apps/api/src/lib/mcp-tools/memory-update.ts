@@ -234,7 +234,7 @@ export async function memoryUpdate(
     }
 
     const isPromotion = args.patch.scope === 'org' && page.scope !== 'org';
-    if (isPromotion && !shouldAutoExecute('memory_update', ctx.trust_level)) {
+    if (isPromotion && !shouldAutoExecute('memory_update', ctx.trust_level, args)) {
       const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
       if (!shadowUserId) {
         return errorResult(

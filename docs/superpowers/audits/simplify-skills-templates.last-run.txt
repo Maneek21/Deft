@@ -1,0 +1,31 @@
+Run: 2026-04-18T19:06:00.444Z
+API: http://localhost:3001
+Web: http://localhost:3000
+
+INFO --- API smoke ---
+OK   login
+OK   GET /api/task-templates status: 200
+OK   bundled templates list includes launch-campaign + re-engage-sequence (got ["launch-campaign","re-engage-sequence"])
+OK   GET /api/task-templates/:id status: 200
+OK   launch-campaign task count: 7
+OK   GET /api/skills status: 200
+INFO bundled skill slugs: ["deft-workspace","github","google-calendar","shell-exec","tavily","web-browsing"]
+OK   retired bundled skills absent (engineering, marketing-campaign, sales-pipeline)
+OK   deft-workspace bundled skill present
+OK   POST /api/projects status: 201
+OK   created project id present
+OK   POST apply-template status: 201
+OK   apply-template created 7 tasks: 7
+OK   first task from launch-campaign is Draft launch brief
+OK   GET /api/agent-employees/provider-readiness status: 200
+OK   provider-readiness returns { ready: boolean } (got {"ready":false,"reason":"Self-hosted mode requires a BYOA provider. Configure one in Settings → Integrations."})
+INFO --- Web UI smoke ---
+OK   dashboard loaded
+OK   modal no longer says "Step 1 of 2": 0
+INFO "Step X of Y" indicators found: 0
+OK   /library has Skills tab
+OK   /library has Templates tab
+OK   agent wizard no longer says "Step 1 of 5": 0
+OK   agent wizard says "Step 1 of 3"
+
+OVERALL: PASS

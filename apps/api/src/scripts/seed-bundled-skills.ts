@@ -1,5 +1,8 @@
 /**
- * Phase 4 Task 4.3 — Seed the 9 day-one bundled skills.
+ * Phase 4 Task 4.3 — Seed the bundled skills (agent-only, one per capability pack).
+ *
+ * Task 16: project-workflow skills (engineering, marketing-campaign,
+ * sales-pipeline) retired — 6 bundled skills remain.
  *
  * Idempotent: uses the (source, COALESCE(org_id,''), slug) unique index
  * from migration 0035 as the conflict target. Re-running refreshes
@@ -32,7 +35,7 @@ export async function seedBundledSkills(
     await db.execute(sql`
       INSERT INTO skills (
         id, org_id, source, slug, name, description, icon, version,
-        agent_config, project_config, is_deleted, usage_count
+        agent_config, is_deleted, usage_count
       ) VALUES (
         ${skill.id},
         NULL,
@@ -43,7 +46,6 @@ export async function seedBundledSkills(
         ${skill.icon},
         ${skill.version},
         ${JSON.stringify(skill.agent_config)}::jsonb,
-        ${JSON.stringify(skill.project_config)}::jsonb,
         false,
         0
       )
@@ -54,7 +56,6 @@ export async function seedBundledSkills(
         icon = EXCLUDED.icon,
         version = EXCLUDED.version,
         agent_config = EXCLUDED.agent_config,
-        project_config = EXCLUDED.project_config,
         updated_at = now()
     `);
     log(`  upserted ${skill.slug}`);

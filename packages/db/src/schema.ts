@@ -503,7 +503,6 @@ export const skills = pgTable('skills', {
   version: text('version').default('1.0.0').notNull(),
   icon: text('icon'),
   agent_config: jsonb('agent_config').default({}).notNull(),
-  project_config: jsonb('project_config').default({}).notNull(),
   source_url: text('source_url'),
   is_deleted: boolean('is_deleted').default(false).notNull(),
   default_agent_employee_id: text('default_agent_employee_id'),
@@ -518,6 +517,113 @@ export const skills = pgTable('skills', {
   uniqueIndex('skills_source_org_slug_idx').on(t.source, t.org_id, t.slug),
   index('skills_source_idx').on(t.source),
   index('skills_org_idx').on(t.org_id),
+]);
+
+// ═══ TASK TEMPLATES ═══
+// First-class catalog. Not nested in skills. Bundled rows live cross-tenant
+// (org_id NULL); org rows have a real org_id. Instantiated into a project
+// via POST /api/projects/:id/apply-template.
+export const taskTemplates = pgTable('task_templates', {
+  ...id(),
+  org_id: text('org_id'),
+  name: text('name').notNull(),
+  description: text('description'),
+  icon: text('icon'),
+  slug: text('slug').notNull(),
+  source: text('source').$type<'bundled' | 'marketplace' | 'org'>().default('org').notNull(),
+  version: text('version').default('1.0.0').notNull(),
+  tasks: jsonb('tasks').notNull(),
+  created_by: text('created_by').references(() => users.id),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  usage_count: integer('usage_count').default(0).notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('task_templates_source_org_slug_idx').on(t.source, t.org_id, t.slug),
+  index('task_templates_org_idx').on(t.org_id),
+  index('task_templates_source_idx').on(t.source),
+]);
+
+// ═══ ORG SPEND CAPS ═══
+// Block 0.9 — per-org LLM spend ceilings enforced server-side at every
+// llm() call + every OpenClaw dispatch. Counters are incremented on
+// response; circuit-break fires when current_*_cents >= *_cents. Daily
+// resets at UTC midnight, monthly at month boundary. Null daily_cents
+// means no daily limit (monthly still applies).
+export const orgSpendCaps = pgTable('org_spend_caps', {
+  org_id: text('org_id').primaryKey().references(() => orgs.id, { onDelete: 'cascade' }),
+  daily_cents: integer('daily_cents'),
+  monthly_cents: integer('monthly_cents').default(10000).notNull(),
+  current_daily_cents: integer('current_daily_cents').default(0).notNull(),
+  current_monthly_cents: integer('current_monthly_cents').default(0).notNull(),
+  daily_reset_at: timestamp('daily_reset_at').defaultNow().notNull(),
+  monthly_reset_at: timestamp('monthly_reset_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('org_spend_caps_monthly_reset_idx').on(t.monthly_reset_at),
+]);
+
+// ═══ CLAWHUB ALLOWLIST ═══
+// Community-curated list of vetted ClawHub skill slugs (primarily from
+// VoltAgent/awesome-openclaw-skills). Block 1 Library UI defaults to
+// showing only rows from this table; raw-ClawHub browse is behind an
+// org-admin Advanced toggle. Populated by the daily
+// `clawhub-allowlist-refresh` cron job — see
+// apps/api/src/workers/handlers/clawhub-allowlist-refresh.ts.
+export const clawhubAllowlist = pgTable('clawhub_allowlist', {
+  slug: text('slug').primaryKey(),
+  source: text('source')
+    .$type<'voltagent' | 'deft-bundled' | 'deft-verified'>()
+    .default('voltagent')
+    .notNull(),
+  description: text('description'),
+  homepage: text('homepage'),
+  last_seen_at: timestamp('last_seen_at').defaultNow().notNull(),
+  added_at: timestamp('added_at').defaultNow().notNull(),
+}, (t) => [
+  index('clawhub_allowlist_source_idx').on(t.source),
+]);
+
+// Block 3.3 — per-agent webhook URLs. An agent-employee can expose an
+// HMAC-signed URL that accepts POST payloads from external systems.
+// The dispatcher enqueues an employee-trigger with trigger_kind='webhook'
+// so the agent runs its playbook over the incoming payload.
+export const agentWebhooks = pgTable('agent_webhooks', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull().unique(),
+  secret_hash: text('secret_hash').notNull(),
+  label: text('label'),
+  enabled: boolean('enabled').default(true).notNull(),
+  last_fired_at: timestamp('last_fired_at'),
+  fire_count: integer('fire_count').default(0).notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('agent_webhooks_org_idx').on(t.org_id),
+  index('agent_webhooks_employee_idx').on(t.agent_employee_id),
+]);
+
+// Block 1.4 — per-org, per-skill encrypted secret store. Used by the pre-deploy
+// install flow when a ClawHub skill declares required env vars and OAuth
+// matching misses. Least-privilege: only secrets declared in the skill's
+// requires.env get pushed to the agent container at install time.
+export const skillSecrets = pgTable('skill_secrets', {
+  ...id(),
+  org_id: text('org_id')
+    .notNull()
+    .references(() => orgs.id, { onDelete: 'cascade' }),
+  skill_id: text('skill_id')
+    .notNull()
+    .references(() => skills.id, { onDelete: 'cascade' }),
+  key_name: text('key_name').notNull(),
+  value_encrypted: text('value_encrypted').notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('skill_secrets_org_skill_key_uniq').on(t.org_id, t.skill_id, t.key_name),
+  index('skill_secrets_org_idx').on(t.org_id),
+  index('skill_secrets_skill_idx').on(t.skill_id),
 ]);
 
 // ═══ AGENT: TOOL REGISTRY ═══
@@ -798,10 +904,14 @@ export const decisions = pgTable('decisions', {
   context: text('context'), // surrounding context / why
   tags: jsonb('tags'), // ['payments', 'infrastructure']
   is_reversed: boolean('is_reversed').default(false).notNull(),
+  // Block 2.6 — set when the decision has been acted on (agent tool
+  // mark_decision_implemented, or the decision-wiki UI).
+  implemented_at: timestamp('implemented_at'),
   ...timestamps(),
 }, (t) => [
   index('decisions_org_idx').on(t.org_id),
   index('decisions_space_idx').on(t.space_id),
+  index('decisions_implemented_idx').on(t.implemented_at),
 ]);
 
 // ═══ CROSS REFERENCES ═══
@@ -1409,21 +1519,6 @@ export const agentEmployeeSkills = pgTable('agent_employee_skills', {
   index('aes_skill_idx').on(t.skill_id),
 ]);
 
-// project_skills: "attached" skills compose the project's status, priority,
-// view, and template vocabulary (per skills.project_config).
-export const projectSkills = pgTable('project_skills', {
-  project_id: text('project_id').notNull()
-    .references(() => projects.id, { onDelete: 'cascade' }),
-  skill_id: text('skill_id').notNull()
-    .references(() => skills.id, { onDelete: 'restrict' }),
-  attachment_order: integer('attachment_order').default(0).notNull(),
-  attached_at: timestamp('attached_at').defaultNow().notNull(),
-}, (t) => [
-  primaryKey({ columns: [t.project_id, t.skill_id] }),
-  index('ps_skill_idx').on(t.skill_id),
-  index('ps_project_order_idx').on(t.project_id, t.attachment_order),
-]);
-
 // ═══ AGENT PLANS ═══
 export const agentPlans = pgTable('agent_plans', {
   ...id(),
@@ -1487,7 +1582,11 @@ export const apiKeys = pgTable('api_keys', {
 // the `agent_employee_templates_version_semver` CHECK constraint applied in migration 0009.
 export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
   ...id(),
-  slug: text('slug').notNull().unique(),
+  // Block 3.1 — nullable. NULL = first-party/community seed; non-NULL =
+  // org-scoped "Save as template" clone. Uniqueness is (org_id, slug)
+  // declared via the SQL migration's COALESCE-keyed partial index.
+  org_id: text('org_id').references(() => orgs.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull(),
   name: text('name').notNull(),
   version: text('version').notNull(),
   role: agentEmployeeRoleEnum('role').notNull(),

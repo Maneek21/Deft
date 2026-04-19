@@ -7,13 +7,10 @@ import {
   taskActivity,
   orgs,
   users,
-  projectSkills,
-  notifications,
 } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { getIO } from '../../socket.js';
-import { ensureSkillInstalled } from '../../lib/skill-install.js';
 
 interface AgentEmployeeTaskData {
   taskId: string;
@@ -56,32 +53,6 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
     .limit(1);
 
   const orgName = org?.name ?? 'Unknown';
-
-  // 3a. Phase 4 Task 4.6 — JIT-install any required skills attached to the
-  // task's project before dispatching. Marketplace skills are gated behind
-  // an owner approval notification, so we abort dispatch until the owner
-  // (created_by) opts in.
-  const projectSkillRows = await db
-    .select({ skill_id: projectSkills.skill_id })
-    .from(projectSkills)
-    .where(eq(projectSkills.project_id, task.project_id));
-
-  for (const { skill_id } of projectSkillRows) {
-    const result = await ensureSkillInstalled(employee.id, skill_id);
-    if (result.status === 'requires_approval') {
-      await createSkillInstallApprovalNotification({
-        orgId,
-        ownerUserId: employee.created_by,
-        employeeId: employee.id,
-        employeeName: employee.name,
-        skill: result.skill,
-      });
-      console.warn(
-        `[agent-employee-task] Marketplace skill ${result.skill.name} requires approval; skipping dispatch of task ${taskId}`,
-      );
-      return;
-    }
-  }
 
   // 4. Build task-focused augmented prompt
   const systemPrompt = `${employee.system_prompt}
@@ -209,35 +180,5 @@ You have been assigned the following task:
   }
 
   console.log(`[agent-employee-task] Completed task ${taskId}, status set to in_review`);
-}
-
-/**
- * Phase 4 Task 4.6 — surface a "skill install pending approval" notification
- * to the employee's owner. The `skill_install_approval` type isn't yet in
- * the notification_type enum, so we re-use `agent_suggestion` and stash the
- * real payload in `metadata` for the UI to pick up.
- */
-async function createSkillInstallApprovalNotification(args: {
-  orgId: string;
-  ownerUserId: string;
-  employeeId: string;
-  employeeName: string;
-  skill: { id: string; name: string; source: 'marketplace' };
-}): Promise<void> {
-  const { orgId, ownerUserId, employeeId, employeeName, skill } = args;
-  await db.insert(notifications).values({
-    org_id: orgId,
-    user_id: ownerUserId,
-    type: 'agent_suggestion',
-    title: `Approve ${skill.name} for ${employeeName}`,
-    body: `${employeeName} needs the marketplace skill "${skill.name}" to run the task in this project. Review and approve the install.`,
-    metadata: {
-      kind: 'skill_install_approval',
-      skill_id: skill.id,
-      skill_name: skill.name,
-      skill_source: skill.source,
-      agent_employee_id: employeeId,
-    },
-  });
 }
 

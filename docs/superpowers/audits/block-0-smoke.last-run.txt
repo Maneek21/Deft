@@ -1,0 +1,24 @@
+Run: 2026-04-19T04:14:48.746Z
+API: http://localhost:3001
+Web: http://localhost:3000
+pass=12 fail=0
+
+OK   login: org=1d7d869a user=d4f985f6
+OK   0.2 GET /api/agent/actions/pending → 200
+OK   0.3 PATCH /api/agent-employees/:id accepts expertise_description → 200
+INFO 0.3 unchanged name: AuditAgent 9448
+OK   0.4 POST /api/reminders → 201
+OK   0.4 reminder appears in pending list
+INFO screenshot docs/superpowers/audits/screenshots/block-0-smoke/01-dashboard.png
+OK   dashboard loads
+OK   0.2 Agent nav entry present
+OK   0.7 /settings/agent/deploy → redirected correctly
+INFO screenshot docs/superpowers/audits/screenshots/block-0-smoke/02-redirect-target.png
+OK   0.7 wizard displays "Step 1 of 3"
+OK   0.7 no "Step 1 of 5" or "of 7"
+INFO screenshot docs/superpowers/audits/screenshots/block-0-smoke/03-settings-agent.png
+OK   0.7 settings/agent Deploy link points at canonical route
+INFO screenshot docs/superpowers/audits/screenshots/block-0-smoke/04-library.png
+OK   0.11 /library renders Skills tab (no regression)
+
+OVERALL: PASS

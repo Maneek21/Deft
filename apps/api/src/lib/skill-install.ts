@@ -23,6 +23,66 @@ import {
   findTriggerConflicts,
   type TriggerConflict,
 } from './trigger-resolver.js';
+import { decrypt } from './encryption.js';
+import { getGatewayForDeployment, type OpenClawGateway } from './openclaw-gateway.js';
+
+// Block 1.3 — test seam so install/remove paths can inject a mock gateway.
+let _gatewayResolver: (
+  employeeId: string,
+  connectionUrl: string,
+  token: string,
+) => OpenClawGateway | null = (id, url, tok) => getGatewayForDeployment(id, url, tok);
+export function _setSkillInstallGatewayResolver(
+  fn: (employeeId: string, connectionUrl: string, token: string) => OpenClawGateway | null,
+): void { _gatewayResolver = fn; }
+export function _resetSkillInstallGatewayResolver(): void {
+  _gatewayResolver = (id, url, tok) => getGatewayForDeployment(id, url, tok);
+}
+
+/**
+ * Fire-and-forget live install on the sidecar. Wraps decrypt + gateway call
+ * + error swallow so callers don't block on gateway latency.
+ */
+async function liveInstallOnGateway(
+  employeeId: string,
+  connectionUrl: string | null,
+  tokenEncrypted: string | null,
+  slug: string,
+  version: string,
+): Promise<{ forwarded: boolean; error?: string }> {
+  if (!connectionUrl || !tokenEncrypted) return { forwarded: false };
+  let token: string;
+  try { token = decrypt(tokenEncrypted); }
+  catch { return { forwarded: false, error: 'decrypt failed' }; }
+  const gateway = _gatewayResolver(employeeId, connectionUrl, token);
+  if (!gateway) return { forwarded: false, error: 'gateway unresolved' };
+  try {
+    await gateway.skills.install(slug, version);
+    return { forwarded: true };
+  } catch (err) {
+    return { forwarded: false, error: (err as Error).message };
+  }
+}
+
+async function liveRemoveOnGateway(
+  employeeId: string,
+  connectionUrl: string | null,
+  tokenEncrypted: string | null,
+  slug: string,
+): Promise<{ forwarded: boolean; error?: string }> {
+  if (!connectionUrl || !tokenEncrypted) return { forwarded: false };
+  let token: string;
+  try { token = decrypt(tokenEncrypted); }
+  catch { return { forwarded: false, error: 'decrypt failed' }; }
+  const gateway = _gatewayResolver(employeeId, connectionUrl, token);
+  if (!gateway) return { forwarded: false, error: 'gateway unresolved' };
+  try {
+    await gateway.skills.remove(slug);
+    return { forwarded: true };
+  } catch (err) {
+    return { forwarded: false, error: (err as Error).message };
+  }
+}
 
 export type SkillInstallResult =
   | { status: 'already_installed' }
@@ -166,5 +226,194 @@ export async function ensureSkillInstalled(
     }
   }
 
+  // Block 1.3 — live install on the sidecar for connected openclaw
+  // employees. Best-effort: a gateway error doesn't roll back the DB
+  // install — the reconciliation loop (Block 1.8) will retry next tick.
+  // Fires regardless of packsChanged: a skill can install without any
+  // new capability pack (e.g. a ClawHub slug).
+  if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+    void liveInstallOnGateway(
+      employeeId,
+      employee.connection_url,
+      employee.gateway_token_encrypted,
+      skill.slug,
+      skill.version,
+    ).then((r) => {
+      if (!r.forwarded && r.error) {
+        console.warn(`[skill-install ${employeeId}] gateway install ${skill.slug} deferred: ${r.error}`);
+      }
+    }).catch(() => undefined);
+  }
+
   return { status: 'installed', requires_reprovision: requiresReprovision };
+}
+
+/**
+ * Block 1.6 — marketplace install with secret resolution + gateway push.
+ *
+ * Call site: after the user clears the security-review approval for a
+ * marketplace skill. Performs the Block 1.6 flow:
+ *
+ *   1. Parse `requires.env` from the skill's agent_config.
+ *   2. Resolve each required key via OAuth → skill_secrets fallback.
+ *   3. If any still missing → return `{ status: 'missing_secrets', missing }`
+ *      so the UI can prompt. Caller saves via setSecretForSkill() and retries.
+ *   4. Otherwise push to the gateway via config.set(skills/<slug>/<KEY>),
+ *      then call gateway.skills.install(slug, version).
+ *   5. Insert the junction row + merge capability_packs.
+ *
+ * Only runs for marketplace skills with requires_env declared. Everything
+ * else falls back to the standard ensureSkillInstalled path.
+ */
+export type MarketplaceInstallResult =
+  | { status: 'installed'; requires_reprovision: boolean }
+  | { status: 'already_installed' }
+  | { status: 'missing_secrets'; missing: string[] }
+  | { status: 'gateway_unreachable' }
+  | { status: 'skill_not_found' }
+  | { status: 'employee_not_found' }
+  | { status: 'push_failed'; failed: string[] };
+
+export async function installMarketplaceSkillWithSecrets(
+  employeeId: string,
+  skillId: string,
+): Promise<MarketplaceInstallResult> {
+  const [existing] = await db
+    .select({ skill_id: agentEmployeeSkills.skill_id })
+    .from(agentEmployeeSkills)
+    .where(
+      and(
+        eq(agentEmployeeSkills.agent_employee_id, employeeId),
+        eq(agentEmployeeSkills.skill_id, skillId),
+      ),
+    )
+    .limit(1);
+  if (existing) return { status: 'already_installed' };
+
+  const [skill] = await db.select().from(skills).where(eq(skills.id, skillId)).limit(1);
+  if (!skill) return { status: 'skill_not_found' };
+
+  const [employee] = await db.select().from(agentEmployees).where(eq(agentEmployees.id, employeeId)).limit(1);
+  if (!employee) return { status: 'employee_not_found' };
+
+  const { resolveSecretsForInstall, pushSkillSecretsToGateway } = await import('./skill-secret-resolver.js');
+  const agentConfig = (skill.agent_config ?? {}) as { requires_env?: string[]; capability_packs?: string[] };
+  const requiredKeys = agentConfig.requires_env ?? [];
+
+  const secretResult = await resolveSecretsForInstall(employee.org_id, skillId, requiredKeys);
+  if (secretResult.missing.length > 0) {
+    return { status: 'missing_secrets', missing: secretResult.missing };
+  }
+
+  if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+    if (!employee.connection_url || !employee.gateway_token_encrypted) {
+      return { status: 'gateway_unreachable' };
+    }
+    let token: string;
+    try { token = decrypt(employee.gateway_token_encrypted); }
+    catch { return { status: 'gateway_unreachable' }; }
+
+    const gateway = _gatewayResolver(employee.id, employee.connection_url, token);
+    if (!gateway) return { status: 'gateway_unreachable' };
+
+    if (Object.keys(secretResult.resolved).length > 0) {
+      const push = await pushSkillSecretsToGateway(gateway, skill.slug, secretResult.resolved);
+      if (push.failed.length > 0) return { status: 'push_failed', failed: push.failed };
+    }
+
+    try {
+      await gateway.skills.install(skill.slug, skill.version);
+    } catch (err) {
+      console.warn(`[skill-install ${employeeId}] gateway install ${skill.slug} failed: ${(err as Error).message}`);
+      // Continue — reconciliation loop will retry. DB-level install still commits below.
+    }
+  }
+
+  // Junction row + capability pack merge (same as ensureSkillInstalled tail)
+  await db
+    .insert(agentEmployeeSkills)
+    .values({
+      agent_employee_id: employeeId,
+      skill_id: skillId,
+      installed_version: skill.version,
+    })
+    .onConflictDoNothing();
+
+  const incomingPacks = agentConfig.capability_packs ?? [];
+  const existingPacks = employee.capability_packs ?? [];
+  const mergedPacks = Array.from(new Set([...existingPacks, ...incomingPacks]));
+  const packsChanged = mergedPacks.length !== existingPacks.length;
+
+  let requiresReprovision = false;
+  if (packsChanged) {
+    await db
+      .update(agentEmployees)
+      .set({ capability_packs: mergedPacks })
+      .where(eq(agentEmployees.id, employeeId));
+    if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+      requiresReprovision = true;
+      await enqueue('agent-jobs', 'deploy-provision', {
+        employee_id: employeeId,
+        mode: 'update',
+      });
+    }
+  }
+
+  return { status: 'installed', requires_reprovision: requiresReprovision };
+}
+
+/**
+ * Block 1.3 — remove a skill from an agent employee.
+ *
+ * Idempotent: removing a not-installed skill is a no-op success. For
+ * connected openclaw employees, also fires `gateway.skills.remove(slug)`
+ * live (fire-and-forget — a gateway error is logged but does not block
+ * the DB detach).
+ */
+export async function removeSkillFromEmployee(
+  employeeId: string,
+  skillId: string,
+): Promise<{ removed: boolean; reason?: 'not_installed' | 'skill_not_found' | 'employee_not_found' }> {
+  const [existing] = await db
+    .select({ skill_id: agentEmployeeSkills.skill_id })
+    .from(agentEmployeeSkills)
+    .where(
+      and(
+        eq(agentEmployeeSkills.agent_employee_id, employeeId),
+        eq(agentEmployeeSkills.skill_id, skillId),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) return { removed: false, reason: 'not_installed' };
+
+  const [skill] = await db.select().from(skills).where(eq(skills.id, skillId)).limit(1);
+  if (!skill) return { removed: false, reason: 'skill_not_found' };
+
+  const [employee] = await db.select().from(agentEmployees).where(eq(agentEmployees.id, employeeId)).limit(1);
+  if (!employee) return { removed: false, reason: 'employee_not_found' };
+
+  await db
+    .delete(agentEmployeeSkills)
+    .where(
+      and(
+        eq(agentEmployeeSkills.agent_employee_id, employeeId),
+        eq(agentEmployeeSkills.skill_id, skillId),
+      ),
+    );
+
+  if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+    void liveRemoveOnGateway(
+      employeeId,
+      employee.connection_url,
+      employee.gateway_token_encrypted,
+      skill.slug,
+    ).then((r) => {
+      if (!r.forwarded && r.error) {
+        console.warn(`[skill-install ${employeeId}] gateway remove ${skill.slug} deferred: ${r.error}`);
+      }
+    }).catch(() => undefined);
+  }
+
+  return { removed: true };
 }

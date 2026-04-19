@@ -1,16 +1,11 @@
 /**
- * Phase 4 — Unified skill primitive typings.
+ * Unified skill primitive typings — agent-only after the
+ * Phase-4-reversal simplification (2026-04-18). See:
+ *   docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md
  *
- * A skill row (see `skills` table in `packages/db/src/schema.ts`) carries two
- * jsonb payloads, `agent_config` and `project_config`. These types are the
- * canonical TypeScript shape; runtime validation lives in per-route schemas.
- *
- * agent_config — attached via `agent_employee_skills`. Expands an employee's
- *   toolset, prompt, and trigger subscriptions when the skill is installed.
- *
- * project_config — attached via `project_skills`. Overrides a project's
- *   status vocabulary, priority labels, default board view, and optional
- *   task templates. Allowed-transition graphs pin workflow flow.
+ * The per-project fork (SkillProjectConfig + SkillProjectStatus) retired
+ * alongside the project_skills junction and skills.project_config column.
+ * A skill is now strictly a bundle of agent capabilities.
  */
 
 export type SkillAgentConfig = {
@@ -30,44 +25,24 @@ export type SkillAgentConfig = {
   heartbeat_checklist?: string[];
   /** Legacy JSON schema for skill params; retained from pre-Phase-4 rows. */
   param_schema?: Record<string, unknown>;
-};
-
-export type SkillProjectStatus = {
-  id: string;
-  label: string;
-  color: string;
-  order: number;
-};
-
-export type SkillProjectConfig = {
-  /** Ordered status vocabulary; replaces the tasks.status enum display. */
-  statuses?: SkillProjectStatus[];
-  /** Priority vocabulary for the project; drives TaskCard + filters UI. */
-  priority_vocab?: {
-    kind: 'numbered' | 'named' | 'temperature';
-    labels: string[];
-  };
-  /** Default view surfaced when opening the project. */
-  default_view?: 'board' | 'list' | 'calendar' | 'pipeline' | 'timeline';
-  /** When true, the task ID prefix (e.g. ENG-17) is hidden in UI. */
-  hide_prefix_ids?: boolean;
-  /** Extra typed fields appended to the task form. */
-  custom_fields?: Array<{
-    id: string;
-    label: string;
-    type: string;
-    options?: string[];
-  }>;
-  /** Named task bundles the user can instantiate with one click. */
-  task_templates?: Array<{
-    id: string;
-    name: string;
-    tasks: Array<{ title: string; status?: string; due_date?: string }>;
-  }>;
   /**
-   * Optional adjacency list describing which status transitions are allowed.
-   * `null` means no restriction; any status can move to any other. The key
-   * and values must be status ids from `statuses[]`.
+   * Block 1.6 / 3.4 — env vars the skill requires at install time.
+   * Pre-deploy flow matches each key against connected_accounts (OAuth)
+   * first, falls back to `skill_secrets` on miss.
    */
-  allowed_transitions?: Record<string, string[]> | null;
+  requires_env?: string[];
+  /**
+   * Block 3.4 — MCP server the skill wires the sidecar to. Declared by
+   * `deft-mcp-client` so OpenClaw sidecars register Deft's MCP server at
+   * boot; other skills may use this too in the future.
+   */
+  mcp_servers?: Array<{
+    name: string;
+    transport: 'stdio' | 'sse' | 'streamable-http';
+    /** URL for sse/streamable-http; command for stdio. */
+    url?: string;
+    command?: string;
+    args?: string[];
+    headers?: Record<string, string>;
+  }>;
 };
