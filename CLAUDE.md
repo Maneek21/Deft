@@ -175,9 +175,37 @@ Migration added: `0049_skill_secrets.sql`.
 
 **Known-deferred (Block 2):** full-ClawHub HTTP pass-through (currently stubbed); allowlist-auto under Standard/Autonomous trust; drawer-tab integration of the Personality editor; chat-surface integration of `<ReasoningTrace/>`; migration path for existing per-agent deploys.
 
+## OpenClaw Unlock — Block 2 agent reach + visibility (shipped 2026-04-19)
+
+Block 2 closed the dead zones where agents couldn't act and surfaced agent activity on the primary product surfaces. All 9 tasks shipped.
+
+- **Note agent tools.** `search_notes` (ILIKE + scope filter), `read_note`, `create_note` (tier quick), `note_to_wiki` (auto-slug disambiguation, tier quick). Uses existing `notes` table.
+- **post_thread_reply(parent_message_id, content).** Full-tier; inherits parent's `space_id`, broadcasts `message:new` socket event.
+- **Canvas read/write.** `read_canvas(space_name)` returns exists=false when no row; `write_canvas(space_name, content, title?)` upserts (one canvas per space). String content is auto-wrapped into a minimal TipTap doc.
+- **Blocked-message → task-create proposal.** `blocked-alert` worker now ALSO queues `agent_actions { action:'create_task', approval_status:'pending', source:'blocked_classifier' }` on the blocked user so they get a one-click "track this as a task" card.
+- **unblock_dependents workflow action.** New action kind for workflow rules. When the triggering task enters `done`, DMs each open+assigned dependent task's assignee with a `subtype:'unblocked'` notification.
+- **Decision ↔ task tools.** `link_decision_to_tasks(decision_id, task_ids, context?)` → cross_reference edges (idempotent). `mark_decision_implemented(decision_id)` → stamps `decisions.implemented_at` (migration 0050).
+- **member.joined onboarding trigger.** `POST /api/members` fans out `employee-trigger` jobs to every agent whose `trigger_subscriptions` contains `member.joined`. Opt-in via HR skill install.
+- **Dashboard inline approve/reject.** `/api/agent/actions/recent` returns recent actions; the existing "Agent Activity" bento card on `/dashboard` renders inline Approve/Reject buttons on pending items.
+- **Structured heartbeat checklist builder.** New `<HeartbeatChecklistBuilder/>` component replaces the textarea for `HEARTBEAT.md` on the Personality editor. Rows → `- [ ] every Nmin: …` markdown the existing heartbeat parser already understands.
+
+Migration added: `0050_decision_implemented.sql`.
+
+## OpenClaw Unlock — Block 3 power users + ecosystem polish (shipped 2026-04-19)
+
+Block 3 exit-gate met at 5/10 tasks with `deft-mcp-client` live. Remaining 5 deferred (see `docs/superpowers/block-3-complete-2026-04-19.md`).
+
+- **Clone agent + save as template.** `POST /:id/clone` duplicates an employee with a fresh slug + all installed skills; `POST /:id/save-as-template` writes an org-scoped template row. Migration 0051 makes `agent_employee_templates.org_id` nullable (NULL = first-party/community; non-NULL = org-scoped) with COALESCE-keyed unique on (org_id, slug).
+- **Developer credentials page.** `GET /api/agent-employees/:id/developer[?reveal=1]` + `/settings/agent-employees/[id]/developer` — masked token by default, reveal gated to admin/owner. Carries wscat one-liner + example JSON-RPC frames for SDK scaffolding.
+- **Webhook-callable agents.** Migration 0052 + `agent_webhooks` table. Authenticated mgmt surface under `/api/agent-webhooks`, public HMAC-gated dispatch at `/api/agent-webhooks/:slug` that enqueues an `employee-trigger` with `trigger_kind='webhook'` + full payload in context. scrypt-hashed secrets, constant-time verification.
+- **`deft-mcp-client` bundled skill.** On-ramp for any OpenClaw deployment (incl. BYOA) to talk back into its Deft workspace over MCP — seeded into the bundled catalog. `SkillAgentConfig` extended with `requires_env?: string[]` + `mcp_servers?: Array<{ name, transport, url|command, headers }>`.
+- **Agent trace export.** `GET /api/agent/conversations/:id/trace.json` — format `deft.agent_trace.v1`, messages + actions + conversation metadata as one JSON download.
+
+Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
+
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0049 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0049 applied.
+- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0052 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0052 applied.
 - **No live OpenClaw gateway in dev.** All `openclaw`-kind agent_employees rows currently have `connection_url IS NULL`. Block 1's live-gateway smoke tests run only once a gateway is provisioned; unit tests use MockTransport + `_setGatewayResolver` seams to exercise the forwarding code paths end-to-end.
 
 ## What NOT To Do
