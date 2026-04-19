@@ -543,6 +543,36 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['slug', 'suggested_content', 'reason'],
     },
   },
+  // ─── Block 2.3 — canvas tools ──────────────────────────────────────
+  {
+    name: 'read_canvas',
+    description:
+      'Read the shared canvas (TipTap JSON document) attached to a space. One canvas per space. Returns title + content.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        space_name: { type: 'string', description: 'Space name, e.g. "engineering".' },
+      },
+      required: ['space_name'],
+    },
+  },
+  {
+    name: 'write_canvas',
+    description:
+      'Replace the canvas content for a space. Upserts the canvas row (one per space). Pass the full next content as a TipTap JSON document or HTML string.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        space_name: { type: 'string' },
+        title: { type: 'string', description: 'Optional new title.' },
+        content: {
+          description: 'TipTap JSON document (object) or HTML string.',
+          oneOf: [{ type: 'string' }, { type: 'object' }],
+        },
+      },
+      required: ['space_name', 'content'],
+    },
+  },
   // ─── Block 2.2 — thread reply ───────────────────────────────────────
   {
     name: 'post_thread_reply',
@@ -656,6 +686,8 @@ export const ACTION_TOOLS = new Set([
   'note_to_wiki',
   // ─── Block 2.2 — thread reply ────────────────────────────────────────
   'post_thread_reply',
+  // ─── Block 2.3 — canvas write ────────────────────────────────────────
+  'write_canvas',
 ]);
 
 // Calendar tools (only added when calendar is connected)

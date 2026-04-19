@@ -120,6 +120,12 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // Same tier as post_message (full) — it posts as the agent's shadow
   // user to a shared channel.
   post_thread_reply: 'full',
+
+  // ─── Block 2.3 — canvas tools ───────────────────────────────────────
+  // read_canvas is read-only (not in ACTION_TOOLS). write_canvas
+  // overwrites shared-canvas state visible to every space member, so
+  // tier 'quick' — gated under Conservative, auto under Standard+.
+  write_canvas: 'quick',
 };
 
 /**

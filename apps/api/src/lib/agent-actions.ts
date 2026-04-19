@@ -18,6 +18,7 @@ import {
   mcpConnections,
   reminders,
   notes,
+  canvases,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
@@ -1198,6 +1199,120 @@ export async function executeAction(
             fire_at: remindAt.toISOString(),
           },
         };
+      }
+
+      case 'read_canvas': {
+        // Block 2.3 — read a space's shared canvas by space_name.
+        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
+        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+
+        const [space] = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
+          .limit(1);
+        if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
+
+        const [canvas] = await db
+          .select({ id: canvases.id, title: canvases.title, content: canvases.content, updated_at: canvases.updated_at })
+          .from(canvases)
+          .where(eq(canvases.space_id, space.id))
+          .limit(1);
+
+        if (!canvas) {
+          return { success: true, result: { space: space.name, canvas: null, exists: false } };
+        }
+
+        return {
+          success: true,
+          result: {
+            space: space.name,
+            canvas: {
+              id: canvas.id,
+              title: canvas.title,
+              content: canvas.content,
+              updated_at: canvas.updated_at,
+            },
+            exists: true,
+          },
+        };
+      }
+
+      case 'write_canvas': {
+        // Block 2.3 — upsert the canvas row for a space.
+        const spaceName = typeof params.space_name === 'string' ? params.space_name.trim() : '';
+        const content = params.content;
+        const title = typeof params.title === 'string' ? params.title.trim() : undefined;
+        if (!spaceName) return { success: false, result: null, error: 'space_name is required' };
+        if (content === undefined || content === null) {
+          return { success: false, result: null, error: 'content is required' };
+        }
+
+        const [space] = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, spaceName)))
+          .limit(1);
+        if (!space) return { success: false, result: null, error: `Space "${spaceName}" not found` };
+
+        const jsonContent: any = typeof content === 'string' ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: content }] }] } : content;
+
+        const [existing] = await db
+          .select({ id: canvases.id })
+          .from(canvases)
+          .where(eq(canvases.space_id, space.id))
+          .limit(1);
+
+        let resultRow;
+        if (existing) {
+          const [updated] = await db
+            .update(canvases)
+            .set({
+              content: jsonContent,
+              last_edited_by: userId,
+              last_edited_at: new Date(),
+              ...(title ? { title } : {}),
+            })
+            .where(eq(canvases.id, existing.id))
+            .returning();
+          resultRow = updated;
+        } else {
+          const [inserted] = await db
+            .insert(canvases)
+            .values({
+              org_id: orgId,
+              space_id: space.id,
+              title: title ?? 'Canvas',
+              content: jsonContent,
+              last_edited_by: userId,
+              last_edited_at: new Date(),
+            })
+            .returning();
+          resultRow = inserted;
+        }
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { canvas_id: resultRow!.id, space: space.name } as any,
+            after_state: { canvas_id: resultRow!.id, space_id: space.id, title: resultRow!.title } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'write_canvas',
+          entityType: 'canvas',
+          entityId: resultRow!.id,
+          beforeState: null,
+          afterState: { space_id: space.id, title: resultRow!.title } as any,
+          metadata: { action_id: actionId, space_name: space.name },
+        });
+
+        return { success: true, result: { canvas_id: resultRow!.id, space: space.name, title: resultRow!.title } };
       }
 
       case 'post_thread_reply': {
