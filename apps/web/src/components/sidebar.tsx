@@ -40,6 +40,7 @@ import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
+import { usePendingApprovals } from '@/hooks/use-pending-approvals';
 
 type AgentEmployee = {
   id: string;
@@ -733,6 +734,10 @@ export function Sidebar({
   // Total unread across all spaces
   const totalUnread = Array.from(unreadCounts.values()).reduce((sum, c) => sum + c, 0);
 
+  // Block 0.2 — poll the agent-actions pending queue so the Agent nav entry
+  // renders a red badge whenever an agent is waiting on approval.
+  const { count: pendingApprovalCount } = usePendingApprovals();
+
   const handleSpaceClick = (id: string) => {
     onSelectSpace(id);
     setMobileOpen(false);
@@ -847,6 +852,15 @@ export function Sidebar({
                   style={{ background: 'var(--primary-container)' }}
                 >
                   {totalUnread > 99 ? '99+' : totalUnread}
+                </div>
+              )}
+              {item.name === 'Agent' && pendingApprovalCount > 0 && (
+                <div
+                  className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
+                  style={{ background: 'var(--danger, #ef4444)' }}
+                  title={`${pendingApprovalCount} agent action${pendingApprovalCount === 1 ? '' : 's'} awaiting approval`}
+                >
+                  {pendingApprovalCount > 99 ? '99+' : pendingApprovalCount}
                 </div>
               )}
             </Link>
