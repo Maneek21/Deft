@@ -56,4 +56,41 @@ const capabilityPackSkills: BundledSkill[] = getAvailableCapabilityPacks().map((
   };
 });
 
-export const BUNDLED_SKILLS: BundledSkill[] = capabilityPackSkills;
+// Block 3.4 — `deft-mcp-client` bundled skill.
+//
+// On-ramp for any OpenClaw deployment (including BYOA) to talk back into
+// a Deft workspace. Installing it on an agent wires the sidecar to
+// register Deft's MCP server at boot so the agent can call task_query /
+// message_post / platform_context / etc. without per-agent config.
+//
+// Published externally to ClawHub + agentskills.io as a separate step.
+// The in-repo bundled row makes every Deft-managed agent wire up the
+// same way by default.
+const deftMcpClientSkill: BundledSkill = {
+  id: 'skill_bundled_deft-mcp-client',
+  slug: 'deft-mcp-client',
+  name: 'Deft MCP client',
+  description:
+    'Wires an OpenClaw agent back into its Deft workspace over MCP. Grants task_query, message_post, platform_context, memory_recall, and thread_fetch without per-agent config.',
+  icon: null,
+  version: DEFAULT_VERSION,
+  agent_config: {
+    mcp_servers: [
+      {
+        name: 'deft',
+        transport: 'streamable-http',
+        // Block 1.6 pre-deploy flow substitutes DEFT_API_URL + DEFT_MCP_TOKEN
+        // from connected_accounts / skill_secrets before config.set.
+        url: '${DEFT_API_URL}/api/mcp/v1',
+        headers: {
+          Authorization: 'Bearer ${DEFT_MCP_TOKEN}',
+        },
+      },
+    ],
+    requires_env: ['DEFT_API_URL', 'DEFT_MCP_TOKEN'],
+    system_prompt_addition:
+      'You have an MCP connection to your Deft workspace. Call `deft_platform_context` first on every turn — it is the source of truth for today, your org, your teammates, and your active work.',
+  },
+};
+
+export const BUNDLED_SKILLS: BundledSkill[] = [...capabilityPackSkills, deftMcpClientSkill];

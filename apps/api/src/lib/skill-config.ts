@@ -25,4 +25,24 @@ export type SkillAgentConfig = {
   heartbeat_checklist?: string[];
   /** Legacy JSON schema for skill params; retained from pre-Phase-4 rows. */
   param_schema?: Record<string, unknown>;
+  /**
+   * Block 1.6 / 3.4 — env vars the skill requires at install time.
+   * Pre-deploy flow matches each key against connected_accounts (OAuth)
+   * first, falls back to `skill_secrets` on miss.
+   */
+  requires_env?: string[];
+  /**
+   * Block 3.4 — MCP server the skill wires the sidecar to. Declared by
+   * `deft-mcp-client` so OpenClaw sidecars register Deft's MCP server at
+   * boot; other skills may use this too in the future.
+   */
+  mcp_servers?: Array<{
+    name: string;
+    transport: 'stdio' | 'sse' | 'streamable-http';
+    /** URL for sse/streamable-http; command for stdio. */
+    url?: string;
+    command?: string;
+    args?: string[];
+    headers?: Record<string, string>;
+  }>;
 };
