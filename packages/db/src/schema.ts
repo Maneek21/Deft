@@ -543,6 +543,25 @@ export const taskTemplates = pgTable('task_templates', {
   index('task_templates_source_idx').on(t.source),
 ]);
 
+// ═══ ORG SPEND CAPS ═══
+// Block 0.9 — per-org LLM spend ceilings enforced server-side at every
+// llm() call + every OpenClaw dispatch. Counters are incremented on
+// response; circuit-break fires when current_*_cents >= *_cents. Daily
+// resets at UTC midnight, monthly at month boundary. Null daily_cents
+// means no daily limit (monthly still applies).
+export const orgSpendCaps = pgTable('org_spend_caps', {
+  org_id: text('org_id').primaryKey().references(() => orgs.id, { onDelete: 'cascade' }),
+  daily_cents: integer('daily_cents'),
+  monthly_cents: integer('monthly_cents').default(10000).notNull(),
+  current_daily_cents: integer('current_daily_cents').default(0).notNull(),
+  current_monthly_cents: integer('current_monthly_cents').default(0).notNull(),
+  daily_reset_at: timestamp('daily_reset_at').defaultNow().notNull(),
+  monthly_reset_at: timestamp('monthly_reset_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  index('org_spend_caps_monthly_reset_idx').on(t.monthly_reset_at),
+]);
+
 // ═══ CLAWHUB ALLOWLIST ═══
 // Community-curated list of vetted ClawHub skill slugs (primarily from
 // VoltAgent/awesome-openclaw-skills). Block 1 Library UI defaults to

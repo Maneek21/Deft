@@ -76,6 +76,13 @@ export async function llm(params: {
   maxTokens?: number;
   tools?: any[];
   orgConfig?: Record<string, any>;
+  /**
+   * Block 0.9 — when provided, checkOrgSpendCap gates the call and
+   * recordOrgSpendFromUsage updates the org's monthly/daily counters on
+   * a successful response. Callers that omit orgId run unmetered
+   * (existing behavior preserved).
+   */
+  orgId?: string;
 }): Promise<{
   text: string;
   toolCalls?: any[];
@@ -85,17 +92,49 @@ export async function llm(params: {
   const config = getModelConfig(params.task, params.orgConfig);
   const apiKey = resolveApiKey(config.provider, params.orgConfig);
 
+  // Block 0.9 — per-org spend cap pre-flight.
+  if (params.orgId) {
+    const { checkOrgSpendCap } = await import('./org-spend-cap.js');
+    const verdict = await checkOrgSpendCap(params.orgId);
+    if (!verdict.allowed) {
+      throw new Error(`Spend cap reached: ${verdict.reason}`);
+    }
+  }
+
+  let result: {
+    text: string;
+    toolCalls?: any[];
+    usage?: { input: number; output: number };
+    model: string;
+  };
   switch (config.provider) {
     case 'anthropic':
-      return callAnthropic(config, apiKey, params);
+      result = await callAnthropic(config, apiKey, params);
+      break;
     case 'openai':
     case 'openrouter':
-      return callOpenAI(config, apiKey, params);
+      result = await callOpenAI(config, apiKey, params);
+      break;
     case 'ollama':
-      return callOllama(config, params);
+      result = await callOllama(config, params);
+      break;
     default:
       throw new Error(`Unsupported LLM provider: ${config.provider}`);
   }
+
+  // Block 0.9 — record spend after a successful response.
+  if (params.orgId && result.usage) {
+    const { recordOrgSpendFromUsage } = await import('./org-spend-cap.js');
+    const providerPrefixedModel = `${config.provider}/${result.model}`;
+    await recordOrgSpendFromUsage(
+      params.orgId,
+      providerPrefixedModel,
+      result.usage.input,
+      result.usage.output,
+    );
+  }
+
+  return result;
 }
 
 async function callAnthropic(
