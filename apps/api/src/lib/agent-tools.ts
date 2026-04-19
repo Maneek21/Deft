@@ -543,6 +543,33 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['slug', 'suggested_content', 'reason'],
     },
   },
+  // ─── Block 2.6 — decision tools ─────────────────────────────────────
+  {
+    name: 'link_decision_to_tasks',
+    description:
+      'Link a decision to one or more tasks in your org. Creates `cross_references` rows (source=decision → target=task). Use when a conversation decision implies the team needs to act.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision_id: { type: 'string' },
+        task_ids: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        context: { type: 'string', description: 'Optional explanation of why these tasks implement this decision.' },
+      },
+      required: ['decision_id', 'task_ids'],
+    },
+  },
+  {
+    name: 'mark_decision_implemented',
+    description:
+      'Mark a decision as implemented (sets decisions.implemented_at = now()). Use after the linked tasks have been completed.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision_id: { type: 'string' },
+      },
+      required: ['decision_id'],
+    },
+  },
   // ─── Block 2.3 — canvas tools ──────────────────────────────────────
   {
     name: 'read_canvas',
@@ -688,6 +715,9 @@ export const ACTION_TOOLS = new Set([
   'post_thread_reply',
   // ─── Block 2.3 — canvas write ────────────────────────────────────────
   'write_canvas',
+  // ─── Block 2.6 — decision writes ────────────────────────────────────
+  'link_decision_to_tasks',
+  'mark_decision_implemented',
 ]);
 
 // Calendar tools (only added when calendar is connected)

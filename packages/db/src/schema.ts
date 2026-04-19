@@ -883,10 +883,14 @@ export const decisions = pgTable('decisions', {
   context: text('context'), // surrounding context / why
   tags: jsonb('tags'), // ['payments', 'infrastructure']
   is_reversed: boolean('is_reversed').default(false).notNull(),
+  // Block 2.6 — set when the decision has been acted on (agent tool
+  // mark_decision_implemented, or the decision-wiki UI).
+  implemented_at: timestamp('implemented_at'),
   ...timestamps(),
 }, (t) => [
   index('decisions_org_idx').on(t.org_id),
   index('decisions_space_idx').on(t.space_id),
+  index('decisions_implemented_idx').on(t.implemented_at),
 ]);
 
 // ═══ CROSS REFERENCES ═══

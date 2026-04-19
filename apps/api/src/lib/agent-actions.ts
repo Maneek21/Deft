@@ -19,6 +19,8 @@ import {
   reminders,
   notes,
   canvases,
+  decisions,
+  crossReferences,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
@@ -1199,6 +1201,123 @@ export async function executeAction(
             fire_at: remindAt.toISOString(),
           },
         };
+      }
+
+      case 'link_decision_to_tasks': {
+        // Block 2.6 — create cross-reference edges decision→task.
+        const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+        const taskIds = Array.isArray(params.task_ids) ? params.task_ids.filter((x: any) => typeof x === 'string') : [];
+        const context = typeof params.context === 'string' ? params.context : null;
+        if (!decisionId) return { success: false, result: null, error: 'decision_id is required' };
+        if (taskIds.length === 0) return { success: false, result: null, error: 'task_ids must be a non-empty array' };
+
+        const [decision] = await db
+          .select({ id: decisions.id })
+          .from(decisions)
+          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .limit(1);
+        if (!decision) return { success: false, result: null, error: 'Decision not found' };
+
+        // Filter taskIds to ones that exist in this org
+        const { inArray } = await import('drizzle-orm');
+        const validTasks = await db
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(inArray(tasks.id, taskIds), eq(tasks.org_id, orgId)));
+        const validTaskIdSet = new Set(validTasks.map((t) => t.id));
+
+        const linked: string[] = [];
+        for (const taskId of taskIds) {
+          if (!validTaskIdSet.has(taskId)) continue;
+          // Skip duplicates silently.
+          const [existing] = await db
+            .select({ id: crossReferences.id })
+            .from(crossReferences)
+            .where(and(
+              eq(crossReferences.org_id, orgId),
+              eq(crossReferences.source_type, 'decision'),
+              eq(crossReferences.source_id, decisionId),
+              eq(crossReferences.target_type, 'task'),
+              eq(crossReferences.target_id, taskId),
+            ))
+            .limit(1);
+          if (existing) { linked.push(taskId); continue; }
+          await db.insert(crossReferences).values({
+            org_id: orgId,
+            source_type: 'decision',
+            source_id: decisionId,
+            target_type: 'task',
+            target_id: taskId,
+            context,
+            created_by: userId,
+          });
+          linked.push(taskId);
+        }
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { decision_id: decisionId, linked_task_ids: linked } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        return {
+          success: true,
+          result: {
+            decision_id: decisionId,
+            linked_task_ids: linked,
+            skipped: taskIds.filter((t: string) => !validTaskIdSet.has(t)),
+          },
+        };
+      }
+
+      case 'mark_decision_implemented': {
+        // Block 2.6 — stamp decisions.implemented_at.
+        const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
+        if (!decisionId) return { success: false, result: null, error: 'decision_id is required' };
+
+        const [decision] = await db
+          .select()
+          .from(decisions)
+          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .limit(1);
+        if (!decision) return { success: false, result: null, error: 'Decision not found' };
+
+        if (decision.implemented_at) {
+          return {
+            success: true,
+            result: { decision_id: decisionId, implemented_at: decision.implemented_at, already_implemented: true },
+          };
+        }
+
+        const now = new Date();
+        await db
+          .update(decisions)
+          .set({ implemented_at: now })
+          .where(eq(decisions.id, decisionId));
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { decision_id: decisionId, implemented_at: now } as any,
+            executed_at: now,
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'mark_decision_implemented',
+          entityType: 'decision',
+          entityId: decisionId,
+          beforeState: null,
+          afterState: { implemented_at: now.toISOString() } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { decision_id: decisionId, implemented_at: now } };
       }
 
       case 'read_canvas': {

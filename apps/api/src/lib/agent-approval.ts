@@ -126,6 +126,12 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // overwrites shared-canvas state visible to every space member, so
   // tier 'quick' — gated under Conservative, auto under Standard+.
   write_canvas: 'quick',
+
+  // ─── Block 2.6 — decision tools ─────────────────────────────────────
+  // Both actions only touch links / a single timestamp, not the
+  // decision text itself. Tier 'quick' — gated under Conservative.
+  link_decision_to_tasks: 'quick',
+  mark_decision_implemented: 'quick',
 };
 
 /**
