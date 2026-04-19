@@ -583,6 +583,28 @@ export const clawhubAllowlist = pgTable('clawhub_allowlist', {
   index('clawhub_allowlist_source_idx').on(t.source),
 ]);
 
+// Block 1.4 — per-org, per-skill encrypted secret store. Used by the pre-deploy
+// install flow when a ClawHub skill declares required env vars and OAuth
+// matching misses. Least-privilege: only secrets declared in the skill's
+// requires.env get pushed to the agent container at install time.
+export const skillSecrets = pgTable('skill_secrets', {
+  ...id(),
+  org_id: text('org_id')
+    .notNull()
+    .references(() => orgs.id, { onDelete: 'cascade' }),
+  skill_id: text('skill_id')
+    .notNull()
+    .references(() => skills.id, { onDelete: 'cascade' }),
+  key_name: text('key_name').notNull(),
+  value_encrypted: text('value_encrypted').notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('skill_secrets_org_skill_key_uniq').on(t.org_id, t.skill_id, t.key_name),
+  index('skill_secrets_org_idx').on(t.org_id),
+  index('skill_secrets_skill_idx').on(t.skill_id),
+]);
+
 // ═══ AGENT: TOOL REGISTRY ═══
 export const tools = pgTable('tools', {
   ...id(),
