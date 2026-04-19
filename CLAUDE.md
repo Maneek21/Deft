@@ -151,9 +151,34 @@ and added invisible-today primitives. See
 
 Migrations added: `0047_clawhub_allowlist.sql`, `0048_org_spend_caps.sql`.
 
+## OpenClaw Unlock — Block 1 control plane (shipped 2026-04-19)
+
+Block 1 delivers the OpenClaw Gateway control plane: a WebSocket
+JSON-RPC client that every route/worker shares, plus the surrounding
+surfaces that exercise it (skill install/remove, markdown file editing,
+approval forwarding, reasoning trace, per-org gateway reuse).
+
+**Shipped:**
+- **Gateway RPC client.** `apps/api/src/lib/openclaw-gateway.ts`. WebSocket JSON-RPC 2.0 with multiplex-by-id, lazy connect, exponential-backoff reconnect (1s→2s→4s→8s→30s), 30s per-call timeout, per-deployment-id cache. Typed namespaces: `skills`, `agents.files`, `exec.approval`, `config`, `sessions`, `cron`. Transport is injectable (test seam).
+- **agents.files.\* UI + API.** `GET/PUT /api/agent-employees/:id/files[/:filename]` routes + `/settings/agent-employees/[id]/personality` page with a markdown editor for the 7 canonical files (SOUL, AGENTS, USER, TOOLS, IDENTITY, HEARTBEAT, BOOT). 128KB cap, filename whitelist.
+- **Live skill install/remove on attach.** `ensureSkillInstalled` fires `gateway.skills.install(slug, version)` live for connected openclaw employees alongside the junction insert. New `removeSkillFromEmployee` helper + `DELETE /api/skills/:id/install` route mirrors the semantics. Fire-and-forget — gateway errors don't roll back the DB write; reconciliation loop retries.
+- **`skill_secrets` table.** Migration 0049. Encrypted per-org, per-skill credential store with helpers in `apps/api/src/lib/skill-secrets.ts`. Least-privilege: `getSecretsForSkill` only returns the keys declared by a skill's manifest.
+- **ClawHub browse + import.** `GET /api/clawhub/browse` reads the VoltAgent-seeded allowlist; `POST /api/clawhub/import { slug }` materializes as a marketplace skill. New "ClawHub" tab on the Library page with per-entry Import button.
+- **Pre-deploy install flow.** `resolveSecretsForInstall(orgId, skillId, requiredKeys)` — OAuth-first (connected_accounts) with skill_secrets fallback, env-var → provider prefix map (SLACK_/GITHUB_/GMAIL_/GOOGLE_/LINEAR_). `pushSkillSecretsToGateway` calls `config.set('skills/<slug>/<KEY>', value)`. Orchestrator `installMarketplaceSkillWithSecrets(employeeId, skillId)` wires it end-to-end. New routes: `POST /api/skills/:id/install/marketplace`, `POST /api/skills/:id/secrets`.
+- **Runtime install tool.** `request_skill_install(slug, agent_employee_id?, rationale?)` — new native tool, always queues for approval (tier='full' + DESTRUCTIVE_ADMIN_TOOLS). Executor looks up the slug on the allowlist (imports as marketplace skill on first use) and runs the pre-deploy flow. Slugs off the allowlist are rejected; full-ClawHub install stays admin-only.
+- **Skill reconciliation loop.** `reconcileSkillsForEmployee` fires best-effort from the openclaw heartbeat branch. Diffs `agent_employee_skills` against `gateway.skills.list()`, auto-reinstalls missing via `gateway.skills.install`, emits `skill_drift` system notification to org admins after > 2 consecutive drifting ticks (24h dedupe).
+- **Exec/plugin approval forwarding.** `startApprovalSubscriberFor(employeeId)` subscribes to `exec.approval.request` + `plugin.approval.request` events on the gateway and mirrors them as `agent_actions` rows (action=`openclaw_exec_approval`/`openclaw_plugin_approval`, tier=full). Existing approval-inbox UI renders them with no change. Approve/reject forwards back via `gateway.exec.approval.resolve(approvalId, approved, reason)`. Bootstrap from `workers/index.ts`.
+- **Reasoning trace.** `startTraceForwarderForSession(employee, sessionId)` subscribes to `session.tool` + `session.message`, fans out `agent:trace` via Socket.io to `org:<orgId>` filtered by sessionId. Frontend `useReasoningTrace(sessionId)` hook + `<ReasoningTrace/>` expander component.
+- **Per-org gateway for new deploys.** `deploy-provision` worker checks for an existing openclaw provider_instance in the org on the same provider; if found, the new employee inherits its `connection_url` + `gateway_token_encrypted` + `provider_instance_id`, skipping `provider.provision()`. Pre-existing per-agent deploys are NOT migrated (Open Question #4).
+
+Migration added: `0049_skill_secrets.sql`.
+
+**Known-deferred (Block 2):** full-ClawHub HTTP pass-through (currently stubbed); allowlist-auto under Standard/Autonomous trust; drawer-tab integration of the Personality editor; chat-surface integration of `<ReasoningTrace/>`; migration path for existing per-agent deploys.
+
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0048 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0048 applied.
+- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0049 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0049 applied.
+- **No live OpenClaw gateway in dev.** All `openclaw`-kind agent_employees rows currently have `connection_url IS NULL`. Block 1's live-gateway smoke tests run only once a gateway is provisioned; unit tests use MockTransport + `_setGatewayResolver` seams to exercise the forwarding code paths end-to-end.
 
 ## What NOT To Do
 
