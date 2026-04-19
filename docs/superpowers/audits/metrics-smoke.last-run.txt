@@ -1,0 +1,5 @@
+Phase 10 metrics smoke audit — PASS
+run at: 2026-04-14T16:15:56.899Z
+elapsed_ms: 133
+api_url: http://localhost:3001
+body_bytes: 1896
