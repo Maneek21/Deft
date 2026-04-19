@@ -244,6 +244,16 @@ export function startWorkers(): void {
     .then((mod) => mod.rehydratePendingReminders())
     .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
 
+  // Block 1.9 — subscribe to gateway exec/plugin approval events for every
+  // connected OpenClaw employee, mirror events into agent_actions so the
+  // existing approval-inbox UI renders them.
+  import('../lib/gateway-approval-subscriber.js')
+    .then((mod) => mod.startAllApprovalSubscribers())
+    .then((count) => {
+      if (count > 0) console.log(`[workers] Started gateway approval subscribers for ${count} employee(s)`);
+    })
+    .catch((err) => console.warn('[workers] gateway approval subscribers start failed:', err));
+
   // Run stale cleanup every 60 seconds
   setInterval(() => {
     cleanupStaleJobs().then(count => {
