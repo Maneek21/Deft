@@ -702,6 +702,17 @@ const patchSchema = z.object({
    * flips) as trust_level.
    */
   mark_healthy: z.boolean().optional(),
+  /**
+   * Block 0.3 — editable identity / behavior fields for the "edit agent"
+   * flow. Deft-side config only. OpenClaw-side markdown files (SOUL.md
+   * etc.) edit over Gateway RPC in Block 1.
+   */
+  name: z.string().min(1).max(100).optional(),
+  avatar_url: z.string().url().nullable().optional(),
+  starter_prompts: z.array(z.string().min(1).max(500)).max(6).optional(),
+  expertise_description: z.string().max(500).nullable().optional(),
+  max_daily_actions: z.number().int().min(1).max(1000).optional(),
+  heartbeat_enabled: z.boolean().optional(),
 });
 
 async function getOrgRole(userId: string, orgId: string): Promise<string | null> {
@@ -775,6 +786,16 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
       // The actual column writes happen via raw SQL below so this branch
       // also lands pre-migration without a typecheck miss.
     }
+
+    // Block 0.3 — identity + behavior fields. No role gating because
+    // these are per-employee cosmetic / configuration rather than
+    // destructive admin flips.
+    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+    if (parsed.data.avatar_url !== undefined) updates.avatar_url = parsed.data.avatar_url;
+    if (parsed.data.starter_prompts !== undefined) updates.starter_prompts = parsed.data.starter_prompts;
+    if (parsed.data.expertise_description !== undefined) updates.expertise_description = parsed.data.expertise_description;
+    if (parsed.data.max_daily_actions !== undefined) updates.max_daily_actions = parsed.data.max_daily_actions;
+    if (parsed.data.heartbeat_enabled !== undefined) updates.heartbeat_enabled = parsed.data.heartbeat_enabled;
 
     if (Object.keys(updates).length === 0 && !parsed.data.mark_healthy) {
       return c.json(existing);
