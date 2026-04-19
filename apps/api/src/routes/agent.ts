@@ -630,6 +630,45 @@ agentRoutes.get('/actions/pending', async (c) => {
   return c.json({ actions });
 });
 
+// Block 2.8 — dashboard "Agent Activity" widget. Returns the most recent
+// actions across all employees in the org regardless of status, joined
+// with the employee row so the UI can show name + avatar + kind.
+agentRoutes.get('/actions/recent', async (c) => {
+  const user = c.get('user');
+  const limitParam = parseInt(c.req.query('limit') ?? '5', 10);
+  const limit = Math.min(Math.max(isNaN(limitParam) ? 5 : limitParam, 1), 50);
+
+  const rows = await db
+    .select({
+      id: agentActions.id,
+      action: agentActions.action,
+      params: agentActions.params,
+      source: agentActions.source,
+      approval_tier: agentActions.approval_tier,
+      approval_status: agentActions.approval_status,
+      error: agentActions.error,
+      created_at: agentActions.created_at,
+      executed_at: agentActions.executed_at,
+      agent_employee_id: agentActions.agent_employee_id,
+      employee_name: agentEmployees.name,
+      employee_slug: agentEmployees.slug,
+      employee_avatar: agentEmployees.avatar_url,
+      employee_kind: agentEmployees.kind,
+    })
+    .from(agentActions)
+    .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
+    .where(eq(agentActions.org_id, user.org_id))
+    .orderBy(desc(agentActions.created_at))
+    .limit(limit);
+
+  return c.json({
+    actions: rows.map((r) => ({
+      ...r,
+      proposer: r.agent_employee_id ? 'employee' : 'defty',
+    })),
+  });
+});
+
 agentRoutes.post('/actions/:id/approve', async (c) => {
   const user = c.get('user');
   const actionId = c.req.param('id');
