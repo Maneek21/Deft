@@ -131,9 +131,29 @@ The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop
 6. Product works fully without AI. If LLM is down, chat + tasks function normally.
 7. Multi-tenant from day 1. org_id on every query. No shortcuts.
 
+## OpenClaw Unlock — Block 0 foundation (shipped 2026-04-19)
+
+Block 0 of the OpenClaw Unlock plan closed the structural foundation bugs
+and added invisible-today primitives. See
+`docs/superpowers/plans/2026-04-19-openclaw-unlock.md` for the full plan.
+
+**Shipped:**
+- **Trust levels enforce per-tier.** Conservative auto-execs only `auto`; Standard adds `quick`; Autonomous adds `full` EXCEPT destructive admin tools (`manage_agent_employee`, `manage_mcp_connection`, `remove_member`, any `delete_*`, or any call with `params.mode: delete|pause|revoke`). 35-case matrix test in `apps/api/test/agent-approval-matrix.test.ts`.
+- **Reminders durable.** Moved from in-process `setTimeout` to the Postgres-backed `scheduled-jobs` queue. Boot rehydrates pending reminders from `reminders.is_sent=false`. New `create_reminder` native agent tool.
+- **Wiki search semantic.** `wiki_search` tool routes through `retrieveContext` which blends FTS + pgvector cosine (0.4 / 0.6 weight × confidence). Falls back to FTS-only when embeddings API is unavailable.
+- **Wizards unified.** Old 7-step `/settings/agent/deploy` deleted; `NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES` flag removed; canonical flow is the 3-step `/settings/agent-employees/create`.
+- **Standup fallback retired.** If no employee subscribes to `cron:standup`, orgs admins get a single `standup_unconfigured` notification (7-day dedup) pointing at /library. No more native `llm()` path bypassing agent-runner.
+- **Per-org LLM spend caps.** New `org_spend_caps` table; `checkOrgSpendCap`/`recordOrgSpendFromUsage` helpers; `llm()` gains optional `orgId` for opt-in enforcement. Default $100/mo new-org cap. Admin UI ships in Block 3.
+- **SKILL.md sanitizer.** Pre-import library that neutralizes prompt-injection, credential-exfil, sensitive-file-access patterns. Block 1 consumes at ClawHub skill import time. 20 malicious + 5 benign fixtures.
+- **ClawHub allowlist.** Daily cron pulls VoltAgent curated list into `clawhub_allowlist` table; bundled 14-entry static fallback on network failure. Block 1 Library UI filters against this table.
+- **Approval badge in main nav.** `usePendingApprovals` SWR hook polls `/api/agent/actions/pending` every 15s; red count badge on the Agent nav entry app-wide.
+- **Edit agent post-creation.** `PATCH /api/agent-employees/:id` accepts `name`, `avatar_url`, `starter_prompts`, `expertise_description`, `max_daily_actions`, `heartbeat_enabled` without role gate; trust/cadence/mark_healthy still require owner/admin.
+
+Migrations added: `0047_clawhub_allowlist.sql`, `0048_org_spend_caps.sql`.
+
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0044 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0044 applied.
+- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0048 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0048 applied.
 
 ## What NOT To Do
 
