@@ -630,6 +630,81 @@ agentRoutes.get('/actions/pending', async (c) => {
   return c.json({ actions });
 });
 
+// Block 3.8 — Agent trace export. Downloads the full tool-call tree
+// for every assistant message in a conversation as a single JSON
+// document: conversation metadata + each message's content_blocks +
+// tool_calls + citations. Ownership: caller must be in the
+// conversation's org; agent_actions attached to each message are
+// also joined in so the downloaded trace matches what renders in
+// the session inspector.
+agentRoutes.get('/conversations/:id/trace.json', async (c) => {
+  const user = c.get('user');
+  const convoId = c.req.param('id');
+
+  const [convo] = await db
+    .select()
+    .from(agentConversations)
+    .where(and(eq(agentConversations.id, convoId), eq(agentConversations.org_id, user.org_id)))
+    .limit(1);
+  if (!convo) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+
+  const msgs = await db
+    .select({
+      id: agentMessages.id,
+      role: agentMessages.role,
+      content: agentMessages.content,
+      content_blocks: agentMessages.content_blocks,
+      citations: agentMessages.citations,
+      tool_calls: agentMessages.tool_calls,
+      model: agentMessages.model,
+      tokens_in: agentMessages.tokens_in,
+      tokens_out: agentMessages.tokens_out,
+      created_at: agentMessages.created_at,
+    })
+    .from(agentMessages)
+    .where(and(eq(agentMessages.conversation_id, convoId), eq(agentMessages.hidden, false)))
+    .orderBy(agentMessages.created_at);
+
+  const actions = await db
+    .select({
+      id: agentActions.id,
+      message_id: agentActions.message_id,
+      action: agentActions.action,
+      params: agentActions.params,
+      result: agentActions.result,
+      error: agentActions.error,
+      approval_tier: agentActions.approval_tier,
+      approval_status: agentActions.approval_status,
+      executed_at: agentActions.executed_at,
+      created_at: agentActions.created_at,
+    })
+    .from(agentActions)
+    .where(eq(agentActions.conversation_id, convoId))
+    .orderBy(agentActions.created_at);
+
+  const trace = {
+    format: 'deft.agent_trace.v1',
+    exported_at: new Date().toISOString(),
+    conversation: {
+      id: convo.id,
+      org_id: convo.org_id,
+      created_at: convo.created_at,
+      updated_at: convo.updated_at,
+    },
+    messages: msgs,
+    actions,
+  };
+
+  const filename = `agent-trace-${convoId.slice(0, 8)}.json`;
+  return new Response(JSON.stringify(trace, null, 2), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="${filename}"`,
+    },
+  });
+});
+
 // Block 2.8 — dashboard "Agent Activity" widget. Returns the most recent
 // actions across all employees in the org regardless of status, joined
 // with the employee row so the UI can show name + avatar + kind.
