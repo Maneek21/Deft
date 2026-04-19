@@ -177,6 +177,13 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/agent-daily-reset.js');
       return mod.handleAgentDailyReset;
     }
+    case 'reminder-fire': {
+      // Block 0.4 — fires a single reminder row. Enqueued by
+      // POST /api/reminders with delay = remind_at - now. Rehydrated at
+      // startup for reminders that survived a restart.
+      const mod = await import('./handlers/reminder-fire.js');
+      return mod.reminderFireHandler;
+    }
     case 'agent-heartbeat':
     case 'heartbeat-native':
     case 'heartbeat-openclaw': {
@@ -219,6 +226,12 @@ export function startWorkers(): void {
   cleanupStaleJobs().then(count => {
     if (count > 0) console.log(`[workers] Recovered ${count} stale job(s) on startup`);
   }).catch(() => {});
+
+  // Block 0.4 — rehydrate pending reminders into the scheduled-jobs queue
+  // so sub-24h reminders scheduled before a restart still fire.
+  import('./handlers/reminder-fire.js')
+    .then((mod) => mod.rehydratePendingReminders())
+    .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
 
   // Run stale cleanup every 60 seconds
   setInterval(() => {
