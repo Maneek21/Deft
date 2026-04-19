@@ -82,8 +82,15 @@ app.route('/api/metrics', metricsRoutes);
 // authMiddleware.
 app.route('/api/webhooks', githubWebhookRoutes);
 
+// Block 3.3 — per-agent external webhooks. POST with secret in header,
+// no JWT. Management routes under /api/agent-webhooks are JWT-gated and
+// mounted AFTER authMiddleware below.
+const { publicAgentWebhookRoutes, agentWebhookRoutes } = await import('./routes/agent-webhooks.js');
+app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
+
 // Protected routes
 app.use('/api/*', authMiddleware);
+app.route('/api/agent-webhooks', agentWebhookRoutes);
 app.route('/api/spaces', spaceRoutes);
 app.route('/api/messages', messageRoutes);
 app.route('/api/notifications', notificationRoutes);

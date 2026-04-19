@@ -583,6 +583,27 @@ export const clawhubAllowlist = pgTable('clawhub_allowlist', {
   index('clawhub_allowlist_source_idx').on(t.source),
 ]);
 
+// Block 3.3 — per-agent webhook URLs. An agent-employee can expose an
+// HMAC-signed URL that accepts POST payloads from external systems.
+// The dispatcher enqueues an employee-trigger with trigger_kind='webhook'
+// so the agent runs its playbook over the incoming payload.
+export const agentWebhooks = pgTable('agent_webhooks', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  slug: text('slug').notNull().unique(),
+  secret_hash: text('secret_hash').notNull(),
+  label: text('label'),
+  enabled: boolean('enabled').default(true).notNull(),
+  last_fired_at: timestamp('last_fired_at'),
+  fire_count: integer('fire_count').default(0).notNull(),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('agent_webhooks_org_idx').on(t.org_id),
+  index('agent_webhooks_employee_idx').on(t.agent_employee_id),
+]);
+
 // Block 1.4 — per-org, per-skill encrypted secret store. Used by the pre-deploy
 // install flow when a ClawHub skill declares required env vars and OAuth
 // matching misses. Least-privilege: only secrets declared in the skill's
