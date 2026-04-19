@@ -115,6 +115,11 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // agent can only see org-visible pages.
   create_note: 'quick',
   note_to_wiki: 'quick',
+
+  // ─── Block 2.2 — thread reply ───────────────────────────────────────
+  // Same tier as post_message (full) — it posts as the agent's shadow
+  // user to a shared channel.
+  post_thread_reply: 'full',
 };
 
 /**

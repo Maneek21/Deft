@@ -1200,6 +1200,66 @@ export async function executeAction(
         };
       }
 
+      case 'post_thread_reply': {
+        // Block 2.2 — reply to an existing message in its thread.
+        const parentId = typeof params.parent_message_id === 'string' ? params.parent_message_id : '';
+        const content = typeof params.content === 'string' ? params.content.trim() : '';
+        if (!parentId) return { success: false, result: null, error: 'parent_message_id is required' };
+        if (!content) return { success: false, result: null, error: 'content is required' };
+
+        const [parent] = await db
+          .select({ id: messages.id, space_id: messages.space_id, org_id: messages.org_id })
+          .from(messages)
+          .where(and(eq(messages.id, parentId), eq(messages.org_id, orgId), eq(messages.is_deleted, false)))
+          .limit(1);
+        if (!parent) {
+          return { success: false, result: null, error: 'Parent message not found in this org' };
+        }
+
+        const [msg] = await db
+          .insert(messages)
+          .values({
+            org_id: orgId,
+            space_id: parent.space_id,
+            user_id: userId,
+            content,
+            parent_id: parent.id,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { message_id: msg!.id, parent_id: parent.id, space_id: parent.space_id } as any,
+            after_state: { message_id: msg!.id, parent_id: parent.id, content } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        const io = getIO();
+        if (io) {
+          io.to(`space:${parent.space_id}`).emit('message:new', {
+            ...msg,
+            user_name: 'Deft',
+            user_avatar: null,
+          });
+        }
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'post_thread_reply',
+          entityType: 'message',
+          entityId: msg!.id,
+          beforeState: null,
+          afterState: { message_id: msg!.id, parent_id: parent.id, space_id: parent.space_id } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { message_id: msg!.id, parent_id: parent.id } };
+      }
+
       case 'search_notes': {
         // Block 2.1 — search across user's own notes + org-visible notes.
         const query = typeof params.query === 'string' ? params.query.trim() : '';

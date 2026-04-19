@@ -543,6 +543,23 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['slug', 'suggested_content', 'reason'],
     },
   },
+  // ─── Block 2.2 — thread reply ───────────────────────────────────────
+  {
+    name: 'post_thread_reply',
+    description:
+      'Reply to an existing message in its thread. Requires the parent message id; the reply inherits the parent\'s space. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        parent_message_id: {
+          type: 'string',
+          description: 'The id of the message to reply to (the thread parent).',
+        },
+        content: { type: 'string', description: 'Reply content (plain text or minimal markdown).' },
+      },
+      required: ['parent_message_id', 'content'],
+    },
+  },
   // ─── Block 2.1 — note tools ─────────────────────────────────────────
   {
     name: 'search_notes',
@@ -637,6 +654,8 @@ export const ACTION_TOOLS = new Set([
   // ─── Block 2.1 — note writes ─────────────────────────────────────────
   'create_note',
   'note_to_wiki',
+  // ─── Block 2.2 — thread reply ────────────────────────────────────────
+  'post_thread_reply',
 ]);
 
 // Calendar tools (only added when calendar is connected)
