@@ -30,7 +30,8 @@ import {
   importOpenclawSkill,
   OpenclawImportError,
 } from '../lib/openclaw-skill-import.js';
-import { ensureSkillInstalled, removeSkillFromEmployee } from '../lib/skill-install.js';
+import { ensureSkillInstalled, removeSkillFromEmployee, installMarketplaceSkillWithSecrets } from '../lib/skill-install.js';
+import { setSecretForSkill } from '../lib/skill-secrets.js';
 
 export const skillsRoutes = new Hono();
 
@@ -394,6 +395,81 @@ skillsRoutes.post('/:id/install', async (c) => {
   } catch (err) {
     console.error('Failed to install skill:', err);
     return c.json({ error: 'Failed to install skill', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── POST /:id/install/marketplace — Block 1.6 pre-deploy flow ─────────
+// Runs secret resolution (OAuth → skill_secrets) before install. Returns
+// `missing_secrets` with the key list so the UI can prompt; re-submit
+// after POSTing to /api/skills/:id/secrets.
+skillsRoutes.post('/:id/install/marketplace', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = installSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
+        400,
+      );
+    }
+    const [employee] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, parsed.data.agent_employee_id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    const result = await installMarketplaceSkillWithSecrets(employee.id, skillId);
+    if (result.status === 'missing_secrets') {
+      return c.json(result, 202);
+    }
+    if (result.status === 'installed' || result.status === 'already_installed') {
+      return c.json(result);
+    }
+    return c.json(result, 409);
+  } catch (err) {
+    console.error('Failed marketplace skill install:', err);
+    return c.json({ error: 'Failed to install', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── POST /:id/secrets — save a raw skill secret (Block 1.6) ───────────
+const secretSaveSchema = z.object({
+  key_name: z.string().min(1).max(128).regex(/^[A-Z][A-Z0-9_]*$/),
+  value: z.string().min(1).max(8192),
+});
+
+skillsRoutes.post('/:id/secrets', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = secretSaveSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+    }
+    // Confirm the skill is org-visible.
+    const [skill] = await db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(and(eq(skills.id, skillId), or(isNull(skills.org_id), eq(skills.org_id, user.org_id))))
+      .limit(1);
+    if (!skill) return c.json({ error: 'Skill not found', code: 'NOT_FOUND' }, 404);
+
+    await setSecretForSkill({
+      org_id: user.org_id,
+      skill_id: skillId,
+      key_name: parsed.data.key_name,
+      value: parsed.data.value,
+      created_by: user.id,
+    });
+    return c.json({ saved: true, key_name: parsed.data.key_name }, 201);
+  } catch (err) {
+    console.error('Failed to save skill secret:', err);
+    return c.json({ error: 'Failed to save secret', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
