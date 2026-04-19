@@ -107,6 +107,14 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // code onto the agent sidecar. Full allowlist-auto semantics for
   // Standard/Autonomous land in Block 2.
   request_skill_install: 'full',
+
+  // ─── Block 2.1 — note tools ─────────────────────────────────────────
+  // search_notes + read_note are read-only (not in ACTION_TOOLS).
+  // create_note is quick — it only writes to the caller's own note bag.
+  // note_to_wiki is quick — wiki promotion is a copy, not overwrite; the
+  // agent can only see org-visible pages.
+  create_note: 'quick',
+  note_to_wiki: 'quick',
 };
 
 /**

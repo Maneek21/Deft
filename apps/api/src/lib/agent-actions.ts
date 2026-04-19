@@ -17,6 +17,7 @@ import {
   wikiOpsLog,
   mcpConnections,
   reminders,
+  notes,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { eq, and, sql, ilike, desc } from 'drizzle-orm';
@@ -1197,6 +1198,203 @@ export async function executeAction(
             fire_at: remindAt.toISOString(),
           },
         };
+      }
+
+      case 'search_notes': {
+        // Block 2.1 — search across user's own notes + org-visible notes.
+        const query = typeof params.query === 'string' ? params.query.trim() : '';
+        const scope = ['mine', 'org', 'all'].includes(params.scope) ? params.scope : 'all';
+        const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 50);
+        if (!query) {
+          return { success: false, result: null, error: 'query is required' };
+        }
+        const pattern = `%${query.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+        const scopeClause =
+          scope === 'mine'
+            ? eq(notes.user_id, userId)
+            : scope === 'org'
+              ? eq(notes.visibility, 'org')
+              : sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`;
+        const rows = await db
+          .select({
+            id: notes.id,
+            title: notes.title,
+            visibility: notes.visibility,
+            updated_at: notes.updated_at,
+            snippet: sql<string>`substring(coalesce(${notes.content}, '') from 1 for 240)`,
+          })
+          .from(notes)
+          .where(
+            and(
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              scopeClause,
+              sql`(${notes.title} ILIKE ${pattern} OR coalesce(${notes.content}, '') ILIKE ${pattern})`,
+            ),
+          )
+          .orderBy(desc(notes.updated_at))
+          .limit(limit);
+        return { success: true, result: { notes: rows, count: rows.length } };
+      }
+
+      case 'read_note': {
+        const noteId = typeof params.note_id === 'string' ? params.note_id : '';
+        if (!noteId) return { success: false, result: null, error: 'note_id is required' };
+        const [row] = await db
+          .select()
+          .from(notes)
+          .where(
+            and(
+              eq(notes.id, noteId),
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          return { success: false, result: null, error: 'Note not found or not visible to caller' };
+        }
+        return {
+          success: true,
+          result: {
+            id: row.id,
+            title: row.title,
+            content: row.content ?? '',
+            visibility: row.visibility,
+            updated_at: row.updated_at,
+          },
+        };
+      }
+
+      case 'create_note': {
+        const title = typeof params.title === 'string' ? params.title.trim() : '';
+        const content = typeof params.content === 'string' ? params.content : '';
+        const visibility = ['private', 'org', 'space'].includes(params.visibility)
+          ? params.visibility
+          : 'private';
+        const spaceId =
+          typeof params.visibility_space_id === 'string' ? params.visibility_space_id : null;
+        if (!title) {
+          return { success: false, result: null, error: 'title is required' };
+        }
+        if (visibility === 'space' && !spaceId) {
+          return { success: false, result: null, error: 'visibility_space_id is required when visibility=space' };
+        }
+
+        const [inserted] = await db
+          .insert(notes)
+          .values({
+            org_id: orgId,
+            user_id: userId,
+            title,
+            content,
+            visibility,
+            visibility_space_id: visibility === 'space' ? spaceId : null,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { note_id: inserted!.id, title: inserted!.title } as any,
+            after_state: { note_id: inserted!.id, title, visibility } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'create_note',
+          entityType: 'note',
+          entityId: inserted!.id,
+          beforeState: null,
+          afterState: { title, visibility } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { note_id: inserted!.id, title: inserted!.title } };
+      }
+
+      case 'note_to_wiki': {
+        const noteId = typeof params.note_id === 'string' ? params.note_id : '';
+        const pageType = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(
+          params.type,
+        )
+          ? params.type
+          : 'fact';
+        if (!noteId) return { success: false, result: null, error: 'note_id is required' };
+
+        const [note] = await db
+          .select()
+          .from(notes)
+          .where(
+            and(
+              eq(notes.id, noteId),
+              eq(notes.org_id, orgId),
+              eq(notes.is_deleted, false),
+              sql`(${notes.user_id} = ${userId} OR ${notes.visibility} = 'org')`,
+            ),
+          )
+          .limit(1);
+        if (!note) {
+          return { success: false, result: null, error: 'Note not found or not visible to caller' };
+        }
+
+        // Build a unique slug from the title.
+        const baseSlug = note.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 60) || 'untitled-note';
+        let slug = baseSlug;
+        let suffix = 1;
+        // Collision loop (bounded)
+        while (suffix < 50) {
+          const [collision] = await db
+            .select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)))
+            .limit(1);
+          if (!collision) break;
+          suffix += 1;
+          slug = `${baseSlug}-${suffix}`;
+        }
+
+        const [page] = await db
+          .insert(wikiPages)
+          .values({
+            org_id: orgId,
+            scope: 'org',
+            user_id: userId,
+            type: pageType as any,
+            title: note.title,
+            slug,
+            content: note.content ?? '',
+            confidence: 0.8,
+          })
+          .returning();
+
+        await db
+          .update(agentActions)
+          .set({
+            result: { wiki_page_id: page!.id, slug: page!.slug } as any,
+            after_state: { wiki_page_id: page!.id, source_note_id: noteId } as any,
+            executed_at: new Date(),
+          })
+          .where(eq(agentActions.id, actionId));
+
+        await logAuditEvent({
+          orgId,
+          actorType: 'agent',
+          actorId: userId,
+          action: 'note_to_wiki',
+          entityType: 'wiki_page',
+          entityId: page!.id,
+          beforeState: null,
+          afterState: { title: note.title, slug, source_note_id: noteId } as any,
+          metadata: { action_id: actionId },
+        });
+
+        return { success: true, result: { wiki_page_id: page!.id, slug: page!.slug, title: page!.title } };
       }
 
       case 'request_skill_install': {

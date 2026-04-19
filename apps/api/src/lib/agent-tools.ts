@@ -543,6 +543,76 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['slug', 'suggested_content', 'reason'],
     },
   },
+  // ─── Block 2.1 — note tools ─────────────────────────────────────────
+  {
+    name: 'search_notes',
+    description:
+      'Search the caller\'s private notes + org-visible notes by title/content. Returns up to `limit` matches (default 10).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search keywords' },
+        scope: {
+          type: 'string',
+          enum: ['mine', 'org', 'all'],
+          description: 'Restrict to your own notes, org-visible notes, or both (default).',
+        },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'create_note',
+    description:
+      'Create a new note owned by the caller. Defaults to private visibility. Use when the user asks you to "save this as a note" or "jot this down".',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Note title (required, may be short)' },
+        content: { type: 'string', description: 'HTML body (TipTap-compatible)' },
+        visibility: {
+          type: 'string',
+          enum: ['private', 'org', 'space'],
+          description: 'Default private. Use "org" for shareable, "space" to attach to a space.',
+        },
+        visibility_space_id: {
+          type: 'string',
+          description: 'Required when visibility="space". The target space id.',
+        },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'read_note',
+    description:
+      'Read a single note by id. Returns title, content (HTML), visibility, updated_at. Respects visibility: you can only read notes you own or are org-visible.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        note_id: { type: 'string', description: 'Note id' },
+      },
+      required: ['note_id'],
+    },
+  },
+  {
+    name: 'note_to_wiki',
+    description:
+      'Promote a note into a wiki page so it is durably searchable by every agent in the org. Creates a new wiki page seeded with the note\'s title + content; the original note stays put (this is a copy, not a move).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        note_id: { type: 'string', description: 'Note id to promote' },
+        type: {
+          type: 'string',
+          enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'],
+          description: 'Wiki page type. Default "fact".',
+        },
+      },
+      required: ['note_id'],
+    },
+  },
 ];
 
 /** Tool names that require user approval before execution */
@@ -564,6 +634,9 @@ export const ACTION_TOOLS = new Set([
   // Task 3.6 — dependency tools
   'add_dependency',
   'remove_dependency',
+  // ─── Block 2.1 — note writes ─────────────────────────────────────────
+  'create_note',
+  'note_to_wiki',
 ]);
 
 // Calendar tools (only added when calendar is connected)
