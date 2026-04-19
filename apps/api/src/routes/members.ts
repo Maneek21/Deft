@@ -206,6 +206,26 @@ memberRoutes.post('/invite', async (c) => {
       }).onConflictDoNothing();
     }
 
+    // Block 2.7 — fan out a `member.joined` trigger to any agent subscribed
+    // to it (opt-in via HR-style skill install). Fire-and-forget so a
+    // misconfigured subscriber doesn't block the invite response.
+    (async () => {
+      try {
+        const { emitMemberJoinedTrigger } = await import('../lib/member-joined-trigger.js');
+        const count = await emitMemberJoinedTrigger({
+          org_id: currentUser.org_id,
+          new_user_id: existingUser.id,
+          inviter_user_id: currentUser.id,
+          role,
+        });
+        if (count > 0) {
+          console.log(`[members] Fired member.joined trigger to ${count} employee(s)`);
+        }
+      } catch (err) {
+        console.warn('[members] member.joined trigger failed:', (err as Error).message);
+      }
+    })();
+
     return c.json(
       {
         success: true,
