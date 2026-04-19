@@ -15,6 +15,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { Loader2, Save, FileText, AlertCircle } from 'lucide-react';
+import { HeartbeatChecklistBuilder } from '@/components/heartbeat-checklist-builder';
 
 type FileEntry = { filename: string; size: number | null; exists: boolean | null };
 
@@ -187,6 +188,22 @@ export default function PersonalityEditorPage() {
               {contentLoading ? (
                 <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
                   <Loader2 className="mr-2 size-4 animate-spin" /> Loading file…
+                </div>
+              ) : activeFile === 'HEARTBEAT.md' ? (
+                <div>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Each row below becomes a <code>- [ ] every Nmin: ...</code> line in HEARTBEAT.md. The raw markdown stays editable below.
+                  </p>
+                  <HeartbeatChecklistBuilder value={activeContent} onChange={setActiveContent} />
+                  <details className="mt-3">
+                    <summary className="cursor-pointer text-[11px] text-muted-foreground hover:underline">Raw markdown</summary>
+                    <textarea
+                      value={activeContent}
+                      onChange={(e) => setActiveContent(e.target.value)}
+                      className="mt-2 min-h-[12rem] w-full resize-y rounded border border-border bg-background p-3 font-mono text-xs"
+                      spellCheck={false}
+                    />
+                  </details>
                 </div>
               ) : (
                 <textarea
