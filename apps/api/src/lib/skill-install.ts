@@ -23,6 +23,66 @@ import {
   findTriggerConflicts,
   type TriggerConflict,
 } from './trigger-resolver.js';
+import { decrypt } from './encryption.js';
+import { getGatewayForDeployment, type OpenClawGateway } from './openclaw-gateway.js';
+
+// Block 1.3 — test seam so install/remove paths can inject a mock gateway.
+let _gatewayResolver: (
+  employeeId: string,
+  connectionUrl: string,
+  token: string,
+) => OpenClawGateway | null = (id, url, tok) => getGatewayForDeployment(id, url, tok);
+export function _setSkillInstallGatewayResolver(
+  fn: (employeeId: string, connectionUrl: string, token: string) => OpenClawGateway | null,
+): void { _gatewayResolver = fn; }
+export function _resetSkillInstallGatewayResolver(): void {
+  _gatewayResolver = (id, url, tok) => getGatewayForDeployment(id, url, tok);
+}
+
+/**
+ * Fire-and-forget live install on the sidecar. Wraps decrypt + gateway call
+ * + error swallow so callers don't block on gateway latency.
+ */
+async function liveInstallOnGateway(
+  employeeId: string,
+  connectionUrl: string | null,
+  tokenEncrypted: string | null,
+  slug: string,
+  version: string,
+): Promise<{ forwarded: boolean; error?: string }> {
+  if (!connectionUrl || !tokenEncrypted) return { forwarded: false };
+  let token: string;
+  try { token = decrypt(tokenEncrypted); }
+  catch { return { forwarded: false, error: 'decrypt failed' }; }
+  const gateway = _gatewayResolver(employeeId, connectionUrl, token);
+  if (!gateway) return { forwarded: false, error: 'gateway unresolved' };
+  try {
+    await gateway.skills.install(slug, version);
+    return { forwarded: true };
+  } catch (err) {
+    return { forwarded: false, error: (err as Error).message };
+  }
+}
+
+async function liveRemoveOnGateway(
+  employeeId: string,
+  connectionUrl: string | null,
+  tokenEncrypted: string | null,
+  slug: string,
+): Promise<{ forwarded: boolean; error?: string }> {
+  if (!connectionUrl || !tokenEncrypted) return { forwarded: false };
+  let token: string;
+  try { token = decrypt(tokenEncrypted); }
+  catch { return { forwarded: false, error: 'decrypt failed' }; }
+  const gateway = _gatewayResolver(employeeId, connectionUrl, token);
+  if (!gateway) return { forwarded: false, error: 'gateway unresolved' };
+  try {
+    await gateway.skills.remove(slug);
+    return { forwarded: true };
+  } catch (err) {
+    return { forwarded: false, error: (err as Error).message };
+  }
+}
 
 export type SkillInstallResult =
   | { status: 'already_installed' }
@@ -166,5 +226,80 @@ export async function ensureSkillInstalled(
     }
   }
 
+  // Block 1.3 — live install on the sidecar for connected openclaw
+  // employees. Best-effort: a gateway error doesn't roll back the DB
+  // install — the reconciliation loop (Block 1.8) will retry next tick.
+  // Fires regardless of packsChanged: a skill can install without any
+  // new capability pack (e.g. a ClawHub slug).
+  if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+    void liveInstallOnGateway(
+      employeeId,
+      employee.connection_url,
+      employee.gateway_token_encrypted,
+      skill.slug,
+      skill.version,
+    ).then((r) => {
+      if (!r.forwarded && r.error) {
+        console.warn(`[skill-install ${employeeId}] gateway install ${skill.slug} deferred: ${r.error}`);
+      }
+    }).catch(() => undefined);
+  }
+
   return { status: 'installed', requires_reprovision: requiresReprovision };
+}
+
+/**
+ * Block 1.3 — remove a skill from an agent employee.
+ *
+ * Idempotent: removing a not-installed skill is a no-op success. For
+ * connected openclaw employees, also fires `gateway.skills.remove(slug)`
+ * live (fire-and-forget — a gateway error is logged but does not block
+ * the DB detach).
+ */
+export async function removeSkillFromEmployee(
+  employeeId: string,
+  skillId: string,
+): Promise<{ removed: boolean; reason?: 'not_installed' | 'skill_not_found' | 'employee_not_found' }> {
+  const [existing] = await db
+    .select({ skill_id: agentEmployeeSkills.skill_id })
+    .from(agentEmployeeSkills)
+    .where(
+      and(
+        eq(agentEmployeeSkills.agent_employee_id, employeeId),
+        eq(agentEmployeeSkills.skill_id, skillId),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) return { removed: false, reason: 'not_installed' };
+
+  const [skill] = await db.select().from(skills).where(eq(skills.id, skillId)).limit(1);
+  if (!skill) return { removed: false, reason: 'skill_not_found' };
+
+  const [employee] = await db.select().from(agentEmployees).where(eq(agentEmployees.id, employeeId)).limit(1);
+  if (!employee) return { removed: false, reason: 'employee_not_found' };
+
+  await db
+    .delete(agentEmployeeSkills)
+    .where(
+      and(
+        eq(agentEmployeeSkills.agent_employee_id, employeeId),
+        eq(agentEmployeeSkills.skill_id, skillId),
+      ),
+    );
+
+  if (employee.kind === 'openclaw' && employee.connection_status === 'connected') {
+    void liveRemoveOnGateway(
+      employeeId,
+      employee.connection_url,
+      employee.gateway_token_encrypted,
+      skill.slug,
+    ).then((r) => {
+      if (!r.forwarded && r.error) {
+        console.warn(`[skill-install ${employeeId}] gateway remove ${skill.slug} deferred: ${r.error}`);
+      }
+    }).catch(() => undefined);
+  }
+
+  return { removed: true };
 }

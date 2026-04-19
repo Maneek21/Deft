@@ -30,7 +30,7 @@ import {
   importOpenclawSkill,
   OpenclawImportError,
 } from '../lib/openclaw-skill-import.js';
-import { ensureSkillInstalled } from '../lib/skill-install.js';
+import { ensureSkillInstalled, removeSkillFromEmployee } from '../lib/skill-install.js';
 
 export const skillsRoutes = new Hono();
 
@@ -394,6 +394,45 @@ skillsRoutes.post('/:id/install', async (c) => {
   } catch (err) {
     console.error('Failed to install skill:', err);
     return c.json({ error: 'Failed to install skill', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// ─── DELETE /:id/install?agent_employee_id=… — detach (Block 1.3) ─────
+// Removes the agent_employee_skills junction row and fires a live
+// `gateway.skills.remove(slug)` for connected openclaw employees.
+skillsRoutes.delete('/:id/install', async (c) => {
+  try {
+    const user = c.get('user');
+    const skillId = c.req.param('id');
+    const employeeId = c.req.query('agent_employee_id');
+    if (!employeeId) {
+      return c.json(
+        { error: 'agent_employee_id query param required', code: 'VALIDATION_ERROR' },
+        400,
+      );
+    }
+
+    // Ownership check: employee must belong to caller's org.
+    const [employee] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, employeeId), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const result = await removeSkillFromEmployee(employeeId, skillId);
+    if (!result.removed && result.reason === 'not_installed') {
+      return c.json({ removed: false, reason: 'not_installed' }, 200);
+    }
+    if (!result.removed) {
+      return c.json({ error: 'Skill or employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ removed: true });
+  } catch (err) {
+    console.error('Failed to remove skill:', err);
+    return c.json({ error: 'Failed to remove skill', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
