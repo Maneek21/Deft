@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
-import { X, Send, Smile, ArrowLeft } from 'lucide-react';
+import { X, Smile, ArrowLeft } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
+import { RichComposer } from './rich-composer';
+import { useFileUpload } from './file-upload';
 
 type Reaction = {
   emoji: string;
@@ -148,13 +151,16 @@ type Props = {
 export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
   const { user } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [replies, setReplies] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
-  const [inputFocused, setInputFocused] = useState(false);
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
   const repliesEndRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -162,6 +168,19 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // Sync ?thread= URL param on open/close
+  useEffect(() => {
+    const currentSpace = searchParams.get('space');
+    const base = currentSpace ? `/chat?space=${currentSpace}&thread=${messageId}` : `/chat?thread=${messageId}`;
+    router.replace(base);
+    return () => {
+      // On unmount (panel closed), strip the thread param
+      const sp = currentSpace ? `/chat?space=${currentSpace}` : '/chat';
+      router.replace(sp);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messageId]);
 
   const scrollToBottom = useCallback(() => {
     repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -264,18 +283,38 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const content = input;
-    setInput('');
+  const handleRichSend = async (html: string, _text: string) => {
+    let content = html;
+    if (pendingFiles.length > 0) {
+      const fileLines = pendingFiles.map(
+        (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
+      );
+      content = fileLines.join('\n') + '\n' + content;
+    }
+    setPendingFiles([]);
     await api.post(`/api/messages/${spaceId}`, { content, parent_id: messageId });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          const result = await uploadFile(file);
+          if (result) setPendingFiles((prev) => [...prev, result]);
+        }
+      }
     }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    for (const file of files) {
+      const result = await uploadFile(file);
+      if (result) setPendingFiles((prev) => [...prev, result]);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleReaction = async (msgId: string, emoji: string) => {
@@ -469,39 +508,26 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       </div>
 
       {/* Composer */}
-      <div className="px-4 py-3 flex-shrink-0">
-        <div
-          className="overflow-hidden"
-          style={{
-            background: 'var(--surface-container-low)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: inputFocused ? '0 0 0 2px rgba(144, 128, 250, 0.3)' : 'none',
-            transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
-          }}
-        >
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
-            placeholder="Reply..."
-            className="w-full px-3 pt-2.5 pb-1 text-[13px] resize-none max-h-24 bg-transparent outline-none"
-            style={{ color: 'var(--text-primary)', border: 'none', boxShadow: 'none' }}
-            rows={1}
-          />
-          <div className="flex items-center justify-end px-2 pb-1.5">
-            {input.trim() && (
-              <button
-                onClick={handleSend}
-                className="p-1.5 text-white"
-                style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
-              >
-                <Send size={13} strokeWidth={1.5} />
-              </button>
-            )}
-          </div>
-        </div>
+      <div className="flex-shrink-0">
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          multiple
+          onChange={handleFileSelect}
+        />
+        <RichComposer
+          key={messageId}
+          placeholder="Reply..."
+          onSend={handleRichSend}
+          pendingFiles={pendingFiles}
+          onRemovePendingFile={(id) => setPendingFiles((prev) => prev.filter((f) => f.id !== id))}
+          onFileSelect={() => fileInputRef.current?.click()}
+          onPaste={handlePaste}
+          uploading={uploading}
+          uploadProgress={uploadProgress}
+          spaceId={spaceId}
+        />
       </div>
     </div>
   );
