@@ -1011,18 +1011,12 @@ agentEmployeeRoutes.post('/:id/reassign-trigger', async (c) => {
         new Set([...existingClaims, ...skillTriggers]),
       );
 
-      // Merge capability packs too (same shape as ensureSkillInstalled).
-      const existingPacks = target.capability_packs ?? [];
-      const incomingPacks = agentConfig.capability_packs ?? [];
-      const mergedPacks = Array.from(
-        new Set([...existingPacks, ...incomingPacks]),
-      );
-
+      // capability_packs column was dropped (PR 4 C); pack membership is now
+      // derived at runtime from installed skills' agent_config.capability_packs.
       const [updated] = await tx
         .update(agentEmployees)
         .set({
           trigger_subscriptions: mergedClaims,
-          capability_packs: mergedPacks.length > 0 ? mergedPacks : null,
         })
         .where(eq(agentEmployees.id, targetEmployeeId))
         .returning();
@@ -1368,7 +1362,7 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
         template_version: source.template_version,
         trigger_subscriptions: source.trigger_subscriptions,
         provider_hint: source.provider_hint,
-        capability_packs: source.capability_packs,
+        // capability_packs column dropped (PR 4 C); not carried into the clone.
         created_by: user.id,
         // Intentionally NOT cloned: connection_url, gateway_token_encrypted,
         // mcp_token_hash, provider_instance_id, connection_status,
@@ -1452,7 +1446,9 @@ agentEmployeeRoutes.post('/:id/save-as-template', async (c) => {
           user_md_template: `# USER\nOrg: {{org_name}}`,
           tools_md: '# TOOLS',
           default_tools: [],
-          default_capability_packs: source.capability_packs ?? [],
+          // capability_packs column dropped (PR 4 C); templates start with no
+          // pre-set packs — the wizard lets the user configure them post-save.
+          default_capability_packs: [],
           default_trust_level: source.trust_level,
           default_trigger_subscriptions: source.trigger_subscriptions ?? [],
           model_recommendation: 'anthropic/claude-sonnet-4-6',

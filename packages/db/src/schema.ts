@@ -1433,13 +1433,14 @@ export const agentEmployees = pgTable('agent_employees', {
   trigger_subscriptions: text('trigger_subscriptions').array(),
   provider_hint: text('provider_hint'),
   // ─── Phase 8 deployment provider columns ────────────────────────────
-  deployment_provider: text('deployment_provider')
-    .$type<'railway' | 'fly' | 'digitalocean' | 'deft_cloud' | 'byo'>(),
+  // deployment_provider and capability_packs were dropped in PR 4 C:
+  //   • deployment_provider — every writer removed in PRs 1–3, no live readers.
+  //   • capability_packs   — last reader (clone/save-as-template) refactored
+  //     to derive pack membership from installed skills' agent_config at runtime.
   provider_instance_id: text('provider_instance_id'),
   connection_error: text('connection_error'),
   last_gateway_ping_at: timestamp('last_gateway_ping_at'),
   gateway_ping_fail_count: integer('gateway_ping_fail_count').default(0).notNull(),
-  capability_packs: text('capability_packs').array(),
   // ────────────────────────────────────────────────────────────────────
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
