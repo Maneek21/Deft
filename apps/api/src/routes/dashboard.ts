@@ -500,6 +500,7 @@ dashboardRoutes.post('/standup', async (c) => {
     }
 
     // Insert standup
+    console.log('[standup] stage=insert');
     await db.insert(standups).values({
       org_id: user.org_id,
       date: now,
@@ -508,47 +509,55 @@ dashboardRoutes.post('/standup', async (c) => {
       raw_data: rawData,
     });
 
-    // Post to default space
-    const [defaultSpace] = await db
-      .select({ id: spaces.id })
-      .from(spaces)
-      .where(
-        and(
-          eq(spaces.org_id, user.org_id),
-          eq(spaces.is_default, true),
-        ),
-      )
-      .limit(1);
+    // Post to default space — wrap in its own try/catch so a message-insert
+    // failure (e.g. FK constraint on user_id) never kills the standup response.
+    console.log('[standup] stage=post-to-space');
+    try {
+      const [defaultSpace] = await db
+        .select({ id: spaces.id })
+        .from(spaces)
+        .where(
+          and(
+            eq(spaces.org_id, user.org_id),
+            eq(spaces.is_default, true),
+          ),
+        )
+        .limit(1);
 
-    if (defaultSpace) {
-      const [msg] = await db
-        .insert(messages)
-        .values({
-          org_id: user.org_id,
-          space_id: defaultSpace.id,
-          user_id: 'system',
-          content: `**Daily Standup Summary**\n\n${summary}`,
-        })
-        .returning();
+      if (defaultSpace) {
+        const [msg] = await db
+          .insert(messages)
+          .values({
+            org_id: user.org_id,
+            space_id: defaultSpace.id,
+            user_id: user.id, // must be a valid FK to users.id; 'system' is not
+            content: `**Daily Standup Summary**\n\n${summary}`,
+          })
+          .returning();
 
-      if (msg) {
-        const io = getIO();
-        if (io) {
-          io.to(`org:${user.org_id}`).emit('message:new', {
-            ...msg,
-            user_name: 'Deft',
-            user_avatar: null,
-          });
+        if (msg) {
+          const io = getIO();
+          if (io) {
+            io.to(`org:${user.org_id}`).emit('message:new', {
+              ...msg,
+              user_name: 'Deft',
+              user_avatar: null,
+            });
+          }
         }
       }
+    } catch (msgErr) {
+      // Non-fatal: standup was already persisted; just log and continue.
+      console.error('[standup] Failed to post standup message to space:', msgErr);
     }
 
+    console.log('[standup] stage=done');
     return c.json({
       standup: { summary, date: now.toISOString(), model: model || null },
       already_existed: false,
     });
   } catch (err) {
-    console.error('Standup generation error:', err);
+    console.error('[standup] unexpected error:', err);
     return c.json({ error: 'Failed to generate standup', code: 'INTERNAL_ERROR' }, 500);
   }
 });
