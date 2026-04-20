@@ -227,7 +227,7 @@ input:focus, textarea:focus {
 }
 .deft-editor p { margin: 0; }
 .deft-editor p + p { margin-top: 4px; }
-.deft-editor .is-editor-empty:first-child::before {
+.deft-editor p.is-empty::before {
   content: attr(data-placeholder);
   float: left; color: var(--outline); pointer-events: none; height: 0;
 }

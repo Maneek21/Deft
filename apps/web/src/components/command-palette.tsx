@@ -18,7 +18,7 @@ type SearchResults = {
   spaces: { id: string; name: string; type: string }[];
   tasks: { id: string; title: string; project_prefix: string; number: number; status: string }[];
   people: { id: string; name: string; email: string }[];
-  messages: { id: string; content: string; space_name: string; user_name: string }[];
+  messages: { id: string; content: string; space_id: string; space_name: string; user_name: string }[];
   tags: { id: string; name: string; color: string | null }[];
   wiki: WikiResult[];
   privateNotes: NoteResult[];
@@ -179,7 +179,8 @@ export function CommandPalette() {
           router.push('/chat');
           close();
         } else if (selected.type === 'message') {
-          router.push('/chat');
+          const m = selected.item;
+          router.push(`/chat?space=${m.space_id}&message=${m.id}`);
           close();
         } else if (selected.type === 'tag') {
           router.push(`/settings/tags?tag=${selected.item.id}`);
@@ -418,7 +419,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push('/chat'); close(); }}
+                    onClick={() => { router.push(`/chat?space=${item.space_id}&message=${item.id}`); close(); }}
                   >
                     <MessageSquare size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px] flex-1 truncate">{item.content}</span>
