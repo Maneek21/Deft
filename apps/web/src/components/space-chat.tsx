@@ -1078,7 +1078,7 @@ export function SpaceChat({
           style={{ borderColor: 'var(--border-default, var(--outline-variant))' }}
         >
           {/* Row 1: channel name + topic + actions */}
-          <div className="h-[48px] flex items-center gap-2 overflow-x-auto">
+          <div className="h-[48px] flex items-center gap-2 overflow-x-auto relative">
             {!isDm && <Hash size={15} strokeWidth={1.5} style={{ color: 'var(--on-surface-variant)' }} />}
             {renamingSpace ? (
               <input
@@ -1153,7 +1153,7 @@ export function SpaceChat({
                 setIsMuted(newMuted);
                 await api.patch(`/api/spaces/${spaceId}/mute`, { muted: newMuted });
               }}
-              className="p-1.5 rounded-md hover:opacity-70"
+              className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
               style={{ color: isMuted ? 'var(--status-red)' : 'var(--on-surface-variant)' }}
               title={isMuted ? 'Unmute channel' : 'Mute channel'}
             >
@@ -1219,12 +1219,17 @@ export function SpaceChat({
             {/* Knowledge */}
             <button
               onClick={() => setShowKnowledge(!showKnowledge)}
-              className="p-1.5 rounded-md hover:opacity-70"
+              className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
               style={{ color: 'var(--outline)' }}
               title="Knowledge"
             >
               <BookOpen size={14} strokeWidth={1.5} />
             </button>
+            {/* Right-edge scroll affordance — mobile only */}
+            <div
+              className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 md:hidden flex-shrink-0"
+              style={{ background: 'linear-gradient(to right, transparent, var(--card-bg, var(--surface-container)))' }}
+            />
           </div>
 
           {/* Row 2: Description (collapsible, only if exists) */}
@@ -1346,7 +1351,7 @@ export function SpaceChat({
                   {/* Mobile action button — always visible on touch */}
                   {!msg.is_deleted && editingId !== msg.id && (
                     <button
-                      className="md:hidden p-2 rounded-full absolute top-1 right-1 opacity-40 active:opacity-70"
+                      className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-full absolute top-0 right-0 opacity-40 active:opacity-70"
                       style={{ color: 'var(--outline)' }}
                       onClick={(e) => {
                         e.stopPropagation();

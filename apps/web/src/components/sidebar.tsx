@@ -144,9 +144,8 @@ function ChatSidebarContent({
             <button
               key={space.id}
               onClick={() => onSpaceClick(space.id)}
-              className="w-full text-left px-2 flex items-center gap-1.5 relative"
+              className="w-full text-left px-2 flex items-center gap-1.5 relative min-h-[44px] md:min-h-0 md:h-8"
               style={{
-                height: '32px',
                 background: active ? 'var(--bg-active)' : 'transparent',
                 color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                 fontWeight: active ? 500 : hasUnread ? 600 : 500,
@@ -233,9 +232,8 @@ function ChatSidebarContent({
               <button
                 key={member.id}
                 onClick={handleClick}
-                className="w-full text-left px-2 flex items-center gap-2"
+                className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
                 style={{
-                  height: '32px',
                   background: active ? 'var(--bg-active)' : 'transparent',
                   color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                   fontWeight: active ? 500 : hasUnread ? 600 : 500,
@@ -301,9 +299,8 @@ function ChatSidebarContent({
               <button
                 key={employee.id}
                 onClick={() => router.push(`/agent?employee=${employee.id}`)}
-                className="w-full text-left px-2 flex items-center gap-2"
+                className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
                 style={{
-                  height: '32px',
                   background: 'transparent',
                   color: 'var(--on-surface-variant)',
                   fontWeight: 500,
@@ -421,9 +418,8 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
             <button
               key={project.id}
               onClick={() => { router.push(`/tasks?project=${project.id}`); onNav?.(); }}
-              className="w-full text-left px-2 flex items-center gap-2"
+              className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
               style={{
-                height: '32px',
                 background: active ? 'var(--bg-active)' : 'transparent',
                 color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                 fontWeight: active ? 500 : 500,

@@ -71,7 +71,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
       {onMenuClick && (
         <button
           onClick={onMenuClick}
-          className="md:hidden flex items-center justify-center w-8 h-8 -ml-1 rounded-lg"
+          className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] -ml-1 rounded-lg"
           style={{ color: 'var(--on-surface-variant)' }}
         >
           <Menu size={18} strokeWidth={1.5} />
@@ -95,7 +95,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
       </button>
       <button
         onClick={handleSearchClick}
-        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg cursor-pointer"
+        className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg cursor-pointer"
         style={{ color: 'var(--outline)' }}
       >
         <Search size={18} strokeWidth={1.5} />
@@ -116,7 +116,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
         <button
           ref={bellRef}
           onClick={handleNotifOpen}
-          className="p-1.5 rounded-md relative"
+          className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md relative"
           style={{ color: 'var(--outline)' }}
         >
           <Bell size={16} strokeWidth={1.5} />

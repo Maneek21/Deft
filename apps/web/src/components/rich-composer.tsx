@@ -363,7 +363,7 @@ export function RichComposer({
   const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
 
   return (
-    <div className="px-6 py-3 flex-shrink-0 relative" ref={composerRef}>
+    <div className="px-6 py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
       {showSlashCommands && (
         <SlashCommandAutocomplete
           query={slashQuery}
