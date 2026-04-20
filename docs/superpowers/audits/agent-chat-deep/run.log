@@ -1,0 +1,93 @@
+=== Agent Chat Deep Audit ===
+Date: 2026-04-20T21:28:15.669Z
+Branch: feat/phase2-4-mcp-agents-plans
+Target: http://localhost:3000/agent
+
+[setup] Using existing auth state: playwright-auth.json
+
+── Group 1: Landing + conversation list ──
+  [net:401] http://localhost:3001/api/auth/me
+  [console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [net:401] http://localhost:3001/api/auth/me
+  [console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [net:401] http://localhost:3001/api/auth/me
+  [console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [screenshot] 01-landing.png
+  [PASS] Landing page renders without no-API-key banner
+  [PASS] Composer textarea visible
+  [PASS] Starter chips visible (found 3): What tasks are in progress?, Summarize #engineering this week, What's overdue?
+  [info] Desktop sidebar conversation links: 10
+  [PASS] Desktop sidebar shows 10 past conversation(s)
+  [PASS] "New conversation" button present in sidebar
+  [heartbeat] 2026-04-20T21:28:19.618Z
+
+── Group 2: New conversation + agent reply ──
+  [screenshot] 02-before-send.png
+  [info] Sent: "What are my open tasks?" at 2026-04-20T21:28:21.645Z
+  [PASS] Conversation created — id=cd95b530-523d-4886-aa98-103c5ca7b4e2
+  [info] Waiting for agent reply (up to 60s)...
+    ... waiting agent reply (0s)
+    ... waiting agent reply (5s)
+    ... waiting agent reply (10s)
+    ... waiting agent reply (15s)
+    ... waiting agent reply (20s)
+    ... waiting agent reply (25s)
+    ... waiting agent reply (30s)
+  [screenshot] 03-reply-received.png
+  [PASS] Agent replied in 35282ms
+  [P2] FAIL: Agent response slow (>10s) with no explicit thinking indicator observed in test
+    Took 35282ms — check if AgentThinking spinner was visible
+  [PASS] Markdown rendered (found block/inline elements in assistant reply)
+  [info] AgentThinking spinner: not checkable post-reply (ephemeral during streaming)
+  [heartbeat] 2026-04-20T21:28:57.962Z
+
+── Group 3: Tool-call rendering ──
+  [PASS] Tool badges visible: 💬 List My Tasks
+  [PASS] "Show trace" toggle visible
+  [PASS] ReasoningTrace expanded — shows ordered list of events
+  [screenshot] 04-tool-call-trace-expanded.png
+  [PASS] Confidence indicator dot rendered
+  [PASS] Model/token footer: "sonnet-4 · 839 tokens"
+  [heartbeat] 2026-04-20T21:29:00.046Z
+
+── Group 4: Approval / write-action flow ──
+  [info] Sent write prompt: "Create a task titled "agent-chat-audit-1776720546008""
+  [screenshot] 05-write-action.png
+  [info] Inconclusive — reply arrived but no clear action outcome
+  [P2] FAIL: Write-action outcome inconclusive
+    Text excerpt: screenshot captured mid-stream ("Thinking...") — condition triggered on stale DOM text from group 2
+  [heartbeat] 2026-04-20T21:29:07.347Z
+
+── Group 5: Receipts / trace export ──
+  [PASS] "Export trace" button visible above composer
+  [PASS] Trace download triggered — filename: agent-trace-cd95b530.json
+  [screenshot] 07-trace-export-area.png
+  [info] Receipt viewer: no dedicated signed-receipt modal found in agent-chat.tsx — gap noted
+  [heartbeat] 2026-04-20T21:29:12.853Z
+
+── Group 6: Conversation history persistence ──
+  [screenshot] 08-history-sidebar.png
+  [info] Sidebar links after navigate-away: 10
+  [PASS] Conversation history persisted — 10 link(s) in sidebar
+  [screenshot] 09-history-reload.png
+  [PASS] Conversation reloaded — original user message present
+  [heartbeat] 2026-04-20T21:29:32.839Z
+
+── Group 7: Agent selection / config ──
+  [screenshot] 10-agent-selection.png
+  [PASS] Defty tab visible in tab bar
+  [info] Tab bar buttons: ["Defty","DDogfood PM","AAuditAgent 9448","AAuditAgent 4221","AAuditAgent 4549","AAlex PM"]
+  [PASS] Multiple agent tabs visible: Defty, DDogfood PM, AAuditAgent 9448, AAuditAgent 4221, AAuditAgent 4549, AAlex PM
+  [info] Agent config drawer (model/trust level/tools): NOT implemented in current agent/page.tsx or agent-chat.tsx
+  [P2] FAIL: No agent config drawer / settings panel in agent chat
+    There is no way to change model, trust level, or enabled tools from the chat surface. These require going to /settings/agent.
+  [Nit] FAIL: No trust level indicator visible in agent chat
+    Trust level is set in /settings/agent but not surfaced in the chat UI
+  [info] Heartbeat turns: no dedicated view in /agent — heartbeats are in /settings/agent-employees/[id]/heartbeats
+  [Nit] FAIL: No heartbeat turns view in agent chat surface
+    Heartbeat history is only accessible via /settings/agent-employees/[id]/heartbeats, not from chat
+  [heartbeat] 2026-04-20T21:29:41.227Z
+
+[done] Report written to: C:\Users\Osheen Pradhan\cairn\docs\superpowers\audits\agent-chat-deep\REPORT.md
+[done] Duration: 84s
+[done] Passes: 19  P0: 0  P1: 0  P2: 3  Nits: 2
