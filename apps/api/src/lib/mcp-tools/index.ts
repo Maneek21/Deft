@@ -24,6 +24,7 @@ import { taskCreate, taskUpdate, messagePost } from './writes.js';
 import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
 import { eventsQuery } from './events.js';
+import { taskDetail, messagesSearch, projectProgress, teamWorkload } from './reports.js';
 
 export type ToolHandler = (args: any, ctx: ToolContext) => Promise<ToolResult>;
 
@@ -36,6 +37,11 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   member_list: memberList as ToolHandler,
   space_memory_get: spaceMemoryGet as ToolHandler,
   events_query: eventsQuery as ToolHandler,
+  // Path C Phase 1 — ported from the deprecated /mcp REST surface
+  task_detail: taskDetail as ToolHandler,
+  messages_search: messagesSearch as ToolHandler,
+  project_progress: projectProgress as ToolHandler,
+  team_workload: teamWorkload as ToolHandler,
 };
 
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
@@ -394,6 +400,66 @@ export const toolSchemas: ToolSchema[] = [
         session_id: { type: 'string' },
       },
       required: ['caller_employee_slug', 'target_employee_slug', 'reason'],
+    },
+  },
+  // ─── Path C Phase 1 — ported from /mcp REST surface ──────────────────
+  {
+    name: 'task_detail',
+    description:
+      'Get the full detail of a single task including comments and recent activity. Use this after task_query when you need the full conversation around a specific item.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        task_identifier: {
+          type: 'string',
+          description: 'The task id like "DEFT-42" — the project prefix + number form users see in the UI.',
+        },
+      },
+      required: ['caller_employee_slug', 'task_identifier'],
+    },
+  },
+  {
+    name: 'messages_search',
+    description:
+      'Search chat messages across every space in the caller\'s org. Use for "what did X say about Y" questions. Filter by space name or author name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        query: { type: 'string', description: 'Search keywords.' },
+        space_name: { type: 'string', description: 'Optional: filter to a specific space.' },
+        author_name: { type: 'string', description: 'Optional: filter by author.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+      required: ['caller_employee_slug', 'query'],
+    },
+  },
+  {
+    name: 'project_progress',
+    description:
+      'Summarize progress across one project: counts by status, completion rate, recent velocity. Pass either project_identifier (prefix, e.g. "DEFT") or project_name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        project_identifier: { type: 'string' },
+        project_name: { type: 'string' },
+      },
+      required: ['caller_employee_slug'],
+    },
+  },
+  {
+    name: 'team_workload',
+    description:
+      'Get the team-wide workload snapshot over the last N days — tasks open, in-progress, overdue, and closed by assignee. Default window is 7 days.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        days: { type: 'integer', minimum: 1, maximum: 90, description: 'Window in days (default 7).' },
+      },
+      required: ['caller_employee_slug'],
     },
   },
 ];
