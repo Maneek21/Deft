@@ -19,7 +19,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from '../lib/db.js';
 import { agentEmployeeTemplates } from '@deft/db/schema';
-import { sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = join(__dirname, 'templates');
@@ -362,52 +362,52 @@ export async function seedTemplates(opts: { silent?: boolean } = {}): Promise<nu
     // path targets the same row even across clean-room re-seeds.
     const id = `tmpl_${meta.slug}`;
 
-    await db
-      .insert(agentEmployeeTemplates)
-      .values({
-        id,
-        slug: meta.slug,
-        name: meta.name,
-        version: meta.version,
-        role: meta.role,
-        description: meta.description,
-        soul_md: soulMd,
-        agents_md: agentsMd,
-        user_md_template: userMdTemplate,
-        tools_md: toolsMd,
-        default_tools: meta.default_tools,
-        default_capability_packs: meta.default_capability_packs,
-        default_trust_level: meta.default_trust_level,
-        default_trigger_subscriptions: meta.default_trigger_subscriptions,
-        model_recommendation: meta.model_recommendation,
-        fallback_models: meta.fallback_models,
-        source: meta.source,
-        source_attribution: meta.source_attribution,
-        is_public: true,
-      })
-      .onConflictDoUpdate({
-        target: agentEmployeeTemplates.slug,
-        set: {
-          name: meta.name,
-          version: meta.version,
-          role: meta.role,
-          description: meta.description,
-          soul_md: soulMd,
-          agents_md: agentsMd,
-          user_md_template: userMdTemplate,
-          tools_md: toolsMd,
-          default_tools: meta.default_tools,
-          default_capability_packs: meta.default_capability_packs,
-          default_trust_level: meta.default_trust_level,
-          default_trigger_subscriptions: meta.default_trigger_subscriptions,
-          model_recommendation: meta.model_recommendation,
-          fallback_models: meta.fallback_models,
-          source: meta.source,
-          source_attribution: meta.source_attribution,
-          is_public: true,
-          updated_at: sql`now()`,
-        },
-      });
+    // Migration 0051 replaced the plain `UNIQUE(slug)` with a functional
+    // composite index `UNIQUE (COALESCE(org_id,''), slug)`. Postgres can't
+    // use that index as an ON CONFLICT target without the exact expression,
+    // which Drizzle's column-typed `target` can't express. Manual
+    // check-then-insert-or-update covers both first-boot and re-seed runs
+    // for the first-party catalog (org_id IS NULL).
+    const values = {
+      slug: meta.slug,
+      name: meta.name,
+      version: meta.version,
+      role: meta.role,
+      description: meta.description,
+      soul_md: soulMd,
+      agents_md: agentsMd,
+      user_md_template: userMdTemplate,
+      tools_md: toolsMd,
+      default_tools: meta.default_tools,
+      default_capability_packs: meta.default_capability_packs,
+      default_trust_level: meta.default_trust_level,
+      default_trigger_subscriptions: meta.default_trigger_subscriptions,
+      model_recommendation: meta.model_recommendation,
+      fallback_models: meta.fallback_models,
+      source: meta.source,
+      source_attribution: meta.source_attribution,
+      is_public: true,
+    };
+
+    const [existing] = await db
+      .select({ id: agentEmployeeTemplates.id })
+      .from(agentEmployeeTemplates)
+      .where(
+        and(
+          isNull(agentEmployeeTemplates.org_id),
+          eq(agentEmployeeTemplates.slug, meta.slug),
+        ),
+      )
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(agentEmployeeTemplates)
+        .set({ ...values, updated_at: sql`now()` })
+        .where(eq(agentEmployeeTemplates.id, existing.id));
+    } else {
+      await db.insert(agentEmployeeTemplates).values({ id, ...values });
+    }
     log(`  upserted ${meta.slug}`);
   }
 
