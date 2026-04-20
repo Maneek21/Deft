@@ -126,6 +126,9 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  // Fix 3: client-side pagination — show 50 rows at a time
+  const PAGE_SIZE = 50;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -144,6 +147,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   };
 
   const sorted = useMemo(() => {
+    // Reset pagination when data or sort changes
+    setVisibleCount(PAGE_SIZE);
     return [...tasks].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
@@ -158,6 +163,9 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
       return sortDir === 'desc' ? -cmp : cmp;
     });
   }, [tasks, sortField, sortDir]);
+
+  // Fix 3: page-sliced rows
+  const visibleRows = sorted.slice(0, visibleCount);
 
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <ArrowUpDown size={11} style={{ opacity: 0.3 }} />;
@@ -185,7 +193,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
             <p className="text-[14px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks match the current filters</p>
           </div>
         )}
-        {sorted.map((task) => {
+        {visibleRows.map((task) => {
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
           return (
@@ -203,6 +211,18 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
             />
           );
         })}
+        {/* Fix 3: Load more */}
+        {visibleCount < sorted.length && (
+          <div className="flex justify-center py-3">
+            <button
+              onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+              className="text-[12px] font-medium px-4 py-1.5 rounded-md"
+              style={{ color: 'var(--accent)', border: '1px solid var(--border)', fontFamily: 'var(--font-heading)' }}
+            >
+              Load more ({sorted.length - visibleCount} remaining)
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -264,7 +284,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
           </tr>
         </thead>
         <tbody>
-          {sorted.map((task) => {
+          {visibleRows.map((task) => {
             const priorityStyle = PRIORITY_STYLES[task.priority];
             const priorityText = priorityLabel(task.priority as CanonicalPriority, priorityVocab);
             const isSelected = task.id === selectedTaskId;
@@ -515,6 +535,18 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
       {sorted.length === 0 && (
         <div className="flex items-center justify-center py-16" style={{ color: 'var(--muted)' }}>
           <p className="text-[14px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks match the current filters</p>
+        </div>
+      )}
+      {/* Fix 3: Load more button */}
+      {visibleCount < sorted.length && (
+        <div className="flex justify-center py-4">
+          <button
+            onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+            className="text-[12px] font-medium px-4 py-1.5 rounded-md"
+            style={{ color: 'var(--accent)', border: '1px solid var(--border)', fontFamily: 'var(--font-heading)' }}
+          >
+            Load more ({sorted.length - visibleCount} remaining)
+          </button>
         </div>
       )}
     </div>

@@ -486,8 +486,11 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
       <>
       {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); setLabelSearch(''); setShowSaveInput(false); }} />}
 
+      {/* Fix 5: position: relative + z-index: 20 ensures filter buttons sit above
+          the fixed z-10 backdrop, so clicking Assignee/Status after Priority
+          dropdown is open goes directly to the new dropdown without a double-click. */}
       <div
-        className="flex items-center gap-2 px-6 py-2 flex-shrink-0 flex-wrap"
+        className="flex items-center gap-2 px-6 py-2 flex-shrink-0 flex-wrap relative z-20"
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         {/* Assignee dropdown */}

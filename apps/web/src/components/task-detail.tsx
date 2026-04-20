@@ -1719,6 +1719,24 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 }, 800);
               }}
             />
+            {/* Fix 4: quick comment entry point always visible on description tab */}
+            <div
+              className="mt-4 pt-3"
+              style={{ borderTop: '1px solid var(--border)' }}
+            >
+              <button
+                onClick={() => handleTabChange('comments')}
+                className="w-full text-left px-3 py-2 rounded-lg text-[13px]"
+                style={{
+                  background: 'var(--surface-container-low)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--muted)',
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                Add a comment...{comments.length > 0 ? ` (${comments.length})` : ''}
+              </button>
+            </div>
           </div>
           )}
 

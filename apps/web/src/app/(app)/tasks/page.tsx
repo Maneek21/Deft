@@ -101,19 +101,40 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [view, setView] = useState<'board' | 'list' | 'timeline' | 'calendar' | 'pipeline'>('board');
+
+  // Fix 1: derive view from URL (falls back to 'board')
+  const VIEW_VALUES = ['board', 'list', 'timeline', 'calendar', 'pipeline'] as const;
+  type View = typeof VIEW_VALUES[number];
+  const urlView = searchParams.get('view') as View | null;
+  const view: View = urlView && (VIEW_VALUES as readonly string[]).includes(urlView) ? urlView : 'board';
+
   // Task 4.9 — once the user toggles the view manually, we stop auto-selecting
   // the resolved-config default so their preference wins.
   const [userSelectedView, setUserSelectedView] = useState(false);
-  const [filters, setFilters] = useState<Filters>({
-    assigneeIds: [],
-    priorities: [],
-    status: [],
-    labels: [],
-    dueDate: null,
-    dateFrom: null,
-    dateTo: null,
-    projectId: null,
+
+  // Fix 1: helper to patch URL query params
+  const setQuery = useCallback((patch: Record<string, string | null>) => {
+    const qs = new URLSearchParams(searchParams.toString());
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null) qs.delete(k);
+      else qs.set(k, v);
+    }
+    const str = qs.toString();
+    router.replace(`/tasks${str ? '?' + str : ''}`);
+  }, [searchParams, router]);
+
+  // Fix 1: initialize filters from URL params on mount
+  const [filters, setFilters] = useState<Filters>(() => {
+    return {
+      assigneeIds: searchParams.get('assignee') ? searchParams.get('assignee')!.split(',') : [],
+      priorities: searchParams.get('priority') ? searchParams.get('priority')!.split(',') : [],
+      status: searchParams.get('status') ? searchParams.get('status')!.split(',') : [],
+      labels: searchParams.get('labels') ? searchParams.get('labels')!.split(',') : [],
+      dueDate: (searchParams.get('dueDate') as Filters['dueDate']) || null,
+      dateFrom: searchParams.get('dateFrom') || null,
+      dateTo: searchParams.get('dateTo') || null,
+      projectId: searchParams.get('filterProject') || null,
+    };
   });
   const [loading, setLoading] = useState(true);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
@@ -135,9 +156,8 @@ export default function TasksPage() {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const currentView = searchParams.get('view');
   const currentProjectId = searchParams.get('project');
-  const isMyTasksView = currentView === 'my';
+  const isMyTasksView = searchParams.get('view') === 'my';
 
   // Task 4.9 — resolved skill config drives status/vocab/view/prefix
   const { config: resolvedConfig } = useProjectResolvedConfig(selectedProject?.id ?? null);
@@ -149,7 +169,7 @@ export default function TasksPage() {
     if (!resolvedConfig || userSelectedView || isMyTasksView) return;
     const dv = resolvedConfig.default_view;
     if (dv && dv !== view && (dv === 'board' || dv === 'list' || dv === 'timeline' || dv === 'calendar' || dv === 'pipeline')) {
-      setView(dv);
+      setQuery({ view: dv });
     }
   }, [resolvedConfig, userSelectedView, isMyTasksView]);
 
@@ -535,6 +555,21 @@ export default function TasksPage() {
     }
   };
 
+  // Fix 1: sync filter changes to URL
+  const handleFiltersChange = useCallback((next: Filters) => {
+    setFilters(next);
+    setQuery({
+      assignee: next.assigneeIds.length > 0 ? next.assigneeIds.join(',') : null,
+      priority: next.priorities.length > 0 ? next.priorities.join(',') : null,
+      status: next.status.length > 0 ? next.status.join(',') : null,
+      labels: next.labels.length > 0 ? next.labels.join(',') : null,
+      dueDate: next.dueDate || null,
+      dateFrom: next.dateFrom || null,
+      dateTo: next.dateTo || null,
+      filterProject: next.projectId || null,
+    });
+  }, [setQuery]);
+
   const handleTaskCreated = () => {
     loadTasks();
     setQuickCreateOpen(false);
@@ -707,7 +742,7 @@ export default function TasksPage() {
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
             >
               <button
-                onClick={() => { setView('board'); setUserSelectedView(true); }}
+                onClick={() => { setQuery({ view: 'board' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'board' ? 'var(--accent)' : 'transparent',
@@ -719,7 +754,7 @@ export default function TasksPage() {
                 Board
               </button>
               <button
-                onClick={() => { setView('list'); setUserSelectedView(true); }}
+                onClick={() => { setQuery({ view: 'list' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'list' ? 'var(--accent)' : 'transparent',
@@ -731,7 +766,7 @@ export default function TasksPage() {
                 List
               </button>
               <button
-                onClick={() => { setView('timeline'); setUserSelectedView(true); }}
+                onClick={() => { setQuery({ view: 'timeline' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'timeline' ? 'var(--accent)' : 'transparent',
@@ -743,7 +778,7 @@ export default function TasksPage() {
                 Timeline
               </button>
               <button
-                onClick={() => { setView('calendar'); setUserSelectedView(true); }}
+                onClick={() => { setQuery({ view: 'calendar' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'calendar' ? 'var(--accent)' : 'transparent',
@@ -755,7 +790,7 @@ export default function TasksPage() {
                 Calendar
               </button>
               <button
-                onClick={() => { setView('pipeline'); setUserSelectedView(true); }}
+                onClick={() => { setQuery({ view: 'pipeline' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'pipeline' ? 'var(--accent)' : 'transparent',
@@ -869,7 +904,7 @@ export default function TasksPage() {
         {/* Filter bar */}
         <TaskFilters
           filters={filters}
-          onChange={setFilters}
+          onChange={handleFiltersChange}
           projects={projects}
           statuses={resolvedConfig?.statuses}
           priorityVocab={resolvedConfig?.priority_vocab}
@@ -935,7 +970,26 @@ export default function TasksPage() {
             </div>
           ) : (
             /* Project view: single board/list/timeline */
-            view === 'board' ? (
+            <div className="flex flex-col h-full">
+              {/* Fix 2: scope label so users always know what they're seeing */}
+              {!isMobile && (
+                <div className="flex items-center gap-2 px-6 py-1.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                    Showing{' '}
+                    <span style={{ color: 'var(--foreground-secondary)', fontWeight: 500 }}>
+                      {filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'}
+                    </span>
+                    {selectedProject ? (
+                      <> in <span style={{ color: 'var(--foreground-secondary)', fontWeight: 500 }}>{selectedProject.name}</span></>
+                    ) : null}
+                    {filters.priorities.length > 0 && <> · Priority filtered</>}
+                    {filters.assigneeIds.length > 0 && <> · Assignee filtered</>}
+                    {filters.status.length > 0 && <> · Status filtered</>}
+                  </span>
+                </div>
+              )}
+              <div className="flex-1 overflow-hidden">
+            {view === 'board' ? (
               <TaskBoard
                 tasks={filteredTasks}
                 projectPrefix={selectedProject?.prefix || ''}
@@ -1001,7 +1055,9 @@ export default function TasksPage() {
                   />
                 </Suspense>
               )
-            )
+            )}
+              </div>
+            </div>
           )}
         </div>
       </div>
