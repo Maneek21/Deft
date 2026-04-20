@@ -17,6 +17,7 @@ const AVATAR_COLORS = [
 ];
 
 const ROLES = [
+  { value: 'superintendent', label: 'Superintendent (Defty)' },
   { value: 'project_manager', label: 'Project Manager' },
   { value: 'engineering_lead', label: 'Engineering Lead' },
   { value: 'executive_assistant', label: 'Executive Assistant' },
@@ -94,6 +95,7 @@ function hasInstallableAgentConfig(s: Pick<Skill, 'agent_config'>): boolean {
 // seed-templates.ts); the server-side TEMPLATE_DEFAULT_PACKS hashmap was
 // deleted in Task 4.12.
 const ROLE_DEFAULT_PACK_SLUGS: Record<string, string[]> = {
+  superintendent: ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],
   project_manager: ['deft-workspace', 'web-browsing', 'tavily', 'github', 'google-calendar'],
   engineering_lead: ['deft-workspace', 'web-browsing', 'github', 'shell-exec'],
   executive_assistant: ['deft-workspace', 'google-calendar'],
