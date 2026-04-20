@@ -140,68 +140,74 @@ export default function AgentEmployeesPage() {
           {employees.map((emp) => (
             <div
               key={emp.id}
-              className="flex items-center gap-3 px-4 py-3 rounded-lg"
+              className="flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
             >
-              {/* Avatar */}
-              <div
-                className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white flex-shrink-0"
-                style={{ background: 'var(--accent)' }}
+              {/* Clickable area: avatar + name/role + daily actions + status */}
+              <Link
+                href={`/settings/agent-employees/${emp.id}/developer`}
+                className="flex items-center gap-3 flex-1 min-w-0"
               >
-                {emp.name.charAt(0).toUpperCase()}
-              </div>
-
-              {/* Name & role */}
-              <div className="flex-1 min-w-0">
-                <p
-                  className="text-[14px] font-medium truncate"
-                  style={{ color: 'var(--foreground)' }}
-                >
-                  {emp.name}
-                </p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span
-                    className="text-[11px] px-1.5 py-0.5 rounded"
-                    style={{
-                      background: 'var(--surface)',
-                      color: 'var(--foreground-secondary)',
-                      border: '1px solid var(--border)',
-                    }}
-                  >
-                    {ROLE_LABELS[emp.role] || emp.role}
-                  </span>
-                  <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                    {TRUST_LABELS[emp.trust_level] || emp.trust_level}
-                  </span>
-                </div>
-              </div>
-
-              {/* Daily actions */}
-              <div className="text-right flex-shrink-0 mr-1">
-                <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                  {emp.daily_actions_used ?? 0}/{emp.max_daily_actions} actions
-                </p>
-              </div>
-
-              {/* Status indicator */}
-              <div className="flex items-center gap-1 flex-shrink-0">
+                {/* Avatar */}
                 <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ background: emp.is_active ? '#10b981' : '#9ca3af' }}
-                />
-                <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                  {emp.is_active ? 'Active' : 'Paused'}
-                </span>
-                {emp.heartbeat_enabled && (
-                  <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '8px' }}>
-                    &#9829; every {emp.heartbeat_interval_min}m
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white flex-shrink-0"
+                  style={{ background: 'var(--accent)' }}
+                >
+                  {emp.name.charAt(0).toUpperCase()}
+                </div>
+
+                {/* Name & role */}
+                <div className="flex-1 min-w-0">
+                  <p
+                    className="text-[14px] font-medium truncate"
+                    style={{ color: 'var(--foreground)' }}
+                  >
+                    {emp.name}
+                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span
+                      className="text-[11px] px-1.5 py-0.5 rounded"
+                      style={{
+                        background: 'var(--surface)',
+                        color: 'var(--foreground-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {ROLE_LABELS[emp.role] || emp.role}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {TRUST_LABELS[emp.trust_level] || emp.trust_level}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Daily actions */}
+                <div className="text-right flex-shrink-0 mr-1">
+                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                    {emp.daily_actions_used ?? 0}/{emp.max_daily_actions} actions
+                  </p>
+                </div>
+
+                {/* Status indicator */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{ background: emp.is_active ? '#10b981' : '#9ca3af' }}
+                  />
+                  <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                    {emp.is_active ? 'Active' : 'Paused'}
                   </span>
-                )}
-              </div>
+                  {emp.heartbeat_enabled && (
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '8px' }}>
+                      &#9829; every {emp.heartbeat_interval_min}m
+                    </span>
+                  )}
+                </div>
+              </Link>
 
               {/* Toggle switch */}
               <button
-                onClick={() => handleToggleActive(emp)}
+                onClick={(e) => { e.stopPropagation(); handleToggleActive(emp); }}
                 disabled={togglingId === emp.id}
                 className="relative flex-shrink-0"
                 style={{ width: 36, height: 20 }}
