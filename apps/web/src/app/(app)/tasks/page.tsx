@@ -743,7 +743,7 @@ export default function TasksPage() {
             >
               <button
                 onClick={() => { setQuery({ view: 'board' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'board' ? 'var(--accent)' : 'transparent',
                   color: view === 'board' ? 'white' : 'var(--muted)',
@@ -751,11 +751,11 @@ export default function TasksPage() {
                 }}
               >
                 <LayoutGrid size={13} />
-                Board
+                <span className="hidden md:inline">Board</span>
               </button>
               <button
                 onClick={() => { setQuery({ view: 'list' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'list' ? 'var(--accent)' : 'transparent',
                   color: view === 'list' ? 'white' : 'var(--muted)',
@@ -763,11 +763,11 @@ export default function TasksPage() {
                 }}
               >
                 <List size={13} />
-                List
+                <span className="hidden md:inline">List</span>
               </button>
               <button
                 onClick={() => { setQuery({ view: 'timeline' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'timeline' ? 'var(--accent)' : 'transparent',
                   color: view === 'timeline' ? 'white' : 'var(--muted)',
@@ -775,11 +775,11 @@ export default function TasksPage() {
                 }}
               >
                 <CalendarRange size={13} />
-                Timeline
+                <span className="hidden md:inline">Timeline</span>
               </button>
               <button
                 onClick={() => { setQuery({ view: 'calendar' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'calendar' ? 'var(--accent)' : 'transparent',
                   color: view === 'calendar' ? 'white' : 'var(--muted)',
@@ -787,11 +787,11 @@ export default function TasksPage() {
                 }}
               >
                 <CalendarDays size={13} />
-                Calendar
+                <span className="hidden md:inline">Calendar</span>
               </button>
               <button
                 onClick={() => { setQuery({ view: 'pipeline' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[12px] font-medium transition-colors"
+                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
                   background: view === 'pipeline' ? 'var(--accent)' : 'transparent',
                   color: view === 'pipeline' ? 'white' : 'var(--muted)',
@@ -799,7 +799,7 @@ export default function TasksPage() {
                 }}
               >
                 <GitBranch size={13} />
-                Pipeline
+                <span className="hidden md:inline">Pipeline</span>
               </button>
             </div>
 

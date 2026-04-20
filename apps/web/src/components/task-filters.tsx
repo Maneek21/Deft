@@ -77,6 +77,20 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Close any open dropdown on Escape so the fixed inset-0 backdrop is removed.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && openDropdown) {
+        setOpenDropdown(null);
+        setMemberSearch('');
+        setLabelSearch('');
+        setShowSaveInput(false);
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [openDropdown]);
+
   useEffect(() => {
     api.get('/api/members').then(async res => {
       if (res.ok) setMembers(await res.json());
@@ -184,7 +198,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'mobile-filters' ? null : 'mobile-filters')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 min-h-[44px] rounded-md text-[12px] font-medium"
             style={{
               background: activeFilterCount > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: activeFilterCount > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -497,7 +511,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'assignee' ? null : 'assignee')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: filters.assigneeIds.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.assigneeIds.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -586,7 +600,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'priority' ? null : 'priority')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: filters.priorities.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.priorities.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -646,7 +660,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'status' ? null : 'status')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: filters.status.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.status.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -705,7 +719,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'labels' ? null : 'labels')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: filters.labels.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.labels.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -792,7 +806,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
           <div className="relative">
             <button
               onClick={() => setOpenDropdown(openDropdown === 'project' ? null : 'project')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
               style={{
                 background: filters.projectId ? 'var(--accent-subtle)' : 'transparent',
                 color: filters.projectId ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -844,7 +858,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'dueDate' ? null : 'dueDate')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: (filters.dueDate || filters.dateFrom) ? 'var(--accent-subtle)' : 'transparent',
               color: (filters.dueDate || filters.dateFrom) ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -1008,7 +1022,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative ml-auto">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'views' ? null : 'views')}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
             style={{
               background: 'transparent',
               color: 'var(--foreground-secondary)',
