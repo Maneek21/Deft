@@ -139,9 +139,16 @@ function timeAgo(dateStr: string): string {
 }
 
 // ── Toolbar button ─────────────────────────────────────────
+// onMouseDown + preventDefault keeps editor focus before the TipTap command runs.
+// Using onClick caused a focus race where the editor lost focus before toggleX fired.
 function TBtn({ active, onClick, children, title }: { active?: boolean; onClick: () => void; children: React.ReactNode; title: string }) {
   return (
-    <button onClick={onClick} title={title} className="p-1.5 rounded transition-colors"
+    <button
+      type="button"
+      aria-label={title}
+      title={title}
+      onMouseDown={(e) => { e.preventDefault(); onClick(); }}
+      className="p-1.5 rounded transition-colors"
       style={{ color: active ? 'var(--accent)' : 'var(--muted)', background: active ? 'var(--accent-subtle)' : 'transparent' }}>
       {children}
     </button>
@@ -205,11 +212,13 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     task_status: string | null;
     task_priority: string | null;
   }>>([]);
+  const [pendingDelete, setPendingDelete] = useState(false);
   const iconBtnRef = useRef<HTMLButtonElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const initialContentSet = useRef(false);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const isNoteOwner = !note || note.user_id === user?.id;
 
@@ -221,8 +230,12 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         heading: { levels: [1, 2] },
         codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
         code: { HTMLAttributes: { class: 'deft-inline-code' } },
+        // Disable bundled link+underline so the standalone copies below take
+        // precedence. Prevents "Duplicate extension names" console warnings.
+        link: false,
+        underline: false,
       }),
-      Placeholder.configure({ placeholder: 'Start writing... (type / for commands)' }),
+      Placeholder.configure({ placeholder: 'Start writing…' }),
       LinkExt.configure({ openOnClick: true, HTMLAttributes: { class: 'deft-link' } }),
       Table.configure({ resizable: true }),
       TableRow,
@@ -445,11 +458,25 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     await api.patch(`/api/daily-notes/${noteId}`, { visibility: newVisibility });
   };
 
-  const handleDelete = async () => {
-    if (!window.confirm('Delete this note? This cannot be undone.')) return;
-    await api.delete(`/api/daily-notes/${noteId}`);
-    onDeleted();
+  const handleDelete = () => {
+    // Optimistic delete: show undo toast for 5 s, then fire the real DELETE.
+    setPendingDelete(true);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = setTimeout(async () => {
+      await api.delete(`/api/daily-notes/${noteId}`);
+      onDeleted();
+    }, 5000);
   };
+
+  const handleUndoDelete = () => {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    setPendingDelete(false);
+  };
+
+  // Clean up delete timer on unmount
+  useEffect(() => {
+    return () => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); };
+  }, []);
 
   const isOwner = !note || note.user_id === user?.id;
 
@@ -464,6 +491,22 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
   return (
     <div className={`h-full overflow-y-auto ${focusMode ? 'fixed inset-0 z-[90]' : ''}`}
       style={focusMode ? { background: 'var(--background)', padding: '2rem 0' } : undefined}>
+
+      {/* Undo-delete toast */}
+      {pendingDelete && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[95] flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-lg"
+          style={{ background: 'var(--surface-container-highest)', border: '1px solid var(--border)', color: 'var(--foreground)' }}>
+          <span className="text-[13px]">Note deleted.</span>
+          <button
+            type="button"
+            onClick={handleUndoDelete}
+            className="text-[13px] font-semibold px-2.5 py-1 rounded-lg"
+            style={{ background: 'var(--accent)', color: 'white' }}>
+            Undo
+          </button>
+        </div>
+      )}
+
       <div className="max-w-[700px] mx-auto px-6 py-6">
         {/* Top bar */}
         <div className="flex items-center justify-between mb-4">
@@ -506,30 +549,36 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               </span>
             )}
             <button onClick={() => setFocusMode(!focusMode)} className="p-1.5 rounded-lg"
+              aria-label={focusMode ? 'Exit focus mode' : 'Focus mode'}
               style={{ color: focusMode ? 'var(--accent)' : 'var(--muted)' }} title={focusMode ? 'Exit focus mode' : 'Focus mode'}>
               {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
             {isOwner && (
               <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="p-1.5 rounded-lg"
+                aria-label="Share note"
                 style={{ color: 'var(--muted)' }} title="Share note">
                 <Share2 size={15} />
               </button>
             )}
             <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="p-1.5 rounded-lg"
+              aria-label="Version history"
               style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
               <History size={15} />
             </button>
             <button onClick={() => setShowPromoteModal(true)} className="p-1.5 rounded-lg"
+              aria-label="Promote to Wiki"
               style={{ color: 'var(--muted)' }} title="Promote to Wiki">
               <BookOpen size={15} />
             </button>
             {isOwner && (
               <>
                 <button onClick={handlePin} className="p-1.5 rounded-lg"
+                  aria-label={note?.is_pinned ? 'Unpin' : 'Pin'}
                   style={{ color: note?.is_pinned ? 'var(--accent)' : 'var(--muted)' }} title={note?.is_pinned ? 'Unpin' : 'Pin'}>
                   {note?.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}
                 </button>
                 <button onClick={handleDelete} className="p-1.5 rounded-lg"
+                  aria-label="Delete note"
                   style={{ color: 'var(--muted)' }} title="Delete note">
                   <Trash2 size={15} />
                 </button>
@@ -619,6 +668,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           <div className="relative">
             <button ref={iconBtnRef} onClick={() => setIconPickerOpen(!iconPickerOpen)}
               className="text-[28px] p-1 rounded-lg hover:bg-white/5 transition-colors leading-none"
+              aria-label="Change icon"
               title="Change icon">
               {icon || '\uD83D\uDCC4'}
             </button>
@@ -1034,6 +1084,8 @@ export default function NotesPage() {
             </div>
           ) : (
             <button onClick={() => setShowNewFolder(true)}
+              aria-label="New folder"
+              title="New folder"
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] flex-shrink-0"
               style={{ color: 'var(--muted)' }}>
               <FolderPlus size={11} />
