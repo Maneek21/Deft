@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { MoreHorizontal, User, Terminal, Webhook, Copy, FileText } from 'lucide-react';
+import { MoreHorizontal, Terminal, Webhook, Copy, FileText } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
@@ -672,14 +672,12 @@ export default function AgentSettingsPage() {
                         }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <Link
-                          href={`/settings/agent-employees/${emp.id}/personality`}
-                          className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-accent/40"
-                          style={{ color: 'var(--foreground)' }}
-                          onClick={() => setRowMenuOpen(null)}
-                        >
-                          <User className="size-3.5" /> Personality
-                        </Link>
+                        {/* Personality page was retired in PR 1 of the
+                            self-hosted v1 reframe — it edited SOUL.md
+                            files via the OpenClaw gateway. Native agents
+                            edit their system_prompt on the detail page;
+                            BYOA agents own their prompt in the user's own
+                            codebase. */}
                         <Link
                           href={`/settings/agent-employees/${emp.id}/developer`}
                           className="flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-accent/40"
