@@ -13,24 +13,17 @@ const CRON_DELAYS: Record<string, number> = {
   'weekly-digest': 604800000,     // 7 days
   'wiki-lint': 86400000,          // 24 hours
   'deprecation-warning': 86400000, // 24 hours
-  'skill-update-check': 86400000, // 24 hours — Task 4.14
   'agent-daily-reset': 86400000,  // 24 hours
   'agent-heartbeat': 60000,       // 60 seconds (legacy — kept for rollout)
-  // Task 8.1 — split heartbeat cron by kind. The handler ignores the
-  // poll frequency and re-derives the per-employee due set from the
-  // `last_heartbeat_at + heartbeat_interval_min` SQL filter, so these
-  // numbers are the _scan_ cadence not the _fire_ cadence. We keep the
-  // openclaw scan at 30min to avoid hammering the Gateway with empty
-  // work, and the native scan at 5min so a fresh BullMQ-less self-host
-  // picks up changes quickly.
+  // Self-hosted v1 — single heartbeat scan for native agents. The handler
+  // re-derives the per-employee due set from
+  // `last_heartbeat_at + heartbeat_interval_min`, so this is _scan_ cadence
+  // not _fire_ cadence.
   'heartbeat-native': 5 * 60_000,
-  'heartbeat-openclaw': 30 * 60_000,
   'gateway-ping': 60000,          // 60 seconds — Phase 11
   // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
-  // fire close to their scheduled time without swamping the Gateway.
+  // fire close to their scheduled time.
   'trigger-dispatch': 60_000,
-  // Block 0.11 — pulls VoltAgent awesome-openclaw-skills once a day.
-  'clawhub-allowlist-refresh': 86400000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -43,14 +36,11 @@ const CRON_KEYS: Record<string, string> = {
   'weekly-digest': 'cron:weekly-digest',
   'wiki-lint': 'cron:wiki-lint',
   'deprecation-warning': 'cron:deprecation-warning',
-  'skill-update-check': 'cron:skill-update-check',
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
   'heartbeat-native': 'cron:heartbeat-native',
-  'heartbeat-openclaw': 'cron:heartbeat-openclaw',
   'gateway-ping': 'gateway-ping',
   'trigger-dispatch': 'cron:trigger-dispatch',
-  'clawhub-allowlist-refresh': 'cron:clawhub-allowlist-refresh',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -161,22 +151,6 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/deprecation-warning.js');
       return mod.handleDeprecationWarning as JobHandler;
     }
-    case 'skill-update-check': {
-      // Task 4.14 — daily sweep that compares installed_version in
-      // agent_employee_skills against skills.version and emits a
-      // `skill_update_available` notification for the owner when they
-      // diverge. Dedup lives inside the handler.
-      const mod = await import('./handlers/skill-update-check.js');
-      return mod.handleSkillUpdateCheck;
-    }
-    case 'clawhub-allowlist-refresh': {
-      // Block 0.11 — pulls VoltAgent/awesome-openclaw-skills markdown,
-      // parses skill slugs, upserts into clawhub_allowlist. Bundled
-      // static list used on network failure. Block 1 Library UI
-      // filters against this table.
-      const mod = await import('./handlers/clawhub-allowlist-refresh.js');
-      return mod.handleClawhubAllowlistRefresh;
-    }
     case 'agent-daily-reset': {
       const mod = await import('./handlers/agent-daily-reset.js');
       return mod.handleAgentDailyReset;
@@ -189,9 +163,9 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       return mod.reminderFireHandler;
     }
     case 'agent-heartbeat':
-    case 'heartbeat-native':
-    case 'heartbeat-openclaw': {
-      // Task 8.1 — same handler, job name switches the kind filter.
+    case 'heartbeat-native': {
+      // Single heartbeat scan for native agents (openclaw/BYOA is MCP-pull,
+      // no server-side heartbeat scan).
       const mod = await import('./handlers/agent-employee-heartbeat.js');
       return mod.handleAgentEmployeeHeartbeat;
     }

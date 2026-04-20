@@ -77,10 +77,9 @@ export async function llm(params: {
   tools?: any[];
   orgConfig?: Record<string, any>;
   /**
-   * Block 0.9 — when provided, checkOrgSpendCap gates the call and
-   * recordOrgSpendFromUsage updates the org's monthly/daily counters on
-   * a successful response. Callers that omit orgId run unmetered
-   * (existing behavior preserved).
+   * Retained for API compatibility with existing callers. Self-hosted v1
+   * runs a single org on the operator's own API keys, so no per-org spend
+   * gating is applied.
    */
   orgId?: string;
 }): Promise<{
@@ -91,15 +90,6 @@ export async function llm(params: {
 }> {
   const config = getModelConfig(params.task, params.orgConfig);
   const apiKey = resolveApiKey(config.provider, params.orgConfig);
-
-  // Block 0.9 — per-org spend cap pre-flight.
-  if (params.orgId) {
-    const { checkOrgSpendCap } = await import('./org-spend-cap.js');
-    const verdict = await checkOrgSpendCap(params.orgId);
-    if (!verdict.allowed) {
-      throw new Error(`Spend cap reached: ${verdict.reason}`);
-    }
-  }
 
   let result: {
     text: string;
@@ -120,18 +110,6 @@ export async function llm(params: {
       break;
     default:
       throw new Error(`Unsupported LLM provider: ${config.provider}`);
-  }
-
-  // Block 0.9 — record spend after a successful response.
-  if (params.orgId && result.usage) {
-    const { recordOrgSpendFromUsage } = await import('./org-spend-cap.js');
-    const providerPrefixedModel = `${config.provider}/${result.model}`;
-    await recordOrgSpendFromUsage(
-      params.orgId,
-      providerPrefixedModel,
-      result.usage.input,
-      result.usage.output,
-    );
   }
 
   return result;

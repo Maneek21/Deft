@@ -147,14 +147,16 @@ export default function CreateAgentEmployeePage() {
         setTemplates(await res.json());
       }
     });
-    // Task 4.7 — skill catalog. Uses the deploy router endpoint until
-    // Task 4.13 promotes it to /api/skills. Bundled + org skills only;
-    // marketplace is filtered out server-side.
-    api.get('/api/agents/deploy/skills').then(async (res) => {
+    // Task 4.7 — skill catalog. Bundled + org skills only; filter out
+    // marketplace rows on the client so the picker stays focused.
+    api.get('/api/skills').then(async (res) => {
       if (res.ok) {
         const body = await res.json();
         const list = Array.isArray(body) ? body : (body.skills ?? []);
-        setSkillsCatalog(list as Skill[]);
+        const filtered = (list as Skill[]).filter(
+          (s) => s.source === 'bundled' || s.source === 'org',
+        );
+        setSkillsCatalog(filtered);
       }
     }).catch(() => {});
   }, []);

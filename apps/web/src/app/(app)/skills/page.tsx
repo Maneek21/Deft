@@ -22,7 +22,6 @@ import {
   Building2,
   Download,
   GitFork,
-  Link2,
   Eye,
   AlertTriangle,
   X,
@@ -110,9 +109,6 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [statsById, setStatsById] = useState<Record<string, SkillStats>>({});
   const [loading, setLoading] = useState(true);
-  const [importing, setImporting] = useState(false);
-  const [importUrl, setImportUrl] = useState('');
-  const [importError, setImportError] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<AgentEmployee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -185,27 +181,6 @@ export default function SkillsPage() {
     };
   }, [visible, statsById]);
 
-  const handleImport = async () => {
-    if (!importUrl.trim()) return;
-    setImportError(null);
-    try {
-      const res = await api.post('/api/skills/import', {
-        source_url: importUrl.trim(),
-      });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        setImportError(j?.error ?? 'Import failed');
-        return;
-      }
-      setImportUrl('');
-      setImporting(false);
-      await loadSkills();
-      setTab('marketplace');
-    } catch (err) {
-      setImportError((err as Error).message);
-    }
-  };
-
   const handleFork = async (skill: Skill) => {
     setForking(skill.id);
     setActionError(null);
@@ -246,19 +221,9 @@ export default function SkillsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {tab === 'marketplace' && (
-            <button
-              onClick={() => setImporting(true)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium"
-              style={{
-                background: 'var(--surface-container)',
-                border: '1px solid var(--border-default)',
-              }}
-            >
-              <Link2 className="w-4 h-4" />
-              Import from URL
-            </button>
-          )}
+          {/* Import-from-URL retired alongside the ClawHub surface in self-hosted
+              v1. A fresh marketplace import lands when cooperative knowledge
+              ships. */}
           {tab === 'org' && (
             <Link
               href="/skills/new"
@@ -472,76 +437,6 @@ export default function SkillsPage() {
           </div>
         )}
       </div>
-
-      {/* Import modal */}
-      {importing && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.5)' }}
-        >
-          <div
-            className="w-full max-w-md mx-4 rounded-xl p-5 space-y-3"
-            style={{
-              background: 'var(--surface-container)',
-              border: '1px solid var(--border-default)',
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold">Import marketplace skill</h2>
-              <button onClick={() => setImporting(false)}>
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p
-              className="text-xs"
-              style={{ color: 'var(--foreground-secondary)' }}
-            >
-              Paste a URL to an OpenClaw skill markdown file (e.g.{' '}
-              <code>https://clawhub.ai/skills/content-creator</code>).
-            </p>
-            <input
-              type="url"
-              value={importUrl}
-              onChange={(e) => setImportUrl(e.target.value)}
-              placeholder="https://clawhub.ai/skills/..."
-              className="w-full px-3 py-2 rounded-md text-sm"
-              style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border-default)',
-              }}
-            />
-            {importError && (
-              <div
-                className="flex items-start gap-2 p-2 rounded text-xs"
-                style={{
-                  background: 'rgba(239,68,68,0.1)',
-                  color: 'var(--status-red)',
-                }}
-              >
-                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                {importError}
-              </div>
-            )}
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setImporting(false)}
-                className="px-3 py-1.5 rounded text-sm"
-                style={{ background: 'var(--surface)' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleImport}
-                disabled={!importUrl.trim()}
-                className="px-3 py-1.5 rounded text-sm font-medium"
-                style={{ background: 'var(--accent)', color: 'white' }}
-              >
-                Import
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Install modal */}
       {installSkill && (

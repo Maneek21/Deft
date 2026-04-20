@@ -28,12 +28,6 @@ export const env = {
   TRANSCRIPTION_PROVIDER: (process.env.TRANSCRIPTION_PROVIDER || 'openai') as 'local' | 'openai' | 'deepgram',
   WHISPER_URL: process.env.WHISPER_URL || 'http://localhost:9000', // local whisper container
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || '',
-  // Phase 8 — Railway OAuth (managed employee deployments)
-  RAILWAY_OAUTH_CLIENT_ID: process.env.RAILWAY_OAUTH_CLIENT_ID || '',
-  RAILWAY_OAUTH_CLIENT_SECRET: process.env.RAILWAY_OAUTH_CLIENT_SECRET || '',
-  RAILWAY_OAUTH_REDIRECT_URI:
-    process.env.RAILWAY_OAUTH_REDIRECT_URI ||
-    'http://localhost:3001/api/integrations/railway/callback',
   // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.
   METRICS_SCRAPE_TOKEN: process.env.METRICS_SCRAPE_TOKEN || '',
 };

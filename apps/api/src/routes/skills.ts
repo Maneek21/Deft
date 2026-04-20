@@ -26,11 +26,6 @@ import {
   agentEmployees,
   agentEmployeeSkills,
 } from '@deft/db/schema';
-import {
-  importOpenclawSkill,
-  OpenclawImportError,
-} from '../lib/openclaw-skill-import.js';
-
 export const skillsRoutes = new Hono();
 
 // ─── Schemas ──────────────────────────────────────────────────────────
@@ -48,10 +43,6 @@ const patchSchema = z.object({
   icon: z.string().max(64).nullable().optional(),
   agent_config: z.record(z.string(), z.unknown()).optional(),
   version: z.string().max(32).optional(),
-});
-
-const importSchema = z.object({
-  source_url: z.string().url(),
 });
 
 function toSlug(input: string): string {
@@ -156,69 +147,9 @@ skillsRoutes.post('/', async (c) => {
   }
 });
 
-// ─── POST /import — pull a marketplace skill from a URL ───────────────
-skillsRoutes.post('/import', async (c) => {
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const parsed = importSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json(
-        { error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() },
-        400,
-      );
-    }
-
-    let parsedSkill;
-    try {
-      parsedSkill = await importOpenclawSkill(parsed.data.source_url);
-    } catch (err) {
-      if (err instanceof OpenclawImportError) {
-        return c.json({ error: err.message, code: 'IMPORT_FAILED' }, 400);
-      }
-      throw err;
-    }
-
-    // Upsert by (source='marketplace', slug). The unique index is
-    // (source, org_id, slug) with org_id NULL for marketplace rows, so we
-    // key on slug here. If we already have the row, return it rather than
-    // duplicating — this lets anyone on any org re-trigger the import.
-    const [existing] = await db
-      .select()
-      .from(skills)
-      .where(
-        and(
-          eq(skills.source, 'marketplace'),
-          eq(skills.slug, parsedSkill.slug),
-          eq(skills.is_deleted, false),
-        ),
-      )
-      .limit(1);
-    if (existing) {
-      return c.json(existing, 200);
-    }
-
-    const [created] = await db
-      .insert(skills)
-      .values({
-        org_id: null,
-        name: parsedSkill.name,
-        slug: parsedSkill.slug,
-        description: parsedSkill.description,
-        icon: parsedSkill.icon,
-        source: 'marketplace',
-        version: parsedSkill.version,
-        system_prompt: parsedSkill.system_prompt || null,
-        agent_config: parsedSkill.agent_config,
-        source_url: parsedSkill.source_url,
-      })
-      .returning();
-
-    return c.json(created, 201);
-  } catch (err) {
-    console.error('Failed to import skill:', err);
-    return c.json({ error: 'Failed to import skill', code: 'INTERNAL_ERROR' }, 500);
-  }
-});
+// POST /import retired alongside the ClawHub surface — self-hosted v1 only
+// exposes bundled + org-authored skills. A fresh marketplace import path will
+// land when the cooperative knowledge stack returns.
 
 // ─── GET /:slug — single skill (org > bundled > marketplace) ──────────
 // Also accepts a skill id for cases where the UI has the id already.

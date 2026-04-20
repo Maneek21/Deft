@@ -34,7 +34,6 @@ export type HeartbeatOutcome =
 
 function scopeFromJob(job: JobData): HeartbeatScope {
   if (job.name === 'heartbeat-native') return 'native';
-  if (job.name === 'heartbeat-openclaw') return 'openclaw';
   return 'all';
 }
 

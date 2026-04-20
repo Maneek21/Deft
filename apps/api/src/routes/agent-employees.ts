@@ -850,15 +850,11 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
 
     // Task 8.3 — kick the scheduler so the new cadence takes effect on
     // the next tick. Best-effort — if the cron is already pending this
-    // is a no-op. We infer kind from the employee's `kind` column.
+    // is a no-op.
     if (parsed.data.heartbeat_cadence_minutes !== undefined) {
       try {
         const { rescheduleHeartbeat } = await import('../lib/job-scheduler.js');
-        const kind =
-          updated.kind === 'openclaw' || updated.kind === 'custom_mcp'
-            ? 'openclaw'
-            : 'native';
-        await rescheduleHeartbeat(kind);
+        await rescheduleHeartbeat();
       } catch (err) {
         console.warn('[agent-employees] rescheduleHeartbeat failed:', err);
       }
@@ -1087,47 +1083,10 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         ),
       );
 
-    // Phase 10 — tear down any managed provider_instances rows via the
-    // DeploymentProvider registry. Best-effort — a failing destroy should
-    // not leave the employee undeletable from the UI.
-    try {
-      const instances = await db.execute(sql`
-        SELECT id, org_id, provider, integration_id, external_instance_id,
-               external_project_id, external_environment_id, provider_metadata
-        FROM provider_instances
-        WHERE employee_id = ${id} AND status <> 'destroyed'
-      `);
-      const rows = ((instances as any).rows ?? instances) as any[];
-      if (rows.length > 0) {
-        const { getProvider } = await import('../lib/deployment/index.js');
-        for (const row of rows) {
-          try {
-            const provider = getProvider(row.provider);
-            await provider.destroy({
-              id: row.id,
-              org_id: row.org_id,
-              provider: row.provider,
-              integration_id: row.integration_id,
-              external_instance_id: row.external_instance_id,
-              external_project_id: row.external_project_id,
-              external_environment_id: row.external_environment_id,
-              provider_metadata: row.provider_metadata,
-            });
-            await db.execute(sql`
-              UPDATE provider_instances SET status = 'destroyed' WHERE id = ${row.id}
-            `);
-          } catch (destroyErr) {
-            console.warn(
-              '[delete-employee] provider.destroy failed for instance',
-              row.id,
-              destroyErr,
-            );
-          }
-        }
-      }
-    } catch (provErr) {
-      console.warn('[delete-employee] provider_instances cleanup skipped:', provErr);
-    }
+    // Self-hosted v1 — managed provider_instances cleanup retired along with
+    // the managed deployment surface. BYOA agents are long-running processes
+    // on the operator's own infra; deleting the employee record releases the
+    // MCP token and stops Defty from dispatching to it.
 
     return c.json({ success: true });
   } catch (err) {
