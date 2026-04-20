@@ -108,6 +108,18 @@ function checkRateLimit(keyId: string, perMinute: number, perDay: number): boole
 
 // ═══ ENDPOINTS ═══
 
+// Permission matcher: accept either the bare verb ("read"/"write") OR any
+// namespaced variant ("read:tasks"/"write:messages"). The BYOA wizard issues
+// namespaced permissions by default, the earlier REST-integration flow used
+// bare verbs. Both are valid; filter to tools whose verb matches.
+function keyGrantsPermission(permissions: string[], toolPerm: string): boolean {
+  for (const p of permissions) {
+    if (p === toolPerm) return true;
+    if (p.startsWith(`${toolPerm}:`)) return true;
+  }
+  return false;
+}
+
 // GET /tools — List available tools for this API key
 mcpServerRoutes.get('/tools', async (c) => {
   const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
@@ -115,8 +127,7 @@ mcpServerRoutes.get('/tools', async (c) => {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
 
-  const permissions = new Set(keyRecord.permissions);
-  const tools = ALL_TOOLS.filter((t) => permissions.has(t.permission));
+  const tools = ALL_TOOLS.filter((t) => keyGrantsPermission(keyRecord.permissions, t.permission));
 
   return c.json({ tools });
 });
@@ -145,9 +156,8 @@ mcpServerRoutes.post('/call', async (c) => {
     return c.json({ error: { code: 'not_found', message: `Unknown tool: ${body.tool}` } }, 404);
   }
 
-  // 4. Check permission
-  const permissions = new Set(keyRecord.permissions);
-  if (!permissions.has(toolDef.permission)) {
+  // 4. Check permission — bare verb OR any namespaced variant.
+  if (!keyGrantsPermission(keyRecord.permissions, toolDef.permission)) {
     return c.json({ error: { code: 'forbidden', message: 'Tool not permitted for this API key' } }, 403);
   }
 
