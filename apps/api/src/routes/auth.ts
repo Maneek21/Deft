@@ -37,6 +37,12 @@ function generateTokens(user: { id: string; email: string; org_id: string }) {
   return { accessToken, refreshToken };
 }
 
+// GET /api/auth/has-workspace — public pre-check for the signup page
+authRoutes.get('/has-workspace', async (c) => {
+  const { countOrgs } = await import('../lib/single-org-guard.js');
+  return c.json({ hasWorkspace: (await countOrgs()) > 0 });
+});
+
 // POST /api/auth/signup
 authRoutes.post('/signup', async (c) => {
   const body = await c.req.json();

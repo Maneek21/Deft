@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import Link from 'next/link';
 
@@ -14,6 +14,24 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   const [passwordError, setPasswordError] = useState('');
+
+  // Pre-check: does a workspace already exist?
+  const [workspaceCheck, setWorkspaceCheck] = useState<'loading' | 'exists' | 'free'>('loading');
+
+  useEffect(() => {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    fetch(`${apiUrl}/api/auth/has-workspace`)
+      .then(r => r.json())
+      .then((data: { hasWorkspace: boolean }) => {
+        setWorkspaceCheck(data.hasWorkspace ? 'exists' : 'free');
+      })
+      .catch(() => {
+        // On fetch error, fall through to free — the POST will catch it anyway
+        setWorkspaceCheck('free');
+      });
+  }, []);
+
+  const isDisabled = loading || workspaceCheck === 'loading' || workspaceCheck === 'exists';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,6 +57,12 @@ export default function SignupPage() {
     border: '1px solid var(--outline-variant)',
     borderRadius: '0.5rem',
     color: 'var(--on-surface)',
+  };
+
+  const inputDisabledStyle = {
+    ...inputStyle,
+    opacity: 0.45,
+    cursor: 'not-allowed',
   };
 
   const labelStyle = {
@@ -86,6 +110,17 @@ export default function SignupPage() {
             boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
             outline: '1px solid var(--ghost-border)',
           }}>
+
+          {/* Workspace-exists banner */}
+          {workspaceCheck === 'exists' && (
+            <div className="px-4 py-3 text-[0.8125rem] rounded-lg leading-relaxed"
+              style={{ background: 'rgba(80,80,120,0.25)', color: 'var(--on-surface-variant)', border: '1px solid var(--ghost-border)' }}>
+              <strong style={{ color: 'var(--on-surface)' }}>This Deft workspace is already set up.</strong>
+              {' '}Ask your administrator for an invite — self-hosted Deft hosts a single workspace per deployment.
+              {' '}See LICENSE for the BSL 1.1 terms that make this a hard rule rather than a configuration knob.
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             {error && (
               <div className="px-4 py-3 text-[0.8125rem] rounded-lg"
@@ -101,7 +136,9 @@ export default function SignupPage() {
               <input type="text" value={name} onChange={e => setName(e.target.value)}
                 placeholder="Full name"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={inputStyle} required />
+                style={isDisabled ? inputDisabledStyle : inputStyle}
+                disabled={isDisabled}
+                required />
             </div>
 
             <div className="flex flex-col gap-2">
@@ -111,7 +148,9 @@ export default function SignupPage() {
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                 placeholder="name@company.com"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={inputStyle} required />
+                style={isDisabled ? inputDisabledStyle : inputStyle}
+                disabled={isDisabled}
+                required />
             </div>
 
             <div className="flex flex-col gap-2">
@@ -121,7 +160,13 @@ export default function SignupPage() {
               <input type="password" value={password} onChange={e => { setPassword(e.target.value); setPasswordError(''); }}
                 placeholder="••••••••"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={{ ...inputStyle, ...(passwordError ? { borderColor: 'var(--error)' } : {}) }} minLength={8} required />
+                style={{
+                  ...(isDisabled ? inputDisabledStyle : inputStyle),
+                  ...(passwordError ? { borderColor: 'var(--error)' } : {}),
+                }}
+                disabled={isDisabled}
+                minLength={8}
+                required />
               {passwordError && (
                 <span className="text-[0.75rem]" style={{ color: 'var(--error)' }}>{passwordError}</span>
               )}
@@ -134,18 +179,35 @@ export default function SignupPage() {
               <input type="text" value={orgName} onChange={e => setOrgName(e.target.value)}
                 placeholder="Your team or company"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={inputStyle} required />
+                style={isDisabled ? inputDisabledStyle : inputStyle}
+                disabled={isDisabled}
+                required />
             </div>
 
-            <button type="submit" disabled={loading}
+            <button type="submit" disabled={isDisabled}
               className="w-full h-11 font-semibold text-[0.875rem] mt-2 disabled:opacity-50 active:scale-[0.98]"
               style={{
                 background: 'var(--primary-container)',
                 color: '#FFFFFF',
                 borderRadius: '0.5rem',
                 border: 'none',
+                cursor: isDisabled ? 'not-allowed' : 'pointer',
               }}>
-              {loading ? 'Creating workspace...' : 'Create workspace'}
+              {workspaceCheck === 'loading' ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3" />
+                    <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                  Checking...
+                </span>
+              ) : workspaceCheck === 'exists' ? (
+                'Workspace already exists'
+              ) : loading ? (
+                'Creating workspace...'
+              ) : (
+                'Create workspace'
+              )}
             </button>
           </form>
 
@@ -161,15 +223,19 @@ export default function SignupPage() {
 
           {/* Google SSO */}
           <button type="button"
-            onClick={() => { window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/auth/google`; }}
-            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 active:scale-[0.98]"
+            disabled={workspaceCheck === 'exists'}
+            onClick={() => {
+              if (workspaceCheck === 'exists') return;
+              window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/auth/google`;
+            }}
+            className="w-full h-11 text-[0.875rem] flex items-center justify-center gap-3 active:scale-[0.98] disabled:opacity-40"
             style={{
               background: 'var(--surface-container-low)',
               color: 'var(--on-surface)',
               border: '1px solid var(--ghost-border)',
               borderRadius: '0.5rem',
               transition: 'all 150ms',
-              cursor: 'pointer',
+              cursor: workspaceCheck === 'exists' ? 'not-allowed' : 'pointer',
             }}>
             <svg className="w-4 h-4" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
