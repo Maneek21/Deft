@@ -10,6 +10,26 @@ import { ACTION_TOOLS } from '../lib/agent-tools.js';
 
 export const mcpServerRoutes = new Hono();
 
+// ═══ DEPRECATION (Path C Phase 3) ═══
+//
+// The /mcp surface pre-dates the standard MCP protocol endpoint at
+// /api/mcp/v1. Every /mcp response now carries the RFC-8594 deprecation
+// headers + a Link relation pointing at the replacement route so
+// integrators see it in their HTTP client logs.
+//
+// Sunset date: 2026-07-19 (≈90 days from initial deprecation).
+// Before sunset, Phase 4 deletes this file + route mount.
+const SUNSET_DATE = 'Sun, 19 Jul 2026 00:00:00 GMT';
+mcpServerRoutes.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('Deprecation', 'true');
+  c.res.headers.set('Sunset', SUNSET_DATE);
+  c.res.headers.set(
+    'Link',
+    '</api/mcp/v1>; rel="successor-version"; title="Standard MCP streamable-http endpoint"',
+  );
+});
+
 // ═══ TOOL DEFINITIONS ═══
 
 const READ_TOOLS = [
