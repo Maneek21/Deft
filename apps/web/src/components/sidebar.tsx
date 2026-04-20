@@ -792,12 +792,12 @@ export function Sidebar({
             </svg>
           </div>
           <div>
-            <h1
+            <span
               className="text-[13px] font-semibold leading-tight"
               style={{ color: 'var(--on-surface)', letterSpacing: '-0.02em' }}
             >
               Deft AI
-            </h1>
+            </span>
             <p
               className="text-[0.5625rem] font-semibold uppercase leading-tight"
               style={{ color: 'var(--outline)', letterSpacing: '0.05em' }}
