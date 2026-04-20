@@ -35,6 +35,7 @@ type TemplateMeta = {
   name: string;
   version: string;
   role:
+    | 'superintendent'
     | 'project_manager'
     | 'engineering_lead'
     | 'executive_assistant'
@@ -58,6 +59,41 @@ type TemplateMeta = {
 const DEFAULT_FALLBACKS = ['anthropic/claude-haiku-4-5-20251001'];
 
 export const TEMPLATE_META: TemplateMeta[] = [
+  {
+    slug: 'defty',
+    name: 'Defty — platform captain',
+    version: '1.0.0',
+    role: 'superintendent',
+    description:
+      'Workspace superintendent and captain. Watches the workplace, pushes best practices, protects the crew, and nudges stalled work.',
+    default_tools: [
+      'deft_platform_context',
+      'wiki_search',
+      'tasks_list',
+      'task_create',
+      'task_update',
+      'messages_recent',
+      'message_post',
+      'reminder_create',
+      'delegation_self_report',
+      'memory_write',
+      'events_upcoming',
+      'members_list',
+    ],
+    default_capability_packs: [
+      'deft-workspace',
+      'web-browsing',
+      'tavily',
+      'github',
+      'google-calendar',
+    ],
+    default_trust_level: 'standard',
+    default_trigger_subscriptions: [],
+    model_recommendation: 'anthropic/claude-sonnet-4-6',
+    fallback_models: DEFAULT_FALLBACKS,
+    source: 'first-party',
+    source_attribution: null,
+  },
   {
     slug: 'alex-pm',
     name: 'Alex — Project Manager',

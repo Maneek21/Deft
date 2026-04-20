@@ -26,6 +26,7 @@ export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', '
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
 export const mcpTransportEnum = pgEnum('mcp_transport', ['stdio', 'sse', 'streamable-http']);
 export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', [
+  'superintendent',
   'project_manager',
   'engineering_lead',
   'executive_assistant',
