@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revokedTokens } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
 
 export const authRoutes = new Hono();
 
@@ -45,6 +46,13 @@ authRoutes.post('/signup', async (c) => {
   }
 
   const { name, email, password, org_name } = parsed.data;
+
+  // Self-hosted v1 — only the first signup can create a workspace. Once
+  // an org exists, new accounts must arrive through an invite flow that
+  // joins the existing org. See apps/api/src/lib/single-org-guard.ts.
+  if ((await countOrgs()) > 0) {
+    return c.json(SINGLE_ORG_ERROR, 403);
+  }
 
   // Check if user exists
   const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
@@ -388,6 +396,14 @@ authRoutes.get('/google/callback', async (c) => {
     let [user] = await db.select().from(users).where(eq(users.email, googleUser.email)).limit(1);
 
     if (!user) {
+      // Self-hosted v1 — only bootstrap a workspace for the very first
+      // Google sign-in. Subsequent new accounts need an invite.
+      if ((await countOrgs()) > 0) {
+        return c.redirect(
+          `${env.NEXT_PUBLIC_APP_URL}/login?error=single_org_limit`,
+        );
+      }
+
       // New user — create user + org
       const [newUser] = await db.insert(users).values({
         name: googleUser.name,

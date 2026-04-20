@@ -31,7 +31,14 @@ function LoginContent() {
     const refreshToken = searchParams.get('refreshToken');
     const oauthError = searchParams.get('error');
 
-    if (oauthError) {
+    if (oauthError === 'single_org_limit') {
+      setError(
+        'This Deft instance already has a workspace. Ask your ' +
+          'administrator for an invite — self-hosted Deft hosts a single ' +
+          'workspace per deployment (see LICENSE).',
+      );
+      window.history.replaceState({}, '', '/login');
+    } else if (oauthError) {
       setError('Google sign-in failed. Please try again.');
       window.history.replaceState({}, '', '/login');
     } else if (accessToken && refreshToken) {
