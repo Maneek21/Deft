@@ -51,50 +51,12 @@ import {
   type MemoryUpdateArgs,
 } from './mcp-tools/memory-update.js';
 import { generateReceipt } from './receipts.js';
-import { decrypt } from './encryption.js';
-import { getGatewayForDeployment, type OpenClawGateway } from './openclaw-gateway.js';
-
-// Block 1.9 — test seam so approval_resolver tests can inject a mock gateway
-// without a real WebSocket.
-let _gatewayResolver: (
-  employeeId: string,
-  connectionUrl: string,
-  token: string,
-) => OpenClawGateway | null = (id, url, tok) => getGatewayForDeployment(id, url, tok);
-
-/** Test-only: override gateway resolution (e.g. to return a mock). */
-export function _setGatewayResolver(
-  fn: (
-    employeeId: string,
-    connectionUrl: string,
-    token: string,
-  ) => OpenClawGateway | null,
-): void {
-  _gatewayResolver = fn;
-}
-
-/** Test-only: restore default gateway resolution. */
-export function _resetGatewayResolver(): void {
-  _gatewayResolver = (id, url, tok) => getGatewayForDeployment(id, url, tok);
-}
-
 export const MCP_ACTION_KINDS = new Set([
   'task_create',
   'task_update',
   'message_post',
   'memory_update',
 ]);
-
-// Block 1.9 — actions whose params carry an OpenClaw approvalId that we
-// forward back to the gateway instead of executing a Deft writer.
-export const OPENCLAW_ACTION_KINDS = new Set([
-  'openclaw_exec_approval',
-  'openclaw_plugin_approval',
-]);
-
-function isOpenClawAction(action: string): boolean {
-  return OPENCLAW_ACTION_KINDS.has(action);
-}
 
 export type ApprovalResolverError =
   | { status: 'error'; code: 'NOT_FOUND'; message: string }
@@ -138,76 +100,11 @@ async function loadEmployeeForAction(employeeId: string) {
       slug: agentEmployees.slug,
       trust_level: agentEmployees.trust_level,
       kind: agentEmployees.kind,
-      connection_url: agentEmployees.connection_url,
-      gateway_token_encrypted: agentEmployees.gateway_token_encrypted,
     })
     .from(agentEmployees)
     .where(eq(agentEmployees.id, employeeId))
     .limit(1);
   return row ?? null;
-}
-
-/**
- * Block 1.9 — forward an approval decision back to the OpenClaw gateway
- * that raised it. Returns a ToolResult shape so the caller path is
- * uniform with the MCP dispatch.
- */
-async function forwardOpenClawApproval(
-  action: string,
-  params: Record<string, unknown>,
-  employee: {
-    id: string;
-    connection_url: string | null;
-    gateway_token_encrypted: string | null;
-  },
-  approved: boolean,
-  reason?: string,
-): Promise<ToolResult> {
-  if (!employee.connection_url || !employee.gateway_token_encrypted) {
-    return {
-      content: [{ type: 'text', text: `openclaw approval cannot forward: employee ${employee.id} has no gateway connection` }],
-      isError: true,
-    };
-  }
-  let token: string;
-  try {
-    token = decrypt(employee.gateway_token_encrypted);
-  } catch {
-    return {
-      content: [{ type: 'text', text: 'openclaw approval cannot forward: failed to decrypt gateway token' }],
-      isError: true,
-    };
-  }
-
-  const approvalId = typeof params.approvalId === 'string' ? params.approvalId
-    : typeof (params as any).approval_id === 'string' ? (params as any).approval_id
-    : null;
-  if (!approvalId) {
-    return {
-      content: [{ type: 'text', text: `openclaw approval row missing approvalId in params (action=${action})` }],
-      isError: true,
-    };
-  }
-
-  const gateway = _gatewayResolver(employee.id, employee.connection_url, token);
-  if (!gateway) {
-    return {
-      content: [{ type: 'text', text: 'openclaw approval cannot forward: gateway unavailable' }],
-      isError: true,
-    };
-  }
-
-  try {
-    const result = await gateway.exec.approval.resolve(approvalId, approved, reason);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ approvalId, forwarded: true, gateway_result: result }) }],
-    };
-  } catch (err) {
-    return {
-      content: [{ type: 'text', text: `openclaw approval forward failed: ${(err as Error).message}` }],
-      isError: true,
-    };
-  }
 }
 
 function buildCtxFromEmployee(emp: {
@@ -306,7 +203,7 @@ export async function approveAction(
     };
   }
 
-  if (!MCP_ACTION_KINDS.has(row.action) && !isOpenClawAction(row.action)) {
+  if (!MCP_ACTION_KINDS.has(row.action)) {
     return {
       status: 'error',
       code: 'UNSUPPORTED_ACTION',
@@ -361,24 +258,11 @@ export async function approveAction(
   let toolResult: ToolResult;
   let caughtError: Error | null = null;
   try {
-    if (isOpenClawAction(row.action)) {
-      toolResult = await forwardOpenClawApproval(
-        row.action,
-        (row.params ?? {}) as Record<string, unknown>,
-        {
-          id: emp.id,
-          connection_url: emp.connection_url,
-          gateway_token_encrypted: emp.gateway_token_encrypted,
-        },
-        true,
-      );
-    } else {
-      toolResult = await dispatchAction(
-        row.action,
-        (row.params ?? {}) as Record<string, unknown>,
-        ctx,
-      );
-    }
+    toolResult = await dispatchAction(
+      row.action,
+      (row.params ?? {}) as Record<string, unknown>,
+      ctx,
+    );
   } catch (err) {
     caughtError = err instanceof Error ? err : new Error(String(err));
     toolResult = {
@@ -507,34 +391,6 @@ export async function rejectAction(
       code: 'FORBIDDEN',
       message: 'rejecter is not a member of the action org',
     };
-  }
-
-  // Block 1.9 — forward rejection to the gateway BEFORE stamping the row,
-  // so a gateway error bubbles to the caller instead of silently dropping
-  // the OpenClaw-side approvalId (the gateway would then time out on its
-  // end and the command would never unpause).
-  if (isOpenClawAction(row.action) && row.agent_employee_id) {
-    const emp = await loadEmployeeForAction(row.agent_employee_id);
-    if (emp) {
-      const forward = await forwardOpenClawApproval(
-        row.action,
-        (row.params ?? {}) as Record<string, unknown>,
-        {
-          id: emp.id,
-          connection_url: emp.connection_url,
-          gateway_token_encrypted: emp.gateway_token_encrypted,
-        },
-        false,
-        reason,
-      );
-      if (forward.isError) {
-        return {
-          status: 'error',
-          code: 'EXECUTE_FAILED',
-          message: forward.content?.[0]?.text ?? 'gateway forward failed',
-        };
-      }
-    }
   }
 
   await db

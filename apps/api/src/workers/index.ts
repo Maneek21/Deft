@@ -111,13 +111,6 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/employee-trigger.js');
       return mod.handleEmployeeTrigger;
     }
-    case 'deploy-provision': {
-      // Phase 8 — wizard submission handler. Dispatches to the correct
-      // DeploymentProvider and persists provider_instances + updates the
-      // employee row based on the result.
-      const mod = await import('./handlers/deploy-provision.js');
-      return mod.handleDeployProvision;
-    }
     case 'workflow-execute': {
       // Task 5.7 — basic workflows executor. Runs the actions for a
       // workflow_rule whose trigger matched (currently only
@@ -243,16 +236,6 @@ export function startWorkers(): void {
   import('./handlers/reminder-fire.js')
     .then((mod) => mod.rehydratePendingReminders())
     .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
-
-  // Block 1.9 — subscribe to gateway exec/plugin approval events for every
-  // connected OpenClaw employee, mirror events into agent_actions so the
-  // existing approval-inbox UI renders them.
-  import('../lib/gateway-approval-subscriber.js')
-    .then((mod) => mod.startAllApprovalSubscribers())
-    .then((count) => {
-      if (count > 0) console.log(`[workers] Started gateway approval subscribers for ${count} employee(s)`);
-    })
-    .catch((err) => console.warn('[workers] gateway approval subscribers start failed:', err));
 
   // Run stale cleanup every 60 seconds
   setInterval(() => {

@@ -347,20 +347,6 @@ export async function handleAgentEmployeeHeartbeat(job: JobData): Promise<void> 
 
         await dispatchHeartbeat({ employee, prompt, context });
 
-        // Block 1.8 — best-effort skill reconciliation. Fire-and-forget so
-        // a gateway misbehaving on skills.list never blocks the heartbeat
-        // path. Drift alerts fan out inside the reconciler itself.
-        void import('../../lib/skill-reconciliation.js')
-          .then((mod) => mod.reconcileSkillsForEmployee({
-            id: employee.id,
-            org_id: employee.org_id,
-            connection_url: employee.connection_url,
-            gateway_token_encrypted: employee.gateway_token_encrypted,
-          }))
-          .catch((err) => console.warn(
-            `[skill-reconcile ${employee.id}] async path threw: ${(err as Error).message}`,
-          ));
-
         await logHeartbeatTurn({
           orgId: employee.org_id,
           employeeId: employee.id,
