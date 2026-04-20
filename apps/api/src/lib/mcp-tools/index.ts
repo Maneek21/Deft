@@ -25,6 +25,16 @@ import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
 import { eventsQuery } from './events.js';
 import { taskDetail, messagesSearch, projectProgress, teamWorkload } from './reports.js';
+import {
+  recordConversationTurn,
+  recordDecision,
+  recordOutcome,
+  recordReasoningStep,
+  recordActionAttempt,
+  requestHumanApproval,
+  pollPendingWork,
+  pingAlive,
+} from './cooperative.js';
 
 export type ToolHandler = (args: any, ctx: ToolContext) => Promise<ToolResult>;
 
@@ -42,6 +52,11 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   messages_search: messagesSearch as ToolHandler,
   project_progress: projectProgress as ToolHandler,
   team_workload: teamWorkload as ToolHandler,
+  // Self-hosted v1 — control surface. Read-only from Deft's perspective
+  // (they query pending work or bump a timestamp) so they live with the
+  // always-available reads.
+  poll_pending_work: pollPendingWork as ToolHandler,
+  ping_alive: pingAlive as ToolHandler,
 };
 
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
@@ -52,6 +67,15 @@ export const WRITE_TOOLS: Record<string, ToolHandler> = {
   message_post: messagePost as ToolHandler,
   space_memory_set: spaceMemorySet as ToolHandler,
   delegation_self_report: delegationSelfReport as ToolHandler,
+  // Self-hosted v1 — cooperative knowledge. Aspirational, no approval
+  // gating; they append agent-volunteered records to agent_cooperative_log.
+  record_conversation_turn: recordConversationTurn as ToolHandler,
+  record_decision: recordDecision as ToolHandler,
+  record_outcome: recordOutcome as ToolHandler,
+  record_reasoning_step: recordReasoningStep as ToolHandler,
+  record_action_attempt: recordActionAttempt as ToolHandler,
+  // Request for human approval — queues an agent_actions row.
+  request_human_approval: requestHumanApproval as ToolHandler,
 };
 
 export const ALL_TOOLS: Record<string, ToolHandler> = {
@@ -459,6 +483,159 @@ export const toolSchemas: ToolSchema[] = [
         ...CALLER_SLUG_PROP,
         days: { type: 'integer', minimum: 1, maximum: 90, description: 'Window in days (default 7).' },
       },
+      required: ['caller_employee_slug'],
+    },
+  },
+  // ─── Self-hosted v1 — cooperative knowledge + control tools ──────────
+  {
+    name: 'record_conversation_turn',
+    description:
+      'Volunteer a record of an inbound message or conversation turn you ' +
+      'just handled. Deft can\'t observe everything that reaches you — use ' +
+      'this to share the context you acted on.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string', description: 'Free-form summary of the turn.' },
+        metadata: { type: 'object', additionalProperties: true },
+        session_turn_id: { type: 'string' },
+      },
+      required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'record_decision',
+    description:
+      'Record a choice you made, the alternatives you weighed, and the ' +
+      'rationale. Use this whenever you commit to a non-obvious direction.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string', description: 'What you decided.' },
+        metadata: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'Shape suggestion: { alternatives?: string[], rationale?: string, confidence?: number }.',
+        },
+        session_turn_id: { type: 'string' },
+      },
+      required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'record_outcome',
+    description:
+      'Record the outcome of an action you took — whether it succeeded, ' +
+      'what the effect was, and any follow-up you think is needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string' },
+        metadata: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'Shape suggestion: { status: "success"|"failure"|"partial", action?: string, effect?: string }.',
+        },
+        session_turn_id: { type: 'string' },
+      },
+      required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'record_reasoning_step',
+    description:
+      'Record an internal reasoning beat you want visible outside the turn ' +
+      '— the kind of thought you would normally keep to yourself. Useful ' +
+      'when a later review needs to reconstruct why you went somewhere.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string' },
+        metadata: { type: 'object', additionalProperties: true },
+        session_turn_id: { type: 'string' },
+      },
+      required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'record_action_attempt',
+    description:
+      'Record an action you attempted, regardless of whether it was ' +
+      'approved or executed. Use this to self-report attempts that happen ' +
+      'outside a tool call Deft would otherwise see.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string' },
+        metadata: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'Shape suggestion: { action: string, params?: object, blocked_by?: string }.',
+        },
+        session_turn_id: { type: 'string' },
+      },
+      required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'request_human_approval',
+    description:
+      'Queue an item for a human to review in the native approval UI. Use ' +
+      'this when you hit a decision the human must own — external ' +
+      'outreach, destructive edits, anything outside your trust level. ' +
+      'Returns an action_id; poll `poll_pending_work` for the resolution.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        action: {
+          type: 'string',
+          description:
+            'Short handle for the action you want approved (e.g. ' +
+            '"send_email", "deploy_to_prod"). Shown in the approval UI.',
+        },
+        summary: {
+          type: 'string',
+          description: 'Human-facing description of what you\'re asking to do.',
+        },
+        params: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'Optional structured payload for the reviewer.',
+        },
+      },
+      required: ['caller_employee_slug', 'action', 'summary'],
+    },
+  },
+  {
+    name: 'poll_pending_work',
+    description:
+      'Return pending approval rows for this employee (including ones ' +
+      'you submitted via `request_human_approval`). Used as the idle-loop ' +
+      'wake-up check when running headless.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...CALLER_SLUG_PROP },
+      required: ['caller_employee_slug'],
+    },
+  },
+  {
+    name: 'ping_alive',
+    description:
+      'Bump your heartbeat timestamp. Call periodically from an autonomous ' +
+      'loop so Deft\'s connectivity indicators stay green. Also resets the ' +
+      'Gateway-ping failure counter.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...CALLER_SLUG_PROP },
       required: ['caller_employee_slug'],
     },
   },

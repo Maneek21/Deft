@@ -1565,6 +1565,40 @@ export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
 // ═══ AGENT SESSION TURNS (Phase 2) ═══
 // Session inspector feed — one row per OpenClaw turn. Cost is computed on read
 // from {model_name, tokens_in, tokens_out} against a model_pricing lookup table.
+// ═══ AGENT COOPERATIVE LOG (self-hosted v1) ═══
+// Append-only stream of cooperative-knowledge records volunteered by BYOA
+// agents via the MCP `record_*` tools. Aspirational surface: tools accept
+// the write and stash it here without any trust gating, so an agent can
+// self-report its reasoning, decisions, outcomes, action attempts, or
+// ambient conversation turns even when Deft isn't watching the turn
+// itself. A future session inspector / Defty roll-up will render this;
+// the table is deliberately minimal today.
+export const agentCooperativeLog = pgTable('agent_cooperative_log', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  kind: text('kind').$type<
+    | 'conversation_turn'
+    | 'decision'
+    | 'outcome'
+    | 'reasoning_step'
+    | 'action_attempt'
+  >().notNull(),
+  // Free-form narrative the agent sends. Never truncated — the point of
+  // the log is to receive the agent's voice verbatim.
+  summary: text('summary').notNull(),
+  // Optional structured metadata (decision alternatives, outcome code,
+  // attempted-action name, etc.). Shape is intentionally unscoped.
+  metadata: jsonb('metadata'),
+  // Optional pointer to the turn this record belongs to, when the agent
+  // can provide one. Allows a future rollup to thread records.
+  session_turn_id: text('session_turn_id'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_coop_log_employee_idx').on(t.employee_id, t.created_at),
+  index('agent_coop_log_org_kind_idx').on(t.org_id, t.kind, t.created_at),
+]);
+
 export const agentSessionTurns = pgTable('agent_session_turns', {
   ...id(),
   ...orgId(),
