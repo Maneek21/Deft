@@ -232,13 +232,13 @@ function CalendarWidget() {
     <div>
       {/* Month header */}
       <div className="flex items-center justify-between mb-2">
-        <button onClick={() => goMonth(-1)} className="p-0.5 rounded" style={{ color: 'var(--text-tertiary)' }}>
+        <button onClick={() => goMonth(-1)} className="p-2.5 md:p-0.5 min-h-[44px] md:min-h-0 min-w-[44px] md:min-w-0 flex items-center justify-center rounded" style={{ color: 'var(--text-tertiary)' }}>
           <ChevronLeft size={14} />
         </button>
         <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>
           {month.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
         </span>
-        <button onClick={() => goMonth(1)} className="p-0.5 rounded" style={{ color: 'var(--text-tertiary)' }}>
+        <button onClick={() => goMonth(1)} className="p-2.5 md:p-0.5 min-h-[44px] md:min-h-0 min-w-[44px] md:min-w-0 flex items-center justify-center rounded" style={{ color: 'var(--text-tertiary)' }}>
           <ChevronRight size={14} />
         </button>
       </div>
@@ -263,7 +263,7 @@ function CalendarWidget() {
 
           return (
             <button key={i} onClick={() => setSelectedDay(isSelected ? null : key)}
-              className="relative flex flex-col items-center py-1 rounded transition-colors"
+              className="relative flex flex-col items-center py-3 md:py-1 min-h-[44px] md:min-h-0 justify-center rounded transition-colors"
               style={{
                 background: isSelected ? 'var(--bg-active)' : isToday ? 'var(--accent-muted, rgba(99,102,241,0.1))' : 'transparent',
                 opacity: inMonth ? 1 : 0.3,
@@ -482,7 +482,7 @@ export default function Dashboard3Page() {
               { label: 'Deft', icon: Bot, href: '/agent' },
             ].map(a => (
               <Link key={a.label} href={a.href}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                className="flex items-center gap-1 px-2.5 py-1.5 min-h-[44px] md:min-h-0 rounded-lg text-[11px] font-medium"
                 style={{ color: 'var(--text-secondary)' }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
@@ -492,7 +492,7 @@ export default function Dashboard3Page() {
             <button
               onClick={() => { if (!d.standup) handleGenerateStandup(); setStandupOpen(true); }}
               disabled={standupGenerating}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+              className="flex items-center gap-1 px-2.5 py-1.5 min-h-[44px] md:min-h-0 rounded-lg text-[11px] font-medium"
               style={{ color: d.standup ? 'var(--status-amber)' : 'var(--text-secondary)' }}>
               {standupGenerating ? <Loader2 size={13} className="animate-spin" /> : <Sunrise size={13} strokeWidth={1.5} />}
               Standup
@@ -567,7 +567,7 @@ export default function Dashboard3Page() {
               <div className="space-y-1">
                 {d.unread_spaces.map(s => (
                   <Link key={s.space_id} href="/chat"
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-lg -mx-2"
+                    className="flex items-center gap-2 px-2 py-1.5 min-h-[44px] md:min-h-0 rounded-lg -mx-2"
                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <span className="text-[12px] font-medium flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
@@ -691,9 +691,8 @@ export default function Dashboard3Page() {
                                 if (r.ok) setAgentActivity(await r.json());
                               }
                             }}
+                            className="min-h-[44px] md:min-h-0 px-4 md:px-2 py-2 md:py-0.5 text-sm md:text-[10px]"
                             style={{
-                              fontSize: '10px',
-                              padding: '2px 8px',
                               borderRadius: '4px',
                               background: 'var(--status-green)',
                               color: 'white',
@@ -714,9 +713,8 @@ export default function Dashboard3Page() {
                                 if (r.ok) setAgentActivity(await r.json());
                               }
                             }}
+                            className="min-h-[44px] md:min-h-0 px-4 md:px-2 py-2 md:py-0.5 text-sm md:text-[10px]"
                             style={{
-                              fontSize: '10px',
-                              padding: '2px 8px',
                               borderRadius: '4px',
                               background: 'transparent',
                               color: 'var(--text-secondary)',
@@ -949,7 +947,7 @@ export default function Dashboard3Page() {
                   </span>
                 )}
               </div>
-              <button onClick={() => setStandupOpen(false)} className="p-1 rounded-md" style={{ color: 'var(--outline)' }}>
+              <button onClick={() => setStandupOpen(false)} className="p-3 md:p-1 min-h-[44px] md:min-h-0 min-w-[44px] md:min-w-0 flex items-center justify-center rounded-md" style={{ color: 'var(--outline)' }}>
                 <X size={16} strokeWidth={1.5} />
               </button>
             </div>
