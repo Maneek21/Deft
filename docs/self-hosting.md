@@ -54,7 +54,7 @@ Everything else in `.env` is optional for a first boot. Leave the database and R
 docker compose up -d
 ```
 
-Docker pulls `postgres:16-alpine` and `redis:7-alpine`, builds the Deft image, and starts all three services. The first build takes 2–4 minutes depending on your connection. Subsequent starts are instant.
+Docker pulls `pgvector/pgvector:pg16` and `redis:7-alpine`, builds the Deft image, and starts all three services. The first build takes 2–4 minutes depending on your connection. Subsequent starts are instant. Deft ships with `pgvector` because the wiki and task-search embeddings are stored as `vector(1536)` columns — a plain `postgres:16` image won't accept the schema.
 
 Wait for Postgres to be healthy before continuing (the compose file already enforces this via `depends_on`). You can check with:
 
