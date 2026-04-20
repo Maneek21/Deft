@@ -94,7 +94,7 @@ const TRUST_LEVELS = [
 
 const KIND_STYLES: Record<string, { label: string; bg: string; fg: string }> = {
   native: { label: 'Native', bg: 'rgba(168, 85, 247, 0.15)', fg: '#a855f7' },
-  openclaw: { label: 'OpenClaw', bg: 'rgba(245, 158, 11, 0.15)', fg: '#f59e0b' },
+  openclaw: { label: 'BYOA', bg: 'rgba(245, 158, 11, 0.15)', fg: '#f59e0b' },
   claude_sdk: { label: 'Claude SDK', bg: 'rgba(59, 130, 246, 0.15)', fg: '#3b82f6' },
   custom_mcp: { label: 'Custom MCP', bg: 'rgba(100, 116, 139, 0.15)', fg: '#64748b' },
 };
@@ -458,7 +458,7 @@ export default function AgentSettingsPage() {
           if (openclawEmployees.length === 0) {
             return (
               <p className="text-[13px]" style={{ color: 'var(--muted)' }}>
-                No OpenClaw gateways deployed yet.
+                No BYOA agents connected yet.
               </p>
             );
           }
@@ -674,7 +674,7 @@ export default function AgentSettingsPage() {
                       >
                         {/* Personality page was retired in PR 1 of the
                             self-hosted v1 reframe — it edited SOUL.md
-                            files via the OpenClaw gateway. Native agents
+                            files via the BYOA gateway. Native agents
                             edit their system_prompt on the detail page;
                             BYOA agents own their prompt in the user's own
                             codebase. */}

@@ -41,7 +41,7 @@ const pages: Page[] = [
     content: 'Deft uses Anthropic\'s Claude API as its sole AI provider.\n\n- Claude Sonnet: agent reasoning, plan generation, complex queries\n- Claude Haiku: message classification, fact extraction, wiki ingest decisions\n\nAPI key stored in ANTHROPIC_API_KEY env var. All calls go through the llm() utility in lib/llm.ts.' },
   { slug: 'postgresql-database', title: 'PostgreSQL Database', type: 'entity', confidence: 1.0, scope: 'org',
     summary: 'Primary data store with pgvector extension',
-    content: 'PostgreSQL serves as the single source of truth. Uses Drizzle ORM for schema management and queries.\n\nExtensions:\n- pgvector (planned): for semantic search embeddings\n- Full-text search: tsvector columns with GIN indexes on wiki_pages\n\nHosted on Railway for staging/production. Local Docker for development.' },
+    content: 'PostgreSQL serves as the single source of truth. Uses Drizzle ORM for schema management and queries.\n\nExtensions:\n- pgvector (planned): for semantic search embeddings\n- Full-text search: tsvector columns with GIN indexes on wiki_pages\n\nDeployed via Docker using pgvector/pgvector:pg16 image in docker-compose.yml. Local dev uses same containerized approach.' },
   { slug: 'hono-framework', title: 'Hono Framework', type: 'entity', confidence: 1.0, scope: 'org',
     summary: 'Lightweight TypeScript web framework for the API',
     content: 'Hono is used for the API server. Chosen over Express for:\n- Native TypeScript support\n- Better middleware composition\n- Faster routing\n- Smaller bundle size\n\nRuns on Node.js via @hono/node-server. Supports WebSocket upgrade for Socket.io integration.' },
@@ -54,14 +54,14 @@ const pages: Page[] = [
 
   // ── DECISIONS ──
   { slug: 'decision-no-supabase', title: 'No Supabase', type: 'decision', confidence: 1.0, scope: 'org',
-    summary: 'Supabase blocked in India — use direct PostgreSQL instead',
-    content: 'Decision: Do not use Supabase.\n\nReason: Supabase is blocked/unreliable in India where the core team is based. Using direct PostgreSQL with Drizzle ORM gives us full control.\n\nAlternative considered: Neon (works but adds latency). Decided on self-hosted PostgreSQL via Railway.' },
+    summary: 'Supabase blocked in India — use self-hosted PostgreSQL instead',
+    content: 'Decision: Do not use Supabase.\n\nReason: Supabase is blocked/unreliable in India where the core team is based. Using self-hosted PostgreSQL with Drizzle ORM gives us full control and flexibility.\n\nAlternative considered: Neon (works but adds latency, SaaS dependency). Decided on self-hosted PostgreSQL via Docker.' },
   { slug: 'decision-drizzle-orm', title: 'Use Drizzle ORM', type: 'decision', confidence: 1.0, scope: 'org',
     summary: 'All database queries must use Drizzle ORM',
     content: 'Decision: All database queries use Drizzle ORM. No raw SQL except in agent queries.\n\nReason: Type safety, consistent patterns, easier migrations.\n\nException: Agent SQL queries can use raw SQL for complex joins across native + events data where Drizzle\'s query builder is too limiting.' },
-  { slug: 'decision-railway-deploy', title: 'Deploy on Railway', type: 'decision', confidence: 0.85, scope: 'org',
-    summary: 'Railway for API hosting — WebSocket support required',
-    content: 'Decision: Deploy the API on Railway (not Vercel).\n\nReason: Vercel doesn\'t support persistent WebSocket connections needed for Socket.io. Railway supports long-running processes.\n\nThe frontend (Next.js) can deploy on Vercel since it doesn\'t need WebSockets directly — it connects to the Railway-hosted API.' },
+  { slug: 'decision-railway-deploy', title: 'Self-hosted Docker Deployment', type: 'decision', confidence: 1.0, scope: 'org',
+    summary: 'Deft runs as self-hosted Docker with docker-compose',
+    content: 'Decision: Deploy Deft as self-hosted Docker (not managed hosting).\n\nReason: Users run Deft on their own infrastructure. The API requires persistent connections (Socket.io) and background job processing, which are best managed via docker-compose on user infrastructure.\n\nStack: docker-compose with Hono API, Next.js frontend, PostgreSQL (pgvector:pg16), and Redis (redis:7-alpine) for job queue and Socket.io pub/sub.' },
   { slug: 'decision-bullmq-jobs', title: 'BullMQ for Background Jobs', type: 'decision', confidence: 0.7, scope: 'org',
     summary: 'Switched to Postgres-based job queue — BullMQ being phased out',
     content: 'Original decision: Use BullMQ with Redis for background jobs.\n\nUpdate: Migrating to a Postgres-based job queue to eliminate the Redis dependency. The job_queue table handles scheduling, retries, and dead-letter processing.\n\nBullMQ references in docs may be outdated.' },
@@ -88,8 +88,8 @@ const pages: Page[] = [
 
   // ── PROCEDURES ──
   { slug: 'deployment-process', title: 'Deployment Process', type: 'procedure', confidence: 0.9, scope: 'org',
-    summary: 'How to deploy Deft to staging and production',
-    content: 'Deployment steps:\n1. Merge PR to main branch\n2. CI runs lint + typecheck + build\n3. Railway auto-deploys API from main\n4. Vercel auto-deploys frontend from main\n5. Run db:push if there are schema changes\n6. Verify health endpoint: /health\n\nRollback: Revert the commit on main and redeploy.' },
+    summary: 'How to deploy Deft updates to self-hosted instances',
+    content: 'Deployment steps:\n1. Merge PR to main branch\n2. CI runs lint + typecheck + build\n3. Build and push Docker images (API, frontend)\n4. Users pull latest images and run: docker-compose up -d\n5. Run migrations if schema changed: docker-compose exec api pnpm db:push\n6. Verify health endpoint: /health\n\nRollback: Pull previous image version and restart containers.' },
   { slug: 'pr-review-process', title: 'PR Review Process', type: 'procedure', confidence: 0.95, scope: 'org',
     summary: 'Code review workflow and approval requirements',
     content: 'PR review process:\n1. Create PR with description and test plan\n2. At least 1 approval required\n3. CI must pass (lint + typecheck)\n4. No direct pushes to main\n5. Squash merge preferred\n\nReviewers: Tag the person most familiar with the area. For cross-cutting changes, tag Maneek.' },
@@ -101,7 +101,7 @@ const pages: Page[] = [
     content: 'New member onboarding:\n1. Add to GitHub org and Deft workspace\n2. Clone repo, run pnpm install, copy .env.example\n3. Start local dev: pnpm dev\n4. Read CLAUDE.md for architecture overview\n5. Read CONTRIBUTING.md for code conventions\n6. Assign a starter task (labeled "good first issue")\n7. Pair with buddy for first PR\n\nArjun handles Figma access. Sara handles CI/deploy access.' },
   { slug: 'incident-response', title: 'Incident Response', type: 'procedure', confidence: 0.65, scope: 'org',
     summary: 'How to handle production incidents',
-    content: 'Incident response (draft):\n1. Identify: Check /health endpoint and Railway logs\n2. Communicate: Post in #general with severity\n3. Mitigate: Revert last deploy if regression\n4. Fix: Create hotfix branch, PR, fast-track review\n5. Post-mortem: Document root cause in wiki\n\nSeverity:\n- P0: Service down — all hands\n- P1: Feature broken — owner + backup\n- P2: Bug — next sprint' },
+    content: 'Incident response (draft):\n1. Identify: Check /health endpoint and docker-compose logs\n2. Communicate: Post in #general with severity\n3. Mitigate: Revert to previous Docker image if regression\n4. Fix: Create hotfix branch, PR, fast-track review\n5. Post-mortem: Document root cause in wiki\n\nSeverity:\n- P0: Service down — all hands\n- P1: Feature broken — owner + backup\n- P2: Bug — next sprint' },
 
   // ── PREFERENCES ──
   { slug: 'pref-typescript-strict', title: 'TypeScript Strict Mode Everywhere', type: 'preference', confidence: 1.0, scope: 'org',
