@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import useSWR from 'swr';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { ArrowLeft, ArrowRight, Check, X, Copy } from 'lucide-react';
@@ -171,13 +170,6 @@ export default function CreateAgentEmployeePage() {
   // Legacy API key modal (native path, for backwards compat when API returns api_key)
   const [apiKeyModal, setApiKeyModal] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-
-  // Provider readiness pre-flight — fetched once on mount to block the wizard
-  // on step 1 if self-hosted mode has no BYOA provider configured.
-  const { data: readiness } = useSWR<{ ready: boolean; reason?: string }>(
-    '/api/agent-employees/provider-readiness',
-    (url: string) => api.get(url).then((r) => r.json()),
-  );
 
   useEffect(() => {
     api.get('/api/agent-employees/templates').then(async (res) => {
@@ -405,25 +397,6 @@ export default function CreateAgentEmployeePage() {
       {/* ── Step 1: Identity (all modes) ──────────────────────────────── */}
       {step === 1 && (
         <>
-        {/* Block only when the server says not-ready AND we are in native mode.
-            MCP paths always proceed (the backend will return the api_key). */}
-        {readiness && !readiness.ready && connectMode === 'native' ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 max-w-md">
-            <p className="text-sm font-medium" style={{ color: 'var(--error)' }}>
-              Can&apos;t create native agents yet
-            </p>
-            <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-              {readiness.reason}
-            </p>
-            <a
-              href="/settings/integrations"
-              className="text-sm underline mt-2 inline-block"
-              style={{ color: 'var(--accent)' }}
-            >
-              Open integrations settings →
-            </a>
-          </div>
-        ) : (
         <div
           className="rounded-xl p-5"
           style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
@@ -569,7 +542,6 @@ export default function CreateAgentEmployeePage() {
             </>
           )}
         </div>
-        )}
         </>
       )}
 
@@ -831,8 +803,7 @@ export default function CreateAgentEmployeePage() {
               onClick={() => setStep(step + 1)}
               disabled={
                 step === 1
-                  ? !canProceedStep1 ||
-                    (connectMode === 'native' && readiness != null && !readiness.ready)
+                  ? !canProceedStep1
                   : step === 2
                   ? !canProceedStep2
                   : false
@@ -850,11 +821,7 @@ export default function CreateAgentEmployeePage() {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={
-                submitting ||
-                !canProceedStep1 ||
-                (connectMode === 'native' && step === 1 && readiness != null && !readiness.ready)
-              }
+              disabled={submitting || !canProceedStep1}
               className="flex items-center gap-1 px-4 py-2 text-[12px] font-medium rounded-md disabled:opacity-40"
               style={{
                 background: 'var(--accent)',

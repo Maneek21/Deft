@@ -275,10 +275,7 @@ async function testByoaSubmissionAndModal(page: Page): Promise<void> {
   // Fill the form (Step 1 is the only step for BYOA).
   const inputs = page.locator('input[type="text"]');
   const inputCount = await inputs.count();
-  if (inputCount === 0) {
-    console.log('  step 5: BYOA tab — no inputs found (may need auth/setup)');
-    return;
-  }
+  assert(inputCount > 0, 'BYOA tab should have input fields for name + role');
 
   const nameInput = inputs.first();
   const roleSelect = page.locator('select').first();
@@ -290,27 +287,16 @@ async function testByoaSubmissionAndModal(page: Page): Promise<void> {
 
   // Find the "Create" button (should be the rightmost button in the nav row).
   const createBtn = page.locator('button:has-text("Create")').last();
-  const createBtnVisible = await createBtn.isVisible().catch(() => false);
-  if (!createBtnVisible) {
-    console.log('  step 5: BYOA Create button not visible — may be blocked');
-    return;
-  }
-
-  const isEnabled = await createBtn.isEnabled().catch(() => false);
-  if (!isEnabled) {
-    console.log('  step 5: BYOA Create button disabled — form may require more input');
-    return;
-  }
+  assert(await createBtn.isVisible(), 'BYOA Create button must be visible on step 1');
+  assert(await createBtn.isEnabled(), 'BYOA Create button must be enabled after filling the form');
 
   await createBtn.click();
 
-  // Wait for the success modal to appear (contains "Agent Connected" title).
-  const modalTitle = page.locator('text=/Agent Connected/');
-  const modalVisible = await modalTitle.isVisible({ timeout: 10_000 }).catch(() => false);
-  if (!modalVisible) {
-    console.log('  step 5: BYOA modal did not appear');
-    return;
-  }
+  // Wait for the success modal to appear. The modal renders an h3 with
+  // "Agent Connected" — generous timeout because the API has to create
+  // the employee + user + api_key + space memberships.
+  const modalTitle = page.locator('h3:has-text("Agent Connected")');
+  await modalTitle.waitFor({ state: 'visible', timeout: 15_000 });
 
   // Look for the MCP endpoint URL in the modal — it should contain "mcp/v1".
   const pageText = await page.locator('body').innerText();
@@ -320,10 +306,11 @@ async function testByoaSubmissionAndModal(page: Page): Promise<void> {
     'Success modal should contain MCP endpoint URL with "mcp/v1"',
   );
 
-  // Look for copy button icons (Check + Copy pattern).
-  const copyElements = page.locator('button').filter({ hasText: /Copy/ });
-  const copyCount = await copyElements.count().catch(() => 0);
-  assert(copyCount > 0, 'Success modal should have at least one copy button');
+  // Copy buttons are icon-only (lucide Copy icon inside the credential
+  // rows). Look for the lucide-copy SVG class instead of visible text.
+  const copyButtons = page.locator('button:has(svg.lucide-copy)');
+  const copyCount = await copyButtons.count().catch(() => 0);
+  assert(copyCount >= 2, `Success modal should expose copy buttons for both endpoint + token, got ${copyCount}`);
 
   console.log('  step 5: BYOA submission + success modal with mcp/v1 endpoint');
 }

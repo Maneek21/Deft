@@ -22,37 +22,15 @@ import type { SkillAgentConfig } from '../lib/skill-config.js';
 
 export const agentEmployeeRoutes = new Hono();
 
-// ═══ BYOA / provider readiness ═══
-
-/**
- * Returns true when the org is allowed to create non-BYOA agents, OR when
- * self-hosted mode is active AND the caller has already opted into BYOA.
- * Exposed as a standalone helper so both the GET pre-flight and the POST
- * defense-in-depth check share the same logic.
- *
- * "ready" means: the wizard can proceed. In cloud mode it is always true.
- * In self-hosted mode it is true only when the caller intends is_byoa=true,
- * but since the GET pre-flight doesn't know the caller's intent yet we
- * return ready=false in self-hosted mode so the UI can surface the gate.
- */
-function isOrgProviderReady(): boolean {
-  return process.env.DEFT_SELF_HOSTED !== 'true';
-}
-
-// GET /provider-readiness — wizard pre-flight. Returns { ready, reason? }.
+// Self-hosted v1 — provider-readiness gate retired. The pre-reframe
+// wizard forked between "cloud" (native always ready) and "self-hosted"
+// (native blocked until a managed deployment provider was configured).
+// That whole managed surface is gone now: native agents run in-process,
+// BYOA agents run in the user's own runtime, and there's nothing to
+// pre-flight. The endpoint stays as a ready:true no-op so any stale
+// wizard build that still polls it gets a green light.
 agentEmployeeRoutes.get('/provider-readiness', async (c) => {
-  try {
-    const ready = isOrgProviderReady();
-    if (ready) return c.json({ ready: true });
-    return c.json({
-      ready: false,
-      reason:
-        'Self-hosted mode requires a BYOA provider. Configure one in Settings → Integrations.',
-    });
-  } catch (err) {
-    console.error('provider-readiness failed:', err);
-    return c.json({ ready: false, reason: 'Failed to check provider readiness.' }, 500);
-  }
+  return c.json({ ready: true });
 });
 
 // ═══ TEMPLATES ═══
@@ -484,15 +462,6 @@ agentEmployeeRoutes.post('/', async (c) => {
     }
 
     const data = parsed.data;
-
-    // Block non-BYOA creation if self-hosted (defense in depth — wizard
-    // also pre-flights this via GET /provider-readiness on step 1).
-    if (!isOrgProviderReady() && !data.is_byoa) {
-      return c.json(
-        { error: 'Self-hosted mode requires BYOA (Bring Your Own API) agents', code: 'SELF_HOSTED_BYOA_ONLY' },
-        403,
-      );
-    }
 
     // 1. Create user record with is_agent: true
     const title = roleToTitle(data.role);
