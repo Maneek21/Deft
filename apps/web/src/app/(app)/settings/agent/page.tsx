@@ -506,11 +506,11 @@ export default function AgentSettingsPage() {
           </h3>
           <a
             href="/settings/agent-employees/create"
-            data-testid="deploy-new-employee"
+            data-testid="connect-agent"
             className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
             style={{ background: 'var(--accent)', color: 'white' }}
           >
-            Deploy new employee
+            Connect agent
           </a>
         </div>
         {employeesLoading ? (
@@ -1413,7 +1413,7 @@ function SaveAsTemplateModal({
           Save {employee.name} as template
         </h3>
         <p className="mb-3 text-[12px]" style={{ color: 'var(--muted)' }}>
-          Templates appear in the Deploy-new-employee wizard step 1 for everyone in your org.
+          Templates appear in the Connect agent wizard step 1 for everyone in your org.
         </p>
         <div className="space-y-3">
           <div>
