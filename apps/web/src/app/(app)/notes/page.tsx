@@ -148,7 +148,7 @@ function TBtn({ active, onClick, children, title }: { active?: boolean; onClick:
       aria-label={title}
       title={title}
       onMouseDown={(e) => { e.preventDefault(); onClick(); }}
-      className="p-1.5 rounded transition-colors"
+      className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded transition-colors"
       style={{ color: active ? 'var(--accent)' : 'var(--muted)', background: active ? 'var(--accent-subtle)' : 'transparent' }}>
       {children}
     </button>
@@ -500,7 +500,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           <button
             type="button"
             onClick={handleUndoDelete}
-            className="text-[13px] font-semibold px-2.5 py-1 rounded-lg"
+            className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-auto md:min-w-auto md:px-2.5 md:py-1 text-[13px] font-semibold rounded-lg"
             style={{ background: 'var(--accent)', color: 'white' }}>
             Undo
           </button>
@@ -548,36 +548,36 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <Globe size={11} /> Shared (read-only)
               </span>
             )}
-            <button onClick={() => setFocusMode(!focusMode)} className="p-1.5 rounded-lg"
+            <button onClick={() => setFocusMode(!focusMode)} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
               aria-label={focusMode ? 'Exit focus mode' : 'Focus mode'}
               style={{ color: focusMode ? 'var(--accent)' : 'var(--muted)' }} title={focusMode ? 'Exit focus mode' : 'Focus mode'}>
               {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
             {isOwner && (
-              <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="p-1.5 rounded-lg"
+              <button onClick={() => { setShowShareModal(true); fetchShares(); fetchMembers(); }} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
                 aria-label="Share note"
                 style={{ color: 'var(--muted)' }} title="Share note">
                 <Share2 size={15} />
               </button>
             )}
-            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="p-1.5 rounded-lg"
+            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
               aria-label="Version history"
               style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
               <History size={15} />
             </button>
-            <button onClick={() => setShowPromoteModal(true)} className="p-1.5 rounded-lg"
+            <button onClick={() => setShowPromoteModal(true)} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
               aria-label="Promote to Wiki"
               style={{ color: 'var(--muted)' }} title="Promote to Wiki">
               <BookOpen size={15} />
             </button>
             {isOwner && (
               <>
-                <button onClick={handlePin} className="p-1.5 rounded-lg"
+                <button onClick={handlePin} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
                   aria-label={note?.is_pinned ? 'Unpin' : 'Pin'}
                   style={{ color: note?.is_pinned ? 'var(--accent)' : 'var(--muted)' }} title={note?.is_pinned ? 'Unpin' : 'Pin'}>
                   {note?.is_pinned ? <PinOff size={15} /> : <Pin size={15} />}
                 </button>
-                <button onClick={handleDelete} className="p-1.5 rounded-lg"
+                <button onClick={handleDelete} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
                   aria-label="Delete note"
                   style={{ color: 'var(--muted)' }} title="Delete note">
                   <Trash2 size={15} />
