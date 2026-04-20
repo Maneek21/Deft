@@ -26,6 +26,12 @@ const createTaskSchema = z.object({
   metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
 
+// Schema for root POST /api/tasks — project_id comes from the body instead of
+// the path param.
+const createTaskWithProjectSchema = createTaskSchema.extend({
+  project_id: z.string().uuid({ message: 'project_id must be a valid UUID' }),
+});
+
 const updateTaskSchema = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional(),
@@ -1303,7 +1309,152 @@ taskRoutes.get('/project/:projectId', async (c) => {
   }
 });
 
-// POST /api/projects/:projectId/tasks — create task
+/**
+ * Shared task-creation logic used by both the root POST /api/tasks and the
+ * path-param POST /api/tasks/project/:projectId routes.
+ */
+async function createTaskForProject(
+  data: z.infer<typeof createTaskSchema>,
+  projectId: string,
+  orgId: string,
+  userId: string,
+): Promise<{ task: Record<string, any>; project: { prefix: string; name: string } }> {
+  // Verify project belongs to org
+  const [project] = await db.select()
+    .from(projects)
+    .where(
+      and(
+        eq(projects.id, projectId),
+        eq(projects.org_id, orgId),
+      )
+    )
+    .limit(1);
+
+  if (!project) {
+    throw Object.assign(new Error('Project not found'), { code: 'NOT_FOUND' });
+  }
+
+  // Atomically increment task_counter
+  const [updated] = await db.update(projects)
+    .set({ task_counter: sql`${projects.task_counter} + 1` })
+    .where(eq(projects.id, projectId))
+    .returning({ task_counter: projects.task_counter });
+
+  const taskNumber = updated!.task_counter;
+
+  const [task] = await db.insert(tasks).values({
+    org_id: orgId,
+    project_id: projectId,
+    number: taskNumber,
+    title: data.title,
+    description: data.description || undefined,
+    status: (data.status || 'backlog') as any,
+    priority: (data.priority || 'p2') as any,
+    assignee_id: data.assignee_id || undefined,
+    created_by: userId,
+    due_date: data.due_date ? new Date(data.due_date) : undefined,
+    sort_order: data.sort_order ?? 0,
+    source_message_id: data.source_message_id || undefined,
+    parent_task_id: data.parent_task_id || undefined,
+    // Task 4.11 — skill-defined custom fields.
+    metadata: data.metadata ?? undefined,
+  }).returning();
+
+  // Create activity log entry
+  await db.insert(taskActivity).values({
+    org_id: orgId,
+    task_id: task!.id,
+    user_id: userId,
+    action: 'created',
+  });
+
+  // Broadcast task:created via socket to org
+  const io = getIO();
+  if (io) {
+    io.to(`org:${orgId}`).emit('task:created', {
+      ...task,
+      project_prefix: project.prefix,
+      project_name: project.name,
+    });
+  }
+
+  // Notify assignee if different from creator
+  if (task!.assignee_id && task!.assignee_id !== userId) {
+    try {
+      const [creatorUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1);
+      const taskId_str = `${project.prefix}-${taskNumber}`;
+      await db.insert(notifications).values({
+        org_id: orgId,
+        user_id: task!.assignee_id,
+        type: 'task_assigned',
+        title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
+        body: task!.title,
+        link: `/tasks?task=${taskId_str}`,
+      });
+      emitToUser(task!.assignee_id, 'notification:new', { type: 'task_assigned', title: `New task: ${taskId_str}` });
+    } catch {}
+  }
+
+  // Enqueue duplicate detection job (skip for subtasks)
+  if (!data.parent_task_id) {
+    try {
+      await enqueue(QUEUE_NAMES.AGENT_JOBS, 'duplicate-detect', {
+        taskId: task!.id,
+        title: task!.title,
+        projectId,
+        orgId,
+      });
+    } catch (err) {
+      console.error('Failed to enqueue duplicate-detect:', err);
+    }
+  }
+
+  return { task: task!, project };
+}
+
+// POST /api/tasks — root endpoint for REST discoverability.
+// Accepts project_id in the request body; otherwise identical to the
+// path-param variant below. This is the canonical entry point for
+// third-party clients (MCP, scripts, integrations).
+taskRoutes.post('/', async (c) => {
+  try {
+    const user = c.get('user');
+    const body = await c.req.json();
+
+    // Validate project_id presence and UUID format before running the full schema.
+    if (!body?.project_id) {
+      return c.json({ error: 'project_id required', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const parsed = createTaskWithProjectSchema.safeParse(body);
+    if (!parsed.success) {
+      // Surface a specific message for bad project_id UUID format.
+      const projectIdError = parsed.error.issues.find((i) => i.path[0] === 'project_id');
+      if (projectIdError) {
+        return c.json({ error: 'project_id required', code: 'VALIDATION_ERROR' }, 400);
+      }
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const { project_id: projectId, ...taskData } = parsed.data;
+
+    try {
+      const { task, project } = await createTaskForProject(taskData, projectId, user.org_id, user.id);
+      return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
+    } catch (err: any) {
+      if (err?.code === 'NOT_FOUND') {
+        return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+      }
+      throw err;
+    }
+  } catch (err) {
+    console.error('Failed to create task:', err);
+    return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/project/:projectId — create task (path-param variant, kept
+// for backwards compatibility with existing clients).
 taskRoutes.post('/project/:projectId', async (c) => {
   try {
     const user = c.get('user');
@@ -1315,101 +1466,15 @@ taskRoutes.post('/project/:projectId', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    // Verify project belongs to user's org
-    const [project] = await db.select()
-      .from(projects)
-      .where(
-        and(
-          eq(projects.id, projectId),
-          eq(projects.org_id, user.org_id),
-        )
-      )
-      .limit(1);
-
-    if (!project) {
-      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    // Atomically increment task_counter
-    const [updated] = await db.update(projects)
-      .set({ task_counter: sql`${projects.task_counter} + 1` })
-      .where(eq(projects.id, projectId))
-      .returning({ task_counter: projects.task_counter });
-
-    const taskNumber = updated!.task_counter;
-
-    const [task] = await db.insert(tasks).values({
-      org_id: user.org_id,
-      project_id: projectId,
-      number: taskNumber,
-      title: parsed.data.title,
-      description: parsed.data.description || undefined,
-      status: (parsed.data.status || 'backlog') as any,
-      priority: (parsed.data.priority || 'p2') as any,
-      assignee_id: parsed.data.assignee_id || undefined,
-      created_by: user.id,
-      due_date: parsed.data.due_date ? new Date(parsed.data.due_date) : undefined,
-      sort_order: parsed.data.sort_order ?? 0,
-      source_message_id: parsed.data.source_message_id || undefined,
-      parent_task_id: parsed.data.parent_task_id || undefined,
-      // Task 4.11 — skill-defined custom fields.
-      metadata: parsed.data.metadata ?? undefined,
-    }).returning();
-
-    // Create activity log entry
-    await db.insert(taskActivity).values({
-      org_id: user.org_id,
-      task_id: task!.id,
-      user_id: user.id,
-      action: 'created',
-    });
-
-    // Broadcast task:created via socket to org
-    const io = getIO();
-    if (io) {
-      io.to(`org:${user.org_id}`).emit('task:created', {
-        ...task,
-        project_prefix: project.prefix,
-        project_name: project.name,
-      });
-    }
-
-    // Notify assignee if different from creator
-    if (task!.assignee_id && task!.assignee_id !== user.id) {
-      try {
-        const [creatorUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)).limit(1);
-        const taskId_str = `${project!.prefix}-${taskNumber}`;
-        await db.insert(notifications).values({
-          org_id: user.org_id,
-          user_id: task!.assignee_id,
-          type: 'task_assigned',
-          title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
-          body: task!.title,
-          link: `/tasks?task=${taskId_str}`,
-        });
-        emitToUser(task!.assignee_id, 'notification:new', { type: 'task_assigned', title: `New task: ${taskId_str}` });
-      } catch {}
-    }
-
-    // Enqueue duplicate detection job (skip for subtasks)
-    if (!parsed.data.parent_task_id) {
-      try {
-        await enqueue(QUEUE_NAMES.AGENT_JOBS, 'duplicate-detect', {
-          taskId: task!.id,
-          title: task!.title,
-          projectId,
-          orgId: user.org_id,
-        });
-      } catch (err) {
-        console.error('Failed to enqueue duplicate-detect:', err);
+    try {
+      const { task, project } = await createTaskForProject(parsed.data, projectId, user.org_id, user.id);
+      return c.json({ ...task, project_prefix: project.prefix, project_name: project.name }, 201);
+    } catch (err: any) {
+      if (err?.code === 'NOT_FOUND') {
+        return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
       }
+      throw err;
     }
-
-    return c.json({
-      ...task,
-      project_prefix: project.prefix,
-      project_name: project.name,
-    }, 201);
   } catch (err) {
     console.error('Failed to create task:', err);
     return c.json({ error: 'Failed to create task', code: 'INTERNAL_ERROR' }, 500);
