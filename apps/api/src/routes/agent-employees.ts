@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -35,45 +35,33 @@ agentEmployeeRoutes.get('/provider-readiness', async (c) => {
 
 // ═══ TEMPLATES ═══
 
-const ROLE_TEMPLATES = [
-  {
-    role: 'project_manager' as const,
-    name: 'Project Manager',
-    system_prompt:
-      'You are a project manager agent. Your primary responsibilities are sprint tracking, blocker detection, and team coordination. You proactively monitor task progress, identify blockers before they escalate, coordinate cross-functional work, and keep the team aligned on priorities. You communicate status updates clearly and escalate risks early.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Research external information relevant to tasks or projects\n  - Verify links or resources shared by team members\n  - Check project documentation on external sites\n- Always summarize what you find — don\'t dump raw page content.',
-    expertise_description:
-      'Sprint tracking, blocker detection, team coordination, status reporting, risk escalation',
-    heartbeat_config:
-      "### Every 30 minutes:\n- Check for tasks overdue by more than 24 hours. If found, post a summary in the task's project channel.\n- Check for tasks with status 'in_progress' that haven't been updated in 48+ hours. DM the assignee.\n\n### Every morning (if first heartbeat of the day):\n- Generate a brief standup summary from yesterday's task activity and post in #general.",
-  },
-  {
-    role: 'engineering_lead' as const,
-    name: 'Engineering Lead',
-    system_prompt:
-      'You are an engineering lead agent. Your primary responsibilities are code review management, PR workflow, and velocity monitoring. You track pull request lifecycles, flag stale PRs, monitor team velocity and throughput, identify bottlenecks in the development pipeline, and ensure engineering best practices are followed.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Check npm package versions, security advisories, or documentation\n  - Review PR descriptions or CI status on GitHub (if not connected natively)\n  - Research technical solutions or library comparisons\n- Always summarize findings concisely with links.',
-    expertise_description:
-      'Code review management, PR lifecycle tracking, velocity monitoring, pipeline bottleneck detection',
-    heartbeat_config:
-      '### Every hour:\n- Check for open PRs with no review activity in 24+ hours. Post a reminder in #engineering.\n- Check for tasks blocked by code review. DM the reviewer.\n\n### Every morning:\n- Summarize merged PRs from yesterday and post in #engineering.',
-  },
-  {
-    role: 'executive_assistant' as const,
-    name: 'Executive Assistant',
-    system_prompt:
-      'You are an executive assistant agent. Your primary responsibilities are calendar management, meeting preparation, and daily briefings. You organize schedules, prepare meeting agendas with relevant context, generate daily briefings summarizing key updates and upcoming commitments, and proactively manage time conflicts.\n\n## Web Browsing\n- You may have web browsing tools available (Playwright). Use them when you need to:\n  - Research meeting attendees or their companies\n  - Check travel or venue information for upcoming meetings\n  - Verify links shared in conversations\n- Always provide actionable summaries.',
-    expertise_description:
-      'Calendar management, meeting preparation, daily briefings, schedule optimization',
-    heartbeat_config:
-      '### Every 30 minutes:\n- Check calendar for meetings in the next 30 minutes. If found, generate a prep brief and DM the attendee.\n- Check for calendar conflicts in today\'s schedule. If found, alert the affected person.',
-  },
-];
-
-// GET /templates — pre-built role templates
+// GET /templates — pre-built role templates read from DB.
+// The old in-memory ROLE_TEMPLATES array and DEFT_SELF_HOSTED guard are
+// removed; the DB is the single source of truth for both cloud and
+// self-hosted deployments.
 agentEmployeeRoutes.get('/templates', async (c) => {
-  if (process.env.DEFT_SELF_HOSTED === 'true') {
-    return c.json([]);
-  }
-  return c.json(ROLE_TEMPLATES);
+  const user = c.get('user');
+
+  const rows = await db
+    .select()
+    .from(agentEmployeeTemplates)
+    .where(
+      or(
+        eq(agentEmployeeTemplates.org_id, user.org_id),
+        isNull(agentEmployeeTemplates.org_id),
+      ),
+    )
+    .orderBy(asc(agentEmployeeTemplates.source), asc(agentEmployeeTemplates.name));
+
+  const mapped = rows.map((t) => ({
+    role: t.role,
+    name: t.name,
+    system_prompt: t.soul_md,
+    expertise_description: t.description,
+    heartbeat_config: null as string | null,
+  }));
+
+  return c.json(mapped);
 });
 
 // GET / — list org's agent employees
