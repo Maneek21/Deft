@@ -543,45 +543,9 @@ export const taskTemplates = pgTable('task_templates', {
   index('task_templates_source_idx').on(t.source),
 ]);
 
-// ═══ ORG SPEND CAPS ═══
-// Block 0.9 — per-org LLM spend ceilings enforced server-side at every
-// llm() call + every OpenClaw dispatch. Counters are incremented on
-// response; circuit-break fires when current_*_cents >= *_cents. Daily
-// resets at UTC midnight, monthly at month boundary. Null daily_cents
-// means no daily limit (monthly still applies).
-export const orgSpendCaps = pgTable('org_spend_caps', {
-  org_id: text('org_id').primaryKey().references(() => orgs.id, { onDelete: 'cascade' }),
-  daily_cents: integer('daily_cents'),
-  monthly_cents: integer('monthly_cents').default(10000).notNull(),
-  current_daily_cents: integer('current_daily_cents').default(0).notNull(),
-  current_monthly_cents: integer('current_monthly_cents').default(0).notNull(),
-  daily_reset_at: timestamp('daily_reset_at').defaultNow().notNull(),
-  monthly_reset_at: timestamp('monthly_reset_at').defaultNow().notNull(),
-  ...timestamps(),
-}, (t) => [
-  index('org_spend_caps_monthly_reset_idx').on(t.monthly_reset_at),
-]);
-
-// ═══ CLAWHUB ALLOWLIST ═══
-// Community-curated list of vetted ClawHub skill slugs (primarily from
-// VoltAgent/awesome-openclaw-skills). Block 1 Library UI defaults to
-// showing only rows from this table; raw-ClawHub browse is behind an
-// org-admin Advanced toggle. Populated by the daily
-// `clawhub-allowlist-refresh` cron job — see
-// apps/api/src/workers/handlers/clawhub-allowlist-refresh.ts.
-export const clawhubAllowlist = pgTable('clawhub_allowlist', {
-  slug: text('slug').primaryKey(),
-  source: text('source')
-    .$type<'voltagent' | 'deft-bundled' | 'deft-verified'>()
-    .default('voltagent')
-    .notNull(),
-  description: text('description'),
-  homepage: text('homepage'),
-  last_seen_at: timestamp('last_seen_at').defaultNow().notNull(),
-  added_at: timestamp('added_at').defaultNow().notNull(),
-}, (t) => [
-  index('clawhub_allowlist_source_idx').on(t.source),
-]);
+// org_spend_caps + clawhub_allowlist retired in self-hosted v1 delete
+// sweep (migration 0053). Self-hosted runs on operator-owned API keys
+// and the ClawHub surface is gone.
 
 // Block 3.3 — per-agent webhook URLs. An agent-employee can expose an
 // HMAC-signed URL that accepts POST payloads from external systems.
@@ -604,27 +568,8 @@ export const agentWebhooks = pgTable('agent_webhooks', {
   index('agent_webhooks_employee_idx').on(t.agent_employee_id),
 ]);
 
-// Block 1.4 — per-org, per-skill encrypted secret store. Used by the pre-deploy
-// install flow when a ClawHub skill declares required env vars and OAuth
-// matching misses. Least-privilege: only secrets declared in the skill's
-// requires.env get pushed to the agent container at install time.
-export const skillSecrets = pgTable('skill_secrets', {
-  ...id(),
-  org_id: text('org_id')
-    .notNull()
-    .references(() => orgs.id, { onDelete: 'cascade' }),
-  skill_id: text('skill_id')
-    .notNull()
-    .references(() => skills.id, { onDelete: 'cascade' }),
-  key_name: text('key_name').notNull(),
-  value_encrypted: text('value_encrypted').notNull(),
-  created_by: text('created_by').references(() => users.id),
-  ...timestamps(),
-}, (t) => [
-  uniqueIndex('skill_secrets_org_skill_key_uniq').on(t.org_id, t.skill_id, t.key_name),
-  index('skill_secrets_org_idx').on(t.org_id),
-  index('skill_secrets_skill_idx').on(t.skill_id),
-]);
+// skill_secrets retired alongside the pre-deploy install flow in self-hosted
+// v1 (migration 0053).
 
 // ═══ AGENT: TOOL REGISTRY ═══
 export const tools = pgTable('tools', {
