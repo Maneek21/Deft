@@ -309,7 +309,13 @@ export default function CreateAgentEmployeePage() {
       {/* Step 1: Identity */}
       {step === 1 && (
         <>
-        {readiness && !readiness.ready ? (
+        {/* Block only when the server says not-ready AND we aren't in
+            self-hosted mode. In self-hosted mode the wizard still works
+            — it submits with is_byoa=true and the backend returns an
+            api_key the user feeds into their OpenClaw. Previously this
+            gate redirected to /settings/integrations (which has no BYOA
+            config surface) and left users stuck. */}
+        {readiness && !readiness.ready && !isSelfHosted ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 max-w-md">
             <p className="text-sm font-medium" style={{ color: 'var(--error)' }}>
               Can&apos;t create agents yet
@@ -676,7 +682,7 @@ export default function CreateAgentEmployeePage() {
           {step < 3 ? (
             <button
               onClick={() => setStep(step + 1)}
-              disabled={step === 1 ? (!canProceedStep1 || (readiness != null && !readiness.ready)) : step === 2 ? !canProceedStep2 : false}
+              disabled={step === 1 ? (!canProceedStep1 || (readiness != null && !readiness.ready && !isSelfHosted)) : step === 2 ? !canProceedStep2 : false}
               className="flex items-center gap-1 px-4 py-2 text-[12px] font-medium rounded-md disabled:opacity-40"
               style={{
                 background: 'var(--accent)',
