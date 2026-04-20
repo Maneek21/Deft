@@ -309,8 +309,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     (id: string) => {
       setActiveSpaceId(id);
       setThreadMessage(null);
-      if (!pathname.startsWith('/chat')) {
-        router.push('/chat');
+      if (pathname.startsWith('/chat')) {
+        // Preserve existing query params (e.g. ?thread=) but update ?space=
+        const params = new URLSearchParams(window.location.search);
+        params.set('space', id);
+        router.replace(`/chat?${params.toString()}`);
+      } else {
+        router.push(`/chat?space=${id}`);
       }
     },
     [pathname, router],
