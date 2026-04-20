@@ -99,7 +99,7 @@ export const users = pgTable('users', {
 export const orgMembers = pgTable('org_members', {
   ...id(),
   ...orgId(),
-  user_id: text('user_id').notNull().references(() => users.id),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   role: orgRoleEnum('role').default('member').notNull(),
   is_active: boolean('is_active').default(true).notNull(),
   joined_at: timestamp('joined_at').defaultNow().notNull(),
@@ -789,7 +789,7 @@ export const workflowRuns = pgTable('workflow_runs', {
 // ═══ ONBOARDING STATE ═══
 export const onboardingState = pgTable('onboarding_state', {
   ...id(),
-  user_id: text('user_id').notNull().references(() => users.id).unique(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
   org_created: boolean('org_created').default(false),
   profile_set: boolean('profile_set').default(false),
   first_space_created: boolean('first_space_created').default(false),
