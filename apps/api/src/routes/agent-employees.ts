@@ -567,7 +567,14 @@ agentEmployeeRoutes.post('/', async (c) => {
       .set({ agent_employee_id: employee!.id })
       .where(eq(users.id, agentUser!.id));
 
-    // 5. If BYOA, auto-generate API key
+    // 5. If BYOA, auto-generate API key.
+    //
+    // Path C Phase 2 — the same token is persisted on BOTH sides so
+    // BYOA agents work against either the standard MCP endpoint
+    // (/api/mcp/v1, auth via agent_employees.mcp_token_hash) or the
+    // deprecated /mcp REST surface (auth via api_keys). /api/mcp/v1 is
+    // the modern path; /mcp is kept during the deprecation window so
+    // existing integrations don't break.
     let rawApiKey: string | null = null;
     if (data.is_byoa) {
       const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
@@ -575,6 +582,7 @@ agentEmployeeRoutes.post('/', async (c) => {
       const keyHash = await bcrypt.hash(rawApiKey, 12);
       const keyPrefix = rawApiKey.slice(0, 12);
 
+      // Legacy /mcp (REST) — api_keys table, namespaced permissions.
       await db.insert(apiKeys).values({
         org_id: currentUser.org_id,
         agent_employee_id: employee!.id,
@@ -584,6 +592,18 @@ agentEmployeeRoutes.post('/', async (c) => {
         permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
         created_by: currentUser.id,
       });
+
+      // Modern /api/mcp/v1 (standard MCP streamable-http) —
+      // agent_employees.mcp_token_hash. resolveGatewayToken() in
+      // lib/mcp-token.ts bcrypt-compares against this column.
+      // Skip for kind='native' (column is reserved for openclaw /
+      // custom_mcp / claude_sdk employees).
+      if (employee!.kind !== 'native') {
+        await db
+          .update(agentEmployees)
+          .set({ mcp_token_hash: keyHash })
+          .where(eq(agentEmployees.id, employee!.id));
+      }
     }
 
     return c.json(
