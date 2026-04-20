@@ -284,6 +284,43 @@ function renderFormattedText(text: string, keyPrefix: string): React.ReactNode[]
 
 /** Render inline formatting: bold, italic, strikethrough, inline code */
 function renderInlineFormatting(text: string, keyPrefix: string): React.ReactNode[] {
+  // Pre-pass: split on markdown links [text](url) first, before any other formatting
+  const linkPattern = /(\[[^\]]+\]\([^)]+\))/g;
+  const linkSegments = text.split(linkPattern);
+  if (linkSegments.length > 1) {
+    // There are markdown links — process each segment
+    const result: React.ReactNode[] = [];
+    linkSegments.forEach((seg, si) => {
+      const linkMatch = seg.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch) {
+        const label = linkMatch[1]!;
+        const href = linkMatch[2]!;
+        // Sanitize: only allow http, https, mailto
+        const safe = /^(https?:\/\/|mailto:)/i.test(href);
+        if (safe) {
+          result.push(
+            <a
+              key={`${keyPrefix}-lnk-${si}`}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              {label}
+            </a>
+          );
+        } else {
+          result.push(<span key={`${keyPrefix}-lnk-${si}`}>{seg}</span>);
+        }
+      } else if (seg) {
+        // Recurse on plain segments so bold/italic/code still work
+        result.push(...renderInlineFormatting(seg, `${keyPrefix}-ls-${si}`));
+      }
+    });
+    return result;
+  }
+
   // Split by inline code first (backticks)
   const codeParts = text.split(/(`[^`]+`)/g);
   const result: React.ReactNode[] = [];
@@ -2328,7 +2365,7 @@ function EditBox({ content, onChange, onSave, onCancel }: { content: string; onC
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ heading: false }),
+      StarterKit.configure({ heading: false, link: false }),
       Link.configure({ openOnClick: false }),
     ],
     content,
