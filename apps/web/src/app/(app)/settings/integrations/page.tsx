@@ -224,13 +224,16 @@ export default function IntegrationsPage() {
     setConnecting(provider);
     try {
       const res = await api.post(`/api/connections/${provider}/connect`);
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
         if (data.url) {
           window.location.href = data.url;
-        } else if (data.code === 'NOT_CONFIGURED') {
-          alert(`${provider} is not configured. Add credentials to .env`);
         }
+      } else if (data.code === 'NOT_CONFIGURED') {
+        // Credentials not set in .env — show a friendly message instead of silently failing
+        alert(`${PROVIDERS.find(p => p.id === provider)?.name ?? provider} is not available yet. Google Calendar OAuth credentials are not configured on this server.`);
+      } else {
+        alert(`Failed to start connection. Please try again.`);
       }
     } catch { /* ignore */ }
     setConnecting(null);

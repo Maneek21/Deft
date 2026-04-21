@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import {
@@ -16,13 +17,35 @@ import { CreateEventModal } from '@/components/calendar/create-event-modal';
 import { EventDetailModal } from '@/components/calendar/event-detail-modal';
 import { Loader2 } from 'lucide-react';
 
+const VALID_VIEWS: CalendarView[] = ['month', 'week', 'day'];
+
+function parseDateParam(dateStr: string | null): Date | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function anchorFromParams(viewParam: CalendarView, dateParam: Date | null): Date {
+  const base = dateParam ?? new Date();
+  if (viewParam === 'month') {
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  }
+  return base;
+}
+
 export default function CalendarPage() {
-  const [view, setView] = useState<CalendarView>('month');
-  const [anchor, setAnchor] = useState<Date>(() =>
-    view === 'month'
-      ? new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-      : new Date()
-  );
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const initialView: CalendarView = (() => {
+    const v = searchParams.get('view');
+    return VALID_VIEWS.includes(v as CalendarView) ? (v as CalendarView) : 'month';
+  })();
+
+  const initialDate = parseDateParam(searchParams.get('date'));
+
+  const [view, setView] = useState<CalendarView>(initialView);
+  const [anchor, setAnchor] = useState<Date>(() => anchorFromParams(initialView, initialDate));
   const [calData, setCalData] = useState<CalendarData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -41,6 +64,13 @@ export default function CalendarPage() {
 
   // Feature 7: Event detail modal
   const [selectedEvent, setSelectedEvent] = useState<CalEvent | null>(null);
+
+  // ── URL sync helper ──
+
+  const setQuery = useCallback((nextView: CalendarView, nextAnchor: Date) => {
+    const dateStr = `${nextAnchor.getFullYear()}-${String(nextAnchor.getMonth() + 1).padStart(2, '0')}-${String(nextAnchor.getDate()).padStart(2, '0')}`;
+    router.replace(`/calendar?view=${nextView}&date=${dateStr}`);
+  }, [router]);
 
   // ── Data fetching ──
 
@@ -137,10 +167,11 @@ export default function CalendarPage() {
       if (view === 'month') d.setMonth(d.getMonth() - 1);
       else if (view === 'week') d.setDate(d.getDate() - 7);
       else d.setDate(d.getDate() - 1);
+      setQuery(view, d);
       return d;
     });
     setSelectedDay(null);
-  }, [view]);
+  }, [view, setQuery]);
 
   const goNext = useCallback(() => {
     setAnchor((prev) => {
@@ -148,27 +179,29 @@ export default function CalendarPage() {
       if (view === 'month') d.setMonth(d.getMonth() + 1);
       else if (view === 'week') d.setDate(d.getDate() + 7);
       else d.setDate(d.getDate() + 1);
+      setQuery(view, d);
       return d;
     });
     setSelectedDay(null);
-  }, [view]);
+  }, [view, setQuery]);
 
   const goToday = useCallback(() => {
     const now = new Date();
-    setAnchor(view === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : now);
+    const nextAnchor = view === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : now;
+    setAnchor(nextAnchor);
+    setQuery(view, nextAnchor);
     setSelectedDay(null);
-  }, [view]);
+  }, [view, setQuery]);
 
   const handleViewChange = useCallback((v: CalendarView) => {
+    const nextAnchor = v === 'month'
+      ? new Date(anchor.getFullYear(), anchor.getMonth(), 1)
+      : new Date();
     setView(v);
-    if (v === 'month') {
-      setAnchor((prev) => new Date(prev.getFullYear(), prev.getMonth(), 1));
-    } else {
-      // When switching to week or day view, anchor on today
-      setAnchor(new Date());
-    }
+    setAnchor(nextAnchor);
+    setQuery(v, nextAnchor);
     setSelectedDay(null);
-  }, []);
+  }, [anchor, setQuery]);
 
   const handleSelectDay = useCallback((dateKey: string) => {
     setSelectedDay((prev) => (prev === dateKey ? null : dateKey));
@@ -176,10 +209,12 @@ export default function CalendarPage() {
 
   const handleDrillDown = useCallback((dateKey: string) => {
     const [y, m, d] = dateKey.split('-').map(Number);
-    setAnchor(new Date(y, m - 1, d));
+    const nextAnchor = new Date(y, m - 1, d);
+    setAnchor(nextAnchor);
     setView('day');
+    setQuery('day', nextAnchor);
     setSelectedDay(null);
-  }, []);
+  }, [setQuery]);
 
   // ── Feature 2: Sync ──
 

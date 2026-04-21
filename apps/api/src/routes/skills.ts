@@ -19,7 +19,7 @@
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, or, isNull, desc, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, ne, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   skills,
@@ -65,13 +65,17 @@ skillsRoutes.get('/', async (c) => {
       eq(skills.org_id, user.org_id),
     );
 
+    // Always exclude marketplace skills — self-hosted v1 only exposes bundled + org.
+    const noMarketplace = ne(skills.source, 'marketplace');
+
     const where = sourceFilter
       ? and(
           visibility,
-          eq(skills.source, sourceFilter as 'bundled' | 'marketplace' | 'org'),
+          noMarketplace,
+          eq(skills.source, sourceFilter as 'bundled' | 'org'),
           eq(skills.is_deleted, false),
         )
-      : and(visibility, eq(skills.is_deleted, false));
+      : and(visibility, noMarketplace, eq(skills.is_deleted, false));
 
     const rows = await db
       .select()
@@ -158,6 +162,11 @@ skillsRoutes.get('/:slug', async (c) => {
     const user = c.get('user');
     const slugOrId = c.req.param('slug');
 
+    const visibilityAndNotMarketplace = and(
+      or(isNull(skills.org_id), eq(skills.org_id, user.org_id)),
+      ne(skills.source, 'marketplace'),
+    );
+
     // Try id match first (cheap if it isn't one).
     const [byId] = await db
       .select()
@@ -166,13 +175,13 @@ skillsRoutes.get('/:slug', async (c) => {
         and(
           eq(skills.id, slugOrId),
           eq(skills.is_deleted, false),
-          or(isNull(skills.org_id), eq(skills.org_id, user.org_id)),
+          visibilityAndNotMarketplace,
         ),
       )
       .limit(1);
     if (byId) return c.json(byId);
 
-    // Slug fallback with source precedence: org > bundled > marketplace.
+    // Slug fallback with source precedence: org > bundled.
     const candidates = await db
       .select()
       .from(skills)
@@ -180,15 +189,11 @@ skillsRoutes.get('/:slug', async (c) => {
         and(
           eq(skills.slug, slugOrId),
           eq(skills.is_deleted, false),
-          or(isNull(skills.org_id), eq(skills.org_id, user.org_id)),
+          visibilityAndNotMarketplace,
         ),
       );
 
-    const order: Array<'org' | 'bundled' | 'marketplace'> = [
-      'org',
-      'bundled',
-      'marketplace',
-    ];
+    const order: Array<'org' | 'bundled'> = ['org', 'bundled'];
     for (const src of order) {
       const hit = candidates.find((s) => s.source === src);
       if (hit) return c.json(hit);
@@ -207,7 +212,7 @@ skillsRoutes.get('/:slug/stats', async (c) => {
     const user = c.get('user');
     const slugOrId = c.req.param('slug');
 
-    // Resolve to a single skill (same precedence as GET /:slug).
+    // Resolve to a single skill (same precedence as GET /:slug). Marketplace hidden in v1.
     const candidates = await db
       .select({ id: skills.id, source: skills.source })
       .from(skills)
@@ -216,13 +221,10 @@ skillsRoutes.get('/:slug/stats', async (c) => {
           or(eq(skills.id, slugOrId), eq(skills.slug, slugOrId)),
           eq(skills.is_deleted, false),
           or(isNull(skills.org_id), eq(skills.org_id, user.org_id)),
+          ne(skills.source, 'marketplace'),
         ),
       );
-    const order: Array<'org' | 'bundled' | 'marketplace'> = [
-      'org',
-      'bundled',
-      'marketplace',
-    ];
+    const order: Array<'org' | 'bundled'> = ['org', 'bundled'];
     let target: { id: string; source: string } | undefined;
     for (const src of order) {
       const hit = candidates.find((s) => s.source === src);
