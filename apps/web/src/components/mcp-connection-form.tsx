@@ -151,13 +151,15 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop — sits behind the card; clicking it closes the modal */}
       <div
-        className="w-full max-w-lg rounded-xl p-6 relative"
+        className="absolute inset-0 bg-black/50"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="relative z-10 w-full max-w-lg rounded-xl p-6"
         style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
       >
         <button

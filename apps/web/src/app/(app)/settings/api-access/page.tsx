@@ -38,6 +38,7 @@ export default function ApiAccessPage() {
   // Create form state
   const [name, setName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
+  const [scope, setScope] = useState<'mcp:full' | 'mcp:read'>('mcp:full');
   const [ratePerMin, setRatePerMin] = useState(60);
   const [ratePerDay, setRatePerDay] = useState(10000);
   const [expiresAt, setExpiresAt] = useState('');
@@ -68,7 +69,7 @@ export default function ApiAccessPage() {
       const res = await api.post('/api/api-keys', {
         name,
         agent_employee_id: employeeId || null,
-        permissions: ['mcp:full'],
+        permissions: [scope],
         rate_limit_per_minute: ratePerMin,
         rate_limit_per_day: ratePerDay,
         expires_at: expiresAt || null,
@@ -82,6 +83,7 @@ export default function ApiAccessPage() {
       setShowCreate(false);
       setName('');
       setEmployeeId('');
+      setScope('mcp:full');
       setRatePerMin(60);
       setRatePerDay(10000);
       setExpiresAt('');
@@ -246,6 +248,18 @@ export default function ApiAccessPage() {
               ))}
             </select>
           </div>
+          <div>
+            <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Access scope</label>
+            <select
+              value={scope}
+              onChange={e => setScope(e.target.value as 'mcp:full' | 'mcp:read')}
+              className="w-full h-9 px-2 text-[13px] rounded-md outline-none"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+            >
+              <option value="mcp:full">Full access — read + write + execute tools</option>
+              <option value="mcp:read">Read-only — list tools and resources, no mutations</option>
+            </select>
+          </div>
           <div className="flex gap-3">
             <div className="flex-1">
               <label className="block text-[11px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Requests / minute</label>
@@ -352,6 +366,9 @@ export default function ApiAccessPage() {
                       {getEmployeeName(k.agent_employee_id)}
                     </span>
                   )}
+                  <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'var(--surface)', color: 'var(--muted)' }}>
+                    {k.permissions.includes('mcp:read') && !k.permissions.includes('mcp:full') ? 'read-only' : 'full access'}
+                  </span>
                   {k.last_used_at && (
                     <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                       Last used {new Date(k.last_used_at).toLocaleDateString('en', { month: 'short', day: 'numeric' })}

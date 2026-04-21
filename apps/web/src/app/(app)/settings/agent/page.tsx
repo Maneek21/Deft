@@ -1243,7 +1243,7 @@ export default function AgentSettingsPage() {
                   </div>
                   <button
                     disabled
-                    title="Coming in Phase 8"
+                    title="Coming soon"
                     className="mt-2 text-[11px] px-3 py-1.5 rounded opacity-50 cursor-not-allowed"
                     style={{
                       background: 'var(--surface-container)',
