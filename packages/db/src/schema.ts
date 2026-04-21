@@ -1417,6 +1417,11 @@ export const agentEmployees = pgTable('agent_employees', {
   unhealthy_reason: text('unhealthy_reason'),
   last_heartbeat_at: timestamp('last_heartbeat_at'),
   is_active: boolean('is_active').default(true).notNull(),
+  // is_active=false is "pause" (resumable). is_deleted=true is a real
+  // soft-delete — the row is hidden from every list endpoint and cannot
+  // be restored from the UI. Separate semantics added in migration 0058.
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
   is_byoa: boolean('is_byoa').default(false).notNull(),
   byoa_model_info: text('byoa_model_info'),
   // ─── OpenClaw sidecar columns (Phase 2) ─────────────────────────────

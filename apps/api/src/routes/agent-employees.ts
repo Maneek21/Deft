@@ -78,7 +78,12 @@ agentEmployeeRoutes.get('/', async (c) => {
     const employees = await db
       .select()
       .from(agentEmployees)
-      .where(eq(agentEmployees.org_id, user.org_id))
+      .where(
+        and(
+          eq(agentEmployees.org_id, user.org_id),
+          eq(agentEmployees.is_deleted, false),
+        ),
+      )
       .orderBy(desc(agentEmployees.created_at));
 
     if (!wantsStats || employees.length === 0) {
@@ -1019,8 +1024,14 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       );
     }
 
-    // Soft delete: deactivate employee and user
-    await db.update(agentEmployees).set({ is_active: false }).where(eq(agentEmployees.id, id));
+    // Soft-delete: is_deleted=true + deleted_at. List endpoints filter
+    // is_deleted=false so the row disappears from the UI. The shadow user
+    // is flipped out of is_agent so cross-references don't spuriously
+    // render it as a real employee.
+    await db
+      .update(agentEmployees)
+      .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
+      .where(eq(agentEmployees.id, id));
     await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
 
     // Expire pending agent actions
