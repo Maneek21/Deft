@@ -48,12 +48,69 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     return;
   }
 
-  // ─── OpenClaw dispatch branch ────────────────────────────────────────
-  // Employees with `kind='openclaw'` are external agents running on a remote
-  // Gateway. We package the thread as an OpenAI-compatible chat completions
-  // request, POST to their Gateway, and parse the SSE reply into a Deft
-  // message row. `native` and legacy employees fall through to the existing
-  // runAgentQuery path below.
+  // ─── BYOA (MCP pull) branch ─────────────────────────────────────────
+  // Self-hosted v1: BYOA agents (is_byoa=true, no connection_url) run in
+  // the user's own Claude Code / Claude Desktop / custom runtime. Deft
+  // has no push endpoint for them — they pull via MCP. We queue the
+  // mention as a pending agent_actions row so the BYOA client can
+  // discover it through `poll_pending_work`, and post a subtle system
+  // note in the thread so the human sees the mention was received but
+  // the agent replies on its own schedule.
+  if (employee.is_byoa || !employee.connection_url) {
+    const { agentActions } = await import('@deft/db/schema');
+    try {
+      await db.insert(agentActions).values({
+        org_id: orgId,
+        user_id: author!.id,
+        agent_employee_id: employeeId,
+        source: 'mention',
+        action: 'chat_mention',
+        params: {
+          message_id: messageId,
+          space_id: spaceId,
+          author_name: author!.name,
+          content: triggerMsg.content,
+          is_dm: isDM,
+        },
+        approval_tier: 'auto',
+        approval_status: 'pending',
+      });
+    } catch (err) {
+      console.error(
+        `[agent-employee-message] failed to queue BYOA mention for ${employeeId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    // Post a subtle system note so the human knows the mention landed.
+    try {
+      const io = getIO();
+      const [sysMsg] = await db
+        .insert(messages)
+        .values({
+          org_id: orgId,
+          space_id: spaceId,
+          user_id: employee.user_id,
+          content: `_Mention received. ${employee.name} is a BYOA agent — check your Claude Code / MCP client to see the pending work._`,
+          parent_id: triggerMsg.parent_id ?? null,
+        })
+        .returning();
+      if (sysMsg && io) {
+        io.to(`space:${spaceId}`).emit('message:new', sysMsg);
+      }
+    } catch (err) {
+      console.warn(
+        `[agent-employee-message] BYOA system-note post failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    return;
+  }
+
+  // ─── OpenClaw Gateway dispatch branch ───────────────────────────────
+  // Employees with `kind='openclaw'` AND a connection_url are legacy
+  // gateway-hosted agents. POST to the Gateway, parse SSE reply.
+  // Native + legacy rows fall through to the runAgentQuery path below.
   if (employee.kind === 'openclaw') {
     try {
       await dispatchViaOpenClaw({
