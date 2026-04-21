@@ -4,6 +4,9 @@ import { useState, useEffect, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 
 const KnowledgeGraph = lazy(() => import('./graph'));
 import {
@@ -90,11 +93,13 @@ function CreatePageModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [scope, setScope] = useState<string>('org');
   const [summary, setSummary] = useState('');
   const [confidence, setConfidence] = useState(1.0);
+  const [tags, setTags] = useState('');
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async () => {
     if (!title.trim() || !content.trim()) return;
     setSaving(true);
+    const parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean).filter((t, i, arr) => arr.indexOf(t) === i);
     try {
       const res = await api.post('/api/wiki', {
         title: title.trim(),
@@ -103,6 +108,7 @@ function CreatePageModal({ onClose, onCreated }: { onClose: () => void; onCreate
         scope,
         summary: summary.trim() || null,
         confidence,
+        tags: parsedTags,
       });
       if (res.ok) {
         onCreated();
@@ -182,6 +188,14 @@ function CreatePageModal({ onClose, onCreated }: { onClose: () => void; onCreate
             style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }} />
         </div>
 
+        {/* Tags */}
+        <div>
+          <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--text-secondary)' }}>Tags (optional, comma-separated)</label>
+          <input value={tags} onChange={e => setTags(e.target.value)} placeholder="e.g. security, workflow, audit"
+            className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
+            style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }} />
+        </div>
+
         {/* Content */}
         <div>
           <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--text-secondary)' }}>Content</label>
@@ -240,8 +254,8 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState<{ title: string; content: string; summary: string; type: string; confidence: number }>({
-    title: '', content: '', summary: '', type: 'concept', confidence: 1.0,
+  const [editForm, setEditForm] = useState<{ title: string; content: string; summary: string; type: string; confidence: number; tags: string }>({
+    title: '', content: '', summary: '', type: 'concept', confidence: 1.0, tags: '',
   });
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -319,6 +333,7 @@ export default function KnowledgePage() {
       summary: detail.summary || '',
       type: detail.type,
       confidence: detail.confidence,
+      tags: (detail.tags ?? []).join(', '),
     });
     setEditing(true);
   };
@@ -327,12 +342,18 @@ export default function KnowledgePage() {
     if (!detail) return;
     setSaving(true);
     try {
+      const parsedTags = editForm.tags
+        .split(',')
+        .map(t => t.trim())
+        .filter(Boolean)
+        .filter((t, i, arr) => arr.indexOf(t) === i);
       const res = await api.patch(`/api/wiki/${detail.slug}`, {
         title: editForm.title.trim(),
         content: editForm.content.trim(),
         summary: editForm.summary.trim() || null,
         type: editForm.type,
         confidence: editForm.confidence,
+        tags: parsedTags,
       });
       if (res.ok) {
         setEditing(false);
@@ -578,6 +599,16 @@ export default function KnowledgePage() {
                       onChange={e => setEditForm(f => ({ ...f, confidence: parseInt(e.target.value) / 100 }))}
                       className="flex-1" />
                   </div>
+                  {/* Edit: tags */}
+                  <div className="mt-2">
+                    <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--text-tertiary)' }}>
+                      Tags (comma-separated)
+                    </label>
+                    <input value={editForm.tags} onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))}
+                      placeholder="e.g. security, workflow, audit"
+                      className="w-full px-2 py-1 rounded-lg text-[12px] outline-none"
+                      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }} />
+                  </div>
                 </>
               ) : (
                 <>
@@ -602,6 +633,16 @@ export default function KnowledgePage() {
                   {detail.summary && (
                     <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>{detail.summary}</p>
                   )}
+                  {detail.tags && detail.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {detail.tags.map(tag => (
+                        <span key={tag} className="text-[9px] font-medium px-1.5 py-0.5 rounded-full"
+                          style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <p className="text-[11px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
                     Updated {formatRelative(detail.updated_at)}
                   </p>
@@ -617,8 +658,13 @@ export default function KnowledgePage() {
                   className="w-full text-[13px] leading-relaxed outline-none resize-y bg-transparent"
                   style={{ color: 'var(--text-primary)' }} />
               ) : (
-                <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>
-                  {detail.content}
+                <div className="text-[13px] leading-relaxed prose prose-sm max-w-none" style={{ color: 'var(--text-primary)' }}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[[rehypeSanitize, defaultSchema]]}
+                  >
+                    {detail.content}
+                  </ReactMarkdown>
                 </div>
               )}
             </div>
@@ -814,8 +860,15 @@ export default function KnowledgePage() {
           {/* Search */}
           <input
             value={searchQuery}
-            onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
+            onChange={e => {
+              const val = e.target.value;
+              // Auto-clear type filter when starting a search so results span all types
+              if (val && !searchQuery) setFilter('all');
+              setSearchQuery(val);
+              setPage(1);
+            }}
             placeholder="Search wiki..."
+            title="Search returns results across all types — clear the search to refine by type."
             className="flex-shrink-0 w-36 px-3 py-1.5 rounded-lg text-[12px] outline-none"
             style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
           />

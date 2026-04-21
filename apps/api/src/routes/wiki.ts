@@ -467,6 +467,7 @@ const createPageSchema = z.object({
   space_id: z.string().nullable().optional(),
   summary: z.string().nullable().optional(),
   confidence: z.number().min(0).max(1).optional(),
+  tags: z.array(z.string()).optional(),
   related_slugs: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
 });
 
@@ -479,7 +480,7 @@ wikiRoutes.post('/', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const { title, content, type, scope, space_id, summary, confidence, related_slugs } = parsed.data;
+    const { title, content, type, scope, space_id, summary, confidence, tags, related_slugs } = parsed.data;
 
     // Validate space_id belongs to org when scope is 'space'
     if (scope === 'space') {
@@ -518,6 +519,7 @@ wikiRoutes.post('/', async (c) => {
       summary: summary || null,
       content,
       confidence: confidence ?? 1.0,
+      tags: tags && tags.length > 0 ? tags : [],
     }).returning();
 
     // Create links to related pages
@@ -563,6 +565,7 @@ const updatePageSchema = z.object({
   summary: z.string().nullable().optional(),
   type: z.enum(['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  tags: z.array(z.string()).optional(),
   related_slugs: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
 });
 
@@ -606,6 +609,7 @@ wikiRoutes.patch('/:slug', async (c) => {
       updates.previous_content = existing.content;
       updates.version = existing.version + 1;
     }
+    if (parsed.data.tags !== undefined) updates.tags = parsed.data.tags;
 
     if (Object.keys(updates).length === 0 && !parsed.data.related_slugs) {
       return c.json({ error: 'No fields to update', code: 'EMPTY_UPDATE' }, 400);
