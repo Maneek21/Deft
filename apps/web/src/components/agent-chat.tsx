@@ -24,15 +24,30 @@ function AgentThinking({ toolStatus }: { toolStatus?: string }) {
   const display = toolStatus
     ? (/^(mcp__|[a-z_]+$)/.test(toolStatus) ? formatToolLabel(toolStatus) : toolStatus)
     : 'Thinking...';
+
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <div className="flex items-center gap-2.5 py-0.5">
-      <div className="relative w-4 h-4 flex-shrink-0">
-        <div className="absolute inset-0 rounded-full border-[1.5px] border-t-transparent animate-spin"
-          style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+    <div className="flex flex-col gap-1 py-0.5">
+      <div className="flex items-center gap-2.5">
+        <div className="relative w-4 h-4 flex-shrink-0">
+          <div className="absolute inset-0 rounded-full border-[1.5px] border-t-transparent animate-spin"
+            style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+        </div>
+        <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+          {display} {elapsed > 2 ? `${elapsed}s` : ''}
+        </span>
       </div>
-      <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
-        {display}
-      </span>
+      {elapsed >= 20 && (
+        <div className="text-[11px]" style={{ color: 'var(--outline)' }}>
+          Complex tool calls can take up to 60s...
+        </div>
+      )}
     </div>
   );
 }
