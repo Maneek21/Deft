@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import useSWR from 'swr';
-import { BookOpen, Loader2, Layers, FileStack, X, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Loader2, Layers, FileStack, X, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { PageHeader } from '@/components/page-header';
+import { TabStrip } from '@/components/tab-strip';
 
 const fetcher = async (url: string) => {
   const res = await api.get(url);
@@ -597,52 +599,42 @@ export default function LibraryPage() {
   const templates: Template[] = templatesData?.templates ?? [];
 
   return (
-    <div className="flex flex-col h-full p-4 md:p-6 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-4 flex-shrink-0">
-        <BookOpen size={20} style={{ color: 'var(--accent)' }} />
-        <h1 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Library
-        </h1>
-      </div>
-      <p className="text-[13px] mb-5 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>
-        Browse skills to install on agents and task templates to apply to projects.
-      </p>
-
-      {/* Tab bar */}
-      <div
-        className="flex gap-1 mb-5 flex-shrink-0 border-b"
-        style={{ borderColor: 'var(--border-default)' }}
-      >
-        <button
-          onClick={() => setTab('skills')}
-          className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors"
-          style={{
-            color: tab === 'skills' ? 'var(--accent)' : 'var(--text-tertiary)',
-            borderBottom: tab === 'skills' ? '2px solid var(--accent)' : '2px solid transparent',
-            marginBottom: '-1px',
-          }}
-        >
-          <Layers size={14} />
-          Skills
-        </button>
-        <button
-          onClick={() => setTab('templates')}
-          className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors"
-          style={{
-            color: tab === 'templates' ? 'var(--accent)' : 'var(--text-tertiary)',
-            borderBottom: tab === 'templates' ? '2px solid var(--accent)' : '2px solid transparent',
-            marginBottom: '-1px',
-          }}
-        >
-          <FileStack size={14} />
-          Templates
-        </button>
-      </div>
+    <div className="flex flex-col h-full overflow-hidden">
+      <PageHeader
+        title="Library"
+        description="Browse skills to install on agents and task templates to apply to projects."
+        secondary={
+          <TabStrip>
+            <button
+              onClick={() => setTab('skills')}
+              className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors flex-shrink-0"
+              style={{
+                color: tab === 'skills' ? 'var(--accent)' : 'var(--text-tertiary)',
+                borderBottom: tab === 'skills' ? '2px solid var(--accent)' : '2px solid transparent',
+              }}
+            >
+              <Layers size={14} />
+              Skills
+            </button>
+            <button
+              onClick={() => setTab('templates')}
+              className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors flex-shrink-0"
+              style={{
+                color: tab === 'templates' ? 'var(--accent)' : 'var(--text-tertiary)',
+                borderBottom: tab === 'templates' ? '2px solid var(--accent)' : '2px solid transparent',
+              }}
+            >
+              <FileStack size={14} />
+              Templates
+            </button>
+          </TabStrip>
+        }
+        compact
+      />
 
       {/* Skills tab */}
       {tab === 'skills' && (
-        <div className="flex-1 overflow-y-auto space-y-2">
+        <div className="flex-1 overflow-y-auto space-y-2 px-4 md:px-6 pb-4">
           {skillsErr && (
             <p className="text-[13px]" style={{ color: '#EF4444' }}>
               Failed to load skills.
@@ -725,7 +717,7 @@ export default function LibraryPage() {
 
       {/* Templates tab */}
       {tab === 'templates' && (
-        <div className="flex-1 overflow-y-auto space-y-2">
+        <div className="flex-1 overflow-y-auto space-y-2 px-4 md:px-6 pb-4">
           {templatesErr && (
             <p className="text-[13px]" style={{ color: '#EF4444' }}>
               Failed to load templates.
