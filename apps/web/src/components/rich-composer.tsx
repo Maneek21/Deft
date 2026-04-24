@@ -568,8 +568,8 @@ export function RichComposer({
               </button>
             )}
           </div>
-          {hasContent && (
-            <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1">
+            {hasContent && (
               <div className="relative">
                 <button onClick={() => setScheduleOpen(!scheduleOpen)}
                   className="p-1.5 rounded-md" style={{ color: 'var(--outline)' }} title="Schedule send">
@@ -612,15 +612,18 @@ export function RichComposer({
                   </div>
                 )}
               </div>
-              <button
-                onClick={handleSend}
-                className="p-1.5 text-white"
-                style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
-              >
-                <Send size={14} strokeWidth={1.5} />
-              </button>
-            </div>
-          )}
+            )}
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!hasContent}
+              aria-label="Send message"
+              className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+              style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+            >
+              <Send size={16} strokeWidth={2} />
+            </button>
+          </div>
         </div>
       </div>
 
