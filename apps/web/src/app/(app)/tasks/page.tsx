@@ -157,6 +157,15 @@ export default function TasksPage() {
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Mobile-spillover P2-2: calendar cells (~55px wide) can't fit task content
+  // on mobile. Auto-redirect to list view when width < 768 and calendar is active.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.innerWidth < 768 && view === 'calendar') {
+      setQuery({ view: 'list' });
+    }
+  }, [view]);
+
   const currentProjectId = searchParams.get('project');
   const isMyTasksView = searchParams.get('view') === 'my';
 
