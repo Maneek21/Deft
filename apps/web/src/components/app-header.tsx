@@ -23,7 +23,8 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
   if (pathname.startsWith('/agent')) placeholder = 'Search conversations... ⌘K';
 
-  let breadcrumb = 'Dashboard';
+  let breadcrumb = 'Deft';
+  if (pathname.startsWith('/dashboard')) breadcrumb = 'Dashboard';
   if (pathname.startsWith('/chat')) breadcrumb = 'Chat';
   if (pathname.startsWith('/tasks')) breadcrumb = 'Tasks';
   if (pathname.startsWith('/agent')) breadcrumb = 'Agent';
@@ -32,6 +33,8 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   if (pathname.startsWith('/knowledge')) breadcrumb = 'Knowledge';
   if (pathname.startsWith('/calendar')) breadcrumb = 'Calendar';
   if (pathname.startsWith('/skills')) breadcrumb = 'Skills';
+  if (pathname.startsWith('/library')) breadcrumb = 'Library';
+  if (pathname.startsWith('/reminders')) breadcrumb = 'Reminders';
 
   // Fetch unread notification count on mount
   useEffect(() => {
