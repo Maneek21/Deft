@@ -15,6 +15,8 @@ import {
   Plus, Pencil, Trash2, X, Check, History, GitBranch,
   Activity, Download, BarChart3, AlertTriangle, RotateCcw, RefreshCw,
 } from 'lucide-react';
+import { PageHeader } from '@/components/page-header';
+import { OverflowMenu } from '@/components/overflow-menu';
 
 const TYPE_CONFIG: Record<string, { label: string; color: string; icon: React.ComponentType<any> }> = {
   concept: { label: 'Concepts', color: '#8B5CF6', icon: Brain },
@@ -809,101 +811,153 @@ export default function KnowledgePage() {
 
   // List view
   return (
-    <div className="flex flex-col h-full p-4 md:p-6 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <BookOpen size={20} style={{ color: 'var(--accent)' }} />
-          <h1 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>Knowledge Wiki</h1>
-          <button onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors"
-            style={{ background: 'var(--accent)', color: 'white' }}>
-            <Plus size={12} /> New
-          </button>
-        </div>
-        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto flex-shrink-0">
-          {/* View mode toggles */}
-          {([
-            { key: 'pages', icon: BookOpen, label: 'Pages' },
-            { key: 'activity', icon: Activity, label: 'Activity' },
-            { key: 'stats', icon: BarChart3, label: 'Stats' },
-          ] as const).map(v => (
-            <button key={v.key} onClick={() => {
-              setViewMode(v.key);
-              setShowGraph(false);
-              if (v.key === 'activity' && activityLog.length === 0) fetchActivity();
-              if (v.key === 'stats' && !stats) fetchStats();
-            }}
-              className="flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
-              style={{
-                background: viewMode === v.key ? 'var(--accent)' : 'transparent',
-                color: viewMode === v.key ? 'white' : 'var(--text-tertiary)',
-              }}>
-              <v.icon size={12} /> {v.label}
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Page header — mobile-trimmed */}
+      <PageHeader
+        title="Knowledge Wiki"
+        compact
+        primary={
+          <>
+            {/* + New */}
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors"
+              style={{ background: 'var(--accent)', color: 'white' }}
+            >
+              <Plus size={12} /> New
             </button>
-          ))}
-          <button onClick={() => { if (!showGraph) fetchGraph(); setShowGraph(!showGraph); setViewMode('pages'); }}
-            className="flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
-            style={{
-              background: showGraph ? 'var(--accent)' : 'transparent',
-              color: showGraph ? 'white' : 'var(--text-tertiary)',
-            }}>
-            <GitBranch size={12} /> Graph
-          </button>
-          {/* Export */}
-          <a href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/wiki/export?format=md`}
-            target="_blank" rel="noopener noreferrer"
-            className="flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium"
-            style={{ color: 'var(--text-tertiary)' }}>
-            <Download size={12} />
-          </a>
-          {/* Search */}
-          <input
-            value={searchQuery}
-            onChange={e => {
-              const val = e.target.value;
-              // Auto-clear type filter when starting a search so results span all types
-              if (val && !searchQuery) setFilter('all');
-              setSearchQuery(val);
-              setPage(1);
-            }}
-            placeholder="Search wiki..."
-            title="Search returns results across all types — clear the search to refine by type."
-            className="flex-shrink-0 w-36 px-3 py-1.5 rounded-lg text-[12px] outline-none"
-            style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
-          />
-        </div>
-      </div>
+            {/* Pages (primary view toggle — always visible) */}
+            <button
+              onClick={() => { setViewMode('pages'); setShowGraph(false); }}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+              style={{
+                background: viewMode === 'pages' && !showGraph ? 'var(--surface-container-high)' : 'transparent',
+                color: viewMode === 'pages' && !showGraph ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              }}
+            >
+              <BookOpen size={12} /> Pages
+            </button>
+            {/* Graph toggle */}
+            <button
+              onClick={() => { if (!showGraph) fetchGraph(); setShowGraph(!showGraph); setViewMode('pages'); }}
+              className="hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+              style={{
+                background: showGraph ? 'var(--surface-container-high)' : 'transparent',
+                color: showGraph ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              }}
+            >
+              <GitBranch size={12} /> Graph
+            </button>
+            {/* Search */}
+            <input
+              value={searchQuery}
+              onChange={e => {
+                const val = e.target.value;
+                // Auto-clear type filter when starting a search so results span all types
+                if (val && !searchQuery) setFilter('all');
+                setSearchQuery(val);
+                setPage(1);
+              }}
+              placeholder="Search wiki..."
+              title="Search returns results across all types — clear the search to refine by type."
+              className="w-28 md:w-36 px-3 py-1.5 rounded-lg text-[12px] outline-none"
+              style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+            />
+            {/* Overflow menu — Activity, Stats, Graph (mobile), Export */}
+            <OverflowMenu
+              items={[
+                {
+                  label: 'Activity',
+                  onClick: () => {
+                    setViewMode('activity');
+                    setShowGraph(false);
+                    if (activityLog.length === 0) fetchActivity();
+                  },
+                },
+                {
+                  label: 'Stats',
+                  onClick: () => {
+                    setViewMode('stats');
+                    setShowGraph(false);
+                    if (!stats) fetchStats();
+                  },
+                },
+                {
+                  label: 'Graph',
+                  onClick: () => { if (!showGraph) fetchGraph(); setShowGraph(true); setViewMode('pages'); },
+                },
+                {
+                  label: 'Export',
+                  onClick: () => {
+                    window.open(
+                      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/wiki/export?format=md`,
+                      '_blank',
+                    );
+                  },
+                },
+              ]}
+            />
+          </>
+        }
+        secondary={
+          <div className="flex flex-col gap-1 px-1">
+            {/* Scope axis: <select> on mobile, inline tab strip on md+ */}
+            <div className="flex gap-1">
+              {/* Mobile: select */}
+              <select
+                value={scopeFilter}
+                onChange={e => { setScopeFilter(e.target.value); setPage(1); }}
+                className="md:hidden text-[0.8125rem] rounded-md px-2 py-1 outline-none"
+                style={{
+                  background: 'var(--surface-container-low)',
+                  border: '1px solid var(--border-default)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {scopeFilters.map(f => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+              {/* Desktop: inline pill buttons */}
+              <div className="hidden md:flex gap-1">
+                {scopeFilters.map(f => (
+                  <button
+                    key={f.value}
+                    onClick={() => { setScopeFilter(f.value); setPage(1); }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
+                    style={{
+                      background: scopeFilter === f.value ? 'var(--surface-container-high)' : 'transparent',
+                      color: scopeFilter === f.value ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-      {/* Scope filter */}
-      <div className="flex gap-1 mb-2 flex-shrink-0">
-        {scopeFilters.map((f) => (
-          <button key={f.value} onClick={() => { setScopeFilter(f.value); setPage(1); }}
-            className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-            style={{
-              background: scopeFilter === f.value ? 'var(--surface-container-high)' : 'transparent',
-              color: scopeFilter === f.value ? 'var(--text-primary)' : 'var(--text-tertiary)',
-            }}>
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Type filter tabs */}
-      <div className="flex flex-nowrap gap-1 mb-4 flex-shrink-0 overflow-x-auto">
-        {typeFilters.map((f) => (
-          <button key={f.value} onClick={() => { setFilter(f.value); setPage(1); }}
-            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
-            style={{
-              background: filter === f.value ? 'var(--accent)' : 'var(--surface-container-low)',
-              color: filter === f.value ? 'white' : 'var(--text-secondary)',
-            }}>
-            {f.label}
-          </button>
-        ))}
-      </div>
+            {/* Type axis: scrollable tab strip on both mobile + desktop */}
+            <div className="flex flex-nowrap gap-1 overflow-x-auto">
+              {typeFilters.map(f => (
+                <button
+                  key={f.value}
+                  onClick={() => { setFilter(f.value); setPage(1); }}
+                  className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
+                  style={{
+                    background: filter === f.value ? 'var(--accent)' : 'var(--surface-container-low)',
+                    color: filter === f.value ? 'white' : 'var(--text-secondary)',
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        }
+      />
 
       {/* Entries */}
+      <div className="flex flex-col flex-1 overflow-hidden px-4 md:px-6 pb-4 md:pb-6">
       {/* Graph View — interactive force-directed graph */}
       {showGraph && (
         <div className="flex-1 rounded-lg overflow-hidden"
@@ -1229,6 +1283,8 @@ export default function KnowledgePage() {
           </div>
         )}
       </div>
+
+      </div>{/* /entries wrapper */}
 
       {/* Create Modal */}
       {showCreate && (
