@@ -973,16 +973,26 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
             />
             <div className="pr-2 pb-2">
               {streaming ? (
-                <button onClick={() => abortRef.current?.abort()}
-                  className="p-2 rounded-lg" style={{ color: 'var(--danger)' }}>
+                <button
+                  onClick={() => abortRef.current?.abort()}
+                  aria-label="Stop generating"
+                  className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg"
+                  style={{ color: 'var(--danger)' }}
+                >
                   <Square size={16} fill="currentColor" />
                 </button>
-              ) : input.trim() ? (
-                <button onClick={() => sendMessage(input)}
-                  className="p-2 rounded-lg text-white" style={{ background: 'var(--accent)' }}>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => sendMessage(input)}
+                  disabled={!input.trim()}
+                  aria-label="Send message"
+                  className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg text-white disabled:opacity-40"
+                  style={{ background: 'var(--accent)' }}
+                >
                   <Send size={16} />
                 </button>
-              ) : null}
+              )}
             </div>
           </div>
         </div>
