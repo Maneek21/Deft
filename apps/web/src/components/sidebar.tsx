@@ -708,6 +708,16 @@ export function Sidebar({
     return () => document.removeEventListener('mousedown', handler);
   }, [userMenuOpen]);
 
+  // Escape-key handler for mobile drawer
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [mobileOpen, setMobileOpen]);
+
   const toggleDnd = async () => {
     const next = !dnd;
     setDnd(next);
@@ -1042,6 +1052,9 @@ export function Sidebar({
 
       {/* Sidebar — NO borderRight, tonal layering only */}
       <aside
+        role={mobileOpen ? 'dialog' : undefined}
+        aria-modal={mobileOpen ? 'true' : undefined}
+        aria-label={mobileOpen ? 'Navigation' : undefined}
         className={`
           fixed md:relative z-50 md:z-auto
           h-full flex flex-col
