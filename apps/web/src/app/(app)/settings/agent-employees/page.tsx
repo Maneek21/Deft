@@ -140,10 +140,10 @@ export default function AgentEmployeesPage() {
           {employees.map((emp) => (
             <div
               key={emp.id}
-              className="flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer"
+              className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-4 py-3 rounded-lg cursor-pointer"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
             >
-              {/* Clickable area: avatar + name/role + daily actions + status */}
+              {/* Clickable area: avatar + name/role + secondary metadata */}
               <Link
                 href={`/settings/agent-employees/${emp.id}/developer`}
                 className="flex items-center gap-3 flex-1 min-w-0"
@@ -156,7 +156,7 @@ export default function AgentEmployeesPage() {
                   {emp.name.charAt(0).toUpperCase()}
                 </div>
 
-                {/* Name & role */}
+                {/* Name, role, and secondary metadata stacked */}
                 <div className="flex-1 min-w-0">
                   <p
                     className="text-[14px] font-medium truncate"
@@ -164,7 +164,7 @@ export default function AgentEmployeesPage() {
                   >
                     {emp.name}
                   </p>
-                  <div className="flex items-center gap-2 mt-0.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
                     <span
                       className="text-[11px] px-1.5 py-0.5 rounded"
                       style={{
@@ -178,82 +178,79 @@ export default function AgentEmployeesPage() {
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                       {TRUST_LABELS[emp.trust_level] || emp.trust_level}
                     </span>
-                  </div>
-                </div>
-
-                {/* Daily actions */}
-                <div className="text-right flex-shrink-0 mr-1">
-                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                    {emp.daily_actions_used ?? 0}/{emp.max_daily_actions} actions
-                  </p>
-                </div>
-
-                {/* Status indicator */}
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <div
-                    className="w-2 h-2 rounded-full"
-                    style={{ background: emp.is_active ? '#10b981' : '#9ca3af' }}
-                  />
-                  <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                    {emp.is_active ? 'Active' : 'Paused'}
-                  </span>
-                  {emp.heartbeat_enabled && (
-                    <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '8px' }}>
-                      &#9829; every {emp.heartbeat_interval_min}m
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {emp.daily_actions_used ?? 0}/{emp.max_daily_actions} actions
                     </span>
-                  )}
+                    <div className="flex items-center gap-1">
+                      <div
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: emp.is_active ? '#10b981' : '#9ca3af' }}
+                      />
+                      <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                        {emp.is_active ? 'Active' : 'Paused'}
+                      </span>
+                      {emp.heartbeat_enabled && (
+                        <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '4px' }}>
+                          &#9829; every {emp.heartbeat_interval_min}m
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </Link>
 
-              {/* Toggle switch */}
-              <button
-                onClick={(e) => { e.stopPropagation(); handleToggleActive(emp); }}
-                disabled={togglingId === emp.id}
-                className="relative flex-shrink-0"
-                style={{ width: 36, height: 20 }}
-                title={emp.is_active ? 'Pause agent' : 'Resume agent'}
-              >
-                <div
-                  className="absolute inset-0 rounded-full transition-colors"
-                  style={{
-                    background: emp.is_active ? 'var(--accent)' : 'var(--border)',
-                  }}
-                />
-                <div
-                  className="absolute top-0.5 w-4 h-4 rounded-full transition-transform bg-white"
-                  style={{
-                    left: 2,
-                    transform: emp.is_active ? 'translateX(16px)' : 'translateX(0)',
-                  }}
-                />
-              </button>
-
-              {/* Delete */}
-              {confirmDelete === emp.id ? (
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button
-                    onClick={() => handleDelete(emp.id)}
-                    className="text-[11px] px-2 py-0.5 rounded"
-                    style={{ background: 'var(--error)', color: 'white' }}
-                  >
-                    Confirm
-                  </button>
-                  <button onClick={() => setConfirmDelete(null)}>
-                    <X size={12} style={{ color: 'var(--muted)' }} />
-                  </button>
-                </div>
-              ) : (
+              {/* Controls row — inline on md+, drops below on mobile */}
+              <div className="flex items-center gap-3 flex-shrink-0 ml-12 md:ml-0">
+                {/* Toggle switch */}
                 <button
-                  onClick={() => setConfirmDelete(emp.id)}
-                  className="p-1 rounded flex-shrink-0"
-                  style={{ color: 'var(--muted)' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-                  onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.5')}
-                  title="Delete agent"
+                  onClick={(e) => { e.stopPropagation(); handleToggleActive(emp); }}
+                  disabled={togglingId === emp.id}
+                  className="relative"
+                  style={{ width: 36, height: 20 }}
+                  title={emp.is_active ? 'Pause agent' : 'Resume agent'}
                 >
-                  <Trash2 size={13} />
+                  <div
+                    className="absolute inset-0 rounded-full transition-colors"
+                    style={{
+                      background: emp.is_active ? 'var(--accent)' : 'var(--border)',
+                    }}
+                  />
+                  <div
+                    className="absolute top-0.5 w-4 h-4 rounded-full transition-transform bg-white"
+                    style={{
+                      left: 2,
+                      transform: emp.is_active ? 'translateX(16px)' : 'translateX(0)',
+                    }}
+                  />
                 </button>
-              )}
+
+                {/* Delete */}
+                {confirmDelete === emp.id ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleDelete(emp.id)}
+                      className="text-[11px] px-2 py-0.5 rounded"
+                      style={{ background: 'var(--error)', color: 'white' }}
+                    >
+                      Confirm
+                    </button>
+                    <button onClick={() => setConfirmDelete(null)}>
+                      <X size={12} style={{ color: 'var(--muted)' }} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(emp.id)}
+                    className="p-1 rounded"
+                    style={{ color: 'var(--muted)' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+                    onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.5')}
+                    title="Delete agent"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
