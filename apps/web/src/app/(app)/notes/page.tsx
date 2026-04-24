@@ -166,9 +166,9 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
       className="group p-4 rounded-lg cursor-pointer transition-all hover:shadow-sm"
       style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
       <div className="flex items-start gap-2 mb-2">
-        <span className="text-[18px] flex-shrink-0">{note.icon || '\uD83D\uDCC4'}</span>
+        {note.icon && <span className="text-[18px] flex-shrink-0">{note.icon}</span>}
         <div className="flex-1 min-w-0">
-          <h3 className="text-[14px] font-semibold truncate"
+          <h3 className="text-[14px] font-semibold line-clamp-2 md:truncate"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
             {note.title || 'Untitled'}
           </h3>
