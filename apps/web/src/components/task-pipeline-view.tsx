@@ -12,9 +12,12 @@
  * Column footer shows a sum of deal_value + task count so Sales skill users
  * can eyeball pipeline weight at a glance. Other skill kinds (Marketing
  * campaign, Engineering) see only the count.
+ *
+ * Mobile (< md): collapses to a single-column view with a stage select
+ * above, mirroring the Board view's status-tab pattern (Mobile-spillover P2-1).
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { ResolvedStatus, PriorityVocab, CanonicalPriority } from '@/hooks/use-project-resolved-config';
 import { priorityLabel } from '@/hooks/use-project-resolved-config';
 
@@ -62,10 +65,31 @@ export function TaskPipelineView<T extends PipelineTask>({
   priorityVocab,
   onTaskClick,
 }: Props<T>) {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
   const stages = useMemo(() => {
     if (!statuses || statuses.length === 0) return [] as ResolvedStatus[];
     return [...statuses].sort((a, b) => a.order - b.order);
   }, [statuses]);
+
+  const [activeStageId, setActiveStageId] = useState<string>(() => {
+    if (!statuses || statuses.length === 0) return '';
+    const sorted = [...statuses].sort((a, b) => a.order - b.order);
+    return sorted[0]?.id ?? '';
+  });
+
+  // Keep activeStageId valid when statuses change
+  useEffect(() => {
+    if (stages.length === 0) return;
+    const has = stages.some((s) => s.id === activeStageId);
+    if (!has) setActiveStageId(stages[0]!.id);
+  }, [stages, activeStageId]);
 
   const stageTasks = useMemo(() => {
     const map = new Map<string, T[]>();
@@ -88,8 +112,35 @@ export function TaskPipelineView<T extends PipelineTask>({
   }
 
   return (
-    <div className="flex h-full overflow-x-auto px-4 py-4 gap-3">
-      {stages.map((stage) => {
+    <div className="flex flex-col h-full">
+      {/* Mobile: stage select — hidden on md+ */}
+      {isMobile && stages.length > 0 && (
+        <div className="flex-shrink-0 px-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+          <select
+            value={activeStageId}
+            onChange={(e) => setActiveStageId(e.target.value)}
+            className="w-full rounded-lg px-3 py-2 text-[13px] font-medium"
+            style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              color: 'var(--foreground)',
+              fontFamily: 'var(--font-heading)',
+            }}
+          >
+            {stages.map((s) => {
+              const count = (stageTasks.get(s.id) ?? []).length;
+              return (
+                <option key={s.id} value={s.id}>
+                  {s.label} ({count})
+                </option>
+              );
+            })}
+          </select>
+        </div>
+      )}
+      {/* Columns wrapper */}
+      <div className={isMobile ? 'flex-1 overflow-y-auto px-4 py-4' : 'flex flex-1 overflow-x-auto px-4 py-4 gap-3'}>
+      {stages.filter((s) => !isMobile || s.id === activeStageId).map((stage) => {
         const items = stageTasks.get(stage.id) ?? [];
         // Deal-value sum — only meaningful when at least one card has it set.
         let valueSum = 0;
@@ -105,7 +156,7 @@ export function TaskPipelineView<T extends PipelineTask>({
         return (
           <div
             key={stage.id}
-            className="flex flex-col w-[320px] min-w-[320px] rounded-lg"
+            className={`flex flex-col rounded-lg ${isMobile ? 'w-full' : 'w-[320px] min-w-[320px]'}`}
             style={{ background: 'var(--surface)' }}
           >
             {/* Stage header */}
@@ -243,6 +294,7 @@ export function TaskPipelineView<T extends PipelineTask>({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
