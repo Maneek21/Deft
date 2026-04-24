@@ -72,6 +72,18 @@ export default function CalendarPage() {
     router.replace(`/calendar?view=${nextView}&date=${dateStr}`);
   }, [router]);
 
+  // ── Mobile: auto-redirect week→day on small screens ──
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.innerWidth < 768 && view === 'week') {
+      setView('day');
+      setQuery('day', anchor);
+    }
+  // Run once on mount and whenever view changes (e.g. if user manually selects week on mobile)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
   // ── Data fetching ──
 
   const refetchCalData = useCallback(async () => {

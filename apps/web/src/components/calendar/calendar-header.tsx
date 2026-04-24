@@ -78,7 +78,7 @@ export function CalendarHeader({
                 )}
               </>
             ) : (
-              <Link href="/settings/integrations" className="flex items-center gap-1 hover:underline"
+              <Link href="/settings/integrations" className="hidden md:flex items-center gap-1 hover:underline"
                 style={{ color: 'var(--accent)' }}>
                 <LinkIcon size={11} />
                 Connect Calendar
