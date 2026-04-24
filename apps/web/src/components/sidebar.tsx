@@ -881,7 +881,7 @@ export function Sidebar({
 
       {/* Bottom user section — no border, tonal separation */}
       <div
-        className="px-3 flex items-center gap-2 flex-shrink-0"
+        className="px-3 flex items-center gap-2 flex-shrink-0 pb-[max(env(safe-area-inset-bottom),12px)]"
         style={{
           height: '56px',
           background: 'rgba(0,0,0,0.08)',
