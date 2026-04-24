@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, Bell, Menu, Moon } from 'lucide-react';
 import { NotificationPanel } from './notification-panel';
@@ -10,7 +10,13 @@ import { useAuth } from '@/lib/auth-context';
 
 const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
-export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
+export function AppHeader({
+  onMenuClick,
+  pageContext,
+}: {
+  onMenuClick?: () => void;
+  pageContext?: ReactNode;
+}) {
   const pathname = usePathname();
   const { user } = useAuth();
   const isDnd = user?.status_text === 'Do Not Disturb';
@@ -22,19 +28,6 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   if (pathname.startsWith('/chat')) placeholder = 'Search messages... ⌘K';
   if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
   if (pathname.startsWith('/agent')) placeholder = 'Search conversations... ⌘K';
-
-  let breadcrumb = 'Deft';
-  if (pathname.startsWith('/dashboard')) breadcrumb = 'Dashboard';
-  if (pathname.startsWith('/chat')) breadcrumb = 'Chat';
-  if (pathname.startsWith('/tasks')) breadcrumb = 'Tasks';
-  if (pathname.startsWith('/agent')) breadcrumb = 'Agent';
-  if (pathname.startsWith('/settings')) breadcrumb = 'Settings';
-  if (pathname.startsWith('/notes')) breadcrumb = 'Notes';
-  if (pathname.startsWith('/knowledge')) breadcrumb = 'Knowledge';
-  if (pathname.startsWith('/calendar')) breadcrumb = 'Calendar';
-  if (pathname.startsWith('/skills')) breadcrumb = 'Skills';
-  if (pathname.startsWith('/library')) breadcrumb = 'Library';
-  if (pathname.startsWith('/reminders')) breadcrumb = 'Reminders';
 
   // Fetch unread notification count on mount
   useEffect(() => {
@@ -82,12 +75,10 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
           <Menu size={18} strokeWidth={1.5} />
         </button>
       )}
-      {/* Breadcrumb */}
-      <span className="text-[0.8125rem] font-medium" style={{ color: 'var(--on-surface-variant)' }}>
-        {breadcrumb}
-      </span>
-
-      <div className="flex-1" />
+      {/* Page context slot */}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
+        {pageContext}
+      </div>
 
       {/* Search — full bar on desktop, icon-only on mobile */}
       <button
