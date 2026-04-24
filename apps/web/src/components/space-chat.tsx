@@ -28,6 +28,7 @@ import {
   Bookmark,
   Mic,
   ChevronDown,
+  ChevronRight,
   Bell,
   BellOff,
   MailOpen,
@@ -2207,8 +2208,9 @@ function ThreadIndicator({
       {hasUnread && (
         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: 'var(--primary, #6366f1)' }} />
       )}
-      <span className="group-hover:underline">
-        {replyCount} thread {replyCount === 1 ? 'reply' : 'replies'} &gt;
+      <span className="group-hover:underline inline-flex items-center gap-1">
+        {replyCount} thread {replyCount === 1 ? 'reply' : 'replies'}
+        <ChevronRight size={12} strokeWidth={2} />
       </span>
       {latestReplyAt && (
         <span className="text-[11px]" style={{ color: 'var(--outline)' }}>
