@@ -28,6 +28,10 @@ try {
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@deft/shared'],
+  // Hide the floating Next.js dev-tools indicator — it overlapped composer/FAB
+  // on mobile audits. The badge is dev-only either way; this also hides the
+  // build-activity spinner during dev.
+  devIndicators: false,
 };
 
 export default nextConfig;
