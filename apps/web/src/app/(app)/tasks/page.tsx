@@ -26,11 +26,12 @@ import {
   MousePointerSquareDashed,
   X,
   Trash2,
-  CalendarRange,
+  GanttChartSquare,
   CalendarDays,
   GitBranch,
   FileText,
 } from 'lucide-react';
+import { TabStrip } from '@/components/tab-strip';
 
 const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
@@ -737,11 +738,12 @@ export default function TasksPage() {
             )}
 
             {/* View toggle */}
-            <div
-              className="flex items-center rounded-md p-0.5"
+            <TabStrip
+              className="items-center rounded-md p-0.5"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
             >
               <button
+                aria-label="Board view"
                 onClick={() => { setQuery({ view: 'board' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
@@ -754,6 +756,7 @@ export default function TasksPage() {
                 <span className="hidden md:inline">Board</span>
               </button>
               <button
+                aria-label="List view"
                 onClick={() => { setQuery({ view: 'list' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
@@ -766,6 +769,7 @@ export default function TasksPage() {
                 <span className="hidden md:inline">List</span>
               </button>
               <button
+                aria-label="Timeline view"
                 onClick={() => { setQuery({ view: 'timeline' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
@@ -774,10 +778,11 @@ export default function TasksPage() {
                   fontFamily: 'var(--font-heading)',
                 }}
               >
-                <CalendarRange size={13} />
+                <GanttChartSquare size={13} />
                 <span className="hidden md:inline">Timeline</span>
               </button>
               <button
+                aria-label="Calendar view"
                 onClick={() => { setQuery({ view: 'calendar' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
@@ -790,6 +795,7 @@ export default function TasksPage() {
                 <span className="hidden md:inline">Calendar</span>
               </button>
               <button
+                aria-label="Pipeline view"
                 onClick={() => { setQuery({ view: 'pipeline' }); setUserSelectedView(true); }}
                 className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
                 style={{
@@ -801,7 +807,7 @@ export default function TasksPage() {
                 <GitBranch size={13} />
                 <span className="hidden md:inline">Pipeline</span>
               </button>
-            </div>
+            </TabStrip>
 
             {/* Select toggle */}
             {!isMobile && (
