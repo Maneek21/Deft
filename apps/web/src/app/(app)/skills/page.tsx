@@ -26,6 +26,8 @@ import {
   AlertTriangle,
   X,
 } from 'lucide-react';
+import { PageHeader } from '@/components/page-header';
+import { TabStrip } from '@/components/tab-strip';
 
 type SourceTab = 'bundled' | 'marketplace' | 'org';
 
@@ -207,24 +209,11 @@ export default function SkillsPage() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div
-        className="border-b px-6 py-4 flex items-center justify-between"
-        style={{ borderColor: 'var(--border-default)' }}
-      >
-        <div>
-          <h1 className="text-lg font-semibold">Skills</h1>
-          <p
-            className="text-sm mt-0.5"
-            style={{ color: 'var(--foreground-secondary)' }}
-          >
-            Reusable bundles you can install on agents or attach to projects.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Import-from-URL retired alongside the ClawHub surface in self-hosted
-              v1. A fresh marketplace import lands when cooperative knowledge
-              ships. */}
-          {tab === 'org' && (
+      <PageHeader
+        title="Skills"
+        description="Reusable bundles you can install on agents or attach to projects."
+        primary={
+          tab === 'org' ? (
             <Link
               href="/skills/new"
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium"
@@ -233,44 +222,42 @@ export default function SkillsPage() {
               <Plus className="w-4 h-4" />
               New skill
             </Link>
-          )}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div
-        className="flex border-b px-6"
-        style={{ borderColor: 'var(--border-default)' }}
-      >
-        {(Object.keys(SOURCE_LABEL) as SourceTab[]).map((t) => {
-          const Icon = SOURCE_ICON[t];
-          const active = tab === t;
-          const count = skills.filter((s) => s.source === t).length;
-          return (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className="flex items-center gap-2 px-3 py-2 text-sm -mb-px border-b-2"
-              style={{
-                borderColor: active ? 'var(--accent)' : 'transparent',
-                color: active ? 'var(--foreground)' : 'var(--foreground-secondary)',
-              }}
-            >
-              <Icon className="w-4 h-4" />
-              {SOURCE_LABEL[t]}
-              <span
-                className="text-xs px-1.5 py-0.5 rounded"
-                style={{
-                  background: 'var(--surface-container)',
-                  color: 'var(--foreground-secondary)',
-                }}
-              >
-                {count}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+          ) : undefined
+        }
+        secondary={
+          <TabStrip>
+            {(Object.keys(SOURCE_LABEL) as SourceTab[]).map((t) => {
+              const Icon = SOURCE_ICON[t];
+              const active = tab === t;
+              const count = skills.filter((s) => s.source === t).length;
+              return (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className="flex items-center gap-2 px-3 py-2 text-sm border-b-2 flex-shrink-0"
+                  style={{
+                    borderColor: active ? 'var(--accent)' : 'transparent',
+                    color: active ? 'var(--foreground)' : 'var(--foreground-secondary)',
+                  }}
+                >
+                  <Icon className="w-4 h-4" />
+                  {SOURCE_LABEL[t]}
+                  <span
+                    className="text-xs px-1.5 py-0.5 rounded"
+                    style={{
+                      background: 'var(--surface-container)',
+                      color: 'var(--foreground-secondary)',
+                    }}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </TabStrip>
+        }
+        compact
+      />
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
