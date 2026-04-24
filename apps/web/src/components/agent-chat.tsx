@@ -956,7 +956,7 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
       )}
 
       {/* Composer */}
-      <div className="px-4 md:px-6 py-4 flex-shrink-0">
+      <div className="px-4 md:px-6 py-4 flex-shrink-0" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
         <div className="max-w-[700px] w-full mx-auto">
           <div className="rounded-xl overflow-hidden flex items-end gap-2"
             style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)' }}>
