@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useTheme } from '@/components/theme-provider';
 import { useAuth } from '@/lib/auth-context';
 import { Sun, Moon } from 'lucide-react';
+import { TabStrip } from '@/components/tab-strip';
 
 const settingsSections = [
   { name: 'General', href: '/settings' },
@@ -32,33 +33,28 @@ export default function SettingsPage() {
   return (
     <div className="h-full overflow-y-auto">
       {/* Mobile sub-navigation — only visible below md breakpoint */}
-      <div className="md:hidden flex gap-1 px-4 pt-4 pb-0 overflow-x-auto flex-nowrap">
-        {settingsSections.map((section) => {
-          const active = pathname === section.href;
-          return (
-            <Link
-              key={section.href}
-              href={section.href}
-              className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
-              style={{
-                background: active ? 'var(--accent)' : 'var(--surface-container-low)',
-                color: active ? 'white' : 'var(--text-secondary)',
-              }}
-            >
-              {section.name}
-            </Link>
-          );
-        })}
+      <div className="md:hidden px-4 pt-4 pb-0">
+        <TabStrip>
+          {settingsSections.map((section) => {
+            const active = pathname === section.href;
+            return (
+              <Link
+                key={section.href}
+                href={section.href}
+                className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
+                style={{
+                  background: active ? 'var(--accent)' : 'var(--surface-container-low)',
+                  color: active ? 'white' : 'var(--text-secondary)',
+                }}
+              >
+                {section.name}
+              </Link>
+            );
+          })}
+        </TabStrip>
       </div>
 
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <h1
-          className="text-2xl font-semibold mb-8"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em' }}
-        >
-          Settings
-        </h1>
-
         {/* Profile Section */}
         <section className="mb-10">
           <h2
