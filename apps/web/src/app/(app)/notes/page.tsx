@@ -27,8 +27,11 @@ import {
   Underline as UnderlineIcon, Download, BookOpen,
   FolderPlus, Folder, ChevronRight, LayoutTemplate,
   History, Share2, Maximize2, Minimize2, Users, Globe, Lock,
+  MoreHorizontal,
 } from 'lucide-react';
 import { EmojiPicker } from '@/components/emoji-picker';
+import { PageHeader } from '@/components/page-header';
+import { useSetPageContext } from '@/components/app-header-context';
 
 type NoteFolder = {
   id: string;
@@ -973,6 +976,7 @@ export default function NotesPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [showOverflow, setShowOverflow] = useState(false);
 
   const activeId = searchParams.get('id');
 
@@ -1006,6 +1010,25 @@ export default function NotesPage() {
 
   useEffect(() => { loadNotes(); }, [loadNotes]);
   useEffect(() => { loadFolders(); loadTemplates(); }, [loadFolders, loadTemplates]);
+
+  // Inject mobile-only search input into AppHeader (hidden on desktop via md:hidden)
+  useSetPageContext(
+    activeId ? null : (
+      <div className="md:hidden flex items-center gap-2 flex-1 h-8 px-2 rounded-md"
+        style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+        <Search size={13} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+        <input
+          type="search"
+          placeholder="Search notes…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 bg-transparent text-[0.8125rem] outline-none min-w-0"
+          style={{ color: 'var(--on-surface)' }}
+        />
+      </div>
+    ),
+    [search, activeId]
+  );
 
   const handleCreate = async (templateId?: string) => {
     let body: any = { title: '', icon: getDefaultIcon(), folder_id: activeFolderId };
@@ -1057,127 +1080,215 @@ export default function NotesPage() {
   const pinned = filtered.filter(n => n.is_pinned);
   const unpinned = filtered.filter(n => !n.is_pinned);
 
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-[900px] mx-auto px-6 py-8">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-[22px] font-semibold"
-              style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em' }}>
-              Notes
-            </h1>
-            <p className="text-[13px] mt-0.5" style={{ color: 'var(--muted)' }}>
-              {allNotes.length} note{allNotes.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Default icon setting */}
-            <div className="relative">
-              <button ref={defaultIconBtnRef}
-                onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
-                className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px]"
-                style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
-                title="Default icon for new notes">
-                <span className="text-[14px]">{currentDefault}</span>
-                <Settings2 size={12} />
-              </button>
-              {defaultIconPickerOpen && (
-                <EmojiPicker
-                  anchorRef={defaultIconBtnRef}
-                  onSelect={(emoji) => {
-                    setDefaultIcon(emoji);
-                    setCurrentDefault(emoji);
-                    setDefaultIconPickerOpen(false);
-                  }}
-                  onClose={() => setDefaultIconPickerOpen(false)}
-                />
-              )}
-            </div>
-            <div className="relative">
-              <button onClick={() => setShowTemplates(!showTemplates)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
-                style={{ background: 'var(--accent)' }}>
-                <Plus size={14} /> New Note
-              </button>
-              {showTemplates && (
-                <div className="absolute right-0 top-full mt-1 w-56 py-1 rounded-lg z-50"
-                  style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)', border: '1px solid var(--border)' }}>
-                  <button onClick={() => handleCreate()}
-                    className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
-                    style={{ color: 'var(--foreground)' }}>
-                    <FileText size={14} /> Blank Note
-                  </button>
-                  {templates.length > 0 && (
-                    <>
-                      <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
-                      <div className="px-3 py-1 text-[10px] font-medium" style={{ color: 'var(--muted)' }}>Templates</div>
-                      {templates.map(t => (
-                        <button key={t.id} onClick={() => handleCreate(t.id)}
-                          className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
-                          style={{ color: 'var(--foreground)' }}>
-                          <span>{t.icon || '📄'}</span> {t.title}
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Folder bar */}
-        <div className="flex items-center gap-1 mb-4 overflow-x-auto">
-          <button onClick={() => setActiveFolderId(null)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
-            style={{
-              background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
-              color: !activeFolderId ? 'white' : 'var(--muted)',
-            }}>
-            All Notes
+  // ── New Note button (shared between PageHeader primary and overflow menu) ──
+  const newNoteButton = (
+    <div className="relative">
+      <button onClick={() => setShowTemplates(!showTemplates)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+        style={{ background: 'var(--accent)' }}>
+        <Plus size={14} /> New Note
+      </button>
+      {showTemplates && (
+        <div className="absolute right-0 top-full mt-1 w-56 py-1 rounded-lg z-50"
+          style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)', border: '1px solid var(--border)' }}>
+          <button onClick={() => handleCreate()}
+            className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
+            style={{ color: 'var(--foreground)' }}>
+            <FileText size={14} /> Blank Note
           </button>
-          {folders.map(f => (
-            <button key={f.id} onClick={() => setActiveFolderId(f.id)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
-              style={{
-                background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
-                color: activeFolderId === f.id ? 'white' : 'var(--muted)',
-              }}>
-              <Folder size={11} /> {f.name}
-            </button>
-          ))}
-          {showNewFolder ? (
-            <div className="flex items-center gap-1">
-              <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
-                placeholder="Folder name..."
-                autoFocus
-                className="px-2 py-1 rounded-md text-[11px] outline-none w-24"
-                style={{ background: 'var(--surface-container)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
-            </div>
-          ) : (
-            <button onClick={() => setShowNewFolder(true)}
-              aria-label="New folder"
-              title="New folder"
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] flex-shrink-0"
-              style={{ color: 'var(--muted)' }}>
-              <FolderPlus size={11} />
-            </button>
+          {templates.length > 0 && (
+            <>
+              <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
+              <div className="px-3 py-1 text-[10px] font-medium" style={{ color: 'var(--muted)' }}>Templates</div>
+              {templates.map(t => (
+                <button key={t.id} onClick={() => handleCreate(t.id)}
+                  className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left hover:opacity-80"
+                  style={{ color: 'var(--foreground)' }}>
+                  <span>{t.icon || '📄'}</span> {t.title}
+                </button>
+              ))}
+            </>
           )}
         </div>
+      )}
+    </div>
+  );
 
-        {/* Search */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 px-3 h-9 rounded-lg"
-            style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
-            <Search size={14} style={{ color: 'var(--muted)' }} />
-            <input value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Search notes..."
-              className="flex-1 bg-transparent text-[13px] outline-none"
-              style={{ color: 'var(--foreground)' }} />
+  return (
+    <div className="h-full overflow-y-auto">
+      {/* ── PageHeader: title hidden on mobile (AppHeader carries search); primary = New Note ── */}
+      <PageHeader
+        title="Notes"
+        description={`${allNotes.length} note${allNotes.length !== 1 ? 's' : ''}`}
+        compact
+        primary={newNoteButton}
+        secondary={
+          // Desktop: full search + folder bar + default-icon picker in secondary slot
+          // Mobile: hidden — search is in AppHeader; folder/icon live in ••• overflow menu
+          <div className="hidden md:flex flex-col gap-2">
+            {/* Search */}
+            <div className="flex items-center gap-2 px-3 h-9 rounded-lg"
+              style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+              <Search size={14} style={{ color: 'var(--muted)' }} />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search notes..."
+                className="flex-1 bg-transparent text-[13px] outline-none"
+                style={{ color: 'var(--foreground)' }} />
+            </div>
+            {/* Folder bar */}
+            <div className="flex items-center gap-1 overflow-x-auto">
+              <button onClick={() => setActiveFolderId(null)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+                style={{
+                  background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
+                  color: !activeFolderId ? 'white' : 'var(--muted)',
+                }}>
+                All Notes
+              </button>
+              {folders.map(f => (
+                <button key={f.id} onClick={() => setActiveFolderId(f.id)}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+                  style={{
+                    background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
+                    color: activeFolderId === f.id ? 'white' : 'var(--muted)',
+                  }}>
+                  <Folder size={11} /> {f.name}
+                </button>
+              ))}
+              {showNewFolder ? (
+                <div className="flex items-center gap-1">
+                  <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
+                    placeholder="Folder name..."
+                    autoFocus
+                    className="px-2 py-1 rounded-md text-[11px] outline-none w-24"
+                    style={{ background: 'var(--surface-container)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
+                </div>
+              ) : (
+                <button onClick={() => setShowNewFolder(true)}
+                  aria-label="New folder"
+                  title="New folder"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] flex-shrink-0"
+                  style={{ color: 'var(--muted)' }}>
+                  <FolderPlus size={11} />
+                </button>
+              )}
+              {/* Default icon setting */}
+              <div className="relative ml-auto">
+                <button ref={defaultIconBtnRef}
+                  onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
+                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px]"
+                  style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                  title="Default icon for new notes">
+                  <span className="text-[14px]">{currentDefault}</span>
+                  <Settings2 size={12} />
+                </button>
+                {defaultIconPickerOpen && (
+                  <EmojiPicker
+                    anchorRef={defaultIconBtnRef}
+                    onSelect={(emoji) => {
+                      setDefaultIcon(emoji);
+                      setCurrentDefault(emoji);
+                      setDefaultIconPickerOpen(false);
+                    }}
+                    onClose={() => setDefaultIconPickerOpen(false)}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        }
+      />
+
+      {/* ── Mobile-only: overflow ••• menu for folder filter + default-icon picker ── */}
+      <div className="md:hidden px-4 pb-3">
+        <div className="flex items-center gap-2">
+          {/* Compact folder chips — show first 2 + overflow */}
+          <div className="flex items-center gap-1 flex-1 overflow-x-auto">
+            <button onClick={() => setActiveFolderId(null)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0"
+              style={{
+                background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
+                color: !activeFolderId ? 'white' : 'var(--muted)',
+              }}>
+              All Notes
+            </button>
+            {folders.map(f => (
+              <button key={f.id} onClick={() => setActiveFolderId(f.id)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0"
+                style={{
+                  background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
+                  color: activeFolderId === f.id ? 'white' : 'var(--muted)',
+                }}>
+                <Folder size={11} /> {f.name}
+              </button>
+            ))}
+          </div>
+          {/* ••• overflow menu */}
+          <div className="relative flex-shrink-0">
+            <button
+              onClick={() => setShowOverflow(!showOverflow)}
+              aria-label="More options"
+              title="More options"
+              className="flex items-center justify-center w-8 h-8 rounded-lg"
+              style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}>
+              <MoreHorizontal size={16} />
+            </button>
+            {showOverflow && (
+              <>
+                {/* Backdrop to close */}
+                <div className="fixed inset-0 z-40" onClick={() => setShowOverflow(false)} />
+                <div className="absolute right-0 top-full mt-1 w-52 py-1 rounded-lg z-50"
+                  style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)', border: '1px solid var(--border)' }}>
+                  <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Folders</div>
+                  {showNewFolder ? (
+                    <div className="px-3 py-1.5">
+                      <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') { handleCreateFolder(); setShowOverflow(false); } if (e.key === 'Escape') setShowNewFolder(false); }}
+                        placeholder="Folder name..."
+                        autoFocus
+                        className="w-full px-2 py-1 rounded-md text-[11px] outline-none"
+                        style={{ background: 'var(--surface-container)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowNewFolder(true)}
+                      className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left"
+                      style={{ color: 'var(--foreground)' }}>
+                      <FolderPlus size={13} /> New folder
+                    </button>
+                  )}
+                  <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
+                  <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Default note icon</div>
+                  <div className="px-3 py-1.5 relative">
+                    <button ref={defaultIconBtnRef}
+                      onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px]"
+                      style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                      title="Default icon for new notes">
+                      <span className="text-[14px]">{currentDefault}</span>
+                      <Settings2 size={12} />
+                    </button>
+                    {defaultIconPickerOpen && (
+                      <EmojiPicker
+                        anchorRef={defaultIconBtnRef}
+                        onSelect={(emoji) => {
+                          setDefaultIcon(emoji);
+                          setCurrentDefault(emoji);
+                          setDefaultIconPickerOpen(false);
+                          setShowOverflow(false);
+                        }}
+                        onClose={() => setDefaultIconPickerOpen(false)}
+                      />
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
+      </div>
+
+      <div className="max-w-[900px] mx-auto px-4 md:px-6 pb-8">
 
         {loading ? (
           <div className="flex items-center justify-center py-20">
