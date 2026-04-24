@@ -3,12 +3,14 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import Link from 'next/link';
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function SignupPage() {
   const { signup } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [orgName, setOrgName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -135,6 +137,8 @@ export default function SignupPage() {
               </label>
               <input type="text" value={name} onChange={e => setName(e.target.value)}
                 placeholder="Full name"
+                autoComplete="name"
+                autoFocus
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={isDisabled ? inputDisabledStyle : inputStyle}
                 disabled={isDisabled}
@@ -147,6 +151,8 @@ export default function SignupPage() {
               </label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                 placeholder="name@company.com"
+                autoComplete="email"
+                inputMode="email"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={isDisabled ? inputDisabledStyle : inputStyle}
                 disabled={isDisabled}
@@ -157,16 +163,25 @@ export default function SignupPage() {
               <label className="text-[0.6875rem] font-semibold uppercase" style={labelStyle}>
                 Password
               </label>
-              <input type="password" value={password} onChange={e => { setPassword(e.target.value); setPasswordError(''); }}
-                placeholder="••••••••"
-                className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={{
-                  ...(isDisabled ? inputDisabledStyle : inputStyle),
-                  ...(passwordError ? { borderColor: 'var(--error)' } : {}),
-                }}
-                disabled={isDisabled}
-                minLength={8}
-                required />
+              <div className="relative">
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => { setPassword(e.target.value); setPasswordError(''); }}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  className="w-full h-11 px-4 pr-10 text-[0.875rem] outline-none"
+                  style={{
+                    ...(isDisabled ? inputDisabledStyle : inputStyle),
+                    ...(passwordError ? { borderColor: 'var(--error)' } : {}),
+                  }}
+                  disabled={isDisabled}
+                  minLength={8}
+                  required />
+                <button type="button" onClick={() => setShowPw(s => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 min-w-[36px] min-h-[36px] flex items-center justify-center"
+                  aria-label={showPw ? 'Hide password' : 'Show password'}
+                  style={{ color: 'var(--on-surface-variant)' }}>
+                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
               {passwordError && (
                 <span className="text-[0.75rem]" style={{ color: 'var(--error)' }}>{passwordError}</span>
               )}
@@ -178,6 +193,7 @@ export default function SignupPage() {
               </label>
               <input type="text" value={orgName} onChange={e => setOrgName(e.target.value)}
                 placeholder="Your team or company"
+                autoComplete="organization"
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={isDisabled ? inputDisabledStyle : inputStyle}
                 disabled={isDisabled}

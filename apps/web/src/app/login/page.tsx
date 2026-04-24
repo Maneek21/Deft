@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Eye, EyeOff } from 'lucide-react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -22,6 +23,7 @@ function LoginContent() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -117,6 +119,9 @@ function LoginContent() {
               </label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                 placeholder="name@company.com"
+                autoComplete="email"
+                inputMode="email"
+                autoFocus
                 className="w-full h-11 px-4 text-[0.875rem] outline-none"
                 style={{
                   background: 'var(--surface-container)',
@@ -133,20 +138,31 @@ function LoginContent() {
                   style={{ color: 'var(--on-surface-variant)', letterSpacing: '0.05em' }}>
                   Password
                 </label>
-                <Link href="/forgot-password" className="text-[0.75rem]" style={{ color: 'var(--primary)' }}>
+                <Link href="/forgot-password"
+                  className="inline-flex items-center min-h-[44px] px-2 -mx-2 text-[0.75rem]"
+                  style={{ color: 'var(--primary)' }}>
                   Forgot?
                 </Link>
               </div>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full h-11 px-4 text-[0.875rem] outline-none"
-                style={{
-                  background: 'var(--surface-container)',
-                  border: '1px solid var(--outline-variant)',
-                  borderRadius: '0.5rem',
-                  color: 'var(--foreground)',
-                }}
-                required />
+              <div className="relative">
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  className="w-full h-11 px-4 pr-10 text-[0.875rem] outline-none"
+                  style={{
+                    background: 'var(--surface-container)',
+                    border: '1px solid var(--outline-variant)',
+                    borderRadius: '0.5rem',
+                    color: 'var(--foreground)',
+                  }}
+                  required />
+                <button type="button" onClick={() => setShowPw(s => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 min-w-[36px] min-h-[36px] flex items-center justify-center"
+                  aria-label={showPw ? 'Hide password' : 'Show password'}
+                  style={{ color: 'var(--on-surface-variant)' }}>
+                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
 
             <button type="submit" disabled={loading}
