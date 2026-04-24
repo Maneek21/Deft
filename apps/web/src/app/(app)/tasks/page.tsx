@@ -1151,7 +1151,7 @@ export default function TasksPage() {
           className="fixed z-30 w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg"
           style={{
             background: 'var(--accent)',
-            bottom: '80px',
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
             right: '16px',
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
           }}
