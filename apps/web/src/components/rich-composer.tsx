@@ -73,6 +73,7 @@ import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
 import { SlashCommandAutocomplete } from './slash-command-autocomplete';
+import { MobileActionSheet } from './mobile-action-sheet';
 
 type TaskResult = {
   id: string;
@@ -134,6 +135,7 @@ export function RichComposer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [formatSheetOpen, setFormatSheetOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [taskQuery, setTaskQuery] = useState('');
   const [showTaskAutocomplete, setShowTaskAutocomplete] = useState(false);
@@ -407,9 +409,9 @@ export function RichComposer({
           transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
         }}
       >
-        {/* Formatting toolbar */}
+        {/* Formatting toolbar — desktop only (hidden on < md) */}
         <div
-          className="flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
+          className="hidden md:flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
         >
           <ToolbarBtn
             active={editor.isActive('bold')}
@@ -488,6 +490,151 @@ export function RichComposer({
             <LinkIcon size={14} strokeWidth={1.5} />
           </ToolbarBtn>
         </div>
+
+        {/* Mobile-only "Aa" trigger — opens the format bottom sheet */}
+        <div className="md:hidden flex items-center px-2 pt-1.5 pb-0.5">
+          <button
+            type="button"
+            onClick={() => setFormatSheetOpen(true)}
+            aria-label="Formatting"
+            className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md hover:opacity-70"
+            style={{ color: 'var(--on-surface-variant)' }}
+          >
+            <span className="text-[1rem] font-serif italic">Aa</span>
+          </button>
+        </div>
+
+        {/* Format bottom sheet — mobile only */}
+        <MobileActionSheet
+          open={formatSheetOpen}
+          onClose={() => setFormatSheetOpen(false)}
+          title="Format"
+        >
+          <div className="grid grid-cols-4 gap-2">
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBold().run(); setFormatSheetOpen(false); }}
+              aria-label="Bold"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('bold') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('bold') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Bold size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Bold</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleItalic().run(); setFormatSheetOpen(false); }}
+              aria-label="Italic"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('italic') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('italic') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Italic size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Italic</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleStrike().run(); setFormatSheetOpen(false); }}
+              aria-label="Strikethrough"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('strike') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('strike') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Strikethrough size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Strike</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleCode().run(); setFormatSheetOpen(false); }}
+              aria-label="Inline code"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('code') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('code') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Code size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Code</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleCodeBlock().run(); setFormatSheetOpen(false); }}
+              aria-label="Code block"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('codeBlock') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('codeBlock') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <CodeSquare size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Block</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBulletList().run(); setFormatSheetOpen(false); }}
+              aria-label="Bullet list"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('bulletList') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('bulletList') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <List size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Bullets</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleOrderedList().run(); setFormatSheetOpen(false); }}
+              aria-label="Numbered list"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('orderedList') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('orderedList') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <ListOrdered size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Numbered</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBlockquote().run(); setFormatSheetOpen(false); }}
+              aria-label="Blockquote"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('blockquote') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('blockquote') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Quote size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Quote</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const existing = editor.getAttributes('link').href;
+                setLinkUrl(existing || '');
+                setFormatSheetOpen(false);
+                setLinkDialogOpen(true);
+              }}
+              aria-label="Link"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('link') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('link') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <LinkIcon size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Link</span>
+            </button>
+          </div>
+        </MobileActionSheet>
 
         {/* Editor area */}
         <div
