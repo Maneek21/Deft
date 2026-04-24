@@ -1924,9 +1924,12 @@ export function SpaceChat({
         {/* Hidden file input */}
         <input ref={fileInputRef} type="file" className="hidden" multiple onChange={handleFileSelect} />
 
-        {/* Clip recorder — shown above composer when recording */}
+        {/* Clip recorder — replaces composer entirely while recording.
+            Matches WhatsApp/iMessage pattern (recorder takes over the input area
+            instead of stacking above the composer). The whole space-chat composer
+            is hidden via the {!clipRecording && ...} wrapper below. */}
         {clipRecording && (
-          <div className="px-4 py-2">
+          <div className="px-3 md:px-4 py-2 md:py-3">
             <ClipRecorder
               spaceId={spaceId}
               contextType="space"
@@ -1952,7 +1955,9 @@ export function SpaceChat({
           </div>
         )}
 
-        {/* Rich text composer */}
+        {/* Rich text composer — hidden while recording so the recorder
+            owns the input area (single focused interaction). */}
+        {!clipRecording && (
         <RichComposer
           key={spaceId}
           placeholder={`Message ${isDm ? displayName : '#' + spaceName}`}
@@ -2041,6 +2046,7 @@ export function SpaceChat({
             }
           }}
         />
+        )}
 
         {/* Scheduled messages panel */}
         {showScheduled && <ScheduledPanel onClose={() => setShowScheduled(false)} />}
