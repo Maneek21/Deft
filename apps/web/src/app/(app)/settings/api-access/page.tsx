@@ -334,9 +334,10 @@ export default function ApiAccessPage() {
           {keys.map(k => (
             <div
               key={k.id}
-              className="flex items-center gap-3 px-4 py-3 rounded-lg"
+              className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-4 py-3 rounded-lg"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', opacity: k.is_active ? 1 : 0.6 }}
             >
+              {/* Title row */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <p
@@ -354,7 +355,7 @@ export default function ApiAccessPage() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-3 mt-1">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
                   <code
                     className="text-[12px]"
                     style={{ fontFamily: 'monospace', color: 'var(--muted)' }}
@@ -380,48 +381,51 @@ export default function ApiAccessPage() {
                 </div>
               </div>
 
-              {/* Active toggle */}
-              <button
-                onClick={() => handleToggleActive(k)}
-                className="relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0"
-                style={{
-                  background: k.is_active ? 'var(--accent)' : 'var(--border)',
-                }}
-                title={k.is_active ? 'Deactivate' : 'Activate'}
-              >
-                <div
-                  className="absolute top-[2px] w-[14px] h-[14px] rounded-full transition-all"
-                  style={{
-                    background: 'white',
-                    left: k.is_active ? '16px' : '2px',
-                  }}
-                />
-              </button>
-
-              {/* Delete */}
-              {confirmDelete === k.id ? (
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button
-                    onClick={() => handleDelete(k.id)}
-                    className="text-[11px] px-2 py-0.5 rounded"
-                    style={{ background: 'var(--error)', color: 'white' }}
-                  >
-                    Confirm
-                  </button>
-                  <button onClick={() => setConfirmDelete(null)}>
-                    <X size={12} style={{ color: 'var(--muted)' }} />
-                  </button>
-                </div>
-              ) : (
+              {/* Actions row — inline on md+, wraps below title on mobile */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Active toggle */}
                 <button
-                  onClick={() => setConfirmDelete(k.id)}
-                  className="p-1 rounded flex-shrink-0"
-                  style={{ color: 'var(--muted)' }}
-                  title="Delete key"
+                  onClick={() => handleToggleActive(k)}
+                  className="relative w-8 h-[18px] rounded-full transition-colors"
+                  style={{
+                    background: k.is_active ? 'var(--accent)' : 'var(--border)',
+                  }}
+                  title={k.is_active ? 'Deactivate' : 'Activate'}
                 >
-                  <Trash2 size={13} />
+                  <div
+                    className="absolute top-[2px] w-[14px] h-[14px] rounded-full transition-all"
+                    style={{
+                      background: 'white',
+                      left: k.is_active ? '16px' : '2px',
+                    }}
+                  />
                 </button>
-              )}
+
+                {/* Delete */}
+                {confirmDelete === k.id ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleDelete(k.id)}
+                      className="text-[11px] px-2 py-0.5 rounded"
+                      style={{ background: 'var(--error)', color: 'white' }}
+                    >
+                      Confirm
+                    </button>
+                    <button onClick={() => setConfirmDelete(null)}>
+                      <X size={12} style={{ color: 'var(--muted)' }} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(k.id)}
+                    className="p-1 rounded"
+                    style={{ color: 'var(--muted)' }}
+                    title="Delete key"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
