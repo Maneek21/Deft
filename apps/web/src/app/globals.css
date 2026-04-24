@@ -185,6 +185,10 @@ div.pinned-dropdown-item + div.pinned-dropdown-item {
   * { scrollbar-width: none; }
 }
 
+/* ── No-scrollbar utility ────────────────────────────────────── */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 /* ── Focus — sharp precision ring ────────────────────────────── */
 input:focus, textarea:focus {
   outline: none;

@@ -34,6 +34,7 @@ import {
   Forward,
 } from 'lucide-react';
 import { formatMessageTime, formatDayLabel, isSameDay, formatTimeWithSenderZone } from '@/lib/time';
+import { TabStrip } from './tab-strip';
 import { EmojiPicker } from './emoji-picker';
 import { FileDropZone, useFileUpload, UploadProgress } from './file-upload';
 import { Lightbox } from './lightbox';
@@ -1082,7 +1083,7 @@ export function SpaceChat({
           style={{ borderColor: 'var(--border-default, var(--outline-variant))' }}
         >
           {/* Row 1: channel name + topic + actions */}
-          <div className="h-[48px] flex items-center gap-2 overflow-x-auto relative">
+          <TabStrip className="h-[48px] items-center relative">
             {!isDm && <Hash size={15} strokeWidth={1.5} style={{ color: 'var(--on-surface-variant)' }} />}
             {renamingSpace ? (
               <input
@@ -1229,12 +1230,7 @@ export function SpaceChat({
             >
               <BookOpen size={14} strokeWidth={1.5} />
             </button>
-            {/* Right-edge scroll affordance — mobile only */}
-            <div
-              className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 md:hidden flex-shrink-0"
-              style={{ background: 'linear-gradient(to right, transparent, var(--card-bg, var(--surface-container)))' }}
-            />
-          </div>
+          </TabStrip>
 
           {/* Row 2: Description (collapsible, only if exists) */}
           {spaceDescription && !isDm && (
