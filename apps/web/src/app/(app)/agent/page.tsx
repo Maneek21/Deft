@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { api } from '@/lib/api';
 import { AgentChat } from '@/components/agent-chat';
 import { ConversationList } from '@/components/conversation-list';
+import { useSetPageContext } from '@/components/app-header-context';
 import { Send, History, Plus, X } from 'lucide-react';
 
 const SUGGESTIONS = [
@@ -197,47 +198,9 @@ export default function AgentPage() {
 
   const activeEmployee = agentEmployees.find((e) => e.id === activeTab);
 
-  // Tab bar for switching between Defty and agent employees
-  const tabBar = agentEmployees.length > 0 ? (
-    <div
-      className="flex items-center gap-1 px-4 py-2 flex-shrink-0 border-b overflow-x-auto"
-      style={{ borderColor: 'var(--border)' }}
-    >
-      <button
-        onClick={() => handleTabClick('defty')}
-        className="px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors flex-shrink-0"
-        style={{
-          background: activeTab === 'defty' ? 'var(--accent)' : 'transparent',
-          color: activeTab === 'defty' ? 'white' : 'var(--on-surface-variant)',
-        }}
-      >
-        Defty
-      </button>
-      {agentEmployees.map((employee) => (
-        <button
-          key={employee.id}
-          onClick={() => handleTabClick(employee.id)}
-          className="px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors flex-shrink-0 flex items-center gap-1.5"
-          style={{
-            background: activeTab === employee.id ? 'var(--accent)' : 'transparent',
-            color: activeTab === employee.id ? 'white' : 'var(--on-surface-variant)',
-          }}
-        >
-          <span
-            className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0"
-            style={{ background: 'var(--primary-container)' }}
-          >
-            {employee.name.charAt(0).toUpperCase()}
-          </span>
-          {employee.name}
-        </button>
-      ))}
-    </div>
-  ) : null;
-
-  // Mobile history toggle button (shown only on mobile).
-  // Declared BEFORE the employee branch so both render paths can use it.
-  const mobileHistoryButton = (
+  // Inject History toggle into AppHeader on mobile via the page-context slot.
+  // This frees the dedicated mobile-only row and keeps the chrome in a single place.
+  useSetPageContext(
     <button
       onClick={() => setShowMobileConversations(prev => !prev)}
       className="md:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[0.75rem] font-medium flex-shrink-0"
@@ -250,8 +213,71 @@ export default function AgentPage() {
     >
       <History size={14} />
       History
-    </button>
+    </button>,
+    [showMobileConversations],
   );
+
+  // Tab bar for switching between Defty and agent employees.
+  // On mobile: single <select> (scales to any number of agents).
+  // On desktop: chips row (existing behaviour).
+  const allTabOptions = [
+    { id: 'defty', name: 'Defty' },
+    ...agentEmployees.map((e) => ({ id: e.id, name: e.name })),
+  ];
+
+  const tabBar = agentEmployees.length > 0 ? (
+    <div
+      className="flex-shrink-0 border-b px-4 py-2"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      {/* Mobile: native select — scales to any number of agents */}
+      <div className="md:hidden">
+        <select
+          value={activeTab}
+          onChange={(e) => handleTabClick(e.target.value)}
+          className="w-full bg-transparent text-[1rem] font-semibold outline-none py-1"
+          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+          aria-label="Select agent"
+        >
+          {allTabOptions.map((opt) => (
+            <option key={opt.id} value={opt.id}>{opt.name}</option>
+          ))}
+        </select>
+      </div>
+      {/* Desktop: chip buttons */}
+      <div className="hidden md:flex items-center gap-1 overflow-x-auto">
+        <button
+          onClick={() => handleTabClick('defty')}
+          className="px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors flex-shrink-0"
+          style={{
+            background: activeTab === 'defty' ? 'var(--accent)' : 'transparent',
+            color: activeTab === 'defty' ? 'white' : 'var(--on-surface-variant)',
+          }}
+        >
+          Defty
+        </button>
+        {agentEmployees.map((employee) => (
+          <button
+            key={employee.id}
+            onClick={() => handleTabClick(employee.id)}
+            className="px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors flex-shrink-0 flex items-center gap-1.5"
+            style={{
+              background: activeTab === employee.id ? 'var(--accent)' : 'transparent',
+              color: activeTab === employee.id ? 'white' : 'var(--on-surface-variant)',
+            }}
+          >
+            <span
+              className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0"
+              style={{ background: 'var(--primary-container)' }}
+            >
+              {employee.name.charAt(0).toUpperCase()}
+            </span>
+            {employee.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   // Employee chat tab — functional chat interface
   if (activeTab !== 'defty' && activeEmployee) {
@@ -312,10 +338,6 @@ export default function AgentPage() {
             </div>
           </div>
         </div>
-        {/* Mobile history toggle row — only visible under md: */}
-        <div className="md:hidden flex items-center px-4 py-2 flex-shrink-0 border-b" style={{ borderColor: 'var(--border)' }}>
-          {mobileHistoryButton}
-        </div>
         {showMobileConversations && (
           <MobileConversationPanel
             onClose={() => setShowMobileConversations(false)}
@@ -341,10 +363,6 @@ export default function AgentPage() {
     return (
       <div className="flex flex-col h-full">
         {tabBar}
-        {/* Mobile history toggle row */}
-        <div className="md:hidden flex items-center px-4 py-2 flex-shrink-0 border-b" style={{ borderColor: 'var(--border)' }}>
-          {mobileHistoryButton}
-        </div>
         {showMobileConversations && (
           <MobileConversationPanel
             onClose={() => setShowMobileConversations(false)}
@@ -366,10 +384,6 @@ export default function AgentPage() {
     return (
       <div className="flex flex-col h-full">
         {tabBar}
-        {/* Mobile history toggle row */}
-        <div className="md:hidden flex items-center px-4 py-2 flex-shrink-0 border-b" style={{ borderColor: 'var(--border)' }}>
-          {mobileHistoryButton}
-        </div>
         {showMobileConversations && (
           <MobileConversationPanel
             onClose={() => setShowMobileConversations(false)}
@@ -388,10 +402,6 @@ export default function AgentPage() {
   return (
     <div className="flex flex-col h-full">
       {tabBar}
-      {/* Mobile history toggle row */}
-      <div className="md:hidden flex items-center px-4 py-2 flex-shrink-0 border-b" style={{ borderColor: 'var(--border)' }}>
-        {mobileHistoryButton}
-      </div>
       {showMobileConversations && (
         <MobileConversationPanel
           onClose={() => setShowMobileConversations(false)}
