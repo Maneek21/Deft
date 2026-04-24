@@ -558,11 +558,10 @@ export function CommandPalette() {
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between px-4 py-2"
+          className="hidden md:flex items-center justify-between px-4 py-2"
           style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', color: 'var(--outline)' }}
         >
-          <span>↑↓ to navigate &nbsp; ← to select</span>
-          <span>v1.0.0-beta</span>
+          <span>↑↓ to navigate &nbsp; ↵ to select</span>
         </div>
       </div>
     </div>
