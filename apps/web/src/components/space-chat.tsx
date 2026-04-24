@@ -1174,7 +1174,7 @@ export function SpaceChat({
 
               if (inThisHuddle) {
                 return (
-                  <button className="hidden md:flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
+                  <button className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
                     style={{ background: '#22c55e', color: 'white' }} title="You're in this huddle">
                     <Mic size={13} strokeWidth={1.5} />
                     <span className="hidden md:inline">In Huddle</span>
@@ -1184,7 +1184,7 @@ export function SpaceChat({
               if (othersInHuddle) {
                 return (
                   <button onClick={() => joinHuddleBySpace?.(spaceId)}
-                    className="hidden md:flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
+                    className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
                     style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                     title={`${huddleHere!.participants.length} in huddle — click to join`}>
                     <Mic size={13} strokeWidth={1.5} />
@@ -1194,7 +1194,7 @@ export function SpaceChat({
               }
               return (
                 <button onClick={() => startHuddle?.(spaceId)}
-                  className="hidden md:flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80"
+                  className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80"
                   style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-high, var(--accent-muted))' }}
                   title="Start a huddle">
                   <Mic size={13} strokeWidth={1.5} />

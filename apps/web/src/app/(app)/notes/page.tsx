@@ -545,9 +545,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       >
         {/* Top bar */}
         <div className="flex items-center justify-between mb-4">
-          <button onClick={focusMode ? () => setFocusMode(false) : onBack} className="flex items-center gap-1.5 text-[13px] font-medium px-2 py-1 rounded-lg"
+          <button onClick={focusMode ? () => setFocusMode(false) : onBack}
+            aria-label="Back to all notes"
+            className="flex items-center gap-1.5 text-[13px] font-medium min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 px-2 py-1 rounded-lg"
             style={{ color: 'var(--muted)' }}>
-            <ArrowLeft size={15} /> All Notes
+            <ArrowLeft size={15} /> <span className="hidden md:inline">All Notes</span>
           </button>
           <div className="flex items-center gap-2">
             {saveStatus === 'saving' && (
@@ -583,7 +585,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <Globe size={11} /> Shared (read-only)
               </span>
             )}
-            <button onClick={() => setFocusMode(!focusMode)} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
+            <button onClick={() => setFocusMode(!focusMode)} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
               aria-label={focusMode ? 'Exit focus mode' : 'Focus mode'}
               style={{ color: focusMode ? 'var(--accent)' : 'var(--muted)' }} title={focusMode ? 'Exit focus mode' : 'Focus mode'}>
               {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
@@ -595,12 +597,12 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
                 <Share2 size={15} />
               </button>
             )}
-            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
+            <button onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
               aria-label="Version history"
               style={{ color: showHistory ? 'var(--accent)' : 'var(--muted)' }} title="Version history">
               <History size={15} />
             </button>
-            <button onClick={() => setShowPromoteModal(true)} className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded-lg"
+            <button onClick={() => setShowPromoteModal(true)} className="hidden md:inline-flex items-center justify-center md:p-1.5 rounded-lg"
               aria-label="Promote to Wiki"
               style={{ color: 'var(--muted)' }} title="Promote to Wiki">
               <BookOpen size={15} />
