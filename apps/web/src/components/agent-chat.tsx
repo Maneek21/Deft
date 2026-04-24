@@ -1060,6 +1060,14 @@ function ActionCard({ action, onApprove, onReject, onUndo }: {
       </div>
     );
   }
+  if (action.status === 'failed') {
+    return (
+      <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
+        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--status-red)' }}>
+        {'\u2717'} {displayLabel} - failed
+      </div>
+    );
+  }
   if (action.status === 'undone') {
     return (
       <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
@@ -1120,7 +1128,7 @@ function PlanCard({ actions, onApproveAll, onRejectAll, onApproveOne, onRejectOn
     assign_task: 'Assign task', post_message: 'Post message',
   };
 
-  const allDone = actions.every(a => a.status === 'approved' || a.status === 'rejected' || a.status === 'undone');
+  const allDone = actions.every(a => a.status === 'approved' || a.status === 'rejected' || a.status === 'undone' || a.status === 'failed');
 
   return (
     <div className="rounded-lg p-3 mt-2 max-w-[420px] w-full"
@@ -1135,10 +1143,11 @@ function PlanCard({ actions, onApproveAll, onRejectAll, onApproveOne, onRejectOn
           return (
             <div key={a.id} className="flex items-center gap-2 text-[12px]">
               <span style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)', width: '16px' }}>
-                {a.status === 'approved' ? '\u2713' : a.status === 'rejected' ? '\u2717' : a.status === 'undone' ? '\u21A9' : `${i + 1}.`}
+                {a.status === 'approved' ? '\u2713' : a.status === 'failed' ? '\u2717' : a.status === 'rejected' ? '\u2717' : a.status === 'undone' ? '\u21A9' : `${i + 1}.`}
               </span>
               <span className="flex-1" style={{
                 color: a.status === 'approved' ? 'var(--status-green)' :
+                       a.status === 'failed' ? 'var(--status-red)' :
                        a.status === 'rejected' ? 'var(--outline)' : 'var(--on-surface-variant)',
                 textDecoration: a.status === 'rejected' ? 'line-through' : 'none',
               }}>

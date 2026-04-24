@@ -318,6 +318,28 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     URL.revokeObjectURL(url);
   }, [editor, note, title]);
 
+  const clearSavedTimers = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+  }, []);
+
+  const markSaved = useCallback(() => {
+    clearSavedTimers();
+    setSaveStatus('saved');
+    savedTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
+  }, [clearSavedTimers]);
+
+  const persistNoteUpdate = useCallback(async (payload: Record<string, unknown>) => {
+    setSaveStatus('saving');
+    try {
+      const res = await api.patch(`/api/daily-notes/${noteId}`, payload);
+      if (res.ok) markSaved();
+      else setSaveStatus('idle');
+    } catch {
+      setSaveStatus('idle');
+    }
+  }, [markSaved, noteId]);
+
   const handlePromoteToWiki = async () => {
     if (!editor || !note || !title.trim()) return;
     setPromoting(true);
@@ -428,34 +450,41 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
+    setSaveStatus('saving');
     if (titleDebounce.current) clearTimeout(titleDebounce.current);
-    titleDebounce.current = setTimeout(() => {
-      api.patch(`/api/daily-notes/${noteId}`, { title: value });
+    titleDebounce.current = setTimeout(async () => {
+      try {
+        const res = await api.patch(`/api/daily-notes/${noteId}`, { title: value });
+        if (res.ok) markSaved();
+        else setSaveStatus('idle');
+      } catch {
+        setSaveStatus('idle');
+      }
     }, 500);
   };
 
   const handleIconChange = async (emoji: string) => {
     setIcon(emoji);
     setIconPickerOpen(false);
-    await api.patch(`/api/daily-notes/${noteId}`, { icon: emoji });
+    await persistNoteUpdate({ icon: emoji });
   };
 
   const handleRemoveIcon = async () => {
     setIcon(null);
     setIconPickerOpen(false);
-    await api.patch(`/api/daily-notes/${noteId}`, { icon: null });
+    await persistNoteUpdate({ icon: null });
   };
 
   const handlePin = async () => {
     if (!note) return;
     const pinned = !note.is_pinned;
     setNote({ ...note, is_pinned: pinned });
-    await api.patch(`/api/daily-notes/${noteId}`, { is_pinned: pinned });
+    await persistNoteUpdate({ is_pinned: pinned });
   };
 
   const handleVisibilityChange = async (newVisibility: 'private' | 'org') => {
     setVisibility(newVisibility);
-    await api.patch(`/api/daily-notes/${noteId}`, { visibility: newVisibility });
+    await persistNoteUpdate({ visibility: newVisibility });
   };
 
   const handleDelete = () => {
@@ -507,7 +536,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         </div>
       )}
 
-      <div className="max-w-[700px] mx-auto px-6 py-6">
+      <div
+        className={`max-w-[700px] mx-auto px-6 py-6 ${pendingDelete ? 'opacity-40 pointer-events-none select-none' : ''}`}
+        aria-hidden={pendingDelete}
+      >
         {/* Top bar */}
         <div className="flex items-center justify-between mb-4">
           <button onClick={focusMode ? () => setFocusMode(false) : onBack} className="flex items-center gap-1.5 text-[13px] font-medium px-2 py-1 rounded-lg"
@@ -866,6 +898,48 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           </div>
         )}
       </div>
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[94] flex items-center justify-center px-6 pointer-events-none">
+          <div
+            className="w-full max-w-[460px] rounded-2xl p-6 shadow-xl pointer-events-auto"
+            style={{ background: 'var(--surface-container-highest)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center"
+                style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--status-red)' }}
+              >
+                <Trash2 size={18} />
+              </div>
+              <div>
+                <h3 className="text-[15px] font-semibold">Note deleted</h3>
+                <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                  This note will disappear in a few seconds unless you undo it.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleUndoDelete}
+                className="inline-flex items-center justify-center min-h-[44px] px-4 rounded-lg text-[13px] font-semibold"
+                style={{ background: 'var(--accent)', color: 'white' }}
+              >
+                Undo delete
+              </button>
+              <button
+                type="button"
+                onClick={focusMode ? () => setFocusMode(false) : onBack}
+                className="inline-flex items-center justify-center min-h-[44px] px-4 rounded-lg text-[13px] font-medium"
+                style={{ background: 'var(--surface-container-low)', color: 'var(--foreground)' }}
+              >
+                Back to notes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

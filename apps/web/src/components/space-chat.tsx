@@ -370,6 +370,7 @@ function renderInlineFormatting(text: string, keyPrefix: string): React.ReactNod
 }
 
 const FILE_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
 /** Parse [[file:...]] markers from content and separate them */
 function parseFileMarkers(content: string): { text: string; files: FileAttachment[] } {
@@ -1013,6 +1014,9 @@ export function SpaceChat({
   };
 
   const handleDelete = async (id: string) => {
+    setMessages((prev) => prev.map((message) => (
+      message.id === id ? { ...message, is_deleted: true } : message
+    )));
     await api.delete(`/api/messages/${id}`);
     setMoreMenuId(null);
   };
@@ -1127,7 +1131,7 @@ export function SpaceChat({
 
             {/* Pin count */}
             {pinCount > 0 && (
-              <button className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px]"
+              <button className="flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px]"
                 style={{ color: 'var(--on-surface-variant)' }}
                 title={`${pinCount} pinned messages`}>
                 <Pin size={12} strokeWidth={1.5} />
@@ -1138,7 +1142,7 @@ export function SpaceChat({
             {/* Member count */}
             <button
               onClick={() => setShowMembers(true)}
-              className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px] hover:opacity-70"
+              className="flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px] hover:opacity-70"
               style={{ color: 'var(--on-surface-variant)' }}
               title="View members"
             >
@@ -1168,7 +1172,7 @@ export function SpaceChat({
 
               if (inThisHuddle) {
                 return (
-                  <button className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium"
+                  <button className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
                     style={{ background: '#22c55e', color: 'white' }} title="You're in this huddle">
                     <Mic size={13} strokeWidth={1.5} />
                     <span className="hidden md:inline">In Huddle</span>
@@ -1178,7 +1182,7 @@ export function SpaceChat({
               if (othersInHuddle) {
                 return (
                   <button onClick={() => joinHuddleBySpace?.(spaceId)}
-                    className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
+                    className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
                     style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                     title={`${huddleHere!.participants.length} in huddle — click to join`}>
                     <Mic size={13} strokeWidth={1.5} />
@@ -1188,7 +1192,7 @@ export function SpaceChat({
               }
               return (
                 <button onClick={() => startHuddle?.(spaceId)}
-                  className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium hover:opacity-80"
+                  className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80"
                   style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-high, var(--accent-muted))' }}
                   title="Start a huddle">
                   <Mic size={13} strokeWidth={1.5} />
@@ -1209,7 +1213,7 @@ export function SpaceChat({
                 } catch { setRecapSummary('Failed to connect to the server.'); }
                 setRecapLoading(false);
               }}
-              className="flex items-center gap-1 px-2.5 h-7 rounded-md text-[11px] font-medium"
+              className="flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
               style={{ background: 'var(--accent-muted)', color: 'var(--primary)' }}
               disabled={recapLoading}
             >
@@ -2022,7 +2026,7 @@ export function SpaceChat({
                 break;
 
               case 'search':
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+                document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
                 break;
 
               case 'note': {

@@ -8,6 +8,8 @@ import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
+
 export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
   const { user } = useAuth();
@@ -54,7 +56,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   }, []);
 
   const handleSearchClick = () => {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }));
+    document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
   };
 
   const handleNotifOpen = () => {

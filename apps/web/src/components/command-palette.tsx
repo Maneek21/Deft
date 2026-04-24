@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
+
 type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
 type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
 type DecisionResult = { id: string; title: string; summary: string | null; slug: string | null; source_id: string };
@@ -80,6 +82,15 @@ export function CommandPalette() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  useEffect(() => {
+    const openHandler = () => {
+      setOpen(true);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+    document.addEventListener(OPEN_COMMAND_PALETTE_EVENT, openHandler as EventListener);
+    return () => document.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openHandler as EventListener);
   }, []);
 
   // Focus input when opened

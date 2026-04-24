@@ -405,7 +405,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                   <div className="relative">
                     <button
                       onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
-                      className="flex items-center justify-center w-6 h-6 rounded-md"
+                      className="flex items-center justify-center w-9 h-9 md:w-6 md:h-6 rounded-md"
                       style={{ background: 'var(--surface-container-highest)', color: 'var(--outline)' }}
                     >
                       <Smile size={12} strokeWidth={1.5} />
@@ -443,7 +443,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           {isMobile && (
             <button
               onClick={onClose}
-              className="p-1 rounded-md mr-1"
+              className="flex items-center justify-center min-h-[44px] min-w-[44px] rounded-md mr-1"
               style={{ color: 'var(--muted)' }}
             >
               <ArrowLeft size={18} strokeWidth={1.5} />
@@ -459,7 +459,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         {!isMobile && (
           <button
             onClick={onClose}
-            className="p-1 rounded-md"
+            className="flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1 rounded-md"
             style={{ color: 'var(--muted)' }}
           >
             <X size={16} strokeWidth={1.5} />

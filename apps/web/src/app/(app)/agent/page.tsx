@@ -17,7 +17,17 @@ const SUGGESTIONS = [
 ];
 
 type Conversation = { id: string; title: string | null; updated_at: string; agent_employee_id?: string | null };
-type AgentEmployee = { id: string; name: string; role: string; avatar_url: string | null; is_active: boolean; starter_prompts?: string[] | null };
+type AgentEmployee = {
+  id: string;
+  name: string;
+  role: string;
+  avatar_url: string | null;
+  is_active: boolean;
+  starter_prompts?: string[] | null;
+  trust_level?: 'conservative' | 'standard' | 'autonomous' | null;
+  heartbeat_enabled?: boolean | null;
+  max_daily_actions?: number | null;
+};
 
 function MobileConversationPanel({
   onClose,
@@ -273,6 +283,33 @@ export default function AgentPage() {
             <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
               {formattedRole}
             </p>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+              {activeEmployee.trust_level && (
+                <span
+                  className="px-2 py-0.5 rounded-full text-[10px] font-medium uppercase"
+                  style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)', letterSpacing: '0.04em' }}
+                >
+                  {activeEmployee.trust_level}
+                </span>
+              )}
+              <span
+                className="px-2 py-0.5 rounded-full text-[10px] font-medium"
+                style={{
+                  background: activeEmployee.heartbeat_enabled ? 'rgba(34,197,94,0.12)' : 'var(--surface-container-low)',
+                  color: activeEmployee.heartbeat_enabled ? 'var(--status-green)' : 'var(--on-surface-variant)',
+                }}
+              >
+                {activeEmployee.heartbeat_enabled ? 'Heartbeat on' : 'Heartbeat off'}
+              </span>
+              {typeof activeEmployee.max_daily_actions === 'number' && (
+                <span
+                  className="px-2 py-0.5 rounded-full text-[10px] font-medium"
+                  style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)' }}
+                >
+                  {activeEmployee.max_daily_actions}/day
+                </span>
+              )}
+            </div>
           </div>
         </div>
         {/* Mobile history toggle row — only visible under md: */}
