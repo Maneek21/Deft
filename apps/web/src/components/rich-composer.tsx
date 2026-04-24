@@ -68,6 +68,7 @@ import {
   FileText,
   Clock,
   Mic,
+  Plus,
 } from 'lucide-react';
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
@@ -491,25 +492,51 @@ export function RichComposer({
           </ToolbarBtn>
         </div>
 
-        {/* Mobile-only "Aa" trigger — opens the format bottom sheet */}
-        <div className="md:hidden flex items-center px-2 pt-1.5 pb-0.5">
-          <button
-            type="button"
-            onClick={() => setFormatSheetOpen(true)}
-            aria-label="Formatting"
-            className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md hover:opacity-70"
-            style={{ color: 'var(--on-surface-variant)' }}
-          >
-            <span className="text-[1rem] font-serif italic">Aa</span>
-          </button>
-        </div>
-
-        {/* Format bottom sheet — mobile only */}
+        {/* Mobile composer action sheet — Insert (attach/emoji/voice) + Format (B/I/...) */}
         <MobileActionSheet
           open={formatSheetOpen}
           onClose={() => setFormatSheetOpen(false)}
-          title="Format"
+          title="Compose"
         >
+          {/* Insert section */}
+          <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Insert</div>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            <button
+              type="button"
+              onClick={() => { setFormatSheetOpen(false); onFileSelect(); }}
+              aria-label="Attach file"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{ color: 'var(--on-surface-variant)' }}
+            >
+              <Paperclip size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Attach</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setFormatSheetOpen(false); setEmojiOpen(true); }}
+              aria-label="Insert emoji"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{ color: 'var(--on-surface-variant)' }}
+            >
+              <Smile size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Emoji</span>
+            </button>
+            {onClipRecord && (
+              <button
+                type="button"
+                onClick={() => { setFormatSheetOpen(false); onClipRecord(); }}
+                aria-label="Record voice memo"
+                className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+                style={{ color: 'var(--on-surface-variant)' }}
+              >
+                <Mic size={18} strokeWidth={1.5} />
+                <span className="text-[0.6875rem]">Voice</span>
+              </button>
+            )}
+          </div>
+
+          {/* Format section */}
+          <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Format</div>
           <div className="grid grid-cols-4 gap-2">
             <button
               type="button"
@@ -636,12 +663,39 @@ export function RichComposer({
           </div>
         </MobileActionSheet>
 
-        {/* Editor area */}
-        <div
-          className="px-4 py-2 min-h-[40px] max-h-[200px] overflow-y-auto"
-          onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
-        >
-          <EditorContent editor={editor} />
+        {/* Editor row — mobile uses single-row layout with [+] and [send] flanking the editor.
+            Desktop renders only the editor (the +/send below are md:hidden) and uses the
+            bottom toolbar for those actions instead. */}
+        <div className="flex items-end gap-1 md:block">
+          {/* Mobile-only "+" — opens unified compose sheet (Insert + Format) */}
+          <button
+            type="button"
+            onClick={() => setFormatSheetOpen(true)}
+            aria-label="Add (format, attach, emoji, voice)"
+            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md hover:opacity-70 ml-1 mb-1"
+            style={{ color: 'var(--on-surface-variant)' }}
+          >
+            <Plus size={20} strokeWidth={1.5} />
+          </button>
+
+          <div
+            className="flex-1 min-w-0 px-3 md:px-4 py-2 min-h-[40px] max-h-[200px] overflow-y-auto"
+            onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
+          >
+            <EditorContent editor={editor} />
+          </div>
+
+          {/* Mobile-only inline send — desktop uses the send button in the bottom toolbar instead */}
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!hasContent}
+            aria-label="Send message"
+            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity mr-1 mb-1"
+            style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+          >
+            <Send size={18} strokeWidth={2} />
+          </button>
         </div>
 
         {/* Upload progress */}
@@ -675,8 +729,9 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Bottom toolbar: emoji, attach, send */}
-        <div className="flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
+        {/* Bottom toolbar: emoji, attach, send — desktop only.
+            Mobile consolidates these into the "+" sheet + inline send. */}
+        <div className="hidden md:flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
           <div className="flex items-center gap-0.5">
             <button
               className="p-1.5 rounded-md"
