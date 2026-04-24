@@ -426,3 +426,16 @@ input:focus, textarea:focus {
     border-radius: 2px;
   }
 }
+
+/* Prevent iOS Safari from auto-zooming on input focus.
+   Inputs are visually 14px on desktop via Tailwind utilities; on mobile we override to 16px,
+   which is the threshold below which iOS auto-zooms. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  .ProseMirror {
+    font-size: 16px !important;
+  }
+}
