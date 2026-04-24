@@ -4,6 +4,7 @@ import { Hash } from 'lucide-react';
 import type { WidgetDefinition, WidgetProps } from '../lib/widget-types';
 import { useDashboardData } from '../lib/data-provider';
 import { initials } from '../lib/shared';
+import { stripHtml } from '@/lib/strip-html';
 
 function UnreadWidget(_props: WidgetProps) {
   const { core } = useDashboardData();
@@ -48,7 +49,7 @@ function UnreadWidget(_props: WidgetProps) {
                 fontSize: 11, color: 'var(--text-tertiary)', marginTop: 1,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
-                {s.last_message_by ? `${s.last_message_by.split(' ')[0]}: ` : ''}{s.last_message}
+                {s.last_message_by ? `${s.last_message_by.split(' ')[0]}: ` : ''}{stripHtml(s.last_message)}
               </div>
             )}
           </div>
