@@ -1,7 +1,7 @@
 /**
  * Phase 3 MCP tool registry.
  *
- * READ_ONLY_TOOLS are always available to any resolved Gateway employee.
+ * READ_ONLY_TOOLS are always available to any resolved BYOA agent employee.
  * WRITE_TOOLS are the Phase 3 subset that doesn't need approval gating —
  * `memory_write` writes into the caller employee's own scope which is
  * always-allowed. Everything else that writes (task_create, message_post,
@@ -10,7 +10,7 @@
  *
  * `toolSchemas` is the JSON Schema catalog returned by `POST /tools/list`.
  * The shapes are intentionally lightweight — Phase 3 exists to unblock
- * OpenClaw handshake, not to teach the agent every nuance.
+ * the BYOA agent handshake, not to teach the agent every nuance.
  */
 import type { ToolContext, ToolResult } from './types.js';
 
@@ -95,7 +95,7 @@ const CALLER_SLUG_PROP = {
   caller_employee_slug: {
     type: 'string',
     description:
-      'The slug of the employee on this Gateway that is making the call. ' +
+      'The slug of the employee that is making the call. ' +
       'Required on every MCP tool call so Deft can scope trust level + memory.',
   },
 };
@@ -413,7 +413,7 @@ export const toolSchemas: ToolSchema[] = [
     name: 'delegation_self_report',
     description:
       'Audit log: tell Deft that you delegated a sub-task to another ' +
-      'OpenClaw employee. Deft cannot observe internal delegations — this ' +
+      'agent employee. Deft cannot observe internal delegations — this ' +
       'is how you volunteer visibility into your own reasoning chain.',
     inputSchema: {
       type: 'object',
@@ -631,8 +631,7 @@ export const toolSchemas: ToolSchema[] = [
     name: 'ping_alive',
     description:
       'Bump your heartbeat timestamp. Call periodically from an autonomous ' +
-      'loop so Deft\'s connectivity indicators stay green. Also resets the ' +
-      'Gateway-ping failure counter.',
+      'loop so Deft\'s connectivity indicators stay green.',
     inputSchema: {
       type: 'object',
       properties: { ...CALLER_SLUG_PROP },

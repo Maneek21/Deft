@@ -1,15 +1,10 @@
-// HMAC-signed audit receipt schema adapted from OpenClaw Mission Control (MIT).
-// See THIRD-PARTY-LICENSES.md.
 /**
  * Phase 7 — HMAC-signed action receipts.
  *
  * `generateReceipt` writes a row into `action_receipts` for every elevated
  * MCP write and for every approval resolver decision. The receipt is signed
  * with an HMAC-SHA256 over a canonical JSON payload (sorted keys, no
- * whitespace) using `env.ENCRYPTION_KEY` — the same org-level secret that
- * AES-GCM-encrypts Gateway tokens. One secret per deployment; compromise
- * forces a rotation across both feature domains, which matches how a real
- * compliance officer would think about it.
+ * whitespace) using `env.ENCRYPTION_KEY`. One secret per deployment.
  *
  * `verifyReceipt` recomputes the HMAC against the stored canonical payload
  * and constant-time compares with the stored signature. Returns a plain

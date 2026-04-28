@@ -99,7 +99,6 @@ async function loadEmployeeForAction(employeeId: string) {
       org_id: agentEmployees.org_id,
       slug: agentEmployees.slug,
       trust_level: agentEmployees.trust_level,
-      kind: agentEmployees.kind,
     })
     .from(agentEmployees)
     .where(eq(agentEmployees.id, employeeId))

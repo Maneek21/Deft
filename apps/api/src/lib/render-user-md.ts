@@ -10,9 +10,8 @@
  * handlebars package for v1. A later phase can swap this for the real
  * thing when we need conditionals, nested blocks, or helpers.
  *
- * The deploy-provision worker currently passes the raw template string
- * through to OpenClaw without rendering. This helper is available to any
- * caller who wants to materialise the template with real values.
+ * Available to any caller who wants to materialise the template with
+ * real values for a BYOA agent's USER.md file.
  */
 export type UserMdContext = {
   org_name: string;

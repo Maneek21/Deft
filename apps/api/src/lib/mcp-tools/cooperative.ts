@@ -185,9 +185,6 @@ export async function pingAlive(
     .update(agentEmployees)
     .set({
       last_heartbeat_at: now,
-      connection_status: 'connected',
-      last_gateway_ping_at: now,
-      gateway_ping_fail_count: 0,
     })
     .where(
       and(

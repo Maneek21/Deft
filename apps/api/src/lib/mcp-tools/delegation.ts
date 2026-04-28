@@ -2,7 +2,7 @@
  * Phase 4 — delegation_self_report (I7).
  *
  * Audit-only tool. The agent reports its own `sessions_send` delegations to
- * Deft so they appear in the action log. Deft cannot observe OpenClaw-internal
+ * Deft so they appear in the action log. Deft cannot observe agent-internal
  * delegations directly — this is an honesty-based surface and is named
  * accordingly.
  *

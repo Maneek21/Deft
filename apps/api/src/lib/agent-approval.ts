@@ -25,7 +25,7 @@
  *   risky stuff queued" which wasn't matching reality. Loosening standard
  *   to auto-exec quick-tier makes it behave like the plan promises.
  *
- * Matrix update (OpenClaw unlock — 2026-04-18):
+ * Matrix update (autonomy tier — 2026-04-18):
  *   Autonomous was identical to Standard before this change. Now Autonomous
  *   auto-executes full-tier actions (post_message, create_calendar_event,
  *   create_github_issue, message_post) while still queuing destructive

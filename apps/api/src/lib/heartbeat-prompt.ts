@@ -14,7 +14,7 @@
  *        - open tasks assigned to the employee's shadow user
  *        - tasks the employee itself created in the last 24h
  *   4. Composes the final prompt text + a machine-readable context blob
- *      the OpenClaw trigger envelope can forward verbatim.
+ *      the trigger envelope can forward verbatim.
  *
  * Task 8.6 later adds a `prompt_sha` over the normalized output for
  * idempotency + loop detection — the normalization excludes the real

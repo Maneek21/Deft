@@ -2,8 +2,7 @@
  * SKILL.md body sanitizer — neutralizes common prompt-injection attack patterns
  * before the skill's markdown content is injected into an agent's system prompt.
  *
- * Regex-first approach. An LLM classifier second-pass is a future option (see
- * docs/superpowers/plans/2026-04-19-openclaw-unlock.md Open Question Q3).
+ * Regex-first approach. An LLM classifier second-pass is a future option.
  *
  * Threat model (what we defend against):
  *   1. Role-override / jailbreak: "ignore previous instructions", "you are now",
@@ -17,9 +16,7 @@
  * Approach: detect + replace. For each match, replace the offending span with
  * a neutralized placeholder [[REDACTED: pattern-id]] and record the finding.
  * Skills with any critical finding can be blocked (Conservative trust) or
- * warned (Standard/Autonomous) at import time. Block 1 consumes.
- *
- * See Block 0.10 in the OpenClaw Unlock plan.
+ * warned (Standard/Autonomous) at import time.
  */
 
 export type SanitizeFinding = {

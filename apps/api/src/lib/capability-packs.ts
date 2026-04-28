@@ -1,17 +1,15 @@
 /**
- * Phase 8 — Capability pack catalog.
+ * Capability pack catalog.
  *
- * A capability pack is a named bundle of tools that can be attached to an
- * OpenClaw employee during deployment. Packs fall into three layers per
- * §4.6 of the agentic vision plan:
+ * A capability pack is a named bundle of tools that can be attached to a
+ * BYOA agent during deployment. Packs fall into two layers:
  *
  *   - Layer 1 (Deft MCP server): `deft-workspace`, `google-calendar`
- *   - Layer 2 (OpenClaw native plugins): `web-browsing`, `shell-exec`
  *   - Layer 3 (External MCP servers): `tavily`, `github`
  *
  * The wizard renders this catalog as a checklist in step 2. Packs marked
  * `user_provides_secret` prompt the user for a credential during the flow;
- * those credentials get baked into the generated `openclaw.json` env vars.
+ * those credentials get baked into the agent's env vars.
  *
  * Extending: add new packs by appending to `CAPABILITY_PACKS`. The wizard
  * will pick up any new entries on next render.
@@ -24,7 +22,7 @@ export type CapabilityPack = {
   /** True = always added to the deployment; checkbox disabled in wizard. */
   is_always_on: boolean;
   /** Which template layer this pack targets. Purely informational. */
-  layer: 1 | 2 | 3;
+  layer: 1 | 3;
   /** Environment variable name the container expects (if user_provides_secret). */
   provider_env_var?: string;
   /** If true, wizard step 2 asks the user for a credential. */
@@ -35,8 +33,6 @@ export type CapabilityPack = {
     transport: 'streamable-http' | 'sse' | 'stdio';
     headers_template: Record<string, string>;
   };
-  /** Layer 2 — OpenClaw native plugin name (enables it in plugins.entries). */
-  openclaw_plugin?: string;
   /** Whether the pack is shipping in v1 or is "Coming Soon" UI-disabled. */
   coming_soon?: boolean;
 };
@@ -58,16 +54,6 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
       transport: 'streamable-http',
       headers_template: { Authorization: 'Bearer ${DEFT_MCP_TOKEN}' },
     },
-  },
-  {
-    slug: 'web-browsing',
-    display_name: 'Web Browsing',
-    description:
-      "OpenClaw's built-in browser plugin — navigate public URLs, take snapshots, read static HTML.",
-    is_always_on: false,
-    layer: 2,
-    user_provides_secret: false,
-    openclaw_plugin: 'browser',
   },
   {
     slug: 'tavily',
@@ -107,16 +93,6 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
     is_always_on: false,
     layer: 1,
     user_provides_secret: false,
-  },
-  {
-    slug: 'shell-exec',
-    display_name: 'Shell Exec (Advanced)',
-    description:
-      "Power users only. Grants the agent access to OpenClaw's exec plugin for running shell commands on the VPS. Use for DevOps and on-call roles only.",
-    is_always_on: false,
-    layer: 2,
-    user_provides_secret: false,
-    openclaw_plugin: 'exec',
   },
   // ─── Coming soon — disabled in wizard UI ─────────────────────────
   {

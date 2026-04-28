@@ -8,8 +8,8 @@
  * and the trigger descriptor.
  *
  * The blob is assembled here rather than being baked into a dynamic system
- * prompt (NC1 fix): the system prompt is owned by OpenClaw and stays
- * immutable, while per-turn context flows through this tool.
+ * prompt (NC1 fix): the system prompt is owned by the agent runtime and
+ * stays immutable, while per-turn context flows through this tool.
  *
  * Cache: 60-second LRU keyed by (employee_id + query hash) so a busy agent
  * calling `platform_context` repeatedly inside a single session doesn't
