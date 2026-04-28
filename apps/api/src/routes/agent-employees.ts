@@ -1126,13 +1126,15 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
 // agent's filesystem. A Defty-specific settings page (Defty's SOUL.md
 // lives inside Deft) can come back as its own focused feature if needed.
 
-// ─── Block 3.2 — GET /:id/developer  → connection credentials ────────
+// ─── GET /:id/developer  → BYOA connection credentials ───────────────
 //
-// Returns metadata about the agent's MCP token (whether one is issued)
-// plus an example JSON-RPC frame. The raw token is *not* returned —
-// `agent_employees.mcp_token_hash` is a bcrypt hash and the raw value is
-// shown to the operator exactly once at issuance (POST / and POST
-// /:id/regenerate-token). Callers who need a fresh token must regenerate.
+// Returns the MCP endpoint URL and a masked token placeholder so the
+// operator can wire up Claude Desktop / Claude Code / a custom MCP
+// client. The raw bearer token is *not* recoverable —
+// `agent_employees.mcp_token_hash` is a bcrypt hash and the raw value
+// is shown exactly once at issuance (POST / and POST
+// /:id/regenerate-token). `mcp_token` is therefore always null; if a
+// caller needs a fresh token, regenerate.
 agentEmployeeRoutes.get('/:id/developer', async (c) => {
   try {
     const user = c.get('user');
@@ -1145,18 +1147,16 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
+    const apiBase = process.env.PUBLIC_API_BASE_URL ?? 'http://localhost:4000';
+
     return c.json({
       employee: {
         id: employee.id,
         slug: employee.slug,
       },
-      mcp_token_set: !!employee.mcp_token_hash,
-      examples: {
-        json_rpc_skills_status: {
-          frame: { jsonrpc: '2.0', id: 1, method: 'skills.status' },
-          expected_shape: { ready: true, count: 0 },
-        },
-      },
+      mcp_endpoint_url: `${apiBase}/api/mcp/v1`,
+      mcp_token_masked: employee.mcp_token_hash ? '••••••••' : null,
+      mcp_token: null,
     });
   } catch (err) {
     console.error('Failed to fetch developer credentials:', err);
