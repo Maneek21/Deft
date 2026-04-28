@@ -72,9 +72,9 @@ before(async () => {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_status, is_active, created_by)
+         is_byoa, is_active, created_by)
        VALUES ($1, $2, $3, 'RC Agent Emp', $4, 'custom', 'test', 'standard',
-         'openclaw', 'pending', true, $3)
+         true, true, $3)
        ON CONFLICT (id) DO NOTHING`,
       [AGENT_EMPLOYEE_ID, ORG_ID, USER_ID, `agent-rc-emp-slug-${Date.now()}`],
     );

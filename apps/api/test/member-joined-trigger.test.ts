@@ -45,7 +45,7 @@ before(async () => {
   await db.insert(agentEmployees).values({
     id: subscriberId, org_id: testOrgId, user_id: testUserId,
     slug: `b27-hr-${Date.now()}`, name: 'HR Agent', system_prompt: 'test',
-    kind: 'native', trust_level: 'standard',
+    is_byoa: true, trust_level: 'standard',
     trigger_subscriptions: ['member.joined'] as any,
     created_by: testUserId, role: 'project_manager',
     is_active: true,
@@ -54,7 +54,7 @@ before(async () => {
   await db.insert(agentEmployees).values({
     id: nonSubscriberId, org_id: testOrgId, user_id: testUserId,
     slug: `b27-other-${Date.now()}`, name: 'Other', system_prompt: 'test',
-    kind: 'native', trust_level: 'standard',
+    is_byoa: true, trust_level: 'standard',
     trigger_subscriptions: ['cron:standup'] as any,
     created_by: testUserId, role: 'project_manager',
     is_active: true,

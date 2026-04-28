@@ -51,7 +51,7 @@ before(async () => {
   await db.insert(agentEmployees).values({
     id: testEmployeeId, org_id: testOrgId, user_id: testUserId,
     slug: `b33-emp-${Date.now()}`, name: 'B33 Agent', system_prompt: 'test',
-    kind: 'native', trust_level: 'standard',
+    is_byoa: true, trust_level: 'standard',
     created_by: testUserId, role: 'project_manager',
   });
 });

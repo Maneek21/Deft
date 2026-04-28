@@ -1,10 +1,10 @@
 /**
- * Phase 2 schema smoke test — OpenClaw agent employee + sidecar tables.
+ * Phase 2 schema smoke test — agent employee + sidecar tables.
  *
  * Run: pnpm --filter @deft/api exec tsx --test test/agent-employee-schema.test.ts
  *
  * Verifies:
- *   1. Alex PM seed row has kind='native'.
+ *   1. Alex PM seed row exists.
  *   2. New sidecar tables exist (agent_employee_templates, agent_session_turns, action_receipts, space_memory).
  *   3. wiki_pages has embedding pgvector column.
  *   4. A valid semver template row inserts cleanly.
@@ -29,14 +29,13 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   }
 }
 
-test('Alex PM seed row has kind=native', async () => {
+test('Alex PM seed row exists', async () => {
   await withClient(async (c) => {
     const r = await c.query(
-      'SELECT id, kind FROM agent_employees WHERE id = $1',
+      'SELECT id FROM agent_employees WHERE id = $1',
       [ALEX_PM_ID]
     );
     assert.equal(r.rows.length, 1, 'Alex PM row must exist');
-    assert.equal(r.rows[0].kind, 'native', 'Alex PM must be marked kind=native');
   });
 });
 
@@ -60,18 +59,13 @@ test('all new sidecar tables exist', async () => {
   });
 });
 
-test('new agent_employees columns exist', async () => {
+test('agent_employees retains BYOA + heartbeat columns post-Phase-9', async () => {
   await withClient(async (c) => {
     const expected = [
-      'kind',
-      'connection_url',
-      'gateway_token_encrypted',
+      'is_byoa',
+      'byoa_model_info',
       'mcp_token_hash',
-      'connection_status',
-      'template_slug',
-      'template_version',
       'trigger_subscriptions',
-      'provider_hint',
     ];
     const r = await c.query(
       `SELECT column_name FROM information_schema.columns
@@ -82,6 +76,30 @@ test('new agent_employees columns exist', async () => {
     for (const col of expected) {
       assert.ok(found.has(col), `missing agent_employees column ${col}`);
     }
+  });
+});
+
+test('OpenClaw columns dropped in migration 0059', async () => {
+  await withClient(async (c) => {
+    const dropped = [
+      'kind',
+      'connection_url',
+      'gateway_token_encrypted',
+      'connection_status',
+      'template_slug',
+      'template_version',
+      'provider_hint',
+      'provider_instance_id',
+      'connection_error',
+      'last_gateway_ping_at',
+      'gateway_ping_fail_count',
+    ];
+    const r = await c.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'agent_employees' AND column_name = ANY($1)`,
+      [dropped]
+    );
+    assert.equal(r.rows.length, 0, `expected zero dropped columns to remain, got ${r.rows.map((row: { column_name: string }) => row.column_name).join(', ')}`);
   });
 });
 

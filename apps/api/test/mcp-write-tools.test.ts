@@ -23,9 +23,8 @@ const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 
-// Three employees, one per trust level, all on the same Gateway so they
-// share a bearer token.
-const CONNECTION_URL = 'http://127.0.0.1:19998/test-phase4';
+// Three employees, one per trust level. Phase 9: every employee has its
+// own bearer token (Defty has no row, BYOA agents resolve 1:1).
 const EMP_CONSERVATIVE_ID = 'test-mcp-phase4-cons';
 const EMP_CONSERVATIVE_SLUG = 'mcp-phase4-cons';
 const EMP_STANDARD_ID = 'test-mcp-phase4-std';
@@ -36,7 +35,7 @@ const TEST_USER_ID = 'test-mcp-phase4-user';
 const OTHER_EMP_ID = 'test-mcp-phase4-other';
 const OTHER_EMP_SLUG = 'mcp-phase4-other';
 
-let RAW_TOKEN: string | null = null;
+const TOKENS_BY_SLUG = new Map<string, string>();
 let testApp: Hono | null = null;
 let TEST_PROJECT_ID: string | null = null;
 let TEST_SPACE_ID: string | null = null;
@@ -62,8 +61,8 @@ async function seedFixtures() {
       [TEST_USER_ID, 'mcp-phase4@test.local', 'MCP Phase 4 Test User']
     );
 
-    // Three employees with three different trust levels, all on the same
-    // Gateway so they share a bearer token.
+    // Three BYOA employees with three different trust levels. Each gets
+    // its own bearer token in the before() hook below.
     const emps: Array<[string, string, string, string]> = [
       [EMP_CONSERVATIVE_ID, EMP_CONSERVATIVE_SLUG, 'conservative', 'Phase4 Conservative'],
       [EMP_STANDARD_ID, EMP_STANDARD_SLUG, 'standard', 'Phase4 Standard'],
@@ -73,27 +72,23 @@ async function seedFixtures() {
       await c.query(
         `INSERT INTO agent_employees
           (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-           kind, connection_url, connection_status, is_active, created_by)
+           is_byoa, is_active, created_by)
          VALUES ($1, $2, $3, $4, $5, 'project_manager', 'test', $6,
-           'openclaw', $7, 'pending', true, $3)
+           true, true, $3)
          ON CONFLICT (id) DO UPDATE SET
-           kind = 'openclaw',
-           connection_url = $7,
-           connection_status = 'pending',
            trust_level = $6,
            is_active = true`,
-        [id, ORG_ID, TEST_USER_ID, name, slug, trust, CONNECTION_URL]
+        [id, ORG_ID, TEST_USER_ID, name, slug, trust]
       );
     }
 
     // An unrelated employee used to test memory_update cross-employee reject.
-    // Different Gateway URL so it isn't resolved under the test bearer.
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_url, connection_status, is_active, created_by)
+         is_byoa, is_active, created_by)
        VALUES ($1, $2, $3, 'Other Phase4', $4, 'project_manager', 'test', 'standard',
-         'openclaw', 'http://127.0.0.1:19997/other', 'pending', true, $3)
+         true, true, $3)
        ON CONFLICT (id) DO UPDATE SET is_active = true`,
       [OTHER_EMP_ID, ORG_ID, TEST_USER_ID, OTHER_EMP_SLUG]
     );
@@ -196,7 +191,15 @@ before(async () => {
   const routeModule = await import('../src/routes/mcp-server-v1.js');
   testApp = new Hono();
   testApp.route('/api/mcp/v1', routeModule.mcpServerV1Routes);
-  RAW_TOKEN = await tokenModule.issueGatewayToken(ORG_ID, CONNECTION_URL);
+  // Issue one bearer per BYOA employee — Phase 9 routing is 1:1.
+  for (const [id, slug] of [
+    [EMP_CONSERVATIVE_ID, EMP_CONSERVATIVE_SLUG],
+    [EMP_STANDARD_ID, EMP_STANDARD_SLUG],
+    [EMP_AUTONOMOUS_ID, EMP_AUTONOMOUS_SLUG],
+    [OTHER_EMP_ID, OTHER_EMP_SLUG],
+  ]) {
+    TOKENS_BY_SLUG.set(slug, await tokenModule.issueEmployeeToken(ORG_ID, id));
+  }
 });
 
 after(async () => {
@@ -212,11 +215,16 @@ async function mcpCall(
   tool: string,
   args: Record<string, unknown>,
 ): Promise<{ status: number; body: any }> {
+  const slug = (args as any).caller_employee_slug as string | undefined;
+  const token = slug ? TOKENS_BY_SLUG.get(slug) : undefined;
+  if (!token) {
+    throw new Error(`mcpCall: no bearer for caller_employee_slug=${slug}`);
+  }
   const res = await app().request('/api/mcp/v1/tools/call', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${RAW_TOKEN}`,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ name: tool, arguments: args }),
   });
@@ -312,7 +320,7 @@ test('3. message_post with standard trust returns pseudo-result (full tier)', as
 });
 
 test('4. message_post with autonomous trust auto-executes (full-tier unlocked)', async () => {
-  // OpenClaw unlock (2026-04-18): Autonomous trust now auto-executes full-tier
+  // Trust unlock (2026-04-18): Autonomous trust now auto-executes full-tier
   // actions. message_post is full-tier but NOT in the destructive guard set,
   // so it runs immediately instead of queuing.
   // Standard trust still queues full-tier — that is covered by test 3.

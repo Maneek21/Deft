@@ -53,7 +53,7 @@ before(async () => {
   await db.insert(agentEmployees).values({
     id: sourceEmployeeId, org_id: testOrgId, user_id: testUserId,
     slug: `b31-source-${Date.now()}`, name: 'B31 Source', system_prompt: 'test',
-    kind: 'native', trust_level: 'standard',
+    is_byoa: true, trust_level: 'standard',
     expertise_description: 'Source agent', starter_prompts: ['Say hi'] as any,
     created_by: testUserId, role: 'project_manager',
   });
@@ -105,7 +105,6 @@ test('POST /:id/clone duplicates the employee with a fresh slug + copies skills'
 
   assert.equal(body.employee.name, 'B31 Source (copy)');
   assert.match(body.employee.slug, /-copy$/);
-  assert.equal(body.employee.connection_status, 'pending');
 
   // Skills copied
   const skillRows = await db

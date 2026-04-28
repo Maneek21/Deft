@@ -82,12 +82,11 @@ async function seedFixtures() {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_url, connection_status, is_active, created_by)
+         is_byoa, is_active, created_by)
        VALUES ($1, $2, $3, 'Resolver Test Employee', $4,
          'project_manager', 'test resolver employee', 'conservative',
-         'openclaw', 'http://127.0.0.1:19996/resolver', 'pending', true, $3)
+         true, true, $3)
        ON CONFLICT (id) DO UPDATE SET
-         kind = 'openclaw',
          trust_level = 'conservative',
          is_active = true`,
       [EMP_ID, ORG_ID, SHADOW_USER_ID, EMP_SLUG],

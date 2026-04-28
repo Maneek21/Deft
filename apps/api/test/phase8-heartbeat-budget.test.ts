@@ -58,12 +58,12 @@ test('an employee at max_daily_actions is skipped by the heartbeat scan', async 
     await c.query(
       `INSERT INTO agent_employees
          (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-          kind, connection_status, is_active, heartbeat_enabled,
+          is_byoa, is_active, heartbeat_enabled,
           heartbeat_interval_min, max_daily_actions, daily_action_count,
           daily_budget_cents, daily_cost_cents, unhealthy, created_by)
        VALUES
          ($1, $2, $3, 'P8 Budget', $4, 'project_manager', 'test', 'standard',
-          'openclaw', 'connected', true, true, 30, 50, 50, 10000, 0, false, $3)`,
+          true, true, true, 30, 50, 50, 10000, 0, false, $3)`,
       [employeeId, orgId, userId, `slug-${employeeId}`],
     );
   });
@@ -103,12 +103,12 @@ test('daily_cost_cents >= daily_budget_cents flips the cost guard', async () => 
     await c.query(
       `INSERT INTO agent_employees
          (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-          kind, connection_status, is_active, heartbeat_enabled,
+          is_byoa, is_active, heartbeat_enabled,
           heartbeat_interval_min, max_daily_actions, daily_action_count,
           daily_budget_cents, daily_cost_cents, unhealthy, created_by)
        VALUES
          ($1, $2, $3, 'P8 Cost', $4, 'project_manager', 'test', 'standard',
-          'openclaw', 'connected', true, true, 30, 50, 5, 1000, 1500, false, $3)`,
+          true, true, true, 30, 50, 5, 1000, 1500, false, $3)`,
       [employeeId, orgId, userId, `slug-${employeeId}`],
     );
   });
@@ -146,12 +146,12 @@ test('agent-daily-reset handler resets both action count + cost cents', async ()
     await c.query(
       `INSERT INTO agent_employees
          (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-          kind, connection_status, is_active, heartbeat_enabled,
+          is_byoa, is_active, heartbeat_enabled,
           heartbeat_interval_min, max_daily_actions, daily_action_count,
           daily_budget_cents, daily_cost_cents, unhealthy, created_by)
        VALUES
          ($1, $2, $3, 'P8 Reset', $4, 'project_manager', 'test', 'standard',
-          'openclaw', 'connected', true, true, 30, 50, 7, 10000, 123, false, $3)`,
+          true, true, true, 30, 50, 7, 10000, 123, false, $3)`,
       [employeeId, orgId, userId, `slug-${employeeId}`],
     );
   });

@@ -84,9 +84,9 @@ async function seedFixture(c: pg.Client): Promise<Fixture> {
   await c.query(
     `INSERT INTO agent_employees
       (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-       kind, connection_status, is_active, trigger_subscriptions, created_by)
+       is_byoa, is_active, trigger_subscriptions, created_by)
      VALUES ($1, $2, $3, $4, $5, 'project_manager', 'nudge pc test prompt',
-       'standard', 'native', 'connected', true,
+       'standard', true, true,
        ARRAY['event:task-stalled', 'event:task-overdue']::text[], $3)`,
     [employeeId, orgId, agentUserId, 'Test Agent PM', uniqueId('agent-pm-slug')],
   );

@@ -76,9 +76,9 @@ before(async () => {
     await c.query(
       `INSERT INTO agent_employees (
          id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         max_daily_actions, created_by, is_active, kind, connection_status
+         max_daily_actions, created_by, is_active, is_byoa
        ) VALUES ($1, $2, $3, 'Pixel Agent', 'pixel-resolve', 'project_manager',
-                 'you are pixel', 'conservative', 50, $3, true, 'openclaw', 'connected')
+                 'you are pixel', 'conservative', 50, $3, true, true)
        ON CONFLICT (id) DO NOTHING`,
       [AGENT_EMP_ID, ORG_ID, U_AGENT_SHADOW],
     );
