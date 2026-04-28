@@ -1424,29 +1424,10 @@ export const agentEmployees = pgTable('agent_employees', {
   deleted_at: timestamp('deleted_at'),
   is_byoa: boolean('is_byoa').default(false).notNull(),
   byoa_model_info: text('byoa_model_info'),
-  // ─── OpenClaw sidecar columns (Phase 2) ─────────────────────────────
-  kind: text('kind').$type<'native' | 'openclaw' | 'claude_sdk' | 'custom_mcp'>()
-    .default('openclaw').notNull(),
-  connection_url: text('connection_url'),
-  gateway_token_encrypted: text('gateway_token_encrypted'),
   mcp_token_hash: text('mcp_token_hash'),
-  connection_status: text('connection_status')
-    .$type<'pending' | 'connected' | 'error' | 'revoked'>()
-    .default('pending').notNull(),
-  template_slug: text('template_slug'),
-  template_version: text('template_version'),
+  // trigger_subscriptions is the routing key for the trigger system (e.g.
+  // member.joined, cron:standup) — kept as part of Phase 9.
   trigger_subscriptions: text('trigger_subscriptions').array(),
-  provider_hint: text('provider_hint'),
-  // ─── Phase 8 deployment provider columns ────────────────────────────
-  // deployment_provider and capability_packs were dropped in PR 4 C:
-  //   • deployment_provider — every writer removed in PRs 1–3, no live readers.
-  //   • capability_packs   — last reader (clone/save-as-template) refactored
-  //     to derive pack membership from installed skills' agent_config at runtime.
-  provider_instance_id: text('provider_instance_id'),
-  connection_error: text('connection_error'),
-  last_gateway_ping_at: timestamp('last_gateway_ping_at'),
-  gateway_ping_fail_count: integer('gateway_ping_fail_count').default(0).notNull(),
-  // ────────────────────────────────────────────────────────────────────
   created_by: text('created_by').notNull().references(() => users.id),
   ...timestamps(),
 }, (t) => [
@@ -1726,30 +1707,6 @@ export const integrations = pgTable('integrations', {
   ...timestamps(),
 }, (t) => [
   uniqueIndex('integrations_org_provider_idx').on(t.org_id, t.provider),
-]);
-
-// ═══ PROVIDER INSTANCES (Phase 8) ═══
-// One row per deployed OpenClaw employee that lives on a managed provider
-// or BYO infrastructure. DeploymentProvider.provision() inserts the row;
-// DeploymentProvider.destroy() flips status='destroyed'.
-export const providerInstances = pgTable('provider_instances', {
-  ...id(),
-  ...orgId(),
-  employee_id: text('employee_id').notNull().references(() => agentEmployees.id),
-  provider: text('provider').$type<'railway' | 'fly' | 'digitalocean' | 'deft_cloud' | 'byo'>().notNull(),
-  integration_id: text('integration_id').references(() => integrations.id),
-  external_instance_id: text('external_instance_id'),
-  external_project_id: text('external_project_id'),
-  external_environment_id: text('external_environment_id'),
-  provider_metadata: jsonb('provider_metadata'),
-  cost_usd_cents_monthly: integer('cost_usd_cents_monthly'),
-  deft_orchestration_fee_usd_cents_monthly: integer('deft_orchestration_fee_usd_cents_monthly'),
-  status: text('status').$type<'provisioning' | 'running' | 'crashed' | 'stopped' | 'destroyed' | 'unknown'>().default('provisioning').notNull(),
-  last_status_check_at: timestamp('last_status_check_at'),
-  ...timestamps(),
-}, (t) => [
-  index('provider_instances_employee_idx').on(t.employee_id),
-  index('provider_instances_org_idx').on(t.org_id),
 ]);
 
 // ═══ MESSAGE CLASSIFICATIONS (Task 5.6) ═══
