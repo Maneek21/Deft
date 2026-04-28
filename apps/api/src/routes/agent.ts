@@ -607,7 +607,6 @@ agentRoutes.get('/actions/pending', async (c) => {
       employee_name: agentEmployees.name,
       employee_slug: agentEmployees.slug,
       employee_avatar: agentEmployees.avatar_url,
-      employee_kind: agentEmployees.kind,
     })
     .from(agentActions)
     .leftJoin(
@@ -728,7 +727,6 @@ agentRoutes.get('/actions/recent', async (c) => {
       employee_name: agentEmployees.name,
       employee_slug: agentEmployees.slug,
       employee_avatar: agentEmployees.avatar_url,
-      employee_kind: agentEmployees.kind,
     })
     .from(agentActions)
     .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
