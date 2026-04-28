@@ -6,10 +6,6 @@ import { api } from '@/lib/api';
 import { ReceiptViewer } from '@/components/receipt-viewer';
 import { ConfirmDangerous } from '@/components/confirm-dangerous';
 import { SessionTurnCard, type SessionTurn } from '@/components/session-turn-card';
-import {
-  GatewayHealthCard,
-  type GatewayHealthMember,
-} from '@/components/gateway-health-card';
 
 // Phase 10 — mirrors apps/api/src/lib/model-pricing.ts. Kept in sync by hand
 // because the cost column is advisory only.
@@ -48,19 +44,10 @@ type Employee = {
   name: string;
   slug: string;
   role: string;
-  kind?: 'native' | 'openclaw' | 'claude_sdk' | 'custom_mcp';
   trust_level: string;
   is_active: boolean;
   avatar_url?: string | null;
-  connection_status?: 'pending' | 'connected' | 'error' | 'revoked';
-  connection_url?: string | null;
-  connection_error?: string | null;
-  last_gateway_ping_at?: string | null;
-  gateway_ping_fail_count?: number | null;
-  template_slug?: string | null;
-  template_version?: string | null;
   trigger_subscriptions?: string[] | null;
-  provider_hint?: string | null;
   last_heartbeat_at?: string | null;
   pending_action_count?: number;
   recent_turn_count_24h?: number;
@@ -78,7 +65,6 @@ type PendingAction = {
   employee_name: string | null;
   employee_slug: string | null;
   employee_avatar: string | null;
-  employee_kind: string | null;
   proposer: 'employee' | 'defty';
 };
 
@@ -92,19 +78,11 @@ const TRUST_LEVELS = [
   { value: 'autonomous', label: 'Autonomous', desc: 'All actions auto-execute except external writes.' },
 ];
 
-const KIND_STYLES: Record<string, { label: string; bg: string; fg: string }> = {
-  native: { label: 'Native', bg: 'rgba(168, 85, 247, 0.15)', fg: '#a855f7' },
-  openclaw: { label: 'BYOA', bg: 'rgba(245, 158, 11, 0.15)', fg: '#f59e0b' },
-  claude_sdk: { label: 'Claude SDK', bg: 'rgba(59, 130, 246, 0.15)', fg: '#3b82f6' },
-  custom_mcp: { label: 'Custom MCP', bg: 'rgba(100, 116, 139, 0.15)', fg: '#64748b' },
-};
-
-const CONNECTION_COLORS: Record<string, string> = {
-  connected: '#10b981',
-  pending: '#eab308',
-  error: '#ef4444',
-  revoked: '#94a3b8',
-};
+// Visual treatment for proposer badges. Defty (built-in) vs BYOA employees.
+const PROPOSER_STYLE = {
+  defty: { label: 'Defty', bg: 'rgba(168, 85, 247, 0.15)', fg: '#a855f7' },
+  employee: { label: 'BYOA', bg: 'rgba(245, 158, 11, 0.15)', fg: '#f59e0b' },
+} as const;
 
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -443,58 +421,6 @@ export default function AgentSettingsPage() {
         )}
       </div>
 
-      {/* Gateway health — Phase 11 */}
-      <div className="mb-8" data-testid="gateway-health-section">
-        <h3
-          className="text-[14px] font-semibold mb-3"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-        >
-          Gateway health
-        </h3>
-        {(() => {
-          const openclawEmployees = employees.filter(
-            (e) => (e.kind ?? 'openclaw') === 'openclaw' && !!e.connection_url,
-          );
-          if (openclawEmployees.length === 0) {
-            return (
-              <p className="text-[13px]" style={{ color: 'var(--muted)' }}>
-                No BYOA agents connected yet.
-              </p>
-            );
-          }
-          const groups = new Map<string, Employee[]>();
-          for (const emp of openclawEmployees) {
-            const url = emp.connection_url as string;
-            const list = groups.get(url) ?? [];
-            list.push(emp);
-            groups.set(url, list);
-          }
-          return (
-            <div className="space-y-2">
-              {Array.from(groups.entries()).map(([url, members]) => {
-                const healthMembers: GatewayHealthMember[] = members.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  slug: m.slug,
-                  role: m.role,
-                  connection_status: m.connection_status ?? 'pending',
-                  connection_error: m.connection_error ?? null,
-                  last_gateway_ping_at: m.last_gateway_ping_at ?? null,
-                  gateway_ping_fail_count: m.gateway_ping_fail_count ?? 0,
-                }));
-                return (
-                  <GatewayHealthCard
-                    key={url}
-                    gatewayUrl={url}
-                    employees={healthMembers}
-                  />
-                );
-              })}
-            </div>
-          );
-        })()}
-      </div>
-
       {/* Employees — Phase 6.5 */}
       <div className="mb-8">
         <div className="flex items-center justify-between mb-3">
@@ -533,10 +459,6 @@ export default function AgentSettingsPage() {
           )}
           <div className="space-y-2">
             {employees.map((emp) => {
-              const kind = emp.kind ?? 'openclaw';
-              const kindStyle = KIND_STYLES[kind] ?? KIND_STYLES.openclaw!;
-              const conn = emp.connection_status ?? 'pending';
-              const connColor = CONNECTION_COLORS[conn] ?? '#9ca3af';
               const triggers = emp.trigger_subscriptions ?? [];
               const pendingCount = emp.pending_action_count ?? 0;
               return (
@@ -572,33 +494,12 @@ export default function AgentSettingsPage() {
                       </p>
                       <span
                         className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                        style={{ background: kindStyle.bg, color: kindStyle.fg }}
+                        style={{ background: PROPOSER_STYLE.employee.bg, color: PROPOSER_STYLE.employee.fg }}
                       >
-                        {kindStyle.label}
+                        {PROPOSER_STYLE.employee.label}
                       </span>
-                      {kind !== 'native' && (
-                        <span
-                          className="flex items-center gap-1 text-[10px]"
-                          style={{ color: 'var(--muted)' }}
-                        >
-                          <span
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ background: connColor }}
-                          />
-                          {conn}
-                        </span>
-                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                      {emp.template_slug && (
-                        <span
-                          className="text-[10px]"
-                          style={{ color: 'var(--muted)' }}
-                        >
-                          {emp.template_slug}
-                          {emp.template_version ? `@${emp.template_version}` : ''}
-                        </span>
-                      )}
                       {triggers.length === 0 ? (
                         <span className="text-[10px]" style={{ color: 'var(--muted)' }}>
                           No triggers
@@ -746,9 +647,9 @@ export default function AgentSettingsPage() {
         ) : (
           <div className="space-y-2">
             {pending.map((p) => {
-              const emp = p.agent_employee_id ? employeeById.get(p.agent_employee_id) : undefined;
-              const kind = (emp?.kind ?? p.employee_kind) ?? 'native';
-              const kindStyle = KIND_STYLES[kind] ?? KIND_STYLES.native!;
+              const proposerStyle = p.proposer === 'employee'
+                ? PROPOSER_STYLE.employee
+                : PROPOSER_STYLE.defty;
               const preview = JSON.stringify(p.params ?? {}).slice(0, 80);
               return (
                 <div
@@ -766,7 +667,7 @@ export default function AgentSettingsPage() {
                     </div>
                     <span
                       className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                      style={{ background: kindStyle.bg, color: kindStyle.fg }}
+                      style={{ background: proposerStyle.bg, color: proposerStyle.fg }}
                     >
                       {p.proposer === 'employee' ? p.employee_name ?? 'Employee' : 'Defty'}
                     </span>
@@ -847,11 +748,11 @@ export default function AgentSettingsPage() {
                   className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 font-medium"
                   style={{
                     background: a.agent_employee_id
-                      ? KIND_STYLES.openclaw!.bg
-                      : KIND_STYLES.native!.bg,
+                      ? PROPOSER_STYLE.employee.bg
+                      : PROPOSER_STYLE.defty.bg,
                     color: a.agent_employee_id
-                      ? KIND_STYLES.openclaw!.fg
-                      : KIND_STYLES.native!.fg,
+                      ? PROPOSER_STYLE.employee.fg
+                      : PROPOSER_STYLE.defty.fg,
                   }}
                 >
                   {sourceLabel}
@@ -945,9 +846,9 @@ export default function AgentSettingsPage() {
           body={
             <>
               <p className="mb-2">
-                Soft-deletes the employee and tears down any managed provider
-                instances. Pending approvals are marked expired. You can still
-                access the audit log afterwards.
+                Soft-deletes the employee and revokes its API key. Pending
+                approvals are marked expired. You can still access the audit
+                log afterwards.
               </p>
               <p>
                 Type the employee slug to confirm —{' '}
@@ -997,11 +898,11 @@ export default function AgentSettingsPage() {
                   <span
                     className="text-[10px] px-1.5 py-0.5 rounded font-medium"
                     style={{
-                      background: (KIND_STYLES[drawerEmp.kind ?? 'openclaw'] ?? KIND_STYLES.openclaw!).bg,
-                      color: (KIND_STYLES[drawerEmp.kind ?? 'openclaw'] ?? KIND_STYLES.openclaw!).fg,
+                      background: PROPOSER_STYLE.employee.bg,
+                      color: PROPOSER_STYLE.employee.fg,
                     }}
                   >
-                    {(KIND_STYLES[drawerEmp.kind ?? 'openclaw'] ?? KIND_STYLES.openclaw!).label}
+                    {PROPOSER_STYLE.employee.label}
                   </span>
                   <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                     trust: {drawerEmp.trust_level}
@@ -1212,49 +1113,6 @@ export default function AgentSettingsPage() {
                 </div>
               )}
 
-              {/* Connection details for OpenClaw */}
-              {(drawerEmp.kind === 'openclaw' || drawerEmp.kind === 'custom_mcp') && (
-                <>
-                  <h4
-                    className="text-[12px] font-semibold mt-5 mb-2"
-                    style={{ color: 'var(--foreground)' }}
-                  >
-                    Connection
-                  </h4>
-                  <div
-                    className="text-[11px] space-y-1 p-2 rounded"
-                    style={{
-                      background: 'var(--surface-container)',
-                      color: 'var(--foreground-secondary)',
-                    }}
-                  >
-                    {drawerEmp.connection_url && (
-                      <p>
-                        <span style={{ color: 'var(--muted)' }}>url: </span>
-                        {drawerEmp.connection_url}
-                      </p>
-                    )}
-                    {drawerEmp.provider_hint && (
-                      <p>
-                        <span style={{ color: 'var(--muted)' }}>provider: </span>
-                        {drawerEmp.provider_hint}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    disabled
-                    title="Coming soon"
-                    className="mt-2 text-[11px] px-3 py-1.5 rounded opacity-50 cursor-not-allowed"
-                    style={{
-                      background: 'var(--surface-container)',
-                      color: 'var(--muted)',
-                      border: '1px solid var(--border)',
-                    }}
-                  >
-                    Regenerate token
-                  </button>
-                </>
-              )}
             </div>
           </div>
         </div>
