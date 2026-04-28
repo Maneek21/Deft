@@ -18,6 +18,7 @@ import {
   Save,
   Trash2,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 
 type Skill = {

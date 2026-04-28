@@ -1551,7 +1551,7 @@ export const agentEmployeeTemplates = pgTable('agent_employee_templates', {
 ]);
 
 // ═══ AGENT SESSION TURNS (Phase 2) ═══
-// Session inspector feed — one row per OpenClaw turn. Cost is computed on read
+// Session inspector feed — one row per agent turn. Cost is computed on read
 // from {model_name, tokens_in, tokens_out} against a model_pricing lookup table.
 // ═══ AGENT COOPERATIVE LOG (self-hosted v1) ═══
 // Append-only stream of cooperative-knowledge records volunteered by BYOA
@@ -1673,7 +1673,7 @@ export const actionReceipts = pgTable('action_receipts', {
 ]);
 
 // ═══ SPACE MEMORY (Phase 2) ═══
-// Per-channel KV bag used by OpenClaw employees to remember space-scoped facts.
+// Per-channel KV bag used by agents to remember space-scoped facts.
 export const spaceMemory = pgTable('space_memory', {
   ...id(),
   ...orgId(),
