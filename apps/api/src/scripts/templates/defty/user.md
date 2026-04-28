@@ -13,7 +13,7 @@ You are the superintendent for **{{org_name}}**. You work for the admin. The cre
 ### Agent employees
 
 {{#each agent_employees}}
-- **{{name}}** — {{role}} (template: {{template_slug}})
+- **{{name}}** — {{role}}
 {{/each}}
 
 When you post messages, use real names for people and agent employee names (not slugs) for the crew.
