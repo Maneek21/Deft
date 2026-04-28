@@ -1,9 +1,16 @@
-// Handler: agent-employee-trigger — fires when events occur and evaluates trigger conditions for agent employees
+// Handler: agent-employee-trigger — fires when events occur and evaluates
+// per-employee trigger conditions, then queues a pending `agent_actions`
+// row so the BYOA client picks the work up via `poll_pending_work`.
+//
+// Phase 9: every employee is BYOA. We never push into a runtime — we
+// record the invitation. The legacy `triggers` row (with structured
+// `condition` + `actions`) drives gating; on a match we queue ONE
+// agent_actions row carrying the event payload + the trigger's prompt
+// (if any) so the agent has full context.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { triggers, agentEmployees, orgs } from '@deft/db/schema';
+import { triggers, agentEmployees, agentActions } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
-import { runAgentQuery } from '../../lib/agent-runner.js';
 
 interface AgentEmployeeTriggerData {
   triggerId: string;
@@ -45,13 +52,7 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     return;
   }
 
-  // 4. Load org name
-  const [org] = await db.select({ name: orgs.name })
-    .from(orgs)
-    .where(eq(orgs.id, orgId))
-    .limit(1);
-
-  // 5. Evaluate structured condition
+  // 4. Evaluate structured condition
   const condition = trigger.condition as Record<string, any> | null;
   if (condition) {
     for (const [field, expected] of Object.entries(condition)) {
@@ -68,33 +69,51 @@ export async function handleAgentEmployeeTrigger(job: JobData): Promise<void> {
     }
   }
 
-  // 6. Execute actions
+  // 5. Queue one pending agent_actions row per matching `run_agent`
+  // action so the BYOA client picks them up. Non-`run_agent` action
+  // types are ignored here — they belong on workflow-execute.
   const actions = trigger.actions as { type: string; prompt?: string }[];
+  let queued = 0;
   for (const action of actions) {
-    if (action.type === 'run_agent' && action.prompt) {
-      const prompt = action.prompt.replace('{{event}}', JSON.stringify(eventData));
+    if (action.type !== 'run_agent' || !action.prompt) continue;
 
-      await runAgentQuery({
-        content: prompt,
-        orgId,
-        userId: employee.user_id,
-        orgName: org?.name ?? '',
-        mode: 'background',
-        systemPromptOverride: employee.system_prompt,
+    const prompt = action.prompt.replace('{{event}}', JSON.stringify(eventData));
+
+    try {
+      await db.insert(agentActions).values({
+        org_id: orgId,
+        user_id: employee.user_id,
+        agent_employee_id: employee.id,
+        source: 'trigger',
+        action: 'trigger_dispatch',
+        params: {
+          trigger_id: triggerId,
+          trigger_name: trigger.name,
+          event_type: eventType,
+          event_data: eventData,
+          prompt,
+        },
+        approval_tier: 'auto',
+        approval_status: 'pending',
       });
-
-      // Increment daily action count
-      await db.update(agentEmployees).set({
-        daily_action_count: employee.daily_action_count + 1,
-      }).where(eq(agentEmployees.id, employee.id));
+      queued += 1;
+    } catch (err) {
+      console.error(
+        `[agent-employee-trigger] failed to queue trigger ${triggerId}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
-  // 7. Update trigger fire stats
-  await db.update(triggers).set({
-    last_fired_at: new Date(),
-    fire_count: sql`coalesce(${triggers.fire_count}, 0) + 1`,
-  }).where(eq(triggers.id, triggerId));
+  // 6. Update trigger fire stats only when we actually queued something
+  // — keeps fire_count meaningful when the actions list is empty or
+  // only contains non-run_agent kinds.
+  if (queued > 0) {
+    await db.update(triggers).set({
+      last_fired_at: new Date(),
+      fire_count: sql`coalesce(${triggers.fire_count}, 0) + 1`,
+    }).where(eq(triggers.id, triggerId));
+  }
 
-  console.log(`[agent-employee-trigger] Trigger ${triggerId} (${trigger.name}) executed for event ${eventType}`);
+  console.log(`[agent-employee-trigger] Trigger ${triggerId} (${trigger.name}) queued ${queued} action(s) for event ${eventType}`);
 }

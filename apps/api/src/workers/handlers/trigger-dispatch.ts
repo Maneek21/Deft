@@ -106,9 +106,9 @@ export async function handleTriggerDispatch(job: JobData): Promise<void> {
 /**
  * Look up every active employee whose active trigger set (inline +
  * skill-derived) includes `triggerKind` and enqueue an `employee-trigger`
- * job per match. The Phase 6 `employee-trigger` handler already knows
- * how to route by kind (openclaw vs native) and enforce the per-employee
- * budget gate.
+ * job per match. The `employee-trigger` handler queues a pending
+ * `agent_actions` row that the BYOA agent picks up via
+ * `poll_pending_work`, and enforces the per-employee budget gate.
  */
 async function fanOutTrigger(params: {
   triggerKind: string;
