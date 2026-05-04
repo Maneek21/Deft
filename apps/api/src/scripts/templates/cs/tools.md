@@ -19,6 +19,8 @@
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — open public pages a user is referring to (pricing page, docs page, public roadmap) so you can speak to what they're actually looking at.
 
 ## Coming soon (not yet available)

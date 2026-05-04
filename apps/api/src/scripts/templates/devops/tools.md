@@ -18,6 +18,8 @@
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — read public vendor status pages (Stripe, AWS, GitHub) and public docs.
 
 ## GitHub
@@ -29,6 +31,8 @@
 - **`github_create_issue`** — open an upstream issue (write; gated by approval).
 
 ## Shell Exec (advanced — gated)
+
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
 
 - **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless the trust level is `autonomous` and the command matches a pre-approved runbook entry.
   _Example: draft `kubectl get pods -n prod` and let a human approve it before execution._

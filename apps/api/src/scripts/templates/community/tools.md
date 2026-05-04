@@ -16,6 +16,8 @@
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — open public threads, forum posts, Hacker News, subreddit pages, blog comments. Read what's being said and screenshot it back into Deft.
   _Example: `browser_navigate({url: "https://news.ycombinator.com/item?id=12345"})`_
 

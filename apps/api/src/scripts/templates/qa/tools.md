@@ -19,6 +19,8 @@
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — open the deployed URL in a lightweight browser to reproduce bugs that are reported on public pages.
 
 ## GitHub

@@ -29,6 +29,8 @@ You have access to the following tools, grouped by capability pack. Use them as 
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — open a public URL and read its static content. Use for reading public roadmaps, release notes, or vendor status pages.
 
 ## Tavily Search

@@ -19,6 +19,8 @@
 
 ## Web Browsing
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — read public competitor sites, design-system examples, and Dribbble-style inspiration.
   _Use: to pull reference material before proposing a new pattern._
 

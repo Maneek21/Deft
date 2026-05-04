@@ -20,6 +20,8 @@
 
 ## Web Browsing + Tavily
 
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
+
 - **`browser_navigate`** / **`browser_snapshot`** — check public status pages (Stripe, AWS, GitHub, Cloudflare) to see if a dependency is in outage.
 - **`tavily_search`** — search for recent reports of the same issue, upstream outages, or vendor status.
   _Example: `tavily_search({query: "stripe api outage site:status.stripe.com"})`_
@@ -32,6 +34,8 @@
 - **`github_create_issue`** — file an upstream issue (write; gated by approval).
 
 ## Shell Exec (advanced — gated)
+
+> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
 
 - **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless you're on `autonomous` trust AND the command matches a pre-approved runbook pattern.
   _Example: draft `kubectl rollout undo deployment/payments -n prod` and ask the human to approve it._
