@@ -7,7 +7,7 @@ export async function findRecentAgentActions(opts: {
   source?: string;
   action?: string;
   sinceMs?: number;
-  status?: 'pending' | 'approved' | 'rejected' | 'executed' | 'error';
+  status?: 'pending' | 'approved' | 'rejected' | 'expired';
 }) {
   const conds = [eq(schema.agentActions.agent_employee_id, opts.agentEmployeeId)];
   if (opts.source) conds.push(eq(schema.agentActions.source, opts.source));
@@ -33,14 +33,24 @@ export async function waitForAgentAction(opts: {
   throw new Error(`waitForAgentAction timed out for source=${opts.source} action=${opts.action ?? '*'}`);
 }
 
-export async function seedSyntheticEvent(orgId: string, type: string) {
+export async function seedSyntheticEvent(orgId: string, eventType: string) {
   await db.insert(schema.events).values({
     org_id: orgId,
-    type,
+    event_type: eventType,
     source: 'github',
-    payload: { harness: true, ts: Date.now() },
-    occurred_at: new Date(),
+    title: `harness ${eventType}`,
+    metadata: { harness: true, ts: Date.now() },
+    timestamp: new Date(),
   } as any);
+}
+
+export async function getAgentShadowUserId(employeeId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ user_id: schema.agentEmployees.user_id })
+    .from(schema.agentEmployees)
+    .where(eq(schema.agentEmployees.id, employeeId))
+    .limit(1);
+  return row?.user_id ?? null;
 }
 
 export async function getEmployeeRow(employeeId: string) {

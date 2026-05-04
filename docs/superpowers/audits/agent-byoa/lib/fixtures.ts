@@ -9,11 +9,20 @@ function tag(scenarioSlug: string): string {
   return `${HARNESS_PREFIX}-${scenarioSlug}-${Date.now()}`;
 }
 
+// 4-char short code derived from scenario + a 2-digit suffix to keep
+// project prefix within the 2-6 char schema constraint.
+function shortPrefix(scenarioSlug: string): string {
+  const base = scenarioSlug.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const head = base.slice(0, 4) || 'TEST';
+  const tail = String(Date.now() % 100).padStart(2, '0');
+  return (head + tail).slice(0, 6);
+}
+
 export async function withScratchSpace(rest: DeftRest, scenarioSlug: string): Promise<Scratch<{ id: string; name: string }>> {
   const name = tag(scenarioSlug);
   const created = await rest.post<{ id: string; name: string }>('/api/spaces', {
     name,
-    type: 'channel',
+    type: 'public',
   });
   return {
     resource: created,
@@ -27,7 +36,7 @@ export async function withScratchProject(rest: DeftRest, scenarioSlug: string): 
   const name = tag(scenarioSlug);
   const created = await rest.post<{ id: string; prefix: string }>('/api/projects', {
     name,
-    prefix: name.slice(0, 8).toUpperCase().replace(/[^A-Z0-9]/g, 'X'),
+    prefix: shortPrefix(scenarioSlug),
   });
   return {
     resource: created,
@@ -40,13 +49,13 @@ export async function withScratchProject(rest: DeftRest, scenarioSlug: string): 
 export async function withScratchWikiPage(
   rest: DeftRest,
   scenarioSlug: string,
-  body: string,
+  content: string,
   type: string = 'fact',
 ): Promise<Scratch<{ slug: string; id: string }>> {
   const title = `${HARNESS_PREFIX}: ${scenarioSlug}-${Date.now()}`;
   const created = await rest.post<{ slug: string; id: string }>('/api/wiki', {
     title,
-    body,
+    content,
     type,
     scope: 'org',
   });

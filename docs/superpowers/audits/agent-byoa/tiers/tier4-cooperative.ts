@@ -32,16 +32,16 @@ export async function runTier4(ctx: TierCtx) {
     assert(afterMs > beforeMs, `last_heartbeat_at advanced (${beforeMs} → ${afterMs})`);
   });
 
-  await run('4.27 delegation_self_report writes log', async () => {
+  await run('4.27 delegation_self_report writes agent_actions row', async () => {
     const sentinel = `delegate-${Date.now()}`;
     await ctx.mcp.toolsCall('delegation_self_report', { caller_employee_slug: slug, target_employee_slug: 'nonexistent', reason: sentinel });
-    // Surface check: query activity timeline endpoint OR drop directly to log
-    const rows = await db.select().from(schema.agentCooperativeLog)
-      .where(eq(schema.agentCooperativeLog.employee_id, ctx.agent.id))
-      .orderBy(desc(schema.agentCooperativeLog.created_at)).limit(5);
-    // delegation_self_report may map to a different table — if so, swap accordingly
-    const found = rows.some((r) => JSON.stringify(r).includes(sentinel));
-    assert(found, `delegation_self_report sentinel ${sentinel} appears somewhere in agent log`);
+    // delegation_self_report writes to agent_actions, not agent_cooperative_log.
+    // Action='delegation_self_report', approval_status='approved', params.reason=<sentinel>.
+    const rows = await db.select().from(schema.agentActions)
+      .where(eq(schema.agentActions.agent_employee_id, ctx.agent.id))
+      .orderBy(desc(schema.agentActions.created_at)).limit(10);
+    const found = rows.some((r) => r.action === 'delegation_self_report' && JSON.stringify(r.params).includes(sentinel));
+    assert(found, `delegation_self_report sentinel ${sentinel} not found in agent_actions; got ${rows.length} recent rows: ${rows.map(r => r.action).join(',')}`);
   });
 
   return { passed, failed: failures.length, failures };

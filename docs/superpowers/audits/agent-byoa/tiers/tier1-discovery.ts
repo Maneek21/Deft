@@ -4,7 +4,7 @@ import type { McpClient } from '../lib/mcp-client.js';
 import type { DeftRest } from '../lib/api-client.js';
 import { withScratchSpace } from '../lib/fixtures.js';
 import { assertActionRowExists } from '../lib/assertions.js';
-import { findRecentAgentActions, waitForAgentAction, getEmployeeRow } from '../lib/db-helpers.js';
+import { findRecentAgentActions, waitForAgentAction, getEmployeeRow, getAgentShadowUserId } from '../lib/db-helpers.js';
 import { assert, assertEquals } from '../../lib/assert.js';
 import { db, schema } from '../../lib/db.js';
 import { eq } from 'drizzle-orm';
@@ -32,7 +32,7 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
     try {
       // Post message with @mention via REST. Format: <@employee:slug> or @<slug> — both supported by mention parser.
       const startedAt = Date.now();
-      await ctx.rest.post(`/api/spaces/${sp.resource.id}/messages`, {
+      await ctx.rest.post(`/api/messages/${sp.resource.id}`, {
         content: `@${ctx.agent.slug} please help`,
       });
       // Wait for agent_actions row
@@ -54,13 +54,15 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
       prefix: 'T1TASK',
     });
     try {
-      // Need agent's shadow user_id — query via DB
-      const emp = await getEmployeeRow(ctx.agent.id);
-      assert(emp?.shadow_user_id, 'agent has shadow_user_id');
+      // Need agent's shadow user_id — query via DB. Column is `user_id`
+      // on agent_employees; users.is_agent flag points back via
+      // users.agent_employee_id.
+      const shadowUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(shadowUserId, 'agent has user_id (shadow user)');
       await ctx.rest.post('/api/tasks', {
         project_id: proj.id,
         title: 'harness assignment',
-        assignee_id: emp!.shadow_user_id,
+        assignee_id: shadowUserId,
       });
       const row = await waitForAgentAction({
         agentEmployeeId: ctx.agent.id,
@@ -76,22 +78,21 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
 
   // Scenario 3 — webhook dispatch
   await run('1.3 webhook trigger dispatch', async () => {
-    // Create a webhook for the agent
-    const wh = await ctx.rest.post<{ id: string; slug: string; secret: string }>('/api/agent-webhooks', {
+    // Create a webhook for the agent. Auth response wraps under { webhook, secret }.
+    const created = await ctx.rest.post<{ webhook: { id: string; slug: string }; secret: string }>('/api/agent-webhooks', {
       agent_employee_id: ctx.agent.id,
-      name: `t1-webhook-${Date.now()}`,
+      label: `t1-webhook-${Date.now()}`,
     });
+    const wh = { id: created.webhook.id, slug: created.webhook.slug, secret: created.secret };
     try {
-      // POST to public dispatch endpoint with HMAC
+      // Public dispatch surface uses raw secret in `x-deft-webhook-secret` header (NOT HMAC)
       const payload = JSON.stringify({ harness: true, n: Date.now() });
-      const crypto = await import('node:crypto');
-      const sig = crypto.createHmac('sha256', wh.secret).update(payload).digest('hex');
       const res = await fetch(`${process.env.DEFT_API_URL || 'http://localhost:3001'}/api/agent-webhooks/${wh.slug}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Deft-Signature': `sha256=${sig}` },
+        headers: { 'Content-Type': 'application/json', 'x-deft-webhook-secret': wh.secret },
         body: payload,
       });
-      assert(res.ok, `webhook dispatch returned ${res.status}`);
+      assert(res.ok, `webhook dispatch returned ${res.status}: ${await res.text()}`);
       await waitForAgentAction({
         agentEmployeeId: ctx.agent.id,
         source: 'trigger',
@@ -141,7 +142,7 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
   await run('1.5 poll_pending_work idempotency', async () => {
     const sp = await withScratchSpace(ctx.rest, 't1-idem');
     try {
-      await ctx.rest.post(`/api/spaces/${sp.resource.id}/messages`, { content: `@${ctx.agent.slug} idempotency check` });
+      await ctx.rest.post(`/api/messages/${sp.resource.id}`, { content: `@${ctx.agent.slug} idempotency check` });
       await waitForAgentAction({ agentEmployeeId: ctx.agent.id, source: 'mention', action: 'chat_mention', timeoutMs: 15_000 });
 
       const r1 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });

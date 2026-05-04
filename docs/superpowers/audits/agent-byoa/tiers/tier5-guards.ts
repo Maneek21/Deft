@@ -60,8 +60,9 @@ export async function runTier5(ctx: TierCtx) {
   await run('5.31 org isolation', async () => {
     // Read a task that exists in another org. We need at least 1 task in
     // a different org. Skip gracefully if test DB has only one org.
-    const otherOrg = await db.select().from(schema.organizations).limit(5);
-    const off = otherOrg.find((o) => o.id !== ctx.orgId);
+    // Drizzle table is `orgs`, not `organizations`.
+    const otherOrgs = await db.select().from(schema.orgs).limit(5);
+    const off = otherOrgs.find((o) => o.id !== ctx.orgId);
     if (!off) { console.log('  (skip — only one org in test DB)'); return; }
     const otherTask = await db.select().from(schema.tasks).where(eq(schema.tasks.org_id, off.id)).limit(1);
     if (!otherTask[0]) { console.log('  (skip — no tasks in other org)'); return; }
@@ -70,34 +71,19 @@ export async function runTier5(ctx: TierCtx) {
     assert(isolated, `cross-org task should not be readable, got ${JSON.stringify(r).slice(0, 200)}`);
   });
 
-  await run('5.32 circuit breaker (3 errors → unhealthy)', async () => {
+  await run('5.32 circuit breaker field accepts write', async () => {
+    // approval_status enum is ('pending', 'approved', 'rejected', 'expired') — no 'error',
+    // so we can't simulate the auto-trip path by inserting failed rows. Instead, verify
+    // the unhealthy field exists and accepts a write — the auto-trip wiring is covered
+    // by the behavior tests for the heartbeat worker, not the BYOA contract.
     const before = await getEmployeeRow(ctx.agent.id);
     try {
-      // Insert 3 errored agent_actions rows
-      for (let i = 0; i < 3; i++) {
-        await db.insert(schema.agentActions).values({
-          org_id: ctx.orgId,
-          agent_employee_id: ctx.agent.id,
-          user_id: ctx.rest.user().id,
-          source: 'mcp',
-          action: 'harness_error',
-          params: { harness: true, idx: i },
-          approval_tier: 'auto',
-          approval_status: 'error',
-        });
-      }
-      // The breaker triggers on next health-check tick. The most reliable
-      // way to verify the FIELD is wired is to set unhealthy=true directly
-      // and confirm the UI badge surfaces it. We split the assertion:
-      //   (a) The unhealthy field accepts a write — verifies field exists.
-      //   (b) Skip the auto-trip behavior assertion if it's not running on
-      //       a timer in this dev shell.
       await db.update(schema.agentEmployees).set({ unhealthy: true } as any)
         .where(eq(schema.agentEmployees.id, ctx.agent.id));
       const after = await getEmployeeRow(ctx.agent.id);
       assert((after as any).unhealthy === true, 'unhealthy field accepts write');
     } finally {
-      await db.update(schema.agentEmployees).set({ unhealthy: before?.unhealthy ?? false } as any)
+      await db.update(schema.agentEmployees).set({ unhealthy: (before as any)?.unhealthy ?? false } as any)
         .where(eq(schema.agentEmployees.id, ctx.agent.id));
     }
   });
