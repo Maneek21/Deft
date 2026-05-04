@@ -15,12 +15,11 @@ const CRON_DELAYS: Record<string, number> = {
   'deprecation-warning': 86400000, // 24 hours
   'agent-daily-reset': 86400000,  // 24 hours
   'agent-heartbeat': 60000,       // 60 seconds (legacy — kept for rollout)
-  // Self-hosted v1 — single heartbeat scan for native agents. The handler
-  // re-derives the per-employee due set from
+  // Single heartbeat scan for BYOA agents. The handler re-derives the
+  // per-employee due set from
   // `last_heartbeat_at + heartbeat_interval_min`, so this is _scan_ cadence
   // not _fire_ cadence.
   'heartbeat-native': 5 * 60_000,
-  'gateway-ping': 60000,          // 60 seconds — Phase 11
   // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
   // fire close to their scheduled time.
   'trigger-dispatch': 60_000,
@@ -39,7 +38,6 @@ const CRON_KEYS: Record<string, string> = {
   'agent-daily-reset': 'agent-daily-reset',
   'agent-heartbeat': 'agent-heartbeat',
   'heartbeat-native': 'cron:heartbeat-native',
-  'gateway-ping': 'gateway-ping',
   'trigger-dispatch': 'cron:trigger-dispatch',
 };
 
@@ -164,8 +162,9 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     }
     case 'agent-heartbeat':
     case 'heartbeat-native': {
-      // Single heartbeat scan for native agents (openclaw/BYOA is MCP-pull,
-      // no server-side heartbeat scan).
+      // Single heartbeat scan for BYOA agents — queues an
+      // `agent_actions` row that the BYOA client picks up via
+      // `poll_pending_work`.
       const mod = await import('./handlers/agent-employee-heartbeat.js');
       return mod.handleAgentEmployeeHeartbeat;
     }
@@ -174,14 +173,6 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       // to a given trigger_kind.
       const mod = await import('./handlers/trigger-dispatch.js');
       return mod.handleTriggerDispatch;
-    }
-    case 'gateway-ping': {
-      // Phase 11 — per-Gateway connectivity ping. Distinct from the
-      // proactive wake-up agent-heartbeat handler above; this one only
-      // verifies the OpenClaw Gateway is reachable and updates per-row
-      // connection_status/gateway_ping_fail_count.
-      const mod = await import('./handlers/gateway-ping.js');
-      return mod.handleGatewayPing;
     }
     default:
       return null;

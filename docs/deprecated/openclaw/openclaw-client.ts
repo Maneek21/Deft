@@ -1,3 +1,12 @@
+// ARCHIVED 2026-04-28 — Phase 9 agent architecture simplification.
+// This file is no longer imported by source code (downstream phases will
+// remove the importers below).
+// Historical importers (these imports will be removed in later Phase 9 PRs):
+//   - apps/api/src/lib/openclaw-dispatch.ts (also archived in this PR)
+//   - apps/api/test/openclaw-envelope.test.ts (test)
+//
+// Original location: apps/api/src/lib/openclaw-client.ts
+
 /**
  * Phase 5 — thin HTTP wrapper around OpenClaw's OpenAI-compatible
  * chat completions endpoint.

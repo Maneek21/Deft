@@ -14,8 +14,8 @@
  *   8. Invalid caller_employee_slug returns 403
  *   9. platform_context second call within 60s hits the LRU cache
  *
- * The test uses a dedicated throwaway OpenClaw-kind employee seeded in setup()
- * and deleted in teardown() so the 2026-04-13 Alex PM native demo is untouched.
+ * The test uses a dedicated throwaway BYOA employee seeded in setup()
+ * and deleted in teardown() so the 2026-04-13 Alex PM seed row is untouched.
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +29,6 @@ const DATABASE_URL =
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6'; // Maneek seed org
 const TEST_EMPLOYEE_ID = 'test-mcp-phase3-employee';
 const TEST_EMPLOYEE_SLUG = 'mcp-phase3-test';
-const TEST_CONNECTION_URL = 'http://127.0.0.1:19999/test-phase3';
 
 let RAW_TOKEN: string | null = null;
 let TEST_USER_ID: string | null = null;
@@ -67,13 +66,10 @@ async function seedTestEmployee(userId: string) {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_url, connection_status, is_active, created_by)
+         is_byoa, is_active, created_by)
        VALUES ($1, $2, $3, $4, $5, 'project_manager', 'test', 'standard',
-         'openclaw', $6, 'pending', true, $3)
+         true, true, $3)
        ON CONFLICT (id) DO UPDATE SET
-         kind = 'openclaw',
-         connection_url = $6,
-         connection_status = 'pending',
          is_active = true`,
       [
         TEST_EMPLOYEE_ID,
@@ -81,7 +77,6 @@ async function seedTestEmployee(userId: string) {
         userId,
         'MCP Phase 3 Test Employee',
         TEST_EMPLOYEE_SLUG,
-        TEST_CONNECTION_URL,
       ]
     );
   });
@@ -106,7 +101,7 @@ before(async () => {
   const routeModule = await import('../src/routes/mcp-server-v1.js');
   testApp = new Hono();
   testApp.route('/api/mcp/v1', routeModule.mcpServerV1Routes);
-  RAW_TOKEN = await tokenModule.issueGatewayToken(ORG_ID, TEST_CONNECTION_URL);
+  RAW_TOKEN = await tokenModule.issueEmployeeToken(ORG_ID, TEST_EMPLOYEE_ID);
 });
 
 after(async () => {

@@ -1,27 +1,18 @@
 /**
- * Phase 3 — Gateway bearer token issuer + resolver.
+ * MCP bearer token issuer + resolver.
  *
- * One bearer = one Gateway = N employees. When we issue a token for a Gateway
- * (identified by its connection_url), every `agent_employees` row on that
- * Gateway within the given org gets the same bcrypt hash stamped into its
- * `mcp_token_hash` column. The Gateway presents the raw token to Deft on every
- * MCP request; Deft bcrypt-compares it against all live employee rows to find
- * the owning Gateway, then the tool handler validates the declared
- * `caller_employee_slug` against that Gateway's employee set.
+ * One bearer = one BYOA agent. The agent presents the raw token to Deft on
+ * every MCP request; Deft bcrypt-compares it against all live employee rows
+ * to find the owning employee, then the tool handler validates the declared
+ * `caller_employee_slug` against that employee's slug.
  *
- * Native employees (`kind = 'native'`) are never considered bearer-auth
- * candidates — the native runtime talks to Deft via direct service calls, not
- * via MCP streamable-http. Phase 2 preserved Alex PM as native so the demo
- * path keeps working.
- *
- * This is an honesty-based boundary: two employees on the same Gateway could
- * theoretically lie about their slug to escalate into each other's memory
- * scope. Stricter isolation requires the "one Gateway per employee" wizard
- * mode (Phase 8). See §3.2 of the Deft Agentic Vision plan.
+ * Defty (the in-process built-in agent) does not transit MCP — it has no
+ * `agent_employees` row and never participates in bearer auth. Every row in
+ * `agent_employees` is a BYOA agent.
  */
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { eq, and, inArray, isNotNull } from 'drizzle-orm';
+import { eq, and, isNotNull } from 'drizzle-orm';
 import { db } from './db.js';
 import { agentEmployees } from '@deft/db/schema';
 import type { TrustLevel } from './mcp-tools/types.js';
@@ -51,17 +42,13 @@ export class McpAuthError extends Error {
 }
 
 /**
- * Generate a raw token, bcrypt-hash it, and write the hash into every
- * agent_employees row with `kind != 'native'` matching (orgId, connectionUrl).
- * Returns the raw token exactly once.
- *
- * If no matching employee rows exist, throws — the caller must seed the
- * employee first. This prevents accidental "token issued but hash landed
- * nowhere" states.
+ * Generate a raw token, bcrypt-hash it, and write the hash into the
+ * `agent_employees` row identified by (orgId, employeeId). Returns the raw
+ * token exactly once.
  */
-export async function issueGatewayToken(
+export async function issueEmployeeToken(
   orgId: string,
-  connectionUrl: string,
+  employeeId: string,
 ): Promise<string> {
   const raw = randomBytes(32).toString('base64url');
   const hash = await bcrypt.hash(raw, BCRYPT_ROUNDS);
@@ -72,57 +59,38 @@ export async function issueGatewayToken(
     .where(
       and(
         eq(agentEmployees.org_id, orgId),
-        eq(agentEmployees.connection_url, connectionUrl),
+        eq(agentEmployees.id, employeeId),
       ),
     )
-    .returning({ id: agentEmployees.id, kind: agentEmployees.kind });
+    .returning({ id: agentEmployees.id });
 
-  // Filter out native employees — they should never get a bearer hash set,
-  // but we defensively null them out if they were accidentally matched.
-  const nonNative = affected.filter((r) => r.kind !== 'native');
-  if (nonNative.length === 0) {
+  if (affected.length === 0) {
     throw new Error(
-      `issueGatewayToken: no non-native employees found for org ${orgId} connection ${connectionUrl}`,
+      `issueEmployeeToken: no employee found for org ${orgId} id ${employeeId}`,
     );
-  }
-
-  // Undo any accidental writes to native rows.
-  const nativeIds = affected.filter((r) => r.kind === 'native').map((r) => r.id);
-  if (nativeIds.length > 0) {
-    await db
-      .update(agentEmployees)
-      .set({ mcp_token_hash: null })
-      .where(inArray(agentEmployees.id, nativeIds));
   }
 
   return raw;
 }
 
 /**
- * Resolve a bearer token to its Gateway. Walks all live agent_employees rows
- * that have a non-null `mcp_token_hash` and bcrypt-compares. The first match
- * wins. We group the match by `(org_id, connection_url)` to collect the
- * sibling employees on the same Gateway.
+ * Resolve a bearer token to its owning employee. Walks all live
+ * `agent_employees` rows that have a non-null `mcp_token_hash` and
+ * bcrypt-compares. The first match wins.
  *
- * In MVP this is a linear scan. It's fine at the <100 employee scale a
- * self-hosted Deft instance operates at. A follow-up Phase 11 can move this
- * to a token_prefix + hash lookup table if needed.
+ * In MVP this is a linear scan. Fine at the <100 employee scale a
+ * self-hosted Deft instance operates at.
  */
 export async function resolveGatewayToken(bearer: string): Promise<ResolvedGateway> {
   if (!bearer || bearer.length < 16) {
     throw new McpAuthError(401, 'unauthorized', 'Missing or malformed bearer token');
   }
 
-  // Pull every candidate row with a hash set. Native employees have no hash
-  // so they're naturally excluded.
   const candidates = await db
     .select({
       id: agentEmployees.id,
       org_id: agentEmployees.org_id,
       slug: agentEmployees.slug,
-      kind: agentEmployees.kind,
-      connection_url: agentEmployees.connection_url,
-      connection_status: agentEmployees.connection_status,
       mcp_token_hash: agentEmployees.mcp_token_hash,
       trust_level: agentEmployees.trust_level,
       is_active: agentEmployees.is_active,
@@ -137,26 +105,18 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
 
   for (const row of candidates) {
     if (!row.mcp_token_hash) continue;
-    if (row.kind === 'native') continue;
-    if (row.connection_status === 'revoked' || row.connection_status === 'error') continue;
     // eslint-disable-next-line no-await-in-loop
     const ok = await bcrypt.compare(bearer, row.mcp_token_hash);
     if (!ok) continue;
-    // Match. Collect sibling employees on the same Gateway.
-    const siblings = candidates.filter(
-      (r) =>
-        r.org_id === row.org_id &&
-        r.connection_url === row.connection_url &&
-        r.kind !== 'native' &&
-        r.mcp_token_hash === row.mcp_token_hash,
-    );
     return {
       org_id: row.org_id,
-      gateway_employees: siblings.map((s) => ({
-        employee_id: s.id,
-        slug: s.slug,
-        trust_level: s.trust_level as TrustLevel,
-      })),
+      gateway_employees: [
+        {
+          employee_id: row.id,
+          slug: row.slug,
+          trust_level: row.trust_level as TrustLevel,
+        },
+      ],
     };
   }
 
@@ -164,10 +124,8 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
 }
 
 /**
- * Validate that the declared `caller_employee_slug` is a member of the
- * Gateway we just resolved. Returns the narrowed employee on success.
- * Throws 403 on mismatch — this is the NC2 boundary that the plan calls out
- * as honesty-based: the resolver trusts the slug the Gateway sends.
+ * Validate that the declared `caller_employee_slug` matches the employee
+ * we just resolved. Returns the narrowed employee on success.
  */
 export function validateCallerSlug(
   resolved: ResolvedGateway,
@@ -185,7 +143,7 @@ export function validateCallerSlug(
     throw new McpAuthError(
       403,
       'forbidden',
-      `Declared caller_employee_slug "${callerSlug}" is not registered on this Gateway`,
+      `Declared caller_employee_slug "${callerSlug}" is not registered for this token`,
     );
   }
   return hit;

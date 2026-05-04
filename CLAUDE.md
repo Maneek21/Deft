@@ -62,6 +62,10 @@ deft/
 
 The agent is NOT a chatbot. It's a workflow engine.
 
+**Two agent roles** (collapsed from five in Phase 9, 2026-04-28):
+- **Defty** — built-in platform agent. Runs in-process via Anthropic API, has direct SQL access plus 42+ native tools, multi-step planning (`create_plan`), memory (remember/recall), and streaming responses. Lives behind `apps/api/src/workers/handlers/agent-reply.ts` with a well-known `deft-agent@system.local` user. No `agent_employees` row, no `kind` column, no choice. Operates under the org-wide trust level. Reactive only — responds to `@mentions` and triggers.
+- **BYOA employees** — every `agent_employees` row. External agents (Claude Code, Claude Desktop, Codex, Cursor, custom MCP runtimes) connecting via MCP. Authenticate with API key, get tools via `/api/mcp/v1`. Per-employee trust levels, daily action caps, cost tracking, circuit breakers. Push is gone — Deft never pushes to BYOA agents. They discover work via `poll_pending_work` MCP tool: `@mentions`, heartbeat ticks, and `trigger_subscriptions`-routed events all queue `agent_actions` rows that BYOA clients pull.
+
 Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
 
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Six day-one bundled skills ship: one per available capability pack (Deft Workspace carries the 9 task tools — `comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
@@ -111,15 +115,11 @@ Dead primitives retired: the `native_tools[]` agent column was dropped (migratio
 
 - **UI fixes (Phase 7)** — sidebar three-dot menu portal click propagation fixed (menu items now respond to clicks). Scroll containers added to 9 settings pages that were clipping content.
 
-## Next Milestone — Phase 8 (OpenClaw autonomy)
+## Next Milestone — Phase 8 (SUPERSEDED by Phase 9)
 
-Phase 8 has NOT shipped yet. Flagged here so future edits don't claim it:
+The original Phase 8 plan was OpenClaw autonomy — autonomous heartbeat lifecycle, skill-defined trigger dispatcher, heartbeat cost guardrails inside an in-process gateway. Phase 9 (2026-04-28) deleted OpenClaw entirely; the autonomous loop is now the BYOA agent's responsibility. The Deft side ships heartbeat ticks as `agent_actions` rows; what the agent does with them is out of our process.
 
-- OpenClaw autonomous heartbeat lifecycle (long-running employees with scheduled self-wake).
-- Skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just `cron:standup`).
-- Heartbeat cost guardrails (per-turn + per-day caps, circuit-breakers).
-
-The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop ships in Phase 8.
+Heartbeat guard gates that *did* land (budget, circuit-breaker, idempotency, loop detector) live in `apps/api/src/workers/handlers/agent-employee-heartbeat.ts` and apply before the row is queued.
 
 ## Key Design Decisions
 
@@ -131,7 +131,9 @@ The current `agent-employee-heartbeat` worker is a scaffold; the autonomous loop
 6. Product works fully without AI. If LLM is down, chat + tasks function normally.
 7. Multi-tenant from day 1. org_id on every query. No shortcuts.
 
-## OpenClaw Unlock — Block 0 foundation (shipped 2026-04-19)
+## OpenClaw Unlock — Block 0 foundation (shipped 2026-04-19; gateway parts ARCHIVED in Phase 9)
+
+> **ARCHIVED 2026-04-28.** OpenClaw was deleted in Phase 9. The in-process gateway, per-org provisioning, gateway-ping, ClawHub HTTP pass-through, and the `kind` column are all gone. Items below stayed because they're useful in the BYOA-only world (trust levels, durable reminders, semantic wiki search, per-org spend caps, SKILL.md sanitizer, ClawHub allowlist as a skill-import source, approval badge nav, post-creation employee edit). Items that depended on a live gateway (any `connection_url`/`gateway_token`/`provider_instance` plumbing) were stripped.
 
 Block 0 of the OpenClaw Unlock plan closed the structural foundation bugs
 and added invisible-today primitives. See
@@ -151,7 +153,9 @@ and added invisible-today primitives. See
 
 Migrations added: `0047_clawhub_allowlist.sql`, `0048_org_spend_caps.sql`.
 
-## OpenClaw Unlock — Block 1 control plane (shipped 2026-04-19)
+## OpenClaw Unlock — Block 1 control plane (shipped 2026-04-19; ARCHIVED 2026-04-28)
+
+> **ARCHIVED 2026-04-28.** Phase 9 deleted the gateway control plane: `openclaw-{gateway,dispatch,client,chat-envelope}.ts` are in `docs/deprecated/openclaw/`, `pushSkillSecretsToGateway` is removed, the per-org provider-instance reuse logic is gone (the `provider_instances` table was dropped), the reasoning-trace component + hook were deleted (no live session events to subscribe to), and the gateway approval-forwarder is gone. Surfaces that survived because they're still useful in BYOA-only: the markdown personality editor (`/settings/agent-employees/[id]/personality` reading/writing the 7 canonical files locally, no longer pushed to a gateway), the `skill_secrets` table for storing BYOA per-skill credentials, ClawHub allowlist for skill import (allowlist row → marketplace skill row, no gateway install). The `request_skill_install` runtime tool stayed but no longer pushes to a gateway.
 
 Block 1 delivers the OpenClaw Gateway control plane: a WebSocket
 JSON-RPC client that every route/worker shares, plus the surrounding
@@ -175,7 +179,9 @@ Migration added: `0049_skill_secrets.sql`.
 
 **Known-deferred (Block 2):** full-ClawHub HTTP pass-through (currently stubbed); allowlist-auto under Standard/Autonomous trust; drawer-tab integration of the Personality editor; chat-surface integration of `<ReasoningTrace/>`; migration path for existing per-agent deploys.
 
-## OpenClaw Unlock — Block 2 agent reach + visibility (shipped 2026-04-19)
+## OpenClaw Unlock — Block 2 agent reach + visibility (shipped 2026-04-19; mostly intact)
+
+> **Phase 9 note 2026-04-28.** Block 2 was already runtime-agnostic — the new tools (notes/canvas/decision/post_thread_reply) are exposed via MCP and work for BYOA agents unchanged. The `member.joined` onboarding trigger keeps working because `trigger_subscriptions` was preserved (it's the routing key for the trigger system, not OpenClaw plumbing). Dashboard inline approve/reject and the heartbeat checklist builder still apply. Nothing in this block needed to be removed.
 
 Block 2 closed the dead zones where agents couldn't act and surfaced agent activity on the primary product surfaces. All 9 tasks shipped.
 
@@ -191,7 +197,9 @@ Block 2 closed the dead zones where agents couldn't act and surfaced agent activ
 
 Migration added: `0050_decision_implemented.sql`.
 
-## OpenClaw Unlock — Block 3 power users + ecosystem polish (shipped 2026-04-19)
+## OpenClaw Unlock — Block 3 power users + ecosystem polish (shipped 2026-04-19; partially ARCHIVED 2026-04-28)
+
+> **Phase 9 note 2026-04-28.** Clone agent + save-as-template stayed (still useful for BYOA scaffolding). Webhook-callable agents stayed — the dispatch path enqueues `employee-trigger` jobs which now queue `agent_actions` rows for BYOA pickup. `deft-mcp-client` bundled skill stayed (more relevant than ever). Agent trace export stayed. **Removed:** the "developer credentials" page no longer carries `wscat` examples or a JSON-RPC frame catalog (the gateway is gone) — it now shows the MCP endpoint URL + a regenerable bearer token, plus a Claude Desktop config snippet. The reasoning-trace component (Block 1) is also gone, so any chat-surface integration of `<ReasoningTrace/>` planned in Block 3 is moot.
 
 Block 3 exit-gate met at 5/10 tasks with `deft-mcp-client` live. Remaining 5 deferred (see `docs/superpowers/block-3-complete-2026-04-19.md`).
 
@@ -203,10 +211,51 @@ Block 3 exit-gate met at 5/10 tasks with `deft-mcp-client` live. Remaining 5 def
 
 Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 
+## Phase 9 — Agent Architecture Simplification (shipped 2026-04-28)
+
+Collapsed five agent kinds (`native`, `openclaw`, `claude_sdk`, `custom_mcp`, plus the unkinded built-in Defty) down to two clear roles:
+
+1. **Defty** — built-in platform agent. In-process via Anthropic API. No `agent_employees` row; routes through `agent-reply.ts` with a well-known system user. Serves `@deft` mentions and platform workflows.
+2. **BYOA employees** — every `agent_employees` row. External agents (Claude Code, Claude Desktop, Codex, Cursor, custom MCP) connect via MCP with an API key, get tools through `/api/mcp/v1`, and pull pending work through `poll_pending_work`. Deft never pushes.
+
+**Removed:**
+- `kind` column on `agent_employees` (and the `'native' | 'openclaw' | 'claude_sdk' | 'custom_mcp'` enum)
+- 10 OpenClaw sidecar columns: `connection_url`, `gateway_token_encrypted`, `connection_status`, `template_slug`, `template_version`, `provider_hint`, `provider_instance_id`, `connection_error`, `last_gateway_ping_at`, `gateway_ping_fail_count`
+- `provider_instances` table
+- Worker handler `gateway-ping.ts` and the cron registration
+- Gateway WebSocket JSON-RPC client (`openclaw-gateway.ts`), dispatch (`openclaw-dispatch.ts`), HTTP client (`openclaw-client.ts`), chat envelope (`openclaw-chat-envelope.ts`) — all archived to `docs/deprecated/openclaw/`
+- `pushSkillSecretsToGateway` helper
+- Frontend: `gateway-health-card.tsx`, `reasoning-trace.tsx`, `use-reasoning-trace.ts`
+- `web-browsing` and `shell-exec` capability pack slugs (Layer-2 OpenClaw plugins)
+- `/provider-readiness` and `/retry-provision` API endpoints
+- 6 test files (openclaw-envelope, openclaw-heartbeat, gateway-ping, agent-deploy-routes, byo-provider, railway-provider, skill-install)
+
+**Kept (deliberately):**
+- `is_byoa` (now always true), `byoa_model_info`, `mcp_token_hash`
+- `trigger_subscriptions` and `default_trigger_subscriptions` — routing key for the trigger system, not OpenClaw plumbing. Webhooks, member.joined, cron triggers all still route through it
+- `agent_webhooks` table (Block 3)
+- `agent_employee_templates` table (templates still useful for scaffolding BYOA personalities)
+- `skill_secrets` table (still useful for storing BYOA per-skill credentials)
+- ClawHub allowlist (now imports as marketplace skills directly, no gateway install)
+- The 7-file markdown personality editor (BYOA runtimes can read these locally)
+- All trust-tier/budget/circuit-breaker/idempotency/loop-detector heartbeat guards
+
+**New worker behavior:** instead of branching by `kind` to push to native (`runAgentQuery`) or OpenClaw (`dispatchViaOpenClaw`), every BYOA-bound action queues an `agent_actions` row that `poll_pending_work` discovers:
+
+| Source | `action` | `source` |
+|--------|----------|----------|
+| `@mention` in chat | `chat_mention` | `mention` |
+| Heartbeat tick (after guards pass) | `heartbeat_tick` | `heartbeat` |
+| Trigger fired (`member.joined`, webhook, skill cron, …) | `trigger_dispatch` | `trigger` |
+| Task assigned to agent | `task_assigned` | `task_assignment` |
+
+Migration: `0059_remove_openclaw_columns.sql`.
+
+See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this prompt).
+
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0052 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0052 applied.
-- **No live OpenClaw gateway in dev.** All `openclaw`-kind agent_employees rows currently have `connection_url IS NULL`. Block 1's live-gateway smoke tests run only once a gateway is provisioned; unit tests use MockTransport + `_setGatewayResolver` seams to exercise the forwarding code paths end-to-end.
+- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0059 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0059 applied.
 
 ## What NOT To Do
 
@@ -218,3 +267,4 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need
 - Don't store agent conversations in the same messages table — separate agent_conversations table
+- Don't reintroduce agent kind/type enums or in-process agent runtimes. Every `agent_employees` row is BYOA — the user's runtime owns execution. If managed deployments come back as a need, build it as a separate service, not as a column on `agent_employees`.

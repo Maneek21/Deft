@@ -3,11 +3,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // Load the repo-root .env into process.env so NEXT_PUBLIC_* vars defined
-// there (e.g. NEXT_PUBLIC_FEATURE_OPENCLAW_EMPLOYEES) are visible to
-// Next.js. Without this, Next only sees apps/web/.env.local which most
-// contributors don't have. Next then inlines NEXT_PUBLIC_* values at
-// build / dev-reload time. Uses a minimal inline parser so we don't add
-// a new dependency.
+// there are visible to Next.js. Without this, Next only sees
+// apps/web/.env.local which most contributors don't have. Next then
+// inlines NEXT_PUBLIC_* values at build / dev-reload time. Uses a minimal
+// inline parser so we don't add a new dependency.
 try {
   const raw = readFileSync(resolve(__dirname, '..', '..', '.env'), 'utf8');
   for (const line of raw.split(/\r?\n/)) {

@@ -53,9 +53,9 @@ async function seed() {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_status, is_active, created_by, trigger_subscriptions)
+         is_byoa, is_active, created_by, trigger_subscriptions)
        VALUES ($1, $2, $3, $4, $5, 'project_manager', 'alex test', 'standard',
-         'native', 'connected', true, $3, ARRAY['cron:standup']::text[])
+         true, true, $3, ARRAY['cron:standup']::text[])
        ON CONFLICT (id) DO UPDATE SET
          trigger_subscriptions = ARRAY['cron:standup']::text[],
          is_active = true,
@@ -67,9 +67,9 @@ async function seed() {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         kind, connection_status, is_active, created_by, trigger_subscriptions)
+         is_byoa, is_active, created_by, trigger_subscriptions)
        VALUES ($1, $2, $3, $4, $5, 'project_manager', 'riya test', 'standard',
-         'native', 'connected', true, $3, NULL)
+         true, true, $3, NULL)
        ON CONFLICT (id) DO UPDATE SET
          trigger_subscriptions = NULL,
          is_active = true,

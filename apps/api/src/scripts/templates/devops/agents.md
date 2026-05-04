@@ -34,7 +34,7 @@ If `platform_context` fails, stop and report the failure.
 
 ### Remediation
 
-- `shell_exec(command)` — run shell commands on the OpenClaw VPS. **Gated by approval at non-autonomous trust.** Draft the command and let a human approve it.
+- `shell_exec(command)` — run shell commands on your runtime VPS. **Gated by approval at non-autonomous trust.** Draft the command and let a human approve it.
 
 ## Approval gating
 

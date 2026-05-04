@@ -30,7 +30,7 @@
 
 ## Shell Exec (advanced — gated)
 
-- **`shell_exec(command)`** — run a shell command on the OpenClaw VPS. **Every shell command goes through approval** unless the trust level is `autonomous` and the command matches a pre-approved runbook entry.
+- **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless the trust level is `autonomous` and the command matches a pre-approved runbook entry.
   _Example: draft `kubectl get pods -n prod` and let a human approve it before execution._
 - Never run destructive commands (`rm -rf`, `drop database`, `terraform destroy`, force push) without explicit human approval regardless of trust level.
 

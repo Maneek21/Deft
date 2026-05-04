@@ -33,7 +33,7 @@
 
 ## Shell Exec (advanced — gated)
 
-- **`shell_exec(command)`** — run a shell command on the OpenClaw VPS. **Every shell command goes through approval** unless you're on `autonomous` trust AND the command matches a pre-approved runbook pattern.
+- **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless you're on `autonomous` trust AND the command matches a pre-approved runbook pattern.
   _Example: draft `kubectl rollout undo deployment/payments -n prod` and ask the human to approve it._
 - Never run destructive commands (`rm`, `drop database`, `force push`) without explicit human approval, regardless of trust level.
 

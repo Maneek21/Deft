@@ -1,3 +1,14 @@
+// ARCHIVED 2026-04-28 — Phase 9 agent architecture simplification.
+// This file is no longer imported by source code (downstream phases will
+// remove the importers below).
+// Historical importers (these imports will be removed in later Phase 9 PRs):
+//   - apps/api/src/workers/handlers/agent-employee-heartbeat.ts
+//   - apps/api/src/workers/handlers/agent-employee-message.ts
+//   - apps/api/src/workers/handlers/employee-trigger.ts
+//   - apps/api/test/phase8-heartbeat-routing.test.ts (test)
+//
+// Original location: apps/api/src/lib/openclaw-dispatch.ts
+
 /**
  * Phase 6 — shared OpenClaw dispatch helper.
  *

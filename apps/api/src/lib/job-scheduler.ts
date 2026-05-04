@@ -12,10 +12,9 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'wiki-lint', 'cron:wiki-lint');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'deprecation-warning', 'cron:deprecation-warning');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'weekly-digest', 'cron:weekly-digest');
-  // Phase 11 — Gateway connectivity ping (distinct from agent-heartbeat).
-  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'gateway-ping', 'gateway-ping');
-  // Self-hosted v1 — single heartbeat scan for native agents (BYOA agents
-  // pull over MCP, no server-side scan needed).
+  // BYOA agents pull pending work over MCP, so no server-side push scan
+  // is required. The heartbeat cron only fires for in-process schedulers
+  // that need a periodic tick.
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'heartbeat-native', 'cron:heartbeat-native');
   // Task 8.5 — reset daily cost + action counters at UTC midnight. The
   // handler itself is idempotent, so a missed tick just catches up on

@@ -6,22 +6,19 @@
  * Renders the canonical skill (org > bundled > marketplace) with:
  *   - editable agent_config + project_config JSON for `source=org`,
  *   - read-only view for bundled + marketplace,
- *   - "Retry install" button wired to the agent-employees retry endpoint
- *     when the page is visited with `?retry_employee_id=...`,
  *   - context-bloat indicator (~N tokens) for installed skills.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import {
   ArrowLeft,
   Loader2,
-  AlertTriangle,
-  RefreshCw,
   Save,
   Trash2,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 
 type Skill = {
@@ -55,8 +52,6 @@ function estimatedTokens(agentConfig: Record<string, unknown> | null): number {
 export default function SkillDetailPage() {
   const params = useParams<{ slug: string }>();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const retryEmployeeId = searchParams.get('retry_employee_id');
 
   const slug = params?.slug ?? '';
 
@@ -72,9 +67,6 @@ export default function SkillDetailPage() {
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-
-  const [retrying, setRetrying] = useState(false);
-  const [retryMessage, setRetryMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
@@ -145,25 +137,6 @@ export default function SkillDetailPage() {
     if (!window.confirm(`Delete ${skill.name}? Installs will be preserved but no new agents can add it.`)) return;
     const res = await api.delete(`/api/skills/${skill.id}`);
     if (res.ok) router.push('/skills');
-  };
-
-  const handleRetryProvision = async () => {
-    if (!retryEmployeeId) return;
-    setRetrying(true);
-    setRetryMessage(null);
-    try {
-      const res = await api.post(
-        `/api/agent-employees/${retryEmployeeId}/retry-provision`,
-      );
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setRetryMessage(j?.error ?? 'Retry failed');
-      } else {
-        setRetryMessage('Provisioning re-enqueued. Check the agent status in a moment.');
-      }
-    } finally {
-      setRetrying(false);
-    }
   };
 
   if (loading) {
@@ -291,42 +264,6 @@ export default function SkillDetailPage() {
               ~{tokens * (stats?.installed_on_agents ?? 0)} tokens total across installs.
               Consider uninstalling this skill from agents that don't need it to
               reduce context bloat.
-            </div>
-          </div>
-        )}
-
-        {/* Retry provision banner (only when redirected from a pending install) */}
-        {retryEmployeeId && (
-          <div
-            className="flex items-start gap-3 p-3 rounded text-xs"
-            style={{
-              background: 'rgba(59,130,246,0.1)',
-              border: '1px solid rgba(59,130,246,0.3)',
-            }}
-          >
-            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-            <div className="flex-1 space-y-2">
-              <div>
-                The last install left this agent in{' '}
-                <code>connection_status=pending</code>. The sidecar may have
-                missed the capability pack update.
-              </div>
-              <button
-                onClick={handleRetryProvision}
-                disabled={retrying}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded font-medium"
-                style={{
-                  background: 'var(--accent)',
-                  color: 'white',
-                  opacity: retrying ? 0.6 : 1,
-                }}
-              >
-                <RefreshCw
-                  className={`w-3 h-3 ${retrying ? 'animate-spin' : ''}`}
-                />
-                Retry install
-              </button>
-              {retryMessage && <div>{retryMessage}</div>}
             </div>
           </div>
         )}

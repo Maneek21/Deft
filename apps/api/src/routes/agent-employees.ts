@@ -22,17 +22,6 @@ import type { SkillAgentConfig } from '../lib/skill-config.js';
 
 export const agentEmployeeRoutes = new Hono();
 
-// Self-hosted v1 — provider-readiness gate retired. The pre-reframe
-// wizard forked between "cloud" (native always ready) and "self-hosted"
-// (native blocked until a managed deployment provider was configured).
-// That whole managed surface is gone now: native agents run in-process,
-// BYOA agents run in the user's own runtime, and there's nothing to
-// pre-flight. The endpoint stays as a ready:true no-op so any stale
-// wizard build that still polls it gets a green light.
-agentEmployeeRoutes.get('/provider-readiness', async (c) => {
-  return c.json({ ready: true });
-});
-
 // ═══ TEMPLATES ═══
 
 // GET /templates — pre-built role templates read from DB.
@@ -430,7 +419,6 @@ const createSchema = z.object({
   project_ids: z.array(z.string()).nullable().optional(),
   trust_level: z.enum(['conservative', 'standard', 'autonomous']).default('conservative'),
   max_daily_actions: z.number().int().positive().default(50),
-  is_byoa: z.boolean().default(false),
   byoa_model_info: z.string().optional(),
   heartbeat_enabled: z.boolean().default(false),
   heartbeat_interval_min: z.number().int().min(5).max(1440).default(30),
@@ -514,7 +502,7 @@ agentEmployeeRoutes.post('/', async (c) => {
         project_ids: data.project_ids ?? null,
         trust_level: data.trust_level,
         max_daily_actions: data.max_daily_actions,
-        is_byoa: data.is_byoa,
+        is_byoa: true,
         byoa_model_info: data.byoa_model_info || null,
         heartbeat_enabled: data.heartbeat_enabled,
         heartbeat_interval_min: data.heartbeat_interval_min,
@@ -529,50 +517,42 @@ agentEmployeeRoutes.post('/', async (c) => {
       .set({ agent_employee_id: employee!.id })
       .where(eq(users.id, agentUser!.id));
 
-    // 5. If BYOA, auto-generate API key.
-    //
-    // Path C Phase 2 — the same token is persisted on BOTH sides so
-    // BYOA agents work against either the standard MCP endpoint
-    // (/api/mcp/v1, auth via agent_employees.mcp_token_hash) or the
-    // deprecated /mcp REST surface (auth via api_keys). /api/mcp/v1 is
-    // the modern path; /mcp is kept during the deprecation window so
-    // existing integrations don't break.
-    let rawApiKey: string | null = null;
-    if (data.is_byoa) {
-      const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
-      rawApiKey = `deft_${keyId}`;
-      const keyHash = await bcrypt.hash(rawApiKey, 12);
-      const keyPrefix = rawApiKey.slice(0, 12);
+    // 5. Always auto-generate the API key. Every agent in v1 is BYOA —
+    // the same token is persisted on BOTH sides so the agent works
+    // against either the standard MCP endpoint (/api/mcp/v1, auth via
+    // agent_employees.mcp_token_hash) or the deprecated /mcp REST
+    // surface (auth via api_keys). /api/mcp/v1 is the modern path; /mcp
+    // is kept during the deprecation window so existing integrations
+    // don't break.
+    const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+    const rawApiKey = `deft_${keyId}`;
+    const keyHash = await bcrypt.hash(rawApiKey, 12);
+    const keyPrefix = rawApiKey.slice(0, 12);
 
-      // Legacy /mcp (REST) — api_keys table, namespaced permissions.
-      await db.insert(apiKeys).values({
-        org_id: currentUser.org_id,
-        agent_employee_id: employee!.id,
-        name: `${data.name} API Key`,
-        key_hash: keyHash,
-        key_prefix: keyPrefix,
-        permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
-        created_by: currentUser.id,
-      });
+    // Legacy /mcp (REST) — api_keys table, namespaced permissions.
+    await db.insert(apiKeys).values({
+      org_id: currentUser.org_id,
+      agent_employee_id: employee!.id,
+      name: `${data.name} API Key`,
+      key_hash: keyHash,
+      key_prefix: keyPrefix,
+      permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
+      created_by: currentUser.id,
+    });
 
-      // Modern /api/mcp/v1 (standard MCP streamable-http) —
-      // agent_employees.mcp_token_hash. resolveGatewayToken() in
-      // lib/mcp-token.ts bcrypt-compares against this column.
-      // Skip for kind='native' (column is reserved for openclaw /
-      // custom_mcp / claude_sdk employees).
-      if (employee!.kind !== 'native') {
-        await db
-          .update(agentEmployees)
-          .set({ mcp_token_hash: keyHash })
-          .where(eq(agentEmployees.id, employee!.id));
-      }
-    }
+    // Modern /api/mcp/v1 (standard MCP streamable-http) —
+    // agent_employees.mcp_token_hash. resolveGatewayToken() in
+    // lib/mcp-token.ts bcrypt-compares against this column.
+    await db
+      .update(agentEmployees)
+      .set({ mcp_token_hash: keyHash })
+      .where(eq(agentEmployees.id, employee!.id));
 
     return c.json(
       {
         employee: employee!,
         user_id: agentUser!.id,
-        ...(rawApiKey ? { api_key: rawApiKey } : {}),
+        api_key: rawApiKey,
       },
       201,
     );
@@ -687,8 +667,8 @@ const patchSchema = z.object({
   mark_healthy: z.boolean().optional(),
   /**
    * Block 0.3 — editable identity / behavior fields for the "edit agent"
-   * flow. Deft-side config only. OpenClaw-side markdown files (SOUL.md
-   * etc.) edit over Gateway RPC in Block 1.
+   * flow. Deft-side config only. The agent's own markdown files (SOUL.md
+   * etc.) live in the operator's BYOA runtime and are edited there.
    */
   name: z.string().min(1).max(100).optional(),
   avatar_url: z.string().url().nullable().optional(),
@@ -1045,10 +1025,9 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
         ),
       );
 
-    // Self-hosted v1 — managed provider_instances cleanup retired along with
-    // the managed deployment surface. BYOA agents are long-running processes
-    // on the operator's own infra; deleting the employee record releases the
-    // MCP token and stops Defty from dispatching to it.
+    // BYOA agents are long-running processes on the operator's own infra;
+    // deleting the employee record releases the MCP token and stops Defty
+    // from dispatching to it.
 
     return c.json({ success: true });
   } catch (err) {
@@ -1141,66 +1120,25 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
   }
 });
 
-// ═══ RETRY PROVISIONING (Task 4.13) ═══
+// The legacy retry-provision endpoint and the agents.files.* RPC routes
+// were removed in the v1 self-hosted reframe. All agents are BYOA —
+// operators run them on their own infra and Deft does not control the
+// agent's filesystem. A Defty-specific settings page (Defty's SOUL.md
+// lives inside Deft) can come back as its own focused feature if needed.
+
+// ─── GET /:id/developer  → BYOA connection credentials ───────────────
 //
-// JIT skill installs (Task 4.6) can leave an openclaw employee in
-// `connection_status='pending'` if the deploy-provision worker fails to
-// push the new capability packs through to the sidecar. This endpoint
-// re-enqueues that provision job in `update` mode so the caller can
-// retry without touching the employee row itself.
-agentEmployeeRoutes.post('/:id/retry-provision', async (c) => {
-  try {
-    const user = c.get('user');
-    const id = c.req.param('id');
-
-    const [employee] = await db
-      .select()
-      .from(agentEmployees)
-      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
-      .limit(1);
-
-    if (!employee) {
-      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    if (employee.connection_status !== 'pending') {
-      return c.json(
-        {
-          error: 'Retry only allowed while connection_status=pending',
-          code: 'INVALID_STATE',
-          current_status: employee.connection_status,
-        },
-        409,
-      );
-    }
-
-    const { enqueue } = await import('../lib/queues.js');
-    await enqueue('agent-jobs', 'deploy-provision', {
-      employee_id: id,
-      mode: 'update',
-    });
-
-    return c.json({ success: true, enqueued: true });
-  } catch (err) {
-    console.error('Failed to retry provision:', err);
-    return c.json({ error: 'Failed to retry provision', code: 'INTERNAL_ERROR' }, 500);
-  }
-});
-
-// Block 1.2 agents.files.* routes removed in v1 self-hosted reframe.
-// Deft doesn't control the BYOA agent's filesystem — users edit their
-// own SOUL.md/AGENTS.md/etc. locally in their OpenClaw workspace.
-// A Defty-specific settings page (Defty's SOUL.md lives inside Deft)
-// can come back as its own focused feature if needed.
-
-// ─── Block 3.2 — GET /:id/developer  → connection credentials ────────
-// Returns the connection URL + wscat one-liner + masked token. Full
-// token only revealed when ?reveal=1 and the caller is an admin/owner.
+// Returns the MCP endpoint URL and a masked token placeholder so the
+// operator can wire up Claude Desktop / Claude Code / a custom MCP
+// client. The raw bearer token is *not* recoverable —
+// `agent_employees.mcp_token_hash` is a bcrypt hash and the raw value
+// is shown exactly once at issuance (POST / and POST
+// /:id/regenerate-token). `mcp_token` is therefore always null; if a
+// caller needs a fresh token, regenerate.
 agentEmployeeRoutes.get('/:id/developer', async (c) => {
   try {
     const user = c.get('user');
     const id = c.req.param('id');
-    const reveal = c.req.query('reveal') === '1';
 
     const [employee] = await db
       .select()
@@ -1209,58 +1147,16 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    let token: string | null = null;
-    if (employee.gateway_token_encrypted) {
-      try {
-        const { decrypt } = await import('../lib/encryption.js');
-        token = decrypt(employee.gateway_token_encrypted);
-      } catch {
-        token = null;
-      }
-    }
-
-    // Gate the full-reveal behind role=admin/owner.
-    if (reveal) {
-      const [member] = await db
-        .select({ role: orgMembers.role })
-        .from(orgMembers)
-        .where(and(eq(orgMembers.user_id, user.id), eq(orgMembers.org_id, user.org_id)))
-        .limit(1);
-      if (!member || !['admin', 'owner'].includes(member.role)) {
-        return c.json({ error: 'Only admins can reveal the gateway token', code: 'FORBIDDEN' }, 403);
-      }
-    }
-
-    const masked = token ? `${token.slice(0, 8)}…${token.slice(-4)}` : null;
-    const effectiveToken = reveal ? token : null;
-    const wscatCommand = employee.connection_url
-      ? `wscat -c "${employee.connection_url}?token=${reveal && token ? token : '$GATEWAY_TOKEN'}"`
-      : null;
+    const apiBase = process.env.PUBLIC_API_BASE_URL ?? 'http://localhost:4000';
 
     return c.json({
       employee: {
         id: employee.id,
         slug: employee.slug,
-        kind: employee.kind,
-        connection_status: employee.connection_status,
-        provider_instance_id: employee.provider_instance_id,
       },
-      connection_url: employee.connection_url,
-      gateway_token_masked: masked,
-      gateway_token: effectiveToken,
-      wscat_command: wscatCommand,
-      examples: {
-        json_rpc_skills_status: {
-          frame: { jsonrpc: '2.0', id: 1, method: 'skills.status' },
-          expected_shape: { ready: true, count: 0 },
-        },
-        json_rpc_files_get: {
-          frame: {
-            jsonrpc: '2.0', id: 2, method: 'agents.files.get',
-            params: { agentId: employee.id, filename: 'SOUL.md' },
-          },
-        },
-      },
+      mcp_endpoint_url: `${apiBase}/api/mcp/v1`,
+      mcp_token_masked: employee.mcp_token_hash ? '••••••••' : null,
+      mcp_token: null,
     });
   } catch (err) {
     console.error('Failed to fetch developer credentials:', err);
@@ -1325,18 +1221,12 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
         heartbeat_interval_min: source.heartbeat_interval_min,
         heartbeat_config: source.heartbeat_config,
         daily_budget_cents: source.daily_budget_cents,
-        kind: source.kind,
-        template_slug: source.template_slug,
-        template_version: source.template_version,
         trigger_subscriptions: source.trigger_subscriptions,
-        provider_hint: source.provider_hint,
         // capability_packs column dropped (PR 4 C); not carried into the clone.
         created_by: user.id,
-        // Intentionally NOT cloned: connection_url, gateway_token_encrypted,
-        // mcp_token_hash, provider_instance_id, connection_status,
-        // daily_action_count/cost, last_heartbeat_at. The clone is a fresh
-        // employee — provisioning produces its own credentials.
-        connection_status: 'pending',
+        // Intentionally NOT cloned: mcp_token_hash, daily_action_count/cost,
+        // last_heartbeat_at. The clone is a fresh employee — its MCP token
+        // must be issued separately.
       })
       .returning();
 

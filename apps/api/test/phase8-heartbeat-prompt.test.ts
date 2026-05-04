@@ -53,12 +53,12 @@ async function seedEmployee(opts: {
     await c.query(
       `INSERT INTO agent_employees
          (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-          kind, connection_status, is_active, heartbeat_enabled,
+          is_byoa, is_active, heartbeat_enabled,
           heartbeat_interval_min, max_daily_actions, daily_action_count,
           heartbeat_overrides, created_by)
        VALUES
          ($1, $2, $3, 'Phase 8 Prompt', $4, 'project_manager', 'test',
-          'standard', 'openclaw', 'connected', true, true, 30, 50, 0,
+          'standard', true, true, true, 30, 50, 0,
           $5::jsonb, $3)`,
       [
         employeeId,

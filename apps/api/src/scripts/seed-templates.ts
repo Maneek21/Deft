@@ -6,8 +6,7 @@
  * and upserts each template into `agent_employee_templates`.
  *
  * Idempotent: running twice results in 8 rows (not 16). Re-running refreshes
- * the markdown content without breaking FK relationships from deployed
- * employees — `agent_employees.template_slug` is FK to the slug column.
+ * the markdown content without breaking the templates table contents.
  *
  * Run:
  *   pnpm --filter @deft/api exec tsx src/scripts/seed-templates.ts

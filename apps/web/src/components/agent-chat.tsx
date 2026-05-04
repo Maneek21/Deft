@@ -7,7 +7,6 @@ import { formatToolLabel, humanizeToolName } from '@/lib/tool-display';
 import { deriveConfidence } from '@/lib/confidence';
 import { useRouter } from 'next/navigation';
 import { Send, Square, Loader2, ExternalLink, Download } from 'lucide-react';
-import { ReasoningTrace } from '@/components/reasoning-trace';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
@@ -735,29 +734,17 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
                         </ReactMarkdown>
                       </div>
                       {msg.tool_calls && msg.tool_calls.length > 0 && (
-                        <>
-                          <div className="flex flex-wrap gap-1.5 mt-2.5">
-                            {msg.tool_calls.map((tc, ti) => (
-                              <button
-                                key={ti}
-                                className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
-                                style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
-                              >
-                                💬 {formatToolLabel(tc.tool)}
-                              </button>
-                            ))}
-                          </div>
-                          {/* UX sweep — expandable reasoning trace */}
-                          <ReasoningTrace
-                            events={msg.tool_calls.map((tc) => ({
-                              sessionId: activeConversationId ?? '',
-                              employee_id: agentEmployeeId ?? '',
-                              kind: 'session.tool' as const,
-                              payload: { tool_name: tc.tool, input: tc.params, result: tc.result },
-                              at: '',
-                            }))}
-                          />
-                        </>
+                        <div className="flex flex-wrap gap-1.5 mt-2.5">
+                          {msg.tool_calls.map((tc, ti) => (
+                            <button
+                              key={ti}
+                              className="px-2 py-1 rounded-full text-[11px] font-medium inline-flex items-center gap-1"
+                              style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+                            >
+                              💬 {formatToolLabel(tc.tool)}
+                            </button>
+                          ))}
+                        </div>
                       )}
                       {msg.thinking && msg.tool_status && (
                         <AgentThinking toolStatus={msg.tool_status} />
