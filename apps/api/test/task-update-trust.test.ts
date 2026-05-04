@@ -95,8 +95,8 @@ async function seedFixtures() {
       TEST_PROJECT_ID = proj.rows[0].id;
     } else {
       const r = await c.query(
-        `INSERT INTO projects (org_id, name, prefix, lead_id, task_counter)
-         VALUES ($1, 'task_update trust regression', $2, $3, 0)
+        `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+         VALUES (gen_random_uuid()::text, $1, 'task_update trust regression', $2, $3, 0)
          RETURNING id`,
         [ORG_ID, TEST_PROJECT_PREFIX, TEST_USER_ID],
       );
@@ -112,9 +112,9 @@ async function seedFixtures() {
     const taskNumber = Number(counter.rows[0].task_counter);
     const taskRow = await c.query(
       `INSERT INTO tasks
-        (org_id, project_id, number, title, description, priority,
+        (id, org_id, project_id, number, title, description, priority,
          created_by, status)
-       VALUES ($1, $2, $3, $4, $5, 'p2', $6, 'todo')
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'p2', $6, 'todo')
        RETURNING id`,
       [
         ORG_ID,

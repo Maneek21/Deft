@@ -423,6 +423,7 @@ export async function executeTaskUpdate(
   }
 }
 
+// Trust-gating verified by apps/api/test/task-update-trust.test.ts
 export async function taskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
