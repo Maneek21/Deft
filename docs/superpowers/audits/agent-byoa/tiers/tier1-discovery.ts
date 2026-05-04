@@ -8,6 +8,7 @@ import { findRecentAgentActions, waitForAgentAction, getEmployeeRow, getAgentSha
 import { assert, assertEquals } from '../../lib/assert.js';
 import { db, schema } from '../../lib/db.js';
 import { eq } from 'drizzle-orm';
+import { createHmac } from 'node:crypto';
 
 export interface TierCtx {
   page: Page;
@@ -89,18 +90,35 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
 
   // Scenario 3 — webhook dispatch
   await run('1.3 webhook trigger dispatch', async () => {
-    // Create a webhook for the agent. Auth response wraps under { webhook, secret }.
-    const created = await ctx.rest.post<{ webhook: { id: string; slug: string }; secret: string }>('/api/agent-webhooks', {
+    // Create a webhook for the agent. Auth response wraps under
+    // { webhook, secret, hmac_key } — fix #7 added hmac_key for
+    // HMAC-SHA256 signature auth (legacy raw-secret still accepted).
+    const created = await ctx.rest.post<{
+      webhook: { id: string; slug: string };
+      secret: string;
+      hmac_key?: string;
+    }>('/api/agent-webhooks', {
       agent_employee_id: ctx.agent.id,
       label: `t1-webhook-${Date.now()}`,
     });
-    const wh = { id: created.webhook.id, slug: created.webhook.slug, secret: created.secret };
+    const wh = {
+      id: created.webhook.id,
+      slug: created.webhook.slug,
+      secret: created.secret,
+      hmac_key: created.hmac_key,
+    };
     try {
-      // Public dispatch surface uses raw secret in `x-deft-webhook-secret` header (NOT HMAC)
+      // Public dispatch surface uses HMAC-SHA256 over the raw body,
+      // sent as `x-deft-webhook-signature: sha256=<hex>`.
       const payload = JSON.stringify({ harness: true, n: Date.now() });
+      assert(wh.hmac_key, 'create response includes hmac_key (post fix #7)');
+      const sig = `sha256=${createHmac('sha256', wh.hmac_key!).update(payload).digest('hex')}`;
       const res = await fetch(`${process.env.DEFT_API_URL || 'http://localhost:3001'}/api/agent-webhooks/${wh.slug}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-deft-webhook-secret': wh.secret },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-deft-webhook-signature': sig,
+        },
         body: payload,
       });
       assert(res.ok, `webhook dispatch returned ${res.status}: ${await res.text()}`);
