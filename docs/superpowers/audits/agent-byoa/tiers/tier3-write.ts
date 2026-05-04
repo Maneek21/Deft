@@ -30,30 +30,34 @@ export async function runTier3(ctx: TierCtx) {
     const sinceMs = Date.now();
     try {
       const r = await ctx.mcp.toolsCall<any>('task_create', { caller_employee_slug: slug, title: 'harness create', project_id: proj.resource.id, priority: 'p1' });
-      const wasQueued = r?.queued_for_approval === true || r?.status === 'pending' || r?.action_id;
+      // Platform returns: { status: 'queued_for_approval', approval_id, message } when queued,
+      // or the task row directly when auto-executed.
+      const wasQueued = r?.status === 'queued_for_approval' || r?.queued_for_approval === true || !!r?.approval_id || !!r?.action_id;
       if (wasQueued) {
         const approved = await approveAllPending(ctx, sinceMs);
-        assert(approved >= 1, 'at least one pending action approved');
-        // wait briefly for executor
+        assert(approved >= 1, `at least one pending action approved, got ${approved}`);
         await new Promise((res) => setTimeout(res, 2_000));
       }
-      // Verify task exists
-      const list = await ctx.rest.get<{ tasks: Array<{ title: string }> }>(`/api/projects/${proj.resource.id}/tasks`);
-      const found = list.tasks.find((t) => t.title === 'harness create');
-      assert(found, 'task with seeded title now exists in project');
+      // Verify task exists. /api/projects/:id/tasks returns array directly.
+      const list = await ctx.rest.get<any>(`/api/projects/${proj.resource.id}/tasks`);
+      const tasks: Array<{ title: string }> = Array.isArray(list) ? list : (list.tasks ?? []);
+      const found = tasks.find((t) => t.title === 'harness create');
+      assert(found, `task with seeded title exists; got ${tasks.length} tasks: [${tasks.map(t => t.title).slice(0, 5).join(',')}]`);
     } finally { await proj.cleanup(); }
   });
 
   await run('3.18 task_update→done round-trip', async () => {
     const proj = await withScratchProject(ctx.rest, 't3-update');
     try {
-      const t = await ctx.rest.post<{ id: string; identifier: string }>('/api/tasks', { project_id: proj.resource.id, title: 'updateme', status: 'todo' });
+      const t = await ctx.rest.post<{ id: string; number: number; project_prefix: string }>('/api/tasks', { project_id: proj.resource.id, title: 'updateme', status: 'todo' });
       const sinceMs = Date.now();
       await ctx.mcp.toolsCall<any>('task_update', { caller_employee_slug: slug, task_id: t.id, patch: { status: 'done' } });
       await approveAllPending(ctx, sinceMs);
       await new Promise((res) => setTimeout(res, 1_500));
-      const after = await ctx.rest.get<{ task: { status: string } }>(`/api/tasks/${t.id}`);
-      assertEquals(after.task.status, 'done', 'task status updated to done');
+      // /api/tasks/:id returns task row directly OR { task }; accept both
+      const after = await ctx.rest.get<any>(`/api/tasks/${t.id}`);
+      const status = after?.status ?? after?.task?.status;
+      assertEquals(status, 'done', `task status updated to done; raw=${JSON.stringify(after).slice(0, 200)}`);
     } finally { await proj.cleanup(); }
   });
 

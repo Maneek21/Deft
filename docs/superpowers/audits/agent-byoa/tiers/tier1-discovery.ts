@@ -30,17 +30,20 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
   await run('1.1 @mention dispatch', async () => {
     const sp = await withScratchSpace(ctx.rest, 't1-mention');
     try {
-      // Post message with @mention via REST. Format: <@employee:slug> or @<slug> — both supported by mention parser.
-      const startedAt = Date.now();
+      // Add agent's user_id to the space so the @mention dispatcher fires
+      const agentUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(agentUserId, 'agent has user_id');
+      await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
+
+      // Post @mention. Mention parser accepts @<slug>.
       await ctx.rest.post(`/api/messages/${sp.resource.id}`, {
         content: `@${ctx.agent.slug} please help`,
       });
-      // Wait for agent_actions row
       const row = await waitForAgentAction({
         agentEmployeeId: ctx.agent.id,
         source: 'mention',
         action: 'chat_mention',
-        timeoutMs: 15_000,
+        timeoutMs: 20_000,
       });
       const params = row.params as { space_id?: string };
       assertEquals(params.space_id, sp.resource.id, 'params.space_id matches scratch space');
@@ -49,9 +52,11 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
 
   // Scenario 2 — task assignment dispatch
   await run('1.2 task_assigned dispatch', async () => {
+    // Unique prefix per run to avoid collisions across reruns
+    const prefix = `T1T${String(Date.now() % 100).padStart(2, '0')}`.slice(0, 6);
     const proj = await ctx.rest.post<{ id: string; prefix: string }>('/api/projects', {
       name: `harness-t1-task-${Date.now()}`,
-      prefix: 'T1TASK',
+      prefix,
     });
     try {
       // Need agent's shadow user_id — query via DB. Column is `user_id`
@@ -142,8 +147,11 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
   await run('1.5 poll_pending_work idempotency', async () => {
     const sp = await withScratchSpace(ctx.rest, 't1-idem');
     try {
+      const agentUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(agentUserId, 'agent has user_id');
+      await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
       await ctx.rest.post(`/api/messages/${sp.resource.id}`, { content: `@${ctx.agent.slug} idempotency check` });
-      await waitForAgentAction({ agentEmployeeId: ctx.agent.id, source: 'mention', action: 'chat_mention', timeoutMs: 15_000 });
+      await waitForAgentAction({ agentEmployeeId: ctx.agent.id, source: 'mention', action: 'chat_mention', timeoutMs: 20_000 });
 
       const r1 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });
       const r2 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });

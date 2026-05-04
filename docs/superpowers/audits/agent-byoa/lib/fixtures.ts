@@ -32,9 +32,9 @@ export async function withScratchSpace(rest: DeftRest, scenarioSlug: string): Pr
   };
 }
 
-export async function withScratchProject(rest: DeftRest, scenarioSlug: string): Promise<Scratch<{ id: string; prefix: string }>> {
+export async function withScratchProject(rest: DeftRest, scenarioSlug: string): Promise<Scratch<{ id: string; prefix: string; name: string }>> {
   const name = tag(scenarioSlug);
-  const created = await rest.post<{ id: string; prefix: string }>('/api/projects', {
+  const created = await rest.post<{ id: string; prefix: string; name: string }>('/api/projects', {
     name,
     prefix: shortPrefix(scenarioSlug),
   });

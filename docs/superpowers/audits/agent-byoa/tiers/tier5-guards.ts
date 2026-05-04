@@ -22,7 +22,7 @@ export async function runTier5(ctx: TierCtx) {
       const proj = await withScratchProject(ctx.rest, 't5-trust');
       try {
         const r = await ctx.mcp.toolsCall<any>('task_create', { caller_employee_slug: slug, title: 'trust check', project_id: proj.resource.id });
-        const queued = r?.queued_for_approval === true || r?.status === 'pending' || !!r?.action_id;
+        const queued = r?.status === 'queued_for_approval' || r?.queued_for_approval === true || !!r?.approval_id || !!r?.action_id;
         assert(queued, `at conservative trust, task_create should queue, got ${JSON.stringify(r).slice(0, 200)}`);
       } finally { await proj.cleanup(); }
     } finally { await setEmployee(ctx.agent.id, { trust_level: before!.trust_level }); }
