@@ -35,9 +35,9 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
       assert(agentUserId, 'agent has user_id');
       await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
 
-      // Post @mention. Mention parser accepts @<slug>.
+      // Mention parser only recognizes <@<userId>|<name>> format (parseMentions in lib/mentions.ts)
       await ctx.rest.post(`/api/messages/${sp.resource.id}`, {
-        content: `@${ctx.agent.slug} please help`,
+        content: `<@${agentUserId}|${ctx.agent.slug}> please help`,
       });
       const row = await waitForAgentAction({
         agentEmployeeId: ctx.agent.id,
@@ -150,7 +150,7 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
       const agentUserId = await getAgentShadowUserId(ctx.agent.id);
       assert(agentUserId, 'agent has user_id');
       await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
-      await ctx.rest.post(`/api/messages/${sp.resource.id}`, { content: `@${ctx.agent.slug} idempotency check` });
+      await ctx.rest.post(`/api/messages/${sp.resource.id}`, { content: `<@${agentUserId}|${ctx.agent.slug}> idempotency check` });
       await waitForAgentAction({ agentEmployeeId: ctx.agent.id, source: 'mention', action: 'chat_mention', timeoutMs: 20_000 });
 
       const r1 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });
