@@ -18,7 +18,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { getWidget } from '../lib/registry';
 import { WidgetShell } from './widget-shell';
-import type { DashboardLayout, WidgetContext } from '../lib/widget-types';
+import type { BreakpointLayoutEntry, DashboardLayout, WidgetContext } from '../lib/widget-types';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -56,33 +56,85 @@ export function DashboardGrid({
     return true;
   }), [layout.placements, ctx]);
 
-  const rglLayout: Layout[] = useMemo(() => placements.map(p => {
-    const def = getWidget(p.widgetId)!;
-    return {
-      i: p.instanceId,
-      x: p.x, y: p.y, w: p.w, h: p.h,
-      minW: def.minSize.w, minH: def.minSize.h,
-      maxW: def.maxSize?.w, maxH: def.maxSize?.h,
+  const layouts = useMemo(() => {
+    const placementById = new Map(placements.map(p => [p.instanceId, p]));
+    const lg: Layout[] = placements.map(p => {
+      const def = getWidget(p.widgetId)!;
+      return {
+        i: p.instanceId,
+        x: p.x, y: p.y, w: p.w, h: p.h,
+        minW: def.minSize.w, minH: def.minSize.h,
+        maxW: def.maxSize?.w, maxH: def.maxSize?.h,
+      };
+    });
+    const fromOverride = (entries?: BreakpointLayoutEntry[]): Layout[] | undefined => {
+      if (!entries) return undefined;
+      const seen = new Set<string>();
+      const out: Layout[] = [];
+      for (const e of entries) {
+        const p = placementById.get(e.i);
+        if (!p) continue; // widget removed since this breakpoint layout was saved
+        const def = getWidget(p.widgetId)!;
+        out.push({
+          i: e.i,
+          x: e.x, y: e.y, w: e.w, h: e.h,
+          minW: def.minSize.w, minH: def.minSize.h,
+          maxW: def.maxSize?.w, maxH: def.maxSize?.h,
+        });
+        seen.add(e.i);
+      }
+      // Append any placements added since this breakpoint was last saved so they
+      // still appear (RGL will compact them into place).
+      for (const p of placements) {
+        if (seen.has(p.instanceId)) continue;
+        const def = getWidget(p.widgetId)!;
+        out.push({
+          i: p.instanceId,
+          x: p.x, y: p.y, w: p.w, h: p.h,
+          minW: def.minSize.w, minH: def.minSize.h,
+          maxW: def.maxSize?.w, maxH: def.maxSize?.h,
+        });
+      }
+      return out;
     };
-  }), [placements]);
+    const overrides = layout.responsiveLayouts ?? {};
+    return {
+      lg,
+      md: fromOverride(overrides.md) ?? lg,
+      sm: fromOverride(overrides.sm) ?? lg,
+      xs: fromOverride(overrides.xs) ?? lg,
+      xxs: fromOverride(overrides.xxs) ?? lg,
+    };
+  }, [placements, layout.responsiveLayouts]);
 
-  const handleChange = (next: Layout[]) => {
+  const handleChange = (_current: Layout[], all: { [breakpoint: string]: Layout[] }) => {
     if (!onLayoutChange) return;
-    const byId = new Map(next.map(n => [n.i, n]));
+    const lgEntries = all.lg ?? [];
+    const byId = new Map(lgEntries.map(n => [n.i, n]));
+    const nextPlacements = layout.placements.map(p => {
+      const n = byId.get(p.instanceId);
+      if (!n) return p;
+      return { ...p, x: n.x, y: n.y, w: n.w, h: n.h };
+    });
+    const stripMeta = (entries?: Layout[]): BreakpointLayoutEntry[] | undefined =>
+      entries?.map(e => ({ i: e.i, x: e.x, y: e.y, w: e.w, h: e.h }));
+    const responsiveLayouts = {
+      md: stripMeta(all.md),
+      sm: stripMeta(all.sm),
+      xs: stripMeta(all.xs),
+      xxs: stripMeta(all.xxs),
+    };
     onLayoutChange({
-      version: 1,
-      placements: layout.placements.map(p => {
-        const n = byId.get(p.instanceId);
-        if (!n) return p;
-        return { ...p, x: n.x, y: n.y, w: n.w, h: n.h };
-      }),
+      version: 2,
+      placements: nextPlacements,
+      responsiveLayouts,
     });
   };
 
   return (
     <ResponsiveGridLayout
       className="dashboard4-grid"
-      layouts={{ lg: rglLayout, md: rglLayout, sm: rglLayout, xs: rglLayout, xxs: rglLayout }}
+      layouts={layouts}
       breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
       cols={{ lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 }}
       rowHeight={60}

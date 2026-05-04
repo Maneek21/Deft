@@ -165,6 +165,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     // Execute / enqueue tools, building the tool_result user turn.
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     let haltAfterThisIteration = false;
+    const pendingActionsBeforeIter = pendingActions.length;
 
     for (const tool of toolUseBlocks) {
       const isAction = p.allActionTools.has(tool.name);
@@ -243,7 +244,31 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     }
 
     if (haltAfterThisIteration) {
-      finalText = iterText;
+      // The pre-tool prose Claude streams in the same turn as a pending-approval
+      // tool_use is sometimes contradictory ("I don't have access to set a
+      // reminder" while emitting a create_reminder call). The model never gets
+      // a follow-up turn to correct itself because we halt here. Replace the
+      // streamed text with a deterministic summary that points the user at the
+      // approval card, so the persisted message + the live UI agree with the
+      // actual outcome.
+      const newPendings = pendingActions.slice(pendingActionsBeforeIter);
+      if (newPendings.length > 0) {
+        const labels = newPendings.map((a) => a.action.replace(/_/g, ' '));
+        const replacement =
+          newPendings.length === 1
+            ? `Queued the **${labels[0]}** action for your approval — confirm the card above to proceed.`
+            : `Queued ${newPendings.length} actions for your approval (${labels.join(', ')}) — confirm the cards above to proceed.`;
+
+        await db
+          .update(agentMessages)
+          .set({ content: replacement })
+          .where(eq(agentMessages.id, assistantRow!.id));
+
+        await p.write({ type: 'text_replace', text: replacement });
+        finalText = replacement;
+      } else {
+        finalText = iterText;
+      }
       break;
     }
   }

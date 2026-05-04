@@ -34,5 +34,5 @@ export function buildDefaultLayout(isManager: boolean): DashboardLayout {
       x: 0, y: 13, w: 12, h: 3,
     });
   }
-  return { version: 1, placements };
+  return { version: 2, placements };
 }

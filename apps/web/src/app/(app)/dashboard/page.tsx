@@ -22,7 +22,7 @@ import { DashboardGrid } from './grid/dashboard-grid';
 import { AddWidgetDrawer } from './grid/add-widget-drawer';
 import { useLayoutStorage } from './lib/use-layout-storage';
 import { getWidget } from './lib/registry';
-import type { DashboardLayout } from './lib/widget-types';
+import type { BreakpointLayoutEntry, DashboardLayout } from './lib/widget-types';
 import { registerBuiltInWidgets } from './widgets';
 
 registerBuiltInWidgets();
@@ -308,9 +308,20 @@ function DashboardBody() {
   };
 
   const handleRemove = useCallback((instanceId: string) => {
+    const stripFrom = (entries?: BreakpointLayoutEntry[]) =>
+      entries?.filter(e => e.i !== instanceId);
+    const overrides = layout.responsiveLayouts;
     setLayout({
-      version: 1,
+      version: 2,
       placements: layout.placements.filter(p => p.instanceId !== instanceId),
+      responsiveLayouts: overrides
+        ? {
+            md: stripFrom(overrides.md),
+            sm: stripFrom(overrides.sm),
+            xs: stripFrom(overrides.xs),
+            xxs: stripFrom(overrides.xxs),
+          }
+        : undefined,
     });
   }, [layout, setLayout]);
 
@@ -320,7 +331,7 @@ function DashboardBody() {
     const maxY = layout.placements.reduce((m, p) => Math.max(m, p.y + p.h), 0);
     const instanceId = `${widgetId.split('.').pop() ?? 'widget'}-${Date.now()}`;
     setLayout({
-      version: 1,
+      version: 2,
       placements: [
         ...layout.placements,
         {
@@ -329,6 +340,7 @@ function DashboardBody() {
           w: def.defaultSize.w, h: def.defaultSize.h,
         },
       ],
+      responsiveLayouts: layout.responsiveLayouts,
     });
     setAddOpen(false);
   }, [layout, setLayout]);
@@ -339,10 +351,11 @@ function DashboardBody() {
 
   const handleConfigChange = useCallback((instanceId: string, config: unknown) => {
     setLayout({
-      version: 1,
+      version: 2,
       placements: layout.placements.map(p =>
         p.instanceId === instanceId ? { ...p, config } : p
       ),
+      responsiveLayouts: layout.responsiveLayouts,
     });
   }, [layout, setLayout]);
 

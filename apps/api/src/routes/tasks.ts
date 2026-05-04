@@ -9,6 +9,7 @@ import { canDeleteTask } from '../lib/task-permissions.js';
 import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
+import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
 
 export const taskRoutes = new Hono();
 
@@ -1395,6 +1396,16 @@ async function createTaskForProject(
     } catch {}
   }
 
+  // If assignee is an agent employee, wake them up to work the task.
+  if (task!.assignee_id) {
+    await dispatchAgentEmployeeTask({
+      taskId: task!.id,
+      orgId,
+      assigneeUserId: task!.assignee_id,
+      assignedBy: userId,
+    });
+  }
+
   // Enqueue duplicate detection job (skip for subtasks)
   if (!data.parent_task_id) {
     try {
@@ -1759,23 +1770,12 @@ taskRoutes.patch('/:id', async (c) => {
 
       // If the new assignee is an AI agent, enqueue the agent worker
       if (newAssignee) {
-        try {
-          const [assigneeUser] = await db.select({
-            is_agent: users.is_agent,
-            agent_employee_id: users.agent_employee_id,
-          }).from(users).where(eq(users.id, newAssignee)).limit(1);
-
-          if (assigneeUser?.is_agent && assigneeUser?.agent_employee_id) {
-            await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-task', {
-              taskId: taskId,
-              orgId: user.org_id,
-              employeeId: assigneeUser.agent_employee_id,
-              assignedBy: user.id,
-            });
-          }
-        } catch (err) {
-          console.error('Failed to enqueue agent employee task:', err);
-        }
+        await dispatchAgentEmployeeTask({
+          taskId,
+          orgId: user.org_id,
+          assigneeUserId: newAssignee,
+          assignedBy: user.id,
+        });
       }
     }
 

@@ -11,7 +11,7 @@
  * layout. Until then, callers render the default layout.
  */
 import { useCallback, useEffect, useState } from 'react';
-import type { DashboardLayout } from './widget-types';
+import type { DashboardLayout, WidgetPlacement } from './widget-types';
 import { buildDefaultLayout } from '../grid/default-layout';
 
 const storageKey = (userId: string) => `dashboard4:layout:${userId}`;
@@ -19,9 +19,15 @@ const storageKey = (userId: string) => `dashboard4:layout:${userId}`;
 function safeParse(raw: string | null): DashboardLayout | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as DashboardLayout;
-    if (parsed?.version !== 1 || !Array.isArray(parsed.placements)) return null;
-    return parsed;
+    const parsed = JSON.parse(raw) as { version?: number; placements?: unknown; responsiveLayouts?: unknown };
+    if (!Array.isArray(parsed?.placements)) return null;
+    if (parsed.version === 1) {
+      return { version: 2, placements: parsed.placements as WidgetPlacement[] };
+    }
+    if (parsed.version === 2) {
+      return parsed as DashboardLayout;
+    }
+    return null;
   } catch {
     return null;
   }

@@ -30,6 +30,7 @@ import { mcpClientManager } from '@deft/mcp';
 import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
+import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 
 const AGENT_EMAIL = 'deft-agent@system.local';
 
@@ -249,6 +250,16 @@ export async function executeAction(
           metadata: { action_id: actionId, project: project.prefix },
         });
 
+        // If assignee is an agent employee, wake them up to work the task.
+        if (assigneeId) {
+          await dispatchAgentEmployeeTask({
+            taskId: task!.id,
+            orgId,
+            assigneeUserId: assigneeId,
+            assignedBy: userId,
+          });
+        }
+
         return {
           success: true,
           result: {
@@ -462,6 +473,16 @@ export async function executeAction(
           afterState: { assignee_id: newAssigneeId },
           metadata: { action_id: actionId, assignee_name: newAssigneeName },
         });
+
+        // If new assignee is an agent employee, wake them up to work the task.
+        if (newAssigneeId && newAssigneeId !== oldAssigneeId) {
+          await dispatchAgentEmployeeTask({
+            taskId,
+            orgId,
+            assigneeUserId: newAssigneeId,
+            assignedBy: userId,
+          });
+        }
 
         return {
           success: true,

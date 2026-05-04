@@ -324,6 +324,24 @@ export function AgentChat({ conversationId, initialPrompt, onConversationCreated
               scrollToBottom();
               break;
             }
+            case 'text_replace': {
+              // Server detected that the streamed prose contradicts the
+              // actual outcome (e.g. model said "I can't set a reminder"
+              // while calling create_reminder). Swap the bubble contents
+              // with the server's deterministic summary.
+              agentText = typeof data.text === 'string' ? data.text : '';
+              const snap = agentText;
+              setMessages(prev => {
+                const updated = [...prev];
+                const msg = updated[assistantPlaceholderIdx];
+                if (msg && msg.role === 'assistant') {
+                  updated[assistantPlaceholderIdx] = { ...msg, content: snap, thinking: false, streaming: true, tool_status: undefined };
+                }
+                return updated;
+              });
+              scrollToBottom();
+              break;
+            }
             case 'tool_start': {
               // Track this tool call for the final setMessages so reload and
               // live render produce matching tool_calls state.

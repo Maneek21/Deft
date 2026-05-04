@@ -104,7 +104,24 @@ export type WidgetPlacement = {
   config?: unknown;
 };
 
+export type ResponsiveBreakpoint = 'lg' | 'md' | 'sm' | 'xs' | 'xxs';
+
+/** Position-only layout entry for a single breakpoint (no widget metadata). */
+export type BreakpointLayoutEntry = {
+  i: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
 export type DashboardLayout = {
-  version: 1;
+  version: 2;
+  /** Canonical lg layout + widget metadata. */
   placements: WidgetPlacement[];
+  /**
+   * Optional per-breakpoint position overrides for non-lg breakpoints.
+   * Missing breakpoints fall back to RGL's auto-derivation from `placements`.
+   */
+  responsiveLayouts?: Partial<Record<Exclude<ResponsiveBreakpoint, 'lg'>, BreakpointLayoutEntry[]>>;
 };
