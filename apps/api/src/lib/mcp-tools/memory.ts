@@ -70,13 +70,23 @@ export async function memoryRecall(
     });
 
     // Map ContextResult back to the shape clients expect.
-    const result = filtered.map((r) => ({
-      slug: (r.metadata?.slug as string) ?? '',
-      title: r.title,
-      summary: (r.metadata?.summary as string | null) ?? null,
-      type: (r.metadata?.type as string) ?? '',
-      confidence: r.confidence ?? 1.0,
-    }));
+    // Fix #5: include page content (truncated to 2000 chars) so callers can
+    // quote body text instead of only the summary. Flag pages whose content
+    // exceeded the cap with `truncated: true`.
+    const CONTENT_CAP = 2000;
+    const result = filtered.map((r) => {
+      const fullContent = r.content ?? '';
+      const truncated = fullContent.length > CONTENT_CAP;
+      return {
+        slug: (r.metadata?.slug as string) ?? '',
+        title: r.title,
+        summary: (r.metadata?.summary as string | null) ?? null,
+        content: truncated ? fullContent.slice(0, CONTENT_CAP) : fullContent,
+        truncated,
+        type: (r.metadata?.type as string) ?? '',
+        confidence: r.confidence ?? 1.0,
+      };
+    });
 
     return textResult(result);
   } catch (err) {

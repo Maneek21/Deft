@@ -18,7 +18,8 @@
  */
 import { fileURLToPath } from 'node:url';
 import { db } from '../lib/db.js';
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { skills, agentEmployeeSkills } from '@deft/db/schema';
 import { BUNDLED_SKILLS } from '../lib/bundled-skills.js';
 
 export async function seedBundledSkills(
@@ -59,6 +60,35 @@ export async function seedBundledSkills(
         updated_at = now()
     `);
     log(`  upserted ${skill.slug}`);
+  }
+
+  // Clean up orphaned bundled rows whose slugs are no longer in BUNDLED_SKILLS.
+  // This catches stale rows from previous seed runs (e.g. retired capability
+  // packs like `web-browsing` / `shell-exec` after Phase 9). We delete junction
+  // rows first so FK constraints don't block the skill row delete.
+  const currentSlugs = BUNDLED_SKILLS.map((s) => s.slug);
+  const orphanRows = await db
+    .select({ id: skills.id, slug: skills.slug })
+    .from(skills)
+    .where(
+      and(
+        eq(skills.source, 'bundled'),
+        isNull(skills.org_id),
+        notInArray(skills.slug, currentSlugs),
+      ),
+    );
+
+  if (orphanRows.length > 0) {
+    const orphanIds = orphanRows.map((r) => r.id);
+    await db
+      .delete(agentEmployeeSkills)
+      .where(inArray(agentEmployeeSkills.skill_id, orphanIds));
+    await db.delete(skills).where(inArray(skills.id, orphanIds));
+    log(
+      `[seed-bundled-skills] cleaned ${orphanRows.length} orphan bundled skill rows: ${orphanRows
+        .map((r) => r.slug)
+        .join(', ')}`,
+    );
   }
 
   log(`[seed-bundled-skills] Done. Seeded ${BUNDLED_SKILLS.length} skills.`);

@@ -234,7 +234,7 @@ Collapsed five agent kinds (`native`, `openclaw`, `claude_sdk`, `custom_mcp`, pl
 - Gateway WebSocket JSON-RPC client (`openclaw-gateway.ts`), dispatch (`openclaw-dispatch.ts`), HTTP client (`openclaw-client.ts`), chat envelope (`openclaw-chat-envelope.ts`) — all archived to `docs/deprecated/openclaw/`
 - `pushSkillSecretsToGateway` helper
 - Frontend: `gateway-health-card.tsx`, `reasoning-trace.tsx`, `use-reasoning-trace.ts`
-- `web-browsing` and `shell-exec` capability pack slugs (Layer-2 OpenClaw plugins)
+- `web-browsing` and `shell-exec` references from seed templates (these were never in the `CAPABILITY_PACKS` catalog; they pointed to OpenClaw Layer-2 plugins that no longer exist)
 - `/provider-readiness` and `/retry-provision` API endpoints
 - 6 test files (openclaw-envelope, openclaw-heartbeat, gateway-ping, agent-deploy-routes, byo-provider, railway-provider, skill-install)
 

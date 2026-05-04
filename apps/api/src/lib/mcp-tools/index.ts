@@ -126,9 +126,7 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'memory_recall',
     description:
-      'Search your wiki memory plus org-wide pages for relevant context. ' +
-      'Uses full-text ranking blended with page confidence. Returns up to ' +
-      '`limit` pages (default 5).',
+      'Search the org wiki for knowledge pages. Returns title, summary, and content (truncated to 2000 chars, with a `truncated` flag for longer pages). Use for answering questions about previously saved knowledge.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -171,9 +169,7 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'memory_write',
     description:
-      'Write a new wiki page scoped to your employee. Use this to remember ' +
-      'facts, decisions, procedures, or preferences that you learn during a ' +
-      'session.',
+      "Persist knowledge to the org wiki. This is the ONLY tool for durable memory — use it whenever asked to 'remember', 'save', 'note', or 'track' information. Creates a searchable wiki page visible to the whole org.",
     inputSchema: {
       type: 'object',
       properties: {
