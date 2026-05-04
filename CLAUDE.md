@@ -17,6 +17,7 @@ deft/
 │   └── api/          # Hono (TypeScript, REST endpoints, WebSocket via Socket.io)
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + client + migrations
+│   ├── mcp/          # MCP server SDK + tool definitions for BYOA agents
 │   └── shared/       # Shared types, Zod schemas, constants
 ├── docker-compose.yml  # Self-host: postgres + redis + app
 ├── .env.example
@@ -29,7 +30,7 @@ deft/
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
 - Real-time: Socket.io with Redis adapter
-- Auth: better-auth (JWT + refresh tokens + Google OAuth)
+- Auth: Custom JWT + bcrypt (jsonwebtoken + bcryptjs, Google OAuth)
 - Background jobs: BullMQ with Redis
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: Anthropic Claude API (Sonnet for reasoning, Haiku for classification)
@@ -68,7 +69,7 @@ The agent is NOT a chatbot. It's a workflow engine.
 
 Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
 
-**Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Six day-one bundled skills ship: one per available capability pack (Deft Workspace carries the 9 task tools — `comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
+**Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
 
@@ -115,11 +116,18 @@ Dead primitives retired: the `native_tools[]` agent column was dropped (migratio
 
 - **UI fixes (Phase 7)** — sidebar three-dot menu portal click propagation fixed (menu items now respond to clicks). Scroll containers added to 9 settings pages that were clipping content.
 
-## Next Milestone — Phase 8 (SUPERSEDED by Phase 9)
+## Phase 8 — Heartbeat Autonomy (partially shipped)
 
-The original Phase 8 plan was OpenClaw autonomy — autonomous heartbeat lifecycle, skill-defined trigger dispatcher, heartbeat cost guardrails inside an in-process gateway. Phase 9 (2026-04-28) deleted OpenClaw entirely; the autonomous loop is now the BYOA agent's responsibility. The Deft side ships heartbeat ticks as `agent_actions` rows; what the agent does with them is out of our process.
+The original Phase 8 plan was OpenClaw autonomy inside an in-process gateway. Phase 9 (2026-04-28) deleted the gateway; the autonomous loop is now the BYOA agent's responsibility. What the Deft side actually shipped — the heartbeat lifecycle and its guard rails — survived Phase 9 and now applies before BYOA-bound `agent_actions` rows are queued for MCP pickup.
 
-Heartbeat guard gates that *did* land (budget, circuit-breaker, idempotency, loop detector) live in `apps/api/src/workers/handlers/agent-employee-heartbeat.ts` and apply before the row is queued.
+Tasks 8.1–8.6 shipped on the heartbeat worker:
+
+- **Heartbeat lifecycle** (Task 8.1) — BullMQ cron dispatches due employees based on `heartbeat_interval_min`. Post-Phase-9, all employees are BYOA; heartbeat ticks queue pending work for MCP polling.
+- **Per-tick logging** (Task 8.4) — every tick writes to `agent_heartbeat_turns` (fired_at, prompt_sha, action_count, tokens_in/out, cost_cents, outcome, summary) and broadcasts `agent:heartbeat:turn` via Socket.io.
+- **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day), reset at UTC midnight. Circuit breaker: `unhealthy` flag tripped after 3 consecutive errors, blocks all autonomous dispatch until manually cleared via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
+- **Loop detection** (Task 8.6) — prompt_sha idempotency skips re-dispatch when nothing changed since last no_op tick. Consecutive identical action detector trips the circuit breaker.
+
+**Not yet shipped:** skill-defined trigger dispatcher (arbitrary triggers from skill manifests, not just the hardcoded set of `cron:standup`, `member.joined`, `webhook`, `task.status_changed`).
 
 ## Key Design Decisions
 
@@ -262,7 +270,7 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 - Don't build features we don't need yet (sprints, burndown, Gantt, huddles, CRM)
 - Don't over-abstract. Build for the current scope, refactor when needed
 - Don't cache prematurely. Postgres is fast enough for our scale
-- Don't build a custom auth system. Use better-auth
+- Don't replace the existing auth system without a migration plan. It's custom JWT + bcrypt, not a library — changes affect every authenticated route.
 - Don't use Supabase (blocked in India)
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need
