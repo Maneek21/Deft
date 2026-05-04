@@ -13,7 +13,7 @@
     "audit:metrics": "tsx docs/superpowers/audits/metrics-smoke.ts",
     "audit:setup": "tsx docs/superpowers/audits/setup-auth.ts",
     "audit:byoa-bootstrap": "tsx docs/superpowers/audits/agent-byoa/lib/bootstrap.ts",
-    "audit:byoa-restore": "tsx docs/superpowers/audits/agent-byoa/lib/bootstrap.ts -- --restore",
+    "audit:byoa-restore": "tsx docs/superpowers/audits/agent-byoa/lib/bootstrap.ts --restore",
     "audit:byoa-preflight": "tsx docs/superpowers/audits/agent-byoa/lib/preflight.ts",
     "audit:byoa-a": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-a.audit.ts",
     "audit:byoa-b": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-b.audit.ts",
