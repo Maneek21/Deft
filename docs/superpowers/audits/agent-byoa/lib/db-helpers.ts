@@ -7,13 +7,15 @@ export async function findRecentAgentActions(opts: {
   source?: string;
   action?: string;
   sinceMs?: number;
+  afterTs?: Date;
   status?: 'pending' | 'approved' | 'rejected' | 'expired';
 }) {
   const conds = [eq(schema.agentActions.agent_employee_id, opts.agentEmployeeId)];
   if (opts.source) conds.push(eq(schema.agentActions.source, opts.source));
   if (opts.action) conds.push(eq(schema.agentActions.action, opts.action));
   if (opts.status) conds.push(eq(schema.agentActions.approval_status, opts.status));
-  if (opts.sinceMs) conds.push(gte(schema.agentActions.created_at, new Date(Date.now() - opts.sinceMs)));
+  if (opts.afterTs) conds.push(gte(schema.agentActions.created_at, opts.afterTs));
+  else if (opts.sinceMs) conds.push(gte(schema.agentActions.created_at, new Date(Date.now() - opts.sinceMs)));
   return db.select().from(schema.agentActions).where(and(...conds)).orderBy(desc(schema.agentActions.created_at)).limit(20);
 }
 
@@ -22,11 +24,14 @@ export async function waitForAgentAction(opts: {
   source: string;
   action?: string;
   sinceMs?: number;
+  afterTs?: Date;
   timeoutMs?: number;
 }) {
   const deadline = Date.now() + (opts.timeoutMs ?? 15_000);
   while (Date.now() < deadline) {
-    const rows = await findRecentAgentActions({ ...opts, sinceMs: opts.sinceMs ?? 30_000 });
+    const rows = await findRecentAgentActions(opts.afterTs
+      ? { ...opts, afterTs: opts.afterTs }
+      : { ...opts, sinceMs: opts.sinceMs ?? 30_000 });
     if (rows.length) return rows[0]!;
     await new Promise((r) => setTimeout(r, 250));
   }

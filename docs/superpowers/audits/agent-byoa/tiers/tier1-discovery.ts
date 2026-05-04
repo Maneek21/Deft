@@ -30,30 +30,36 @@ export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: 
   await run('1.1 @mention dispatch', async () => {
     const sp = await withScratchSpace(ctx.rest, 't1-mention');
     try {
-      // Add agent's user_id to the space so the @mention dispatcher fires
       const agentUserId = await getAgentShadowUserId(ctx.agent.id);
       assert(agentUserId, 'agent has user_id');
       await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
 
       // Mention parser only recognizes <@<userId>|<name>> format (parseMentions in lib/mentions.ts)
+      const startedAt = new Date();
       await ctx.rest.post(`/api/messages/${sp.resource.id}`, {
         content: `<@${agentUserId}|${ctx.agent.slug}> please help`,
       });
-      const row = await waitForAgentAction({
-        agentEmployeeId: ctx.agent.id,
-        source: 'mention',
-        action: 'chat_mention',
-        timeoutMs: 20_000,
-      });
-      const params = row.params as { space_id?: string };
-      assertEquals(params.space_id, sp.resource.id, 'params.space_id matches scratch space');
+      // BullMQ may have other agent jobs in flight; filter explicitly by our space_id
+      const deadline = Date.now() + 20_000;
+      let matched: any = null;
+      while (Date.now() < deadline && !matched) {
+        const rows = await findRecentAgentActions({
+          agentEmployeeId: ctx.agent.id,
+          source: 'mention',
+          action: 'chat_mention',
+          afterTs: startedAt,
+        });
+        matched = rows.find((r) => (r.params as any)?.space_id === sp.resource.id);
+        if (!matched) await new Promise((res) => setTimeout(res, 250));
+      }
+      assert(matched, `expected agent_actions row with params.space_id=${sp.resource.id} after ${startedAt.toISOString()}; none matched`);
     } finally { await sp.cleanup(); }
   });
 
   // Scenario 2 — task assignment dispatch
   await run('1.2 task_assigned dispatch', async () => {
-    // Unique prefix per run to avoid collisions across reruns
-    const prefix = `T1T${String(Date.now() % 100).padStart(2, '0')}`.slice(0, 6);
+    // Random prefix per run to avoid collisions across reruns (schema: 2-6 char alphanumeric uppercase)
+    const prefix = `T1${String(Date.now() % 10000).padStart(4, '0')}`.slice(0, 6);
     const proj = await ctx.rest.post<{ id: string; prefix: string }>('/api/projects', {
       name: `harness-t1-task-${Date.now()}`,
       prefix,
