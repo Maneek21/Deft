@@ -24,6 +24,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentWebhooks, agentEmployees } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { encrypt, decrypt } from '../lib/encryption.js';
 
 export const agentWebhookRoutes = new Hono();
 
@@ -31,6 +32,9 @@ function randomSlug(bytes = 16): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 function randomSecret(bytes = 32): string {
+  return crypto.randomBytes(bytes).toString('base64url');
+}
+function randomHmacKey(bytes = 32): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 function hashSecret(secret: string): string {
@@ -72,6 +76,7 @@ agentWebhookRoutes.post('/', async (c) => {
 
     const slug = randomSlug();
     const secret = randomSecret();
+    const hmacKey = randomHmacKey();
     const id = crypto.randomUUID();
 
     const [inserted] = await db
@@ -82,6 +87,7 @@ agentWebhookRoutes.post('/', async (c) => {
         agent_employee_id: emp.id,
         slug,
         secret_hash: hashSecret(secret),
+        hmac_key_encrypted: encrypt(hmacKey),
         label: parsed.data.label ?? null,
         enabled: true,
         created_by: user.id,
@@ -97,9 +103,18 @@ agentWebhookRoutes.post('/', async (c) => {
         enabled: inserted!.enabled,
         created_at: inserted!.created_at,
       },
-      // Shown ONCE. Caller must save it immediately; subsequent GETs
-      // only return the slug.
+      // Both shown ONCE. Caller must save them immediately; subsequent
+      // GETs only return the slug.
+      // `secret` is the legacy raw-secret auth (deprecated, ships in
+      // every request — vulnerable to TLS-terminating-proxy log lift).
+      // `hmac_key` is the preferred path: HMAC-SHA256 over the raw body,
+      // sent as `x-deft-webhook-signature: sha256=<hex>`.
       secret,
+      hmac_key: hmacKey,
+      auth_instructions:
+        'Sign request body with HMAC-SHA256 using hmac_key as the key. ' +
+        'Send signature as `x-deft-webhook-signature: sha256=<hex>`. ' +
+        'The legacy `x-deft-webhook-secret` header still works during transition.',
       post_url: `/api/agent-webhooks/${slug}`,
     }, 201);
   } catch (err) {
@@ -161,11 +176,18 @@ export const publicAgentWebhookRoutes = new Hono();
 publicAgentWebhookRoutes.post('/:slug', async (c) => {
   try {
     const slug = c.req.param('slug');
-    const provided = (c.req.header('x-deft-webhook-secret')
+
+    // Read body as raw bytes BEFORE parsing — HMAC must compute over the
+    // exact bytes the client signed.
+    const rawBody = await c.req.text();
+
+    const sigHeader = (c.req.header('x-deft-webhook-signature') ?? '').trim();
+    const legacySecret = (c.req.header('x-deft-webhook-secret')
       ?? c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
       ?? '').trim();
-    if (!provided) {
-      return c.json({ error: 'Missing webhook secret', code: 'UNAUTHORIZED' }, 401);
+
+    if (!sigHeader && !legacySecret) {
+      return c.json({ error: 'Missing webhook authentication', code: 'UNAUTHORIZED' }, 401);
     }
 
     const [hook] = await db
@@ -175,11 +197,63 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
       .limit(1);
     if (!hook) return c.json({ error: 'Webhook not found', code: 'NOT_FOUND' }, 404);
     if (!hook.enabled) return c.json({ error: 'Webhook disabled', code: 'DISABLED' }, 410);
-    if (!verifySecret(provided, hook.secret_hash)) {
-      return c.json({ error: 'Invalid webhook secret', code: 'UNAUTHORIZED' }, 401);
+
+    // Prefer HMAC; fall back to legacy raw-secret with a deprecation log
+    // so operators can spot pre-rotation traffic. NEVER fail closed on
+    // legacy alone — old webhooks (NULL hmac_key_encrypted) still need
+    // it during the transition window.
+    let authed = false;
+    let authMethod: 'hmac' | 'legacy' | null = null;
+
+    if (sigHeader && hook.hmac_key_encrypted) {
+      try {
+        const hmacKey = decrypt(hook.hmac_key_encrypted);
+        const expectedHex = sigHeader.startsWith('sha256=')
+          ? sigHeader.slice(7)
+          : sigHeader;
+        const computedHex = crypto
+          .createHmac('sha256', hmacKey)
+          .update(rawBody)
+          .digest('hex');
+        const expected = Buffer.from(expectedHex, 'hex');
+        const computed = Buffer.from(computedHex, 'hex');
+        if (
+          expected.length > 0 &&
+          expected.length === computed.length &&
+          crypto.timingSafeEqual(expected, computed)
+        ) {
+          authed = true;
+          authMethod = 'hmac';
+        }
+      } catch (err) {
+        console.error('[agent-webhook] HMAC verify failed:', err);
+      }
     }
 
-    const payload = await c.req.json().catch(() => ({}));
+    if (!authed && legacySecret) {
+      if (verifySecret(legacySecret, hook.secret_hash)) {
+        authed = true;
+        authMethod = 'legacy';
+        console.warn(
+          `[agent-webhook] DEPRECATED auth: webhook ${slug} authenticated via x-deft-webhook-secret. ` +
+            'Migrate to x-deft-webhook-signature with HMAC-SHA256 using the per-webhook hmac_key.',
+        );
+      }
+    }
+
+    if (!authed) {
+      return c.json({ error: 'Invalid webhook authentication', code: 'UNAUTHORIZED' }, 401);
+    }
+
+    const payload = rawBody
+      ? (() => {
+          try {
+            return JSON.parse(rawBody);
+          } catch {
+            return {};
+          }
+        })()
+      : {};
 
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'employee-trigger', {
       employee_id: hook.agent_employee_id,
@@ -200,7 +274,7 @@ publicAgentWebhookRoutes.post('/:slug', async (c) => {
       })
       .where(eq(agentWebhooks.id, hook.id));
 
-    return c.json({ accepted: true, webhook_id: hook.id });
+    return c.json({ accepted: true, webhook_id: hook.id, auth_method: authMethod });
   } catch (err) {
     console.error('Failed to dispatch webhook:', err);
     return c.json({ error: 'Failed', code: 'INTERNAL_ERROR' }, 500);
