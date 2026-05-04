@@ -558,6 +558,11 @@ export const agentWebhooks = pgTable('agent_webhooks', {
   agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
   slug: text('slug').notNull().unique(),
   secret_hash: text('secret_hash').notNull(),
+  // Per-webhook AES-encrypted HMAC key (fix #7). New webhooks issue this
+  // alongside the legacy scrypt secret so callers can sign with HMAC-SHA256
+  // (`x-deft-webhook-signature: sha256=<hex>`) instead of shipping the raw
+  // secret. Pre-existing rows have NULL until they're rotated.
+  hmac_key_encrypted: text('hmac_key_encrypted'),
   label: text('label'),
   enabled: boolean('enabled').default(true).notNull(),
   last_fired_at: timestamp('last_fired_at'),
