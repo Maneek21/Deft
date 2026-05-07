@@ -23,6 +23,7 @@ memberRoutes.get('/', async (c) => {
       status_text: users.status_text,
       status_expires_at: users.status_expires_at,
       role: orgMembers.role,
+      kind: users.kind,
     })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
@@ -69,6 +70,7 @@ memberRoutes.get('/:id', async (c) => {
       status_text: users.status_text,
       last_seen_at: users.last_seen_at,
       role: orgMembers.role,
+      kind: users.kind,
     })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
