@@ -1,6 +1,6 @@
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
-import { eq, and, desc, sql, lt, gt } from 'drizzle-orm';
+import { eq, and, desc, sql, lt, gt, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   notifications,
@@ -211,5 +211,45 @@ inboxRoutes.get('/', async (c) => {
   } catch (err) {
     console.error('Failed to fetch inbox:', err);
     return c.json({ error: 'Failed to fetch inbox', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+inboxRoutes.post('/read', async (c) => {
+  try {
+    const user = c.get('user') as { id: string; org_id: string };
+    const body = await c.req.json().catch(() => ({})) as { ids?: string[]; all?: boolean };
+
+    if (body.all) {
+      await db.update(notifications)
+        .set({ is_read: true })
+        .where(and(
+          eq(notifications.user_id, user.id),
+          eq(notifications.org_id, user.org_id),
+          eq(notifications.is_read, false),
+        ));
+      return c.json({ success: true });
+    }
+
+    const notifIds = (body.ids ?? [])
+      .filter((id) => id.startsWith('notif:'))
+      .map((id) => id.slice('notif:'.length));
+
+    if (notifIds.length === 0) {
+      return c.json({ success: true, updated: 0 });
+    }
+
+    const updated = await db.update(notifications)
+      .set({ is_read: true })
+      .where(and(
+        inArray(notifications.id, notifIds),
+        eq(notifications.user_id, user.id),
+        eq(notifications.org_id, user.org_id),
+      ))
+      .returning({ id: notifications.id });
+
+    return c.json({ success: true, updated: updated.length });
+  } catch (err) {
+    console.error('Failed to mark inbox read:', err);
+    return c.json({ error: 'Failed to mark read', code: 'INTERNAL_ERROR' }, 500);
   }
 });

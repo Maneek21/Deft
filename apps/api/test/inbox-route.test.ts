@@ -159,3 +159,68 @@ test('GET /api/inbox sorts items desc by created_at', async () => {
     assert.ok(prev >= cur, `expected desc; got ${body.items[i - 1].created_at} before ${body.items[i].created_at}`);
   }
 });
+
+test('POST /api/inbox/read marks specific notifications read', async () => {
+  const [n1] = await db.insert(notifications).values({
+    org_id: testOrgId, user_id: userId, type: 'task_assigned',
+    title: 'Task X', is_read: false,
+  }).returning();
+  const [n2] = await db.insert(notifications).values({
+    org_id: testOrgId, user_id: userId, type: 'task_assigned',
+    title: 'Task Y', is_read: false,
+  }).returning();
+  createdNotifIds.push(n1.id, n2.id);
+
+  const res = await app.request('/api/inbox/read', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: [`notif:${n1.id}`] }),
+  });
+  assert.equal(res.status, 200);
+
+  const [after1] = await db.select().from(notifications).where(eq(notifications.id, n1.id));
+  const [after2] = await db.select().from(notifications).where(eq(notifications.id, n2.id));
+  assert.equal(after1.is_read, true);
+  assert.equal(after2.is_read, false);
+});
+
+test('POST /api/inbox/read with all=true marks everything read', async () => {
+  const [n] = await db.insert(notifications).values({
+    org_id: testOrgId, user_id: userId, type: 'task_assigned',
+    title: 'Z', is_read: false,
+  }).returning();
+  createdNotifIds.push(n.id);
+
+  const res = await app.request('/api/inbox/read', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ all: true }),
+  });
+  assert.equal(res.status, 200);
+
+  const [after] = await db.select().from(notifications).where(eq(notifications.id, n.id));
+  assert.equal(after.is_read, true);
+});
+
+test('POST /api/inbox/read scoped to current user only', async () => {
+  const [otherUser] = await db.insert(users).values({
+    email: `other-${Date.now()}@test.com`, name: 'O', org_id: testOrgId, kind: 'human',
+  }).returning();
+  const [n] = await db.insert(notifications).values({
+    org_id: testOrgId, user_id: otherUser.id, type: 'mention',
+    title: 'cross-user', is_read: false,
+  }).returning();
+
+  const res = await app.request('/api/inbox/read', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: [`notif:${n.id}`] }),
+  });
+  assert.equal(res.status, 200);
+
+  const [after] = await db.select().from(notifications).where(eq(notifications.id, n.id));
+  assert.equal(after.is_read, false, 'other-user notif must not be flipped');
+
+  await db.delete(notifications).where(eq(notifications.id, n.id));
+  await db.delete(users).where(eq(users.id, otherUser.id));
+});
