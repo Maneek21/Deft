@@ -48,6 +48,7 @@ import { PinnedBar } from './pinned-messages';
 import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
 import { ClipCard } from './clip-card';
+import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
 import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
@@ -1278,8 +1279,13 @@ export function SpaceChat({
               description="Send a message to kick things off."
             />
           )}
-          {messages.map((msg, i) => {
-            const prev = i > 0 ? messages[i - 1] : null;
+          {messages
+            .filter((m) => {
+              const meta = ((m as any).metadata ?? {}) as Record<string, unknown>;
+              return meta.kind !== 'tool_result' && meta.hidden !== true;
+            })
+            .map((msg, i, visibleMessages) => {
+            const prev = i > 0 ? visibleMessages[i - 1] : null;
             const grouped = prev ? shouldGroup(prev, msg) : false;
             const showDaySeparator = !prev || !isSameDay(prev.created_at, msg.created_at);
             const isHovered = hoveredId === msg.id;
@@ -1704,6 +1710,24 @@ export function SpaceChat({
                                 </>
                               );
                             })()}
+                            {(() => {
+                              const meta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
+                              const blocks = meta.agent_blocks as AgentBlock[] | undefined;
+                              const citations = meta.citations as AgentCitation[] | null | undefined;
+                              const model = meta.model as string | null | undefined;
+                              const tokensIn = meta.tokens_in as number | null | undefined;
+                              const tokensOut = meta.tokens_out as number | null | undefined;
+                              if (!blocks && !citations && !model) return null;
+                              return (
+                                <AgentMessageBlocks
+                                  blocks={blocks ?? null}
+                                  citations={citations ?? null}
+                                  model={model ?? null}
+                                  tokens_in={tokensIn ?? null}
+                                  tokens_out={tokensOut ?? null}
+                                />
+                              );
+                            })()}
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1822,6 +1846,24 @@ export function SpaceChat({
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
                                   ))}
                                 </>
+                              );
+                            })()}
+                            {(() => {
+                              const meta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
+                              const blocks = meta.agent_blocks as AgentBlock[] | undefined;
+                              const citations = meta.citations as AgentCitation[] | null | undefined;
+                              const model = meta.model as string | null | undefined;
+                              const tokensIn = meta.tokens_in as number | null | undefined;
+                              const tokensOut = meta.tokens_out as number | null | undefined;
+                              if (!blocks && !citations && !model) return null;
+                              return (
+                                <AgentMessageBlocks
+                                  blocks={blocks ?? null}
+                                  citations={citations ?? null}
+                                  model={model ?? null}
+                                  tokens_in={tokensIn ?? null}
+                                  tokens_out={tokensOut ?? null}
+                                />
                               );
                             })()}
                             <MessageReactions
