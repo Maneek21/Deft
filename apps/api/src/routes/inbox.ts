@@ -220,14 +220,15 @@ inboxRoutes.post('/read', async (c) => {
     const body = await c.req.json().catch(() => ({})) as { ids?: string[]; all?: boolean };
 
     if (body.all) {
-      await db.update(notifications)
+      const updated = await db.update(notifications)
         .set({ is_read: true })
         .where(and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
           eq(notifications.is_read, false),
-        ));
-      return c.json({ success: true });
+        ))
+        .returning({ id: notifications.id });
+      return c.json({ success: true, updated: updated.length });
     }
 
     const notifIds = (body.ids ?? [])
