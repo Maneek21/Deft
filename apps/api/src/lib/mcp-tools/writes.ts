@@ -38,6 +38,7 @@ import {
 } from '../agent-approval.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { generateReceipt } from '../receipts.js';
+import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -610,6 +611,17 @@ export async function sendMessage(
     }
     spaceId = parent.space_id;
     parentId = parent.id;
+
+    // Phase 6 — reply-storm guard.
+    const callerShadowId = await getShadowUserId(ctx.employee_id);
+    if (callerShadowId) {
+      const storm = await checkReplyStorm(callerShadowId, parent.id);
+      if (storm.tripped) {
+        return errorResult(
+          `STORM_DETECTED: agent exceeded ${STORM_THRESHOLD} replies in this thread within the rate-limit window; backing off`,
+        );
+      }
+    }
   } else if ('user_id' in target) {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
     if (!shadowUserId) {
