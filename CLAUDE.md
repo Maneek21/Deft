@@ -113,6 +113,22 @@ the sidebar nav entry swapped "Agent" for "Approvals" with the same
 red-badge count. Defty's DM is pinned at the top of the Direct
 Messages section, followed by other BYOA agents.
 
+**Phase 5 (2026-05-07).** Universal `/inbox`: one queue at `/inbox`
+unifies notifications (mentions, task_assigned, task_updated, blocked,
+cross_reference, wiki_update, system), DM unread (per-space rollup
+from `space_members.last_read_at` vs `messages.created_at` for `dm` /
+`group_dm` spaces), and pending agent approvals (from `agent_actions`).
+Backed by `GET /api/inbox` (with `count_only=1` for the badge fetch
+and `kind=` for tab filtering) plus `POST /api/inbox/read` for mark-read
+(ids[] with `notif:` prefix, or `all: true`). Tab strip:
+All / Mentions / DMs / Tasks / Approvals. The Tasks tab fetches all and
+filters client-side for both `task_assigned` and `task_updated`.
+Approval rows render the existing `<AgentActionCard/>`; everything
+else renders `<InboxRow/>`. The sidebar `Approvals` entry was replaced
+by `Inbox` with one aggregated red-badge count via `useInboxCount`.
+`/approvals` is a server redirect to `/inbox?tab=approvals` so external
+links keep working. No schema migrations — pure read-side aggregator.
+
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
