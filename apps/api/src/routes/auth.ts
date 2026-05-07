@@ -8,6 +8,7 @@ import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revokedTokens } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
+import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 
 export const authRoutes = new Hono();
 
@@ -88,6 +89,13 @@ authRoutes.post('/signup', async (c) => {
     user_id: user!.id,
     role: 'owner',
   });
+
+  try {
+    await ensureDeftyMembership(org!.id);
+  } catch (err) {
+    console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+    // Don't fail signup — Defty will be lazily created on first @deft mention.
+  }
 
   // Create #general space
   const [generalSpace] = await db.insert(spaces).values({
@@ -430,6 +438,13 @@ authRoutes.get('/google/callback', async (c) => {
         user_id: user.id,
         role: 'owner',
       });
+
+      try {
+        await ensureDeftyMembership(org!.id);
+      } catch (err) {
+        console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+        // Don't fail OAuth signup — Defty will be lazily created on first @deft mention.
+      }
 
       // Create #general space
       const [generalSpace] = await db.insert(spaces).values({

@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import { users, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 
 export const memberRoutes = new Hono();
 
@@ -195,6 +196,13 @@ memberRoutes.post('/invite', async (c) => {
       user_id: existingUser.id,
       role,
     });
+
+    try {
+      await ensureDeftyMembership(currentUser.org_id);
+    } catch (err) {
+      console.error('[ensureDeftyMembership] failed for org', currentUser.org_id, err);
+      // Don't fail invite — Defty will be lazily created on first @deft mention.
+    }
 
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
