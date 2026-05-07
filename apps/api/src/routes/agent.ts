@@ -6,8 +6,6 @@ import type { TrustLevel } from '../lib/agent-approval.js';
 import { eq, and, asc, desc, lt, sql, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
-  agentConversations,
-  agentMessages,
   agentActions,
   agentMemory,
   agentEmployees,
@@ -84,13 +82,21 @@ async function buildStreamContext(
     return { _kind: 'error', error: 'Anthropic API key not configured', code: 'NO_API_KEY', status: 503 };
   }
 
-  // Load the conversation to get agent_employee_id
-  const [convo] = await db
-    .select()
-    .from(agentConversations)
-    .where(eq(agentConversations.id, convoId))
-    .limit(1);
-  const agentEmployeeId = convo?.agent_employee_id ?? undefined;
+  // Derive agent_employee_id from the space members: find the non-user member,
+  // then look up their agent_employees row. The old agentConversations table is gone.
+  const spaceAgentMembers = await db
+    .select({ user_id: spaceMembers.user_id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, convoId), sql`${spaceMembers.user_id} != ${user.id}`));
+  const agentMemberUserId = spaceAgentMembers[0]?.user_id;
+  let agentEmployeeId: string | undefined;
+  if (agentMemberUserId) {
+    const [emp] = await db.select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.user_id, agentMemberUserId))
+      .limit(1);
+    agentEmployeeId = emp?.id;
+  }
 
   // Load conversation history from the unified messages table (space_id = convoId).
   const history = await db
@@ -421,13 +427,30 @@ agentRoutes.post('/conversations', async (c) => {
 agentRoutes.get('/conversations/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
-  const [conv] = await db
-    .select()
-    .from(agentConversations)
-    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
-    .limit(1);
+  // Verify the current user is a member of this agent_conversation space.
+  const rows = await db.execute(sql`
+    SELECT s.id, s.name AS title, s.created_at, s.updated_at, s.org_id,
+           ae.id AS agent_employee_id
+    FROM spaces s
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id != ${user.id}
+    LEFT JOIN agent_employees ae ON ae.user_id = sm.user_id
+    WHERE s.id = ${id}
+      AND s.org_id = ${user.org_id}
+      AND s.type = 'agent_conversation'
+      AND EXISTS (SELECT 1 FROM space_members usm WHERE usm.space_id = s.id AND usm.user_id = ${user.id})
+    LIMIT 1
+  `);
+  const conv = rows.rows[0] as any;
   if (!conv) return c.json({ error: 'Not found' }, 404);
-  return c.json(conv);
+  return c.json({
+    id: conv.id,
+    user_id: user.id,
+    org_id: conv.org_id,
+    agent_employee_id: conv.agent_employee_id ?? null,
+    title: conv.title,
+    created_at: conv.created_at,
+    updated_at: conv.updated_at,
+  });
 });
 
 agentRoutes.patch('/conversations/:id', async (c) => {
@@ -436,10 +459,17 @@ agentRoutes.patch('/conversations/:id', async (c) => {
   const body = await c.req.json();
   const { title } = body;
   if (title) {
-    await db
-      .update(agentConversations)
-      .set({ title })
-      .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)));
+    // Verify membership before allowing rename.
+    const [membership] = await db.select({ space_id: spaceMembers.space_id })
+      .from(spaceMembers)
+      .where(and(eq(spaceMembers.space_id, id), eq(spaceMembers.user_id, user.id)))
+      .limit(1);
+    if (membership) {
+      await db
+        .update(spaces)
+        .set({ name: title })
+        .where(and(eq(spaces.id, id), eq(spaces.org_id, user.org_id)));
+    }
   }
   return c.json({ success: true });
 });
@@ -447,17 +477,25 @@ agentRoutes.patch('/conversations/:id', async (c) => {
 agentRoutes.delete('/conversations/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
-  const [conv] = await db.select({ id: agentConversations.id })
-    .from(agentConversations)
-    .where(and(eq(agentConversations.id, id), eq(agentConversations.user_id, user.id)))
+
+  // Verify the requester is a member of this agent_conversation space.
+  const [membership] = await db.select({ space_id: spaceMembers.space_id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, id), eq(spaceMembers.user_id, user.id)))
     .limit(1);
 
-  if (!conv) {
+  if (!membership) {
     return c.json({ success: true });
   }
 
-  await db.delete(agentMessages).where(eq(agentMessages.conversation_id, id));
-  await db.delete(agentConversations).where(eq(agentConversations.id, id));
+  // Soft-delete: archive the space and soft-delete its messages.
+  await db.update(spaces)
+    .set({ is_archived: true })
+    .where(and(eq(spaces.id, id), eq(spaces.org_id, user.org_id)));
+  await db.update(messages)
+    .set({ is_deleted: true })
+    .where(and(eq(messages.space_id, id), eq(messages.org_id, user.org_id)));
+
   return c.json({ success: true });
 });
 
@@ -558,32 +596,17 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
     content,
   });
 
-  // Auto-set agent_employee_id on conversation if provided and not yet set.
-  if (agent_employee_id) {
-    const [existingConv] = await db
-      .select()
-      .from(agentConversations)
-      .where(eq(agentConversations.id, convoId))
-      .limit(1);
-    if (existingConv && !existingConv.agent_employee_id) {
-      await db
-        .update(agentConversations)
-        .set({ agent_employee_id })
-        .where(eq(agentConversations.id, convoId));
-    }
-  }
-
-  // Auto-title on first message.
-  const [convo] = await db
-    .select()
-    .from(agentConversations)
-    .where(eq(agentConversations.id, convoId))
+  // Auto-title on first message: update spaces.name when it is still the default.
+  const [spaceRow] = await db
+    .select({ name: spaces.name })
+    .from(spaces)
+    .where(and(eq(spaces.id, convoId), eq(spaces.org_id, user.org_id)))
     .limit(1);
-  if (convo && (!convo.title || convo.title === 'New conversation')) {
+  if (spaceRow && (!spaceRow.name || spaceRow.name === 'New conversation')) {
     await db
-      .update(agentConversations)
-      .set({ title: content.slice(0, 60) + (content.length > 60 ? '...' : '') })
-      .where(eq(agentConversations.id, convoId));
+      .update(spaces)
+      .set({ name: content.slice(0, 60) + (content.length > 60 ? '...' : '') })
+      .where(and(eq(spaces.id, convoId), eq(spaces.org_id, user.org_id)));
   }
 
   const ctx = await buildStreamContext(user, convoId);
@@ -636,13 +659,13 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
 
-  // Verify conversation ownership.
-  const [convo] = await db
-    .select()
-    .from(agentConversations)
-    .where(and(eq(agentConversations.id, convoId), eq(agentConversations.user_id, user.id)))
+  // Verify the current user is a member of this agent_conversation space.
+  const [convoMembership] = await db
+    .select({ space_id: spaceMembers.space_id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
     .limit(1);
-  if (!convo) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  if (!convoMembership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
   const ctx = await buildStreamContext(user, convoId);
   if (ctx._kind === 'error') {
@@ -935,10 +958,10 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     { agentEmployeeId: action.agent_employee_id ?? undefined },
   );
 
-  // Insert a hidden user agent_messages row with a proper tool_result block so
+  // Insert a hidden tool_result message into the unified messages table so
   // the next streaming turn (via /continue) sees a valid Anthropic tool_use →
-  // tool_result pair. This is what eliminates the "messages repeated over and
-  // over" disclaimers — the model can see its own prior call and its real result.
+  // tool_result pair. This eliminates the "messages repeated over and over"
+  // disclaimers — the model can see its own prior call and its real result.
   if (action.tool_use_id && action.conversation_id) {
     const toolResultBlock = {
       type: 'tool_result' as const,
@@ -950,12 +973,16 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       ),
       ...(execResult.success ? {} : { is_error: true }),
     };
-    await db.insert(agentMessages).values({
-      conversation_id: action.conversation_id,
-      role: 'user',
+    await db.insert(messages).values({
+      org_id: action.org_id,
+      space_id: action.conversation_id,
+      user_id: action.user_id,
       content: '',
-      content_blocks: [toolResultBlock] as any,
-      hidden: true,
+      metadata: {
+        kind: 'tool_result',
+        hidden: true,
+        agent_blocks: [toolResultBlock],
+      } as any,
     });
   }
 

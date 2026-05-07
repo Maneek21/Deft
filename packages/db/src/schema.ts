@@ -428,38 +428,15 @@ export const favorites = pgTable('favorites', {
   uniqueIndex('favorite_unique').on(t.user_id, t.entity_type, t.entity_id),
 ]);
 
-// ═══ AGENT: CONVERSATIONS ═══
-export const agentConversations = pgTable('agent_conversations', {
-  ...id(),
-  ...orgId(),
-  user_id: text('user_id').notNull().references(() => users.id),
-  agent_employee_id: text('agent_employee_id'),
-  title: text('title'),
-  ...timestamps(),
-});
-
-// ═══ AGENT: MESSAGES ═══
-export const agentMessages = pgTable('agent_messages', {
-  ...id(),
-  conversation_id: text('conversation_id').notNull().references(() => agentConversations.id),
-  role: text('role').notNull(), // 'user', 'assistant'
-  content: text('content').notNull(),
-  content_blocks: jsonb('content_blocks'), // Anthropic content blocks: [{type:'text'},{type:'tool_use'},{type:'tool_result'}]
-  citations: jsonb('citations'), // [{ type, id, title, url }]
-  tool_calls: jsonb('tool_calls'), // [{ tool, params, result, status }]
-  hidden: boolean('hidden').default(false).notNull(),
-  model: text('model'),
-  tokens_in: integer('tokens_in'),
-  tokens_out: integer('tokens_out'),
-  ...timestamps(),
-});
-
 // ═══ AGENT: ACTIONS LOG ═══
+// Note: agent_conversations and agent_messages were dropped in migration 0065
+// (Phase 2 agent-chat unification). Conversation IDs are now space IDs in the
+// spaces table; messages live in the unified messages table.
 export const agentActions = pgTable('agent_actions', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
-  conversation_id: text('conversation_id').references(() => agentConversations.id),
+  conversation_id: text('conversation_id'), // now a space_id (FK dropped in 0065)
   message_id: text('message_id'),
   agent_employee_id: text('agent_employee_id'),
   tool_use_id: text('tool_use_id'), // Anthropic tool_use block id (toolu_*)
@@ -831,7 +808,7 @@ export const agentMemory = pgTable('agent_memory', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
-  conversation_id: text('conversation_id').references(() => agentConversations.id),
+  conversation_id: text('conversation_id'), // now a space_id (FK dropped in 0065)
   scope: text('scope').notNull(), // 'conversation' | 'user' | 'org'
   key: text('key').notNull(),
   value: text('value').notNull(),

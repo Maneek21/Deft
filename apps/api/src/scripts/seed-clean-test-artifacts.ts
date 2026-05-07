@@ -32,7 +32,6 @@ async function main() {
     const deleteSpecs = [
       { table: 'action_receipts', column: 'approver_id' },
       { table: 'agent_actions', column: 'user_id' },
-      { table: 'agent_conversations', column: 'user_id' },
       { table: 'agent_employee_templates', column: 'created_by' },
       { table: 'agent_employees', column: 'created_by' },
       { table: 'agent_employees', column: 'user_id' },

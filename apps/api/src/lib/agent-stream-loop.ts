@@ -12,7 +12,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { agentActions, agentConversations, messages } from '@deft/db/schema';
+import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { env } from './env.js';
 import { executeToolCall } from './agent-context.js';
@@ -282,10 +282,11 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     }
   }
 
+  // Touch the space's updated_at so the conversation list sorts correctly.
   await db
-    .update(agentConversations)
+    .update(spaces)
     .set({ updated_at: new Date() })
-    .where(eq(agentConversations.id, p.convoId));
+    .where(eq(spaces.id, p.convoId));
 
   return { finalText, citations: allCitations, pendingActions, totalTokensIn, totalTokensOut };
 }
