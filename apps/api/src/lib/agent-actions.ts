@@ -32,8 +32,6 @@ import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 
-const AGENT_EMAIL = 'deft-agent@system.local';
-
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
  * the internal task uuid for the given org. Returns null if not found.
@@ -64,21 +62,6 @@ async function resolveTaskIdentifier(
     .where(and(eq(tasks.id, identifier), eq(tasks.org_id, orgId)))
     .limit(1);
   return t?.id ?? null;
-}
-
-export async function ensureAgentUser(): Promise<string> {
-  const [existing] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, AGENT_EMAIL))
-    .limit(1);
-  if (existing) return existing.id;
-
-  const [created] = await db
-    .insert(users)
-    .values({ email: AGENT_EMAIL, name: 'Deft', email_verified: true })
-    .returning();
-  return created!.id;
 }
 
 export async function executeAction(

@@ -1,5 +1,5 @@
 /**
- * Agent mention detection — verifies dispatch routes by users.kind.
+ * Agent mention detection — verifies dispatch routes by Defty identity.
  * Phase 1 of agent-chat unification, Task 8.
  *
  * Strategy: enqueue() writes to the `job_queue` Postgres table (not Redis).
@@ -21,12 +21,16 @@ import { Hono } from 'hono';
 import { db } from '../src/lib/db.js';
 import { users, orgs, orgMembers, spaces, spaceMembers, jobQueue, messages, notifications } from '@deft/db/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
+import { ensureDeftyMembership, DEFTY_EMAIL } from '../src/lib/ensure-defty-membership.js';
 
 let testOrgId: string;
 let humanUserId: string;
-let agentUserId: string;
+let deftyUserId: string;
+let byoaAgentUserId: string;
 let spaceId: string;
 let app: Hono;
+// Whether Defty already existed before this test run — used in cleanup.
+let deftyExistedBefore = false;
 
 // Track created message IDs so we can clean up job_queue + messages after each test
 const createdMessageIds: string[] = [];
@@ -34,6 +38,14 @@ const createdMessageIds: string[] = [];
 before(async () => {
   const ts = Date.now();
   const slug = `amd-${ts}`;
+
+  // Detect whether Defty already exists (from prior test runs or dev usage).
+  // If it does, we must NOT delete the Defty user row in cleanup.
+  const [existingDefty] = await db.select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, DEFTY_EMAIL))
+    .limit(1);
+  deftyExistedBefore = !!existingDefty;
 
   const [org] = await db.insert(orgs).values({ name: 'Agent Mention Detection Test', slug }).returning();
   testOrgId = org!.id;
@@ -47,18 +59,24 @@ before(async () => {
   }).returning();
   humanUserId = human!.id;
 
-  // Agent user — kind='agent'. This is what Defty looks like post-Task-2.
-  const [agentUser] = await db.insert(users).values({
-    name: 'AMD Agent (Defty)',
+  // Defty — the real system agent. ensureDeftyMembership creates-or-reuses
+  // the canonical Defty user and adds it as a member of testOrgId.
+  deftyUserId = await ensureDeftyMembership(testOrgId);
+
+  // BYOA agent — kind='agent' but NOT Defty. Simulates an arbitrary BYOA
+  // employee. agent-reply must NOT fire for mentions of this user.
+  const [byoaAgent] = await db.insert(users).values({
+    name: 'AMD BYOA Agent',
     kind: 'agent',
     is_agent: true,
     email_verified: true,
   }).returning();
-  agentUserId = agentUser!.id;
+  byoaAgentUserId = byoaAgent!.id;
 
   await db.insert(orgMembers).values([
     { org_id: testOrgId, user_id: humanUserId, role: 'owner' },
-    { org_id: testOrgId, user_id: agentUserId, role: 'member' },
+    { org_id: testOrgId, user_id: byoaAgentUserId, role: 'member' },
+    // Defty's org_members row is handled by ensureDeftyMembership above.
   ]);
 
   const [space] = await db.insert(spaces).values({
@@ -71,7 +89,8 @@ before(async () => {
 
   await db.insert(spaceMembers).values([
     { space_id: spaceId, user_id: humanUserId },
-    { space_id: spaceId, user_id: agentUserId },
+    { space_id: spaceId, user_id: deftyUserId },
+    { space_id: spaceId, user_id: byoaAgentUserId },
   ]);
 
   // Mount messageRoutes with a shim that sets c.var.user — same pattern as
@@ -103,12 +122,18 @@ after(async () => {
     }
     // Delete notifications that reference our test users (FK: notifications.user_id → users.id).
     // The message route creates mention + space notifications, so clean these before users.
-    await db.delete(notifications).where(inArray(notifications.user_id, [humanUserId, agentUserId]));
+    const userIdsToClean = [humanUserId, byoaAgentUserId, deftyUserId];
+    await db.delete(notifications).where(inArray(notifications.user_id, userIdsToClean));
     await db.delete(spaceMembers).where(eq(spaceMembers.space_id, spaceId));
     await db.delete(spaces).where(eq(spaces.id, spaceId));
+    // Remove only the org_members rows we created for testOrgId.
     await db.delete(orgMembers).where(eq(orgMembers.org_id, testOrgId));
-    await db.delete(users).where(inArray(users.id, [humanUserId, agentUserId]));
+    await db.delete(users).where(inArray(users.id, [humanUserId, byoaAgentUserId]));
     await db.delete(orgs).where(eq(orgs.id, testOrgId));
+    // Only delete Defty user if it didn't pre-exist before this test run.
+    if (!deftyExistedBefore) {
+      await db.delete(users).where(eq(users.email, DEFTY_EMAIL));
+    }
   } catch (err) {
     console.error('cleanup error:', err);
   }
@@ -139,9 +164,9 @@ async function findAgentReplyJob(messageId: string): Promise<boolean> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('structured mention of kind=agent user triggers agent-reply dispatch', async () => {
-  // The autocomplete produces <@<agentUserId>|AMD Agent (Defty)> — the new Phase-1 format.
-  const content = `Hello <@${agentUserId}|AMD Agent (Defty)>, can you summarise today?`;
+test('structured mention of Defty user triggers agent-reply dispatch', async () => {
+  // The autocomplete produces <@<deftyId>|Deft> — the new Phase-1 format.
+  const content = `Hello <@${deftyUserId}|Deft>, can you summarise today?`;
 
   const res = await app.request(`/api/messages/${spaceId}`, {
     method: 'POST',
@@ -155,7 +180,29 @@ test('structured mention of kind=agent user triggers agent-reply dispatch', asyn
   createdMessageIds.push(body.id!);
 
   const dispatched = await findAgentReplyJob(body.id!);
-  assert.ok(dispatched, 'agent-reply job should be enqueued for kind=agent mention');
+  assert.ok(dispatched, 'agent-reply job should be enqueued for Defty mention');
+});
+
+test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger agent-reply dispatch', async () => {
+  // Mentioning a non-Defty kind=agent user must NOT trigger agent-reply.
+  // BYOA mentions are handled via the agent-employee-message path instead.
+  const content = `Hey <@${byoaAgentUserId}|AMD BYOA Agent>, can you help?`;
+
+  const res = await app.request(`/api/messages/${spaceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+
+  assert.equal(res.status, 201, 'route should return 201 Created');
+  const body = await res.json() as { id?: string };
+  assert.ok(body.id, 'response should include message id');
+  createdMessageIds.push(body.id!);
+
+  // Give the queue a moment to settle
+  await new Promise((r) => setTimeout(r, 100));
+  const dispatched = await findAgentReplyJob(body.id!);
+  assert.ok(!dispatched, 'agent-reply job should NOT be enqueued for BYOA agent mention');
 });
 
 test('structured mention of kind=human user does NOT trigger agent-reply dispatch', async () => {

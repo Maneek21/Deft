@@ -9,7 +9,7 @@
 
 import { db } from './db.js';
 import { users, orgMembers } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 export const DEFTY_EMAIL = 'deft-agent@system.local';
 export const DEFTY_NAME = 'Deft';
@@ -40,19 +40,14 @@ export async function ensureDeftyMembership(orgId: string): Promise<string> {
 
   const userId = user!.id;
 
-  // 2. Ensure org_members row exists for this org.
-  const [existing] = await db.select({ id: orgMembers.id })
-    .from(orgMembers)
-    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, userId)))
-    .limit(1);
-
-  if (!existing) {
-    await db.insert(orgMembers).values({
-      org_id: orgId,
-      user_id: userId,
-      role: 'member',
-    });
-  }
+  // 2. Ensure org_members row exists for this org. Use onConflictDoNothing
+  // to handle concurrent invocations cleanly (signup + invite acceptance
+  // can race on the unique (org_id, user_id) index).
+  await db.insert(orgMembers).values({
+    org_id: orgId,
+    user_id: userId,
+    role: 'member',
+  }).onConflictDoNothing();
 
   return userId;
 }

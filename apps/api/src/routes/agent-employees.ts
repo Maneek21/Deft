@@ -451,6 +451,7 @@ agentEmployeeRoutes.post('/', async (c) => {
       .values({
         name: data.name,
         is_agent: true,
+        kind: 'agent',
         title,
         email_verified: true,
       })

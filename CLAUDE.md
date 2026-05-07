@@ -288,5 +288,5 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 - Don't use Supabase (blocked in India)
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need
-- Don't store agent conversations in the same messages table — separate agent_conversations table
+- Don't store agent conversations in the same messages table — separate agent_conversations table — NOTE: Phase 2 will supersede this; see Agent Architecture § Participant model above.
 - Don't reintroduce agent kind/type enums or in-process agent runtimes. Every `agent_employees` row is BYOA — the user's runtime owns execution. If managed deployments come back as a need, build it as a separate service, not as a column on `agent_employees`.

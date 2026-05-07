@@ -10,6 +10,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { env } from '../lib/env.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
+import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 export const messageRoutes = new Hono();
 
@@ -482,22 +483,22 @@ messageRoutes.post('/:spaceId', async (c) => {
       console.error('Message notification error:', err);
     }
 
-    // Detect @deft mention — first by joining parsed mention IDs to users.kind=agent
-    // (real agent users incl. Defty + BYOA), with the legacy regex as a fallback for
-    // freeform `@deft` typing or pre-Phase-1 messages with `<@agent|Deft>`.
+    // Detect @deft mention — Defty is the only agent that fires agent-reply.
+    // BYOA agent mentions are handled separately (agent-employee-message); we
+    // must NOT fire agent-reply for them.
     let agentMentioned = false;
     if (mentionedUserIds.length > 0) {
-      const mentionedAgents = await db
+      const deftyMatch = await db
         .select({ id: users.id })
         .from(users)
         .where(and(
           inArray(users.id, mentionedUserIds),
-          eq(users.kind, 'agent'),
+          eq(users.email, DEFTY_EMAIL),
         ))
         .limit(1);
-      agentMentioned = mentionedAgents.length > 0;
+      agentMentioned = deftyMatch.length > 0;
     }
-    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@deft` still trigger.
+    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@deft` still trigger Defty.
     const legacyAgentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
     if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
       agentMentioned = true;
