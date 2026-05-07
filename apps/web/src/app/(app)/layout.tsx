@@ -53,7 +53,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map());
   const [mentionCounts, setMentionCounts] = useState<Map<string, number>>(new Map());
-  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null }[]>([]);
+  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null; kind?: 'human' | 'agent' | 'system' }[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pendingChord = useRef<string | null>(null);

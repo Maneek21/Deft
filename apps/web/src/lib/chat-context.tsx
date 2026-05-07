@@ -34,6 +34,7 @@ type OrgMember = {
   avatar_url: string | null;
   status_emoji?: string | null;
   status_text?: string | null;
+  kind?: 'human' | 'agent' | 'system';
 };
 
 type ChatContextType = {

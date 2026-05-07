@@ -215,8 +215,21 @@ function ChatSidebarContent({
         </div>
         {orgMembers
           .filter((m) => m.id !== user?.id)
-          .filter((m) => !agentEmployees.some((e) => e.user_id === m.id))
+          .slice()
+          .sort((a, b) => {
+            // Defty pinned at top
+            if (a.email === 'deft-agent@system.local') return -1;
+            if (b.email === 'deft-agent@system.local') return 1;
+            // Then other agents before humans
+            const aAgent = a.kind === 'agent' || a.kind === 'system';
+            const bAgent = b.kind === 'agent' || b.kind === 'system';
+            if (aAgent && !bAgent) return -1;
+            if (!aAgent && bAgent) return 1;
+            // Then alphabetical by name
+            return (a.name || '').localeCompare(b.name || '');
+          })
           .map((member) => {
+            const isAgent = member.kind === 'agent' || member.kind === 'system';
             const dmSpace = dmSpaces.find((s) => {
               const names = s.name.split(',').map((n) => n.trim());
               return names.includes(member.name);
@@ -268,7 +281,15 @@ function ChatSidebarContent({
                   )}
                 </div>
                 <span className="truncate flex-1">{member.name}</span>
-                {member.status_emoji && (
+                {isAgent && !hasMentions && !hasUnread && (
+                  <span
+                    className="text-[9px] font-semibold px-1 py-0 rounded-full flex-shrink-0 leading-[16px]"
+                    style={{ background: 'var(--surface-variant)', color: 'var(--on-surface-variant)' }}
+                  >
+                    AI
+                  </span>
+                )}
+                {member.status_emoji && !isAgent && (
                   <span className="text-[11px] flex-shrink-0" title={member.status_text || ''}>{member.status_emoji}</span>
                 )}
                 {hasMentions ? (
