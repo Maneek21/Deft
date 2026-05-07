@@ -312,6 +312,14 @@ messageRoutes.post('/:spaceId', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    // Phase 7 invariant — verify membership BEFORE insert. Without this, any
+    // authenticated user could POST a message into any space (including
+    // cross-org spaces) by passing the foreign space_id in the URL.
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
     // Normalize plain @deft / @agent (case-insensitive) into structured mentions
     // so the renderer styles them as pills uniformly. Skip if a structured Defty
     // mention is already present.
