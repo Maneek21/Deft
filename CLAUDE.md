@@ -69,6 +69,20 @@ The agent is NOT a chatbot. It's a workflow engine.
 
 Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-tools, agent-actions, agent-runner, agent-stream-loop, agent-approval, agent-approval-resolver). The `packages/ai` stub was removed 2026-04-16.
 
+**Participant model (Phase 1 unification, 2026-05-07).** Agents are first-class
+`users` rows distinguished by `users.kind` (`human | agent | system`). The Defty
+system user has an `org_members` row in every org (auto-created by
+`ensureDeftyMembership` on signup, invite acceptance, or via the backfill
+script `apps/api/src/scripts/backfill-defty-membership.ts`); BYOA agent
+employees do too. Both appear in `/api/members` (which now returns `kind`),
+the @-autocomplete, and the DM picker. The hardcoded `'agent'` mention shim
+was removed; agent-reply dispatch detects mentions by joining parsed mention
+IDs to `users.kind = 'agent'`, with the legacy `@deft` regex retained as a
+backwards-compat fallback. Phase 2 (planned) merges `agent_messages` into
+`messages` with structured blocks in `metadata.agent_blocks`, which will
+supersede the prior "*Don't store agent conversations in the same messages
+table*" rule. See `docs/superpowers/specs/2026-05-07-agent-chat-unification.md`.
+
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
