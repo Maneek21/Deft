@@ -233,8 +233,11 @@ inboxRoutes.post('/read', async (c) => {
       return c.json({ success: true, updated: updated.length });
     }
 
-    const notifIds = (body.ids ?? [])
-      .filter((id) => id.startsWith('notif:'))
+    // Filter for valid string ids before parsing — clients (or attackers)
+    // may send non-string entries (numbers, null, etc.) which would crash
+    // the .startsWith call without a typeof guard.
+    const notifIds = (Array.isArray(body.ids) ? body.ids : [])
+      .filter((id): id is string => typeof id === 'string' && id.startsWith('notif:'))
       .map((id) => id.slice('notif:'.length));
 
     if (notifIds.length === 0) {
