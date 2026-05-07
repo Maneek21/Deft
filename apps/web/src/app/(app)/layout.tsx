@@ -289,7 +289,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               case 'd': router.push('/dashboard'); break;
               case 'c': router.push('/chat'); break;
               case 't': router.push('/tasks'); break;
-              case 'a': router.push('/agent'); break;
+              case 'a': router.push('/chat'); break;
               case 's': router.push('/settings'); break;
               case 'n': router.push('/notes'); break;
               case 'l': router.push('/calendar'); break;

@@ -31,7 +31,7 @@ const DEFAULT_VIEW_LINKS: Record<string, string> = {
   'cairn.unread': '/chat',
   'cairn.projects': '/tasks',
   'cairn.activity': '',
-  'cairn.agent': '/agent',
+  'cairn.agent': '/chat',
   'cairn.team': '',
   'cairn.insights': '',
 };

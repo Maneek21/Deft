@@ -53,7 +53,7 @@ export function CommandPalette() {
     { label: 'New space', icon: Hash, action: () => { router.push('/chat'); close(); } },
     { label: 'Toggle dark mode', icon: Sun, action: () => { document.documentElement.classList.toggle('dark'); close(); } },
     { label: 'Open settings', icon: Settings, action: () => { router.push('/settings'); close(); } },
-    { label: 'Ask Deft', icon: Bot, action: () => { router.push('/agent'); close(); } },
+    { label: 'Ask Deft', icon: Bot, action: () => { router.push('/chat'); close(); } },
     { label: 'Go to Calendar', icon: CalendarDays, action: () => { router.push('/calendar'); close(); } },
   ], [router]);
 

@@ -27,7 +27,6 @@ export function AppHeader({
   let placeholder = 'Search workspace... ⌘K';
   if (pathname.startsWith('/chat')) placeholder = 'Search messages... ⌘K';
   if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
-  if (pathname.startsWith('/agent')) placeholder = 'Search conversations... ⌘K';
 
   // Fetch unread notification count on mount
   useEffect(() => {

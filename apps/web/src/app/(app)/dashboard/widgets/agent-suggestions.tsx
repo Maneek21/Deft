@@ -26,7 +26,7 @@ function AgentSuggestionsWidget(_props: WidgetProps) {
       id: 'overdue',
       label: `Chase ${overdueN} overdue task${overdueN === 1 ? '' : 's'}`,
       detail: 'Draft a nudge to each assignee.',
-      href: '/agent',
+      href: '/chat',
       accent: 'var(--status-red)',
     });
   }
@@ -44,7 +44,7 @@ function AgentSuggestionsWidget(_props: WidgetProps) {
       id: 'unread',
       label: `Summarize ${unreadTotal} unread message${unreadTotal === 1 ? '' : 's'}`,
       detail: 'Short digest across all spaces.',
-      href: '/agent',
+      href: '/chat',
       accent: 'var(--status-blue)',
     });
   }
@@ -62,7 +62,7 @@ function AgentSuggestionsWidget(_props: WidgetProps) {
       id: 'project',
       label: 'Tee up a project retro',
       detail: 'One project is >80% complete.',
-      href: '/agent',
+      href: '/chat',
       accent: 'var(--status-green)',
     });
   }
