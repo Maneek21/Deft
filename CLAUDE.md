@@ -93,6 +93,14 @@ response shapes; only the underlying data source changed.
 `agent_actions.message_id` continues to link to chat messages — same
 UUID space.
 
+**Phase 3 (2026-05-07).** Two unified MCP tools added: `send_message`
+(target = `{space_id}` | `{thread_id}` | `{user_id}` — replaces
+`message_post` + `post_thread_reply` + planned `open_dm`) and
+`fetch_unread` (unread chat messages + pending `agent_actions` in one
+roundtrip — replaces `poll_pending_work`). The old tools still work
+this release but log a deprecation warning. The `deft-mcp-client`
+bundled skill prompt nudges agents toward the new tools.
+
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
