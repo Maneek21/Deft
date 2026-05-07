@@ -12,7 +12,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { agentActions, agentConversations, agentMessages } from '@deft/db/schema';
+import { agentActions, agentConversations, messages } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { env } from './env.js';
 import { executeToolCall } from './agent-context.js';
@@ -22,6 +22,7 @@ export interface StreamLoopParams {
   convoId: string;
   userId: string;
   orgId: string;
+  agentUserId: string;  // Defty or BYOA — the message author for assistant turns
   agentEmployeeId: string | undefined;
   systemPrompt: string;
   tools: Anthropic.Tool[];
@@ -135,18 +136,22 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     // (accumulated at line 74 above after response.usage is read). The terminal
     // row gets the cumulative running sum so history reload can show the full
     // cost of a multi-iter response, not just the final API call's tokens.
-    const [assistantRow] = await db.insert(agentMessages).values({
-      conversation_id: p.convoId,
-      role: 'assistant',
+    const [assistantRow] = await db.insert(messages).values({
+      org_id: p.orgId,
+      space_id: p.convoId,
+      user_id: p.agentUserId,
       content: iterText,
-      content_blocks: response.content as any,
-      hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
-      tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
-        ? (cumulativeToolCalls as any)
-        : null,
-      model: p.model,
-      tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
-      tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
+      metadata: {
+        is_agent_reply: true,
+        agent_blocks: response.content as any,
+        hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
+        tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
+          ? (cumulativeToolCalls as any)
+          : null,
+        model: p.model ?? null,
+        tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
+        tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
+      },
     }).returning();
 
     // Stream this iteration's text word-by-word for typing effect.
@@ -228,12 +233,16 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
 
     // Persist the tool_result user turn (only if we produced results this iteration).
     if (toolResults.length > 0) {
-      await db.insert(agentMessages).values({
-        conversation_id: p.convoId,
-        role: 'user',
+      await db.insert(messages).values({
+        org_id: p.orgId,
+        space_id: p.convoId,
+        user_id: p.userId,
         content: '',
-        content_blocks: toolResults as any,
-        hidden: true,
+        metadata: {
+          kind: 'tool_result',
+          agent_blocks: toolResults as any,
+          hidden: true,
+        },
       });
 
       apiMessages = [
@@ -260,9 +269,9 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
             : `Queued ${newPendings.length} actions for your approval (${labels.join(', ')}) — confirm the cards above to proceed.`;
 
         await db
-          .update(agentMessages)
+          .update(messages)
           .set({ content: replacement })
-          .where(eq(agentMessages.id, assistantRow!.id));
+          .where(eq(messages.id, assistantRow!.id));
 
         await p.write({ type: 'text_replace', text: replacement });
         finalText = replacement;
