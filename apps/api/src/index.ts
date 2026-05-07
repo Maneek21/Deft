@@ -11,6 +11,7 @@ import { messageRoutes } from './routes/messages.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { inboxRoutes } from './routes/inbox.js';
 import { orgRoutes } from './routes/org.js';
+import { icsRoutes, icsPublicRoutes } from './routes/ics.js';
 import { uploadRoutes, fileServingRoutes } from './routes/upload.js';
 import { memberRoutes } from './routes/members.js';
 import { projectRoutes } from './routes/projects.js';
@@ -87,6 +88,11 @@ app.route('/api/webhooks', githubWebhookRoutes);
 const { publicAgentWebhookRoutes, agentWebhookRoutes } = await import('./routes/agent-webhooks.js');
 app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
 
+// Public ICS calendar feed. The publish token in the URL is the only
+// credential; mounted before authMiddleware so calendar clients can
+// subscribe without a JWT.
+app.route('/api/ics', icsPublicRoutes);
+
 // Protected routes
 app.use('/api/*', authMiddleware);
 app.route('/api/agent-webhooks', agentWebhookRoutes);
@@ -95,6 +101,7 @@ app.route('/api/messages', messageRoutes);
 app.route('/api/notifications', notificationRoutes);
 app.route('/api/inbox', inboxRoutes);
 app.route('/api/org', orgRoutes);
+app.route('/api/ics', icsRoutes);
 app.route('/api/upload', uploadRoutes);
 app.route('/api/members', memberRoutes);
 app.route('/api/projects', projectRoutes);

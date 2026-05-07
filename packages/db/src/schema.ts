@@ -21,7 +21,7 @@ export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_prog
 export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard', 'autonomous']);
 export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full']);
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
-export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear']);
+export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
 export const knowledgeTypeEnum = pgEnum('knowledge_type', ['decision', 'resource', 'action_item', 'note']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
@@ -97,6 +97,9 @@ export const users = pgTable('users', {
   last_seen_at: timestamp('last_seen_at'),
   notification_keywords: text('notification_keywords').array(),
   show_read_receipts: boolean('show_read_receipts').default(true).notNull(),
+  // Per-user secret token for the outbound ICS feed. Lazily generated when
+  // the user first opens Settings → Calendar. See migration 0062.
+  ics_publish_token: text('ics_publish_token'),
   ...timestamps(),
 });
 
@@ -629,6 +632,27 @@ export const events = pgTable('events', {
   index('event_timestamp_idx').on(t.timestamp),
   index('event_type_idx').on(t.event_type),
   uniqueIndex('event_external_unique').on(t.source, t.external_id),
+]);
+
+// ═══ ICS CALENDAR SUBSCRIPTIONS ═══
+// Inbound: a user pastes their secret ICS feed URL (Google "Secret address",
+// iCloud public URL, Outlook ICS) and the worker polls every
+// sync_interval_min, upserting events with source='ics'. See migration 0062.
+export const icsSubscriptions = pgTable('ics_subscriptions', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  ics_url: text('ics_url').notNull(),
+  label: text('label'),
+  sync_interval_min: integer('sync_interval_min').notNull().default(15),
+  is_active: boolean('is_active').notNull().default(true),
+  last_synced_at: timestamp('last_synced_at'),
+  last_error: text('last_error'),
+  last_event_count: integer('last_event_count'),
+  ...timestamps(),
+}, (t) => [
+  index('ics_subscriptions_user_idx').on(t.user_id),
+  index('ics_subscriptions_org_idx').on(t.org_id),
 ]);
 
 // ═══ REMINDERS ═══

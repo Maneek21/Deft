@@ -23,6 +23,10 @@ const CRON_DELAYS: Record<string, number> = {
   // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
   // fire close to their scheduled time.
   'trigger-dispatch': 60_000,
+  // ICS calendar sync scan. The handler re-derives the per-subscription
+  // due set from `last_synced_at + sync_interval_min`, so this is _scan_
+  // cadence not _fire_ cadence.
+  'ics-sync': 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -39,6 +43,7 @@ const CRON_KEYS: Record<string, string> = {
   'agent-heartbeat': 'agent-heartbeat',
   'heartbeat-native': 'cron:heartbeat-native',
   'trigger-dispatch': 'cron:trigger-dispatch',
+  'ics-sync': 'cron:ics-sync',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -173,6 +178,12 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       // to a given trigger_kind.
       const mod = await import('./handlers/trigger-dispatch.js');
       return mod.handleTriggerDispatch;
+    }
+    case 'ics-sync': {
+      // ICS calendar feed sync — fetch all due ics_subscriptions, parse,
+      // upsert events with source='ics'.
+      const mod = await import('./handlers/ics-sync.js');
+      return mod.handleIcsSync;
     }
     default:
       return null;
