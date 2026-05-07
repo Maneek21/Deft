@@ -132,7 +132,8 @@ inboxRoutes.get('/', async (c) => {
           sql`${messages.user_id} != ${user.id}`,
           sql`${messages.parent_id} IS NULL`,
         ));
-      const count = agg?.count ?? 0;
+      if (!agg) continue;
+      const count = agg.count ?? 0;
       if (count <= 0) continue;
       dmItems.push({
         id: `dm:${s.space_id}`,
@@ -200,7 +201,8 @@ inboxRoutes.get('/', async (c) => {
     }
 
     const items = all.slice(0, limit);
-    const nextCursor = items.length === limit ? items[items.length - 1].created_at : null;
+    const lastItem = items[items.length - 1];
+    const nextCursor = items.length === limit && lastItem ? lastItem.created_at : null;
 
     return c.json({
       items,
