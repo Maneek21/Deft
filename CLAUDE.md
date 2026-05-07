@@ -78,10 +78,20 @@ employees do too. Both appear in `/api/members` (which now returns `kind`),
 the @-autocomplete, and the DM picker. The hardcoded `'agent'` mention shim
 was removed; agent-reply dispatch detects mentions by joining parsed mention
 IDs to `users.kind = 'agent'`, with the legacy `@deft` regex retained as a
-backwards-compat fallback. Phase 2 (planned) merges `agent_messages` into
-`messages` with structured blocks in `metadata.agent_blocks`, which will
-supersede the prior "*Don't store agent conversations in the same messages
-table*" rule. See `docs/superpowers/specs/2026-05-07-agent-chat-unification.md`.
+backwards-compat fallback. See `docs/superpowers/specs/2026-05-07-agent-chat-unification.md`.
+
+**Phase 2 (2026-05-07).** `agent_conversations` and `agent_messages` tables
+are dropped. Each `/agent` conversation is now a `spaces` row of type
+`agent_conversation` with the user + agent (Defty or BYOA) as members.
+Each agent turn is a `messages` row with structured Anthropic content
+blocks in `metadata.agent_blocks`, plus `citations`, `tool_calls`,
+`model`, `tokens_in`, `tokens_out`. Tool-result rows carry
+`metadata.kind = 'tool_result'` so the chat-view filter excludes them.
+The `/agent` UI is unchanged because the API contracts at
+`/api/agent/conversations[/:id/messages|trace.json]` preserve their
+response shapes; only the underlying data source changed.
+`agent_actions.message_id` continues to link to chat messages — same
+UUID space.
 
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
@@ -288,5 +298,5 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 - Don't use Supabase (blocked in India)
 - Don't deploy to Vercel for the API (need WebSocket support). Use Railway or Fly.io
 - Don't import full TipTap — use only the extensions we need
-- Don't store agent conversations in the same messages table — separate agent_conversations table — NOTE: Phase 2 will supersede this; see Agent Architecture § Participant model above.
+- Agent conversations live in messages with metadata.agent_blocks (since Phase 2, 2026-05-07). Don't reintroduce parallel agent-only chat tables; use the unified messages schema.
 - Don't reintroduce agent kind/type enums or in-process agent runtimes. Every `agent_employees` row is BYOA — the user's runtime owns execution. If managed deployments come back as a need, build it as a separate service, not as a column on `agent_employees`.
