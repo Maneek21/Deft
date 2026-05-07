@@ -55,10 +55,7 @@ test('count_only=1 returns just unread_count, no items', async () => {
   assert.equal(res.status, 200);
   const body = await res.json() as { unread_count: number; items?: unknown };
   assert.equal(typeof body.unread_count, 'number');
-  // When count_only=1, notifications are not fetched from DB (notifRows=[]), so the count only includes
-  // approvals and DMs. In this setup we have 1 pending approval, so count should be >=1.
-  // NOTE: Task 1 implementation may need to fix this — count_only should still count notifications.
-  assert.ok(body.unread_count >= 1, `expected >=1 (at least pending approval), got ${body.unread_count}`);
+  assert.ok(body.unread_count >= 2, `expected >=2 (mention + approval), got ${body.unread_count}`);
   assert.equal(body.items, undefined);
 });
 

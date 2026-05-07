@@ -80,17 +80,15 @@ inboxRoutes.get('/', async (c) => {
         lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
       ));
 
-    const notifRows = countOnly
-      ? []
-      : await db.select()
-          .from(notifications)
-          .where(and(
-            eq(notifications.user_id, user.id),
-            eq(notifications.org_id, user.org_id),
-            cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
-          ))
-          .orderBy(desc(notifications.created_at))
-          .limit(limit);
+    const notifRows = await db.select()
+      .from(notifications)
+      .where(and(
+        eq(notifications.user_id, user.id),
+        eq(notifications.org_id, user.org_id),
+        cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
+      ))
+      .orderBy(desc(notifications.created_at))
+      .limit(limit);
 
     const notifItems: InboxItem[] = notifRows.map((n) => ({
       id: `notif:${n.id}`,
