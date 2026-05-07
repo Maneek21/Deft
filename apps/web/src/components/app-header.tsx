@@ -111,6 +111,8 @@ export function AppHeader({
         <button
           ref={bellRef}
           onClick={handleNotifOpen}
+          aria-label="Notifications"
+          title="Notifications"
           className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md relative"
           style={{ color: 'var(--outline)' }}
         >
