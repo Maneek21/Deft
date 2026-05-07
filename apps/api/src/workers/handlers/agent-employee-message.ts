@@ -15,6 +15,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
+import { ensureDeftyMembership } from '../../lib/ensure-defty-membership.js';
 
 interface AgentEmployeeMessageData {
   messageId: string;
@@ -83,15 +84,18 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   }
 
   // Post a subtle system note so the human knows the mention landed.
+  // Authored by the Defty system user, not the BYOA agent itself —
+  // this is a platform notice, not a reply from the agent.
   try {
     const io = getIO();
+    const deftyUserId = await ensureDeftyMembership(orgId);
     const [sysMsg] = await db
       .insert(messages)
       .values({
         org_id: orgId,
         space_id: spaceId,
-        user_id: employee.user_id,
-        content: `_Mention received. ${employee.name} is a BYOA agent — check your Claude Code / MCP client to see the pending work._`,
+        user_id: deftyUserId,
+        content: `_${employee.name} was mentioned. They run on a BYOA runtime (Claude Code / MCP client) — they'll respond when their client is online and polls for pending work._`,
         parent_id: triggerMsg.parent_id ?? null,
       })
       .returning();
