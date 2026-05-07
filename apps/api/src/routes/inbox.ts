@@ -1,6 +1,6 @@
 // apps/api/src/routes/inbox.ts
 import { Hono } from 'hono';
-import { eq, and, desc, sql, lt, gt, inArray } from 'drizzle-orm';
+import { eq, and, desc, sql, lt, gt } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   notifications,
@@ -9,7 +9,6 @@ import {
   messages,
   agentActions,
   agentEmployees,
-  users,
 } from '@deft/db/schema';
 
 export const inboxRoutes = new Hono();
