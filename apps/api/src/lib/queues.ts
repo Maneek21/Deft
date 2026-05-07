@@ -148,4 +148,28 @@ export async function ensureCronJob(
   });
 }
 
+/**
+ * Reset stale jobs stuck in 'running' status (worker crash recovery).
+ * Jobs running for more than 5 minutes are considered stale.
+ */
+export async function cleanupStaleJobs(): Promise<number> {
+  const result = await db.execute(sql`
+    UPDATE job_queue
+    SET status = CASE
+      WHEN attempts < max_attempts THEN 'pending'
+      ELSE 'failed'
+    END,
+    error = 'stale: worker timeout after 5 minutes',
+    run_at = CASE
+      WHEN attempts < max_attempts THEN now() + interval '5 seconds'
+      ELSE run_at
+    END
+    WHERE status = 'running'
+      AND started_at < now() - interval '5 minutes'
+    RETURNING id
+  `);
+  const rows = (result as any).rows ?? (result as any);
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
 export { QUEUE_NAMES as default };

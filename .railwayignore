@@ -1,0 +1,42 @@
+# Exclude everything not needed for an API-only deploy on Railway.
+node_modules/
+**/node_modules/
+.next/
+apps/web/.next/
+.turbo/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+uploads/
+playwright-auth.json
+.deploy-tokens
+.playwright-mcp/
+
+# Screenshots and test artifacts
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# IDE and OS noise
+.DS_Store
+.vscode/
+.idea/
+
+# Git metadata not needed in the tarball
+.git/
+
+# Large web-only folders — API doesn't need them
+apps/web/public/
+apps/web/.vercel/
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Monitoring and scratch
+New folder/
+Dockerfile

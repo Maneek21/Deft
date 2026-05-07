@@ -5,33 +5,7 @@ import { messages, users } from '@deft/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
-
-/** Well-known agent user email — we ensure this user exists per-org */
-const AGENT_EMAIL = 'deft-agent@system.local';
-const AGENT_NAME = 'Deft';
-
-/**
- * Ensure an agent system user exists in the users table.
- * Returns the agent user's ID.
- */
-async function ensureAgentUser(): Promise<string> {
-  const [existing] = await db.select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, AGENT_EMAIL))
-    .limit(1);
-
-  if (existing) return existing.id;
-
-  // Create the system user
-  const [created] = await db.insert(users).values({
-    email: AGENT_EMAIL,
-    name: AGENT_NAME,
-    email_verified: true,
-  }).returning();
-
-  console.log(`[agent-reply] Created agent system user: ${created!.id}`);
-  return created!.id;
-}
+import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
 
 export async function handleAgentReply(job: JobData): Promise<void> {
   const {
@@ -103,7 +77,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     // Add thread messages (reverse to get oldest first, excluding the trigger message)
     const orderedThread = [...threadMessages].reverse();
-    const agentUserId = await ensureAgentUser();
+    const agentUserId = await ensureDeftyMembership(orgId);
 
     for (const msg of orderedThread) {
       if (msg.id === messageId) continue; // skip the triggering message, it's sent as the main content
@@ -117,21 +91,35 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const cleanContent = content.replace(/<@agent\|Deft>/gi, '').replace(/@(agent|deft)\b/gi, '').trim();
     const promptContent = cleanContent || 'Hey, what can you help me with?';
 
-    // Call the agent reasoning engine
-    const result = await runAgentQuery({
-      content: promptContent,
-      orgId,
-      userId,
-      orgName,
-      conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
-    });
+    // Call the agent reasoning engine with a 60s hard timeout so a stuck
+    // MCP tool / Anthropic call can never wedge the worker.
+    const AGENT_TIMEOUT_MS = 60_000;
+    const result = await Promise.race([
+      runAgentQuery({
+        content: promptContent,
+        orgId,
+        userId,
+        orgName,
+        conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        // Task 3.2 — thread the triggering message id so write actions like
+        // create_task can inherit source_message_id without the LLM having
+        // to know about it.
+        sourceMessageId: messageId,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
+      ),
+    ]);
 
     if (!result.text) {
       console.warn('[agent-reply] Agent returned empty text, skipping reply');
       return;
     }
 
-    // Insert the agent's reply as a message in the space
+    // Insert the agent's reply as a message in the space.
+    // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
+    // can render tool chips, citations footer, and the model+tokens detail
+    // (parity with the agent-stream-loop path).
     const [agentMessage] = await db.insert(messages).values({
       org_id: orgId,
       space_id: spaceId,
@@ -140,9 +128,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       parent_id: threadParentId,
       metadata: {
         is_agent_reply: true,
+        agent_blocks: result.assistantBlocks ?? undefined,
+        model: result.model,
+        tokens_in: result.tokensIn,
+        tokens_out: result.tokensOut,
         citations: result.citations.length > 0 ? result.citations : undefined,
         pending_actions: result.pendingActions.length > 0 ? result.pendingActions : undefined,
-      },
+      } as never,
     }).returning();
 
     // Get the agent user info for the broadcast
@@ -153,7 +145,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     const messageWithUser = {
       ...agentMessage,
-      user_name: agentUserData?.name ?? AGENT_NAME,
+      user_name: agentUserData?.name ?? DEFTY_NAME,
       user_avatar: agentUserData?.avatar_url ?? null,
       reactions: [],
       reply_count: 0,

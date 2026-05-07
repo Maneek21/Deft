@@ -2,13 +2,15 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions } from '@deft/db/schema';
+import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, messageClassifications } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { env } from '../lib/env.js';
 import { classifyMessage } from '../lib/classifier.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
+import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 
 export const messageRoutes = new Hono();
 
@@ -86,11 +88,82 @@ async function getReplyStats(messageIds: string[]) {
   return result;
 }
 
+// POST /forward — forward a message to another space (must be before /:spaceId)
+messageRoutes.post('/forward', async (c) => {
+  try {
+    const user = c.get('user');
+    const { message_id, target_space_id } = await c.req.json();
+
+    if (!message_id || !target_space_id) {
+      return c.json({ error: 'message_id and target_space_id required', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const [original] = await db.select({
+      content: messages.content,
+      user_id: messages.user_id,
+      space_id: messages.space_id,
+    }).from(messages)
+      .where(eq(messages.id, message_id))
+      .limit(1);
+
+    if (!original) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const isSourceMember = await requireSpaceMembership(original.space_id, user.id);
+    if (!isSourceMember) return c.json({ error: 'No access to source message', code: 'FORBIDDEN' }, 403);
+
+    const isTargetMember = await requireSpaceMembership(target_space_id, user.id);
+    if (!isTargetMember) return c.json({ error: 'No access to target space', code: 'FORBIDDEN' }, 403);
+
+    const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, original.user_id)).limit(1);
+    const [sourceSpace] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, original.space_id)).limit(1);
+
+    const forwardedContent = `<blockquote>${original.content}</blockquote><p><em>Forwarded from #${sourceSpace?.name || 'unknown'} by ${author?.name || 'unknown'}</em></p>`;
+
+    const [forwarded] = await db.insert(messages).values({
+      org_id: user.org_id,
+      space_id: target_space_id,
+      user_id: user.id,
+      content: forwardedContent,
+      metadata: { forwarded_from: { message_id, space_id: original.space_id, space_name: sourceSpace?.name } },
+    }).returning();
+
+    const io = getIO();
+    if (io && forwarded) {
+      const [full] = await db.select({
+        id: messages.id,
+        content: messages.content,
+        user_id: messages.user_id,
+        space_id: messages.space_id,
+        created_at: messages.created_at,
+        user_name: users.name,
+        user_avatar: users.avatar_url,
+        metadata: messages.metadata,
+      }).from(messages)
+        .innerJoin(users, eq(messages.user_id, users.id))
+        .where(eq(messages.id, forwarded.id))
+        .limit(1);
+
+      io.to(`space:${target_space_id}`).emit('message:new', full);
+    }
+
+    return c.json(forwarded, 201);
+  } catch (err) {
+    console.error('Failed to forward message:', err);
+    return c.json({ error: 'Failed to forward', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 // GET /api/messages/:spaceId — paginated top-level messages
 messageRoutes.get('/:spaceId', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
     const cursor = c.req.query('cursor');
     const around = c.req.query('around');
     const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
@@ -239,11 +312,34 @@ messageRoutes.post('/:spaceId', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    // Phase 7 invariant — verify membership BEFORE insert. Without this, any
+    // authenticated user could POST a message into any space (including
+    // cross-org spaces) by passing the foreign space_id in the URL.
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
+    // Normalize plain @deft / @agent (case-insensitive) into structured mentions
+    // so the renderer styles them as pills uniformly. Skip if a structured Defty
+    // mention is already present.
+    let normalizedContent = parsed.data.content;
+    if (!/<@[^|]+\|Deft>/i.test(normalizedContent)) {
+      const hasLegacyAgent = /(^|[^a-z0-9_])@(deft|agent)\b/i.test(normalizedContent);
+      if (hasLegacyAgent) {
+        const deftyUserId = await ensureDeftyMembership(user.org_id);
+        normalizedContent = normalizedContent.replace(
+          /(^|[^a-z0-9_])@(deft|agent)\b/gi,
+          (_match, prefix) => `${prefix}<@${deftyUserId}|Deft>`,
+        );
+      }
+    }
+
     const [message] = await db.insert(messages).values({
       org_id: user.org_id,
       space_id: spaceId,
       user_id: user.id,
-      content: parsed.data.content,
+      content: normalizedContent,
       parent_id: parsed.data.parent_id,
     }).returning();
 
@@ -410,9 +506,28 @@ messageRoutes.post('/:spaceId', async (c) => {
       console.error('Message notification error:', err);
     }
 
-    // Detect @agent or @deft mention — enqueue agent reply job
-    const agentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
-    if (agentMentionRegex.test(parsed.data.content) && env.ANTHROPIC_API_KEY) {
+    // Detect @deft mention — Defty is the only agent that fires agent-reply.
+    // BYOA agent mentions are handled separately (agent-employee-message); we
+    // must NOT fire agent-reply for them.
+    let agentMentioned = false;
+    if (mentionedUserIds.length > 0) {
+      const deftyMatch = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(
+          inArray(users.id, mentionedUserIds),
+          eq(users.email, DEFTY_EMAIL),
+        ))
+        .limit(1);
+      agentMentioned = deftyMatch.length > 0;
+    }
+    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@deft` still trigger Defty.
+    const legacyAgentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
+    if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
+      agentMentioned = true;
+    }
+
+    if (agentMentioned && env.ANTHROPIC_API_KEY) {
       try {
         const [org] = await db.select({ name: orgs.name })
           .from(orgs)
@@ -431,6 +546,34 @@ messageRoutes.post('/:spaceId', async (c) => {
       } catch (err) {
         // Don't block message sending if Redis/queue is down
         console.error('Failed to enqueue agent reply:', err);
+      }
+    }
+
+    // Detect agent-employee mentions → enqueue agent-employee-message per employee
+    if (mentionedUserIds.length > 0 && env.ANTHROPIC_API_KEY) {
+      try {
+        const mentionedEmployees = await db.select({
+          id: agentEmployees.id,
+          user_id: agentEmployees.user_id,
+        })
+          .from(agentEmployees)
+          .where(and(
+            eq(agentEmployees.org_id, user.org_id),
+            eq(agentEmployees.is_active, true),
+            inArray(agentEmployees.user_id, mentionedUserIds),
+          ));
+
+        for (const emp of mentionedEmployees) {
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
+            messageId: message!.id,
+            spaceId,
+            orgId: user.org_id,
+            employeeId: emp.id,
+            isDM: false,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to enqueue agent-employee-message:', err);
       }
     }
 
@@ -454,6 +597,25 @@ messageRoutes.post('/:spaceId', async (c) => {
     (async () => {
       try {
         const classification = await classifyMessage(parsed.data.content, user.org_id);
+
+        // Persist classifier output for observability (Task 5.6)
+        try {
+          await db.insert(messageClassifications).values({
+            org_id: user.org_id,
+            message_id: message!.id,
+            intent: classification.intent,
+            confidence: classification.confidence,
+            agent_mentioned: classification.agent_mentioned,
+            blocked: classification.blocked,
+            task_references: classification.task_refs,
+            entities: classification.entities,
+            memorable_facts: classification.memorable_facts,
+            decision: classification.decision,
+          });
+        } catch (err) {
+          console.warn('[classifier-persist] failed:', err);
+        }
+
         if (
           (classification.intent === 'task_create' || classification.intent === 'actionable') &&
           classification.confidence > 0.7
@@ -794,5 +956,33 @@ messageRoutes.get('/:id/history', async (c) => {
   } catch (err) {
     console.error('Failed to fetch message history:', err);
     return c.json({ error: 'Failed to fetch history', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// GET /:spaceId/read-receipts — get read positions for all members
+messageRoutes.get('/:spaceId/read-receipts', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('spaceId');
+
+    const receipts = await db.select({
+      user_id: spaceMembers.user_id,
+      user_name: users.name,
+      user_avatar: users.avatar_url,
+      last_read_at: spaceMembers.last_read_at,
+      last_read_message_id: spaceMembers.last_read_message_id,
+      show_read_receipts: users.show_read_receipts,
+    })
+      .from(spaceMembers)
+      .innerJoin(users, eq(spaceMembers.user_id, users.id))
+      .where(eq(spaceMembers.space_id, spaceId));
+
+    // Filter out users who have disabled read receipts
+    const visible = receipts.filter(r => r.show_read_receipts);
+
+    return c.json({ receipts: visible });
+  } catch (err) {
+    console.error('Failed to fetch read receipts:', err);
+    return c.json({ error: 'Failed to fetch read receipts', code: 'INTERNAL_ERROR' }, 500);
   }
 });

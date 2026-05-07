@@ -1,0 +1,81 @@
+
+> deft@ audit:session3 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-3.audit.ts
+
+Session 3 audit — empty states + mobile + contextual follow-ups
+
+  Test 1/6: starter prompts visible in empty state...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ 5 starter pills rendered
+  Test 2/6: clicking a starter pill sends the message...
+    ✓ pill "What's overdue?" sent as message
+  Test 3/6: mobile code block horizontal scroll...
+    ✓ code block scrollable (scroll=1071 client=308)
+  Test 4/6: mobile agent bubble right gutter...
+    ✓ mobile bubble has 16px right gutter
+  Test 5/6: mobile panel + desktop sidebar both render conversation lists...
+    ✓ desktop=10 mobile=20 both rendering
+  Test 6/6: contextual follow-ups replace hardcoded generics...
+    ✓ contextual follow-ups present
+
+── Session 1 + 2 regression ──
+
+> deft@ audit:session2 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-2.audit.ts
+
+Session 2 audit — approval cards + metadata trust signals
+
+  Test 1/7: friendly tool name in approval card...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ humanized label shown, raw name hidden
+  Test 2/7: params visible in approval card...
+    ✓ task title visible in card
+  Test 3/7: no follow-ups rendered while pending action exists...
+    ✓ no follow-up chips during pending action
+  Test 4/7: no confidence label while pending action exists...
+    ✓ no confidence label during pending action
+  Test 5/7: tool-backed answer shows High confidence...
+    ✓ tool-backed answer shows High confidence
+  Test 6/7: cumulative tokens shown on terminal row...
+    ✓ cumulative tokens = 35310
+  Test 7/7: in-flight tool label humanized...
+    ✓ in-flight label humanized (no raw mcp__ string observed)
+
+── Session 1 regression ──
+
+> deft@ audit:session1 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-1.audit.ts
+
+Session 1 audit — content safety + identity
+
+  Test 1/7: agent name in bubble...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ bubble label = Alex PM (1 found)
+  Test 2/7: markdown table renders as <table>...
+    ✓ table rendered with 4 rows
+  Test 3/7: code fence content is isolated...
+    ✓ code fence isolated (385 chars, 0 <li>)
+  Test 4/7: markdown links render as <a href>...
+    ✓ 3 react.dev link(s) rendered
+  Test 5/7: XSS payload is neutralized...
+    ✓ XSS neutralized (no execution, no <img onerror>)
+  Test 6/7: tool badges visible after reload...
+    ✓ 4 tool badge(s) on reload: 💬 Tavily Search · Tavily Search, 💬 Tavily Search · Tavily Search, 💬 Tavily Search · Tavily Extract, 💬 Tavily Search · Tavily Search
+  Test 7/7: multi-iteration response = 1 bubble on reload...
+    ✓ exactly 1 Alex PM bubble on reload
+
+✅ Session 1 audit: all 7 assertions passed
+── Session 1 regression passed ──
+
+
+✅ Session 2 audit: all 7 assertions passed + Session 1 regression clean
+── Session 1 + 2 regression passed ──
+
+
+✅ Session 3 audit: all 6 assertions passed + Session 1+2 regression clean

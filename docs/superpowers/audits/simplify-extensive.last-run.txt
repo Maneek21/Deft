@@ -1,0 +1,56 @@
+Run: 2026-04-18T19:22:29.779Z
+API: http://localhost:3001
+Web: http://localhost:3000
+pass=21 fail=0
+
+OK   login (user d4f985f6-6c37-4102-a7e8-32e22cfbe962, org 1d7d869a-5e68-48d5-832e-11d8f3bb1dd6)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/01-dashboard.png
+OK   1. dashboard
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/02-project-modal.png
+OK   2a. project modal single-step (no step badge)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/03-project-form-filled.png
+OK   2b. submitted project create
+OK   2c. redirected to project 77d84620…
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/04-project-board-empty.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/05-task-modal-filled.png
+OK   3. manual task created
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/06-task-on-board.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/07-template-picker.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/08-template-preview.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/09-template-applied.png
+OK   4. Launch Campaign applied (7 tasks expected)
+INFO 4c. project task count: 8
+OK   4c. at least 7 tasks after template apply
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/10-marketing-board.png
+OK   5. Marketing project renders without crash
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/11-library-skills.png
+OK   6. Library Skills tab shows bundled skills (9 matches)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/12-library-templates.png
+OK   7. Library Templates tab shows bundled templates (2 matches)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/13-agent-wizard-step1.png
+OK   8a. wizard shows "Step 1 of 3"
+OK   8b. wizard not BYOA-blocked
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/14-agent-wizard-identity-filled.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/15-agent-wizard-step2.png
+OK   8c. advanced to Step 2 (Behavior)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/16-agent-wizard-behavior-filled.png
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/17-agent-wizard-step3-skills.png
+OK   8d. advanced to Step 3 (Skills)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/18-agent-created.png
+OK   9. agent create submitted
+OK   9b. no BYOA error banner after Create
+INFO 9c. newAgentId: 07bd9253-c5ab-4bc0-a341-6fed101fd90c
+INFO 10a. agent user_id: 6d1e017b-4465-4e15-a753-aa47014980c0
+OK   10b. PATCH /api/tasks/:id assignee_id=agent.user_id (200)
+OK   10c. task.assignee_id === agent.user_id (6d1e017b-4465-4e15-a753-aa47014980c0)
+INFO 11. waiting up to 20s for agent worker to process...
+INFO   poll 1: pending=0 all=47
+OK   11. agent produced at least one action after assignment (actions=47, pending=0)
+OK   12. PATCH /api/tasks/:id status → todo (200)
+INFO screenshot: docs/superpowers/audits/screenshots/simplify-extensive/19-task-moved-to-todo.png
+
+Seeded project id: 77d84620-058e-4756-bed9-574efc88b7e5
+Seeded agent id: 07bd9253-c5ab-4bc0-a341-6fed101fd90c
+Seeded task id: bc59aaf6-62e2-44df-b3f8-e8f09c5b2258
+
+OVERALL: PASS

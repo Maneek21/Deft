@@ -77,41 +77,71 @@ export function ClipCard({ clipId, clipStatus, clipSummary, clipDuration, clipUs
     return `${m}:${sec.toString().padStart(2, '0')}`;
   };
 
-  const togglePlay = useCallback(() => {
+  const togglePlay = useCallback(async () => {
     if (!audioRef.current) {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-      const audio = new Audio(`${apiUrl}/api/clips/${clipId}/audio`);
-      audioRef.current = audio;
+      // The /api/clips/:id/audio route is auth-gated under app.use('/api/*', authMiddleware).
+      // The HTML <audio> element doesn't send Authorization headers, so a direct
+      // src= URL gets a 401 → "NotSupportedError: Failed to load because no
+      // supported source was found". Fetch the audio as a Blob through the
+      // auth-aware api helper, then play from a blob: URL.
+      try {
+        const res = await api.get(`/api/clips/${clipId}/audio`);
+        if (!res.ok) {
+          console.error('[clip-card] audio fetch failed', res.status);
+          return;
+        }
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const audio = new Audio(blobUrl);
+        audioRef.current = audio;
 
-      audio.onended = () => {
-        setPlaying(false);
-        setProgress(0);
-        setCurrentTime(0);
-        if (progressInterval.current) clearInterval(progressInterval.current);
-      };
+        audio.onended = () => {
+          setPlaying(false);
+          setProgress(0);
+          setCurrentTime(0);
+          if (progressInterval.current) clearInterval(progressInterval.current);
+        };
 
-      audio.onplay = () => {
-        progressInterval.current = setInterval(() => {
-          if (audio.duration) {
-            setProgress((audio.currentTime / audio.duration) * 100);
-            setCurrentTime(audio.currentTime);
-          }
-        }, 100);
-      };
+        audio.onplay = () => {
+          progressInterval.current = setInterval(() => {
+            if (audio.duration) {
+              setProgress((audio.currentTime / audio.duration) * 100);
+              setCurrentTime(audio.currentTime);
+            }
+          }, 100);
+        };
 
-      audio.onpause = () => {
-        if (progressInterval.current) clearInterval(progressInterval.current);
-      };
+        audio.onpause = () => {
+          if (progressInterval.current) clearInterval(progressInterval.current);
+        };
+      } catch (err) {
+        console.error('[clip-card] failed to load audio', err);
+        return;
+      }
     }
 
     if (playing) {
       audioRef.current.pause();
       setPlaying(false);
     } else {
-      audioRef.current.play();
-      setPlaying(true);
+      try {
+        await audioRef.current.play();
+        setPlaying(true);
+      } catch (err) {
+        console.error('[clip-card] play failed', err);
+      }
     }
   }, [clipId, playing]);
+
+  // Free the blob URL when this card unmounts so we don't leak the audio buffer.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current?.src.startsWith('blob:')) {
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      if (progressInterval.current) clearInterval(progressInterval.current);
+    };
+  }, []);
 
   const seekTo = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!audioRef.current || !audioRef.current.duration) return;

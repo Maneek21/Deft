@@ -1,0 +1,20 @@
+Run: 2026-04-19T09:15:42.545Z
+API: http://localhost:3001
+Web: http://localhost:3000
+pass=10 fail=0
+
+OK   login: org=1d7d869a user=d4f985f6
+OK   2.8 GET /api/agent/actions/recent → 200 count=5
+OK   2.8 recent limit clamped to 50 (got 47)
+OK   2.8 GET /api/dashboard/agent-activity → 200
+INFO screenshot docs/superpowers/audits/screenshots/block-2-smoke/01-dashboard.png
+OK   2.8 Dashboard renders "Agent Activity" bento card
+INFO screenshot docs/superpowers/audits/screenshots/block-2-smoke/02-heartbeat-builder.png
+OK   2.9 HEARTBEAT.md shows structured builder ("Add check" button)
+OK   2.9 builder exposes collapsible raw markdown
+INFO screenshot docs/superpowers/audits/screenshots/block-2-smoke/03-heartbeat-builder-with-row.png
+OK   2.9 clicking "Add check" inserts a new row
+OK   2.9 SOUL.md does NOT show the heartbeat builder
+OK   regression: ClawHub tab from Block 1.5 still present
+
+OVERALL: PASS

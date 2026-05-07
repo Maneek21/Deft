@@ -1,14 +1,19 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
+import { TaskCardUnified } from './task-card-unified';
+import type { ResolvedStatus, PriorityVocab, CanonicalPriority } from '@/hooks/use-project-resolved-config';
+import { priorityLabel } from '@/hooks/use-project-resolved-config';
 
 type Task = {
   id: string;
   number: number;
   title: string;
   description: string | null;
-  status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
+  // Resolved-config driven; wide string (e.g. 'lead' / 'qualified' for Sales).
+  status: string;
   priority: 'p0' | 'p1' | 'p2' | 'p3';
   assignee_id: string | null;
   assignee_name: string | null;
@@ -16,6 +21,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -27,6 +33,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -40,18 +47,22 @@ type Props = {
   selectionMode?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelect?: (taskId: string) => void;
+  /** Task 4.9 — resolved skill config drives status dropdown + prefix + priority labels. */
+  statuses?: ResolvedStatus[];
+  hidePrefixIds?: boolean;
+  priorityVocab?: PriorityVocab;
 };
 
 type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'due_date' | 'updated_at';
 type SortDir = 'asc' | 'desc';
 
-const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
-  { value: 'done', label: 'Done' },
-  { value: 'cancelled', label: 'Cancelled' },
+const DEFAULT_STATUS_OPTIONS = [
+  { value: 'backlog', label: statusLabel('backlog'), color: '#6b7280' },
+  { value: 'todo', label: statusLabel('todo'), color: '#3b82f6' },
+  { value: 'in_progress', label: statusLabel('in_progress'), color: '#f59e0b' },
+  { value: 'in_review', label: statusLabel('in_review'), color: '#8b5cf6' },
+  { value: 'done', label: statusLabel('done'), color: '#10b981' },
+  { value: 'cancelled', label: statusLabel('cancelled'), color: '#ef4444' },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -64,19 +75,12 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const PRIORITY_ORDER = { p0: 0, p1: 1, p2: 2, p3: 3 };
-const PRIORITY_STYLES: Record<string, { bg: string; color: string; label: string }> = {
-  p0: { bg: 'rgba(220, 38, 38, 0.15)', color: '#DC2626', label: 'P0' },
-  p1: { bg: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B', label: 'P1' },
-  p2: { bg: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6', label: 'P2' },
-  p3: { bg: 'rgba(107, 114, 128, 0.15)', color: '#6B7280', label: 'P3' },
+const PRIORITY_STYLES: Record<string, { bg: string; color: string }> = {
+  p0: { bg: 'rgba(220, 38, 38, 0.15)', color: '#DC2626' },
+  p1: { bg: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B' },
+  p2: { bg: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6' },
+  p3: { bg: 'rgba(107, 114, 128, 0.15)', color: '#6B7280' },
 };
-
-const PRIORITY_OPTIONS = [
-  { value: 'p0', label: 'P0' },
-  { value: 'p1', label: 'P1' },
-  { value: 'p2', label: 'P2' },
-  { value: 'p3', label: 'P3' },
-];
 
 function formatDueDate(dateStr: string | null, status?: string): { text: string; color: string; badge?: string; badgeBg?: string } | null {
   if (!dateStr) return null;
@@ -108,11 +112,23 @@ function formatDueDate(dateStr: string | null, status?: string): { text: string;
   return { text: dateText, color: 'var(--foreground-secondary)' };
 }
 
-export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect }: Props) {
+export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab }: Props) {
+  const STATUS_OPTIONS = useMemo(() => {
+    if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
+    return [...statuses]
+      .sort((a, b) => a.order - b.order)
+      .map((s) => ({ value: s.id, label: s.label, color: s.color }));
+  }, [statuses]);
+
+  const statusColorFor = (id: string): string =>
+    STATUS_OPTIONS.find((s) => s.value === id)?.color || STATUS_COLORS[id] || 'var(--muted)';
   const [sortField, setSortField] = useState<SortField>('number');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  // Fix 3: client-side pagination — show 50 rows at a time
+  const PAGE_SIZE = 50;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -131,6 +147,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   };
 
   const sorted = useMemo(() => {
+    // Reset pagination when data or sort changes
+    setVisibleCount(PAGE_SIZE);
     return [...tasks].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
@@ -146,6 +164,9 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
     });
   }, [tasks, sortField, sortDir]);
 
+  // Fix 3: page-sliced rows
+  const visibleRows = sorted.slice(0, visibleCount);
+
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <ArrowUpDown size={11} style={{ opacity: 0.3 }} />;
     return sortDir === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />;
@@ -157,9 +178,12 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
     { field: 'status', label: 'Status', width: '130px' },
     { field: 'priority', label: 'Priority', width: '80px' },
     { field: 'assignee', label: 'Assignee', width: '140px' },
-    { field: 'due_date', label: 'Due Date', width: '110px' },
+    { field: 'due_date', label: 'Due', width: '110px' },
     { field: 'updated_at', label: 'Updated', width: '110px' },
   ];
+
+
+  const hasAnyEstimation = tasks.some(t => t.estimation);
 
   if (isMobile) {
     return (
@@ -169,82 +193,36 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
             <p className="text-[14px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks match the current filters</p>
           </div>
         )}
-        {sorted.map((task) => {
-          const priority = PRIORITY_STYLES[task.priority];
+        {visibleRows.map((task) => {
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
-          const statusLabel = STATUS_OPTIONS.find((s) => s.value === task.status)?.label || task.status;
-          const dueInfo = formatDueDate(task.due_date, task.status);
-
           return (
-            <div
+            <TaskCardUnified
               key={task.id}
-              onClick={() => {
-                if (selectionMode && onToggleSelect) {
-                  onToggleSelect(task.id);
-                } else {
-                  onTaskClick(task);
-                }
-              }}
-              className="rounded-lg p-3 cursor-pointer"
-              style={{
-                background: isChecked || isSelected ? 'var(--accent-subtle)' : 'var(--card-bg)',
-                border: `1px solid ${isChecked || isSelected ? 'var(--accent)' : 'var(--border)'}`,
-                transition: 'all 150ms',
-              }}
-            >
-              <div className="flex items-start gap-2">
-                {selectionMode && (
-                  <div
-                    className="mt-0.5 flex-shrink-0 w-5 h-5 md:w-4 md:h-4 min-w-[20px] min-h-[20px] rounded border flex items-center justify-center"
-                    style={{
-                      borderColor: isChecked ? 'var(--accent)' : 'var(--border)',
-                      background: isChecked ? 'var(--accent)' : 'transparent',
-                    }}
-                    onClick={(e) => { e.stopPropagation(); onToggleSelect?.(task.id); }}
-                  >
-                    {isChecked && <Check size={10} strokeWidth={3} style={{ color: 'white' }} />}
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
-                      style={{ background: priority.bg, color: priority.color, fontFamily: 'var(--font-heading)' }}
-                    >
-                      {priority.label}
-                    </span>
-                    <span className="text-[11px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-                      {projectPrefix || task.project_prefix}-{task.number}
-                    </span>
-                  </div>
-                  <p className="text-[13px] font-medium leading-snug mb-1.5 break-words" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', overflowWrap: 'anywhere' }}>
-                    {task.title}
-                  </p>
-                  <div className="flex items-center gap-2 flex-wrap text-[11px]" style={{ color: 'var(--muted)' }}>
-                    {task.assignee_name && (
-                      <span>{task.assignee_name}</span>
-                    )}
-                    {task.assignee_name && <span style={{ color: 'var(--border)' }}>·</span>}
-                    <span className="flex items-center gap-1">
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                      {statusLabel}
-                    </span>
-                    {dueInfo && (
-                      <>
-                        <span style={{ color: 'var(--border)' }}>·</span>
-                        <span className="flex items-center gap-1" style={{ color: dueInfo.color }}>
-                          <Calendar size={10} strokeWidth={1.5} />
-                          {dueInfo.text}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
+              variant="list"
+              task={task as any}
+              projectPrefix={projectPrefix}
+              onClick={() => onTaskClick(task)}
+              isSelected={isSelected}
+              selectionMode={selectionMode}
+              isChecked={isChecked}
+              onToggleSelect={onToggleSelect}
+              hidePrefixIds={hidePrefixIds}
+            />
           );
         })}
+        {/* Fix 3: Load more */}
+        {visibleCount < sorted.length && (
+          <div className="flex justify-center py-3">
+            <button
+              onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+              className="text-[12px] font-medium px-4 py-1.5 rounded-md"
+              style={{ color: 'var(--accent)', border: '1px solid var(--border)', fontFamily: 'var(--font-heading)' }}
+            >
+              Load more ({sorted.length - visibleCount} remaining)
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -268,29 +246,47 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
               />
             )}
             {columns.map((col) => (
-              <th
-                key={col.field}
-                onClick={() => handleSort(col.field)}
-                className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
-                style={{
-                  color: 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                  background: 'var(--surface)',
-                  borderBottom: '1px solid var(--border)',
-                  width: col.width === '1fr' ? undefined : col.width,
-                }}
-              >
-                <div className="flex items-center gap-1">
-                  {col.label}
-                  <SortIcon field={col.field} />
-                </div>
-              </th>
+              <React.Fragment key={col.field}>
+                <th
+                  onClick={() => handleSort(col.field)}
+                  className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
+                  style={{
+                    color: 'var(--muted)',
+                    fontFamily: 'var(--font-heading)',
+                    background: 'var(--surface)',
+                    borderBottom: '1px solid var(--border)',
+                    width: col.width === '1fr' ? undefined : col.width,
+                    whiteSpace: col.field === 'status' ? 'nowrap' : undefined,
+                    minWidth: col.field === 'status' ? '100px' : undefined,
+                  }}
+                >
+                  <div className="flex items-center gap-1">
+                    {col.label}
+                    <SortIcon field={col.field} />
+                  </div>
+                </th>
+                {col.field === 'priority' && hasAnyEstimation && (
+                  <th
+                    className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide select-none sticky top-0"
+                    style={{
+                      color: 'var(--muted)',
+                      fontFamily: 'var(--font-heading)',
+                      background: 'var(--surface)',
+                      borderBottom: '1px solid var(--border)',
+                      width: '60px',
+                    }}
+                  >
+                    Est.
+                  </th>
+                )}
+              </React.Fragment>
             ))}
           </tr>
         </thead>
         <tbody>
-          {sorted.map((task) => {
-            const priority = PRIORITY_STYLES[task.priority];
+          {visibleRows.map((task) => {
+            const priorityStyle = PRIORITY_STYLES[task.priority];
+            const priorityText = priorityLabel(task.priority as CanonicalPriority, priorityVocab);
             const isSelected = task.id === selectedTaskId;
             const isChecked = selectionMode && selectedTaskIds?.has(task.id);
 
@@ -344,7 +340,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                   className="px-3 py-2.5 text-[12px] font-medium"
                   style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)' }}
                 >
-                  {projectPrefix || task.project_prefix}-{task.number}
+                  {hidePrefixIds ? '' : `${projectPrefix || task.project_prefix}-${task.number}`}
                 </td>
 
                 {/* Title */}
@@ -378,7 +374,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                 {/* Status */}
                 <td
                   className="px-3 py-2.5"
-                  style={{ borderBottom: '1px solid var(--border)' }}
+                  style={{ borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', minWidth: '100px' }}
                 >
                   <div className="relative">
                     <button
@@ -399,8 +395,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                      {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
+                      <div className="w-2 h-2 rounded-full" style={{ background: statusColorFor(task.status) }} />
+                      {STATUS_OPTIONS.find((s) => s.value === task.status)?.label ?? statusLabel(task.status)}
                     </button>
                     {inlineDropdown?.taskId === task.id && inlineDropdown?.field === 'status' && (
                       <div
@@ -423,7 +419,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                           >
-                            <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[opt.value] }} />
+                            <div className="w-2 h-2 rounded-full" style={{ background: statusColorFor(opt.value) }} />
                             {opt.label}
                           </button>
                         ))}
@@ -440,14 +436,31 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                   <span
                     className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
                     style={{
-                      background: priority.bg,
-                      color: priority.color,
+                      background: priorityStyle.bg,
+                      color: priorityStyle.color,
                       fontFamily: 'var(--font-heading)',
                     }}
                   >
-                    {priority.label}
+                    {priorityText}
                   </span>
                 </td>
+
+                {/* Est. */}
+                {hasAnyEstimation && (
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ borderBottom: '1px solid var(--border)' }}
+                  >
+                    {task.estimation ? (
+                      <span
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                        style={{ background: 'var(--surface-container-high)', color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+                      >
+                        {task.estimation.toUpperCase()}
+                      </span>
+                    ) : null}
+                  </td>
+                )}
 
                 {/* Assignee */}
                 <td
@@ -522,6 +535,18 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
       {sorted.length === 0 && (
         <div className="flex items-center justify-center py-16" style={{ color: 'var(--muted)' }}>
           <p className="text-[14px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks match the current filters</p>
+        </div>
+      )}
+      {/* Fix 3: Load more button */}
+      {visibleCount < sorted.length && (
+        <div className="flex justify-center py-4">
+          <button
+            onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+            className="text-[12px] font-medium px-4 py-1.5 rounded-md"
+            style={{ color: 'var(--accent)', border: '1px solid var(--border)', fontFamily: 'var(--font-heading)' }}
+          >
+            Load more ({sorted.length - visibleCount} remaining)
+          </button>
         </div>
       )}
     </div>

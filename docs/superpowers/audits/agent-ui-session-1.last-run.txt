@@ -1,0 +1,26 @@
+
+> deft@ audit:session1 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-1.audit.ts
+
+Session 1 audit — content safety + identity
+
+  Test 1/7: agent name in bubble...
+    ✓ bubble label = Alex PM (1 found)
+  Test 2/7: markdown table renders as <table>...
+    ✓ table rendered with 4 rows
+  Test 3/7: code fence content is isolated...
+    ✓ code fence isolated (451 chars, 0 <li>)
+  Test 4/7: markdown links render as <a href>...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ 3 react.dev link(s) rendered
+  Test 5/7: XSS payload is neutralized...
+    ✓ XSS neutralized (no execution, no <img onerror>)
+  Test 6/7: tool badges visible after reload...
+    ✓ 1 tool badge(s) on reload: 💬 mcp__time__current_time
+  Test 7/7: multi-iteration response = 1 bubble on reload...
+    ✓ exactly 1 Alex PM bubble on reload
+
+✅ Session 1 audit: all 7 assertions passed

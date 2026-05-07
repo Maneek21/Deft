@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { reminders, notifications } from '@deft/db/schema';
-import { emitToUser } from '../socket.js';
+import { reminders } from '@deft/db/schema';
+import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 
 export const reminderRoutes = new Hono();
 
@@ -33,17 +33,16 @@ reminderRoutes.post('/', async (c) => {
     source_message_id: parsed.data.source_message_id || undefined,
   }).returning();
 
-  // Schedule the reminder (in-process timeout for messages within 24h)
-  const delay = remindAt.getTime() - Date.now();
-  if (delay > 0 && delay < 24 * 60 * 60 * 1000) {
-    setTimeout(async () => {
-      try {
-        await fireReminder(reminder!.id, user.id, user.org_id);
-      } catch (err) {
-        console.error('Failed to fire reminder:', err);
-      }
-    }, delay);
-  }
+  // Schedule firing via the scheduled-jobs queue. The Postgres-backed queue
+  // persists across restarts, and rehydratePendingReminders() at boot
+  // re-enqueues anything missed. Handler is idempotent (no-op when is_sent=true).
+  const delay = Math.max(0, remindAt.getTime() - Date.now());
+  await enqueue(
+    QUEUE_NAMES.SCHEDULED_JOBS,
+    'reminder-fire',
+    { reminderId: reminder!.id },
+    { delay },
+  );
 
   return c.json(reminder, 201);
 });
@@ -67,29 +66,5 @@ reminderRoutes.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-async function fireReminder(reminderId: string, userId: string, orgId: string) {
-  const [reminder] = await db.select().from(reminders)
-    .where(and(eq(reminders.id, reminderId), eq(reminders.is_sent, false)))
-    .limit(1);
-
-  if (!reminder) return;
-
-  // Create notification
-  await db.insert(notifications).values({
-    org_id: orgId,
-    user_id: userId,
-    type: 'reminder',
-    title: `⏰ Reminder: ${reminder.message}`,
-    body: reminder.message,
-    link: reminder.source_message_id ? `/chat` : undefined,
-  });
-
-  // Mark as sent
-  await db.update(reminders).set({ is_sent: true }).where(eq(reminders.id, reminderId));
-
-  // Emit notification
-  emitToUser(userId, 'notification:new', {
-    type: 'reminder',
-    title: `⏰ Reminder: ${reminder.message}`,
-  });
-}
+// Firing logic moved to apps/api/src/workers/handlers/reminder-fire.ts
+// (Block 0 Task 0.4 — reminders → durable queue).

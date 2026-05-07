@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, X, Loader2 } from 'lucide-react';
+import { X, Loader2, Send } from 'lucide-react';
 import { api } from '@/lib/api';
 
 type ClipRecorderProps = {
@@ -14,8 +14,7 @@ type ClipRecorderProps = {
 };
 
 export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComplete, onCancel }: ClipRecorderProps) {
-  const [state, setState] = useState<'idle' | 'countdown' | 'recording' | 'uploading'>('idle');
-  const [countdown, setCountdown] = useState(3);
+  const [state, setState] = useState<'starting' | 'recording' | 'uploading' | 'error'>('starting');
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -26,6 +25,7 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(undefined);
+  const startedRef = useRef(false);
 
   const MAX_DURATION = 300; // 5 minutes
 
@@ -45,6 +45,8 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
   }, [cleanup]);
 
   const startRecording = useCallback(async () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     setError(null);
 
     try {
@@ -59,22 +61,12 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      // Countdown
-      setState('countdown');
-      setCountdown(3);
-
-      let count = 3;
-      const countdownInterval = setInterval(() => {
-        count--;
-        setCountdown(count);
-        if (count <= 0) {
-          clearInterval(countdownInterval);
-          beginCapture(stream);
-        }
-      }, 1000);
+      // Begin capturing immediately — no countdown.
+      beginCapture(stream);
     } catch (err) {
       setError('Microphone access denied. Please allow microphone access in your browser settings.');
-      setState('idle');
+      setState('error');
+      startedRef.current = false;
     }
   }, []);
 
@@ -176,10 +168,16 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
 
   const cancel = useCallback(() => {
     cleanup();
-    setState('idle');
     setDuration(0);
     onCancel?.();
   }, [cleanup, onCancel]);
+
+  // Auto-start when this component mounts. WhatsApp/iMessage start recording
+  // immediately on tap — no countdown delay. The pre-existing countdown was
+  // disruptive friction every time a user wanted to send a voice message.
+  useEffect(() => {
+    startRecording();
+  }, [startRecording]);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60);
@@ -187,103 +185,72 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
     return `${m}:${sec.toString().padStart(2, '0')}`;
   };
 
-  // Idle — show mic button
-  if (state === 'idle' && !error) {
-    return (
-      <button
-        onClick={startRecording}
-        className="p-1.5 rounded-md transition-colors"
-        style={{ color: 'var(--muted)' }}
-        title="Record audio clip (⌘H)"
-      >
-        <Mic size={15} strokeWidth={1.5} />
-      </button>
-    );
-  }
-
   // Error state
-  if (error) {
+  if (state === 'error' && error) {
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px]"
         style={{ background: 'rgba(220,50,50,0.1)', color: 'var(--status-red)' }}>
         <span className="flex-1 truncate">{error}</span>
-        <button onClick={() => { setError(null); setState('idle'); }} className="p-0.5">
-          <X size={12} />
-        </button>
-      </div>
-    );
-  }
-
-  // Countdown
-  if (state === 'countdown') {
-    return (
-      <div className="flex items-center gap-3 px-3 py-2 rounded-xl"
-        style={{ background: 'var(--surface-container-high)' }}>
-        <div className="w-10 h-10 rounded-full flex items-center justify-center text-[20px] font-bold"
-          style={{ background: 'rgba(220,50,50,0.1)', color: 'var(--status-red)' }}>
-          {countdown}
-        </div>
-        <span className="text-[13px] font-medium" style={{ color: 'var(--on-surface-variant)' }}>
-          Recording starts in...
-        </span>
-        <button onClick={cancel} className="ml-auto p-1.5 rounded-md" style={{ color: 'var(--outline)' }}>
+        <button onClick={cancel} className="p-1.5" aria-label="Dismiss" style={{ color: 'var(--status-red)' }}>
           <X size={14} />
         </button>
       </div>
     );
   }
 
-  // Recording
-  if (state === 'recording') {
+  // Recording — composer area becomes the recording bar.
+  // Single Send action stops + uploads + posts (was previously Stop, then auto-upload).
+  if (state === 'recording' || state === 'starting') {
     return (
-      <div className="flex items-center gap-3 px-3 py-2 rounded-xl"
+      <div className="flex items-center gap-2 px-2 py-2 rounded-xl"
         style={{ background: 'var(--surface-container-high)' }}>
+        {/* Cancel — leftmost, easy to reach */}
+        <button onClick={cancel} aria-label="Cancel recording"
+          className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md hover:opacity-70"
+          style={{ color: 'var(--outline)' }}>
+          <X size={18} />
+        </button>
+
         {/* Pulsing red dot */}
-        <div className="relative flex items-center justify-center w-8 h-8">
-          <div className="absolute w-8 h-8 rounded-full animate-ping"
-            style={{ background: 'rgba(220,50,50,0.2)' }} />
-          <div className="w-3 h-3 rounded-full" style={{ background: 'var(--status-red)' }} />
+        <div className="relative flex items-center justify-center w-6 h-6 flex-shrink-0">
+          <div className="absolute w-6 h-6 rounded-full animate-ping"
+            style={{ background: 'rgba(220,50,50,0.25)' }} />
+          <div className="w-2.5 h-2.5 rounded-full" style={{ background: 'var(--status-red)' }} />
         </div>
 
-        {/* Audio level bars */}
-        <div className="flex items-end gap-[2px] h-5">
-          {Array.from({ length: 5 }).map((_, i) => {
-            const threshold = (i + 1) / 6;
+        {/* Timer + level meter, fills middle */}
+        <span className="text-[14px] font-mono font-medium tabular-nums flex-shrink-0"
+          style={{ color: 'var(--on-surface)' }}>
+          {formatTime(duration)}
+        </span>
+        <div className="flex-1 flex items-end gap-[2px] h-5 min-w-0">
+          {Array.from({ length: 12 }).map((_, i) => {
+            const threshold = (i + 1) / 13;
             const active = audioLevel > threshold;
             return (
-              <div key={i} className="w-[3px] rounded-full transition-all duration-75"
+              <div key={i} className="w-[3px] rounded-full transition-all duration-75 flex-shrink-0"
                 style={{
-                  height: active ? `${8 + (i * 2.5)}px` : '4px',
+                  height: active ? `${6 + (i * 1.4)}px` : '3px',
                   background: active ? 'var(--status-red)' : 'var(--outline-variant)',
                 }} />
             );
           })}
         </div>
 
-        {/* Timer */}
-        <span className="text-[13px] font-mono font-medium tabular-nums"
-          style={{ color: 'var(--on-surface)' }}>
-          {formatTime(duration)}
-        </span>
-
         {/* Max duration warning */}
         {duration >= MAX_DURATION - 30 && (
-          <span className="text-[11px]" style={{ color: 'var(--status-amber)' }}>
+          <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--status-amber)' }}>
             {formatTime(MAX_DURATION - duration)} left
           </span>
         )}
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <button onClick={cancel} className="p-1.5 rounded-md" style={{ color: 'var(--outline)' }} title="Cancel">
-            <X size={14} />
-          </button>
-          <button onClick={stopRecording}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium text-white"
-            style={{ background: 'var(--status-red)' }}>
-            <Square size={10} fill="white" />
-            Stop
-          </button>
-        </div>
+        {/* Send — rightmost, primary action. Single tap stops + uploads + posts. */}
+        <button onClick={stopRecording} aria-label="Send voice message"
+          disabled={state === 'starting'}
+          className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+          style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}>
+          <Send size={18} strokeWidth={2} />
+        </button>
       </div>
     );
   }
@@ -294,22 +261,8 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
       style={{ background: 'var(--surface-container-high)' }}>
       <Loader2 size={16} className="animate-spin" style={{ color: 'var(--primary)' }} />
       <span className="text-[13px]" style={{ color: 'var(--on-surface-variant)' }}>
-        Processing clip...
+        Sending voice message…
       </span>
     </div>
-  );
-}
-
-// Standalone mic button for the composer toolbar
-export function ClipRecorderButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="p-1.5 rounded-md transition-colors"
-      style={{ color: 'var(--muted)' }}
-      title="Record audio clip"
-    >
-      <Mic size={15} strokeWidth={1.5} />
-    </button>
   );
 }

@@ -1,12 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
-import { X, Send, Smile, ArrowLeft } from 'lucide-react';
+import { X, Smile, ArrowLeft } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
+import { RichComposer } from './rich-composer';
+import { useFileUpload } from './file-upload';
 
 type Reaction = {
   emoji: string;
@@ -53,7 +57,12 @@ function displayEmoji(emoji: string): string {
 }
 
 function inlineFormat(text: string): string {
-  return text
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return escaped
     .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
@@ -120,7 +129,7 @@ function renderContent(content: string) {
         '<span class="px-1 py-0.5 rounded text-[13px] font-medium" style="background:rgba(144,128,250,0.15);color:var(--primary)">@$2</span>')
       .replace(/<@([^|]+)\|([^>]+)>/g,
         '<span class="px-1 py-0.5 rounded text-[13px] font-medium" style="background:rgba(144,128,250,0.15);color:var(--primary)">@$2</span>');
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: processed }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
   // Plain text / markdown (agent replies, seed data)
@@ -130,7 +139,7 @@ function renderContent(content: string) {
       '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>')
     .replace(/([A-Z]{2,6})-(\d+)/g,
       '<span style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1-$2</span>');
-  return <span className="message-content" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
 }
 
 type Props = {
@@ -142,13 +151,16 @@ type Props = {
 export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
   const { user } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [replies, setReplies] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
-  const [inputFocused, setInputFocused] = useState(false);
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
   const repliesEndRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -156,6 +168,19 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // Sync ?thread= URL param on open/close
+  useEffect(() => {
+    const currentSpace = searchParams.get('space');
+    const base = currentSpace ? `/chat?space=${currentSpace}&thread=${messageId}` : `/chat?thread=${messageId}`;
+    router.replace(base);
+    return () => {
+      // On unmount (panel closed), strip the thread param
+      const sp = currentSpace ? `/chat?space=${currentSpace}` : '/chat';
+      router.replace(sp);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messageId]);
 
   const scrollToBottom = useCallback(() => {
     repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -258,18 +283,38 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const content = input;
-    setInput('');
+  const handleRichSend = async (html: string, _text: string) => {
+    let content = html;
+    if (pendingFiles.length > 0) {
+      const fileLines = pendingFiles.map(
+        (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
+      );
+      content = fileLines.join('\n') + '\n' + content;
+    }
+    setPendingFiles([]);
     await api.post(`/api/messages/${spaceId}`, { content, parent_id: messageId });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          const result = await uploadFile(file);
+          if (result) setPendingFiles((prev) => [...prev, result]);
+        }
+      }
     }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    for (const file of files) {
+      const result = await uploadFile(file);
+      if (result) setPendingFiles((prev) => [...prev, result]);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleReaction = async (msgId: string, emoji: string) => {
@@ -360,7 +405,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                   <div className="relative">
                     <button
                       onClick={() => setEmojiPickerMsgId(emojiPickerMsgId === msg.id ? null : msg.id)}
-                      className="flex items-center justify-center w-6 h-6 rounded-md"
+                      className="flex items-center justify-center w-9 h-9 md:w-6 md:h-6 rounded-md"
                       style={{ background: 'var(--surface-container-highest)', color: 'var(--outline)' }}
                     >
                       <Smile size={12} strokeWidth={1.5} />
@@ -387,7 +432,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         ? "fixed inset-0 z-50 flex flex-col"
         : "w-[400px] h-full flex flex-col flex-shrink-0"
       }
-      style={{ background: 'var(--surface)' }}
+      style={{ background: 'var(--surface)', borderLeft: isMobile ? undefined : '1px solid var(--border)' }}
     >
       {/* Header */}
       <div
@@ -398,7 +443,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
           {isMobile && (
             <button
               onClick={onClose}
-              className="p-1 rounded-md mr-1"
+              className="flex items-center justify-center min-h-[44px] min-w-[44px] rounded-md mr-1"
               style={{ color: 'var(--muted)' }}
             >
               <ArrowLeft size={18} strokeWidth={1.5} />
@@ -414,7 +459,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         {!isMobile && (
           <button
             onClick={onClose}
-            className="p-1 rounded-md"
+            className="flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1 rounded-md"
             style={{ color: 'var(--muted)' }}
           >
             <X size={16} strokeWidth={1.5} />
@@ -463,39 +508,26 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       </div>
 
       {/* Composer */}
-      <div className="px-4 py-3 flex-shrink-0">
-        <div
-          className="overflow-hidden"
-          style={{
-            background: 'var(--surface-container-low)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: inputFocused ? '0 0 0 2px rgba(144, 128, 250, 0.3)' : 'none',
-            transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
-          }}
-        >
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
-            placeholder="Reply..."
-            className="w-full px-3 pt-2.5 pb-1 text-[13px] resize-none max-h-24 bg-transparent outline-none"
-            style={{ color: 'var(--text-primary)', border: 'none', boxShadow: 'none' }}
-            rows={1}
-          />
-          <div className="flex items-center justify-end px-2 pb-1.5">
-            {input.trim() && (
-              <button
-                onClick={handleSend}
-                className="p-1.5 text-white"
-                style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
-              >
-                <Send size={13} strokeWidth={1.5} />
-              </button>
-            )}
-          </div>
-        </div>
+      <div className="flex-shrink-0">
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          multiple
+          onChange={handleFileSelect}
+        />
+        <RichComposer
+          key={messageId}
+          placeholder="Reply..."
+          onSend={handleRichSend}
+          pendingFiles={pendingFiles}
+          onRemovePendingFile={(id) => setPendingFiles((prev) => prev.filter((f) => f.id !== id))}
+          onFileSelect={() => fileInputRef.current?.click()}
+          onPaste={handlePaste}
+          uploading={uploading}
+          uploadProgress={uploadProgress}
+          spaceId={spaceId}
+        />
       </div>
     </div>
   );

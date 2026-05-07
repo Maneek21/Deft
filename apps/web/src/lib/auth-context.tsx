@@ -102,7 +102,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.push('/chat');
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const refreshToken = localStorage.getItem('deft-refresh-token');
+    if (refreshToken) {
+      // Best-effort server-side revocation — ignore failures so client still clears
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await fetch(`${apiUrl}/api/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      }).catch(() => {});
+    }
     api.clearTokens();
     setUser(null);
     setOrg(null);

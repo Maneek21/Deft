@@ -18,13 +18,17 @@ import {
 } from '@dnd-kit/sortable';
 import { TaskCard } from './task-card';
 import { BoardColumn } from './board-column';
+import { statusLabel } from '@/lib/task-status-labels';
+import type { ResolvedStatus } from '@/hooks/use-project-resolved-config';
 
 type Task = {
   id: string;
   number: number;
   title: string;
   description: string | null;
-  status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
+  // Status is now resolved-config driven; keep the string type wide for
+  // arbitrary skill-defined IDs (e.g. 'lead' / 'qualified' for Sales).
+  status: string;
   priority: 'p0' | 'p1' | 'p2' | 'p3';
   assignee_id: string | null;
   assignee_name: string | null;
@@ -32,6 +36,7 @@ type Task = {
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -43,6 +48,7 @@ type Task = {
   parent_task_id: string | null;
   subtask_count: number;
   subtask_done_count: number;
+  estimation?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -60,23 +66,25 @@ type Props = {
   selectionMode?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelect?: (taskId: string) => void;
+  /**
+   * Task 4.9 — ordered status vocabulary from the project's resolved skill
+   * config. Falls back to the hardcoded engineering set when omitted so
+   * callers that haven't been migrated yet keep working.
+   */
+  statuses?: ResolvedStatus[];
+  hidePrefixIds?: boolean;
 };
 
-const COLUMNS = [
-  { id: 'backlog', label: 'Backlog' },
-  { id: 'todo', label: 'Todo' },
-  { id: 'in_progress', label: 'In Progress' },
-  { id: 'in_review', label: 'In Review' },
-  { id: 'done', label: 'Done' },
-] as const;
+const FALLBACK_COLUMNS: ResolvedStatus[] = [
+  { id: 'backlog', label: 'Backlog', color: '#6b7280', order: 0 },
+  { id: 'todo', label: 'To Do', color: '#3b82f6', order: 1 },
+  { id: 'in_progress', label: 'In Progress', color: '#f59e0b', order: 2 },
+  { id: 'in_review', label: 'In Review', color: '#8b5cf6', order: 3 },
+  { id: 'done', label: 'Done', color: '#10b981', order: 4 },
+  { id: 'cancelled', label: statusLabel('cancelled'), color: '#ef4444', order: 5 },
+];
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog',
-  todo: 'Todo',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  done: 'Done',
-};
+const CANCELLED_COLLAPSED_KEY = 'tasks:cancelled-collapsed';
 
 export function TaskBoard({
   tasks,
@@ -91,11 +99,35 @@ export function TaskBoard({
   selectionMode,
   selectedTaskIds,
   onToggleSelect,
+  statuses,
+  hidePrefixIds,
 }: Props) {
+  const COLUMNS = useMemo(() => {
+    const source = statuses && statuses.length > 0 ? [...statuses] : FALLBACK_COLUMNS;
+    source.sort((a, b) => a.order - b.order);
+    return source;
+  }, [statuses]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<Record<string, string>>({});
   const [isMobile, setIsMobile] = useState(false);
   const [mobileColumn, setMobileColumn] = useState<string>('in_progress');
+  // Keep mobileColumn valid when the resolved-config statuses change (e.g.
+  // switching to a Sales pipeline). If the selected status is no longer in
+  // the list, jump to the second column (typical 'todo'-like) or the first.
+  useEffect(() => {
+    if (!statuses || statuses.length === 0) return;
+    const has = statuses.some((s) => s.id === mobileColumn);
+    if (!has) {
+      const sorted = [...statuses].sort((a, b) => a.order - b.order);
+      setMobileColumn(sorted[Math.min(1, sorted.length - 1)]?.id ?? sorted[0]!.id);
+    }
+  }, [statuses, mobileColumn]);
+  const [cancelledCollapsed, setCancelledCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(CANCELLED_COLLAPSED_KEY);
+    if (stored === null) return true;
+    return stored === 'true';
+  });
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -103,6 +135,16 @@ export function TaskBoard({
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  function toggleCancelledCollapsed() {
+    setCancelledCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(CANCELLED_COLLAPSED_KEY, String(next));
+      }
+      return next;
+    });
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -195,6 +237,8 @@ export function TaskBoard({
 
   if (isMobile) {
     const mobileColTasks = columnTasks[mobileColumn] || [];
+    const mobileColLabel =
+      COLUMNS.find((c) => c.id === mobileColumn)?.label ?? statusLabel(mobileColumn);
     return (
       <div className="flex flex-col h-full">
         {/* Status tabs */}
@@ -211,7 +255,7 @@ export function TaskBoard({
                 transition: 'all 150ms',
               }}
             >
-              {STATUS_LABELS[col.id] || col.label} ({(columnTasks[col.id] || []).length})
+              {col.label} ({(columnTasks[col.id] || []).length})
             </button>
           ))}
         </div>
@@ -219,7 +263,7 @@ export function TaskBoard({
         <div className="flex-1 overflow-y-auto px-4 py-2 space-y-2">
           {mobileColTasks.length === 0 && (
             <div className="flex items-center justify-center py-12" style={{ color: 'var(--muted)' }}>
-              <p className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks in {STATUS_LABELS[mobileColumn]}</p>
+              <p className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks in {mobileColLabel}</p>
             </div>
           )}
           {mobileColTasks.map((task) => (
@@ -234,6 +278,7 @@ export function TaskBoard({
               selectionMode={selectionMode}
               isChecked={selectedTaskIds?.has(task.id)}
               onToggleSelect={onToggleSelect}
+              hidePrefixIds={hidePrefixIds}
             />
           ))}
         </div>
@@ -252,13 +297,18 @@ export function TaskBoard({
       <div className="flex h-full overflow-x-auto px-4 py-4 gap-3">
         {COLUMNS.map((col) => {
           const colItems = columnTasks[col.id];
+          const isCancelled = col.id === 'cancelled';
           return (
             <BoardColumn
               key={col.id}
               id={col.id}
               label={col.label}
+              color={col.color}
               count={colItems.length}
               onAdd={() => onColumnAdd(col.id)}
+              collapsible={isCancelled}
+              collapsed={isCancelled ? cancelledCollapsed : false}
+              onToggleCollapse={isCancelled ? toggleCancelledCollapsed : undefined}
             >
               <SortableContext
                 items={colItems.map((t) => t.id)}
@@ -276,6 +326,7 @@ export function TaskBoard({
                     selectionMode={selectionMode}
                     isChecked={selectedTaskIds?.has(task.id)}
                     onToggleSelect={onToggleSelect}
+                    hidePrefixIds={hidePrefixIds}
                   />
                 ))}
               </SortableContext>
@@ -291,6 +342,7 @@ export function TaskBoard({
             projectPrefix={projectPrefix}
             onClick={() => {}}
             isDragOverlay
+            hidePrefixIds={hidePrefixIds}
           />
         ) : null}
       </DragOverlay>

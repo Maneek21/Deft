@@ -1,0 +1,24 @@
+Run: 2026-04-19T12:11:09.739Z
+API: http://localhost:3001
+Web: http://localhost:3000
+pass=16 fail=0
+
+OK   login: org=1d7d869a
+OK   3.1 POST /:id/clone → 201
+OK   3.2 GET /:id/developer → 200
+OK   3.2 token hidden by default
+OK   3.2 GET /:id/developer?reveal=1 → 200 (200 admin or 403 non-admin)
+OK   3.3 POST /api/agent-webhooks → 201
+OK   3.3 public POST /:slug → 200
+OK   3.3 wrong secret → 401 (expect 401)
+OK   3.4 deft-mcp-client present in /api/skills (source=bundled)
+OK   3.8 trace.json → 200
+OK   3.8 Content-Disposition is attachment (got "attachment; filename="agent-trace-3631bbc2.json"")
+OK   3.8 format=deft.agent_trace.v1
+INFO screenshot docs/superpowers/audits/screenshots/block-3-smoke/01-developer-page.png
+OK   3.2 Developer page renders header
+OK   3.2 Reveal button present
+OK   3.2 wscat one-liner section visible
+OK   regression: ClawHub tab still present (Block 1.5)
+
+OVERALL: PASS

@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@deft/db": "workspace:*",
+    "@deft/mcp": "workspace:*",
     "@deft/shared": "workspace:*",
     "@hono/node-server": "^1.19.11",
     "bcryptjs": "^3.0.3",

@@ -14,6 +14,10 @@ import {
   peopleExpertise,
   peoplePatterns,
   peopleRelationships,
+  wikiPages,
+  wikiLinks,
+  labels,
+  taskLabels,
 } from '@deft/db/schema';
 import { eq, and, gte, sql, inArray, ne, desc } from 'drizzle-orm';
 
@@ -410,7 +414,125 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
     WHERE org_id = ${orgId}
   `);
 
-  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs`);
+  // ── Wiki authorship signal ──────────────────────────────────────────────────
+  // Users who author wiki pages tagged with topic X get +5 × confidence added
+  // to their expertise score on X. Covers pages created in the last 24 hours
+  // (matches the existing extraction cadence).
+  //
+  // We pull all recent pages for the org (not per-user) to avoid N+1 queries,
+  // then accumulate per-user/topic deltas and upsert in one pass.
+  const recentWikiPages = await db
+    .select({
+      user_id: wikiPages.user_id,
+      tags: wikiPages.tags,
+      confidence: wikiPages.confidence,
+    })
+    .from(wikiPages)
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.created_at} > NOW() - INTERVAL '24 hours'`,
+      ),
+    );
+
+  // Accumulate wiki score deltas: key = "userId:topic", value = score delta
+  const wikiScoreDeltas = new Map<string, number>();
+  for (const page of recentWikiPages) {
+    if (!page.user_id) continue; // agent-authored pages have no user_id
+    for (const tag of page.tags ?? []) {
+      if (!tag || tag === 'commitment' || tag === 'reversed') continue;
+      const key = `${page.user_id}:${tag}`;
+      wikiScoreDeltas.set(key, (wikiScoreDeltas.get(key) ?? 0) + 5 * (page.confidence ?? 1));
+    }
+  }
+
+  // Upsert wiki-derived expertise rows and apply the score boost
+  for (const [key, scoreDelta] of wikiScoreDeltas) {
+    const colonIdx = key.indexOf(':');
+    const userId = key.slice(0, colonIdx);
+    const topic = key.slice(colonIdx + 1);
+    const now = new Date();
+
+    await db
+      .insert(peopleExpertise)
+      .values({
+        org_id: orgId,
+        user_id: userId,
+        topic,
+        expertise_score: scoreDelta,
+      })
+      .onConflictDoUpdate({
+        target: [peopleExpertise.org_id, peopleExpertise.user_id, peopleExpertise.topic],
+        set: {
+          expertise_score: sql`${peopleExpertise.expertise_score} + ${scoreDelta}`,
+          updated_at: now,
+        },
+      });
+  }
+
+  // ── Task-completion signal (label-driven) ─────────────────────────────────
+  // When a user's task transitions to status='done' within the last 24h,
+  // each label on that task becomes a topic for the assignee with a
+  // `+3 × label_weight` contribution to their expertise score.
+  //
+  // NOTE: the `tasks` table does not carry a `completed_at` column today
+  // (see packages/db/src/schema.ts). Falling back to `updated_at` with
+  // `status='done'` is a close proxy — it overcounts only when a done task
+  // is edited after completion, which is rare in practice. The `labels`
+  // table likewise has no `weight` column, so `label_weight` defaults to 1.
+  const completedTaskLabelRows = await db
+    .select({
+      assignee_id: tasks.assignee_id,
+      label_name: labels.name,
+    })
+    .from(tasks)
+    .innerJoin(taskLabels, eq(taskLabels.task_id, tasks.id))
+    .innerJoin(labels, eq(labels.id, taskLabels.label_id))
+    .where(
+      and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.status, 'done'),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.updated_at} > NOW() - INTERVAL '24 hours'`,
+      ),
+    );
+
+  // Accumulate: key = "userId:topic", value = +3 × label_weight per completion.
+  const taskLabelScoreDeltas = new Map<string, number>();
+  for (const row of completedTaskLabelRows) {
+    if (!row.assignee_id) continue; // unassigned → no-one gets credit
+    const topic = row.label_name?.toLowerCase().trim();
+    if (!topic || topic.length > 50) continue;
+    const key = `${row.assignee_id}:${topic}`;
+    const labelWeight = 1; // labels table has no weight column → default 1
+    taskLabelScoreDeltas.set(key, (taskLabelScoreDeltas.get(key) ?? 0) + 3 * labelWeight);
+  }
+
+  for (const [key, scoreDelta] of taskLabelScoreDeltas) {
+    const colonIdx = key.indexOf(':');
+    const userId = key.slice(0, colonIdx);
+    const topic = key.slice(colonIdx + 1);
+    const now = new Date();
+
+    await db
+      .insert(peopleExpertise)
+      .values({
+        org_id: orgId,
+        user_id: userId,
+        topic,
+        expertise_score: scoreDelta,
+      })
+      .onConflictDoUpdate({
+        target: [peopleExpertise.org_id, peopleExpertise.user_id, peopleExpertise.topic],
+        set: {
+          expertise_score: sql`${peopleExpertise.expertise_score} + ${scoreDelta}`,
+          updated_at: now,
+        },
+      });
+  }
+
+  console.log(`[people-graph] Expertise extracted for org ${orgId}: ${expertiseDeltas.size} topic-user pairs; wiki signal applied for ${wikiScoreDeltas.size} topic-user pairs; task-completion label signal applied for ${taskLabelScoreDeltas.size} topic-user pairs`);
 }
 
 // ═══ PATTERN ANALYSIS ═══
@@ -920,7 +1042,260 @@ export async function detectRelationships(orgId: string): Promise<void> {
     }
   }
 
-  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed`);
+  // ─── Wiki citation → knowledge_dependency edges ───────────────────────────
+  // When user-A's wiki page links to user-B's wiki page (via wikiLinks),
+  // that signals user-A relies on user-B's documented knowledge.
+  const citationPairs = await db
+    .select({
+      user_a: wikiPages.user_id,
+      user_b: sql<string>`cited.user_id`,
+      strength: sql<number>`count(*)::int`,
+    })
+    .from(wikiLinks)
+    .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
+    .innerJoin(
+      sql`wiki_pages AS cited`,
+      sql`cited.id = ${wikiLinks.target_page_id}`,
+    )
+    .where(
+      and(
+        eq(wikiPages.org_id, orgId),
+        sql`cited.org_id = ${orgId}`,
+        sql`${wikiPages.user_id} IS NOT NULL`,
+        sql`cited.user_id IS NOT NULL`,
+        sql`${wikiPages.user_id} != cited.user_id`,
+        eq(wikiPages.is_deleted, false),
+        sql`cited.is_deleted = false`,
+      ),
+    )
+    .groupBy(wikiPages.user_id, sql`cited.user_id`)
+    .having(sql`count(*) >= 2`);
+
+  for (const pair of citationPairs) {
+    if (!pair.user_a || !pair.user_b) continue;
+    const normalizedStrength = Math.min(1, Number(pair.strength) / 10);
+
+    await db
+      .insert(peopleRelationships)
+      .values({
+        org_id: orgId,
+        user_a_id: pair.user_a,
+        user_b_id: pair.user_b,
+        relationship_type: 'knowledge_dependency',
+        strength: normalizedStrength,
+        direction: 'a_to_b',
+        evidence: {
+          wiki_citation_count: Number(pair.strength),
+        },
+      })
+      .onConflictDoUpdate({
+        target: [
+          peopleRelationships.user_a_id,
+          peopleRelationships.user_b_id,
+          peopleRelationships.relationship_type,
+        ],
+        set: {
+          strength: normalizedStrength,
+          evidence: {
+            wiki_citation_count: Number(pair.strength),
+          },
+          updated_at: now,
+        },
+      });
+  }
+
+  // ─── delegation_chain edges ───────────────────────────────────────────────
+  // user-A creates/assigns ≥5 tasks to user-B in 14 days with no reverse.
+  // We use tasks.created_by as the delegator and tasks.assignee_id as the delegatee.
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+  const delegationCounts = await db
+    .select({
+      delegator: tasks.created_by,
+      delegatee: tasks.assignee_id,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        gte(tasks.created_at, fourteenDaysAgo),
+        sql`${tasks.assignee_id} IS NOT NULL`,
+        sql`${tasks.created_by} != ${tasks.assignee_id}`,
+      ),
+    )
+    .groupBy(tasks.created_by, tasks.assignee_id)
+    .having(sql`count(*) >= 5`);
+
+  // Build a lookup map: "delegator:delegatee" -> count
+  const delegationMap = new Map<string, number>();
+  for (const row of delegationCounts) {
+    if (!row.delegatee) continue;
+    delegationMap.set(`${row.delegator}:${row.delegatee}`, Number(row.count));
+  }
+
+  for (const row of delegationCounts) {
+    if (!row.delegatee) continue;
+    // Only emit edge if there is NO reverse delegation of ≥5
+    const reverseKey = `${row.delegatee}:${row.delegator}`;
+    if (delegationMap.has(reverseKey)) continue; // mutual delegation — skip
+
+    const count = Number(row.count);
+    const strength = Math.min(1, count / 20);
+
+    await db
+      .insert(peopleRelationships)
+      .values({
+        org_id: orgId,
+        user_a_id: row.delegator,
+        user_b_id: row.delegatee,
+        relationship_type: 'delegation_chain',
+        strength,
+        direction: 'a_to_b',
+        evidence: { delegation_count: count, period_days: 14 },
+      })
+      .onConflictDoUpdate({
+        target: [
+          peopleRelationships.user_a_id,
+          peopleRelationships.user_b_id,
+          peopleRelationships.relationship_type,
+        ],
+        set: {
+          strength,
+          evidence: { delegation_count: count, period_days: 14 },
+          updated_at: now,
+        },
+      });
+  }
+
+  const delegationEdges = delegationCounts.filter((r) => {
+    if (!r.delegatee) return false;
+    return !delegationMap.has(`${r.delegatee}:${r.delegator}`);
+  }).length;
+
+  // ─── cross_team_bridge edges ──────────────────────────────────────────────
+  // A user who belongs to ≥3 distinct spaces AND has ≥2 distinct expertise topics
+  // is a "bridge". We link them to their highest-scoring interaction partner.
+
+  // Find all users with ≥3 space memberships in this org
+  const spaceMemberCounts = await db
+    .select({
+      user_id: spaceMembers.user_id,
+      space_count: sql<number>`count(distinct ${spaceMembers.space_id})::int`,
+    })
+    .from(spaceMembers)
+    .innerJoin(spaces, eq(spaceMembers.space_id, spaces.id))
+    .where(
+      and(
+        eq(spaces.org_id, orgId),
+      ),
+    )
+    .groupBy(spaceMembers.user_id)
+    .having(sql`count(distinct ${spaceMembers.space_id}) >= 3`);
+
+  const bridgeCandidates = new Set(spaceMemberCounts.map((r) => r.user_id));
+
+  if (bridgeCandidates.size > 0) {
+    // Filter to those with ≥2 distinct expertise topics
+    const expertiseCounts = await db
+      .select({
+        user_id: peopleExpertise.user_id,
+        topic_count: sql<number>`count(distinct ${peopleExpertise.topic})::int`,
+      })
+      .from(peopleExpertise)
+      .where(
+        and(
+          eq(peopleExpertise.org_id, orgId),
+          inArray(peopleExpertise.user_id, [...bridgeCandidates]),
+        ),
+      )
+      .groupBy(peopleExpertise.user_id)
+      .having(sql`count(distinct ${peopleExpertise.topic}) >= 2`);
+
+    const confirmedBridges = new Set(expertiseCounts.map((r) => r.user_id));
+
+    if (confirmedBridges.size > 0) {
+      // For each confirmed bridge, find top interaction partner (by recency_weighted_score)
+      const bridgeInteractions = await db
+        .select()
+        .from(peopleInteractions)
+        .where(
+          and(
+            eq(peopleInteractions.org_id, orgId),
+            sql`(${peopleInteractions.user_a_id} = ANY(${sql`ARRAY[${sql.join([...confirmedBridges].map((id) => sql`${id}`), sql`, `)}]::text[]`}) OR
+                 ${peopleInteractions.user_b_id} = ANY(${sql`ARRAY[${sql.join([...confirmedBridges].map((id) => sql`${id}`), sql`, `)}]::text[]`}))`,
+          ),
+        )
+        .orderBy(desc(peopleInteractions.recency_weighted_score));
+
+      // For each bridge user, collect the best interaction partner
+      const bestPartner = new Map<string, { partnerId: string; score: number }>();
+
+      for (const interaction of bridgeInteractions) {
+        const bridgeIsA = confirmedBridges.has(interaction.user_a_id);
+        const bridgeIsB = confirmedBridges.has(interaction.user_b_id);
+
+        // Handle bridge on the A side
+        if (bridgeIsA && !confirmedBridges.has(interaction.user_b_id)) {
+          const existing = bestPartner.get(interaction.user_a_id);
+          if (!existing || interaction.recency_weighted_score > existing.score) {
+            bestPartner.set(interaction.user_a_id, {
+              partnerId: interaction.user_b_id,
+              score: interaction.recency_weighted_score,
+            });
+          }
+        }
+        // Handle bridge on the B side
+        if (bridgeIsB && !confirmedBridges.has(interaction.user_a_id)) {
+          const existing = bestPartner.get(interaction.user_b_id);
+          if (!existing || interaction.recency_weighted_score > existing.score) {
+            bestPartner.set(interaction.user_b_id, {
+              partnerId: interaction.user_a_id,
+              score: interaction.recency_weighted_score,
+            });
+          }
+        }
+      }
+
+      for (const [bridgeUserId, { partnerId, score }] of bestPartner) {
+        const strength = Math.min(1, score / 50);
+
+        await db
+          .insert(peopleRelationships)
+          .values({
+            org_id: orgId,
+            user_a_id: bridgeUserId,
+            user_b_id: partnerId,
+            relationship_type: 'cross_team_bridge',
+            strength,
+            direction: 'a_to_b',
+            evidence: { bridge_user_id: bridgeUserId, recency_weighted_score: score },
+          })
+          .onConflictDoUpdate({
+            target: [
+              peopleRelationships.user_a_id,
+              peopleRelationships.user_b_id,
+              peopleRelationships.relationship_type,
+            ],
+            set: {
+              strength,
+              evidence: { bridge_user_id: bridgeUserId, recency_weighted_score: score },
+              updated_at: now,
+            },
+          });
+      }
+    }
+  }
+
+  // ─── tension (intentionally stubbed) ─────────────────────────────────────
+  // Tension detection requires reliable sentiment or asymmetric engagement signals.
+  // The available heuristics (message-count skew + mutual @-mention count) produce
+  // too many false positives on small teams and too many false negatives on async
+  // communicators. Stubbed until a higher-quality signal is available (e.g. LLM
+  // sentiment on sampled message pairs or explicit "block/mute" events).
+
+  console.log(`[people-graph] Relationships detected for org ${orgId}: ${strongPairs.length} strong pairs analyzed, ${citationPairs.length} knowledge_dependency edges, ${delegationEdges} delegation_chain edges`);
 }
 
 // ═══ FULL PIPELINE ═══

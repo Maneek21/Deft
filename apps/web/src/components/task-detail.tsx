@@ -3,21 +3,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import { TagPicker } from './tag-picker';
+import { TaskReactionBar } from './task-card-unified';
 import {
   X,
   ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ArrowLeft,
   Calendar,
   Tag,
   User,
-  MessageSquare,
-  Activity,
   ExternalLink,
   Loader2,
   MoreHorizontal,
@@ -31,7 +33,10 @@ import {
   Paperclip,
   Upload,
   Trash2,
+  Repeat,
 } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
+import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type CanonicalPriority } from '@/hooks/use-project-resolved-config';
 
 type Task = {
   id: string;
@@ -40,12 +45,17 @@ type Task = {
   description: string | null;
   status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
   priority: 'p0' | 'p1' | 'p2' | 'p3';
+  // Primary assignee — singular (see Phase 0.3: schema.ts tasks.assignee_id)
   assignee_id: string | null;
   assignee_name: string | null;
   assignee_avatar: string | null;
+  // Additional assignees — loaded from GET /api/tasks/:id/assignees
+  additional_assignees?: { user_id: string; user_name: string | null; user_avatar: string | null }[];
   created_by: string;
   creator_name: string | null;
   due_date: string | null;
+  start_date: string | null;
+  estimation: string | null;
   sort_order: number;
   source_message_id: string | null;
   is_deleted: boolean;
@@ -55,6 +65,10 @@ type Task = {
   project_color: string | null;
   labels: { id: string; name: string; color: string }[];
   parent_task_id: string | null;
+  // Task 4.12 — recurrence cadence; null means "does not repeat".
+  recurrence: 'daily' | 'weekly' | 'biweekly' | 'monthly' | null;
+  // Task 4.11 — skill-defined custom field payload (deal_value, contact, etc).
+  metadata?: Record<string, any> | null;
   created_at: string;
   updated_at: string;
 };
@@ -134,12 +148,12 @@ type Props = {
 };
 
 const STATUS_OPTIONS = [
-  { value: 'backlog', label: 'Backlog' },
-  { value: 'todo', label: 'Todo' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'in_review', label: 'In Review' },
-  { value: 'done', label: 'Done' },
-  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'backlog', label: statusLabel('backlog') },
+  { value: 'todo', label: statusLabel('todo') },
+  { value: 'in_progress', label: statusLabel('in_progress') },
+  { value: 'in_review', label: statusLabel('in_review') },
+  { value: 'done', label: statusLabel('done') },
+  { value: 'cancelled', label: statusLabel('cancelled') },
 ];
 
 const PRIORITY_OPTIONS = [
@@ -159,11 +173,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function formatStatusLabel(status: string): string {
-  const map: Record<string, string> = {
-    backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress',
-    in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-  };
-  return map[status] || status;
+  return statusLabel(status);
 }
 
 function formatPriorityLabel(priority: string): string {
@@ -190,6 +200,272 @@ function formatActivityValue(field: string, value: string | null, members?: { id
     return member ? member.name : value;
   }
   return value;
+}
+
+/**
+ * Task 4.11 — Renders a label/input pair for one skill-defined custom field.
+ * Sits inside the task-detail 2-column grid so its children live in the same
+ * row as the other metadata fields. Auto-saves on blur (text / textarea /
+ * url / number) or on change (select / date / user) via the `onChange` prop,
+ * which the caller debounces + merges into `tasks.metadata` JSONB.
+ */
+function CustomFieldRow({
+  field,
+  value,
+  onChange,
+  members,
+}: {
+  field: { id: string; label: string; type: string; options?: string[] };
+  value: any;
+  onChange: (v: any) => void | Promise<void>;
+  members: { id: string; name: string; avatar_url: string | null }[];
+}) {
+  const labelCell = (
+    <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+      {field.label}
+    </span>
+  );
+
+  const inputStyle: React.CSSProperties = {
+    background: 'transparent',
+    border: '1px solid var(--border)',
+    color: 'var(--foreground)',
+    fontFamily: 'var(--font-body)',
+    borderRadius: '6px',
+    padding: '4px 8px',
+    fontSize: '13px',
+    outline: 'none',
+    width: '100%',
+  };
+
+  let inputCell: React.ReactNode;
+
+  switch (field.type) {
+    case 'textarea':
+      inputCell = (
+        <textarea
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical' }}
+          placeholder="—"
+        />
+      );
+      break;
+    case 'select':
+      inputCell = (
+        <select
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        >
+          <option value="">—</option>
+          {(field.options ?? []).map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    case 'date':
+      inputCell = (
+        <input
+          type="date"
+          value={value ? String(value).slice(0, 10) : ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        />
+      );
+      break;
+    case 'number':
+    case 'currency':
+      inputCell = (
+        <input
+          type="number"
+          defaultValue={value ?? ''}
+          onBlur={(e) => {
+            const raw = e.target.value;
+            if (raw === '') {
+              onChange(null);
+            } else {
+              const n = Number(raw);
+              if (!Number.isNaN(n)) onChange(n);
+            }
+          }}
+          style={inputStyle}
+          placeholder={field.type === 'currency' ? '0' : '—'}
+        />
+      );
+      break;
+    case 'url':
+      inputCell = (
+        <input
+          type="url"
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+          placeholder="https://…"
+        />
+      );
+      break;
+    case 'user':
+      inputCell = (
+        <select
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+        >
+          <option value="">Unassigned</option>
+          {members.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    case 'text':
+    default:
+      inputCell = (
+        <input
+          type="text"
+          defaultValue={value ?? ''}
+          onBlur={(e) => onChange(e.target.value || null)}
+          style={inputStyle}
+          placeholder="—"
+        />
+      );
+  }
+
+  return (
+    <>
+      {labelCell}
+      {inputCell}
+    </>
+  );
+}
+
+/**
+ * Task 6.2 — Activity diff view.
+ *
+ * For short/simple fields (status, priority, assignee, title, due_date,
+ * etc.) we render `old` → `new` inline with a subtle strikethrough on the
+ * old value so the transition reads at a glance.
+ *
+ * For `description` changes the values can be multi-paragraph HTML, so we
+ * strip tags, split by newline, and run a minimal longest-common-subsequence
+ * line diff inline (no external dep). The diff starts collapsed and toggles
+ * on click.
+ */
+function htmlToLines(html: string | null): string[] {
+  if (!html) return [];
+  // Strip tags; preserve paragraph/line breaks as newlines.
+  const withBreaks = html
+    .replace(/<br\s*\/?>(?=)/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  const decoded = withBreaks
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  return decoded.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+type DiffOp = { op: 'eq' | 'add' | 'del'; text: string };
+
+function lineDiff(oldLines: string[], newLines: string[]): DiffOp[] {
+  // Classic LCS table; O(N*M) is fine — activity diffs are small by nature.
+  const n = oldLines.length;
+  const m = newLines.length;
+  const table: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0),
+  );
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      table[i][j] =
+        oldLines[i - 1] === newLines[j - 1]
+          ? table[i - 1][j - 1] + 1
+          : Math.max(table[i - 1][j], table[i][j - 1]);
+    }
+  }
+  const out: DiffOp[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (oldLines[i - 1] === newLines[j - 1]) {
+      out.push({ op: 'eq', text: oldLines[i - 1] });
+      i--;
+      j--;
+    } else if (table[i - 1][j] >= table[i][j - 1]) {
+      out.push({ op: 'del', text: oldLines[i - 1] });
+      i--;
+    } else {
+      out.push({ op: 'add', text: newLines[j - 1] });
+      j--;
+    }
+  }
+  while (i > 0) {
+    out.push({ op: 'del', text: oldLines[i - 1] });
+    i--;
+  }
+  while (j > 0) {
+    out.push({ op: 'add', text: newLines[j - 1] });
+    j--;
+  }
+  return out.reverse();
+}
+
+function DescriptionDiff({ oldValue, newValue }: { oldValue: string | null; newValue: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const diff = lineDiff(htmlToLines(oldValue), htmlToLines(newValue));
+  const adds = diff.filter((d) => d.op === 'add').length;
+  const dels = diff.filter((d) => d.op === 'del').length;
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-[11px] font-medium px-1.5 py-0.5 rounded inline-flex items-center gap-1"
+        style={{
+          color: 'var(--muted)',
+          background: 'var(--surface-container-high)',
+          fontFamily: 'var(--font-heading)',
+        }}
+      >
+        {expanded ? 'Hide diff' : 'Show diff'}
+        <span style={{ color: 'var(--success)' }}>+{adds}</span>
+        <span style={{ color: 'var(--danger)' }}>-{dels}</span>
+      </button>
+      {expanded && (
+        <pre
+          className="mt-1 rounded-md p-2 overflow-x-auto text-[11px] leading-relaxed"
+          style={{
+            background: 'var(--surface-container-low)',
+            border: '1px solid var(--border)',
+            fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, monospace)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {diff.map((d, idx) => {
+            const marker = d.op === 'add' ? '+' : d.op === 'del' ? '-' : ' ';
+            const color = d.op === 'add' ? 'var(--success)' : d.op === 'del' ? 'var(--danger)' : 'var(--foreground-secondary)';
+            const bg =
+              d.op === 'add' ? 'rgba(34, 197, 94, 0.08)'
+              : d.op === 'del' ? 'rgba(220, 38, 38, 0.08)'
+              : 'transparent';
+            return (
+              <div key={idx} style={{ color, background: bg, padding: '0 4px' }}>
+                {marker} {d.text}
+              </div>
+            );
+          })}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function DescriptionEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
@@ -231,20 +507,92 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const { user } = useAuth();
   const router = useRouter();
   const [task, setTask] = useState<Task | null>(null);
+  const { config: resolvedConfig } = useProjectResolvedConfig(task?.project_id ?? null);
   const [loading, setLoading] = useState(true);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState('');
   const [descValue, setDescValue] = useState('');
-  const [activeTab, setActiveTab] = useState<'comments' | 'activity'>('comments');
+  // Task 6.1 — tabbed navigation. Description is the default surface; the
+  // other tabs host sections that used to stack in the flat layout. Top of
+  // modal (title + status + priority + assignee + due date) stays visible
+  // above the tab strip.
+  type TabKey = 'description' | 'subtasks' | 'dependencies' | 'comments' | 'activity' | 'attachments' | 'references';
+  const VALID_TABS: readonly TabKey[] = [
+    'description',
+    'subtasks',
+    'dependencies',
+    'comments',
+    'activity',
+    'attachments',
+    'references',
+  ] as const;
+  const initialTab = ((): TabKey => {
+    if (typeof window === 'undefined') return 'description';
+    const hash = window.location.hash.replace(/^#/, '') as TabKey;
+    return (VALID_TABS as readonly string[]).includes(hash) ? hash : 'description';
+  })();
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  const handleTabChange = useCallback((tab: TabKey) => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      // Update hash without re-triggering nav events.
+      const url = new URL(window.location.href);
+      url.hash = tab;
+      window.history.replaceState(null, '', url.toString());
+    }
+  }, []);
+  // React to external hash changes (deep-link or back/forward nav).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onHashChange = () => {
+      const hash = window.location.hash.replace(/^#/, '') as TabKey;
+      if ((VALID_TABS as readonly string[]).includes(hash)) {
+        setActiveTab(hash);
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+    // VALID_TABS is module-constant; intentionally omitted from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [comments, setComments] = useState<Comment[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const commentEditor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({
+        heading: false,
+        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
+        code: { HTMLAttributes: { class: 'deft-inline-code' } },
+      }),
+      Placeholder.configure({ placeholder: 'Add a comment...' }),
+    ],
+    editorProps: { attributes: { class: 'deft-editor' } },
+  });
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [members, setMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
+  const [agentEmployees, setAgentEmployees] = useState<any[]>([]);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [metadataExpanded, setMetadataExpanded] = useState(false);
+  useEffect(() => {
+    setMetadataExpanded(false);
+  }, [taskId]);
   const [taskTags, setTaskTags] = useState<{ id: string; name: string; color: string | null }[]>([]);
+
+  // Task 3.10 — live agent progress strip. Populated by `task:agent_progress`
+  // socket events scoped to this open task. Only the most recent agent's
+  // state is kept; if another agent takes over (rare), the latest event wins.
+  const [agentProgress, setAgentProgress] = useState<{
+    agent_employee_id: string | null;
+    step_index: number;
+    step_description: string;
+    status: 'started' | 'completed' | 'failed';
+    total_steps: number;
+    error?: string;
+  } | null>(null);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -271,6 +619,16 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   // Attachments state
   const [attachments, setAttachments] = useState<{ id: string; filename: string; mime_type: string; size_bytes: number; storage_key: string; created_at: string }[]>([]);
   const attachFileRef = useRef<HTMLInputElement>(null);
+  // Task 6.5 — upload state: progress percent (0–100), the last failed file
+  // (so we can render a Retry button), and the in-flight XHR (cancel-on-unmount).
+  const [uploadState, setUploadState] = useState<{
+    status: 'idle' | 'uploading' | 'error';
+    filename?: string;
+    progress?: number;
+    error?: string;
+  }>({ status: 'idle' });
+  const pendingUploadRef = useRef<File | null>(null);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
   // References state (backlinks)
   const [references, setReferences] = useState<{
@@ -280,6 +638,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }[]>([]);
 
   const titleRef = useRef<HTMLInputElement>(null);
+  const dueDateInputRef = useRef<HTMLInputElement>(null);
+  const startDateInputRef = useRef<HTMLInputElement>(null);
   const titleDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
   const depSearchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -301,6 +661,71 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   useEffect(() => {
     loadTask();
   }, [loadTask]);
+
+  // Socket: live updates for the currently-open task
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    if (!token) return;
+    const socket = getSocket(token);
+
+    const onUpdated = (payload: { id: string } & Record<string, unknown>) => {
+      if (payload.id !== taskId) return;
+      // Refetch for canonical shape (includes joined fields like assignee_name, labels, subtasks)
+      loadTask();
+    };
+    const onDeleted = (payload: { id: string }) => {
+      if (payload.id !== taskId) return;
+      onClose();
+    };
+
+    // Task 3.10 — live agent progress. The server emits to `org:${orgId}`,
+    // so we filter by task_id here.
+    const onAgentProgress = (payload: {
+      task_id: string;
+      agent_employee_id: string | null;
+      step_index: number;
+      step_description: string;
+      status: 'started' | 'completed' | 'failed';
+      total_steps: number;
+      error?: string;
+    }) => {
+      if (payload.task_id !== taskId) return;
+      setAgentProgress({
+        agent_employee_id: payload.agent_employee_id,
+        step_index: payload.step_index,
+        step_description: payload.step_description,
+        status: payload.status,
+        total_steps: payload.total_steps,
+        error: payload.error,
+      });
+    };
+
+    socket.on('task:updated', onUpdated);
+    socket.on('task:deleted', onDeleted);
+    socket.on('task:agent_progress', onAgentProgress);
+    return () => {
+      socket.off('task:updated', onUpdated);
+      socket.off('task:deleted', onDeleted);
+      socket.off('task:agent_progress', onAgentProgress);
+    };
+  }, [taskId, loadTask, onClose]);
+
+  // Task 3.10 — auto-dismiss the agent progress strip once the agent has
+  // finished. Completed steps clear after 5s; failed steps linger 30s so the
+  // user has time to read the error before it disappears.
+  useEffect(() => {
+    if (!agentProgress) return;
+    if (agentProgress.status !== 'completed' && agentProgress.status !== 'failed') return;
+    const delayMs = agentProgress.status === 'failed' ? 30_000 : 5_000;
+    const timer = setTimeout(() => setAgentProgress(null), delayMs);
+    return () => clearTimeout(timer);
+  }, [agentProgress]);
+
+  // Clear the progress strip when we switch to a different task so state
+  // from the previous task doesn't bleed across.
+  useEffect(() => {
+    setAgentProgress(null);
+  }, [taskId]);
 
   // Load tags for this task
   const loadTaskTags = useCallback(async () => {
@@ -438,9 +863,19 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     load();
   }, []);
 
+  // Load agent employees
+  useEffect(() => {
+    api.get('/api/agent-employees').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.filter((e: any) => e.is_active));
+      }
+    });
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'comments') loadComments();
-    else loadActivity();
+    if (activeTab === 'activity') loadActivity();
   }, [activeTab, loadComments, loadActivity]);
 
   // Title edit with debounce
@@ -468,10 +903,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       const apiResult = await res.json();
       // Merge API result into existing task to preserve joined fields (project_prefix, assignee_name, labels, etc.)
       const merged = { ...task, ...apiResult };
-      // If assignee changed, update the name from members list
+      // If assignee changed, update the name from members list or agent employees
       if (field === 'assignee_id') {
         const member = members.find(m => m.id === value);
-        merged.assignee_name = member?.name || null;
+        const agent = agentEmployees.find(e => e.user_id === value);
+        merged.assignee_name = member?.name || (agent ? `${agent.name} (AI)` : null);
         merged.assignee_avatar = member?.avatar_url || null;
       }
       setTask(merged);
@@ -480,15 +916,97 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   };
 
   const handleAddComment = async () => {
-    if (!newComment.trim() || submittingComment) return;
+    const html = commentEditor?.getHTML() ?? '';
+    const text = commentEditor?.getText() ?? '';
+    if (!text.trim() || submittingComment) return;
     setSubmittingComment(true);
-    const res = await api.post(`/api/tasks/${taskId}/comments`, { content: newComment.trim() });
+    const res = await api.post(`/api/tasks/${taskId}/comments`, { content: html });
     if (res.ok) {
-      setNewComment('');
+      commentEditor?.commands.clearContent();
       loadComments();
     }
     setSubmittingComment(false);
   };
+
+  /**
+   * Task 6.5 — upload with progress. `fetch` doesn't expose upload progress,
+   * so we drop down to XHR. On completion we append the parsed metadata to
+   * local state; on failure we surface an inline error with a retry button.
+   * Large files (>10MB) prompt before firing the request.
+   */
+  const LARGE_FILE_BYTES = 10 * 1024 * 1024;
+  const performUpload = useCallback((file: File) => {
+    if (!task) return;
+    const accessToken = typeof window !== 'undefined' ? localStorage.getItem('deft-access-token') : null;
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    const xhr = new XMLHttpRequest();
+    uploadXhrRef.current = xhr;
+    pendingUploadRef.current = file;
+    setUploadState({ status: 'uploading', filename: file.name, progress: 0 });
+    xhr.open('POST', `${apiBase}/api/upload?task_id=${task.id}`);
+    if (accessToken) xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.upload.addEventListener('progress', (evt) => {
+      if (evt.lengthComputable) {
+        const pct = Math.round((evt.loaded / evt.total) * 100);
+        setUploadState((s) => (s.status === 'uploading' ? { ...s, progress: pct } : s));
+      }
+    });
+    xhr.addEventListener('load', () => {
+      uploadXhrRef.current = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          setAttachments((prev) => [...prev, {
+            id: data.id,
+            filename: data.name || file.name,
+            mime_type: data.type || file.type,
+            size_bytes: data.size || file.size,
+            storage_key: data.url || data.id,
+            created_at: new Date().toISOString(),
+          }]);
+          pendingUploadRef.current = null;
+          setUploadState({ status: 'idle' });
+        } catch (err) {
+          setUploadState({ status: 'error', filename: file.name, error: 'Bad server response' });
+        }
+      } else {
+        setUploadState({ status: 'error', filename: file.name, error: `Upload failed (${xhr.status})` });
+      }
+    });
+    xhr.addEventListener('error', () => {
+      uploadXhrRef.current = null;
+      setUploadState({ status: 'error', filename: file.name, error: 'Network error' });
+    });
+    xhr.addEventListener('abort', () => {
+      uploadXhrRef.current = null;
+    });
+    const formData = new FormData();
+    formData.append('file', file);
+    xhr.send(formData);
+  }, [task]);
+
+  const startUpload = useCallback((file: File) => {
+    if (file.size > LARGE_FILE_BYTES) {
+      const mb = (file.size / (1024 * 1024)).toFixed(1);
+      const ok = typeof window !== 'undefined'
+        ? window.confirm(`"${file.name}" is ${mb}MB — larger than 10MB. Upload anyway?`)
+        : true;
+      if (!ok) return;
+    }
+    performUpload(file);
+  }, [performUpload, LARGE_FILE_BYTES]);
+
+  const retryUpload = useCallback(() => {
+    const file = pendingUploadRef.current;
+    if (file) performUpload(file);
+  }, [performUpload]);
+
+  // Abort any in-flight upload on unmount so we don't leak the request.
+  useEffect(() => {
+    return () => {
+      uploadXhrRef.current?.abort();
+    };
+  }, []);
 
   if (loading || !task) {
     return (
@@ -505,6 +1023,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   }
 
   const priorityInfo = PRIORITY_OPTIONS.find((p) => p.value === task.priority);
+  const hidePrefixIds = resolvedConfig?.hide_prefix_ids ?? false;
+  const priorityDisplay = priorityInfo
+    ? { ...priorityInfo, label: priorityFullLabel(task.priority as CanonicalPriority, resolvedConfig?.priority_vocab) }
+    : undefined;
+  const resolvedStatusOptions =
+    resolvedConfig && resolvedConfig.statuses && resolvedConfig.statuses.length > 0
+      ? [...resolvedConfig.statuses]
+          .sort((a, b) => a.order - b.order)
+          .map((s) => ({ value: s.id, label: s.label, color: s.color }))
+      : STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label, color: STATUS_COLORS[s.value] ?? 'var(--muted)' }));
+  const currentStatusOption = resolvedStatusOptions.find((s) => s.value === task.status);
 
   return (
     <>
@@ -538,12 +1067,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 <ArrowLeft size={18} strokeWidth={1.5} />
               </button>
             )}
-            <span
-              className="text-[12px] font-semibold"
-              style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-            >
-              {projectPrefix || task.project_prefix}-{task.number}
-            </span>
+            {!hidePrefixIds && (
+              <span
+                className="text-[12px] font-semibold"
+                style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+              >
+                {projectPrefix || task.project_prefix}-{task.number}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {task.source_message_id && (
@@ -646,6 +1177,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 {task.title}
               </h2>
             )}
+            {/* Task 6.3 — reaction bar sits under the title so it stays
+                visible regardless of which tab is active. */}
+            <div className="mt-2">
+              <TaskReactionBar taskId={taskId} />
+            </div>
           </div>
 
           {/* Fields grid */}
@@ -666,8 +1202,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
-                <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[task.status] }} />
-                {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
+                <div className="w-2 h-2 rounded-full" style={{ background: currentStatusOption?.color || 'var(--muted)' }} />
+                {currentStatusOption?.label ?? statusLabel(task.status)}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
               {openDropdown === 'status' && (
@@ -675,7 +1211,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   className="absolute top-full left-0 mt-1 w-44 rounded-lg py-1 z-20"
                   style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
                 >
-                  {STATUS_OPTIONS.map((opt) => (
+                  {resolvedStatusOptions.map((opt) => (
                     <button
                       key={opt.value}
                       onClick={() => handleFieldUpdate('status', opt.value)}
@@ -687,7 +1223,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[opt.value] }} />
+                      <div className="w-2 h-2 rounded-full" style={{ background: opt.color || 'var(--muted)' }} />
                       {opt.label}
                     </button>
                   ))}
@@ -712,7 +1248,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
                 <div className="w-2 h-2 rounded-full" style={{ background: priorityInfo?.color }} />
-                {priorityInfo?.label}
+                {priorityDisplay?.label}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
               {openDropdown === 'priority' && (
@@ -733,14 +1269,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
                       <div className="w-2 h-2 rounded-full" style={{ background: opt.color }} />
-                      {opt.label}
+                      {priorityFullLabel(opt.value as CanonicalPriority, resolvedConfig?.priority_vocab)}
                     </button>
                   ))}
                 </div>
               )}
             </div>
 
-            {/* Assignee */}
+            {/* Assignee (primary) */}
             <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
               <User size={12} className="inline mr-1" />
               Assignee
@@ -772,6 +1308,20 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 )}
                 <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
               </button>
+              {/* Phase 0.3 — summarize primary + additional assignees */}
+              {(task.additional_assignees?.length ?? 0) > 0 && (
+                <div
+                  className="text-[11px] mt-1 px-2"
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
+                >
+                  Primary: {task.assignee_name || 'Unassigned'}
+                  {' • '}
+                  Additional:{' '}
+                  {task.additional_assignees!
+                    .map((a) => a.user_name || 'Unknown')
+                    .join(', ')}
+                </div>
+              )}
               {openDropdown === 'assignee' && (
                 <div
                   className="absolute top-full left-0 mt-1 w-52 rounded-lg py-1 z-20"
@@ -786,7 +1336,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   >
                     Unassigned
                   </button>
-                  {members.map((m) => (
+                  {members
+                    .filter((m) => !agentEmployees.some((e) => e.user_id === m.id))
+                    .map((m) => (
                     <button
                       key={m.id}
                       onClick={() => handleFieldUpdate('assignee_id', m.id)}
@@ -807,6 +1359,36 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       {m.name}
                     </button>
                   ))}
+                  {agentEmployees.length > 0 && (
+                    <>
+                      <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
+                      <div className="px-3 py-1 text-[11px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                        AI Agents
+                      </div>
+                      {agentEmployees.map((emp) => (
+                        <button
+                          key={emp.user_id}
+                          onClick={() => handleFieldUpdate('assignee_id', emp.user_id)}
+                          className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-[13px]"
+                          style={{
+                            color: task.assignee_id === emp.user_id ? 'var(--accent)' : 'var(--foreground)',
+                            fontFamily: 'var(--font-body)',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                            style={{ background: '#8B5CF6' }}
+                          >
+                            {emp.name.charAt(0).toUpperCase()}
+                          </div>
+                          {emp.name}
+                          <span className="text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--hover-tint)', color: 'var(--muted)' }}>AI</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -816,90 +1398,302 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               <Calendar size={12} className="inline mr-1" />
               Due date
             </span>
-            <div className="relative">
-              {!task.due_date && (
-                <span
-                  className="absolute left-2 top-1/2 -translate-y-1/2 text-[13px] pointer-events-none"
-                  style={{
-                    color: 'var(--muted)',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                >
-                  Set due date
-                </span>
-              )}
+            <div className="flex items-center gap-1 relative">
+              <span
+                className="text-[13px] px-2 py-1 cursor-pointer rounded-md"
+                style={{
+                  color: task.due_date ? 'var(--foreground)' : 'var(--muted)',
+                  fontFamily: 'var(--font-body)',
+                }}
+                onClick={() => {
+                  dueDateInputRef.current?.showPicker?.();
+                  dueDateInputRef.current?.click();
+                }}
+              >
+                {task.due_date
+                  ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : 'Set due date'}
+              </span>
               <input
+                ref={dueDateInputRef}
                 type="date"
                 value={task.due_date ? new Date(task.due_date).toISOString().split('T')[0] : ''}
                 onChange={(e) => handleFieldUpdate('due_date', e.target.value || null)}
-                className="px-2 py-1 rounded-md text-[13px] bg-transparent outline-none"
-                style={{
-                  color: task.due_date ? 'var(--foreground)' : 'transparent',
-                  fontFamily: 'var(--font-body)',
-                  border: 'none',
-                }}
+                className="w-0 h-0 opacity-0 absolute"
+                tabIndex={-1}
               />
             </div>
 
-            {/* Created date */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Calendar size={12} className="inline mr-1" />
-              Created
-            </span>
-            <span className="text-[13px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
-              {new Date(task.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-            </span>
+            {/* Secondary fields — hidden on mobile until expanded */}
+            {(!isMobile || metadataExpanded) && (
+              <>
+                {/* Estimation */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  Size
+                </span>
+                <div className="flex gap-1 flex-wrap">
+                  {['XS', 'S', 'M', 'L', 'XL'].map(size => (
+                    <button key={size} onClick={() => handleFieldUpdate('estimation', size.toLowerCase())}
+                      className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors"
+                      style={{
+                        background: task.estimation === size.toLowerCase() ? 'var(--accent)' : 'var(--surface-container-low)',
+                        color: task.estimation === size.toLowerCase() ? 'white' : 'var(--muted)',
+                        fontFamily: 'var(--font-heading)',
+                      }}>
+                      {size}
+                    </button>
+                  ))}
+                  {task.estimation && (
+                    <button onClick={() => handleFieldUpdate('estimation', null)}
+                      className="px-1 py-0.5 rounded text-[10px]"
+                      style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                      ×
+                    </button>
+                  )}
+                </div>
 
-            {/* Labels */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Tag size={12} className="inline mr-1" />
-              Labels
-            </span>
-            <div className="flex flex-wrap gap-1">
-              {task.labels.length > 0 ? (
-                task.labels.map((label) => (
+                {/* Start Date */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Calendar size={12} className="inline mr-1" />
+                  Start date
+                </span>
+                <div className="flex items-center gap-1 relative">
                   <span
-                    key={label.id}
-                    className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+                    className="text-[13px] px-2 py-1 cursor-pointer rounded-md"
                     style={{
-                      background: `${label.color}20`,
-                      color: label.color,
+                      color: task.start_date ? 'var(--foreground)' : 'var(--muted)',
+                      fontFamily: 'var(--font-body)',
+                    }}
+                    onClick={() => {
+                      startDateInputRef.current?.showPicker?.();
+                      startDateInputRef.current?.click();
                     }}
                   >
-                    {label.name}
-                    <button
-                      onClick={async () => {
-                        await api.delete(`/api/tasks/${taskId}/labels/${label.id}`);
-                        loadTask();
-                      }}
-                      className="hover:opacity-70"
-                    >
-                      <X size={10} />
-                    </button>
+                    {task.start_date
+                      ? new Date(task.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                      : 'Set start date'}
                   </span>
-                ))
-              ) : (
-                <span className="text-[13px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                  None
-                </span>
-              )}
-            </div>
+                  <input
+                    ref={startDateInputRef}
+                    type="date"
+                    value={task.start_date ? new Date(task.start_date).toISOString().split('T')[0] : ''}
+                    onChange={(e) => handleFieldUpdate('start_date', e.target.value || null)}
+                    className="w-0 h-0 opacity-0 absolute"
+                    tabIndex={-1}
+                  />
+                </div>
 
-            {/* Tags */}
-            <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
-              <Hash size={12} className="inline mr-1" />
-              Tags
-            </span>
-            <TagPicker
-              entityType="task"
-              entityId={taskId}
-              appliedTags={taskTags}
-              onTagsChange={setTaskTags}
-            />
+                {/* Task 4.12 — Recurrence. Persists as tasks.recurrence via
+                    PATCH; the completion spawner on the API reads this to
+                    generate the next occurrence when status transitions to
+                    done/cancelled. */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Repeat size={12} className="inline mr-1" />
+                  Repeats
+                </span>
+                <select
+                  value={task.recurrence ?? ''}
+                  onChange={(e) => handleFieldUpdate('recurrence', e.target.value || null)}
+                  className="text-[13px] px-2 py-1 rounded-md bg-transparent"
+                  style={{
+                    color: task.recurrence ? 'var(--foreground)' : 'var(--muted)',
+                    fontFamily: 'var(--font-body)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <option value="">None</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Every 2 weeks</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+
+                {/* Created date */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Calendar size={12} className="inline mr-1" />
+                  Created
+                </span>
+                <span className="text-[13px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
+                  {new Date(task.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+
+                {/* Labels */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Tag size={12} className="inline mr-1" />
+                  Labels
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {task.labels.length > 0 ? (
+                    task.labels.map((label) => (
+                      <span
+                        key={label.id}
+                        className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+                        style={{
+                          background: `${label.color}20`,
+                          color: label.color,
+                        }}
+                      >
+                        {label.name}
+                        <button
+                          onClick={async () => {
+                            await api.delete(`/api/tasks/${taskId}/labels/${label.id}`);
+                            loadTask();
+                          }}
+                          className="hover:opacity-70"
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-[13px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                      None
+                    </span>
+                  )}
+                </div>
+
+                {/* Task 4.11 — Custom fields from resolved skill config */}
+                {(resolvedConfig?.custom_fields ?? []).map((field) => {
+                  const value = task.metadata?.[field.id];
+                  const handleChange = async (newVal: any) => {
+                    const res = await api.patch(`/api/tasks/${taskId}`, {
+                      metadata: { [field.id]: newVal },
+                    });
+                    if (res.ok) {
+                      const apiResult = await res.json();
+                      const merged = { ...task, ...apiResult };
+                      setTask(merged);
+                      onUpdated(merged);
+                    }
+                  };
+                  return (
+                    <CustomFieldRow
+                      key={field.id}
+                      field={field}
+                      value={value}
+                      onChange={handleChange}
+                      members={members}
+                    />
+                  );
+                })}
+
+                {/* Tags */}
+                <span className="text-[12px] font-medium" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
+                  <Hash size={12} className="inline mr-1" />
+                  Tags
+                </span>
+                <TagPicker
+                  entityType="task"
+                  entityId={taskId}
+                  appliedTags={taskTags}
+                  onTagsChange={setTaskTags}
+                />
+              </>
+            )}
           </div>
 
-          {/* Description */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Mobile expand/collapse toggle */}
+          {isMobile && (
+            <button
+              onClick={() => setMetadataExpanded(!metadataExpanded)}
+              className="w-full text-center py-1.5 text-[11px] font-medium"
+              style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+            >
+              {metadataExpanded
+                ? <><ChevronUp size={11} className="inline" /> Less details</>
+                : <><ChevronDown size={11} className="inline" /> More details</>
+              }
+            </button>
+          )}
+
+          {/* Task 3.10 — live agent progress strip */}
+          {agentProgress && (() => {
+            const employee = agentEmployees.find(
+              (e) => e.id === agentProgress.agent_employee_id,
+            );
+            const agentLabel = employee?.name ? `${employee.name} (AI)` : 'Agent';
+            const stepNum = agentProgress.step_index + 1;
+            const total = agentProgress.total_steps;
+            const isFailed = agentProgress.status === 'failed';
+            const isDone = agentProgress.status === 'completed';
+            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : 'var(--muted-bg, #f3f4f6)';
+            const fg = isFailed ? '#991b1b' : isDone ? '#166534' : 'var(--foreground)';
+            const border = isFailed ? '#fecaca' : isDone ? '#bbf7d0' : 'var(--border)';
+            return (
+              <div
+                className="mx-5 mb-3 px-3 py-2 rounded-md text-[12px] flex items-center gap-2"
+                style={{
+                  background: bg,
+                  color: fg,
+                  border: `1px solid ${border}`,
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                <span aria-hidden className="inline-block">
+                  {isFailed ? '!' : isDone ? '✓' : '•'}
+                </span>
+                <span className="flex-1 truncate">
+                  {isFailed ? (
+                    <>
+                      <strong>{agentLabel}</strong> hit an error:{' '}
+                      {agentProgress.error || agentProgress.step_description}
+                    </>
+                  ) : isDone ? (
+                    <>
+                      <strong>{agentLabel}</strong> finished: {agentProgress.step_description}
+                    </>
+                  ) : (
+                    <>
+                      <strong>{agentLabel}</strong> is on step {stepNum} of {total}:{' '}
+                      {agentProgress.step_description}
+                    </>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
+
+          {/* Task 6.1 — tab navigation strip */}
+          <div
+            className="flex px-3 overflow-x-auto"
+            style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
+          >
+            {([
+              { key: 'description', label: 'Description' },
+              { key: 'subtasks', label: task.parent_task_id ? 'Parent' : 'Subtasks', badge: task.parent_task_id ? undefined : subtasks.length || undefined },
+              { key: 'dependencies', label: 'Dependencies', badge: dependencies.blocks.length + dependencies.blocked_by.length + dependencies.relates_to.length || undefined },
+              { key: 'comments', label: 'Comments', badge: comments.length || undefined },
+              { key: 'activity', label: 'Activity' },
+              { key: 'attachments', label: 'Attachments', badge: attachments.length || undefined },
+              { key: 'references', label: 'References', badge: references.length || undefined },
+            ] as { key: TabKey; label: string; badge?: number }[]).map((t) => (
+              <button
+                key={t.key}
+                onClick={() => handleTabChange(t.key)}
+                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium whitespace-nowrap"
+                style={{
+                  color: activeTab === t.key ? 'var(--accent)' : 'var(--muted)',
+                  borderBottom: activeTab === t.key ? '2px solid var(--accent)' : '2px solid transparent',
+                  fontFamily: 'var(--font-heading)',
+                  transition: 'color 150ms',
+                }}
+              >
+                {t.label}
+                {typeof t.badge === 'number' && t.badge > 0 && (
+                  <span
+                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                    style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}
+                  >
+                    {t.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Description tab */}
+          {activeTab === 'description' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <h3
               className="text-[12px] font-semibold mb-2 uppercase tracking-wide"
               style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
@@ -925,10 +1719,30 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 }, 800);
               }}
             />
+            {/* Fix 4: quick comment entry point always visible on description tab */}
+            <div
+              className="mt-4 pt-3"
+              style={{ borderTop: '1px solid var(--border)' }}
+            >
+              <button
+                onClick={() => handleTabChange('comments')}
+                className="w-full text-left px-3 py-2 rounded-lg text-[13px]"
+                style={{
+                  background: 'var(--surface-container-low)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--muted)',
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                Add a comment...{comments.length > 0 ? ` (${comments.length})` : ''}
+              </button>
+            </div>
           </div>
+          )}
 
-          {/* Attachments */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Attachments tab */}
+          {activeTab === 'attachments' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
@@ -945,30 +1759,64 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}>
                 <Upload size={11} /> Add file
               </button>
-              <input ref={attachFileRef} type="file" className="hidden" onChange={async (e) => {
+              <input ref={attachFileRef} type="file" className="hidden" onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (!file || !task) return;
-                try {
-                  const res = await api.upload(`/api/upload?task_id=${task.id}`, file);
-                  if (res.ok) {
-                    const data = await res.json();
-                    setAttachments(prev => [...prev, {
-                      id: data.id,
-                      filename: data.name || file.name,
-                      mime_type: data.type || file.type,
-                      size_bytes: data.size || file.size,
-                      storage_key: data.url || data.id,
-                      created_at: new Date().toISOString(),
-                    }]);
-                  } else {
-                    console.error('Upload failed:', await res.text());
-                  }
-                } catch (err) {
-                  console.error('Upload error:', err);
-                }
+                if (!file) return;
+                startUpload(file);
                 e.target.value = '';
               }} />
             </div>
+            {/* Task 6.5 — upload progress / error strip */}
+            {uploadState.status === 'uploading' && (
+              <div className="mb-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}>
+                <div className="flex items-center gap-2 text-[11px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
+                  <Loader2 size={11} className="animate-spin" style={{ color: 'var(--accent)' }} />
+                  <span className="flex-1 truncate">{uploadState.filename}</span>
+                  <span style={{ color: 'var(--muted)' }}>{uploadState.progress ?? 0}%</span>
+                </div>
+                <div className="h-1 mt-1 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${uploadState.progress ?? 0}%`,
+                      background: 'var(--accent)',
+                      transition: 'width 150ms',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            {uploadState.status === 'error' && (
+              <div
+                className="mb-2 px-2 py-1.5 rounded-md flex items-center gap-2 text-[11px]"
+                style={{
+                  background: 'rgba(220, 38, 38, 0.08)',
+                  border: '1px solid rgba(220, 38, 38, 0.3)',
+                  color: 'var(--danger)',
+                  fontFamily: 'var(--font-body)',
+                }}
+              >
+                <span className="flex-1 truncate">
+                  {uploadState.filename ? `"${uploadState.filename}" — ` : ''}
+                  {uploadState.error || 'Upload failed'}
+                </span>
+                <button
+                  onClick={retryUpload}
+                  className="px-2 py-0.5 rounded font-medium"
+                  style={{ background: 'var(--accent)', color: 'white', fontFamily: 'var(--font-heading)' }}
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => { pendingUploadRef.current = null; setUploadState({ status: 'idle' }); }}
+                  className="p-0.5 rounded"
+                  style={{ color: 'var(--muted)' }}
+                  title="Dismiss"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            )}
             {attachments.length > 0 ? (
               <div className="space-y-1.5">
                 {attachments.map((file) => (
@@ -998,10 +1846,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               </p>
             )}
           </div>
+          )}
 
-          {/* Subtasks section (only for non-subtasks) */}
-          {!task.parent_task_id && (
-            <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Subtasks tab (only for non-subtasks) */}
+          {activeTab === 'subtasks' && !task.parent_task_id && (
+            <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
               <div className="flex items-center justify-between mb-2">
                 <h3
                   className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
@@ -1138,7 +1987,18 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     }}
                     disabled={creatingSubtask}
                   />
-                  {creatingSubtask && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--muted)' }} />}
+                  {creatingSubtask ? (
+                    <Loader2 size={12} className="animate-spin" style={{ color: 'var(--muted)' }} />
+                  ) : newSubtaskTitle.trim() ? (
+                    <button
+                      onClick={(e) => { e.preventDefault(); handleAddSubtask(); }}
+                      className="flex-shrink-0 p-1 rounded"
+                      style={{ color: 'var(--accent)' }}
+                      title="Add subtask"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  ) : null}
                 </div>
               )}
 
@@ -1150,9 +2010,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             </div>
           )}
 
-          {/* Parent task breadcrumb (if this is a subtask) */}
-          {parentTask && (
-            <div className="px-5 pb-3" style={{ borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
+          {/* Parent task breadcrumb (if this is a subtask) — lives on the
+              "subtasks" tab, where we relabel the tab to "Parent". */}
+          {activeTab === 'subtasks' && parentTask && (
+            <div className="px-5 pb-3" style={{ paddingTop: '12px' }}>
               <button
                 onClick={() => onTaskNavigate?.(parentTask.id)}
                 className="flex items-center gap-1.5 text-[12px] font-medium px-2 py-1 rounded-md"
@@ -1170,8 +2031,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             </div>
           )}
 
-          {/* Dependencies section */}
-          <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* Dependencies tab */}
+          {activeTab === 'dependencies' && (
+          <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
             <div className="flex items-center justify-between mb-2">
               <h3
                 className="text-[12px] font-semibold uppercase tracking-wide flex items-center gap-1.5"
@@ -1459,86 +2321,65 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               </div>
             )}
           </div>
+          )}
 
-          {/* References (backlinks) */}
-          {references.length > 0 && (
-            <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+          {/* References tab */}
+          {activeTab === 'references' && (
+            <div className="px-5 pb-4" style={{ paddingTop: '16px' }}>
               <h3 className="text-[12px] font-semibold mb-2 uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
-                Referenced in {references.length} message{references.length !== 1 ? 's' : ''}
+                {references.length === 0
+                  ? 'No references'
+                  : `Referenced in ${references.length} message${references.length !== 1 ? 's' : ''}`}
               </h3>
-              <div className="space-y-1.5">
-                {references.map(ref => (
-                  <div key={ref.id}
-                    onClick={() => {
-                      if (ref.message_space_id) {
-                        router.push(`/chat?space=${ref.message_space_id}&message=${ref.source_id}`);
-                      }
-                    }}
-                    className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
-                    style={{ background: 'var(--surface-container)' }}>
-                    <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
-                      style={{ background: 'var(--primary-container)' }}>
-                      {ref.author_name?.charAt(0).toUpperCase() || '?'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
-                          {ref.author_name || 'Unknown'}
-                        </span>
-                        {ref.space_name && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded"
-                            style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
-                            #{ref.space_name}
+              {references.length === 0 ? (
+                <p className="text-[12px] px-2" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                  No messages or notes link to this task yet.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {references.map(ref => (
+                    <div key={ref.id}
+                      onClick={() => {
+                        if (ref.message_space_id) {
+                          router.push(`/chat?space=${ref.message_space_id}&message=${ref.source_id}`);
+                        }
+                      }}
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      style={{ background: 'var(--surface-container)' }}>
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
+                        style={{ background: 'var(--primary-container)' }}>
+                        {ref.author_name?.charAt(0).toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
+                            {ref.author_name || 'Unknown'}
                           </span>
+                          {ref.space_name && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded"
+                              style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
+                              #{ref.space_name}
+                            </span>
+                          )}
+                        </div>
+                        {ref.message_preview && (
+                          <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
+                            {ref.message_preview}
+                          </p>
                         )}
                       </div>
-                      {ref.message_preview && (
-                        <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
-                          {ref.message_preview}
-                        </p>
-                      )}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Tabs: Comments | Activity */}
-          <div style={{ borderTop: '1px solid var(--border)' }}>
-            <div className="flex px-5" style={{ borderBottom: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setActiveTab('comments')}
-                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium"
-                style={{
-                  color: activeTab === 'comments' ? 'var(--accent)' : 'var(--muted)',
-                  borderBottom: activeTab === 'comments' ? '2px solid var(--accent)' : '2px solid transparent',
-                  fontFamily: 'var(--font-heading)',
-                  transition: 'color 150ms',
-                }}
-              >
-                <MessageSquare size={13} />
-                Comments
-              </button>
-              <button
-                onClick={() => setActiveTab('activity')}
-                className="flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium"
-                style={{
-                  color: activeTab === 'activity' ? 'var(--accent)' : 'var(--muted)',
-                  borderBottom: activeTab === 'activity' ? '2px solid var(--accent)' : '2px solid transparent',
-                  fontFamily: 'var(--font-heading)',
-                  transition: 'color 150ms',
-                }}
-              >
-                <Activity size={13} />
-                Activity
-              </button>
-            </div>
-
+          {/* Comments tab */}
+          {activeTab === 'comments' && (
             <div className="px-5 py-3">
-              {activeTab === 'comments' ? (
                 <div className="flex flex-col gap-3">
                   {comments.length === 0 && (
                     <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
@@ -1570,12 +2411,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                             })}
                           </span>
                         </div>
-                        <p
-                          className="text-[13px] mt-0.5"
-                          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', lineHeight: '1.5' }}
-                        >
-                          {c.content}
-                        </p>
+                        <div
+                          className="deft-editor text-[13px] mt-0.5"
+                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(c.content) }}
+                        />
                       </div>
                     </div>
                   ))}
@@ -1589,28 +2428,23 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       {user?.name?.charAt(0).toUpperCase()}
                     </div>
                     <div className="flex-1">
-                      <textarea
-                        value={newComment}
-                        onChange={(e) => setNewComment(e.target.value)}
-                        placeholder="Write a comment..."
-                        className="w-full text-[13px] bg-transparent outline-none resize-none rounded-md px-3 py-2"
-                        style={{
-                          color: 'var(--foreground)',
-                          fontFamily: 'var(--font-body)',
-                          border: '1px solid var(--border)',
-                          lineHeight: '1.5',
-                        }}
-                        rows={2}
+                      <div
+                        className="rounded-lg overflow-hidden"
+                        style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                             handleAddComment();
                           }
                         }}
-                      />
+                      >
+                        <div className="px-3 py-2 min-h-[80px] max-h-[200px] overflow-y-auto">
+                          <EditorContent editor={commentEditor} />
+                        </div>
+                      </div>
                       <div className="flex justify-end mt-1.5">
                         <button
                           onClick={handleAddComment}
-                          disabled={!newComment.trim() || submittingComment}
+                          disabled={!(commentEditor?.getText() ?? '').trim() || submittingComment}
                           className="text-[12px] font-medium px-3 py-1 rounded-md text-white disabled:opacity-50"
                           style={{
                             background: 'var(--accent)',
@@ -1624,43 +2458,73 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     </div>
                   </div>
                 </div>
-              ) : (
-                <div className="flex flex-col gap-2.5">
-                  {activity.length === 0 && (
-                    <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                      No activity yet
-                    </p>
-                  )}
-                  {activity.map((a) => (
-                    <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
-                      <div
-                        className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                        style={{ background: 'var(--muted)' }}
-                      />
-                      <div>
-                        <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
-                          {a.user_name}
-                        </span>{' '}
-                        <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
-                          changed {formatFieldName(a.field)} from{' '}
-                          <span style={{ color: 'var(--muted)' }}>{formatActivityValue(a.field, a.old_value, members)}</span> to{' '}
-                          <span style={{ color: 'var(--foreground)' }}>{formatActivityValue(a.field, a.new_value, members)}</span>
-                        </span>
-                        <div className="mt-0.5" style={{ color: 'var(--muted)' }}>
-                          {new Date(a.created_at).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: 'numeric',
-                            minute: '2-digit',
-                          })}
-                        </div>
+            </div>
+          )}
+
+          {/* Activity tab */}
+          {activeTab === 'activity' && (
+            <div className="px-5 py-3">
+              <div className="flex flex-col gap-2.5">
+                {activity.length === 0 && (
+                  <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                    No activity yet
+                  </p>
+                )}
+                {activity.map((a) => {
+                  const dotColor = a.field === 'status' ? '#3B82F6'
+                    : a.field === 'assignee_id' ? '#8B5CF6'
+                    : a.field === 'priority' ? '#F97316'
+                    : a.field === 'comment' ? '#22C55E'
+                    : 'var(--muted)';
+                  const isDescription = a.field === 'description';
+                  // Task 6.2 — inline old → new with strikethrough on the
+                  // outgoing value. Description rows get a collapsible
+                  // line-level diff rendered below the one-liner summary.
+                  const oldLabel = formatActivityValue(a.field, a.old_value, members);
+                  const newLabel = formatActivityValue(a.field, a.new_value, members);
+                  return (
+                  <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                      style={{ background: dotColor }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
+                        {a.user_name}
+                      </span>{' '}
+                      <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
+                        changed {formatFieldName(a.field)}
+                        {!isDescription && (
+                          <>
+                            {': '}
+                            <span style={{ color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'var(--muted)' }}>
+                              {oldLabel}
+                            </span>
+                            {' → '}
+                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>
+                              {newLabel}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                      {isDescription && (
+                        <DescriptionDiff oldValue={a.old_value} newValue={a.new_value} />
+                      )}
+                      <div className="mt-0.5" style={{ color: 'var(--muted)' }}>
+                        {new Date(a.created_at).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })}
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
+                  </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </>

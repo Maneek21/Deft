@@ -16,7 +16,13 @@ export async function handleClipProcess(job: JobData): Promise<void> {
   console.log(`[clip-process] Starting clip ${clip_id}`);
 
   // ─── Step 1: Transcribe ───
-  let transcription;
+  // Transcription is a NICE-TO-HAVE, not a gate. If no provider is configured
+  // (OPENAI_API_KEY/DEEPGRAM_API_KEY/WHISPER_URL absent or rejecting), the audio
+  // clip itself is still the primary artifact — users should be able to record
+  // and play back voice messages without needing an AI provider. Slack/Discord
+  // ship voice clips with no transcription by default. Only if transcription
+  // SUCCEEDS do we run summarization and emit transcript/segments.
+  let transcription: { text: string; segments: any[]; duration_s: number; model: string } | null = null;
   try {
     await db.update(clips)
       .set({ status: 'transcribing' })
@@ -37,14 +43,16 @@ export async function handleClipProcess(job: JobData): Promise<void> {
 
     console.log(`[clip-process] Transcription done for ${clip_id}: ${transcription.text.length} chars`);
   } catch (err) {
-    console.error(`[clip-process] Transcription failed for ${clip_id}:`, err);
+    console.warn(`[clip-process] Transcription unavailable for ${clip_id}, shipping audio-only:`, (err as Error).message);
+    // Mark the failure cause but ALSO mark the clip as playable. Step 4 below
+    // sets status='ready' regardless, so the message becomes a normal clip
+    // card and the user can play it back.
     await db.update(clips)
-      .set({ status: 'failed', error: (err as Error).message })
+      .set({
+        error: `Transcription unavailable: ${(err as Error).message}`,
+        status: 'summarizing', // skip ahead — Step 3 will detect null transcription and skip too
+      })
       .where(eq(clips.id, clip_id));
-
-    // Update the message to show error
-    await updateClipMessage(message_id, clip_id, 'failed', space_id);
-    return;
   }
 
   // ─── Step 2: Gather context ───
@@ -81,7 +89,7 @@ export async function handleClipProcess(job: JobData): Promise<void> {
   // ─── Step 3: AI Summarization ───
   let summary = { tldr: '', decisions: [] as string[], actions: [] as string[], blockers: [] as string[] };
 
-  if (transcription.text.length > 30) {
+  if (transcription && transcription.text.length > 30) {
     try {
       const systemPrompt = `You are an AI assistant analyzing an audio clip recorded in a team workspace.
 The clip was recorded by ${user_name} in context: ${context_type} "${contextTitle}".
@@ -120,8 +128,11 @@ Return ONLY valid JSON, no markdown fences, no extra text.`;
       console.warn(`[clip-process] Summarization failed for ${clip_id}:`, err);
       summary.tldr = transcription.text.slice(0, 200) + (transcription.text.length > 200 ? '...' : '');
     }
-  } else {
+  } else if (transcription) {
     summary.tldr = transcription.text || 'Short clip — no summary generated.';
+  } else {
+    // No transcription provider available. Audio still ships as a playable clip.
+    summary.tldr = '';
   }
 
   // ─── Step 4: Update clip record ───
@@ -132,8 +143,8 @@ Return ONLY valid JSON, no markdown fences, no extra text.`;
   // ─── Step 5: Update the message with the clip card content ───
   await updateClipMessage(message_id, clip_id, 'ready', space_id, {
     summary,
-    transcript: transcription.text,
-    duration_s: Math.round(transcription.duration_s),
+    transcript: transcription?.text || '',
+    duration_s: transcription ? Math.round(transcription.duration_s) : 0,
     user_name,
   });
 

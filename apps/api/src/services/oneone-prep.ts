@@ -9,10 +9,11 @@ import {
   peoplePatterns,
   peopleInteractions,
   peopleRelationships,
-  agentMemory,
+  wikiPages,
   oneonePreps,
 } from '@deft/db/schema';
-import { eq, and, gte, sql, desc } from 'drizzle-orm';
+import { eq, and, gte, sql, desc, lt } from 'drizzle-orm';
+import { getDayBoundaries, getOrgTimezone } from '../lib/task-dates.js';
 
 export async function generateOneOnePrep(
   managerId: string,
@@ -36,6 +37,11 @@ export async function generateOneOnePrep(
   const now = new Date();
   const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
   const sinceDate = lastPrep?.created_at ?? fourteenDaysAgo;
+
+  // Org-local start of "today" for the overdue filter below — `due_date <
+  // NOW()` would incorrectly flag tasks as overdue based on UTC rollover.
+  const orgTz = await getOrgTimezone(orgId);
+  const { start: startOfToday } = getDayBoundaries(orgTz, 0, now);
 
   // Get report user info
   const [reportUser] = await db
@@ -101,7 +107,7 @@ export async function generateOneOnePrep(
         eq(tasks.org_id, orgId),
         eq(tasks.assignee_id, reportId),
         eq(tasks.is_deleted, false),
-        sql`${tasks.due_date} < now()`,
+        lt(tasks.due_date, startOfToday),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
       ),
     );
@@ -191,18 +197,32 @@ export async function generateOneOnePrep(
       ),
     );
 
-  // Agent memory — commitments
-  const commitments = await db
-    .select({ key: agentMemory.key, value: agentMemory.value })
-    .from(agentMemory)
+  // Commitments — read from wiki_pages tagged 'commitment' that reference the report
+  const commitmentPages = await db
+    .select({
+      id: wikiPages.id,
+      title: wikiPages.title,
+      content: wikiPages.content,
+      summary: wikiPages.summary,
+      created_at: wikiPages.created_at,
+    })
+    .from(wikiPages)
     .where(
       and(
-        eq(agentMemory.org_id, orgId),
-        eq(agentMemory.user_id, reportId),
-        eq(agentMemory.scope, 'user'),
-        sql`${agentMemory.key} LIKE '%commitment%'`,
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        sql`${wikiPages.tags} @> ARRAY['commitment']::text[]`,
+        sql`${wikiPages.referenced_user_ids} @> ARRAY[${reportId}]::text[]`,
       ),
-    );
+    )
+    .orderBy(desc(wikiPages.created_at))
+    .limit(10);
+
+  // Map to the shape the rest of the function expects (value = content summary)
+  const commitments = commitmentPages.map((p) => ({
+    key: p.title,
+    value: p.summary ?? p.content.slice(0, 200),
+  }));
 
   // --- 4C: Prep Generation ---
   const collectedData = {

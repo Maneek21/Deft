@@ -2,9 +2,54 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
+
+// ─── Mention node ─────────────────────────────────────────────────────
+// Inline atom that renders as a styled pill in the composer and serializes
+// to `<@uuid|name>` text markers when the message is sent. Parsing back
+// from the same `span[data-mention-uuid]` format lets drafts round-trip.
+// The pill colors match the same --accent token that space-chat.tsx uses
+// for rendered mentions, so the composer preview matches the final message.
+const MentionNode = Node.create({
+  name: 'mention',
+  inline: true,
+  group: 'inline',
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      uuid: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-mention-uuid'),
+        renderHTML: (attrs) => ({ 'data-mention-uuid': attrs.uuid }),
+      },
+      name: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-mention-name'),
+        renderHTML: (attrs) => ({ 'data-mention-name': attrs.name }),
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-mention-uuid]' }];
+  },
+  renderHTML({ HTMLAttributes, node }) {
+    return [
+      'span',
+      mergeAttributes(HTMLAttributes, {
+        class: 'px-1 py-0.5 rounded text-[13px] font-medium',
+        style: 'background:rgba(212,168,83,0.15);color:var(--accent)',
+      }),
+      `@${node.attrs.name ?? ''}`,
+    ];
+  },
+  renderText({ node }) {
+    return `<@${node.attrs.uuid}|${node.attrs.name}>`;
+  },
+});
 import {
   Bold,
   Italic,
@@ -23,11 +68,13 @@ import {
   FileText,
   Clock,
   Mic,
+  Plus,
 } from 'lucide-react';
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
 import { SlashCommandAutocomplete } from './slash-command-autocomplete';
+import { MobileActionSheet } from './mobile-action-sheet';
 
 type TaskResult = {
   id: string;
@@ -89,11 +136,17 @@ export function RichComposer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [formatSheetOpen, setFormatSheetOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [taskQuery, setTaskQuery] = useState('');
   const [showTaskAutocomplete, setShowTaskAutocomplete] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [showMentions, setShowMentions] = useState(false);
+  // Anchor (start of @) + end (current cursor) at the moment the mention
+  // autocomplete opened. Captured in onUpdate so handleMentionSelect can
+  // delete the correct range even if the editor has lost focus (clicking
+  // the dropdown blurs the editor, which resets selection.from to 0).
+  const mentionRangeRef = useRef<{ from: number; to: number } | null>(null);
   const [slashQuery, setSlashQuery] = useState('');
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const emojiBtnRef = useRef<HTMLButtonElement>(null);
@@ -104,16 +157,20 @@ export function RichComposer({
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
+      // StarterKit bundles its own Link extension since TipTap 2.4; disable it
+      // so our explicit Link.configure below is the only one registered.
       StarterKit.configure({
         codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
         code: { HTMLAttributes: { class: 'deft-inline-code' } },
         heading: false,
+        link: false,
       }),
       Placeholder.configure({ placeholder }),
       Link.configure({
         openOnClick: false,
         HTMLAttributes: { class: 'deft-link' },
       }),
+      MentionNode,
     ],
     editorProps: {
       attributes: {
@@ -133,8 +190,13 @@ export function RichComposer({
         if (event.key === 'Enter' && !event.shiftKey) {
           const { from } = view.state.selection;
           const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
-            return false; // Let autocomplete handler take it
+          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@+(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
+            // Prevent the default Enter behavior (which would insert a
+            // newline) and let the autocomplete's document-level listener
+            // handle the keystroke. Returning true + preventDefault stops
+            // ProseMirror from running its own Enter handler.
+            event.preventDefault();
+            return true;
           }
           event.preventDefault();
           handleSend();
@@ -167,14 +229,23 @@ export function RichComposer({
         setTaskQuery('');
       }
 
-      // Mention autocomplete (@)
-      const atMatch = textBefore.match(/@(\w*)$/);
+      // Mention autocomplete (@) — match one or more leading @ so typos
+      // like "@@name" collapse to a single mention. Capture the range
+      // of text that should be replaced when a suggestion is accepted,
+      // so handleMentionSelect works even after the editor loses focus
+      // on click.
+      const atMatch = textBefore.match(/@+(\w*)$/);
       if (atMatch) {
         setShowMentions(true);
         setMentionQuery(atMatch[1]);
+        mentionRangeRef.current = {
+          from: from - atMatch[0].length,
+          to: from,
+        };
       } else {
         setShowMentions(false);
         setMentionQuery('');
+        mentionRangeRef.current = null;
       }
 
       // Slash command autocomplete (/) — only show when typing the command name, not args
@@ -256,16 +327,22 @@ export function RichComposer({
 
   const handleMentionSelect = (selected: { id: string; name: string }) => {
     if (!editor) return;
-    const { from } = editor.state.selection;
-    const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
-    const atMatch = textBefore.match(/@(\w*)$/);
-    if (atMatch) {
-      const deleteFrom = from - atMatch[0].length;
-      editor.chain().focus()
-        .deleteRange({ from: deleteFrom, to: from })
-        .insertContent(`<@${selected.id}|${selected.name}> `)
+    // Use the range we captured in onUpdate — don't re-read selection
+    // here because clicking the dropdown blurs the editor, which resets
+    // editor.state.selection.from to 0 and would wipe out the wrong range.
+    const range = mentionRangeRef.current;
+    if (range) {
+      editor
+        .chain()
+        .focus()
+        .deleteRange(range)
+        .insertContent([
+          { type: 'mention', attrs: { uuid: selected.id, name: selected.name } },
+          { type: 'text', text: ' ' },
+        ])
         .run();
     }
+    mentionRangeRef.current = null;
     setShowMentions(false);
   };
 
@@ -289,7 +366,7 @@ export function RichComposer({
   const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
 
   return (
-    <div className="px-6 py-3 flex-shrink-0 relative" ref={composerRef}>
+    <div className="px-6 py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
       {showSlashCommands && (
         <SlashCommandAutocomplete
           query={slashQuery}
@@ -333,9 +410,9 @@ export function RichComposer({
           transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
         }}
       >
-        {/* Formatting toolbar */}
+        {/* Formatting toolbar — desktop only (hidden on < md) */}
         <div
-          className="flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
+          className="hidden md:flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
         >
           <ToolbarBtn
             active={editor.isActive('bold')}
@@ -415,12 +492,210 @@ export function RichComposer({
           </ToolbarBtn>
         </div>
 
-        {/* Editor area */}
-        <div
-          className="px-4 py-2 min-h-[40px] max-h-[200px] overflow-y-auto"
-          onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
+        {/* Mobile composer action sheet — Insert (attach/emoji/voice) + Format (B/I/...) */}
+        <MobileActionSheet
+          open={formatSheetOpen}
+          onClose={() => setFormatSheetOpen(false)}
+          title="Compose"
         >
-          <EditorContent editor={editor} />
+          {/* Insert section */}
+          <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Insert</div>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            <button
+              type="button"
+              onClick={() => { setFormatSheetOpen(false); onFileSelect(); }}
+              aria-label="Attach file"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{ color: 'var(--on-surface-variant)' }}
+            >
+              <Paperclip size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Attach</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setFormatSheetOpen(false); setEmojiOpen(true); }}
+              aria-label="Insert emoji"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{ color: 'var(--on-surface-variant)' }}
+            >
+              <Smile size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Emoji</span>
+            </button>
+            {onClipRecord && (
+              <button
+                type="button"
+                onClick={() => { setFormatSheetOpen(false); onClipRecord(); }}
+                aria-label="Record voice memo"
+                className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+                style={{ color: 'var(--on-surface-variant)' }}
+              >
+                <Mic size={18} strokeWidth={1.5} />
+                <span className="text-[0.6875rem]">Voice</span>
+              </button>
+            )}
+          </div>
+
+          {/* Format section */}
+          <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Format</div>
+          <div className="grid grid-cols-4 gap-2">
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBold().run(); setFormatSheetOpen(false); }}
+              aria-label="Bold"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('bold') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('bold') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Bold size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Bold</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleItalic().run(); setFormatSheetOpen(false); }}
+              aria-label="Italic"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('italic') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('italic') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Italic size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Italic</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleStrike().run(); setFormatSheetOpen(false); }}
+              aria-label="Strikethrough"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('strike') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('strike') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Strikethrough size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Strike</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleCode().run(); setFormatSheetOpen(false); }}
+              aria-label="Inline code"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('code') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('code') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Code size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Code</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleCodeBlock().run(); setFormatSheetOpen(false); }}
+              aria-label="Code block"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('codeBlock') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('codeBlock') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <CodeSquare size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Block</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBulletList().run(); setFormatSheetOpen(false); }}
+              aria-label="Bullet list"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('bulletList') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('bulletList') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <List size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Bullets</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleOrderedList().run(); setFormatSheetOpen(false); }}
+              aria-label="Numbered list"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('orderedList') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('orderedList') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <ListOrdered size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Numbered</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { editor.chain().focus().toggleBlockquote().run(); setFormatSheetOpen(false); }}
+              aria-label="Blockquote"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('blockquote') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('blockquote') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <Quote size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Quote</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const existing = editor.getAttributes('link').href;
+                setLinkUrl(existing || '');
+                setFormatSheetOpen(false);
+                setLinkDialogOpen(true);
+              }}
+              aria-label="Link"
+              className="flex flex-col items-center justify-center gap-1 min-h-[44px] p-2 rounded-md"
+              style={{
+                color: editor.isActive('link') ? 'var(--primary-container)' : 'var(--on-surface-variant)',
+                background: editor.isActive('link') ? 'rgba(144,128,250,0.15)' : 'transparent',
+              }}
+            >
+              <LinkIcon size={18} strokeWidth={1.5} />
+              <span className="text-[0.6875rem]">Link</span>
+            </button>
+          </div>
+        </MobileActionSheet>
+
+        {/* Editor row — mobile uses single-row layout with [+] and [send] flanking the editor.
+            Desktop renders only the editor (the +/send below are md:hidden) and uses the
+            bottom toolbar for those actions instead. */}
+        <div className="flex items-end gap-1 md:block">
+          {/* Mobile-only "+" — opens unified compose sheet (Insert + Format) */}
+          <button
+            type="button"
+            onClick={() => setFormatSheetOpen(true)}
+            aria-label="Add (format, attach, emoji, voice)"
+            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md hover:opacity-70 ml-1 mb-1"
+            style={{ color: 'var(--on-surface-variant)' }}
+          >
+            <Plus size={20} strokeWidth={1.5} />
+          </button>
+
+          <div
+            className="flex-1 min-w-0 px-3 md:px-4 py-2 min-h-[40px] max-h-[200px] overflow-y-auto"
+            onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
+          >
+            <EditorContent editor={editor} />
+          </div>
+
+          {/* Mobile-only inline send — desktop uses the send button in the bottom toolbar instead */}
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!hasContent}
+            aria-label="Send message"
+            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity mr-1 mb-1"
+            style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+          >
+            <Send size={18} strokeWidth={2} />
+          </button>
         </div>
 
         {/* Upload progress */}
@@ -454,8 +729,9 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Bottom toolbar: emoji, attach, send */}
-        <div className="flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
+        {/* Bottom toolbar: emoji, attach, send — desktop only.
+            Mobile consolidates these into the "+" sheet + inline send. */}
+        <div className="hidden md:flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
           <div className="flex items-center gap-0.5">
             <button
               className="p-1.5 rounded-md"
@@ -494,8 +770,8 @@ export function RichComposer({
               </button>
             )}
           </div>
-          {hasContent && (
-            <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1">
+            {hasContent && (
               <div className="relative">
                 <button onClick={() => setScheduleOpen(!scheduleOpen)}
                   className="p-1.5 rounded-md" style={{ color: 'var(--outline)' }} title="Schedule send">
@@ -538,15 +814,18 @@ export function RichComposer({
                   </div>
                 )}
               </div>
-              <button
-                onClick={handleSend}
-                className="p-1.5 text-white"
-                style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
-              >
-                <Send size={14} strokeWidth={1.5} />
-              </button>
-            </div>
-          )}
+            )}
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!hasContent}
+              aria-label="Send message"
+              className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+              style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+            >
+              <Send size={16} strokeWidth={2} />
+            </button>
+          </div>
         </div>
       </div>
 

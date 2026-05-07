@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, Bell, Menu, Moon } from 'lucide-react';
 import { NotificationPanel } from './notification-panel';
@@ -8,7 +8,15 @@ import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 
-export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
+
+export function AppHeader({
+  onMenuClick,
+  pageContext,
+}: {
+  onMenuClick?: () => void;
+  pageContext?: ReactNode;
+}) {
   const pathname = usePathname();
   const { user } = useAuth();
   const isDnd = user?.status_text === 'Do Not Disturb';
@@ -19,13 +27,6 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   let placeholder = 'Search workspace... ⌘K';
   if (pathname.startsWith('/chat')) placeholder = 'Search messages... ⌘K';
   if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
-  if (pathname.startsWith('/agent')) placeholder = 'Search conversations... ⌘K';
-
-  let breadcrumb = 'Dashboard';
-  if (pathname.startsWith('/chat')) breadcrumb = 'Chat';
-  if (pathname.startsWith('/tasks')) breadcrumb = 'Tasks';
-  if (pathname.startsWith('/agent')) breadcrumb = 'Agent';
-  if (pathname.startsWith('/settings')) breadcrumb = 'Settings';
 
   // Fetch unread notification count on mount
   useEffect(() => {
@@ -50,7 +51,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
   }, []);
 
   const handleSearchClick = () => {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }));
+    document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
   };
 
   const handleNotifOpen = () => {
@@ -67,18 +68,16 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
       {onMenuClick && (
         <button
           onClick={onMenuClick}
-          className="md:hidden flex items-center justify-center w-8 h-8 -ml-1 rounded-lg"
+          className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] -ml-1 rounded-lg"
           style={{ color: 'var(--on-surface-variant)' }}
         >
           <Menu size={18} strokeWidth={1.5} />
         </button>
       )}
-      {/* Breadcrumb */}
-      <span className="text-[0.8125rem] font-medium" style={{ color: 'var(--on-surface-variant)' }}>
-        {breadcrumb}
-      </span>
-
-      <div className="flex-1" />
+      {/* Page context slot */}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
+        {pageContext}
+      </div>
 
       {/* Search — full bar on desktop, icon-only on mobile */}
       <button
@@ -91,7 +90,7 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
       </button>
       <button
         onClick={handleSearchClick}
-        className="md:hidden flex items-center justify-center w-8 h-8 rounded-lg cursor-pointer"
+        className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg cursor-pointer"
         style={{ color: 'var(--outline)' }}
       >
         <Search size={18} strokeWidth={1.5} />
@@ -112,7 +111,9 @@ export function AppHeader({ onMenuClick }: { onMenuClick?: () => void }) {
         <button
           ref={bellRef}
           onClick={handleNotifOpen}
-          className="p-1.5 rounded-md relative"
+          aria-label="Notifications"
+          title="Notifications"
+          className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md relative"
           style={{ color: 'var(--outline)' }}
         >
           <Bell size={16} strokeWidth={1.5} />

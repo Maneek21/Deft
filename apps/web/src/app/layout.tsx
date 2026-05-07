@@ -3,7 +3,10 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'Deft',
+  title: {
+    default: 'Deft',
+    template: '%s — Deft',
+  },
   description: 'AI-native workspace',
 };
 

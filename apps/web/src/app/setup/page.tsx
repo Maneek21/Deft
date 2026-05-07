@@ -177,7 +177,7 @@ export default function SetupPage() {
                 Your AI assistant can answer questions, create tasks, summarize conversations, and help you stay organized.
               </p>
               <div className="flex gap-3">
-                <button onClick={() => router.push('/agent')}
+                <button onClick={() => router.push('/chat')}
                   className="flex-1 h-10 font-semibold text-[0.8125rem] text-white"
                   style={{ background: 'var(--primary-container)', borderRadius: '0.5rem' }}>
                   Try Deft AI

@@ -9,6 +9,32 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'people-graph', 'cron:people-graph');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'manager-pulse', 'cron:manager-pulse');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'burnout-detect', 'cron:burnout-detect');
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'wiki-lint', 'cron:wiki-lint');
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'deprecation-warning', 'cron:deprecation-warning');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'weekly-digest', 'cron:weekly-digest');
+  // BYOA agents pull pending work over MCP, so no server-side push scan
+  // is required. The heartbeat cron only fires for in-process schedulers
+  // that need a periodic tick.
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'heartbeat-native', 'cron:heartbeat-native');
+  // Task 8.5 — reset daily cost + action counters at UTC midnight. The
+  // handler itself is idempotent, so a missed tick just catches up on
+  // the next poll.
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'agent-daily-reset', 'agent-daily-reset');
+  // Task 8.7 — trigger dispatcher cron entry points. The handler fans
+  // out to employees subscribed to each trigger_kind (via
+  // trigger_subscriptions[] + installed skills' agent_config.triggers).
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'trigger-dispatch', 'cron:trigger-dispatch');
   console.log('[scheduler] Cron jobs registered');
+}
+
+/**
+ * Cadence override helper — re-inserts the native-heartbeat cron entry.
+ * ensureCronJob is idempotent, so this is a no-op when a pending row
+ * already exists. The worker's CRON_DELAYS map owns the actual cadence.
+ */
+export async function rescheduleHeartbeat(
+  kind: 'native' = 'native',
+): Promise<void> {
+  void kind;
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'heartbeat-native', 'cron:heartbeat-native');
 }

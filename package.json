@@ -2,24 +2,46 @@
   "name": "deft",
   "private": true,
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
-    "dev:web": "pnpm --filter @deft/web dev",
-    "dev:api": "pnpm --filter @deft/api dev",
+    "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
+    "audit:session2": "tsx docs/superpowers/audits/agent-ui-session-2.audit.ts",
+    "audit:session3": "tsx docs/superpowers/audits/agent-ui-session-3.audit.ts",
+    "audit:openclaw-flow": "tsx docs/superpowers/audits/openclaw-employee-flow.audit.ts",
+    "audit:agent-employees-ui": "tsx docs/superpowers/audits/agent-employees-ui.audit.ts",
+    "audit:receipts": "tsx docs/superpowers/audits/audit-receipts.audit.ts",
+    "audit:deploy-wizard": "tsx docs/superpowers/audits/deploy-wizard.audit.ts",
+    "audit:connect-wizard": "tsx docs/superpowers/audits/connect-wizard-smoke.audit.ts",
+    "audit:metrics": "tsx docs/superpowers/audits/metrics-smoke.ts",
+    "audit:setup": "tsx docs/superpowers/audits/setup-auth.ts",
+    "audit:byoa-bootstrap": "tsx docs/superpowers/audits/agent-byoa/lib/bootstrap.ts",
+    "audit:byoa-restore": "tsx docs/superpowers/audits/agent-byoa/lib/bootstrap.ts --restore",
+    "audit:byoa-preflight": "tsx docs/superpowers/audits/agent-byoa/lib/preflight.ts",
+    "audit:byoa-a": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-a.audit.ts",
+    "audit:byoa-b": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-b.audit.ts",
     "build": "pnpm -r build",
     "db:generate": "pnpm --filter @deft/db generate",
-    "db:push": "pnpm --filter @deft/db push",
     "db:migrate": "pnpm --filter @deft/db migrate",
+    "db:push": "pnpm --filter @deft/db push",
     "db:seed": "pnpm --filter @deft/db seed",
     "db:studio": "pnpm --filter @deft/db studio",
-    "lint": "pnpm -r lint"
+    "dev": "pnpm -r --parallel dev",
+    "dev:api": "pnpm --filter @deft/api dev",
+    "dev:web": "pnpm --filter @deft/web dev",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
+    "playwright": "^1.59.1",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "sharp", "msgpackr-extract"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "msgpackr-extract"
+    ]
   }
 }

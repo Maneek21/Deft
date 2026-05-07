@@ -8,6 +8,7 @@ type Member = {
   id: string;
   name: string;
   avatar: string | null;
+  kind?: 'human' | 'agent' | 'system';
 };
 
 type Props = {
@@ -46,18 +47,16 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
     m.name.toLowerCase().includes(lowerQuery)
   );
 
-  // Deft agent entry — always shown when query matches
-  const agentOption = { id: 'agent', name: 'Deft' };
-  const agentMatches = agentOption.name.toLowerCase().includes(lowerQuery) ||
-    'agent'.includes(lowerQuery) || 'deft'.includes(lowerQuery);
-  const agentOptions = agentMatches ? [agentOption] : [];
+  // Partition by kind: humans first, agents second (incl. Defty + BYOA), special last.
+  const humans = filtered.filter((m) => m.kind !== 'agent');
+  const agents = filtered.filter((m) => m.kind === 'agent');
 
   const specialOptions = [
     { id: 'here', name: 'here' },
     { id: 'all', name: 'all' },
   ].filter((o) => o.name.includes(lowerQuery));
 
-  const allOptions = [...filtered, ...agentOptions, ...specialOptions];
+  const allOptions = [...humans, ...agents, ...specialOptions];
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -121,7 +120,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
         boxShadow: 'var(--shadow-md)',
       }}
     >
-      {filtered.map((member, i) => (
+      {humans.map((member, i) => (
         <button
           key={member.id}
           onClick={() => onSelect({ id: member.id, name: member.name })}
@@ -146,15 +145,15 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
           <span>{member.name}</span>
         </button>
       ))}
-      {agentOptions.length > 0 && filtered.length > 0 && (
+      {agents.length > 0 && humans.length > 0 && (
         <div className="mx-3 my-1 h-px" style={{ background: 'var(--border)' }} />
       )}
-      {agentOptions.map((opt, i) => {
-        const idx = filtered.length + i;
+      {agents.map((agent, i) => {
+        const idx = humans.length + i;
         return (
           <button
-            key={opt.id}
-            onClick={() => onSelect({ id: opt.id, name: opt.name })}
+            key={agent.id}
+            onClick={() => onSelect({ id: agent.id, name: agent.name })}
             className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-[13px]"
             style={{
               background: selectedIndex === idx ? 'var(--hover-tint)' : 'transparent',
@@ -163,24 +162,31 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
             }}
             onMouseEnter={() => setSelectedIndex(idx)}
           >
-            <div
-              className="w-6 h-6 rounded-full flex items-center justify-center"
-              style={{ background: '#6366f1', color: '#fff' }}
+            {agent.avatar ? (
+              <img src={agent.avatar} className="w-6 h-6 rounded-full" alt={agent.name} />
+            ) : (
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center"
+                style={{ background: '#6366f1', color: '#fff' }}
+              >
+                <Bot size={13} strokeWidth={1.5} />
+              </div>
+            )}
+            <span>{agent.name}</span>
+            <span
+              className="text-[11px] ml-auto px-1.5 py-0.5 rounded-full"
+              style={{ background: 'var(--surface)', color: 'var(--muted)' }}
             >
-              <Bot size={13} strokeWidth={1.5} />
-            </div>
-            <span>@{opt.name}</span>
-            <span className="text-[11px] ml-auto px-1.5 py-0.5 rounded-full" style={{ background: 'var(--surface)', color: 'var(--muted)' }}>
               AI
             </span>
           </button>
         );
       })}
-      {specialOptions.length > 0 && (filtered.length > 0 || agentOptions.length > 0) && (
+      {specialOptions.length > 0 && (humans.length > 0 || agents.length > 0) && (
         <div className="mx-3 my-1 h-px" style={{ background: 'var(--border)' }} />
       )}
       {specialOptions.map((opt, i) => {
-        const idx = filtered.length + agentOptions.length + i;
+        const idx = humans.length + agents.length + i;
         return (
           <button
             key={opt.id}

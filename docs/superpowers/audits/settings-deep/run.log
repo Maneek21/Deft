@@ -1,0 +1,116 @@
+[21:32:51] Settings deep audit — started
+[21:32:51] Date: 2026-04-20T21:32:51.812Z
+[21:32:51] Branch: feat/phase2-4-mcp-agents-plans
+[21:32:51] WEB_URL: http://localhost:3000
+[21:32:51] API_URL: http://localhost:3001
+[21:32:51] 
+Logging in...
+[21:32:54] Login OK
+[21:32:55] 
+── 1. Landing /settings ──
+[21:32:58]   screenshot → docs/superpowers/audits/settings-deep/01-settings-landing.png
+[21:32:58]   Nav settings links: Settings, General, Members, Groups, Tags, Integrations, Agent, Agent Employees, API Access
+[21:32:58]   OK — no "Deploy" tab found
+[21:32:58]   Expected 8 subtabs: General, Members, Groups, Tags, Integrations, Agent, Agent Employees, API Access
+[21:32:58]   Page h1: "Settings"
+[21:32:58] 
+── 2. Members ──
+[21:33:00]   screenshot → docs/superpowers/audits/settings-deep/02-members-list.png
+[21:33:00]   Approximate member rows: 0
+[21:33:00]   OK — Invite button found
+[21:33:01]   OK — Invite form appeared
+[21:33:01]   screenshot → docs/superpowers/audits/settings-deep/02-members-invite-form.png
+[21:33:01]   Role options: admin, member, guest
+[21:33:01]   Role change buttons found: 13
+[21:33:01]   Remove buttons found: 13
+[21:33:02]   "(you)" label visible: true
+[21:33:02] 
+── 3. Integrations ──
+[21:33:04]   screenshot → docs/superpowers/audits/settings-deep/03-integrations.png
+[21:33:04]   OAuth providers rendered: 8 — 📅, Google Calendar, 🐙, GitHub, 💬, Slack, 📧, Gmail
+[21:33:04]   "Coming soon" labels: 2
+[21:33:04]   OK — MCP Connections section found
+[21:33:04]   OK — Add MCP Server button found
+[21:33:05]   OK — MCP form/modal opened
+[21:33:05]   screenshot → docs/superpowers/audits/settings-deep/03-integrations-mcp-form.png
+[21:33:06]   MCP form: attempted close via click-outside
+[21:33:06]   Quick-connect buttons: Zapier=true n8n=true Playwright=true
+[21:33:06]   OK — no "Railway" reference
+[21:33:06]   OK — no "deployment provider" reference
+[21:33:06]   MCP connection status dots: 6
+[21:33:06] 
+── 4. Agent dashboard /settings/agent ──
+[21:33:08]   screenshot → docs/superpowers/audits/settings-deep/04-agent-dashboard.png
+[21:33:08]   OK — "Agent Settings" heading found
+[21:33:08]   Trust level buttons: 3
+[21:33:10]   Employee rows: 5
+[21:33:10]   First employee slug: "dogfood-pm"
+[21:33:10]   OK — kebab menu button found for "dogfood-pm"
+[21:33:11]   screenshot → docs/superpowers/audits/settings-deep/04-agent-kebab-open.png
+[21:33:11]   Kebab menu items: ["Developer","Webhooks","Clone agent","Save as template"]
+[21:33:11]   OK — no "Personality" link in kebab menu
+[21:33:11]   OK — Developer link present in kebab menu
+[21:33:11]   Developer href: /settings/agent-employees/b2069334-c955-4f14-b84e-e6a401dd067b/developer
+[21:33:11]   OK — kebab menu closed
+[21:33:12]   OK — employee drawer opened on row click
+[21:33:12]   screenshot → docs/superpowers/audits/settings-deep/04-agent-drawer-open.png
+[21:33:12]   OK — drawer close button found
+[21:33:13]   OK — drawer closed
+[21:33:13]   OK — Pending Approvals section present
+[21:33:13]   OK — Action Log section present
+[21:33:13]   OK — no ClawHub reference
+[21:33:13] 
+── 5. Agent Employees /settings/agent-employees ──
+[21:33:14]   screenshot → docs/superpowers/audits/settings-deep/05-agent-employees.png
+[21:33:14]   Page heading: "Agent Employees"
+[21:33:14]   Current URL: http://localhost:3000/settings/agent-employees
+[21:33:14]   Create/Connect button: "Create Agent" href="/settings/agent-employees/create"
+[21:33:14]   OK — Create/Connect button found
+[21:33:14]   screenshot → docs/superpowers/audits/settings-deep/05-agent-employees-list.png
+[21:33:14]   Navigating to /settings/agent-employees/create...
+[21:33:16]   screenshot → docs/superpowers/audits/settings-deep/05-agent-employees-create-wizard.png
+[21:33:16]   Wizard URL: http://localhost:3000/settings/agent-employees/create
+[21:33:16]   Wizard heading: "Connect Agent"
+[21:33:16]   Wizard tabs found: ["Native","BYOA via MCP","Custom MCP Client"]
+[21:33:16]   OK — Three-tab Connect Agent wizard present
+[21:33:16] 
+── 6. API Access /settings/api-access ──
+[21:33:17]   screenshot → docs/superpowers/audits/settings-deep/06-api-access.png
+[21:33:17]   OK — "API Access" heading found
+[21:33:17]   Approximate API key rows: 0
+[21:33:17]   OK — Create API Key button found
+[21:33:18]   OK — Create API Key form appeared
+[21:33:18]   screenshot → docs/superpowers/audits/settings-deep/06-api-access-create-form.png
+[21:33:18]   Employee link dropdown: true
+[21:33:18]   NOTE — Permissions are hardcoded to mcp:full (no UI scope selector)
+[21:33:18]   Rate limit inputs: 2
+[21:33:18]   Copy references /mcp: false, /api/mcp: false
+[21:33:19]   OK — Create form cancelled
+[21:33:19]   Key toggle buttons: 8
+[21:33:19] 
+── 7a. General /settings ──
+[21:33:20]   screenshot → docs/superpowers/audits/settings-deep/07a-general.png
+[21:33:20]   Profile section: true
+[21:33:20]   Appearance section: true
+[21:33:20]   Theme buttons: ["Light","Dark"]
+[21:33:20]   OK — General page loaded without crash
+[21:33:20]   Workspace/org name section: true
+[21:33:20] 
+── 7b. Groups /settings/groups ──
+[21:33:21]   screenshot → docs/superpowers/audits/settings-deep/07b-groups.png
+[21:33:21]   Groups heading: "User Groups"
+[21:33:21]   Create group button: true
+[21:33:21]   Approximate group rows: 0
+[21:33:21]   OK — Groups page loaded without crash
+[21:33:21] 
+── 7c. Tags /settings/tags ──
+[21:33:22]   screenshot → docs/superpowers/audits/settings-deep/07c-tags.png
+[21:33:22]   Tags heading: "Tags"
+[21:33:23]   Tag-styled elements: 0
+[21:33:23]   OK — Tags page loaded without crash
+[21:33:23] 
+══ Summary ══
+[21:33:23] Duration: 32s
+[21:33:23] Tests: 9 passed, 0 failed
+[21:33:23] Console errors: 0
+[21:33:23] HTTP 4xx/5xx: 0

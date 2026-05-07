@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -34,11 +34,23 @@ import {
   Headphones,
   BookOpen,
   Smile,
+  Library,
+  Inbox,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
+import { useInboxCount } from '@/hooks/use-inbox-count';
+
+type AgentEmployee = {
+  id: string;
+  user_id: string;
+  name: string;
+  role: string;
+  avatar_url: string | null;
+  is_active: boolean;
+};
 
 type Space = {
   id: string;
@@ -55,6 +67,8 @@ type Project = {
   prefix: string;
   color: string | null;
   task_counter: number;
+  total_tasks: number;
+  done_tasks: number;
 };
 
 const navItems = [
@@ -64,7 +78,8 @@ const navItems = [
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
-  { name: 'Agent', href: '/agent', icon: Bot },
+  { name: 'Inbox', href: '/inbox', icon: Inbox },
+  { name: 'Library', href: '/library', icon: Library },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
@@ -83,7 +98,19 @@ function ChatSidebarContent({
   const { user } = useAuth();
   const { unreadCounts, mentionCounts, orgMembers, openDmWith, activeHuddles, joinHuddleBySpace } = useChatContext();
   const pathname = usePathname();
+  const router = useRouter();
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+  const [createDmOpen, setCreateDmOpen] = useState(false);
+  const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
+
+  useEffect(() => {
+    api.get('/api/agent-employees').then(async (res) => {
+      if (res.ok) {
+        const data = await res.json();
+        setAgentEmployees(data.filter((e: AgentEmployee) => e.is_active));
+      }
+    });
+  }, []);
 
   const publicSpaces = spaces.filter((s) => s.type === 'public' || s.type === 'private');
   const dmSpaces = spaces.filter((s) => s.type === 'dm' || s.type === 'group_dm');
@@ -119,9 +146,8 @@ function ChatSidebarContent({
             <button
               key={space.id}
               onClick={() => onSpaceClick(space.id)}
-              className="w-full text-left px-2 flex items-center gap-1.5 relative"
+              className="w-full text-left px-2 flex items-center gap-1.5 relative min-h-[44px] md:min-h-0 md:h-8"
               style={{
-                height: '32px',
                 background: active ? 'var(--bg-active)' : 'transparent',
                 color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                 fontWeight: active ? 500 : hasUnread ? 600 : 500,
@@ -179,10 +205,32 @@ function ChatSidebarContent({
           >
             Direct Messages
           </span>
+          <button
+            onClick={() => setCreateDmOpen(true)}
+            className="p-0.5 rounded"
+            style={{ color: 'var(--outline)' }}
+            title="New direct message"
+          >
+            <Plus size={13} strokeWidth={1.5} />
+          </button>
         </div>
         {orgMembers
           .filter((m) => m.id !== user?.id)
+          .slice()
+          .sort((a, b) => {
+            // Defty pinned at top
+            if (a.email === 'deft-agent@system.local') return -1;
+            if (b.email === 'deft-agent@system.local') return 1;
+            // Then other agents before humans
+            const aAgent = a.kind === 'agent' || a.kind === 'system';
+            const bAgent = b.kind === 'agent' || b.kind === 'system';
+            if (aAgent && !bAgent) return -1;
+            if (!aAgent && bAgent) return 1;
+            // Then alphabetical by name
+            return (a.name || '').localeCompare(b.name || '');
+          })
           .map((member) => {
+            const isAgent = member.kind === 'agent' || member.kind === 'system';
             const dmSpace = dmSpaces.find((s) => {
               const names = s.name.split(',').map((n) => n.trim());
               return names.includes(member.name);
@@ -207,9 +255,8 @@ function ChatSidebarContent({
               <button
                 key={member.id}
                 onClick={handleClick}
-                className="w-full text-left px-2 flex items-center gap-2"
+                className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
                 style={{
-                  height: '32px',
                   background: active ? 'var(--bg-active)' : 'transparent',
                   color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                   fontWeight: active ? 500 : hasUnread ? 600 : 500,
@@ -235,7 +282,15 @@ function ChatSidebarContent({
                   )}
                 </div>
                 <span className="truncate flex-1">{member.name}</span>
-                {member.status_emoji && (
+                {isAgent && !hasMentions && !hasUnread && (
+                  <span
+                    className="text-[9px] font-semibold px-1 py-0 rounded-full flex-shrink-0 leading-[16px]"
+                    style={{ background: 'var(--surface-variant)', color: 'var(--on-surface-variant)' }}
+                  >
+                    AI
+                  </span>
+                )}
+                {member.status_emoji && !isAgent && (
                   <span className="text-[11px] flex-shrink-0" title={member.status_text || ''}>{member.status_emoji}</span>
                 )}
                 {hasMentions ? (
@@ -258,7 +313,72 @@ function ChatSidebarContent({
           })}
       </div>
 
-      {createSpaceOpen && <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />}
+      {/* Agent Employees */}
+      {agentEmployees.length > 0 && (
+        <div className="px-3 pt-5 pb-1">
+          <div className="flex items-center justify-between px-2 mb-2">
+            <span
+              className="text-[0.6875rem] font-semibold uppercase tracking-[0.05em]"
+              style={{ color: 'var(--outline)' }}
+            >
+              Agent Employees
+            </span>
+          </div>
+          {agentEmployees.map((employee) => {
+            const initial = employee.name.charAt(0).toUpperCase();
+            return (
+              <button
+                key={employee.id}
+                onClick={() => router.push(`/agent?employee=${employee.id}`)}
+                className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--on-surface-variant)',
+                  fontWeight: 500,
+                  fontSize: '0.8125rem',
+                  borderRadius: 'var(--radius-lg)',
+                }}
+              >
+                <div className="relative flex-shrink-0">
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                    style={{ background: 'var(--primary-container)' }}
+                  >
+                    {initial}
+                  </div>
+                  <div
+                    className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
+                    style={{
+                      background: 'var(--status-green)',
+                      border: '2px solid var(--surface-container-low)',
+                    }}
+                  />
+                </div>
+                <span className="truncate flex-1">{employee.name}</span>
+                <span
+                  className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded flex-shrink-0"
+                  style={{
+                    background: 'var(--accent-subtle, rgba(124,107,79,0.12))',
+                    color: 'var(--accent)',
+                    borderRadius: '4px',
+                  }}
+                >
+                  AI
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {createSpaceOpen && typeof document !== 'undefined' && createPortal(
+        <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,
+        document.body
+      )}
+      {createDmOpen && typeof document !== 'undefined' && createPortal(
+        <CreateDmModal onClose={() => setCreateDmOpen(false)} />,
+        document.body
+      )}
     </>
   );
 }
@@ -333,9 +453,8 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
             <button
               key={project.id}
               onClick={() => { router.push(`/tasks?project=${project.id}`); onNav?.(); }}
-              className="w-full text-left px-2 flex items-center gap-2"
+              className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
               style={{
-                height: '32px',
                 background: active ? 'var(--bg-active)' : 'transparent',
                 color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                 fontWeight: active ? 500 : 500,
@@ -351,14 +470,14 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
               </div>
               <span className="truncate flex-1">{project.name}</span>
               <span className="text-[11px] flex-shrink-0" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
-                {project.task_counter}
+                {project.total_tasks}
               </span>
             </button>
           );
         })}
       </div>
 
-      {createProjectOpen && (
+      {createProjectOpen && typeof document !== 'undefined' && createPortal(
         <CreateProjectModal
           onClose={() => setCreateProjectOpen(false)}
           onCreated={(p) => {
@@ -366,130 +485,9 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
             setCreateProjectOpen(false);
             router.push(`/tasks?project=${p.id}`);
           }}
-        />
+        />,
+        document.body
       )}
-    </>
-  );
-}
-
-// ── Agent sidebar content ────────────────────────────────────────────
-function AgentSidebarContent({ onNav }: { onNav?: () => void }) {
-  const [conversations, setConversations] = useState<{id:string;title:string|null;updated_at:string}[]>([]);
-  const [editingConvo, setEditingConvo] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const activeConvId = searchParams.get('id');
-
-  // relativeTime imported as formatRelative from @/lib/time
-
-  const loadConversations = () => {
-    api.get('/api/agent/conversations').then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        const filtered = data.filter((c: any) => c.title && c.title !== 'New conversation');
-        setConversations(filtered);
-      }
-    });
-  };
-
-  useEffect(() => {
-    loadConversations();
-    const interval = setInterval(loadConversations, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    await api.delete(`/api/agent/conversations/${id}`);
-    setConversations(prev => prev.filter(c => c.id !== id));
-    if (activeConvId === id) {
-      router.push('/agent');
-    }
-  };
-
-  return (
-    <>
-      <div className="px-3 pt-3 pb-1">
-        <Link href="/agent"
-          onClick={onNav}
-          className="w-full flex items-center gap-2 px-2 font-medium"
-          style={{
-            height: '36px',
-            background: 'var(--primary-container)',
-            color: 'white',
-            borderRadius: 'var(--radius-lg)',
-            fontSize: '0.8125rem',
-          }}>
-          <Plus size={14} /> New conversation
-        </Link>
-      </div>
-      <div className="px-3 pt-4 pb-1">
-        <div className="flex items-center px-2 mb-2">
-          <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.05em]"
-            style={{ color: 'var(--outline)' }}>Conversations</span>
-        </div>
-        {conversations.slice(0, 10).map(conv => {
-          const active = activeConvId === conv.id;
-          return (
-            <Link key={conv.id} href={`/agent?id=${conv.id}`}
-              onClick={onNav}
-              className="w-full text-left px-2 flex items-center gap-2 group"
-              onDoubleClick={(e) => { e.preventDefault(); setEditingConvo(conv.id); setEditTitle(conv.title || ''); }}
-              style={{
-                height: '32px',
-                background: active ? 'var(--bg-active)' : 'transparent',
-                color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
-                fontWeight: active ? 500 : 500,
-                fontSize: '0.8125rem',
-                borderRadius: 'var(--radius-lg)',
-              }}>
-              {editingConvo === conv.id ? (
-                <input
-                  autoFocus
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  onKeyDown={async (e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      await api.patch(`/api/agent/conversations/${conv.id}`, { title: editTitle });
-                      setConversations(prev => prev.map(c => c.id === conv.id ? { ...c, title: editTitle } : c));
-                      setEditingConvo(null);
-                    }
-                    if (e.key === 'Escape') setEditingConvo(null);
-                  }}
-                  onBlur={() => setEditingConvo(null)}
-                  onClick={(e) => e.preventDefault()}
-                  className="w-full bg-transparent text-[12px] outline-none"
-                  style={{ color: 'var(--on-surface)' }}
-                />
-              ) : (
-                <span className="truncate flex-1">{conv.title}</span>
-              )}
-              {editingConvo !== conv.id && (
-                <>
-                  <span className="text-[10px] flex-shrink-0 group-hover:hidden" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
-                    {formatRelative(conv.updated_at)}
-                  </span>
-                  <button
-                    onClick={(e) => handleDelete(conv.id, e)}
-                    className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                    style={{ color: 'var(--outline)' }}
-                    title="Delete conversation">
-                    <X size={12} />
-                  </button>
-                </>
-              )}
-            </Link>
-          );
-        })}
-        {conversations.length === 0 && (
-          <p className="text-[12px] text-center py-6 px-2" style={{ color: 'var(--outline)' }}>
-            No conversations yet
-          </p>
-        )}
-      </div>
     </>
   );
 }
@@ -505,6 +503,8 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
     { name: 'Tags', href: '/settings/tags' },
     { name: 'Integrations', href: '/settings/integrations' },
     { name: 'Agent', href: '/settings/agent' },
+    { name: 'Agent Employees', href: '/settings/agent-employees' },
+    { name: 'API Access', href: '/settings/api-access' },
   ];
 
   return (
@@ -567,6 +567,7 @@ export function Sidebar({
   const [savedOpen, setSavedOpen] = useState(false);
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuBtnRef = useRef<HTMLButtonElement>(null);
 
   // Click-outside handler for three-dot menu
   useEffect(() => {
@@ -579,6 +580,16 @@ export function Sidebar({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [userMenuOpen]);
+
+  // Escape-key handler for mobile drawer
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileOpen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [mobileOpen, setMobileOpen]);
 
   const toggleDnd = async () => {
     const next = !dnd;
@@ -602,6 +613,10 @@ export function Sidebar({
   // Total unread across all spaces
   const totalUnread = Array.from(unreadCounts.values()).reduce((sum, c) => sum + c, 0);
 
+  // Block 0.2 — poll the agent-actions pending queue so the Agent nav entry
+  // renders a red badge whenever an agent is waiting on approval.
+  const { count: inboxCount } = useInboxCount();
+
   const handleSpaceClick = (id: string) => {
     onSelectSpace(id);
     setMobileOpen(false);
@@ -619,9 +634,6 @@ export function Sidebar({
     }
     if (pathname.startsWith('/notes') || pathname.startsWith('/dashboard')) {
       return null;
-    }
-    if (pathname.startsWith('/agent')) {
-      return <AgentSidebarContent onNav={handleNav} />;
     }
     if (pathname.startsWith('/settings')) {
       return <SettingsSidebarContent onNav={handleNav} />;
@@ -656,12 +668,12 @@ export function Sidebar({
             </svg>
           </div>
           <div>
-            <h1
+            <span
               className="text-[13px] font-semibold leading-tight"
               style={{ color: 'var(--on-surface)', letterSpacing: '-0.02em' }}
             >
               Deft AI
-            </h1>
+            </span>
             <p
               className="text-[0.5625rem] font-semibold uppercase leading-tight"
               style={{ color: 'var(--outline)', letterSpacing: '0.05em' }}
@@ -718,6 +730,15 @@ export function Sidebar({
                   {totalUnread > 99 ? '99+' : totalUnread}
                 </div>
               )}
+              {item.name === 'Inbox' && inboxCount > 0 && (
+                <div
+                  className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
+                  style={{ background: 'var(--danger, #ef4444)' }}
+                  title={`${inboxCount} unread item${inboxCount === 1 ? '' : 's'}`}
+                >
+                  {inboxCount > 99 ? '99+' : inboxCount}
+                </div>
+              )}
             </Link>
           );
         })}
@@ -730,7 +751,7 @@ export function Sidebar({
 
       {/* Bottom user section — no border, tonal separation */}
       <div
-        className="px-3 flex items-center gap-2 flex-shrink-0"
+        className="px-3 flex items-center gap-2 flex-shrink-0 pb-[max(env(safe-area-inset-bottom),12px)]"
         style={{
           height: '56px',
           background: 'rgba(0,0,0,0.08)',
@@ -766,8 +787,9 @@ export function Sidebar({
           </span>
         </button>
 
-        <div className="relative" ref={userMenuRef}>
+        <div ref={userMenuRef}>
           <button
+            ref={userMenuBtnRef}
             className="p-1.5 rounded-md"
             style={{ color: 'var(--outline)' }}
             title="More options"
@@ -775,10 +797,16 @@ export function Sidebar({
           >
             <MoreHorizontal size={15} strokeWidth={1.5} />
           </button>
-          {userMenuOpen && (
+          {userMenuOpen && typeof document !== 'undefined' && createPortal(
             <div
-              className="absolute bottom-full right-0 mb-2 w-48 py-1 rounded-lg z-50"
-              style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)' }}
+              className="fixed w-48 py-1 rounded-lg z-[100]"
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                background: 'var(--surface-container-highest)',
+                boxShadow: 'var(--glass-shadow)',
+                bottom: `${window.innerHeight - (userMenuBtnRef.current?.getBoundingClientRect().top ?? 0) + 8}px`,
+                left: `${(userMenuBtnRef.current?.getBoundingClientRect().right ?? 0) + 8}px`,
+              }}
             >
               {/* Status display / set */}
               {user?.status_emoji ? (
@@ -794,39 +822,40 @@ export function Sidebar({
                 </div>
               ) : null}
               <button onClick={() => { setUserMenuOpen(false); setStatusModalOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Smile size={14} strokeWidth={1.5} /> Set status
               </button>
               <button onClick={() => { setUserMenuOpen(false); setSavedOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Bookmark size={14} strokeWidth={1.5} /> Saved messages
               </button>
               <button onClick={() => { toggleDnd(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: dnd ? 'var(--status-amber)' : 'var(--on-surface-variant)' }}>
                 {dnd ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />}
                 {dnd ? 'Disable Do Not Disturb' : 'Do Not Disturb'}
               </button>
               <button onClick={() => { toggleTheme(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 {theme === 'dark' ? <Sun size={14} strokeWidth={1.5} /> : <Moon size={14} strokeWidth={1.5} />}
                 {theme === 'dark' ? 'Light mode' : 'Dark mode'}
               </button>
               <div className="my-1" style={{ borderTop: '1px solid var(--ghost-border)' }} />
               <Link href="/settings" onClick={() => setUserMenuOpen(false)}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--on-surface-variant)' }}>
                 <Settings size={14} strokeWidth={1.5} /> Settings
               </Link>
               <button onClick={() => { setUserMenuOpen(false); logout(); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left"
+                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
                 style={{ color: 'var(--status-red)' }}>
                 <LogOut size={14} strokeWidth={1.5} /> Log out
               </button>
-            </div>
+            </div>,
+            document.body
           )}
         </div>
       </div>
@@ -893,6 +922,9 @@ export function Sidebar({
 
       {/* Sidebar — NO borderRight, tonal layering only */}
       <aside
+        role={mobileOpen ? 'dialog' : undefined}
+        aria-modal={mobileOpen ? 'true' : undefined}
+        aria-label={mobileOpen ? 'Navigation' : undefined}
         className={`
           fixed md:relative z-50 md:z-auto
           h-full flex flex-col

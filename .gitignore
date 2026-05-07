@@ -13,3 +13,41 @@ coverage/
 drizzle/meta/
 uploads/
 *.pdf
+
+# Audit script state (contains access tokens)
+playwright-auth.json
+audit-failure-*.png
+docs/superpowers/audits/agent-byoa/.token-snapshot.json
+docs/superpowers/audits/agent-byoa/agent-byoa-layer-*.last-run.txt
+
+# Ad-hoc visual review screenshots from session audit sweeps.
+# These are throwaway test artifacts — the real audits write their
+# baselines to docs/superpowers/audits/*.last-run.txt and don't
+# persist PNGs. Safe to delete any time.
+s2-visual-*.png
+mcp-bundle-*.png
+ui-audit-*.png
+alex-pm-test-*.png
+audit-*.png
+bug-test-*.png
+demo-*.png
+fix-*.png
+fixed-*.png
+phase1-test-*.png
+phase2-*.png
+tasks-*.png
+test-*.png
+
+# Drizzle migration preview output + ad-hoc SQL dumps
+migration-*.sql
+
+# Ad-hoc scratch test reports
+deft-human-test-results.md
+
+# Playwright MCP internal browser state
+.playwright-mcp/
+
+# Claude Code agent runtime state
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.deploy-tokens

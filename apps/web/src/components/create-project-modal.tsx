@@ -13,9 +13,19 @@ const PRESET_COLORS = [
   '#6B7280', // gray
 ];
 
+type Project = {
+  id: string;
+  name: string;
+  prefix: string;
+  color: string | null;
+  task_counter: number;
+  total_tasks: number;
+  done_tasks: number;
+};
+
 type Props = {
   onClose: () => void;
-  onCreated: (project: { id: string; name: string; prefix: string; color: string | null; task_counter: number }) => void;
+  onCreated: (project: Project) => void;
 };
 
 export function CreateProjectModal({ onClose, onCreated }: Props) {
@@ -43,20 +53,27 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
   // Auto-generate prefix from name
   useEffect(() => {
     if (name && !prefixManuallyEdited) {
-      const auto = name
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((w) => w[0])
-        .join('')
-        .toUpperCase()
-        .slice(0, 4);
+      const words = name.split(/\s+/).filter(Boolean);
+      let auto = words.map((w) => w[0]).join('').toUpperCase().slice(0, 4);
+      // API requires min 2 chars — pad with next letters from the first word
+      if (auto.length < 2 && words[0]) {
+        auto = words[0].slice(0, 4).toUpperCase();
+      }
       setPrefix(auto);
     }
   }, [name, prefixManuallyEdited]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !prefix.trim()) return;
+    if (!name.trim()) return;
+    if (prefix.trim().length < 2) {
+      setError('Prefix must be at least 2 characters');
+      return;
+    }
+    if (prefix.trim().length > 6) {
+      setError('Prefix must be 6 characters or fewer');
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -65,17 +82,26 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
       const res = await api.post('/api/projects', {
         name: name.trim(),
         prefix: prefix.trim().toUpperCase(),
-        description: description.trim() || null,
+        description: description.trim() || undefined,
         color,
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Failed to create project' }));
+        const data = await res
+          .json()
+          .catch(() => ({ error: 'Failed to create project' }));
         throw new Error(data.error || 'Failed to create project');
       }
 
-      const project = await res.json();
-      onCreated(project);
+      const project = (await res.json()) as Project;
+
+      const finalProject: Project = {
+        ...project,
+        total_tasks: 0,
+        done_tasks: 0,
+      };
+
+      onCreated(finalProject);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create project');
     } finally {
@@ -90,7 +116,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
       onClick={onClose}
     >
       <div
-        className="w-[calc(100vw-2rem)] max-w-[420px] max-h-[90vh] overflow-y-auto rounded-2xl"
+        className="w-[calc(100vw-2rem)] max-w-[480px] max-h-[90vh] overflow-y-auto rounded-2xl"
         style={{
           background: 'var(--card-bg)',
           border: '1px solid var(--border)',
@@ -113,12 +139,12 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
             onClick={onClose}
             className="p-1 rounded-md"
             style={{ color: 'var(--muted)' }}
+            aria-label="Close"
           >
             <X size={16} strokeWidth={1.5} />
           </button>
         </div>
 
-        {/* Form */}
         <form onSubmit={handleSubmit} className="p-5">
           {/* Name */}
           <div className="mb-3">
@@ -254,15 +280,15 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
           {/* Submit */}
           <button
             type="submit"
-            disabled={!name.trim() || !prefix.trim() || submitting}
+            disabled={submitting || !name.trim() || !prefix.trim()}
             className="w-full py-2 rounded-lg text-[13px] font-medium text-white transition-opacity"
             style={{
               background: 'var(--accent)',
-              opacity: !name.trim() || !prefix.trim() || submitting ? 0.5 : 1,
+              opacity: submitting || !name.trim() || !prefix.trim() ? 0.5 : 1,
               fontFamily: 'var(--font-heading)',
             }}
           >
-            {submitting ? 'Creating...' : 'Create Project'}
+            {submitting ? 'Creating...' : 'Create project'}
           </button>
         </form>
       </div>

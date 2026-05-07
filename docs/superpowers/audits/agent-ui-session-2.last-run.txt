@@ -1,0 +1,54 @@
+
+> deft@ audit:session2 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-2.audit.ts
+
+Session 2 audit — approval cards + metadata trust signals
+
+  Test 1/7: friendly tool name in approval card...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ humanized label shown, raw name hidden
+  Test 2/7: params visible in approval card...
+    ✓ task title visible in card
+  Test 3/7: no follow-ups rendered while pending action exists...
+    ✓ no follow-up chips during pending action
+  Test 4/7: no confidence label while pending action exists...
+    ✓ no confidence label during pending action
+  Test 5/7: tool-backed answer shows High confidence...
+    ✓ tool-backed answer shows High confidence
+  Test 6/7: cumulative tokens shown on terminal row...
+    ✓ cumulative tokens = 59873
+  Test 7/7: in-flight tool label humanized...
+    ✓ in-flight label humanized (no raw mcp__ string observed)
+
+── Session 1 regression ──
+
+> deft@ audit:session1 C:\Users\Osheen Pradhan\cairn
+> tsx docs/superpowers/audits/agent-ui-session-1.audit.ts
+
+Session 1 audit — content safety + identity
+
+  Test 1/7: agent name in bubble...
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  [page.console.error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+    ✓ bubble label = Alex PM (1 found)
+  Test 2/7: markdown table renders as <table>...
+    ✓ table rendered with 4 rows
+  Test 3/7: code fence content is isolated...
+    ✓ code fence isolated (421 chars, 0 <li>)
+  Test 4/7: markdown links render as <a href>...
+    ✓ 3 react.dev link(s) rendered
+  Test 5/7: XSS payload is neutralized...
+    ✓ XSS neutralized (no execution, no <img onerror>)
+  Test 6/7: tool badges visible after reload...
+    ✓ 1 tool badge(s) on reload: 💬 Time · Current Time
+  Test 7/7: multi-iteration response = 1 bubble on reload...
+    ✓ exactly 1 Alex PM bubble on reload
+
+✅ Session 1 audit: all 7 assertions passed
+── Session 1 regression passed ──
+
+
+✅ Session 2 audit: all 7 assertions passed + Session 1 regression clean

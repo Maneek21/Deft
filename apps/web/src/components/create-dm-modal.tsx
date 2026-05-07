@@ -2,14 +2,16 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
-import { X, Search } from 'lucide-react';
+import { X, Search, Bot } from 'lucide-react';
 import { useChatContext } from '@/lib/chat-context';
 import { useAuth } from '@/lib/auth-context';
+import { AIBadge } from './ai-badge';
 
 type Member = {
   id: string;
   name: string;
   avatar: string | null;
+  kind?: 'human' | 'agent' | 'system';
 };
 
 type Props = {
@@ -21,6 +23,58 @@ function avatarColor(name: string) {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
   return colors[Math.abs(hash) % colors.length];
+}
+
+function MemberRow({
+  member,
+  isAgent,
+  onSelect,
+  submitting,
+}: {
+  member: Member;
+  isAgent: boolean;
+  onSelect: (m: Member) => void;
+  submitting: boolean;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(member)}
+      disabled={submitting}
+      className="w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors"
+      style={{ opacity: submitting ? 0.5 : 1 }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLElement).style.background = 'transparent';
+      }}
+    >
+      {member.avatar ? (
+        <img src={member.avatar} className="w-8 h-8 rounded-full" alt={member.name} />
+      ) : isAgent ? (
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center"
+          style={{ background: '#6366f1', color: '#fff' }}
+        >
+          <Bot size={15} strokeWidth={1.5} />
+        </div>
+      ) : (
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-medium text-white"
+          style={{ background: avatarColor(member.name) }}
+        >
+          {member.name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <span
+        className="text-[13px] font-medium flex-1"
+        style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}
+      >
+        {member.name}
+      </span>
+      {isAgent && <AIBadge />}
+    </button>
+  );
 }
 
 export function CreateDmModal({ onClose }: Props) {
@@ -67,6 +121,9 @@ export function CreateDmModal({ onClose }: Props) {
   const filtered = members.filter((m) =>
     m.name.toLowerCase().includes(search.toLowerCase())
   );
+
+  const humans = filtered.filter((m) => m.kind !== 'agent');
+  const agents = filtered.filter((m) => m.kind === 'agent');
 
   const handleSelect = async (member: Member) => {
     setSubmitting(true);
@@ -178,38 +235,46 @@ export function CreateDmModal({ onClose }: Props) {
               No members found
             </div>
           ) : (
-            filtered.map((member) => (
-              <button
-                key={member.id}
-                onClick={() => handleSelect(member)}
-                disabled={submitting}
-                className="w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors"
-                style={{ opacity: submitting ? 0.5 : 1 }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = 'transparent';
-                }}
-              >
-                {member.avatar ? (
-                  <img src={member.avatar} className="w-8 h-8 rounded-full" alt={member.name} />
-                ) : (
+            <>
+              {agents.length > 0 && (
+                <>
                   <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-medium text-white"
-                    style={{ background: avatarColor(member.name) }}
+                    className="px-4 pt-3 pb-1 text-[11px] font-medium uppercase tracking-wide"
+                    style={{ color: 'var(--muted)' }}
                   >
-                    {member.name.charAt(0).toUpperCase()}
+                    Agents
                   </div>
-                )}
-                <span
-                  className="text-[13px] font-medium"
-                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}
-                >
-                  {member.name}
-                </span>
-              </button>
-            ))
+                  {agents.map((member) => (
+                    <MemberRow
+                      key={member.id}
+                      member={member}
+                      isAgent
+                      onSelect={handleSelect}
+                      submitting={submitting}
+                    />
+                  ))}
+                </>
+              )}
+              {humans.length > 0 && (
+                <>
+                  <div
+                    className="px-4 pt-3 pb-1 text-[11px] font-medium uppercase tracking-wide"
+                    style={{ color: 'var(--muted)' }}
+                  >
+                    People
+                  </div>
+                  {humans.map((member) => (
+                    <MemberRow
+                      key={member.id}
+                      member={member}
+                      isAgent={false}
+                      onSelect={handleSelect}
+                      submitting={submitting}
+                    />
+                  ))}
+                </>
+              )}
+            </>
           )}
         </div>
       </div>

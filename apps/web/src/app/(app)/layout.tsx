@@ -9,6 +9,7 @@ import { Sidebar } from '@/components/sidebar';
 import { CommandPalette } from '@/components/command-palette';
 import { KeyboardShortcuts } from '@/components/keyboard-shortcuts';
 import { AppHeader } from '@/components/app-header';
+import { AppHeaderProvider, useAppHeaderContext } from '@/components/app-header-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useHuddle } from '@/hooks/use-huddle';
@@ -25,6 +26,11 @@ type Space = {
   is_default: boolean;
   is_muted?: boolean;
 };
+
+function AppHeaderHost({ onMenuClick }: { onMenuClick?: () => void }) {
+  const { pageContext } = useAppHeaderContext();
+  return <AppHeader onMenuClick={onMenuClick} pageContext={pageContext} />;
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -47,7 +53,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map());
   const [mentionCounts, setMentionCounts] = useState<Map<string, number>>(new Map());
-  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null }[]>([]);
+  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null; kind?: 'human' | 'agent' | 'system' }[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pendingChord = useRef<string | null>(null);
@@ -283,7 +289,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               case 'd': router.push('/dashboard'); break;
               case 'c': router.push('/chat'); break;
               case 't': router.push('/tasks'); break;
-              case 'a': router.push('/agent'); break;
+              case 'a': router.push('/chat'); break;
               case 's': router.push('/settings'); break;
               case 'n': router.push('/notes'); break;
               case 'l': router.push('/calendar'); break;
@@ -309,8 +315,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     (id: string) => {
       setActiveSpaceId(id);
       setThreadMessage(null);
-      if (!pathname.startsWith('/chat')) {
-        router.push('/chat');
+      if (pathname.startsWith('/chat')) {
+        // Preserve existing query params (e.g. ?thread=) but update ?space=
+        const params = new URLSearchParams(window.location.search);
+        params.set('space', id);
+        router.replace(`/chat?${params.toString()}`);
+      } else {
+        router.push(`/chat?space=${id}`);
       }
     },
     [pathname, router],
@@ -379,43 +390,45 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         activeHuddles: huddleState.activeHuddles,
       }}
     >
-      <div className="flex h-dvh" style={{ background: 'var(--background)' }}>
-        <Sidebar
-          spaces={spaces}
-          activeSpaceId={activeSpaceId}
-          onSelectSpace={handleSelectSpace}
-          presence={presence}
-          mobileOpen={mobileMenuOpen}
-          setMobileOpen={setMobileMenuOpen}
-        />
-        <main className="flex-1 overflow-hidden flex flex-col">
-          <AppHeader onMenuClick={() => setMobileMenuOpen(true)} />
-          <div className="flex-1 overflow-hidden">{children}</div>
-        </main>
-        <CommandPalette />
-        <KeyboardShortcuts open={showShortcuts} onClose={() => setShowShortcuts(false)} />
-        {huddleState.active && huddleState.huddleId && huddleState.spaceId && (
-          <HuddleOverlay
-            huddleId={huddleState.huddleId}
-            spaceId={huddleState.spaceId}
-            participants={huddleState.participants}
-            muted={huddleState.muted}
-            duration={huddleState.duration}
-            expanded={huddleState.expanded}
-            speakingMap={speakingMap}
-            onToggleMute={huddleState.toggleMute}
-            onToggleExpanded={huddleState.toggleExpanded}
-            onLeave={huddleState.leaveHuddle}
+      <AppHeaderProvider>
+        <div className="flex h-dvh" style={{ background: 'var(--background)' }}>
+          <Sidebar
+            spaces={spaces}
+            activeSpaceId={activeSpaceId}
+            onSelectSpace={handleSelectSpace}
+            presence={presence}
+            mobileOpen={mobileMenuOpen}
+            setMobileOpen={setMobileMenuOpen}
           />
-        )}
-        {huddleState.pendingRings.length > 0 && (
-          <HuddleRingToast
-            rings={huddleState.pendingRings}
-            onJoin={huddleState.joinHuddleBySpace}
-            onDismiss={huddleState.dismissRing}
-          />
-        )}
-      </div>
+          <main className="flex-1 overflow-hidden flex flex-col">
+            <AppHeaderHost onMenuClick={() => setMobileMenuOpen(true)} />
+            <div className="flex-1 overflow-hidden">{children}</div>
+          </main>
+          <CommandPalette />
+          <KeyboardShortcuts open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+          {huddleState.active && huddleState.huddleId && huddleState.spaceId && (
+            <HuddleOverlay
+              huddleId={huddleState.huddleId}
+              spaceId={huddleState.spaceId}
+              participants={huddleState.participants}
+              muted={huddleState.muted}
+              duration={huddleState.duration}
+              expanded={huddleState.expanded}
+              speakingMap={speakingMap}
+              onToggleMute={huddleState.toggleMute}
+              onToggleExpanded={huddleState.toggleExpanded}
+              onLeave={huddleState.leaveHuddle}
+            />
+          )}
+          {huddleState.pendingRings.length > 0 && (
+            <HuddleRingToast
+              rings={huddleState.pendingRings}
+              onJoin={huddleState.joinHuddleBySpace}
+              onDismiss={huddleState.dismissRing}
+            />
+          )}
+        </div>
+      </AppHeaderProvider>
     </ChatContext.Provider>
   );
 }

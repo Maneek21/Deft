@@ -1,0 +1,5 @@
+Connect Agent wizard smoke audit — PASS
+run at: 2026-04-20T12:44:02.352Z
+elapsed_ms: 6617
+api_url: http://localhost:3001
+web_url: http://localhost:3000

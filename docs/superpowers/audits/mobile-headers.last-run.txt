@@ -1,0 +1,13 @@
+✅ /dashboard → chrome y=0px (budget 96px ± 8px)
+✅ /chat → chrome y=0px (budget 130px ± 8px)
+✅ /tasks → chrome y=0px (budget 140px ± 8px)
+✅ /agent → chrome y=0px (budget 110px ± 8px)
+✅ /calendar → chrome y=0px (budget 130px ± 8px)
+✅ /notes → chrome y=0px (budget 110px ± 8px)
+✅ /knowledge → chrome y=0px (budget 130px ± 8px)
+✅ /library → chrome y=0px (budget 96px ± 8px)
+✅ /skills → chrome y=0px (budget 96px ± 8px)
+✅ /reminders → chrome y=0px (budget 110px ± 8px)
+✅ /settings → chrome y=0px (budget 130px ± 8px)
+
+All 11 routes within chrome budget. ✨

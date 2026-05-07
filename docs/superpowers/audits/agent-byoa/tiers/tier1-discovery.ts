@@ -1,0 +1,199 @@
+// docs/superpowers/audits/agent-byoa/tiers/tier1-discovery.ts
+import type { Page } from 'playwright';
+import type { McpClient } from '../lib/mcp-client.js';
+import type { DeftRest } from '../lib/api-client.js';
+import { withScratchSpace } from '../lib/fixtures.js';
+import { assertActionRowExists } from '../lib/assertions.js';
+import { findRecentAgentActions, waitForAgentAction, getEmployeeRow, getAgentShadowUserId } from '../lib/db-helpers.js';
+import { assert, assertEquals } from '../../lib/assert.js';
+import { db, schema } from '../../lib/db.js';
+import { eq } from 'drizzle-orm';
+import { createHmac } from 'node:crypto';
+
+export interface TierCtx {
+  page: Page;
+  rest: DeftRest;
+  mcp: McpClient;
+  agent: { id: string; slug: string; trust_level: string };
+  orgId: string;
+  webUrl: string;
+}
+
+export async function runTier1(ctx: TierCtx): Promise<{ passed: number; failed: number; failures: string[] }> {
+  const failures: string[] = [];
+  let passed = 0;
+  const run = async (name: string, fn: () => Promise<void>) => {
+    try { await fn(); console.log(`  ✅ ${name}`); passed++; }
+    catch (e) { failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`); console.log(`  ❌ ${name}: ${e instanceof Error ? e.message : e}`); }
+  };
+
+  // Scenario 1 — @mention dispatch
+  await run('1.1 @mention dispatch', async () => {
+    const sp = await withScratchSpace(ctx.rest, 't1-mention');
+    try {
+      const agentUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(agentUserId, 'agent has user_id');
+      await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
+
+      // Mention parser only recognizes <@<userId>|<name>> format (parseMentions in lib/mentions.ts)
+      const startedAt = new Date();
+      await ctx.rest.post(`/api/messages/${sp.resource.id}`, {
+        content: `<@${agentUserId}|${ctx.agent.slug}> please help`,
+      });
+      // BullMQ may have other agent jobs in flight; filter explicitly by our space_id
+      const deadline = Date.now() + 20_000;
+      let matched: any = null;
+      while (Date.now() < deadline && !matched) {
+        const rows = await findRecentAgentActions({
+          agentEmployeeId: ctx.agent.id,
+          source: 'mention',
+          action: 'chat_mention',
+          afterTs: startedAt,
+        });
+        matched = rows.find((r) => (r.params as any)?.space_id === sp.resource.id);
+        if (!matched) await new Promise((res) => setTimeout(res, 250));
+      }
+      assert(matched, `expected agent_actions row with params.space_id=${sp.resource.id} after ${startedAt.toISOString()}; none matched`);
+    } finally { await sp.cleanup(); }
+  });
+
+  // Scenario 2 — task assignment dispatch
+  await run('1.2 task_assigned dispatch', async () => {
+    // Random prefix per run to avoid collisions across reruns (schema: 2-6 char alphanumeric uppercase)
+    const prefix = `T1${String(Date.now() % 10000).padStart(4, '0')}`.slice(0, 6);
+    const proj = await ctx.rest.post<{ id: string; prefix: string }>('/api/projects', {
+      name: `harness-t1-task-${Date.now()}`,
+      prefix,
+    });
+    try {
+      // Need agent's shadow user_id — query via DB. Column is `user_id`
+      // on agent_employees; users.is_agent flag points back via
+      // users.agent_employee_id.
+      const shadowUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(shadowUserId, 'agent has user_id (shadow user)');
+      await ctx.rest.post('/api/tasks', {
+        project_id: proj.id,
+        title: 'harness assignment',
+        assignee_id: shadowUserId,
+      });
+      const row = await waitForAgentAction({
+        agentEmployeeId: ctx.agent.id,
+        source: 'task_assignment',
+        action: 'task_assigned',
+        timeoutMs: 15_000,
+      });
+      assert(row.params, 'task_assigned has params');
+    } finally {
+      await ctx.rest.delete(`/api/projects/${proj.id}`).catch(() => undefined);
+    }
+  });
+
+  // Scenario 3 — webhook dispatch
+  await run('1.3 webhook trigger dispatch', async () => {
+    // Create a webhook for the agent. Auth response wraps under
+    // { webhook, secret, hmac_key } — fix #7 added hmac_key for
+    // HMAC-SHA256 signature auth (legacy raw-secret still accepted).
+    const created = await ctx.rest.post<{
+      webhook: { id: string; slug: string };
+      secret: string;
+      hmac_key?: string;
+    }>('/api/agent-webhooks', {
+      agent_employee_id: ctx.agent.id,
+      label: `t1-webhook-${Date.now()}`,
+    });
+    const wh = {
+      id: created.webhook.id,
+      slug: created.webhook.slug,
+      secret: created.secret,
+      hmac_key: created.hmac_key,
+    };
+    try {
+      // Public dispatch surface uses HMAC-SHA256 over the raw body,
+      // sent as `x-deft-webhook-signature: sha256=<hex>`.
+      const payload = JSON.stringify({ harness: true, n: Date.now() });
+      assert(wh.hmac_key, 'create response includes hmac_key (post fix #7)');
+      const sig = `sha256=${createHmac('sha256', wh.hmac_key!).update(payload).digest('hex')}`;
+      const res = await fetch(`${process.env.DEFT_API_URL || 'http://localhost:3001'}/api/agent-webhooks/${wh.slug}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-deft-webhook-signature': sig,
+        },
+        body: payload,
+      });
+      assert(res.ok, `webhook dispatch returned ${res.status}: ${await res.text()}`);
+      await waitForAgentAction({
+        agentEmployeeId: ctx.agent.id,
+        source: 'trigger',
+        action: 'trigger_dispatch',
+        timeoutMs: 15_000,
+      });
+    } finally {
+      await ctx.rest.delete(`/api/agent-webhooks/${wh.id}`).catch(() => undefined);
+    }
+  });
+
+  // Scenario 4 — heartbeat tick dispatch
+  await run('1.4 heartbeat tick dispatch', async () => {
+    // Briefly enable heartbeat at 5min cadence so the cron eligibility passes.
+    // BUT we also need the cron to fire NOW, which means pushing a job
+    // directly to the queue. Use a curl into a debug route if it exists,
+    // OR temporarily flip heartbeat_enabled and last_heartbeat_at far enough back.
+    const before = await getEmployeeRow(ctx.agent.id);
+    assert(before, 'agent exists');
+    await db.update(schema.agentEmployees).set({
+      heartbeat_enabled: true,
+      heartbeat_interval_min: 5,
+      last_heartbeat_at: new Date(Date.now() - 1000 * 60 * 60), // 1h ago
+    }).where(eq(schema.agentEmployees.id, ctx.agent.id));
+    try {
+      // The cron worker registers `agent-employee-heartbeat-cron` — wait up
+      // to 75s for it to fire (it runs once a minute). If this is too slow
+      // for the audit, an alternative is to use `BullMQ.Queue.add` directly,
+      // but that requires the queue connection — leave the wait as the
+      // simplest path. If it times out, scenario 4 reports as flaky.
+      await waitForAgentAction({
+        agentEmployeeId: ctx.agent.id,
+        source: 'heartbeat',
+        action: 'heartbeat_tick',
+        timeoutMs: 75_000,
+      });
+    } finally {
+      await db.update(schema.agentEmployees).set({
+        heartbeat_enabled: before!.heartbeat_enabled,
+        heartbeat_interval_min: before!.heartbeat_interval_min,
+        last_heartbeat_at: before!.last_heartbeat_at,
+      }).where(eq(schema.agentEmployees.id, ctx.agent.id));
+    }
+  });
+
+  // Scenario 5 — poll_pending_work idempotency
+  await run('1.5 poll_pending_work idempotency', async () => {
+    const sp = await withScratchSpace(ctx.rest, 't1-idem');
+    try {
+      const agentUserId = await getAgentShadowUserId(ctx.agent.id);
+      assert(agentUserId, 'agent has user_id');
+      await ctx.rest.post(`/api/spaces/${sp.resource.id}/members`, { user_id: agentUserId }).catch(() => undefined);
+      await ctx.rest.post(`/api/messages/${sp.resource.id}`, { content: `<@${agentUserId}|${ctx.agent.slug}> idempotency check` });
+      await waitForAgentAction({ agentEmployeeId: ctx.agent.id, source: 'mention', action: 'chat_mention', timeoutMs: 20_000 });
+
+      const r1 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });
+      const r2 = await ctx.mcp.toolsCall<{ pending_actions: Array<{ id: string }> }>('poll_pending_work', { caller_employee_slug: ctx.agent.slug });
+      // Same pending rows on both polls — both should include the same row.
+      // Note: poll_pending_work is a snapshot read, not a "consume" — the
+      // platform contract is "filter pending status", not "deliver-once".
+      const ids1 = new Set(r1.pending_actions.map((a) => a.id));
+      const ids2 = new Set(r2.pending_actions.map((a) => a.id));
+      assert(ids1.size > 0 && ids2.size > 0, 'both polls returned at least one row');
+      // Resolve the row via approve so the next test class isn't polluted.
+      const ids = [...ids1];
+      for (const id of ids) {
+        // It might not be approvable directly (schema action=chat_mention).
+        // Mark rejected to clear from pending.
+        await ctx.rest.post(`/api/agent/actions/${id}/reject`, { reason: 'harness cleanup' }).catch(() => undefined);
+      }
+    } finally { await sp.cleanup(); }
+  });
+
+  return { passed, failed: failures.length, failures };
+}

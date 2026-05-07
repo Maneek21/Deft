@@ -1,0 +1,16 @@
+-- Phase 9 — Seed 8 first-party employee templates.
+--
+-- The actual content lives in Markdown files at:
+--   apps/api/src/scripts/templates/<slug>/{soul,agents,user,tools}.md
+--
+-- Seeding is done by a TypeScript script that reads those .md files and
+-- inserts via Drizzle (idempotent — INSERT ... ON CONFLICT DO UPDATE).
+-- Running this migration does not itself insert any rows; it exists purely
+-- to bump the Drizzle journal so `pnpm db:migrate` is a no-op on production
+-- and the seed is run by an operator:
+--
+--   pnpm tsx apps/api/src/scripts/seed-templates.ts
+--
+-- Keeping the content out of SQL avoids dollar-quote escaping hell for
+-- ~2000 lines of markdown and makes the templates diff-friendly in git.
+SELECT 1;

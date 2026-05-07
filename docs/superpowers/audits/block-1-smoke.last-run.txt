@@ -1,0 +1,28 @@
+Run: 2026-04-19T08:36:34.748Z
+API: http://localhost:3001
+Web: http://localhost:3000
+pass=16 fail=0
+
+OK   login: org=1d7d869a user=d4f985f6
+OK   1.5 GET /api/clawhub/browse → 200 mode=allowlist entries=3
+OK   1.5 GET /api/clawhub/browse?advanced=1 → 200 (200 or 403 both acceptable)
+OK   1.5 POST /api/clawhub/import {unknown} → 400 (expect 400)
+OK   1.5 POST /api/clawhub/import {agent-security-harness} → 201 skill.id=038c3d33 reused=false
+OK   1.2 GET /files → 200 files=7
+OK   1.2 canonical files include SOUL.md (got ["SOUL.md","AGENTS.md","USER.md","TOOLS.md","IDENTITY.md","HEARTBEAT.md","BOOT.md"])
+OK   1.2 PUT /files/../evil rejected → 404 (400 or 404 acceptable)
+OK   1.2 GET /files/SOUL.md → 503 (503/502 expected without gateway)
+OK   1.3 DELETE /install (no employee_id) → 400 (expect 400)
+OK   1.6 POST /skills/:id/secrets {bad key} → 400 (expect 400)
+INFO screenshot docs/superpowers/audits/screenshots/block-1-smoke/01-library-default.png
+OK   1.5 Library has all three tabs (skills=1 templates=1 clawhub=1)
+INFO screenshot docs/superpowers/audits/screenshots/block-1-smoke/02-library-clawhub.png
+OK   1.5 ClawHub tab renders content
+INFO screenshot docs/superpowers/audits/screenshots/block-1-smoke/03-personality-editor.png
+OK   1.2 Personality editor page renders Personality header + file list
+INFO screenshot docs/superpowers/audits/screenshots/block-1-smoke/04-personality-file-selected.png
+INFO screenshot docs/superpowers/audits/screenshots/block-1-smoke/05-dashboard.png
+OK   regression: Agent nav still present
+OK   regression: /settings/agent/deploy still redirects (got http://localhost:3000/settings/agent-employees/create)
+
+OVERALL: PASS

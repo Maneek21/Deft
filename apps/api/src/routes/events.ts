@@ -1,19 +1,32 @@
 import { Hono } from 'hono';
 import { eq, and } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '../lib/db.js';
 import { events } from '@deft/db/schema';
 
 export const eventRoutes = new Hono();
 
+// Schema for creating a native calendar event
+const createEventSchema = z.object({
+  title: z.string().trim().min(1, 'Title is required'),
+  start: z.string(),
+  end: z.string(),
+  description: z.string().optional(),
+  location: z.string().optional(),
+});
+
 // POST / — create a native calendar event
 eventRoutes.post('/', async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
-  const { title, start, end, description, location } = body;
 
-  if (!title || !start || !end) {
-    return c.json({ error: 'title, start, and end are required', code: 'MISSING_FIELDS' }, 400);
+  const parsed = createEventSchema.safeParse(body);
+  if (!parsed.success) {
+    const firstError = Object.values(parsed.error.flatten().fieldErrors)[0]?.[0];
+    return c.json({ error: firstError || 'Validation error', code: 'VALIDATION_ERROR' }, 400);
   }
+
+  const { title, start, end, description, location } = parsed.data;
 
   const startDate = new Date(start);
   const endDate = new Date(end);

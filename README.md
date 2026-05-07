@@ -13,17 +13,45 @@ Deft combines team chat, task management, and an AI agent into one workspace. Th
 
 ## Quick Start
 
-### Self-Host with Docker
+Get to first login in under 5 minutes.
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
+- A free [Anthropic API key](https://console.anthropic.com) — no other accounts required
+
+### Steps
 
 ```bash
 git clone https://github.com/deft-dev/deft.git
 cd deft
+
+# 1. Create your env file
 cp .env.example .env
-# Edit .env — add your Anthropic API key (optional, app works without it)
-docker compose up -d
 ```
 
-Open http://localhost:3000. Sign up, create your workspace, start chatting.
+Open `.env` and set three values:
+
+| Variable | How to get it |
+|---|---|
+| `ANTHROPIC_API_KEY` | https://console.anthropic.com — free tier works |
+| `JWT_SECRET` | Run `openssl rand -hex 32` |
+| `JWT_REFRESH_SECRET` | Run `openssl rand -hex 32` again |
+
+```bash
+# 2. Start the stack (Postgres + Redis + Deft)
+docker compose up -d
+
+# 3. Initialize the database (run once on first boot)
+pnpm db:push   # applies schema
+pnpm db:seed   # seeds Defty and starter data
+```
+
+Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
+
+> **Single-org note:** Deft is designed for one workspace per deployment. Additional users join via invite link from Settings → Members — direct signups after the first account are blocked.
+
+For a deeper setup guide — environment variable reference, backups, upgrades, and MCP agent configuration — see [docs/self-hosting.md](docs/self-hosting.md).
 
 ### Local Development
 
@@ -49,11 +77,10 @@ pnpm dev        # Starts web (3000) + API (3001)
 deft/
 ├── apps/
 │   ├── web/          # Next.js 14 (App Router, TypeScript)
-│   └── api/          # Hono on Node.js (REST + WebSocket)
+│   └── api/          # Hono on Node.js (REST + WebSocket + agent engine)
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + migrations
-│   ├── shared/       # Shared types and constants
-│   └── ai/           # Agent engine (planner, tools, context)
+│   └── shared/       # Shared types and constants
 ├── docker-compose.yml
 └── pnpm-workspace.yaml
 ```
@@ -79,8 +106,10 @@ The agent has **direct SQL access** to your data — no API middleman. It can:
 - Answer questions about tasks, conversations, and team activity
 - Create and assign tasks from natural language
 - Summarize conversation threads and spaces
-- Execute multi-step plans with approval gates
+- Execute multi-step plans with approval gates and live progress streaming
 - Post messages and updates across spaces
+- Leave proactive comments on stalled or overdue tasks
+- Offer inline task suggestions from actionable chat messages
 
 Every write action goes through an approval flow. The user sees what the agent wants to do, approves or rejects, and can undo after execution.
 
@@ -99,14 +128,18 @@ Every write action goes through an approval flow. The user sees what the agent w
 - Unread badges and mark-as-read
 
 ### Tasks
-- Kanban board with drag-and-drop
-- List view with sortable columns
+- Kanban, List, Calendar, and Pipeline views — view mode driven by the project's attached skill
+- Skill-driven project config: statuses, priority vocab, custom fields, task templates
+- Drag-and-drop across columns
 - Task detail panel with full editing
-- Priority levels (P0-P3) with color coding
-- Labels, due dates, assignments
-- Comments and activity log
+- Emoji reactions on tasks
+- @mentions in task descriptions and comments with notification dispatch
+- Activity diff view (old → new) on the activity log
+- Comments + full activity log
+- Labels, due dates, assignments, recurrence (daily/weekly/biweekly/monthly)
 - Quick-create (press C)
-- Task search and filters
+- Project archive + soft-delete with 7-day recovery
+- GitHub PR → Done on merge (parses `PREFIX-N` in PR title/body)
 
 ### Dashboard
 - Personalized greeting with morning pulse
@@ -124,11 +157,13 @@ Every write action goes through an approval flow. The user sees what the agent w
 
 ## Environment Variables
 
-See `.env.example` for all configuration options. The only required variables are:
+See `.env.example` for all configuration options with inline documentation. Three variables are required for first boot:
 
-- `DATABASE_URL` — PostgreSQL connection string
-- `JWT_SECRET` — Secret for JWT signing
-- `ANTHROPIC_API_KEY` — For AI agent features (optional)
+- `JWT_SECRET` — Secret for JWT signing (`openssl rand -hex 32`)
+- `JWT_REFRESH_SECRET` — Secret for refresh tokens (`openssl rand -hex 32`)
+- `ANTHROPIC_API_KEY` — For AI agent features (app boots without it but AI is disabled)
+
+Full reference: [docs/self-hosting.md#environment-variables-reference](docs/self-hosting.md#environment-variables-reference)
 
 ## License
 

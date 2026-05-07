@@ -6,13 +6,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getModelConfig } from './llm.js';
 import { db } from './db.js';
-import { connectedAccounts, wikiPages, orgs } from '@deft/db/schema';
+import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
 import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
 import { env } from './env.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
+import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
+import { getIO } from '../socket.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -40,6 +42,46 @@ type ConversationMessage = {
   content: string;
 };
 
+async function verifyResponse(
+  originalQuery: string,
+  response: string,
+  citations: any[],
+  orgName: string,
+): Promise<string> {
+  try {
+    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
+    const verificationResult = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      system: `You are a quality reviewer for an AI assistant at ${orgName}. Review the response briefly.`,
+      messages: [{
+        role: 'user',
+        content: `Original question: "${originalQuery.slice(0, 300)}"
+
+Response to review:
+${response.slice(0, 2000)}
+
+Citations: ${citations.length > 0 ? citations.slice(0, 5).map((c: any) => c.title || c.id).join(', ') : 'none'}
+
+Check: Does it answer the question? Any fabricated claims? Anything important missing?
+
+If good, reply exactly: VERIFIED
+If issues, provide a corrected version (same style/length).`,
+      }],
+    });
+
+    const text = (verificationResult.content[0] as any).text?.trim() || 'VERIFIED';
+    // Pass if the first word is VERIFIED — Haiku often appends meta-commentary
+    // like "VERIFIED\n\nThe response accurately..." which would otherwise
+    // replace the real answer with a self-review.
+    const firstWord = text.toUpperCase().match(/^[A-Z]+/)?.[0];
+    return firstWord === 'VERIFIED' ? response : text;
+  } catch (err) {
+    console.warn('[agent-runner] Verification failed:', err);
+    return response;
+  }
+}
+
 export async function runAgentQuery(params: {
   content: string;
   orgId: string;
@@ -50,17 +92,42 @@ export async function runAgentQuery(params: {
   mode?: 'chat_mention' | 'background';
   /** Override system prompt (for agent employees in future). */
   systemPromptOverride?: string;
+  /** Override trust level (for agent employees with per-employee trust). */
+  trustLevelOverride?: 'conservative' | 'standard' | 'autonomous';
+  /** Agent employee ID for limit enforcement. */
+  agentEmployeeId?: string;
+  /** Skip the self-verification pass. Defaults to true for chat_mention, false for background. */
+  skipVerification?: boolean;
+  /**
+   * Triggering message id. When set, write actions that accept source_message_id
+   * (e.g. create_task) inherit it automatically — the LLM does not need to
+   * know about or pass it. See Task 3.2 of the task-management overhaul plan.
+   */
+  sourceMessageId?: string;
+  /**
+   * Task 3.10 — if the agent is working on a specific task, emit
+   * task:agent_progress to `org:${orgId}` on each reasoning iteration so the
+   * task-detail UI can render a live status strip. No-op when unset.
+   */
+  taskId?: string;
 }): Promise<{
   text: string;
   citations: any[];
   pendingActions: any[];
   executedActions: any[];
+  // Phase 2 — last assistant API response, exposed so agent-reply can
+  // populate metadata.agent_blocks / model / tokens_* on the inserted
+  // message (parity with agent-stream-loop).
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  assistantBlocks: Anthropic.ContentBlock[] | null;
 }> {
   if (!env.ANTHROPIC_API_KEY) {
     throw new Error('Anthropic API key not configured');
   }
 
-  const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride } = params;
+  const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride, agentEmployeeId } = params;
 
   // Check connected accounts for dynamic tool availability
   const connections = await db.select({ provider: connectedAccounts.provider })
@@ -78,6 +145,20 @@ export async function runAgentQuery(params: {
   if (connectedProviders.includes('github')) {
     tools = [...tools, ...GITHUB_TOOLS];
     GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
+  }
+
+  // MCP tools
+  try {
+    const mcpTools = await getMCPToolsForAgent(orgId);
+    const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
+    tools = [...tools, ...mcpAnthropicTools];
+    mcpTools.forEach(t => {
+      if (t.approvalTierMapped !== 'auto') {
+        allActionTools.add(t.name);
+      }
+    });
+  } catch (err) {
+    console.warn('[agent-runner] Failed to load MCP tools:', err instanceof Error ? err.message : err);
   }
 
   let connectionInfo = '';
@@ -99,19 +180,42 @@ export async function runAgentQuery(params: {
       .from(orgs)
       .where(eq(orgs.id, orgId))
       .limit(1);
-    trustLevel = (org?.trust_level || 'conservative') as TrustLevel;
+    trustLevel = (params.trustLevelOverride || org?.trust_level || 'conservative') as TrustLevel;
   }
 
   let systemPrompt = SYSTEM_PROMPT
     .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
     .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
 
-  // Auto-load relevant wiki context using full-text search
+  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
   try {
-    // Use the user's message directly as a full-text search query
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
-      const relevantPages = await db.select({
+      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
+
+      // Tier 1: Employee-tagged pages (if agent employee)
+      if (agentEmployeeId) {
+        const employeePages = await db.select({
+          title: wikiPages.title,
+          slug: wikiPages.slug,
+          summary: wikiPages.summary,
+          type: wikiPages.type,
+          confidence: wikiPages.confidence,
+        })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, orgId),
+            eq(wikiPages.is_deleted, false),
+            eq(wikiPages.agent_employee_id, agentEmployeeId),
+            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
+          ))
+          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
+          .limit(2);
+        allRelevantPages.push(...employeePages);
+      }
+
+      // Tier 2: Org-wide pages (no employee tag)
+      const orgWidePages = await db.select({
         title: wikiPages.title,
         slug: wikiPages.slug,
         summary: wikiPages.summary,
@@ -122,13 +226,15 @@ export async function runAgentQuery(params: {
         .where(and(
           eq(wikiPages.org_id, orgId),
           eq(wikiPages.is_deleted, false),
+          sql`${wikiPages.agent_employee_id} IS NULL`,
           sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
         ))
         .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
         .limit(3);
+      allRelevantPages.push(...orgWidePages);
 
-      if (relevantPages.length > 0) {
-        const wikiContext = relevantPages.map(p =>
+      if (allRelevantPages.length > 0) {
+        const wikiContext = allRelevantPages.map(p =>
           `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
         ).join('\n');
         systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
@@ -147,7 +253,7 @@ export async function runAgentQuery(params: {
   }
 
   const reasonConfig = getModelConfig('reason');
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
 
   // Build messages array
   let apiMessages: Anthropic.MessageParam[] = [];
@@ -170,18 +276,88 @@ export async function runAgentQuery(params: {
   let executedActions: any[] = [];
   let finalText = '';
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
+  // Phase 2 — capture metadata from the final API response so agent-reply
+  // can populate metadata.agent_blocks / model / tokens_* parity with
+  // agent-stream-loop. Without these the rendered chat falls back to
+  // plain-text and Phase 4's <AgentMessageBlocks/> can't show tool chips
+  // or the model+tokens footer.
+  let lastResponseContent: Anthropic.ContentBlock[] | null = null;
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
 
   let iterations = 0;
-  while (iterations < 8) {
+  const maxIterations = params.mode === 'background' ? 25 : 8;
+
+  // Task 3.10 — emit live step progress to the org room so the task-detail
+  // UI can render a strip while the agent works. We don't know the true
+  // total step count in advance (it depends on how many tool-use rounds the
+  // LLM takes), so we use maxIterations as the ceiling.
+  const emitTaskProgress = (
+    stepIndex: number,
+    stepDescription: string,
+    status: 'started' | 'completed' | 'failed',
+    error?: string,
+  ): void => {
+    if (!params.taskId) return;
+    const io = getIO();
+    if (!io) return;
+    io.to(`org:${orgId}`).emit('task:agent_progress', {
+      task_id: params.taskId,
+      agent_employee_id: agentEmployeeId ?? null,
+      step_index: stepIndex,
+      step_description: stepDescription,
+      status,
+      total_steps: maxIterations,
+      ...(error ? { error } : {}),
+    });
+  };
+
+  while (iterations < maxIterations) {
     iterations++;
+    emitTaskProgress(
+      iterations - 1,
+      iterations === 1 ? 'Reading the task and gathering context' : 'Thinking and using tools',
+      'started',
+    );
+
+    // Prompt caching: wrap system prompt and mark the last tool with
+    // cache_control so both blocks read at 10% cost on subsequent
+    // iterations. See agent-stream-loop.ts for the same pattern.
+    const cachedSystem: Anthropic.TextBlockParam[] = [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+    const cachedTools: Anthropic.Tool[] =
+      tools.length > 0
+        ? [
+            ...tools.slice(0, -1),
+            { ...tools[tools.length - 1]!, cache_control: { type: 'ephemeral' } },
+          ]
+        : tools;
 
     const response = await anthropic.messages.create({
       model: reasonConfig.model,
       max_tokens: 4096,
-      system: systemPrompt,
+      system: cachedSystem,
       messages: apiMessages,
-      tools,
+      tools: cachedTools,
     });
+
+    if (response.usage) {
+      const cacheRead = (response.usage as any).cache_read_input_tokens ?? 0;
+      const cacheWrite = (response.usage as any).cache_creation_input_tokens ?? 0;
+      if (cacheRead > 0 || cacheWrite > 0) {
+        console.log(
+          `[agent-runner] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
+        );
+      }
+      totalTokensIn += response.usage.input_tokens ?? 0;
+      totalTokensOut += response.usage.output_tokens ?? 0;
+    }
+    lastResponseContent = response.content;
 
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
@@ -195,6 +371,7 @@ export async function runAgentQuery(params: {
     if (toolUseBlocks.length === 0 || response.stop_reason === 'end_turn') {
       // This is the final response — use this text
       finalText = newText;
+      emitTaskProgress(iterations - 1, 'Wrapping up and posting results', 'completed');
       break;
     }
 
@@ -204,18 +381,36 @@ export async function runAgentQuery(params: {
       intermediateText += (intermediateText ? '\n\n' : '') + newText;
     }
 
+    // Emit a "completed" event for this reasoning iteration with a
+    // human-readable summary of the tools the agent is running.
+    const toolsLabel = toolUseBlocks.map((b) => b.name).slice(0, 3).join(', ');
+    emitTaskProgress(
+      iterations - 1,
+      toolUseBlocks.length === 1
+        ? `Using ${toolsLabel}`
+        : `Using ${toolUseBlocks.length} tools (${toolsLabel}${toolUseBlocks.length > 3 ? '…' : ''})`,
+      'completed',
+    );
+
     // Execute tool calls
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const tool of toolUseBlocks) {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
-        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel)) {
+        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input)) {
           // Background mode: auto-execute if trust level permits
           const approvalTier = getApprovalTier(tool.name);
+          // Thread the triggering message id into write actions that understand
+          // source_message_id. The LLM never has to know about it — we inject
+          // it here for create_task and similar tools.
+          const toolInput = { ...(tool.input as Record<string, any>) };
+          if (params.sourceMessageId && !toolInput.source_message_id) {
+            toolInput.source_message_id = params.sourceMessageId;
+          }
           const { actionId, success, result, error } = await executeActionDirect(
             tool.name,
-            tool.input as Record<string, any>,
+            toolInput,
             orgId,
             userId,
             null, // no conversation_id for background actions
@@ -232,10 +427,16 @@ export async function runAgentQuery(params: {
             ),
           });
         } else {
-          // Chat mention mode or trust level requires approval: skip write actions
+          // Chat mention mode or trust level requires approval: skip write actions.
+          // Thread the source message id through so the approval UI can persist
+          // it when the action is executed later.
+          const pendingParams = { ...(tool.input as Record<string, any>) };
+          if (params.sourceMessageId && !pendingParams.source_message_id) {
+            pendingParams.source_message_id = params.sourceMessageId;
+          }
           pendingActions.push({
             action: tool.name,
-            params: tool.input,
+            params: pendingParams,
           });
           toolResults.push({
             type: 'tool_result' as const,
@@ -255,6 +456,8 @@ export async function runAgentQuery(params: {
           tool.input as any,
           orgId,
           userId,
+          undefined,
+          agentEmployeeId,
         );
         allCitations.push(...citations);
 
@@ -277,10 +480,43 @@ export async function runAgentQuery(params: {
   // Use final text if available, fall back to intermediate text from tool-call iterations
   const responseText = finalText || intermediateText;
 
+  // Persist durable notes for agent employees
+  if (agentEmployeeId && responseText && responseText.length > 100) {
+    try {
+      const noteKey = `findings:${new Date().toISOString().slice(0, 10)}`;
+      await db.insert(agentMemory).values({
+        id: crypto.randomUUID(),
+        org_id: orgId,
+        user_id: userId,
+        scope: 'user',
+        key: noteKey,
+        value: responseText.slice(0, 500),
+      }).onConflictDoNothing();
+    } catch (err) {
+      console.warn('[agent-runner] Durable notes failed:', err);
+    }
+  }
+
+  // Self-verification for background mode. Skipped for chat mentions where
+  // the user is in the loop. Callers can force-skip with skipVerification=true
+  // even in background mode (useful for agent-employee chat replies, which
+  // use background mode for auto-exec but don't want verifier mangling).
+  let verifiedText = responseText;
+  const shouldVerify = params.skipVerification === undefined
+    ? params.mode === 'background'
+    : !params.skipVerification;
+  if (shouldVerify && responseText && responseText.length > 50) {
+    verifiedText = await verifyResponse(content, responseText, allCitations, orgName);
+  }
+
   return {
-    text: responseText,
+    text: verifiedText,
     citations: allCitations,
     pendingActions,
     executedActions,
+    model: reasonConfig.model,
+    tokensIn: totalTokensIn,
+    tokensOut: totalTokensOut,
+    assistantBlocks: lastResponseContent,
   };
 }

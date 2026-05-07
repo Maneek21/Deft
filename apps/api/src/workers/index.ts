@@ -1,5 +1,5 @@
 // Postgres-based job workers — polls job_queue table and dispatches to handlers
-import { dequeueJob, completeJob, failJob, ensureCronJob, QUEUE_NAMES } from '../lib/queues.js';
+import { dequeueJob, completeJob, failJob, ensureCronJob, cleanupStaleJobs, QUEUE_NAMES } from '../lib/queues.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -11,6 +11,18 @@ const CRON_DELAYS: Record<string, number> = {
   'manager-pulse': 86400000,      // 24 hours
   'burnout-detect': 86400000,     // 24 hours
   'weekly-digest': 604800000,     // 7 days
+  'wiki-lint': 86400000,          // 24 hours
+  'deprecation-warning': 86400000, // 24 hours
+  'agent-daily-reset': 86400000,  // 24 hours
+  'agent-heartbeat': 60000,       // 60 seconds (legacy — kept for rollout)
+  // Single heartbeat scan for BYOA agents. The handler re-derives the
+  // per-employee due set from
+  // `last_heartbeat_at + heartbeat_interval_min`, so this is _scan_ cadence
+  // not _fire_ cadence.
+  'heartbeat-native': 5 * 60_000,
+  // Task 8.7 — trigger dispatcher scan. 60s cadence so cron triggers
+  // fire close to their scheduled time.
+  'trigger-dispatch': 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -21,6 +33,12 @@ const CRON_KEYS: Record<string, string> = {
   'manager-pulse': 'cron:manager-pulse',
   'burnout-detect': 'cron:burnout-detect',
   'weekly-digest': 'cron:weekly-digest',
+  'wiki-lint': 'cron:wiki-lint',
+  'deprecation-warning': 'cron:deprecation-warning',
+  'agent-daily-reset': 'agent-daily-reset',
+  'agent-heartbeat': 'agent-heartbeat',
+  'heartbeat-native': 'cron:heartbeat-native',
+  'trigger-dispatch': 'cron:trigger-dispatch',
 };
 
 // ─── Lazy-loaded handler registry ───
@@ -58,6 +76,36 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/clip-process.js');
       return mod.handleClipProcess;
     }
+    case 'agent-employee-message': {
+      const mod = await import('./handlers/agent-employee-message.js');
+      return mod.handleAgentEmployeeMessage;
+    }
+    case 'agent-employee-task': {
+      const mod = await import('./handlers/agent-employee-task.js');
+      return mod.handleAgentEmployeeTask;
+    }
+    case 'plan-executor': {
+      const mod = await import('./handlers/plan-executor.js');
+      return mod.handlePlanExecutor;
+    }
+    case 'agent-employee-trigger': {
+      const mod = await import('./handlers/agent-employee-trigger.js');
+      return mod.handleAgentEmployeeTrigger;
+    }
+    case 'employee-trigger': {
+      // Phase 6 — synthetic TriggerInvocation dispatcher. Receives cron-
+      // and webhook-originated jobs enqueued by existing handlers when
+      // an employee subscribes to that trigger kind.
+      const mod = await import('./handlers/employee-trigger.js');
+      return mod.handleEmployeeTrigger;
+    }
+    case 'workflow-execute': {
+      // Task 5.7 — basic workflows executor. Runs the actions for a
+      // workflow_rule whose trigger matched (currently only
+      // task.status_changed) against a single task.
+      const mod = await import('./handlers/workflow-execute.js');
+      return mod.handleWorkflowExecute;
+    }
     default:
       return null;
   }
@@ -93,6 +141,39 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/weekly-digest.js');
       return mod.handleWeeklyDigest;
     }
+    case 'wiki-lint': {
+      const mod = await import('./handlers/wiki-lint.js');
+      return mod.handleWikiLint;
+    }
+    case 'deprecation-warning': {
+      const mod = await import('./handlers/deprecation-warning.js');
+      return mod.handleDeprecationWarning as JobHandler;
+    }
+    case 'agent-daily-reset': {
+      const mod = await import('./handlers/agent-daily-reset.js');
+      return mod.handleAgentDailyReset;
+    }
+    case 'reminder-fire': {
+      // Block 0.4 — fires a single reminder row. Enqueued by
+      // POST /api/reminders with delay = remind_at - now. Rehydrated at
+      // startup for reminders that survived a restart.
+      const mod = await import('./handlers/reminder-fire.js');
+      return mod.reminderFireHandler;
+    }
+    case 'agent-heartbeat':
+    case 'heartbeat-native': {
+      // Single heartbeat scan for BYOA agents — queues an
+      // `agent_actions` row that the BYOA client picks up via
+      // `poll_pending_work`.
+      const mod = await import('./handlers/agent-employee-heartbeat.js');
+      return mod.handleAgentEmployeeHeartbeat;
+    }
+    case 'trigger-dispatch': {
+      // Task 8.7 — cron/webhook/event fan-out for employees subscribed
+      // to a given trigger_kind.
+      const mod = await import('./handlers/trigger-dispatch.js');
+      return mod.handleTriggerDispatch;
+    }
     default:
       return null;
   }
@@ -109,6 +190,24 @@ let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startWorkers(): void {
   if (pollingInterval) return;
+
+  // Cleanup stale jobs on startup
+  cleanupStaleJobs().then(count => {
+    if (count > 0) console.log(`[workers] Recovered ${count} stale job(s) on startup`);
+  }).catch(() => {});
+
+  // Block 0.4 — rehydrate pending reminders into the scheduled-jobs queue
+  // so sub-24h reminders scheduled before a restart still fire.
+  import('./handlers/reminder-fire.js')
+    .then((mod) => mod.rehydratePendingReminders())
+    .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
+
+  // Run stale cleanup every 60 seconds
+  setInterval(() => {
+    cleanupStaleJobs().then(count => {
+      if (count > 0) console.log(`[workers] Recovered ${count} stale job(s)`);
+    }).catch(() => {});
+  }, 60000);
 
   // Poll every 3 seconds
   pollingInterval = setInterval(async () => {

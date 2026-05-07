@@ -6,14 +6,25 @@ import { api } from '@/lib/api';
 import {
   Search, Hash, CheckSquare, User, MessageSquare,
   Sun, Moon, Plus, Settings, X, Bot, Tag, CalendarDays,
+  BookOpen, FileText, Scale,
 } from 'lucide-react';
+import { statusLabel } from '@/lib/task-status-labels';
+
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
+
+type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
+type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
+type DecisionResult = { id: string; title: string; summary: string | null; slug: string | null; source_id: string };
 
 type SearchResults = {
   spaces: { id: string; name: string; type: string }[];
   tasks: { id: string; title: string; project_prefix: string; number: number; status: string }[];
   people: { id: string; name: string; email: string }[];
-  messages: { id: string; content: string; space_name: string; user_name: string }[];
+  messages: { id: string; content: string; space_id: string; space_name: string; user_name: string }[];
   tags: { id: string; name: string; color: string | null }[];
+  wiki: WikiResult[];
+  privateNotes: NoteResult[];
+  decisions: DecisionResult[];
 };
 
 type Command = {
@@ -22,20 +33,15 @@ type Command = {
   action: () => void;
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress',
-  in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-};
-
 function formatStatus(status: string): string {
-  return STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return statusLabel(status);
 }
 
 export function CommandPalette() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
@@ -47,14 +53,14 @@ export function CommandPalette() {
     { label: 'New space', icon: Hash, action: () => { router.push('/chat'); close(); } },
     { label: 'Toggle dark mode', icon: Sun, action: () => { document.documentElement.classList.toggle('dark'); close(); } },
     { label: 'Open settings', icon: Settings, action: () => { router.push('/settings'); close(); } },
-    { label: 'Ask Deft', icon: Bot, action: () => { router.push('/agent'); close(); } },
+    { label: 'Ask Deft', icon: Bot, action: () => { router.push('/chat'); close(); } },
     { label: 'Go to Calendar', icon: CalendarDays, action: () => { router.push('/calendar'); close(); } },
   ], [router]);
 
   const close = useCallback(() => {
     setOpen(false);
     setQuery('');
-    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
   }, []);
 
@@ -67,7 +73,7 @@ export function CommandPalette() {
           if (prev) {
             // closing
             setQuery('');
-            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
             setSelectedIndex(0);
           }
           return !prev;
@@ -76,6 +82,15 @@ export function CommandPalette() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  useEffect(() => {
+    const openHandler = () => {
+      setOpen(true);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+    document.addEventListener(OPEN_COMMAND_PALETTE_EVENT, openHandler as EventListener);
+    return () => document.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openHandler as EventListener);
   }, []);
 
   // Focus input when opened
@@ -88,14 +103,24 @@ export function CommandPalette() {
   // Debounced search
   useEffect(() => {
     if (!query || query.startsWith('>')) {
-      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [] });
+      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
       return;
     }
     const timer = setTimeout(async () => {
       try {
         const res = await api.get(`/api/search?q=${encodeURIComponent(query)}`);
         if (res.ok) {
-          setResults(await res.json());
+          const data = await res.json();
+          setResults({
+            spaces: data.spaces ?? [],
+            tasks: data.tasks ?? [],
+            people: data.people ?? [],
+            messages: data.messages ?? [],
+            tags: data.tags ?? [],
+            wiki: data.wiki ?? [],
+            privateNotes: data.privateNotes ?? [],
+            decisions: data.decisions ?? [],
+          });
         }
       } catch {
         // silently fail
@@ -119,6 +144,9 @@ export function CommandPalette() {
     results.people.forEach((p) => items.push({ type: 'person', item: p, index: idx++ }));
     results.messages.forEach((m) => items.push({ type: 'message', item: m, index: idx++ }));
     results.tags.forEach((t) => items.push({ type: 'tag', item: t, index: idx++ }));
+    (results.wiki ?? []).forEach((w) => items.push({ type: 'wiki', item: w, index: idx++ }));
+    (results.privateNotes ?? []).forEach((n) => items.push({ type: 'privateNote', item: n, index: idx++ }));
+    (results.decisions ?? []).forEach((d) => items.push({ type: 'decision', item: d, index: idx++ }));
     return items;
   }, [mode, query, results, COMMANDS]);
 
@@ -162,10 +190,22 @@ export function CommandPalette() {
           router.push('/chat');
           close();
         } else if (selected.type === 'message') {
-          router.push('/chat');
+          const m = selected.item;
+          router.push(`/chat?space=${m.space_id}&message=${m.id}`);
           close();
         } else if (selected.type === 'tag') {
           router.push(`/settings/tags?tag=${selected.item.id}`);
+          close();
+        } else if (selected.type === 'wiki') {
+          const slug = selected.item.slug;
+          router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
+          close();
+        } else if (selected.type === 'decision') {
+          const slug = selected.item.slug;
+          router.push(slug ? `/knowledge?slug=${slug}` : '/knowledge');
+          close();
+        } else if (selected.type === 'privateNote') {
+          router.push(`/notes?id=${selected.item.id}`);
           close();
         }
       }
@@ -390,7 +430,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push('/chat'); close(); }}
+                    onClick={() => { router.push(`/chat?space=${item.space_id}&message=${item.id}`); close(); }}
                   >
                     <MessageSquare size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px] flex-1 truncate">{item.content}</span>
@@ -422,6 +462,81 @@ export function CommandPalette() {
                   </button>
                 )}
               />
+              {/* Knowledge (Wiki) */}
+              <ResultGroup
+                title="Knowledge"
+                icon={BookOpen}
+                items={results.wiki ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: WikiResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(item.slug ? `/knowledge?slug=${item.slug}` : '/knowledge'); close(); }}
+                  >
+                    <BookOpen size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
+                    {item.type && (
+                      <span className="text-[11px]" style={{ color: 'var(--outline)' }}>{item.type}</span>
+                    )}
+                  </button>
+                )}
+              />
+              {/* Notes */}
+              <ResultGroup
+                title="Notes"
+                icon={FileText}
+                items={results.privateNotes ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: NoteResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(`/notes?id=${item.id}`); close(); }}
+                  >
+                    <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
+                  </button>
+                )}
+              />
+              {/* Decisions */}
+              <ResultGroup
+                title="Decisions"
+                icon={Scale}
+                items={results.decisions ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length + (results.privateNotes ?? []).length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: DecisionResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '36px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => { router.push(item.slug ? `/knowledge?slug=${item.slug}` : '/knowledge'); close(); }}
+                  >
+                    <Scale size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+                    <span className="text-[13px] flex-1 truncate">{item.title}</span>
+                  </button>
+                )}
+              />
             </>
           ) : hasQuery && !hasResults ? (
             <div className="py-8 text-center">
@@ -443,11 +558,10 @@ export function CommandPalette() {
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between px-4 py-2"
+          className="hidden md:flex items-center justify-between px-4 py-2"
           style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', color: 'var(--outline)' }}
         >
-          <span>↑↓ to navigate &nbsp; ← to select</span>
-          <span>v1.0.0-beta</span>
+          <span>↑↓ to navigate &nbsp; ↵ to select</span>
         </div>
       </div>
     </div>

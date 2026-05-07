@@ -76,6 +76,12 @@ export async function llm(params: {
   maxTokens?: number;
   tools?: any[];
   orgConfig?: Record<string, any>;
+  /**
+   * Retained for API compatibility with existing callers. Self-hosted v1
+   * runs a single org on the operator's own API keys, so no per-org spend
+   * gating is applied.
+   */
+  orgId?: string;
 }): Promise<{
   text: string;
   toolCalls?: any[];
@@ -85,17 +91,28 @@ export async function llm(params: {
   const config = getModelConfig(params.task, params.orgConfig);
   const apiKey = resolveApiKey(config.provider, params.orgConfig);
 
+  let result: {
+    text: string;
+    toolCalls?: any[];
+    usage?: { input: number; output: number };
+    model: string;
+  };
   switch (config.provider) {
     case 'anthropic':
-      return callAnthropic(config, apiKey, params);
+      result = await callAnthropic(config, apiKey, params);
+      break;
     case 'openai':
     case 'openrouter':
-      return callOpenAI(config, apiKey, params);
+      result = await callOpenAI(config, apiKey, params);
+      break;
     case 'ollama':
-      return callOllama(config, params);
+      result = await callOllama(config, params);
+      break;
     default:
       throw new Error(`Unsupported LLM provider: ${config.provider}`);
   }
+
+  return result;
 }
 
 async function callAnthropic(

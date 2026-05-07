@@ -3,6 +3,7 @@ import {
   messages,
   users,
   tasks,
+  taskAssignees,
   projects,
   taskComments,
   taskActivity,
@@ -11,7 +12,7 @@ import {
   orgMembers,
   events,
   agentMemory,
-  decisions,
+
   peopleExpertise,
   peopleInteractions,
   peoplePatterns,
@@ -19,13 +20,25 @@ import {
   burnoutAlerts,
   spaceKnowledge,
   connectedAccounts,
+  wikiPages,
+  wikiLinks,
+  wikiCitations,
+  wikiOpsLog,
+  mcpConnections,
+  agentEmployees,
+  agentActions,
 } from '@deft/db/schema';
+import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
+import { mcpClientManager } from '@deft/mcp';
 import { decrypt } from './encryption.js';
 import { env } from './env.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
+import { retrieveContext } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
 import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../services/team-analytics.js';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
+import { createPlanRow } from './agent-plans.js';
+import { resolveAssignee } from './resolve-assignee.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -35,8 +48,39 @@ export async function executeToolCall(
   orgId: string,
   _userId: string,
   conversationId?: string,
+  agentEmployeeId?: string,
 ): Promise<{ result: any; citations: Citation[] }> {
+  // Check daily action limit for agent employees
+  if (agentEmployeeId) {
+    const [emp] = await db.select().from(agentEmployees)
+      .where(eq(agentEmployees.id, agentEmployeeId))
+      .limit(1);
+    if (emp && emp.daily_action_count >= emp.max_daily_actions) {
+      return {
+        result: { error: `Daily action limit reached (${emp.daily_action_count}/${emp.max_daily_actions}). Please ask an admin to increase the limit or wait until tomorrow.` },
+        citations: [],
+      };
+    }
+  }
+
   const citations: Citation[] = [];
+
+  // Route MCP tool calls to the MCP client manager
+  if (toolName.startsWith('mcp__')) {
+    const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
+    const conn = await db.select().from(mcpConnections)
+      .where(and(eq(mcpConnections.org_id, orgId), eq(mcpConnections.slug, connectionSlug)))
+      .limit(1);
+    if (!conn[0]) return { result: { error: `MCP connection '${connectionSlug}' not found` }, citations: [] };
+
+    const config = toConnectionConfig(conn[0]);
+    const mcpResult = await mcpClientManager.executeTool(config, actualToolName, params);
+
+    return {
+      result: mcpResult.success ? mcpResult.content : { error: mcpResult.error },
+      citations: [{ type: 'mcp', id: conn[0].id, title: `${conn[0].name}: ${actualToolName}` }],
+    };
+  }
 
   switch (toolName) {
     case 'search_messages': {
@@ -112,10 +156,46 @@ export async function executeToolCall(
     }
 
     case 'search_tasks': {
+      // Task 3.8 — consult retrieveContext for fuzzy/semantic hits first, then
+      // merge with SQL-filtered (status/priority/assignee/etc.) results by id.
+      // Semantic pass only runs when a query string is provided; structural-only
+      // filters fall straight through to the SQL path below.
+      const semanticIds: string[] = [];
+      if (typeof params.query === 'string' && params.query.trim().length >= 2) {
+        try {
+          const ctx = await retrieveContext({
+            query: params.query,
+            org_id: orgId,
+            user_id: _userId,
+            conversation_id: conversationId,
+            agent_employee_id: agentEmployeeId,
+            types: ['tasks'],
+            limit: 10,
+          });
+          for (const row of ctx) {
+            if (row.source_type === 'task') semanticIds.push(row.source_id);
+          }
+        } catch (err) {
+          // Non-fatal: semantic search is a best-effort enhancement.
+          console.warn('[search_tasks] retrieveContext failed, falling back to SQL-only:', (err as Error).message);
+        }
+      }
+
       const conditions: any[] = [eq(tasks.org_id, orgId), eq(tasks.is_deleted, false)];
 
       if (params.query) {
-        conditions.push(ilike(tasks.title, `%${params.query}%`));
+        // Union: literal-title ILIKE OR semantic id match. When semantic had no
+        // hits this collapses to the old behaviour (title ILIKE only).
+        if (semanticIds.length) {
+          conditions.push(
+            or(
+              ilike(tasks.title, `%${params.query}%`),
+              inArray(tasks.id, semanticIds),
+            ),
+          );
+        } else {
+          conditions.push(ilike(tasks.title, `%${params.query}%`));
+        }
       }
       if (params.status) {
         conditions.push(eq(tasks.status, params.status));
@@ -128,15 +208,8 @@ export async function executeToolCall(
         conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
       }
       if (params.assignee_name) {
-        const [assignee] = await db
-          .select({ id: users.id })
-          .from(users)
-          .innerJoin(orgMembers, eq(users.id, orgMembers.user_id))
-          .where(
-            and(eq(orgMembers.org_id, orgId), ilike(users.name, `%${params.assignee_name}%`)),
-          )
-          .limit(1);
-        if (assignee) conditions.push(eq(tasks.assignee_id, assignee.id));
+        const resolved = await resolveAssignee(params.assignee_name, orgId);
+        if (resolved) conditions.push(eq(tasks.assignee_id, resolved.id));
       }
       if (params.project_name) {
         const [proj] = await db
@@ -177,6 +250,57 @@ export async function executeToolCall(
       });
 
       return { result: results, citations };
+    }
+
+    case 'list_my_tasks': {
+      // Task 3.7 — caller-scoped task list. Matches search_tasks shape but
+      // fixes assignee to ctx.userId and pulls in additional assignees
+      // via task_assignees so tasks that are only shared (not primary)
+      // still surface.
+      const statusFilter = typeof params.status === 'string' ? params.status : null;
+      const conditions: any[] = [
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        or(
+          eq(tasks.assignee_id, _userId),
+          sql`EXISTS (SELECT 1 FROM ${taskAssignees} WHERE ${taskAssignees.task_id} = ${tasks.id} AND ${taskAssignees.user_id} = ${_userId})`,
+        ),
+      ];
+      if (statusFilter) {
+        conditions.push(eq(tasks.status, statusFilter as any));
+      } else {
+        // Default: exclude done + cancelled.
+        conditions.push(sql`${tasks.status} NOT IN ('done', 'cancelled')`);
+      }
+
+      const myResults = await db
+        .select({
+          id: tasks.id,
+          number: tasks.number,
+          title: tasks.title,
+          status: tasks.status,
+          priority: tasks.priority,
+          due_date: tasks.due_date,
+          assignee_name: users.name,
+          project_name: projects.name,
+          project_prefix: projects.prefix,
+        })
+        .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
+        .leftJoin(users, eq(tasks.assignee_id, users.id))
+        .where(and(...conditions))
+        .orderBy(desc(tasks.updated_at))
+        .limit(50);
+
+      myResults.forEach((t) => {
+        citations.push({
+          type: 'task',
+          id: t.id,
+          title: `${t.project_prefix}-${t.number}: ${t.title}`,
+        });
+      });
+
+      return { result: myResults, citations };
     }
 
     case 'get_task_detail': {
@@ -777,58 +901,112 @@ export async function executeToolCall(
     }
 
     case 'search_decisions': {
-      const decisionConditions: any[] = [eq(decisions.org_id, orgId)];
+      // If no query, fall back to listing all org decisions ordered by created_at DESC.
+      if (!params.query) {
+        const decisionConditions: any[] = [
+          eq(wikiPages.org_id, orgId),
+          eq(wikiPages.type, 'decision'),
+          eq(wikiPages.is_deleted, false),
+        ];
 
-      if (params.query) {
-        decisionConditions.push(
-          sql`(${ilike(decisions.decision_text, `%${params.query}%`)} OR ${ilike(decisions.context, `%${params.query}%`)})`,
-        );
+        // space_name filter for empty-query path
+        if (params.space_name) {
+          const [space] = await db
+            .select({ id: spaces.id })
+            .from(spaces)
+            .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
+            .limit(1);
+          if (space) decisionConditions.push(eq(wikiPages.space_id, space.id));
+        }
+
+        const allDecisions = await db
+          .select({
+            id: wikiPages.id,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            confidence: wikiPages.confidence,
+            tags: wikiPages.tags,
+            space_id: wikiPages.space_id,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(and(...decisionConditions))
+          .orderBy(desc(wikiPages.created_at))
+          .limit(20);
+
+        allDecisions.forEach((d) => {
+          citations.push({ type: 'decision', id: d.id, title: d.title.slice(0, 80) });
+        });
+
+        const formatted = allDecisions.map((d) => ({
+          id: d.id,
+          decision: d.title,
+          context: d.content,
+          is_reversed: d.confidence < 0.5 || (d.tags ?? []).includes('reversed'),
+          tags: d.tags,
+          when: d.created_at,
+        }));
+
+        return { result: formatted, citations };
       }
 
+      // Query provided — use retrieveContext for hybrid FTS + vector ranking.
+      const contextResults = await retrieveContext({
+        query: params.query,
+        org_id: orgId,
+        agent_employee_id: agentEmployeeId,
+        types: ['decisions'],
+        limit: 20,
+      });
+
+      // Post-filter by space_name if provided.
+      let filteredResults = contextResults;
       if (params.space_name) {
         const [space] = await db
           .select({ id: spaces.id })
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
           .limit(1);
-        if (space) decisionConditions.push(eq(decisions.space_id, space.id));
+        if (space) {
+          filteredResults = contextResults.filter(
+            (r) => (r as any).space_id === space.id,
+          );
+        }
       }
 
-      const decisionResults = await db
-        .select({
-          id: decisions.id,
-          decision_text: decisions.decision_text,
-          decided_by_name: users.name,
-          space_name: spaces.name,
-          message_id: decisions.message_id,
-          context: decisions.context,
-          is_reversed: decisions.is_reversed,
-          tags: decisions.tags,
-          created_at: decisions.created_at,
-        })
-        .from(decisions)
-        .innerJoin(users, eq(decisions.decided_by, users.id))
-        .innerJoin(spaces, eq(decisions.space_id, spaces.id))
-        .where(and(...decisionConditions))
-        .orderBy(desc(decisions.created_at))
-        .limit(20);
+      // Re-fetch full fields (tags, confidence, created_at) for matched IDs.
+      const matchedIds = filteredResults.map((r) => r.source_id);
+      let fullRows: Array<{ id: string; title: string; content: string; confidence: number; tags: string[] | null; created_at: Date }> = [];
+      if (matchedIds.length > 0) {
+        fullRows = await db
+          .select({
+            id: wikiPages.id,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            confidence: wikiPages.confidence,
+            tags: wikiPages.tags,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(inArray(wikiPages.id, matchedIds));
+      }
 
-      decisionResults.forEach((d) => {
-        citations.push({
-          type: 'decision',
-          id: d.id,
-          title: d.decision_text.slice(0, 80),
-        });
+      // Preserve the ranking order from retrieveContext.
+      const rowMap = new Map(fullRows.map((r) => [r.id, r]));
+      const orderedRows = matchedIds
+        .map((id) => rowMap.get(id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined);
+
+      orderedRows.forEach((d) => {
+        citations.push({ type: 'decision', id: d.id, title: d.title.slice(0, 80) });
       });
 
-      const formatted = decisionResults.map((d) => ({
+      const formatted = orderedRows.map((d) => ({
         id: d.id,
-        decision: d.decision_text,
-        decided_by: d.decided_by_name,
-        channel: d.space_name,
-        message_id: d.message_id,
-        context: d.context,
-        is_reversed: d.is_reversed,
+        decision: d.title,
+        context: d.content,
+        // A decision is "reversed" if confidence < 0.5 OR the 'reversed' tag is present
+        is_reversed: d.confidence < 0.5 || (d.tags ?? []).includes('reversed'),
         tags: d.tags,
         when: d.created_at,
       }));
@@ -1126,67 +1304,129 @@ export async function executeToolCall(
     case 'search_knowledge': {
       const query = params.query as string;
       const limit = (params.limit as number) || 10;
-      const pattern = `%${query}%`;
 
-      const conditions: any[] = [
-        eq(spaceKnowledge.org_id, orgId),
-        eq(spaceKnowledge.is_deleted, false),
-        or(ilike(spaceKnowledge.title, pattern), ilike(spaceKnowledge.content, pattern)),
-      ];
+      // Determine which wiki types to query based on params.type filter.
+      // 'decision' → types:['decisions'], others → types:['wiki'] with optional
+      // post-filter on metadata.type for resource / action_item / note.
+      let retrieveTypes: Array<'wiki' | 'decisions'> = ['wiki', 'decisions'];
+      let metadataTypeFilter: string | null = null;
 
       if (params.type) {
-        conditions.push(eq(spaceKnowledge.type, params.type as any));
+        switch (params.type) {
+          case 'decision':
+            retrieveTypes = ['decisions'];
+            break;
+          case 'resource':
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'resource';
+            break;
+          case 'action_item':
+            // Closest wiki equivalent is 'procedure'
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'procedure';
+            break;
+          case 'note':
+            retrieveTypes = ['wiki'];
+            metadataTypeFilter = 'fact';
+            break;
+          default:
+            retrieveTypes = ['wiki', 'decisions'];
+        }
       }
 
-      // If space_name provided, resolve to space_id
+      // Use retrieveContext for FTS + hybrid ranking.
+      const contextResults = await retrieveContext({
+        query,
+        org_id: orgId,
+        agent_employee_id: agentEmployeeId,
+        types: retrieveTypes,
+        limit,
+      });
+
+      // Post-filter by metadata.type if a type mapping requires it.
+      let filteredResults = contextResults;
+      if (metadataTypeFilter) {
+        filteredResults = contextResults.filter(
+          (r) => r.metadata?.type === metadataTypeFilter,
+        );
+      }
+
+      // Post-filter by space_name if provided.
       if (params.space_name) {
-        const [space] = await db.select({ id: spaces.id })
+        const [space] = await db
+          .select({ id: spaces.id })
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, `%${params.space_name}%`)))
           .limit(1);
         if (space) {
-          conditions.push(eq(spaceKnowledge.space_id, space.id));
+          filteredResults = filteredResults.filter(
+            (r) => (r as any).space_id === space.id,
+          );
         }
       }
 
-      const results = await db
-        .select({
-          id: spaceKnowledge.id,
-          type: spaceKnowledge.type,
-          title: spaceKnowledge.title,
-          content: spaceKnowledge.content,
-          metadata: spaceKnowledge.metadata,
-          space_id: spaceKnowledge.space_id,
-          created_at: spaceKnowledge.created_at,
-          author_name: users.name,
-        })
-        .from(spaceKnowledge)
-        .leftJoin(users, eq(spaceKnowledge.created_by, users.id))
-        .where(and(...conditions))
-        .orderBy(desc(spaceKnowledge.created_at))
-        .limit(limit);
-
-      // Resolve space names
-      const knowledgeSpaceIds = [...new Set(results.map(r => r.space_id))];
-      const knowledgeSpaceMap = new Map<string, string>();
-      if (knowledgeSpaceIds.length > 0) {
-        const spaceRows = await db.select({ id: spaces.id, name: spaces.name })
-          .from(spaces).where(inArray(spaces.id, knowledgeSpaceIds));
-        spaceRows.forEach(s => knowledgeSpaceMap.set(s.id, s.name));
+      // Re-fetch full wiki_pages fields (space_id, user_id, created_at, tags) for
+      // matched IDs so we can return the expected response shape.
+      const matchedIds = filteredResults.map((r) => r.source_id);
+      let wikiRows: Array<{
+        id: string;
+        type: string;
+        title: string;
+        content: string;
+        tags: string[] | null;
+        space_id: string | null;
+        user_id: string | null;
+        created_at: Date;
+      }> = [];
+      if (matchedIds.length > 0) {
+        wikiRows = await db
+          .select({
+            id: wikiPages.id,
+            type: wikiPages.type,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            tags: wikiPages.tags,
+            space_id: wikiPages.space_id,
+            user_id: wikiPages.user_id,
+            created_at: wikiPages.created_at,
+          })
+          .from(wikiPages)
+          .where(inArray(wikiPages.id, matchedIds));
       }
 
-      const formatted = results.map(r => ({
+      // Resolve space names for wiki rows that have a space_id.
+      const wikiSpaceIds = [...new Set(wikiRows.map((r) => r.space_id).filter(Boolean))] as string[];
+      const wikiSpaceMap = new Map<string, string>();
+      if (wikiSpaceIds.length > 0) {
+        const spaceRows = await db
+          .select({ id: spaces.id, name: spaces.name })
+          .from(spaces)
+          .where(inArray(spaces.id, wikiSpaceIds));
+        spaceRows.forEach((s) => wikiSpaceMap.set(s.id, s.name));
+      }
+
+      // Preserve ranking order from retrieveContext.
+      const wikiRowMap = new Map(wikiRows.map((r) => [r.id, r]));
+      const orderedRows = matchedIds
+        .map((id) => wikiRowMap.get(id))
+        .filter((r): r is NonNullable<typeof r> => r !== undefined);
+
+      const formatted = orderedRows.map((r) => ({
         id: r.id,
         type: r.type,
         title: r.title,
         content: r.content,
-        metadata: r.metadata,
-        space: knowledgeSpaceMap.get(r.space_id) || 'unknown',
-        author: r.author_name,
+        // metadata: expose tags as metadata for consistency; wiki pages don't have
+        // a separate metadata JSON column, so we synthesize a minimal object.
+        metadata: { tags: r.tags ?? [] },
+        space: r.space_id ? (wikiSpaceMap.get(r.space_id) ?? null) : null,
+        // author_name is not stored on wiki_pages directly; return null honestly
+        // rather than synthesizing a false value.
+        author: null as string | null,
         created_at: r.created_at,
       }));
 
-      formatted.forEach(k => {
+      formatted.forEach((k) => {
         citations.push({ type: 'knowledge', id: k.id, title: `${k.type}: ${k.title}` });
       });
 
@@ -1535,6 +1775,421 @@ export async function executeToolCall(
         result: { alerts: result, count: result.length },
         citations: [],
       };
+    }
+
+    // ─── Wiki Tools ───
+
+    case 'wiki_search': {
+      // Block 0.6 — semantic wiki search. Routes through retrieveContext
+      // which runs hybrid FTS (search_vector @@ plainto_tsquery) + pgvector
+      // cosine (embedding <=> queryVector) weighted 0.4 / 0.6 * confidence.
+      // Falls back to FTS-only when OPENAI_API_KEY is missing or the
+      // pgvector <=> operator is unavailable.
+      const { query, type: pageType, scope: pageScope, limit: maxResults = 5 } = params;
+      const { retrieveContext } = await import('./retrieve-context.js');
+      const hits = await retrieveContext({
+        query,
+        org_id: orgId,
+        types: ['wiki'],
+        limit: Math.min(maxResults, 10),
+      });
+
+      // Fetch the full wiki_pages row + linked pages for each hit so the
+      // tool output keeps the shape callers expect (title/slug/summary/
+      // type/scope/confidence/updated_at + linked_pages[]).
+      const hitIds = hits.map((h) => h.source_id);
+      const pages =
+        hitIds.length > 0
+          ? await db
+              .select({
+                id: wikiPages.id,
+                title: wikiPages.title,
+                slug: wikiPages.slug,
+                summary: wikiPages.summary,
+                type: wikiPages.type,
+                scope: wikiPages.scope,
+                confidence: wikiPages.confidence,
+                updated_at: wikiPages.updated_at,
+              })
+              .from(wikiPages)
+              .where(
+                and(
+                  eq(wikiPages.org_id, orgId),
+                  eq(wikiPages.is_deleted, false),
+                  sql`${wikiPages.id} = ANY(${hitIds})`,
+                  ...(pageType ? [eq(wikiPages.type, pageType)] : []),
+                  ...(pageScope ? [eq(wikiPages.scope, pageScope)] : []),
+                ),
+              )
+          : [];
+
+      // Preserve retrieveContext's ranking order.
+      const byId = new Map(pages.map((p) => [p.id, p]));
+      const ordered = hitIds
+        .map((id) => byId.get(id))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p));
+
+      const enriched = await Promise.all(
+        ordered.map(async (page) => {
+          const links = await db
+            .select({ title: wikiPages.title, slug: wikiPages.slug })
+            .from(wikiLinks)
+            .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
+            .where(eq(wikiLinks.source_page_id, page.id))
+            .limit(5);
+          return { ...page, linked_pages: links };
+        }),
+      );
+
+      const citations: Citation[] = ordered.map((p) => ({
+        type: 'wiki',
+        id: p.id,
+        title: p.title,
+      }));
+
+      return { result: { pages: enriched, count: enriched.length }, citations };
+    }
+
+    case 'wiki_read': {
+      const { slug } = params;
+
+      const [page] = await db.select()
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+        .limit(1);
+
+      if (!page) {
+        return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
+      }
+
+      // Get linked pages
+      const linkedPages = await db.select({
+        slug: wikiPages.slug,
+        title: wikiPages.title,
+        type: wikiPages.type,
+        summary: wikiPages.summary,
+      })
+        .from(wikiLinks)
+        .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
+        .where(eq(wikiLinks.source_page_id, page.id));
+
+      // Get backlinks
+      const backlinks = await db.select({
+        slug: wikiPages.slug,
+        title: wikiPages.title,
+        type: wikiPages.type,
+      })
+        .from(wikiLinks)
+        .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
+        .where(eq(wikiLinks.target_page_id, page.id));
+
+      // Get citations
+      const citations = await db.select()
+        .from(wikiCitations)
+        .where(eq(wikiCitations.page_id, page.id))
+        .orderBy(desc(wikiCitations.created_at))
+        .limit(10);
+
+      return {
+        result: {
+          title: page.title,
+          slug: page.slug,
+          type: page.type,
+          scope: page.scope,
+          content: page.content,
+          summary: page.summary,
+          confidence: page.confidence,
+          version: page.version,
+          updated_at: page.updated_at,
+          linked_pages: linkedPages,
+          backlinks,
+          citations,
+        },
+        citations: [{ type: 'wiki', id: page.id, title: page.title }],
+      };
+    }
+
+    case 'wiki_write': {
+      const { slug: existingSlug, title, content, type: pageType, summary, related_slugs } = params;
+
+      if (existingSlug) {
+        // UPDATE existing page
+        const [existing] = await db.select()
+          .from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, existingSlug), eq(wikiPages.is_deleted, false)))
+          .limit(1);
+
+        if (!existing) {
+          return { result: { error: `Wiki page "${existingSlug}" not found` }, citations: [] };
+        }
+
+        const updates: Record<string, any> = {};
+        if (title) updates.title = title;
+        if (summary) updates.summary = summary;
+        if (pageType) updates.type = pageType;
+        if (content && content !== existing.content) {
+          updates.content = content;
+          updates.previous_content = existing.content;
+          updates.version = existing.version + 1;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await db.update(wikiPages).set(updates).where(eq(wikiPages.id, existing.id));
+        }
+
+        // Update links
+        if (related_slugs && related_slugs.length > 0) {
+          await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
+          const targets = await db.select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+          for (const t of targets) {
+            if (t.id !== existing.id) {
+              await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
+            }
+          }
+        }
+
+        await db.insert(wikiOpsLog).values({
+          org_id: orgId,
+          operation: 'update',
+          page_id: existing.id,
+          details: { updated_fields: Object.keys(updates), by_agent: true },
+          performed_by: _userId,
+        });
+
+        return { result: { success: true, slug: existingSlug, action: 'updated' }, citations: [] };
+      } else {
+        // CREATE new page
+        if (!title || !content || !pageType) {
+          return { result: { error: 'title, content, and type are required to create a wiki page' }, citations: [] };
+        }
+
+        let slug = title.toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, '')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 80);
+
+        // Ensure unique
+        const [dup] = await db.select({ id: wikiPages.id })
+          .from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug)))
+          .limit(1);
+        if (dup) slug = `${slug}-${Date.now().toString(36)}`;
+
+        const [page] = await db.insert(wikiPages).values({
+          org_id: orgId,
+          scope: 'org',
+          type: pageType,
+          title,
+          slug,
+          summary: summary || null,
+          content,
+          confidence: 1.0,
+        }).returning();
+
+        // Create links
+        if (related_slugs && related_slugs.length > 0) {
+          const targets = await db.select({ id: wikiPages.id })
+            .from(wikiPages)
+            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+          for (const t of targets) {
+            if (t.id !== page!.id) {
+              await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: page!.id, target_page_id: t.id }).onConflictDoNothing();
+            }
+          }
+        }
+
+        await db.insert(wikiOpsLog).values({
+          org_id: orgId,
+          operation: 'create',
+          page_id: page!.id,
+          details: { title, type: pageType, by_agent: true },
+          performed_by: _userId,
+        });
+
+        return { result: { success: true, slug, action: 'created' }, citations: [] };
+      }
+    }
+
+    case 'wiki_suggest_update': {
+      const { slug, suggested_content, reason } = params as { slug: string; suggested_content: string; reason: string };
+
+      if (!slug || !suggested_content || !reason) {
+        return { result: { error: 'slug, suggested_content, and reason are required' }, citations: [] };
+      }
+
+      // Verify page exists
+      const [page] = await db.select({ id: wikiPages.id, title: wikiPages.title })
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+        .limit(1);
+
+      if (!page) {
+        return { result: { error: `Wiki page "${slug}" not found` }, citations: [] };
+      }
+
+      // Log the suggestion in ops log
+      await db.insert(wikiOpsLog).values({
+        org_id: orgId,
+        operation: 'suggest_update',
+        page_id: page.id,
+        details: { suggested_content, reason, by_agent: true },
+        performed_by: _userId,
+      });
+
+      return {
+        result: { success: true, message: `Suggestion logged for "${page.title}". A team member will review it.` },
+        citations: [{ type: 'wiki', id: page.id, title: page.title }],
+      };
+    }
+
+    // ─── Superintendent Tools (read-only) ───
+
+    case 'list_agent_employees': {
+      const { status_filter } = params as { status_filter?: string };
+
+      let query = db
+        .select({
+          id: agentEmployees.id,
+          name: agentEmployees.name,
+          slug: agentEmployees.slug,
+          role: agentEmployees.role,
+          is_active: agentEmployees.is_active,
+          trust_level: agentEmployees.trust_level,
+          daily_action_count: agentEmployees.daily_action_count,
+          max_daily_actions: agentEmployees.max_daily_actions,
+          is_byoa: agentEmployees.is_byoa,
+          created_at: agentEmployees.created_at,
+          updated_at: agentEmployees.updated_at,
+        })
+        .from(agentEmployees)
+        .where(
+          status_filter === 'active'
+            ? and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.is_active, true))
+            : status_filter === 'paused'
+              ? and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.is_active, false))
+              : eq(agentEmployees.org_id, orgId),
+        )
+        .orderBy(desc(agentEmployees.created_at));
+
+      const employees = await query;
+      return {
+        result: {
+          employees: employees.map((e) => ({
+            id: e.id,
+            name: e.name,
+            slug: e.slug,
+            role: e.role,
+            status: e.is_active ? 'active' : 'paused',
+            trust_level: e.trust_level,
+            daily_actions: `${e.daily_action_count}/${e.max_daily_actions}`,
+            is_byoa: e.is_byoa,
+            created_at: e.created_at,
+            updated_at: e.updated_at,
+          })),
+          total: employees.length,
+        },
+        citations: [],
+      };
+    }
+
+    case 'get_agent_activity': {
+      const { employee_id, limit: resultLimit } = params as { employee_id?: string; limit?: number };
+      const maxResults = Math.min(resultLimit || 20, 100);
+
+      const conditions = [eq(agentActions.org_id, orgId)];
+      if (employee_id) {
+        conditions.push(eq(agentActions.agent_employee_id, employee_id));
+      }
+
+      const actions = await db
+        .select({
+          id: agentActions.id,
+          action: agentActions.action,
+          params: agentActions.params,
+          approval_status: agentActions.approval_status,
+          agent_employee_id: agentActions.agent_employee_id,
+          source: agentActions.source,
+          created_at: agentActions.created_at,
+          executed_at: agentActions.executed_at,
+          error: agentActions.error,
+        })
+        .from(agentActions)
+        .where(and(...conditions))
+        .orderBy(desc(agentActions.created_at))
+        .limit(maxResults);
+
+      return {
+        result: {
+          actions,
+          total: actions.length,
+        },
+        citations: [],
+      };
+    }
+
+    case 'get_agent_economics': {
+      const employees = await db
+        .select({
+          id: agentEmployees.id,
+          name: agentEmployees.name,
+          role: agentEmployees.role,
+          is_active: agentEmployees.is_active,
+          daily_action_count: agentEmployees.daily_action_count,
+          max_daily_actions: agentEmployees.max_daily_actions,
+          is_byoa: agentEmployees.is_byoa,
+        })
+        .from(agentEmployees)
+        .where(eq(agentEmployees.org_id, orgId))
+        .orderBy(desc(agentEmployees.daily_action_count));
+
+      return {
+        result: {
+          employees: employees.map((e) => ({
+            id: e.id,
+            name: e.name,
+            role: e.role,
+            is_active: e.is_active,
+            daily_actions_used: e.daily_action_count,
+            daily_actions_limit: e.max_daily_actions,
+            is_byoa: e.is_byoa,
+          })),
+          total_employees: employees.length,
+          total_active: employees.filter((e) => e.is_active).length,
+          total_daily_actions_used: employees.reduce((sum, e) => sum + e.daily_action_count, 0),
+        },
+        citations: [],
+      };
+    }
+
+    case 'create_plan': {
+      const { title, description, steps } = params as {
+        title?: string;
+        description?: string;
+        steps?: any[];
+      };
+
+      if (!title || !steps || !Array.isArray(steps)) {
+        return {
+          result: { error: 'create_plan requires title and steps' },
+          citations: [],
+        };
+      }
+
+      const planResult = await createPlanRow({
+        org_id: orgId,
+        user_id: _userId,
+        conversation_id: conversationId ?? null,
+        agent_employee_id: agentEmployeeId ?? null,
+        title,
+        description: description ?? null,
+        steps,
+      });
+
+      return { result: planResult, citations: [] };
     }
 
     default:

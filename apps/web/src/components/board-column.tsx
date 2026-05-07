@@ -1,7 +1,7 @@
 'use client';
 
 import { useDroppable } from '@dnd-kit/core';
-import { Plus } from 'lucide-react';
+import { Plus, ChevronDown, ChevronRight } from 'lucide-react';
 
 type Props = {
   id: string;
@@ -9,6 +9,11 @@ type Props = {
   count: number;
   onAdd: () => void;
   children: React.ReactNode;
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  /** Task 4.9 — dot color from resolved skill config. */
+  color?: string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -17,10 +22,22 @@ const STATUS_COLORS: Record<string, string> = {
   in_progress: 'var(--accent)',
   in_review: '#8B5CF6',
   done: 'var(--success)',
+  cancelled: 'var(--muted)',
 };
 
-export function BoardColumn({ id, label, count, onAdd, children }: Props) {
+export function BoardColumn({
+  id,
+  label,
+  count,
+  onAdd,
+  children,
+  collapsible = false,
+  collapsed = false,
+  onToggleCollapse,
+  color,
+}: Props) {
   const { setNodeRef, isOver } = useDroppable({ id });
+  const isCollapsed = collapsible && collapsed;
 
   return (
     <div
@@ -32,10 +49,30 @@ export function BoardColumn({ id, label, count, onAdd, children }: Props) {
     >
       {/* Column header */}
       <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0">
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={collapsible ? onToggleCollapse : undefined}
+          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+          style={{
+            cursor: collapsible ? 'pointer' : 'default',
+            background: 'transparent',
+            border: 'none',
+            padding: 0,
+          }}
+          aria-expanded={collapsible ? !isCollapsed : undefined}
+          aria-label={collapsible ? `${isCollapsed ? 'Expand' : 'Collapse'} ${label} column` : undefined}
+        >
+          {collapsible && (
+            <span
+              className="flex-shrink-0"
+              style={{ color: 'var(--muted)' }}
+            >
+              {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+            </span>
+          )}
           <div
             className="w-2 h-2 rounded-full flex-shrink-0"
-            style={{ background: STATUS_COLORS[id] || 'var(--muted)' }}
+            style={{ background: color || STATUS_COLORS[id] || 'var(--muted)' }}
           />
           <span
             className="text-[12px] font-semibold uppercase tracking-wide"
@@ -55,7 +92,7 @@ export function BoardColumn({ id, label, count, onAdd, children }: Props) {
           >
             {count}
           </span>
-        </div>
+        </button>
         <button
           onClick={onAdd}
           className="p-1 rounded-md"
@@ -67,13 +104,23 @@ export function BoardColumn({ id, label, count, onAdd, children }: Props) {
         </button>
       </div>
 
-      {/* Scrollable card list */}
-      <div
-        ref={setNodeRef}
-        className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-1.5 min-h-[60px]"
-      >
-        {children}
-      </div>
+      {/* Scrollable card list (hidden when collapsed) */}
+      {!isCollapsed && (
+        <div
+          ref={setNodeRef}
+          className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-1.5 min-h-[60px]"
+        >
+          {count === 0 && (
+            <p
+              className="text-[11px] text-center py-3"
+              style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}
+            >
+              No tasks
+            </p>
+          )}
+          {children}
+        </div>
+      )}
     </div>
   );
 }

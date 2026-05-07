@@ -5,6 +5,32 @@ import { workflowRules, workflowRuns } from '@deft/db/schema';
 
 export const workflowRoutes = new Hono();
 
+// Task 5.7 — supported v1 trigger + action kinds. CRUD validates payloads
+// against these so the executor never has to defend against unknown shapes.
+const SUPPORTED_TRIGGER_TYPES = new Set(['task.status_changed']);
+const SUPPORTED_ACTION_KINDS = new Set(['add_comment', 'assign_to', 'add_label', 'notify']);
+
+function validateActionConfig(actionType: string, actionConfig: unknown): string | null {
+  const cfg = (actionConfig ?? {}) as Record<string, unknown>;
+  // Multi-action shape: action_type can be 'composite' with action_config.actions=[...]
+  if (actionType === 'composite') {
+    const actions = (cfg as any).actions;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      return 'action_config.actions[] required for composite workflows';
+    }
+    for (const a of actions) {
+      if (!a || !SUPPORTED_ACTION_KINDS.has(a.kind)) {
+        return `unsupported action kind: ${a?.kind}`;
+      }
+    }
+    return null;
+  }
+  if (!SUPPORTED_ACTION_KINDS.has(actionType)) {
+    return `unsupported action_type: ${actionType}`;
+  }
+  return null;
+}
+
 // GET /api/workflows — list all rules for org
 workflowRoutes.get('/', async (c) => {
   const user = c.get('user');
@@ -21,10 +47,17 @@ workflowRoutes.get('/', async (c) => {
 workflowRoutes.post('/', async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
-  const { name, trigger_type, trigger_config, action_type, action_config } = body;
+  const { name, trigger_type, trigger_config, action_type, action_config, is_active } = body;
 
   if (!name || !trigger_type || !trigger_config || !action_type || !action_config) {
     return c.json({ error: 'name, trigger_type, trigger_config, action_type, and action_config are required', code: 'VALIDATION_ERROR' }, 400);
+  }
+  if (!SUPPORTED_TRIGGER_TYPES.has(trigger_type)) {
+    return c.json({ error: `unsupported trigger_type: ${trigger_type}`, code: 'VALIDATION_ERROR' }, 400);
+  }
+  const actionErr = validateActionConfig(action_type, action_config);
+  if (actionErr) {
+    return c.json({ error: actionErr, code: 'VALIDATION_ERROR' }, 400);
   }
 
   const [rule] = await db.insert(workflowRules).values({
@@ -34,6 +67,7 @@ workflowRoutes.post('/', async (c) => {
     trigger_config,
     action_type,
     action_config,
+    is_active: is_active === undefined ? true : !!is_active,
     created_by: user.id,
   }).returning();
 
@@ -46,6 +80,16 @@ workflowRoutes.patch('/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
   const { name, trigger_type, trigger_config, action_type, action_config, is_active } = body;
+
+  if (trigger_type !== undefined && !SUPPORTED_TRIGGER_TYPES.has(trigger_type)) {
+    return c.json({ error: `unsupported trigger_type: ${trigger_type}`, code: 'VALIDATION_ERROR' }, 400);
+  }
+  if (action_type !== undefined && action_config !== undefined) {
+    const actionErr = validateActionConfig(action_type, action_config);
+    if (actionErr) {
+      return c.json({ error: actionErr, code: 'VALIDATION_ERROR' }, 400);
+    }
+  }
 
   const updates: Record<string, unknown> = { updated_at: new Date() };
   if (name !== undefined) updates.name = name;
@@ -72,23 +116,35 @@ workflowRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
-  // Delete runs first
-  await db.delete(workflowRuns).where(eq(workflowRuns.rule_id, id));
-
-  const [deleted] = await db.delete(workflowRules)
+  // Verify ownership FIRST
+  const [rule] = await db.select({ id: workflowRules.id })
+    .from(workflowRules)
     .where(and(eq(workflowRules.id, id), eq(workflowRules.org_id, user.org_id)))
-    .returning();
+    .limit(1);
 
-  if (!deleted) {
+  if (!rule) {
     return c.json({ error: 'Workflow rule not found', code: 'NOT_FOUND' }, 404);
   }
+
+  await db.delete(workflowRuns).where(eq(workflowRuns.rule_id, id));
+  await db.delete(workflowRules).where(eq(workflowRules.id, id));
 
   return c.json({ success: true });
 });
 
 // GET /api/workflows/:id/runs — list recent runs
 workflowRoutes.get('/:id/runs', async (c) => {
+  const user = c.get('user');
   const id = c.req.param('id');
+
+  // Ensure the rule belongs to the caller's org before exposing runs.
+  const [rule] = await db.select({ id: workflowRules.id })
+    .from(workflowRules)
+    .where(and(eq(workflowRules.id, id), eq(workflowRules.org_id, user.org_id)))
+    .limit(1);
+  if (!rule) {
+    return c.json({ error: 'Workflow rule not found', code: 'NOT_FOUND' }, 404);
+  }
 
   const runs = await db.select()
     .from(workflowRuns)

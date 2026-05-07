@@ -3,6 +3,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { pinnedMessages, messages, users } from '@deft/db/schema';
 import { getIO } from '../socket.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
 
 export const pinRoutes = new Hono();
 
@@ -13,6 +14,9 @@ pinRoutes.post('/:spaceId/pins', async (c) => {
   const { message_id } = await c.req.json();
 
   if (!message_id) return c.json({ error: 'message_id required', code: 'VALIDATION_ERROR' }, 400);
+
+  const isMember = await requireSpaceMembership(spaceId, user.id);
+  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const [msg] = await db.select({ id: messages.id, content: messages.content })
     .from(messages)
@@ -45,8 +49,12 @@ pinRoutes.post('/:spaceId/pins', async (c) => {
 
 // DELETE /api/spaces/:spaceId/pins/:messageId — unpin
 pinRoutes.delete('/:spaceId/pins/:messageId', async (c) => {
+  const user = c.get('user');
   const spaceId = c.req.param('spaceId');
   const messageId = c.req.param('messageId');
+
+  const isMember = await requireSpaceMembership(spaceId, user.id);
+  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   await db.delete(pinnedMessages).where(and(eq(pinnedMessages.message_id, messageId), eq(pinnedMessages.space_id, spaceId)));
   await db.update(messages).set({ is_pinned: false }).where(eq(messages.id, messageId));
@@ -62,7 +70,11 @@ pinRoutes.delete('/:spaceId/pins/:messageId', async (c) => {
 
 // GET /api/spaces/:spaceId/pins — get all pinned messages
 pinRoutes.get('/:spaceId/pins', async (c) => {
+  const user = c.get('user');
   const spaceId = c.req.param('spaceId');
+
+  const isMember = await requireSpaceMembership(spaceId, user.id);
+  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
   const pins = await db.select({
     id: pinnedMessages.id,

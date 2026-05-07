@@ -9,6 +9,7 @@ import { authRoutes } from './routes/auth.js';
 import { spaceRoutes } from './routes/spaces.js';
 import { messageRoutes } from './routes/messages.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { inboxRoutes } from './routes/inbox.js';
 import { uploadRoutes, fileServingRoutes } from './routes/upload.js';
 import { memberRoutes } from './routes/members.js';
 import { projectRoutes } from './routes/projects.js';
@@ -22,7 +23,7 @@ import { scheduledRoutes } from './routes/scheduled.js';
 import { reminderRoutes } from './routes/reminders.js';
 import { recapRoutes } from './routes/recap.js';
 import { userStatusRoutes } from './routes/user-status.js';
-import { knowledgeRoutes } from './routes/knowledge.js';
+import { knowledgeRoutes, knowledgeAggRoutes } from './routes/knowledge.js';
 import { bookmarkRoutes } from './routes/bookmarks.js';
 import { groupRoutes } from './routes/groups.js';
 import { emojiRoutes } from './routes/emoji.js';
@@ -36,7 +37,19 @@ import { dailyNoteRoutes } from './routes/daily-notes.js';
 import { tagRoutes } from './routes/tags.js';
 import { calendarRoutes } from './routes/calendar.js';
 import { eventRoutes } from './routes/events.js';
+import { wikiRoutes } from './routes/wiki.js';
+import { agentEmployeeRoutes } from './routes/agent-employees.js';
+import { mcpConnectionRoutes } from './routes/mcp-connections.js';
+import { apiKeyRoutes } from './routes/api-keys.js';
+import { mcpServerRoutes } from './routes/mcp-server.js';
+import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
+import { agentFollowupsRoutes } from './routes/agent-followups.js';
+import { agentPlanRoutes } from './routes/agent-plans.js';
+import { metricsRoutes } from './routes/metrics.js';
+import { skillsRoutes } from './routes/skills.js';
+import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
+import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
 
@@ -45,18 +58,41 @@ app.use('*', cors({
   origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
   credentials: true,
   allowHeaders: ['Content-Type', 'Authorization'],
-  allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
 // Public routes
 app.route('/api/auth', authRoutes);
 app.route('/api/files', fileServingRoutes);
 
+// MCP server — own API key auth, mounted before auth middleware
+app.route('/mcp', mcpServerRoutes);
+
+// Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
+app.route('/api/mcp/v1', mcpServerV1Routes);
+
+// Phase 10 — Prometheus metrics export, own bearer scheme, mounted before
+// authMiddleware so scrapers don't need a JWT.
+app.route('/api/metrics', metricsRoutes);
+
+// Task 8.7 — external webhook endpoints (GitHub). Verified via provider-
+// specific HMAC header (GITHUB_WEBHOOK_SECRET), not JWT — mounted before
+// authMiddleware.
+app.route('/api/webhooks', githubWebhookRoutes);
+
+// Block 3.3 — per-agent external webhooks. POST with secret in header,
+// no JWT. Management routes under /api/agent-webhooks are JWT-gated and
+// mounted AFTER authMiddleware below.
+const { publicAgentWebhookRoutes, agentWebhookRoutes } = await import('./routes/agent-webhooks.js');
+app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
+
 // Protected routes
 app.use('/api/*', authMiddleware);
+app.route('/api/agent-webhooks', agentWebhookRoutes);
 app.route('/api/spaces', spaceRoutes);
 app.route('/api/messages', messageRoutes);
 app.route('/api/notifications', notificationRoutes);
+app.route('/api/inbox', inboxRoutes);
 app.route('/api/upload', uploadRoutes);
 app.route('/api/members', memberRoutes);
 app.route('/api/projects', projectRoutes);
@@ -71,6 +107,8 @@ app.route('/api/scheduled-messages', scheduledRoutes);
 app.route('/api/reminders', reminderRoutes);
 app.route('/api/users', userStatusRoutes);
 app.route('/api/spaces', knowledgeRoutes);
+app.route('/api/knowledge', knowledgeAggRoutes);
+app.route('/api/wiki', wikiRoutes);
 app.route('/api/bookmarks', bookmarkRoutes);
 app.route('/api/groups', groupRoutes);
 app.route('/api/emoji', emojiRoutes);
@@ -84,6 +122,16 @@ app.route('/api/daily-notes', dailyNoteRoutes);
 app.route('/api/tags', tagRoutes);
 app.route('/api/calendar', calendarRoutes);
 app.route('/api/events', eventRoutes);
+app.route('/api/agent-employees', agentEmployeeRoutes);
+app.route('/api/mcp-connections', mcpConnectionRoutes);
+app.route('/api/api-keys', apiKeyRoutes);
+app.route('/api/agent/followups', agentFollowupsRoutes);
+app.route('/api/agent-plans', agentPlanRoutes);
+app.route('/api/skills', skillsRoutes);
+// Task 4.11 — /api/projects/:id/apply-template (template bulk-create)
+app.route('/api/projects', taskTemplateRoutes);
+// Task 3 — /api/task-templates list + detail (read-only catalog)
+app.route('/api/task-templates', taskTemplateRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
@@ -107,23 +155,53 @@ app.get('/health/queue', async (c) => {
   }
 });
 
-const port = parseInt(process.env.API_PORT || '3001');
+// Prefer Railway/Fly's PORT env, then API_PORT, then local default.
+const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
 
-const server = serve({ fetch: app.fetch, port }, async (info) => {
-  console.log(`Deft API running on http://localhost:${info.port}`);
+// Guard: only start the HTTP server when running as the main entry point,
+// not when imported by tests (avoids EADDRINUSE in test environments).
+// In ESM, there's no require.main; we use process.argv[1] vs import.meta.url.
+const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/index.js') ||
+               process.argv[1]?.replace(/\\/g, '/').endsWith('/index.ts');
 
-  // Start background job workers — uses Postgres, no Redis needed
-  try {
-    const { startWorkers } = await import('./workers/index.js');
-    const { initScheduler } = await import('./lib/job-scheduler.js');
-    startWorkers();
-    await initScheduler();
-    console.log('[startup] Job workers and scheduler started');
-  } catch (err) {
-    console.warn('[startup] Job workers failed to start:', (err as Error).message);
-  }
-});
+let server: ReturnType<typeof serve> | null = null;
+if (isMain) {
+  server = serve({ fetch: app.fetch, port }, async (info) => {
+    console.log(`Deft API running on http://localhost:${info.port}`);
 
-setupSocket(server as unknown as Server);
+    // Start background job workers — uses Postgres, no Redis needed
+    try {
+      const { startWorkers } = await import('./workers/index.js');
+      const { initScheduler } = await import('./lib/job-scheduler.js');
+      startWorkers();
+      await initScheduler();
+      console.log('[startup] Job workers and scheduler started');
+    } catch (err) {
+      console.warn('[startup] Job workers failed to start:', (err as Error).message);
+    }
 
+    // Self-hosted v1 — single-org hard-block. Warn the operator if the DB
+    // already holds more than one workspace; signup is blocked server-side
+    // but a legacy DB carried over from a pre-hard-block build can slip
+    // through. See apps/api/src/lib/single-org-guard.ts.
+    try {
+      const { countOrgs } = await import('./lib/single-org-guard.js');
+      const count = await countOrgs();
+      if (count > 1) {
+        console.warn(
+          `[startup] This Deft instance has ${count} orgs. Self-hosted ` +
+            'Deft is licensed for a single workspace per deployment ' +
+            '(BSL 1.1). Check LICENSE and consolidate before opening ' +
+            'signup to external users.',
+        );
+      }
+    } catch (err) {
+      console.warn('[startup] single-org check skipped:', (err as Error).message);
+    }
+  });
+
+  setupSocket(server as unknown as Server);
+}
+
+export { app };
 export default app;

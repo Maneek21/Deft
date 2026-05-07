@@ -4,7 +4,9 @@
       "WebSearch",
       "WebFetch(domain:www.craft.do)",
       "WebFetch(domain:support.craft.do)",
-      "WebFetch(domain:craft-support.mintlify.app)"
+      "WebFetch(domain:craft-support.mintlify.app)",
+      "Bash(git check-ignore *)",
+      "Bash(pnpm dev *)"
     ]
   }
 }

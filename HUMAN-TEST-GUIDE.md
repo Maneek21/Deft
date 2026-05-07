@@ -1,578 +1,936 @@
-# Deft — Human Test Guide
+# Deft — Human Testing Guide
 
-Step-by-step manual testing for every feature. No SQL needed. Just click through the UI.
-
-**Setup:** Run `npx tsx packages/db/seed.ts` then start both servers.
-**Login:** maneek@test.com / test1234
+Comprehensive manual testing checklist for the entire platform. Work through each section top to bottom. Mark items with [x] as you complete them.
 
 ---
 
-## 1. Login & First Impressions
+## Prerequisites
 
-1. Open http://localhost:3000
-2. You should be redirected to /login
-3. Enter maneek@test.com / test1234, click Login
-4. **Check:** You land on the Chat page with the sidebar visible
-5. **Check:** Sidebar shows channels (#general, #engineering, #design, #random) and DMs
-6. **Check:** Some channels show **unread count badges** (numbers like "6", "12" — not just dots)
-7. **Check:** Dark theme by default
-
----
-
-## 2. Sidebar
-
-1. **Unread badges:** #engineering should show ~12 unread, #general should show ~6
-2. **Collapse:** Click the collapse icon (top of sidebar). Sidebar shrinks to icon-only mode
-3. **Expand:** Click the expand icon. Sidebar returns to full width
-4. **Bottom bar icons (left to right):** User avatar, Saved (bookmark), DND (bell), Theme (sun/moon), More (...)
-5. Click the **moon/sun icon** — theme toggles between dark and light
-6. Click **More (...)** — dropdown with Settings and Log out appears
+Before testing, ensure:
+- [ ] PostgreSQL running on port 5432 with database created
+- [ ] Redis running on port 6379
+- [ ] `.env` file configured (copy from `.env.example`)
+- [ ] `pnpm install` completed
+- [ ] `pnpm db:push` run to apply schema
+- [ ] `pnpm dev` running (web on 3000, API on 3001)
 
 ---
 
-## 3. Chat — Basic Messaging
+## 1. Authentication
 
-1. Click **#engineering** in the sidebar
-2. **Check:** 50+ messages between Rahul and Arjun load
-3. **Check:** Messages are grouped (same author within 5 min = compact, no avatar repeat)
-4. **Check:** Day separator headers appear (e.g., "SATURDAY, MAR 28")
-5. Scroll to the bottom. Type "test message from maneek" and press Enter
-6. **Check:** Message appears instantly at the bottom
-7. **Check:** Your message shows on the right side with your avatar
+### 1.1 Signup
+- [ ] Navigate to `/signup`
+- [ ] Try submitting with empty fields — validation errors should appear
+- [ ] Try a password shorter than 8 characters — should be rejected
+- [ ] Create a new account with valid name, email, password, org name
+- [ ] Verify redirect to `/chat` or `/setup` after successful signup
+- [ ] Verify `#general` space was auto-created
+- [ ] Verify user is set as `owner` role
 
----
+### 1.2 Login
+- [ ] Navigate to `/login`
+- [ ] Try wrong password — should show "Invalid credentials"
+- [ ] Try non-existent email — should show "Invalid credentials" (no email enumeration)
+- [ ] Login with correct credentials
+- [ ] Verify redirect to `/chat`
+- [ ] Refresh the page — should stay logged in (token persisted)
 
-## 4. Unread Divider
+### 1.3 Google OAuth
+- [ ] Google login button is clickable (not disabled/grayed out)
+- [ ] Clicking it redirects to Google consent screen (requires GOOGLE_CLIENT_ID configured)
+- [ ] After Google auth, redirects back to `/login` with tokens in URL
+- [ ] Tokens are stored and user is redirected to `/chat`
+- [ ] If Google OAuth is not configured, endpoint returns 503
 
-1. Open **#engineering** (if not already there)
-2. **Check:** A **red "New messages" line** appears somewhere in the message list, separating old messages from unread ones
-3. Scroll up to find it — it should be after Arjun's message "Perfect. I'll have the notification flow done by tonight..."
-4. **Check:** Everything below the red line was "unread" when you first opened the channel
-5. Navigate away to #general, then back to #engineering
-6. **Check:** The red line is gone (you've now read everything)
+### 1.4 Password Reset
+- [ ] Click "Forgot?" link on login page — navigates to `/forgot-password`
+- [ ] Submit with valid email — shows "Check your email" success message
+- [ ] Submit with non-existent email — should STILL show success (no email enumeration)
+- [ ] Check console/email for reset link
+- [ ] Click reset link — navigates to `/reset-password?token=...`
+- [ ] Try mismatched passwords — shows error
+- [ ] Try password < 8 chars — shows error
+- [ ] Submit valid new password — shows success
+- [ ] Login with new password — works
+- [ ] Try the same reset link again — should fail (token expired or already used)
 
----
+### 1.5 Session Management
+- [ ] After 15+ minutes of inactivity, token refresh should happen silently
+- [ ] If refresh token is expired, user sees "Session expired" and is redirected to `/login`
+- [ ] After re-login, user returns to the page they were on (path preserved in sessionStorage)
 
-## 5. Chat — Hover Toolbar
-
-1. Hover over any message from Rahul or Arjun
-2. **Check:** A floating toolbar appears with icons: React (smile), Reply, Pin, **Bookmark**, Create Task, More (...)
-3. Click **React (smile)** — emoji picker opens. Pick any emoji
-4. **Check:** Reaction appears below the message with count "1"
-5. Click the reaction again — it removes
-6. Click **Pin** — the message pins
-7. **Check:** A **pinned bar** appears at the top of the chat showing the pinned message
-8. Click the pinned bar — dropdown expands showing all pins
-9. Click **Unpin** on the pinned message in the dropdown
-
----
-
-## 6. Message Bookmarks
-
-1. Hover over a message, click the **bookmark icon** (flag shape, between Pin and Create Task)
-2. **Check:** Icon fills in and turns purple — message is saved
-3. Hover over another message in a different channel and bookmark it too
-4. In the sidebar bottom bar, click the **bookmark icon**
-5. **Check:** "Saved Items" modal opens showing your bookmarked messages
-6. **Check:** Each entry shows author name, #channel name, date, and message preview
-7. Click a saved message — you navigate to it in chat
-8. Click the X on a saved message — it's removed from saved items
-9. Go back to the original message, hover — bookmark icon should be unfilled again
-
----
-
-## 7. Threads
-
-1. Hover over any message, click **Reply**
-2. **Check:** Thread panel opens on the right side
-3. Type a reply and send it
-4. **Check:** Reply appears in the thread panel
-5. **Check:** The original message in the main chat now shows "1 reply" indicator
-6. Close the thread panel (X or click elsewhere)
+### 1.6 Onboarding / Setup
+- [ ] New user sees `/setup` onboarding wizard
+- [ ] Step 1: Welcome message displayed
+- [ ] Step 2: Can invite team members by email (or skip)
+- [ ] Step 3: Can create spaces (or skip with defaults)
+- [ ] Step 4: Can create first project (or skip)
+- [ ] Step 5: Meet Deft intro
+- [ ] Can skip any step
+- [ ] Completing setup marks onboarding as done
 
 ---
 
-## 8. Notifications
+## 2. Chat / Messaging
 
-1. Look at the **top-right bell icon**
-2. **Check:** Red badge with a number (should be 5 or more)
-3. Click the bell
-4. **Check:** Dropdown opens with notifications like:
-   - "Rahul in #engineering" (channel messages)
-   - "Sara assigned you DEFT-8" (task assignment)
-5. Click a notification — you navigate to the relevant page
-6. Click **Mark all read** — badge disappears
-7. Close the dropdown
+### 2.1 Spaces
+- [ ] Sidebar shows list of spaces with unread counts
+- [ ] Click a space — messages load in main panel
+- [ ] Create a new public space via "+" button
+- [ ] Create a new private space
+- [ ] Create a DM with another user
+- [ ] Space name, description, and topic display correctly
+- [ ] Mute a space — mute icon appears, no more notification badges
+- [ ] Archive/delete a space (admin only) — space disappears from sidebar
+- [ ] Default `#general` space cannot be deleted
 
----
+### 2.2 Messages
+- [ ] Send a text message — appears in real-time
+- [ ] Send a message with **bold**, *italic*, `code`, and links
+- [ ] Links auto-unfurl with preview (title, description, image)
+- [ ] Edit a message — "(edited)" indicator appears
+- [ ] Delete a message — message removed from view
+- [ ] Long messages display correctly (no overflow)
+- [ ] Empty message cannot be sent
 
-## 9. Chat — More Actions
+### 2.3 Threads
+- [ ] Click "Reply in thread" on a message — thread panel opens on the right
+- [ ] Post a reply in the thread
+- [ ] Thread reply count shows on the parent message ("X replies")
+- [ ] Thread unread state works (bold indicator on unread threads)
+- [ ] Close thread panel — returns to main view
 
-1. Hover over **your own message**, click **More (...)**
-2. **Check:** Dropdown with: Edit, Copy link, Remind me, Delete
-3. Click **Edit** — message enters edit mode with "Editing" label
-4. Change the text, press Enter — message updates
-5. Try **Remind me > In 20 minutes** on any message
-6. Try **Delete** on your own message — confirmation dialog appears, confirm it
-7. **Check:** Message shows "[deleted]" or disappears
+### 2.4 Reactions
+- [ ] Add an emoji reaction to a message
+- [ ] Same user reacting again with same emoji removes it
+- [ ] Multiple users reacting shows count
+- [ ] Clicking reaction count shows who reacted
+- [ ] Add multiple different reactions to one message
 
----
+### 2.5 Mentions
+- [ ] Type `@` — autocomplete dropdown appears with user list
+- [ ] Select a user — mention is inserted as formatted text
+- [ ] Mentioned user receives a notification
+- [ ] `@here` and `@all` mentions work
+- [ ] Mention a group handle (e.g., `@engineering`) — all group members notified
 
-## 10. Create Task from Chat
+### 2.6 File Attachments
+- [ ] Upload a file in chat (image, PDF, etc.)
+- [ ] Image files display as inline thumbnails
+- [ ] Non-image files display as download links
+- [ ] Click image — opens in lightbox
+- [ ] Large files (>50MB) are rejected with error
 
-1. Hover over a message with meaningful content, click **Create Task** (checkbox icon)
-2. **Check:** Task creation modal/panel opens with the message text pre-filled as the title
-3. **Check:** Title starts from the beginning of the message (not mid-sentence)
-4. Select a project, set priority if you want
-5. Click Create
-6. **Check:** Task is created (navigate to Tasks to verify)
+### 2.7 Pinned Messages
+- [ ] Pin a message — appears in pinned messages panel
+- [ ] Unpin a message — removed from panel
+- [ ] Pinned messages panel accessible via header icon
 
----
+### 2.8 Bookmarked Messages
+- [ ] Bookmark a message — appears in saved messages
+- [ ] Remove bookmark
+- [ ] Bookmarks are personal (other users don't see them)
 
-## 11. Catch-Up Summary
+### 2.9 Search
+- [ ] Use global search (Cmd+K) to search messages
+- [ ] Filter by author, space, date range
+- [ ] Results show message preview with highlighted match
 
-1. Go to **#engineering**
-2. In the channel header bar, click **Catch Up**
-3. **Check:** "Reading..." loading state appears
-4. **Check:** A summary card appears at the top of the chat (sticky — visible even when scrolled)
-5. **Check:** Summary mentions key topics (WebSocket reconnection, Drizzle, notifications, drag-and-drop)
-6. **Check:** Markdown is rendered (bold text, bullet points — not raw ** and - characters)
-7. Click X to dismiss the summary
+### 2.10 Typing Indicators
+- [ ] When another user types, "X is typing..." appears
+- [ ] Multiple users typing shows "X, Y are typing..."
+- [ ] Typing indicator disappears after 2-3 seconds of inactivity
 
----
+### 2.11 Real-time Updates
+- [ ] Open same space in two browser tabs
+- [ ] Send message in one tab — appears instantly in the other
+- [ ] Edit a message — update reflected in both tabs
+- [ ] Reactions update in real-time across tabs
 
-## 12. DND (Do Not Disturb)
+### 2.12 Presence
+- [ ] Online users show green dot in sidebar
+- [ ] Idle users (5 min inactive) show yellow dot
+- [ ] Offline users show gray dot
+- [ ] Closing browser tab updates presence for other users
 
-1. In the sidebar bottom bar, click the **bell icon**
-2. **Check:** Icon changes to a crossed-out bell (BellOff) with amber/orange color
-3. Refresh the page
-4. **Check:** DND state persists (bell should still be crossed out)
-5. Click the bell icon again to disable DND
-6. **Check:** Icon returns to normal bell
-
----
-
-## 13. Channel Rename
-
-1. In any channel (e.g., #design), **double-click the channel name** in the chat header
-2. **Check:** Name becomes editable
-3. Change it to "design-reviews", press Enter
-4. **Check:** Channel name updates in the header and sidebar
-5. Rename it back to "design"
-
----
-
-## 14. Tasks — Board View
-
-1. Click **Tasks** in the sidebar navigation
-2. **Check:** Kanban board with 5 columns: Backlog, Todo, In Progress, In Review, Done
-3. **Check:** Task cards show: ID (DEFT-7), title, priority badge (P0/P1/P2/P3), assignee avatar
-4. **Check:** Column headers show task counts
-5. Switch between projects using the project selector (Deft v1 / Design System)
-
----
-
-## 15. Tasks — Drag and Drop
-
-1. Grab a task card from "Todo" column
-2. Drag it to "In Progress" column
-3. **Check:** Card moves instantly (optimistic update)
-4. Refresh the page — **Check:** The move persisted
-
----
-
-## 16. Tasks — Create New Task
-
-1. Click **+ New Task** button (or press C)
-2. Enter title: "Test task from manual testing"
-3. Leave assignee and due date empty
-4. Click Create
-5. **Check:** Task appears in the Backlog column
-6. **Check:** No error (the null fields bug should be fixed)
+### 2.13 Scheduled Messages
+- [ ] Schedule a message for a future time
+- [ ] Verify it appears in scheduled messages panel
+- [ ] Cancel a scheduled message
+- [ ] At the scheduled time, message is auto-sent
 
 ---
 
-## 17. Tasks — Task Detail
+## 3. Tasks
 
-1. Click any task card to open the detail panel
-2. **Check:** Shows status, priority, assignee, labels, description, comments, activity
-3. Change the status dropdown to "Done"
-4. **Check:** No crash. Task moves to Done column smoothly
-5. Click the title to edit it, type something new, press Escape
-6. **Check:** Edit cancels (original title restored), panel stays open
-7. Press Enter instead — **Check:** Title saves
-8. Close the panel
+### 3.1 Project Management
+- [ ] Create a new project with name, prefix, and color
+- [ ] Project appears in the task page sidebar/dropdown
+- [ ] Project shows task count and progress
 
----
+### 3.2 Task Creation
+- [ ] Quick create a task (keyboard shortcut `c` or "+" button)
+- [ ] Set title, description, status, priority, assignee, due date
+- [ ] Task appears in the correct board column
+- [ ] Task ID auto-increments (e.g., PROJ-1, PROJ-2)
 
-## 18. Tasks — Subtasks
+### 3.3 Task Board (Kanban)
+- [ ] Board shows columns: Backlog, To Do, In Progress, In Review, Done
+- [ ] Drag a task from one column to another — status updates
+- [ ] Task count per column updates
+- [ ] Cards show: title, priority badge, assignee avatar, due date, subtask count, label pills
 
-1. Open any task detail panel
-2. Look for a "Subtasks" section (may need to scroll down)
-3. Click **Add subtask** (or the + icon in the subtask section)
-4. Enter title: "Sub-item for testing"
-5. **Check:** Subtask appears under the parent task
-6. Click the checkbox on the subtask to toggle it complete
-7. **Check:** Subtask shows as completed (strikethrough or checkmark)
-8. Click the subtask title to navigate to the subtask detail
-9. **Check:** Subtask detail panel shows the parent task reference
-10. Navigate back to the parent task
-11. **Check:** Parent task still shows the subtask in its list
+### 3.4 Task List View
+- [ ] Toggle to list view
+- [ ] Sort by clicking column headers (title, status, priority, assignee, due date)
+- [ ] Inline status dropdown works per row
+- [ ] Click a task row — opens detail panel
 
----
+### 3.5 Task Detail
+- [ ] Title editable (click to edit)
+- [ ] Description editor (TipTap) renders and saves
+- [ ] Status dropdown works
+- [ ] Priority selector works (P0-P3 with colors)
+- [ ] Assignee picker works
+- [ ] Due date picker works
+- [ ] Overdue indicator shows red for past-due tasks
+- [ ] Labels can be added/removed (tag picker)
+- [ ] New labels can be created inline
+- [ ] Parent task / subtasks display correctly
+- [ ] Add a subtask — appears nested under parent
+- [ ] Toggle subtask completion
 
-## 19. Tasks — Dependencies
+### 3.6 Task Comments & Activity
+- [ ] Post a comment on a task
+- [ ] Activity tab shows status changes, assignment changes, priority changes
+- [ ] Comments show author and timestamp
 
-1. Open any task detail panel (e.g., DEFT-7)
-2. Look for a "Dependencies" or "Relationships" section
-3. Click **Add dependency** (or similar button)
-4. Search for another task (e.g., DEFT-10)
-5. Select relationship type: "blocks" or "relates to"
-6. **Check:** Dependency appears in the task detail showing the linked task
-7. Click the linked task to navigate to it
-8. **Check:** The reverse relationship appears (e.g., "blocked by DEFT-7")
-9. Go back to the original task, remove the dependency
-10. **Check:** Dependency is removed from both sides
+### 3.7 Task Dependencies
+- [ ] Add a "blocks" dependency between tasks
+- [ ] Add a "relates to" dependency
+- [ ] Search for tasks to link (autocomplete)
+- [ ] Remove a dependency
+- [ ] Dependencies display in the detail panel
 
----
+### 3.8 Task Attachments
+- [ ] Upload a file to a task
+- [ ] Attachment appears in the attachments section
+- [ ] Click to download
 
-## 20. Tasks — Bulk Operations
+### 3.9 Task References / Backlinks
+- [ ] If a task is mentioned in chat (e.g., PROJ-5), it shows in the "References" section
+- [ ] Clicking a reference navigates to the source message
 
-1. Go to the task board view
-2. Look for a **Select mode** toggle or multi-select button
-3. Enable selection mode
-4. Select 3 or more tasks by clicking them
-5. **Check:** A bulk action bar appears (or toolbar changes)
-6. Try **bulk status change** — change all selected to "In Review"
-7. **Check:** All selected tasks move to the In Review column
-8. Select tasks again, try **bulk delete**
-9. **Check:** Confirmation dialog appears, confirm it
-10. **Check:** Tasks are removed from the board
+### 3.10 Filters
+- [ ] Filter by assignee (multi-select dropdown)
+- [ ] Filter by priority (multi-select)
+- [ ] Filter by project
+- [ ] Filter by due date (presets: overdue, today, this week)
+- [ ] Filter by custom date range (from/to inputs)
+- [ ] Active filter pills appear with X to remove
+- [ ] "Clear all" removes all filters
 
----
+### 3.11 Saved Views
+- [ ] Apply some filters
+- [ ] Click "Save view" in the Views dropdown
+- [ ] Enter a name and save
+- [ ] Clear filters, then load the saved view — filters restored
+- [ ] Delete a saved view
 
-## 21. Tasks — Due Date Badges
+### 3.12 Bulk Operations
+- [ ] Enable selection mode (checkbox icon)
+- [ ] Select multiple tasks
+- [ ] Bulk change status — all selected tasks update
+- [ ] Bulk assign — all selected tasks get new assignee
+- [ ] Bulk delete — confirmation shown, tasks removed
 
-1. Find or create a task with a due date set to **yesterday** (overdue)
-2. **Check:** Task card shows a **red** due date badge or indicator
-3. Find or create a task with a due date set to **today**
-4. **Check:** Task card shows an **amber/orange** due date badge
-5. Find or create a task with a due date in the future
-6. **Check:** Task card shows a neutral/gray due date badge (or no special color)
+### 3.13 My Tasks View
+- [ ] Switch to "My Tasks" view
+- [ ] Shows only tasks assigned to current user across all projects
+- [ ] Tasks grouped by project
 
----
+### 3.14 Task Duplication
+- [ ] Duplicate a task from the card menu
+- [ ] New task created with "(copy)" suffix
+- [ ] Labels carried over
 
-## 22. Tasks — Filters
-
-1. Click **My Tasks** filter
-2. **Check:** Only tasks assigned to Maneek are shown
-3. Clear the filter
-4. Try filtering by priority (e.g., P0 only)
-5. Try filtering by due date
-
----
-
-## 23. Tasks — List View
-
-1. Switch from Board view to **List view** (if toggle exists)
-2. **Check:** Tasks displayed in a table/list format
-3. **Check:** Same filters work in list view
-4. Switch back to Board view
-
----
-
-## 24. Dashboard
-
-1. Click **Dashboard** in the sidebar (or press G then D)
-2. **Check:** Metric cards: Tasks Today, Overdue, Due This Week, Completion Rate
-3. **Check:** "Daily Standup" section visible
-4. If standup already generated: summary is shown with rendered markdown
-5. If not: click **Generate Now**
-6. **Check:** Loading spinner, then summary appears with activity data
-7. **Check:** Summary has formatted text (bold, bullets — not raw markdown)
-
----
-
-## 25. Dashboard — My Insights
-
-1. On the Dashboard page, look for a **My Insights** section
-2. **Check:** Shows personal stats: messages sent this week, tasks completed this week
-3. **Check:** Shows spaces you were active in
-4. **Check:** Shows your expertise areas (topics you discuss most)
-5. **Check:** Shows your top collaborators (who you interact with most)
+### 3.15 Task Notifications
+- [ ] Assign a task to another user — they get a notification
+- [ ] Change task status — assignee notified
+- [ ] Comment on a task — assignee notified
 
 ---
 
-## 26. Timezone
+## 4. Calendar
 
-1. Check any message timestamp in chat
-2. **Check:** Time is displayed in your local timezone (not UTC)
-3. Hover over a message timestamp
-4. **Check:** Tooltip shows additional timezone info (sender's timezone if different)
-5. Check day separator headers
-6. **Check:** "Today" and "Yesterday" labels are correct for your local timezone
+### 4.1 Views
+- [ ] Month view shows events on correct dates
+- [ ] Week view shows events in time slots
+- [ ] Day view shows detailed time blocks
+- [ ] Navigate forward/backward with arrows
+- [ ] "Today" button returns to current date
 
----
+### 4.2 Event Creation
+- [ ] Click a time slot — create event modal opens with pre-filled date/time
+- [ ] Enter title, date, start/end time, location, description
+- [ ] Add attendees via member search picker
+- [ ] Create event — appears on calendar
+- [ ] Create all-day event
 
-## 27. Agent — Basic Chat
+### 4.3 Event Detail
+- [ ] Click an event — detail modal opens
+- [ ] Shows title, time, location, description, attendees
+- [ ] Delete event — removed from calendar
 
-1. Click **Agent** in the sidebar (or press G then A)
-2. **Check:** Empty state with "How can I help?" and suggestion chips
-3. Click any suggestion chip (e.g., "What tasks are in progress?")
-4. **Check:** Your message appears on the right
-5. **Check:** Thinking dots (three bouncing dots) appear immediately below your message
-6. **Check:** "Searching tasks..." status shows while the agent queries data
-7. **Check:** Response streams in word by word
-8. **Check:** Citation chips appear (e.g., "DEFT-7: Implement thread side panel")
-9. **Check:** Confidence indicator shows below (green "High confidence" if citations exist)
-10. **Check:** Follow-up suggestion chips appear
-11. **Check:** Token count and model name shown at bottom of response
-12. **Check:** Response has formatted text (headers, bold, bullets rendered as markdown — not raw)
+### 4.4 Google Calendar Sync
+- [ ] Connect Google Calendar from Settings > Integrations
+- [ ] Click "Sync" on calendar page — events pulled from Google
+- [ ] Synced events appear with Google Calendar badge
+- [ ] Events show attendees, hangout links from Google
+- [ ] Disconnect Google Calendar — synced events remain (read-only)
 
----
+### 4.5 Meeting Briefs
+- [ ] For upcoming meetings (next 15 min), an AI-generated brief appears
+- [ ] Brief includes context from recent messages, relevant tasks, attendee workload
+- [ ] Brief appears via real-time socket event
 
-## 28. Agent — Analytics
-
-1. Ask: **"How is Deft v1 progressing?"**
-2. **Check:** Agent calls `get_project_progress` tool. Shows completion %, task counts by status
-3. Ask: **"Who has the most work right now?"**
-4. **Check:** Agent calls `get_team_workload`. Shows task distribution per person
-5. Ask: **"How many tasks did we close this week?"**
-6. **Check:** Agent calls `get_workspace_stats`. Returns aggregate metrics
-
----
-
-## 29. Agent — Actions + Approval
-
-1. Ask: **"Create a task called 'Write unit tests for auth' in Deft v1, P1 priority"**
-2. **Check:** Approval card appears with task details (title, project, priority)
-3. Click **Approve**
-4. **Check:** Card turns green "approved and executed"
-5. **Check:** An **Undo** link appears (valid for 5 minutes)
-6. Click **Undo**
-7. **Check:** Card shows "undone"
-8. Navigate to Tasks — the task should NOT be there (it was undone)
+### 4.6 Dashboard Calendar Widget
+- [ ] Dashboard shows today's upcoming events
+- [ ] Events display correctly in the mini widget
 
 ---
 
-## 30. Agent — Reject Action
+## 5. Knowledge Wiki
 
-1. Ask: **"Post a message in #random saying 'hello from the agent'"**
-2. **Check:** Approval card appears for "Post message"
-3. Click **Reject**
-4. **Check:** Card shows strikethrough "rejected"
-5. Go to #random — no agent message should be there
+### 5.1 Wiki List View
+- [ ] Navigate to Knowledge page — shows "Knowledge Wiki" header
+- [ ] Search box filters pages by title/content
+- [ ] Type filter tabs: All, Concepts, Entities, Decisions, Resources, Procedures, Preferences, Facts
+- [ ] Each card shows: icon, title, type badge, summary, confidence bar, link count, last updated
+- [ ] Pagination works (prev/next buttons, page indicator)
 
----
+### 5.2 Wiki Page Detail
+- [ ] Click a page card — detail view opens
+- [ ] Shows: type badge, version number, confidence bar with percentage
+- [ ] Full markdown content displayed
+- [ ] "Linked Pages" section shows outbound links (clickable)
+- [ ] "Referenced By" section shows backlinks (clickable)
+- [ ] "Sources" section shows citations with excerpts and timestamps
+- [ ] "Back to Knowledge" button returns to list
 
-## 31. Agent — Stop Mid-Stream
+### 5.3 Wiki Page Navigation
+- [ ] Click a linked page — navigates to that page's detail view
+- [ ] Click a backlink — navigates to that page
+- [ ] Can navigate deep (page A -> page B -> page C)
+- [ ] Back button works at every level
 
-1. Ask a complex question: **"Give me a detailed summary of all tasks, their statuses, and who's working on what"**
-2. While the response is streaming, click the **red stop button**
-3. **Check:** Response stops streaming, "(stopped)" text appears
-4. **Check:** On next page load, the response does NOT continue from where it stopped
+### 5.4 Confidence Indicators
+- [ ] Green bar for confidence > 70%
+- [ ] Yellow bar for 50-70%
+- [ ] Red bar for < 50%
+- [ ] Percentage number matches bar fill
 
----
+### 5.5 Auto-Ingest from Chat
+- [ ] Send a message with a clear fact (e.g., "We decided to use Postgres for the new service")
+- [ ] Wait a few seconds for the classifier + memory-extract pipeline
+- [ ] Check Knowledge Wiki — new page should appear with the fact
+- [ ] Page should have a citation linking back to the source message
+- [ ] Send another related fact — existing page should be updated (not a duplicate)
 
-## 32. Agent — Memory
+### 5.6 Wiki Search
+- [ ] Search for a keyword — matching pages appear
+- [ ] Search with no results — empty state shown
+- [ ] Search combined with type filter works
 
-1. Ask: **"Remember that I prefer seeing tasks grouped by priority"**
-2. **Check:** Agent confirms it stored the preference
-3. Start a **new conversation** (click New conversation in sidebar)
-4. Ask: **"What do you remember about my preferences?"**
-5. **Check:** Agent recalls "prefers tasks grouped by priority" from the previous conversation
-
----
-
-## 33. Agent — Conversation Management
-
-1. **Check:** Left sidebar shows your conversation history
-2. Click on a previous conversation — it loads with full history
-3. Delete a conversation (click the X)
-4. **Check:** Conversation removed, redirected to empty state
-
----
-
-## 34. Agent — Formatted Responses
-
-1. Ask: **"List all P0 tasks with their status"**
-2. **Check:** Response renders markdown properly: bold text, bullet points, headers
-3. **Check:** No raw markdown syntax visible (no `**`, `##`, `-` as literal characters)
-4. Ask: **"Show me a summary of recent activity"**
-5. **Check:** Response has proper formatting, not plain text
-
----
-
-## 35. @Deft in Chat
-
-1. Go to **#engineering**
-2. In the composer, type **@**
-3. **Check:** Autocomplete dropdown appears showing "Deft" with an AI/bot badge
-4. Select it (or type @Deft manually)
-5. Complete the message: **"@Deft what tasks are overdue?"**
-6. Send it
-7. **Check:** Your message appears instantly
-8. Wait 5-15 seconds (background job processes)
-9. **Check:** A threaded reply appears from "Deft" with the answer
-10. **Check:** Thread indicator shows on your original message ("1 reply")
-11. Click the thread indicator
-12. **Check:** Thread panel auto-opens showing the agent's reply
+### 5.7 Empty State
+- [ ] New org with no wiki pages — empty state message shown
+- [ ] Message explains knowledge is auto-captured from conversations
 
 ---
 
-## 36. Task References in Chat
+## 6. AI Agent
 
-1. In **#engineering**, send: **"Let's discuss DEFT-7 and DEFT-10"**
-2. **Check:** Message sends normally
-3. Wait a few seconds for the background job
-4. Open task DEFT-7 detail panel in Tasks
-5. **Check:** A comment appears: "Discussed in #engineering: Let's discuss DEFT-7..."
+### 6.1 Agent Chat
+- [ ] Navigate to Agent page
+- [ ] See greeting and suggested prompts
+- [ ] Click a suggested prompt — sends it as a message
+- [ ] Type a custom question and send
+- [ ] Agent responds with streaming text
+- [ ] Response includes markdown formatting (headers, lists, bold)
 
----
+### 6.2 Agent Tool Use
+- [ ] Ask "What tasks are in progress?" — agent uses search_tasks tool
+- [ ] Ask "What did we decide about X?" — agent uses wiki_search tool
+- [ ] Ask about a specific wiki page — agent uses wiki_read tool
+- [ ] Agent responses include citations (source badges)
 
-## 37. Keyboard Shortcuts
+### 6.3 Agent Actions (Approval Flow)
+- [ ] Ask agent to create a task — approval card appears
+- [ ] Approve the action — task is created
+- [ ] Ask agent to create another task — reject it — task is NOT created
+- [ ] Undo a recently approved action (within 5 min window)
 
-1. Press **?** — shortcuts help panel opens. Close it.
-2. Press **G** then **D** — navigates to Dashboard
-3. Press **G** then **C** — navigates to Chat
-4. Press **G** then **T** — navigates to Tasks
-5. Press **G** then **A** — navigates to Agent
-6. Press **G** then **S** — navigates to Settings
-7. Go to Chat. Press **Shift+Esc** — all unread badges should clear
-8. Go to a channel with unreads. Press **Cmd+Shift+M** — that channel's unread badge clears
-9. Press **Cmd+K** — command palette opens. Search for a task. Click it.
-10. In the chat composer (empty), press **Up arrow** — enters edit mode on your last message
+### 6.4 Agent Wiki Integration
+- [ ] Ask "What do we know about [topic]?" — agent auto-loads relevant wiki context
+- [ ] Agent's system prompt includes "Relevant knowledge:" section
+- [ ] Agent references wiki pages in its response
 
----
+### 6.5 @agent in Chat
+- [ ] In a chat space, type `@agent` or `@deft` followed by a question
+- [ ] Agent reply appears as a message in the thread
+- [ ] Agent reply includes citations if tools were used
 
-## 38. Search (Cmd+K)
+### 6.6 Conversation Management
+- [ ] Multiple conversations listed in sidebar
+- [ ] Switch between conversations — history preserved
+- [ ] Delete a conversation — removed from list
+- [ ] Start a new conversation
 
-1. Press **Cmd+K** to open the command palette
-2. Type "auth" — should find tasks and messages mentioning auth
-3. **Check:** Task results show formatted status ("In Review" not "in_review")
-4. Click a task result from a different project than currently selected
-5. **Check:** You navigate to the correct project and the task detail opens
-
----
-
-## 39. Settings
-
-1. Go to **Settings** (gear icon or G then S)
-2. **Members tab:** All 5 members visible with roles (Maneek=owner, rest=member)
-3. **Agent tab:**
-   - Action log shows any actions you approved/rejected
-   - **Trust level selector:** Three options (Conservative/Standard/Autonomous). Click one to change.
-   - No stale "pending" entries older than 1 hour
-4. **Integrations tab:** Shows Google Calendar, GitHub, Slack, Gmail (all "Coming soon" unless configured)
-
----
-
-## 40. Light Mode
-
-1. Click the **sun/moon icon** in sidebar to switch to light mode
-2. **Check:** All surfaces switch to light backgrounds
-3. **Check:** No black-on-black or white-on-white text anywhere
-4. **Check:** Pinned messages bar, dropdowns, modals all have proper light backgrounds
-5. Navigate through Dashboard, Chat, Tasks, Agent, Settings
-6. **Check:** Everything is readable in light mode
-7. Switch back to dark mode
+### 6.7 Agent Settings
+- [ ] Navigate to Settings > Agent
+- [ ] Change trust level to Conservative — all actions require approval
+- [ ] Change to Standard — routine actions auto-execute
+- [ ] Change to Autonomous — most actions auto-execute
+- [ ] Action log shows history of all agent actions with status
 
 ---
 
-## 41. Queue Health
+## 7. Notes
 
-1. Open browser console, run:
-   ```javascript
-   fetch('http://localhost:3001/health/queue', {
-     headers: { Authorization: 'Bearer ' + localStorage.getItem('cairn-access-token') }
-   }).then(r => r.json()).then(console.log)
-   ```
-2. **Check:** Returns `{ pending: N, running: N, failed: N, completed: N }`
+### 7.1 Note Creation
+- [ ] Click "New note" — blank note appears
+- [ ] Title auto-focuses
+- [ ] Type a title — auto-saves after 500ms
 
----
+### 7.2 Rich Text Editor
+- [ ] Bold text (Ctrl+B)
+- [ ] Italic text (Ctrl+I)
+- [ ] Strikethrough
+- [ ] Code inline
+- [ ] Headings (H1, H2)
+- [ ] Bullet list
+- [ ] Numbered list
+- [ ] Blockquote
+- [ ] Divider
+- [ ] Links (clickable)
 
-## 42. Audit Trail
+### 7.3 Note Management
+- [ ] Auto-save indicator shows "Saving..." then "Saved"
+- [ ] Pin a note — moves to top of list
+- [ ] Unpin a note — returns to normal position
+- [ ] Change note icon via emoji picker
+- [ ] Delete a note — removed from list
+- [ ] Search notes by title/content
 
-1. After performing agent actions (approve/reject/undo), open browser console:
-   ```javascript
-   fetch('http://localhost:3001/api/audit?limit=10', {
-     headers: { Authorization: 'Bearer ' + localStorage.getItem('cairn-access-token') }
-   }).then(r => r.json()).then(console.log)
-   ```
-2. **Check:** Entries with actor_type, action, entity_type, before_state, after_state
-
----
-
-## 43. Multi-User Test
-
-1. Open an **incognito/private window**
-2. Login as **rahul@test.com / test1234**
-3. Go to #engineering, send a message: "Hey team, quick update on the API"
-4. Switch to Maneek's window (normal browser)
-5. **Check:** #engineering shows an unread badge (incremented by 1)
-6. Open #engineering
-7. **Check:** Rahul's message appears
-8. **Check:** Notification bell badge incremented
-9. Click the bell — notification shows "Rahul in #engineering"
+### 7.4 Note Display
+- [ ] Grid layout (3 columns on desktop)
+- [ ] Pinned section at top, recent below
+- [ ] Cards show: icon, title, preview (first 120 chars), last updated
 
 ---
 
-## 44. Edge Cases
+## 8. Dashboard
 
-1. **Long message:** Paste a 1000+ character message. Send it. Check it renders fully.
-2. **Rapid messages:** Send 5 messages quickly one after another. Check all 5 arrive in order.
-3. **Empty states:** Create a new channel, verify it shows an empty state (not a blank page).
-4. **Page refresh:** Refresh any page — state should persist (theme, sidebar collapse, current channel).
+### 8.1 Overview Cards
+- [ ] "Due today" shows correct task count
+- [ ] "Due this week" shows correct count
+- [ ] "Overdue" shows correct count with red indicator
+- [ ] "In progress" shows correct count
+- [ ] Clicking a card navigates to filtered task view
+
+### 8.2 Unread Spaces
+- [ ] Shows spaces with unread messages
+- [ ] Shows last message preview with author
+- [ ] Clicking navigates to that space
+
+### 8.3 Recent Activity
+- [ ] Shows task status changes, assignments, comments
+- [ ] Formatted as "[User] moved [Task] to [Status]"
+- [ ] Timestamps are relative ("2 hours ago")
+
+### 8.4 Project Overview
+- [ ] Shows all projects with progress bar (done/total ratio)
+- [ ] Assigned task count per project
+
+### 8.5 Calendar Widget
+- [ ] Shows today's upcoming events
+- [ ] Events display with time and title
+
+### 8.6 My Insights (Personal Analytics)
+- [ ] Activity summary (messages sent, tasks completed)
+- [ ] Expertise topics
+- [ ] Top collaborators
+- [ ] Work patterns
+
+### 8.7 Manager Features (if user is manager)
+- [ ] Team health cards show per-member status
+- [ ] One-on-one prep data available
+- [ ] Standup summary generated
 
 ---
 
-## Test Results Template
+## 9. Settings
 
-Copy this and fill in as you test:
+### 9.1 Profile
+- [ ] User name displayed
+- [ ] User email displayed
+- [ ] Avatar (initials or image) displayed
 
-```
-Test  1 (Login):              [ PASS / FAIL ] Notes: ___
-Test  2 (Sidebar):            [ PASS / FAIL ] Notes: ___
-Test  3 (Chat Basic):         [ PASS / FAIL ] Notes: ___
-Test  4 (Unread Divider):     [ PASS / FAIL ] Notes: ___
-Test  5 (Hover Toolbar):      [ PASS / FAIL ] Notes: ___
-Test  6 (Bookmarks):          [ PASS / FAIL ] Notes: ___
-Test  7 (Threads):            [ PASS / FAIL ] Notes: ___
-Test  8 (Notifications):      [ PASS / FAIL ] Notes: ___
-Test  9 (More Actions):       [ PASS / FAIL ] Notes: ___
-Test 10 (Task from Chat):     [ PASS / FAIL ] Notes: ___
-Test 11 (Catch Up):           [ PASS / FAIL ] Notes: ___
-Test 12 (DND):                [ PASS / FAIL ] Notes: ___
-Test 13 (Channel Rename):     [ PASS / FAIL ] Notes: ___
-Test 14 (Task Board):         [ PASS / FAIL ] Notes: ___
-Test 15 (Drag & Drop):        [ PASS / FAIL ] Notes: ___
-Test 16 (Create Task):        [ PASS / FAIL ] Notes: ___
-Test 17 (Task Detail):        [ PASS / FAIL ] Notes: ___
-Test 18 (Subtasks):           [ PASS / FAIL ] Notes: ___
-Test 19 (Dependencies):       [ PASS / FAIL ] Notes: ___
-Test 20 (Bulk Operations):    [ PASS / FAIL ] Notes: ___
-Test 21 (Due Date Badges):    [ PASS / FAIL ] Notes: ___
-Test 22 (Task Filters):       [ PASS / FAIL ] Notes: ___
-Test 23 (List View):          [ PASS / FAIL ] Notes: ___
-Test 24 (Dashboard):          [ PASS / FAIL ] Notes: ___
-Test 25 (My Insights):        [ PASS / FAIL ] Notes: ___
-Test 26 (Timezone):           [ PASS / FAIL ] Notes: ___
-Test 27 (Agent Basic):        [ PASS / FAIL ] Notes: ___
-Test 28 (Agent Analytics):    [ PASS / FAIL ] Notes: ___
-Test 29 (Agent Approve):      [ PASS / FAIL ] Notes: ___
-Test 30 (Agent Reject):       [ PASS / FAIL ] Notes: ___
-Test 31 (Agent Stop):         [ PASS / FAIL ] Notes: ___
-Test 32 (Agent Memory):       [ PASS / FAIL ] Notes: ___
-Test 33 (Agent Convos):       [ PASS / FAIL ] Notes: ___
-Test 34 (Formatted Responses):[ PASS / FAIL ] Notes: ___
-Test 35 (@Deft Chat):         [ PASS / FAIL ] Notes: ___
-Test 36 (Task Refs):          [ PASS / FAIL ] Notes: ___
-Test 37 (Shortcuts):          [ PASS / FAIL ] Notes: ___
-Test 38 (Search):             [ PASS / FAIL ] Notes: ___
-Test 39 (Settings):           [ PASS / FAIL ] Notes: ___
-Test 40 (Light Mode):         [ PASS / FAIL ] Notes: ___
-Test 41 (Queue Health):       [ PASS / FAIL ] Notes: ___
-Test 42 (Audit Trail):        [ PASS / FAIL ] Notes: ___
-Test 43 (Multi-User):         [ PASS / FAIL ] Notes: ___
-Test 44 (Edge Cases):         [ PASS / FAIL ] Notes: ___
-```
+### 9.2 Appearance
+- [ ] Toggle between Light and Dark themes
+- [ ] Theme persists across page refreshes
+- [ ] All pages render correctly in both themes
+
+### 9.3 Members
+- [ ] Member list shows all org members with roles
+- [ ] "Invite" button visible for admin/owner only
+- [ ] Invite a new member by email — invite sent (check console if no email configured)
+- [ ] Change a member's role via dropdown
+- [ ] Remove a member — confirmation shown, member deactivated
+- [ ] Cannot remove yourself
+- [ ] Cannot change owner role
+- [ ] Guest/member users cannot see invite/remove buttons
+
+### 9.4 Integrations
+- [ ] Google Calendar shows "Connect" or "Connected" status
+- [ ] GitHub shows "Connect" or "Connected" status
+- [ ] Slack shows "Coming soon" (disabled)
+- [ ] Gmail shows "Coming soon" (disabled)
+- [ ] Connect flow redirects to OAuth provider
+- [ ] Disconnect removes the connection
+
+### 9.5 Tags
+- [ ] Create a tag with name and color
+- [ ] Tag appears in list with entity count
+- [ ] Delete a tag — removed from list
+- [ ] Apply a tag to a task/message — count increments
+- [ ] View tagged entities — shows linked items
+
+### 9.6 Groups
+- [ ] Create a group with name and handle
+- [ ] Group appears in list
+- [ ] Handle auto-generated from name (lowercase, kebab-case)
+- [ ] Delete a group — removed from list
+- [ ] Group handle usable as @mention in chat
+
+---
+
+## 10. Notifications
+
+- [ ] Notification bell shows unread count badge
+- [ ] Click bell — notification panel opens
+- [ ] Notifications include: mentions, task assignments, task updates, thread replies
+- [ ] Click a notification — navigates to the source (message, task, etc.)
+- [ ] Mark single notification as read
+- [ ] "Mark all as read" clears all
+- [ ] Real-time: new notification appears without page refresh
+
+---
+
+## 11. Reminders
+
+- [ ] Navigate to Reminders page
+- [ ] "Upcoming" section shows future reminders sorted by time
+- [ ] "Past" section shows delivered reminders (grayed out)
+- [ ] Delete a reminder
+- [ ] Set a reminder from a chat message context menu
+- [ ] At the reminder time, notification is delivered
+- [ ] Empty state when no reminders exist
+
+---
+
+## 12. Command Palette & Keyboard Shortcuts
+
+- [ ] Press Cmd+K (Mac) / Ctrl+K (Windows) — command palette opens
+- [ ] Search for spaces, tasks, members
+- [ ] Quick actions: create task, create space, toggle theme
+- [ ] Press Escape to close
+- [ ] `c` — opens quick task create (when not in text input)
+- [ ] Keyboard navigation (arrow keys + Enter) works in dropdowns
+
+---
+
+## 13. Real-time & Network Resilience
+
+### 13.1 Socket Reconnection
+- [ ] Disconnect network briefly — "Reconnecting..." behavior expected
+- [ ] Reconnect network — data syncs automatically
+- [ ] Messages sent during disconnect are received after reconnect
+
+### 13.2 API Retry
+- [ ] If API call fails due to network error, it retries (up to 2 times)
+- [ ] 4xx errors do NOT retry (immediate failure)
+
+### 13.3 Concurrent Usage
+- [ ] Open app in two browser tabs as same user
+- [ ] Actions in one tab reflect in the other (messages, task updates, presence)
+- [ ] Open app as two different users — multi-tenant isolation verified
+
+---
+
+## 14. Background Workers
+
+### 14.1 Message Classification Pipeline
+- [ ] Send a message with a clear actionable item — task-extract job fires
+- [ ] Send a message mentioning being "blocked" — blocked-alert fires
+- [ ] Send a message with a memorable fact — memory-extract fires, wiki page created/updated
+
+### 14.2 Cron Jobs (verify via console logs or database)
+- [ ] Standup generation runs hourly
+- [ ] Nudge check runs hourly (overdue/stalled task reminders)
+- [ ] Meeting prep check runs every 15 minutes
+- [ ] Wiki lint runs daily (check wiki_ops_log table for lint entries)
+- [ ] Stale jobs (stuck in "running" > 5 min) are automatically recovered
+
+### 14.3 Wiki Lint Health Check
+- [ ] After wiki-lint runs, check `wiki_ops_log` for lint entries
+- [ ] Orphaned pages (no links) flagged
+- [ ] Stale pages (90+ days, low confidence) have confidence reduced
+- [ ] Pages with confidence < 0.3 are soft-deleted
+
+---
+
+## 15. Integrations
+
+### 15.1 Google Calendar
+- [ ] Connect via OAuth in Settings > Integrations
+- [ ] Trigger sync — events pulled (14 days past, 30 days future)
+- [ ] Events appear in Calendar page
+- [ ] Meeting briefs generated for upcoming meetings
+- [ ] Token refresh works silently when access token expires
+- [ ] Disconnect — connection removed
+
+### 15.2 GitHub
+- [ ] Connect via OAuth in Settings > Integrations
+- [ ] GitHub activity appears in Dashboard
+- [ ] PRs and issues queryable by agent
+- [ ] Disconnect — connection removed
+
+---
+
+## 16. Multi-Tenant Isolation
+
+- [ ] Create two separate accounts/orgs
+- [ ] Data from Org A is never visible in Org B
+- [ ] Spaces, tasks, messages, wiki pages all scoped by org_id
+- [ ] API calls with Org A token cannot access Org B data
+
+---
+
+## 17. Theme & Responsive Design
+
+### 17.1 Dark Mode
+- [ ] All pages render correctly in dark mode
+- [ ] No white flashes on navigation
+- [ ] All text is readable (proper contrast)
+- [ ] Modals, dropdowns, tooltips all themed
+
+### 17.2 Light Mode
+- [ ] All pages render correctly in light mode
+- [ ] Same checks as dark mode
+
+### 17.3 Mobile / Responsive
+- [ ] Sidebar collapses on small screens
+- [ ] Task board scrolls horizontally on mobile
+- [ ] Chat input stays at bottom of screen
+- [ ] Modals fit within viewport
+
+---
+
+## 18. Edge Cases & Error Handling
+
+- [ ] Submit forms with empty required fields — validation errors shown
+- [ ] API returns 500 — user sees error message (not blank screen)
+- [ ] Navigate to non-existent page — 404 page shown
+- [ ] Very long text inputs — handled gracefully (truncation or scroll)
+- [ ] Rapid clicking "Create" button — no duplicate entities created
+- [ ] Delete an entity that's referenced elsewhere — no crash (soft delete)
+- [ ] Browser back/forward navigation works correctly
+- [ ] Page refresh preserves current state (URL-driven routing)
+
+---
+
+## 19. Performance Checks
+
+- [ ] Dashboard loads in < 3 seconds
+- [ ] Chat messages load in < 2 seconds per space
+- [ ] Task board renders 100+ tasks without lag
+- [ ] Knowledge page with 50+ wiki pages renders smoothly
+- [ ] Search results return in < 1 second
+- [ ] No memory leaks after extended use (30+ minutes)
+
+---
+
+## 20. Trusted Tester Flow — Phases 0-6 Smoke
+
+Fast end-to-end walk for verifying Phases 0-6 of the task-management overhaul. Takes ~15 minutes once you have a seeded org. Do this on a fresh login as an admin/owner.
+
+### 20.1 Create a project with a skill
+- [ ] Navigate to `/tasks` → "New project" → wizard opens
+- [ ] Step 1: name + prefix (e.g. "Smoke Test", prefix `SMOK`)
+- [ ] Step 2: skill picker — verify all 9 bundled skills render. Three should carry the "Project" badge (engineering, marketing-campaign, sales-pipeline). Six should carry the "Agent" badge (capability-pack skills)
+- [ ] Pick `engineering` → Create
+- [ ] Board renders with columns `backlog / todo / in_progress / in_review / done / cancelled` and priority labels `p0/p1/p2/p3`
+- [ ] Go back to project settings → Skills tab → verify `engineering` is attached
+
+### 20.2 Attach a second skill (multi-skill, first-attached-wins)
+- [ ] Add the `github` capability-pack skill on top — no column re-order, since project_config only lives on `engineering`
+- [ ] Swap order: drag `github` above `engineering` → page still renders (github has empty project_config so resolver falls through)
+- [ ] Swap back
+
+### 20.3 Assign an agent employee
+- [ ] Create or reuse `Alex PM`. Attach him to the project (Project settings → Team → Add Alex PM)
+- [ ] Verify his drawer now shows the project in context
+
+### 20.4 Add a task + basic fields
+- [ ] Press `C` → quick-create "Ship SMOK smoke" with priority `p1`, assignee self, due date tomorrow
+- [ ] Drag from Backlog → In Progress — activity log records the transition
+
+### 20.5 React to the task (Task 6.3)
+- [ ] Open the task detail → click the emoji button at the top of the task card → add `🚀`
+- [ ] Reaction pill shows `🚀 1` with your name on hover
+- [ ] React again with `🚀` — pill removed (toggle semantics)
+- [ ] React with `🔥` and `👀` — both appear
+
+### 20.6 @mention in comments + description (Task 6.4)
+- [ ] Open task description → type `@` → autocomplete dropdown renders org members
+- [ ] Pick a teammate → mention chip inserted
+- [ ] Save → teammate receives a notification (check their bell or psql `SELECT * FROM notifications ORDER BY created_at DESC LIMIT 3`)
+- [ ] Same flow in Comments tab
+
+### 20.7 Activity diff view (Task 6.2)
+- [ ] Change task title from "Ship SMOK smoke" to "Ship SMOK smoke v2"
+- [ ] Change priority from `p1` → `p0`
+- [ ] Open Activity tab — rows render as `title: "Ship SMOK smoke" → "Ship SMOK smoke v2"` and `priority: p1 → p0`, not flat "changed title"
+- [ ] Bulk-move several tasks in one action (from list view select + bulk edit) — activity groups the bulk change
+
+### 20.8 Recurrence (Task 4.12)
+- [ ] Quick-create a task "Weekly report"
+- [ ] Open detail → enable `weekly` recurrence
+- [ ] Complete the task → new copy auto-generated with `recurrence_source_id` pointing to the original (check psql)
+- [ ] Clone a recurring task manually → the clone should NOT inherit the recurrence pattern (the clone-gap fix)
+
+### 20.9 Workflow executor (Task 5.7)
+- [ ] Settings → Workflows → New rule: trigger `task.status_changed → in_review`, action `add_comment` body `"auto-review triggered"`
+- [ ] Save → enable
+- [ ] Move any task into `in_review` → a new comment appears authored by the system user with the configured body
+- [ ] Check the rule's run history — one successful row
+
+### 20.10 Live agent progress (Task 3.10)
+- [ ] Ask Defty to "Update task SMOK-1 status to done and assign to @teammate"
+- [ ] Open the task detail in a second tab while the plan executes
+- [ ] Tool-call receipts stream into the activity area: `update_task_status` → `assign_task` each with a tick once complete
+
+### 20.11 Proactive agent comment (Task 3.11)
+- [ ] Set a task's due date to yesterday, leave it in `in_progress`
+- [ ] Manually trigger nudge-check (`pnpm tsx apps/api/src/scripts/check-queue.ts run nudge-check`) or wait for the hourly cron
+- [ ] Within a minute, a proactive comment authored by the org's default agent shadow user appears on the task
+- [ ] Trigger again immediately — no duplicate comment (7d dedup)
+
+### 20.12 Inline suggestion card (Task 3.12)
+- [ ] In `#general` send a message like "we should follow up with Acme on the contract tomorrow"
+- [ ] Within a few seconds an inline suggestion card appears under the message offering to create a task
+- [ ] Click Create — task lands in the default project, detail panel opens with the extracted fields pre-filled
+- [ ] Dismiss card on a different actionable message — no task created
+
+### 20.13 PR → Done (Task 5.6) — only if GitHub is connected
+- [ ] Create a test PR with `SMOK-1` in the title
+- [ ] Merge it
+- [ ] Within one GitHub sync poll interval, `SMOK-1` moves to `done` with an attribution comment linking the PR
+- [ ] Tasks already in `done` or `cancelled` are never bumped
+
+### 20.14 Project archive + soft-delete (Task 5.8)
+- [ ] Project settings → Archive → project vanishes from active lists but tasks remain queryable
+- [ ] Unarchive → reappears
+- [ ] Project settings → Delete → ConfirmDangerous modal → soft-delete
+- [ ] Navigate to Settings → Recently deleted → within 7 days, "Restore" is available
+- [ ] Restore → project reappears with all tasks intact
+
+### 20.15 Security sanity (Task 0.1)
+- [ ] Log out. Call `curl -i http://localhost:3001/api/tasks/<id>/watchers` with no auth → 401
+- [ ] Same for `/assignees`, `/assignees/:userId` (POST + DELETE) → all 401
+- [ ] With a different org's token, try to watch a task in Org A → 404 (not found in caller's org)
+
+### 20.16 Dashboard "My Work" (Task 0.4)
+- [ ] Go to `/dashboard`
+- [ ] "My Work" card lists only tasks where you are assignee, split into To Do / In Progress / In Review
+- [ ] Assign a teammate a task in a status you watch — it does NOT appear in your "My Work" card
+
+---
+
+## 21. Persona Flow — Marketing (marketing-campaign skill)
+
+Validates that non-technical skill project_config actually drives the UI.
+
+### 21.1 Create a marketing project
+- [ ] New project "Q2 Campaigns" with the `marketing-campaign` skill attached
+- [ ] Board renders with named priority pills `High / Medium / Low` (NOT `p0/p1/p2/p3`)
+- [ ] Default view is Calendar (not Kanban)
+- [ ] Custom fields include campaign-specific entries (channel, launch_date, budget, etc.)
+
+### 21.2 Create a campaign task
+- [ ] New task "Launch spring newsletter" → calendar view places it on its launch_date
+- [ ] Priority picker shows `High / Medium / Low`
+- [ ] Custom fields panel lets you set channel=email, budget=5000
+- [ ] Switch to list view → custom fields render as sortable columns
+
+### 21.3 Task template
+- [ ] Verify the skill's bundled task template is available in the quick-create dropdown (e.g. "New campaign brief") and prefills the custom fields
+
+### 21.4 Agent familiarity
+- [ ] Ask Defty "what campaigns are High priority due this month?" — should use `search_tasks` scoped to the marketing project and return a list with the correct named priorities
+
+---
+
+## 22. Persona Flow — Sales (sales-pipeline skill)
+
+### 22.1 Create a sales project
+- [ ] New project "Pipeline FY26" with the `sales-pipeline` skill attached
+- [ ] Board renders with temperature priorities `Hot / Warm / Cold`
+- [ ] Default view is Pipeline (pipeline-style board, not Kanban)
+- [ ] Custom fields include deal-specific entries (stage, ACV, probability, close_date, account)
+
+### 22.2 Create a deal
+- [ ] New task "Acme — Enterprise renewal" → stage=Proposal, ACV=50000, probability=60
+- [ ] Drag across pipeline columns — stage updates inline and activity log records the transition with diff
+- [ ] Priority Hot → Warm works
+
+### 22.3 Reporting
+- [ ] Ask Defty "what's in Proposal stage with ACV over $25k?" — should return matching deals using `search_tasks` + custom field filter
+
+### 22.4 Multi-skill for a hybrid team
+- [ ] Attach both `sales-pipeline` and `marketing-campaign` to a single project — verify the first-attached-wins resolver: the project takes its UI from whichever skill sits at position 0, and reordering in project settings immediately flips the board rendering
+
+---
+
+## Playwright E2E Test Results (2026-04-16)
+
+Baseline Playwright walkthrough covering core surfaces. Use as a regression baseline for future test runs.
+
+### Test Environment
+- Branch: `feat/phase2-4-mcp-agents-plans`
+- Migrations applied: 0001-0044
+- Seeds: 9 bundled skills, 1 agent employee (Alex PM)
+- Test user: maneek@test.com (owner role)
+
+### Surface Coverage
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| Dashboard (10+ widgets) | PASS | All bento-grid cards render |
+| Task Board (6 columns) | PASS | Cancelled column renders collapsed |
+| Task List view | PASS | Sortable columns, inline status edit |
+| Calendar view | PASS | Tasks on correct due dates |
+| Pipeline view | PASS | Fixed: was showing "No deals" instead of "No tasks" |
+| Task Detail — Description tab | PASS | TipTap editor renders and saves |
+| Task Detail — Subtasks tab | PASS | |
+| Task Detail — Dependencies tab | PASS | |
+| Task Detail — Comments tab | PASS | |
+| Task Detail — Activity tab | PASS | Diff view renders old->new |
+| Task Reactions bar | PASS | Emoji toggle works |
+| Recurrence dropdown | PASS | None/Daily/Weekly/Biweekly/Monthly |
+| Priority labels | PASS | P1 -> "High" mapping correct |
+| Status labels | PASS | "To Do" (not "Todo") |
+| Filter bar | PASS | Assignee, Priority, Status, Labels, Project, Due date, Views |
+| Skills library (3 tabs) | PASS | Bundled 9 / Marketplace 0 / Your org 0 |
+| Skills cards (actions) | PASS | View/Install/Attach/Fork + context-bloat indicator |
+| Agent Employees list | PASS | Alex PM visible after migration fix |
+| Create Agent wizard (5 steps) | PASS | Skills picker shows all 9 bundled skills |
+| Project selector | PASS | Dropdown works across views |
+| Skills page breadcrumb | PASS | Fixed: was "Dashboard", now "Skills" |
+
+### Bugs Found (6 total — 6 fixed, 0 blocking)
+
+| # | Bug | Severity | Fix |
+|---|-----|----------|-----|
+| 1 | `/api/agent-employees` 500 — 20 unapplied migrations (0025-0044) | Critical | Applied all migrations + seeded 9 bundled skills |
+| 2 | Skills wizard "No skills available" — frontend expected `{skills:[...]}` wrapper, API returns raw array | High | `fd2cb3f` |
+| 3 | Pipeline view "No deals" copy in Engineering projects | Medium | `73946cf` |
+| 4 | Skills page breadcrumb said "Dashboard" | Low | `73946cf` |
+| 5 | Skills wizard fetch error not caught | Low | `73946cf` |
+| 6 | Agent wizard Step 3 (Skills) overflows viewport — Back/Next buttons pushed off-screen with 9 skills | High | `1639dd7` — added `max-h-[45vh] overflow-y-auto` scroll container |
+
+### Known Remaining Issues (not fixed — document for future sprints)
+
+1. **Postgres status enum** — column uses enum with 6 Engineering values; Marketing/Sales statuses will fail at DB layer until changed to text.
+2. **`tasks.completed_at` column missing** — people-graph uses `updated_at` fallback.
+3. **Chat task-reference pills** don't respect `hide_prefix_ids` (would need per-message task lookup).
+4. **Notification panel rows** can't render `variant="notification"` TaskCard (no embedded Task payload).
+5. **Board-card reactions** only show when task data is pre-hydrated (list endpoints don't hydrate reactions).
+6. **Drizzle `_journal.json`** stale since migration 0017 — prod deploy must apply 0025-0044 manually.
+7. **Sidebar wiring** for archived projects not implemented (backend ready, no UI entry point).
+
+---
+
+## Sign-off
+
+| Area | Tester | Date | Pass/Fail | Notes |
+|------|--------|------|-----------|-------|
+| Auth | | | | |
+| Chat | | | | |
+| Tasks | | | | |
+| Calendar | | | | |
+| Knowledge Wiki | | | | |
+| Agent | | | | |
+| Notes | | | | |
+| Dashboard | | | | |
+| Settings | | | | |
+| Notifications | | | | |
+| Reminders | | | | |
+| Real-time | | | | |
+| Workers | | | | |
+| Integrations | | | | |
+| Multi-tenant | | | | |
+| Theme/Responsive | | | | |
+| Edge Cases | | | | |
+| Performance | | | | |
+| Trusted Tester (Phases 0-6) | | | | |
+| Marketing persona | | | | |
+| Sales persona | | | | |
+
+## Security & Access Control Testing
+
+### XSS Prevention
+- [ ] Post a chat message containing `<img src=x onerror="alert('xss')">` — should render as escaped text, not execute
+- [ ] Create a task comment with `<script>alert(1)</script>` — should render as text
+- [ ] Edit a daily note with HTML tags in content — verify they are sanitized on version history view
+- [ ] Check dashboard standup summary renders safely (no raw HTML execution)
+
+### IDOR — Unauthorized Access
+- [ ] Attempt DELETE /api/workflows/:id with an ID from another org — should return 404, workflow runs should NOT be deleted
+- [ ] Attempt DELETE /api/agent/conversations/:id with another user's conversation ID — should return success but delete nothing
+- [ ] Attempt DELETE /api/tasks/:id/wiki-links/:citationId with a task from another org — should return 404
+
+### Space Membership Enforcement
+- [ ] As a non-member, attempt GET /api/spaces/:id/members on a private space — should return 403
+- [ ] As a non-member, attempt to read messages from a private space — should return 403
+- [ ] As a non-member, attempt to join a space via WebSocket `space:join` — should silently fail (no messages received)
+- [ ] As a non-member, attempt to pin a message in another space — should return 403
+- [ ] As a non-member, attempt POST /api/spaces/:id/members to add yourself — should return 403
+
+### Upload Safety
+- [ ] Upload a file with name `../../etc/passwd` — filename should be sanitized to safe characters
+- [ ] Upload a file with special characters in name — should be stored with sanitized name
+- [ ] Download a file — Content-Disposition should be `attachment`, not `inline`
+
+### Daily Notes Concurrency
+- [ ] Open same note in two browser tabs, edit both simultaneously — second save should return 409 Conflict
+
+## UI Regression Tests
+
+### Sidebar Three-Dot Menu
+- [ ] Click the three-dot (⋯) menu in the sidebar bottom — menu should open
+- [ ] Click "Log out" — should log out (not close menu without action)
+- [ ] Click "Settings" — should navigate to /settings
+- [ ] Click "Set status" — should open status modal
+- [ ] Click "Dark mode" / "Light mode" — should toggle theme
+- [ ] Hover over menu items — should show hover feedback
+
+### Settings Page Scroll
+- [ ] Navigate to /settings/integrations — page should scroll if content overflows
+- [ ] Navigate to /settings/agent — page should scroll
+- [ ] Navigate to /settings/members — page should scroll
+- [ ] Navigate to /settings/agent-employees — page should scroll
+- [ ] Navigate to /settings/agent-employees/create — page should scroll (especially Step 3 skills list)
+- [ ] Navigate to /settings/api-access — page should scroll
+- [ ] Navigate to /settings/groups — page should scroll

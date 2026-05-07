@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
+import { statusLabel } from '@/lib/task-status-labels';
 
 type TaskResult = {
   id: string;
@@ -12,13 +13,8 @@ type TaskResult = {
   project_prefix: string;
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  backlog: 'Backlog', todo: 'To Do', in_progress: 'In Progress',
-  in_review: 'In Review', done: 'Done', cancelled: 'Cancelled',
-};
-
 function formatStatus(status: string): string {
-  return STATUS_LABELS[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return statusLabel(status);
 }
 
 const PRIORITY_COLORS: Record<string, string> = {

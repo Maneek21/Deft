@@ -63,8 +63,7 @@ async function seed() {
   await db.delete(schema.savedViews);
   await db.delete(schema.invites);
   await db.delete(schema.agentActions);
-  await db.delete(schema.agentMessages);
-  await db.delete(schema.agentConversations);
+  // agent_messages and agent_conversations dropped in migration 0065 (Phase 2 unification)
   await db.delete(schema.triggers);
   await db.delete(schema.skills);
   await db.delete(schema.tools);

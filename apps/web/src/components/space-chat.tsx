@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -26,10 +28,14 @@ import {
   Bookmark,
   Mic,
   ChevronDown,
+  ChevronRight,
   Bell,
   BellOff,
+  MailOpen,
+  Forward,
 } from 'lucide-react';
 import { formatMessageTime, formatDayLabel, isSameDay, formatTimeWithSenderZone } from '@/lib/time';
+import { TabStrip } from './tab-strip';
 import { EmojiPicker } from './emoji-picker';
 import { FileDropZone, useFileUpload, UploadProgress } from './file-upload';
 import { Lightbox } from './lightbox';
@@ -37,13 +43,21 @@ import { EmptyState } from './empty-state';
 import { RichComposer } from './rich-composer';
 import { SpaceMembersPanel } from './space-members-panel';
 import { TaskQuickCreate } from './task-quick-create';
+import { TaskSuggestionCard } from './task-suggestion-card';
 import { PinnedBar } from './pinned-messages';
 import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
 import { ClipCard } from './clip-card';
+import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
+import { AgentActionCard, type AgentAction } from './agent-action-card';
+import useSWR, { mutate as swrMutate } from 'swr';
 import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
+import ConfirmDialog from './confirm-dialog';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Link from '@tiptap/extension-link';
 
 type Reaction = {
   emoji: string;
@@ -157,7 +171,12 @@ function renderSimpleMarkdown(text: string): string {
 }
 
 function inlineFormat(text: string): string {
-  return text
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return escaped
     .replace(/`([^`]+)`/g, '<code style="background:var(--surface-container-highest);color:var(--tertiary);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
@@ -270,6 +289,43 @@ function renderFormattedText(text: string, keyPrefix: string): React.ReactNode[]
 
 /** Render inline formatting: bold, italic, strikethrough, inline code */
 function renderInlineFormatting(text: string, keyPrefix: string): React.ReactNode[] {
+  // Pre-pass: split on markdown links [text](url) first, before any other formatting
+  const linkPattern = /(\[[^\]]+\]\([^)]+\))/g;
+  const linkSegments = text.split(linkPattern);
+  if (linkSegments.length > 1) {
+    // There are markdown links — process each segment
+    const result: React.ReactNode[] = [];
+    linkSegments.forEach((seg, si) => {
+      const linkMatch = seg.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch) {
+        const label = linkMatch[1]!;
+        const href = linkMatch[2]!;
+        // Sanitize: only allow http, https, mailto
+        const safe = /^(https?:\/\/|mailto:)/i.test(href);
+        if (safe) {
+          result.push(
+            <a
+              key={`${keyPrefix}-lnk-${si}`}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+              style={{ color: 'var(--accent)' }}
+            >
+              {label}
+            </a>
+          );
+        } else {
+          result.push(<span key={`${keyPrefix}-lnk-${si}`}>{seg}</span>);
+        }
+      } else if (seg) {
+        // Recurse on plain segments so bold/italic/code still work
+        result.push(...renderInlineFormatting(seg, `${keyPrefix}-ls-${si}`));
+      }
+    });
+    return result;
+  }
+
   // Split by inline code first (backticks)
   const codeParts = text.split(/(`[^`]+`)/g);
   const result: React.ReactNode[] = [];
@@ -319,6 +375,7 @@ function renderInlineFormatting(text: string, keyPrefix: string): React.ReactNod
 }
 
 const FILE_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
 /** Parse [[file:...]] markers from content and separate them */
 function parseFileMarkers(content: string): { text: string; files: FileAttachment[] } {
@@ -369,7 +426,7 @@ function renderContent(content: string) {
       /@(here|all|channel)\b/g,
       '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
     );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: processed }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(processed) }} />;
   }
 
   // Plain text with markdown (agent replies, seed data, non-TipTap messages)
@@ -395,7 +452,7 @@ function renderContent(content: string) {
       /@(here|all|channel)\b/g,
       '<span style="background:rgba(234,179,8,0.2);color:var(--accent);font-weight:600;padding:1px 4px;border-radius:3px">@$1</span>'
     );
-    return <span className="message-content" dangerouslySetInnerHTML={{ __html: html }} />;
+    return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
   }
 
   const parts = text.split(/(<@[^>]+>|#[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
@@ -486,10 +543,13 @@ export function SpaceChat({
   const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
   const [menuDirection, setMenuDirection] = useState<'down' | 'up'>('down');
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [forwardMsgId, setForwardMsgId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
   const [linkPreviews, setLinkPreviews] = useState<Map<string, LinkPreview[]>>(new Map());
   const [taskSuggestions, setTaskSuggestions] = useState<Map<string, any>>(new Map());
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(new Set());
   const [renamingSpace, setRenamingSpace] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -502,7 +562,7 @@ export function SpaceChat({
   const [reminderMenuId, setReminderMenuId] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; messageId: string } | null>(null);
+  const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; description: string; messageId: string } | null>(null);
   const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   const [recapSummary, setRecapSummary] = useState<string | null>(null);
   const [recapLoading, setRecapLoading] = useState(false);
@@ -516,6 +576,28 @@ export function SpaceChat({
   const [profileCard, setProfileCard] = useState<{ userId: string; rect: { top: number; left: number; bottom: number } } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
+
+  // P4-4 — pending agent_actions keyed by message_id for this space.
+  // Polled every 5s so inline approval cards appear promptly.
+  const pendingBySpaceKey = spaceId
+    ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
+    : null;
+
+  const { data: pendingByMessage } = useSWR(
+    pendingBySpaceKey,
+    async (url: string) => {
+      const res = await api.get(url);
+      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      const list: Array<AgentAction & { message_id: string }> = await res.json();
+      const map: Record<string, AgentAction[]> = {};
+      for (const a of list) {
+        if (!a.message_id) continue;
+        (map[a.message_id] ??= []).push(a);
+      }
+      return map;
+    },
+    { refreshInterval: 5000, fallbackData: {} },
+  );
 
   // Load user's saved/bookmarked message IDs for this space
   useEffect(() => {
@@ -546,6 +628,96 @@ export function SpaceChat({
   useEffect(() => {
     if (cmdToast) { const t = setTimeout(() => setCmdToast(null), 3000); return () => clearTimeout(t); }
   }, [cmdToast]);
+
+  // Load dismissed task-suggestion message IDs for this space from localStorage
+  const dismissedSuggestionsKey = `chat:dismissed-suggestions:${spaceId}`;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(dismissedSuggestionsKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setDismissedSuggestions(new Set(Array.isArray(parsed) ? parsed : []));
+      } else {
+        setDismissedSuggestions(new Set());
+      }
+    } catch {
+      setDismissedSuggestions(new Set());
+    }
+    // Also reset any in-memory suggestions when switching spaces
+    setTaskSuggestions(new Map());
+  }, [dismissedSuggestionsKey]);
+
+  const persistDismissedSuggestion = useCallback((messageId: string) => {
+    setDismissedSuggestions((prev) => {
+      if (prev.has(messageId)) return prev;
+      const next = new Set(prev);
+      next.add(messageId);
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(dismissedSuggestionsKey, JSON.stringify(Array.from(next)));
+        }
+      } catch {
+        /* ignore localStorage quota errors */
+      }
+      return next;
+    });
+  }, [dismissedSuggestionsKey]);
+
+  const removeTaskSuggestion = useCallback((messageId: string) => {
+    setTaskSuggestions((prev) => {
+      if (!prev.has(messageId)) return prev;
+      const next = new Map(prev);
+      next.delete(messageId);
+      return next;
+    });
+  }, []);
+
+  const handleCreateTaskSuggestion = useCallback(async (messageId: string) => {
+    const s = taskSuggestions.get(messageId);
+    if (!s) return;
+    try {
+      const res = await api.post(`/api/projects/${s.project_id}/tasks`, {
+        title: s.title,
+        description: s.description || '',
+        priority: s.priority || 'p2',
+        source_message_id: messageId,
+      });
+      if (!res.ok) throw new Error('Failed to create task');
+      removeTaskSuggestion(messageId);
+      persistDismissedSuggestion(messageId);
+      setCmdToast(`Task "${s.title}" created`);
+    } catch (err) {
+      console.error('Failed to create task from suggestion:', err);
+      setCmdToast('Failed to create task');
+    }
+  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
+
+  const handleEditTaskSuggestion = useCallback((messageId: string) => {
+    const s = taskSuggestions.get(messageId);
+    if (!s) return;
+    if (s.project_id) {
+      setDefaultProjectId(s.project_id);
+    }
+    setCreateTaskMsg({
+      title: s.title || '',
+      description: s.description || '',
+      messageId,
+    });
+    removeTaskSuggestion(messageId);
+    persistDismissedSuggestion(messageId);
+  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
+
+  const handleDismissTaskSuggestion = useCallback((messageId: string, notificationId?: string | null) => {
+    if (notificationId) {
+      // Best-effort dismiss on server if a notification id is attached to the suggestion
+      api.patch(`/api/notifications/${notificationId}`, { dismissed: true }).catch(() => {
+        /* ignore — the local dismiss below is the source of truth for UX */
+      });
+    }
+    removeTaskSuggestion(messageId);
+    persistDismissedSuggestion(messageId);
+  }, [removeTaskSuggestion, persistDismissedSuggestion]);
 
   // Sync mute status from spaces list
   useEffect(() => {
@@ -756,13 +928,26 @@ export function SpaceChat({
 
     // Agent task suggestion listener
     const onTaskSuggestion = (data: { messageId: string; spaceId: string; suggestion: any }) => {
-      if (data.spaceId === spaceId) {
-        setTaskSuggestions((prev) => {
-          const next = new Map(prev);
-          next.set(data.messageId, data.suggestion);
-          return next;
-        });
+      if (data.spaceId !== spaceId) return;
+      // Re-check dismissed state from storage (state may be stale inside the closure)
+      let dismissed = false;
+      try {
+        if (typeof window !== 'undefined') {
+          const raw = window.localStorage.getItem(`chat:dismissed-suggestions:${spaceId}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.includes(data.messageId)) dismissed = true;
+          }
+        }
+      } catch {
+        /* ignore */
       }
+      if (dismissed) return;
+      setTaskSuggestions((prev) => {
+        const next = new Map(prev);
+        next.set(data.messageId, data.suggestion);
+        return next;
+      });
     };
     socket.on('agent:task_suggestion', onTaskSuggestion);
 
@@ -784,8 +969,16 @@ export function SpaceChat({
     };
   }, [spaceId, user?.id, scrollToBottom]);
 
+  const serializeMentions = (html: string) => html.replace(
+    /<span[^>]*data-mention-uuid="([^"]+)"[^>]*data-mention-name="([^"]+)"[^>]*>[^<]*<\/span>/g,
+    '<@$1|$2>'
+  ).replace(
+    /<span[^>]*data-mention-name="([^"]+)"[^>]*data-mention-uuid="([^"]+)"[^>]*>[^<]*<\/span>/g,
+    '<@$2|$1>'
+  );
+
   const handleScheduleSend = async (scheduledFor: string, html: string, text: string) => {
-    let content = html;
+    let content = serializeMentions(html);
     // Embed file references as markers in the content
     if (pendingFiles.length > 0) {
       const fileLines = pendingFiles.map(
@@ -802,7 +995,7 @@ export function SpaceChat({
   };
 
   const handleRichSend = async (html: string, text: string) => {
-    let content = html;
+    let content = serializeMentions(html);
     // Prepend quoted message if present
     if (quotedMessage) {
       const quoteHtml = `<blockquote style="border-left:3px solid var(--primary-container);padding-left:12px;margin:0 0 8px 0;color:var(--on-surface-variant)"><strong>${quotedMessage.userName}</strong><br/>${quotedMessage.content}</blockquote>`;
@@ -831,7 +1024,7 @@ export function SpaceChat({
     const lastMsg = myMessages[myMessages.length - 1];
     if (lastMsg) {
       setEditingId(lastMsg.id);
-      setEditContent(lastMsg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+      setEditContent(lastMsg.content);
       // Scroll the message into view so the edit box is visible
       setTimeout(() => {
         const el = document.querySelector(`[data-message-id="${lastMsg.id}"]`);
@@ -842,15 +1035,15 @@ export function SpaceChat({
 
   const handleEdit = async (id: string) => {
     if (!editContent.trim()) return;
-    // Wrap plain text in <p> tags so TipTap-rendered content stays consistent
-    const isHtml = editContent.startsWith('<') && /<\/?[a-z][\s>]/i.test(editContent);
-    const contentToSave = isHtml ? editContent : `<p>${editContent.replace(/\n/g, '</p><p>')}</p>`;
-    await api.patch(`/api/messages/${id}`, { content: contentToSave });
+    await api.patch(`/api/messages/${id}`, { content: editContent });
     setEditingId(null);
     setMoreMenuId(null);
   };
 
   const handleDelete = async (id: string) => {
+    setMessages((prev) => prev.map((message) => (
+      message.id === id ? { ...message, is_deleted: true } : message
+    )));
     await api.delete(`/api/messages/${id}`);
     setMoreMenuId(null);
   };
@@ -916,7 +1109,7 @@ export function SpaceChat({
           style={{ borderColor: 'var(--border-default, var(--outline-variant))' }}
         >
           {/* Row 1: channel name + topic + actions */}
-          <div className="h-[48px] flex items-center gap-2 overflow-x-auto">
+          <TabStrip className="h-[48px] items-center relative">
             {!isDm && <Hash size={15} strokeWidth={1.5} style={{ color: 'var(--on-surface-variant)' }} />}
             {renamingSpace ? (
               <input
@@ -965,7 +1158,7 @@ export function SpaceChat({
 
             {/* Pin count */}
             {pinCount > 0 && (
-              <button className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px]"
+              <button className="hidden md:flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px]"
                 style={{ color: 'var(--on-surface-variant)' }}
                 title={`${pinCount} pinned messages`}>
                 <Pin size={12} strokeWidth={1.5} />
@@ -976,7 +1169,7 @@ export function SpaceChat({
             {/* Member count */}
             <button
               onClick={() => setShowMembers(true)}
-              className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px] hover:opacity-70"
+              className="hidden md:flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px] hover:opacity-70"
               style={{ color: 'var(--on-surface-variant)' }}
               title="View members"
             >
@@ -991,7 +1184,7 @@ export function SpaceChat({
                 setIsMuted(newMuted);
                 await api.patch(`/api/spaces/${spaceId}/mute`, { muted: newMuted });
               }}
-              className="p-1.5 rounded-md hover:opacity-70"
+              className="hidden md:flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
               style={{ color: isMuted ? 'var(--status-red)' : 'var(--on-surface-variant)' }}
               title={isMuted ? 'Unmute channel' : 'Mute channel'}
             >
@@ -1006,7 +1199,7 @@ export function SpaceChat({
 
               if (inThisHuddle) {
                 return (
-                  <button className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium"
+                  <button className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
                     style={{ background: '#22c55e', color: 'white' }} title="You're in this huddle">
                     <Mic size={13} strokeWidth={1.5} />
                     <span className="hidden md:inline">In Huddle</span>
@@ -1016,7 +1209,7 @@ export function SpaceChat({
               if (othersInHuddle) {
                 return (
                   <button onClick={() => joinHuddleBySpace?.(spaceId)}
-                    className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
+                    className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
                     style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                     title={`${huddleHere!.participants.length} in huddle — click to join`}>
                     <Mic size={13} strokeWidth={1.5} />
@@ -1026,7 +1219,7 @@ export function SpaceChat({
               }
               return (
                 <button onClick={() => startHuddle?.(spaceId)}
-                  className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium hover:opacity-80"
+                  className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80"
                   style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-high, var(--accent-muted))' }}
                   title="Start a huddle">
                   <Mic size={13} strokeWidth={1.5} />
@@ -1047,7 +1240,7 @@ export function SpaceChat({
                 } catch { setRecapSummary('Failed to connect to the server.'); }
                 setRecapLoading(false);
               }}
-              className="flex items-center gap-1 px-2.5 h-7 rounded-md text-[11px] font-medium"
+              className="flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
               style={{ background: 'var(--accent-muted)', color: 'var(--primary)' }}
               disabled={recapLoading}
             >
@@ -1057,13 +1250,13 @@ export function SpaceChat({
             {/* Knowledge */}
             <button
               onClick={() => setShowKnowledge(!showKnowledge)}
-              className="p-1.5 rounded-md hover:opacity-70"
+              className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
               style={{ color: 'var(--outline)' }}
               title="Knowledge"
             >
               <BookOpen size={14} strokeWidth={1.5} />
             </button>
-          </div>
+          </TabStrip>
 
           {/* Row 2: Description (collapsible, only if exists) */}
           {spaceDescription && !isDm && (
@@ -1100,7 +1293,7 @@ export function SpaceChat({
                   <X size={12} strokeWidth={1.5} />
                 </button>
               </div>
-              <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: renderSimpleMarkdown(recapSummary) }} />
+              <div className="text-[0.8125rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(renderSimpleMarkdown(recapSummary)) }} />
             </div>
           )}
           {messages.length === 0 && (
@@ -1110,8 +1303,13 @@ export function SpaceChat({
               description="Send a message to kick things off."
             />
           )}
-          {messages.map((msg, i) => {
-            const prev = i > 0 ? messages[i - 1] : null;
+          {messages
+            .filter((m) => {
+              const meta = ((m as any).metadata ?? {}) as Record<string, unknown>;
+              return meta.kind !== 'tool_result' && meta.hidden !== true;
+            })
+            .map((msg, i, visibleMessages) => {
+            const prev = i > 0 ? visibleMessages[i - 1] : null;
             const grouped = prev ? shouldGroup(prev, msg) : false;
             const showDaySeparator = !prev || !isSameDay(prev.created_at, msg.created_at);
             const isHovered = hoveredId === msg.id;
@@ -1184,7 +1382,7 @@ export function SpaceChat({
                   {/* Mobile action button — always visible on touch */}
                   {!msg.is_deleted && editingId !== msg.id && (
                     <button
-                      className="md:hidden p-2 rounded-full absolute top-1 right-1 opacity-40 active:opacity-70"
+                      className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-full absolute top-0 right-0 opacity-40 active:opacity-70"
                       style={{ color: 'var(--outline)' }}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1284,7 +1482,9 @@ export function SpaceChat({
                           } else if (title.length > 80) {
                             title = (title.slice(0, title.lastIndexOf(' ', 80)) || title.slice(0, 80)) + '...';
                           }
-                          setCreateTaskMsg({ title, messageId: msg.id });
+                          // Build description with source attribution
+                          const description = `<blockquote>${msg.content}</blockquote><p><em>Created from chat in #${spaceName}</em></p>`;
+                          setCreateTaskMsg({ title, description, messageId: msg.id });
                         }}
                       >
                         <CheckSquare size={16} strokeWidth={1.5} />
@@ -1318,7 +1518,7 @@ export function SpaceChat({
                               <button
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                                 style={{ color: 'var(--foreground-secondary)' }}
-                                onClick={() => { setEditingId(msg.id); setEditContent(msg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); setMoreMenuId(null); }}
+                                onClick={() => { setEditingId(msg.id); setEditContent(msg.content); setMoreMenuId(null); }}
                               >
                                 <Pencil size={13} strokeWidth={1.5} /> Edit
                               </button>
@@ -1330,6 +1530,13 @@ export function SpaceChat({
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <Copy size={13} strokeWidth={1.5} /> Copy link
                             </button>
+                            <button onClick={async () => {
+                              await api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: msg.id });
+                              setMoreMenuId(null);
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                              style={{ color: 'var(--on-surface-variant)' }}>
+                              <MailOpen size={13} strokeWidth={1.5} /> Mark unread
+                            </button>
                             <button onClick={() => {
                               const plain = msg.content.replace(/<[^>]+>/g, '').slice(0, 200);
                               setQuotedMessage({ userName: msg.user_name, content: plain });
@@ -1337,6 +1544,13 @@ export function SpaceChat({
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <MessageSquare size={13} strokeWidth={1.5} /> Quote
+                            </button>
+                            <button onClick={() => {
+                              setForwardMsgId(msg.id);
+                              setMoreMenuId(null);
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                              style={{ color: 'var(--on-surface-variant)' }}>
+                              <Forward size={13} strokeWidth={1.5} /> Forward
                             </button>
                             <button onClick={async () => {
                               const title = msg.content.replace(/<[^>]+>/g, '').split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
@@ -1349,7 +1563,7 @@ export function SpaceChat({
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
-                              <BookOpen size={13} strokeWidth={1.5} /> Capture Decision
+                              <BookOpen size={13} strokeWidth={1.5} /> Save to Knowledge
                             </button>
                             <div className="relative">
                               <button className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
@@ -1391,9 +1605,7 @@ export function SpaceChat({
                                 className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                                 style={{ color: 'var(--danger)' }}
                                 onClick={() => {
-                                  if (confirm('Delete this message? This can\'t be undone.')) {
-                                    handleDelete(msg.id);
-                                  }
+                                  setDeleteConfirmId(msg.id);
                                   setMoreMenuId(null);
                                 }}
                               >
@@ -1420,7 +1632,7 @@ export function SpaceChat({
                         <button
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                           style={{ color: 'var(--foreground-secondary)' }}
-                          onClick={() => { setEditingId(msg.id); setEditContent(msg.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()); setMoreMenuId(null); }}
+                          onClick={() => { setEditingId(msg.id); setEditContent(msg.content); setMoreMenuId(null); }}
                         >
                           <Pencil size={13} strokeWidth={1.5} /> Edit
                         </button>
@@ -1467,7 +1679,7 @@ export function SpaceChat({
                           className="w-full text-left px-3.5 py-2 text-[13px] flex items-center gap-2.5"
                           style={{ color: 'var(--danger)' }}
                           onClick={() => {
-                            if (confirm('Delete this message? This can\'t be undone.')) handleDelete(msg.id);
+                            setDeleteConfirmId(msg.id);
                             setMoreMenuId(null);
                           }}
                         >
@@ -1511,10 +1723,10 @@ export function SpaceChat({
                               }
                               return (
                                 <>
-                                  <p className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
+                                  <div className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
-                                  </p>
+                                  </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
@@ -1522,6 +1734,38 @@ export function SpaceChat({
                                 </>
                               );
                             })()}
+                            {(() => {
+                              const meta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
+                              const blocks = meta.agent_blocks as AgentBlock[] | undefined;
+                              const citations = meta.citations as AgentCitation[] | null | undefined;
+                              const model = meta.model as string | null | undefined;
+                              const tokensIn = meta.tokens_in as number | null | undefined;
+                              const tokensOut = meta.tokens_out as number | null | undefined;
+                              if (!blocks && !citations && !model) return null;
+                              return (
+                                <AgentMessageBlocks
+                                  blocks={blocks ?? null}
+                                  citations={citations ?? null}
+                                  model={model ?? null}
+                                  tokens_in={tokensIn ?? null}
+                                  tokens_out={tokensOut ?? null}
+                                />
+                              );
+                            })()}
+                            {pendingByMessage?.[msg.id]?.map((action) => (
+                              <AgentActionCard
+                                key={action.id}
+                                action={action}
+                                onApprove={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                                onReject={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                              />
+                            ))}
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1538,29 +1782,23 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && (
-                              <TaskSuggestionCard
-                                suggestion={taskSuggestions.get(msg.id)}
-                                onAccept={async () => {
-                                  const s = taskSuggestions.get(msg.id);
-                                  if (!s) return;
-                                  try {
-                                    await api.post(`/api/projects/${s.project_id}/tasks`, {
-                                      title: s.title,
-                                      description: s.description || '',
-                                      priority: s.priority || 'p2',
-                                      source_message_id: msg.id,
-                                    });
-                                    setTaskSuggestions((prev) => { const next = new Map(prev); next.delete(msg.id); return next; });
-                                  } catch (err) {
-                                    console.error('Failed to create task from suggestion:', err);
-                                  }
-                                }}
-                                onDismiss={() => {
-                                  setTaskSuggestions((prev) => { const next = new Map(prev); next.delete(msg.id); return next; });
-                                }}
-                              />
-                            )}
+                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
+                              const s = taskSuggestions.get(msg.id);
+                              return (
+                                <TaskSuggestionCard
+                                  messageId={msg.id}
+                                  taskTitle={s.title}
+                                  taskDescription={s.description}
+                                  projectId={s.project_id}
+                                  projectName={s.project_name}
+                                  priority={s.priority}
+                                  agentName={s.agent_name || 'Alex'}
+                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
+                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
+                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
+                                />
+                              );
+                            })()}
                           </>
                         )}
                       </div>
@@ -1637,10 +1875,10 @@ export function SpaceChat({
                               }
                               return (
                                 <>
-                                  <p className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
+                                  <div className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
-                                  </p>
+                                  </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
                                   {linkPreviews.get(msg.id)?.map((preview, pi) => (
                                     <LinkPreviewCard key={`lp-${pi}`} preview={preview} />
@@ -1648,6 +1886,38 @@ export function SpaceChat({
                                 </>
                               );
                             })()}
+                            {(() => {
+                              const meta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
+                              const blocks = meta.agent_blocks as AgentBlock[] | undefined;
+                              const citations = meta.citations as AgentCitation[] | null | undefined;
+                              const model = meta.model as string | null | undefined;
+                              const tokensIn = meta.tokens_in as number | null | undefined;
+                              const tokensOut = meta.tokens_out as number | null | undefined;
+                              if (!blocks && !citations && !model) return null;
+                              return (
+                                <AgentMessageBlocks
+                                  blocks={blocks ?? null}
+                                  citations={citations ?? null}
+                                  model={model ?? null}
+                                  tokens_in={tokensIn ?? null}
+                                  tokens_out={tokensOut ?? null}
+                                />
+                              );
+                            })()}
+                            {pendingByMessage?.[msg.id]?.map((action) => (
+                              <AgentActionCard
+                                key={action.id}
+                                action={action}
+                                onApprove={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                                onReject={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                              />
+                            ))}
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1664,29 +1934,23 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && (
-                              <TaskSuggestionCard
-                                suggestion={taskSuggestions.get(msg.id)}
-                                onAccept={async () => {
-                                  const s = taskSuggestions.get(msg.id);
-                                  if (!s) return;
-                                  try {
-                                    await api.post(`/api/projects/${s.project_id}/tasks`, {
-                                      title: s.title,
-                                      description: s.description || '',
-                                      priority: s.priority || 'p2',
-                                      source_message_id: msg.id,
-                                    });
-                                    setTaskSuggestions((prev) => { const next = new Map(prev); next.delete(msg.id); return next; });
-                                  } catch (err) {
-                                    console.error('Failed to create task from suggestion:', err);
-                                  }
-                                }}
-                                onDismiss={() => {
-                                  setTaskSuggestions((prev) => { const next = new Map(prev); next.delete(msg.id); return next; });
-                                }}
-                              />
-                            )}
+                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
+                              const s = taskSuggestions.get(msg.id);
+                              return (
+                                <TaskSuggestionCard
+                                  messageId={msg.id}
+                                  taskTitle={s.title}
+                                  taskDescription={s.description}
+                                  projectId={s.project_id}
+                                  projectName={s.project_name}
+                                  priority={s.priority}
+                                  agentName={s.agent_name || 'Alex'}
+                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
+                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
+                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
+                                />
+                              );
+                            })()}
                           </>
                         )}
                       </div>
@@ -1754,9 +2018,12 @@ export function SpaceChat({
         {/* Hidden file input */}
         <input ref={fileInputRef} type="file" className="hidden" multiple onChange={handleFileSelect} />
 
-        {/* Clip recorder — shown above composer when recording */}
+        {/* Clip recorder — replaces composer entirely while recording.
+            Matches WhatsApp/iMessage pattern (recorder takes over the input area
+            instead of stacking above the composer). The whole space-chat composer
+            is hidden via the {!clipRecording && ...} wrapper below. */}
         {clipRecording && (
-          <div className="px-4 py-2">
+          <div className="px-3 md:px-4 py-2 md:py-3">
             <ClipRecorder
               spaceId={spaceId}
               contextType="space"
@@ -1782,7 +2049,9 @@ export function SpaceChat({
           </div>
         )}
 
-        {/* Rich text composer */}
+        {/* Rich text composer — hidden while recording so the recorder
+            owns the input area (single focused interaction). */}
+        {!clipRecording && (
         <RichComposer
           key={spaceId}
           placeholder={`Message ${isDm ? displayName : '#' + spaceName}`}
@@ -1801,7 +2070,7 @@ export function SpaceChat({
           onSlashCommand={async (command, args) => {
             switch (command) {
               case 'task':
-                setCreateTaskMsg({ title: args || 'New task', messageId: '' });
+                setCreateTaskMsg({ title: args || 'New task', description: '', messageId: '' });
                 break;
 
               case 'remind': {
@@ -1853,7 +2122,7 @@ export function SpaceChat({
                 break;
 
               case 'search':
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
+                document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
                 break;
 
               case 'note': {
@@ -1871,6 +2140,7 @@ export function SpaceChat({
             }
           }}
         />
+        )}
 
         {/* Scheduled messages panel */}
         {showScheduled && <ScheduledPanel onClose={() => setShowScheduled(false)} />}
@@ -1880,6 +2150,7 @@ export function SpaceChat({
           <TaskQuickCreate
             projectId={defaultProjectId}
             initialTitle={createTaskMsg.title}
+            initialDescription={createTaskMsg.description}
             sourceMessageId={createTaskMsg.messageId}
             onClose={() => setCreateTaskMsg(null)}
             onCreated={() => { setCreateTaskMsg(null); setCmdToast('Task created'); }}
@@ -1906,7 +2177,40 @@ export function SpaceChat({
           onClose={() => setProfileCard(null)}
         />
       )}
+      {deleteConfirmId && (
+        <ConfirmDialog
+          title="Delete message"
+          message="Delete this message? This can't be undone."
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { handleDelete(deleteConfirmId); setDeleteConfirmId(null); }}
+          onCancel={() => setDeleteConfirmId(null)}
+        />
+      )}
       </div>
+      {forwardMsgId && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => setForwardMsgId(null)}>
+          <div className="w-80 max-h-96 rounded-xl overflow-hidden" style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="p-3 font-semibold text-[14px]" style={{ color: 'var(--foreground)', borderBottom: '1px solid var(--border)' }}>
+              Forward to...
+            </div>
+            <div className="overflow-y-auto max-h-72 p-2">
+              {spaces?.filter(s => s.id !== spaceId).map(s => (
+                <button key={s.id} onClick={async () => {
+                  await api.post('/api/messages/forward', { message_id: forwardMsgId, target_space_id: s.id });
+                  setForwardMsgId(null);
+                }} className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2 hover:bg-white/5"
+                  style={{ color: 'var(--foreground)' }}>
+                  # {s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </FileDropZone>
   );
 }
@@ -2004,8 +2308,9 @@ function ThreadIndicator({
       {hasUnread && (
         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: 'var(--primary, #6366f1)' }} />
       )}
-      <span className="group-hover:underline">
-        {replyCount} thread {replyCount === 1 ? 'reply' : 'replies'} &gt;
+      <span className="group-hover:underline inline-flex items-center gap-1">
+        {replyCount} thread {replyCount === 1 ? 'reply' : 'replies'}
+        <ChevronRight size={12} strokeWidth={2} />
       </span>
       {latestReplyAt && (
         <span className="text-[11px]" style={{ color: 'var(--outline)' }}>
@@ -2163,78 +2468,37 @@ function LinkPreviewCard({ preview }: { preview: LinkPreview }) {
 }
 
 /** Inline card shown when the agent suggests creating a task from a message */
-function TaskSuggestionCard({
-  suggestion,
-  onAccept,
-  onDismiss,
-}: {
-  suggestion: { title: string; description?: string; priority?: string; project_name?: string };
-  onAccept: () => void;
-  onDismiss: () => void;
-}) {
-  const [loading, setLoading] = useState(false);
-
-  return (
-    <div
-      className="mt-2 rounded-lg px-3 py-2 flex items-center gap-3"
-      style={{
-        background: 'var(--surface-container)',
-        border: '1px solid var(--outline-variant)',
-      }}
-    >
-      <div className="flex-1 min-w-0">
-        <div className="text-[11px] font-semibold mb-0.5" style={{ color: 'var(--primary)' }}>
-          Deft suggests
-        </div>
-        <div className="text-[12px] truncate" style={{ color: 'var(--on-surface)' }}>
-          Create task &ldquo;{suggestion.title}&rdquo;
-        </div>
-        {suggestion.project_name && (
-          <div className="text-[10px] mt-0.5" style={{ color: 'var(--muted)' }}>
-            in {suggestion.project_name} &middot; {suggestion.priority || 'p2'}
-          </div>
-        )}
-      </div>
-      <button
-        className="px-2.5 py-1 rounded-md text-[11px] font-medium"
-        style={{ background: 'var(--primary)', color: '#fff' }}
-        disabled={loading}
-        onClick={async () => {
-          setLoading(true);
-          await onAccept();
-          setLoading(false);
-        }}
-      >
-        {loading ? '...' : 'Accept'}
-      </button>
-      <button
-        className="px-2.5 py-1 rounded-md text-[11px] font-medium"
-        style={{ color: 'var(--muted)' }}
-        onClick={onDismiss}
-      >
-        Dismiss
-      </button>
-    </div>
-  );
-}
-
 function EditBox({ content, onChange, onSave, onCancel }: { content: string; onChange: (v: string) => void; onSave: () => void; onCancel: () => void }) {
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({ heading: false, link: false }),
+      Link.configure({ openOnClick: false }),
+    ],
+    content,
+    onUpdate: ({ editor: e }) => onChange(e.getHTML()),
+    editorProps: {
+      attributes: { class: 'deft-editor' },
+      handleKeyDown(_view, event) {
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSave(); return true; }
+        if (event.key === 'Escape') { onCancel(); return true; }
+        return false;
+      },
+    },
+  });
+
+  useEffect(() => { editor?.commands.focus('end'); }, [editor]);
+
   return (
     <div className="mt-1">
       <div className="text-[11px] mb-1 font-medium" style={{ color: 'var(--accent)' }}>Editing</div>
-      <div className="flex gap-2">
-        <textarea
-          value={content}
-          onChange={(e) => onChange(e.target.value)}
-          className="flex-1 px-3 py-1.5 rounded-lg text-[13px] resize-none outline-none"
-          style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: 'var(--foreground)' }}
-          rows={2}
-          autoFocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSave(); }
-            if (e.key === 'Escape') onCancel();
-          }}
-        />
+      <div className="flex gap-2 items-start">
+        <div
+          className="flex-1 px-3 py-1.5 rounded-lg text-[13px] outline-none"
+          style={{ background: 'var(--input-bg)', border: '1px solid var(--input-border)', color: 'var(--foreground)', minHeight: '2.5rem' }}
+        >
+          <EditorContent editor={editor} />
+        </div>
         <button onClick={onSave} className="p-1" style={{ color: 'var(--success)' }}><Check size={15} /></button>
         <button onClick={onCancel} className="p-1" style={{ color: 'var(--danger)' }}><X size={15} /></button>
       </div>

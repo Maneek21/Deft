@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
+import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { getIO } from '../socket.js';
 
@@ -85,6 +85,25 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.org_id, user.org_id),
       ))
       .orderBy(tasks.priority);
+
+    // 4b. My Work — all non-terminal tasks where caller is the primary
+    //     assignee OR listed as an additional assignee (Phase 0.3). This is
+    //     the source-of-truth aggregation for the dashboard kanban.
+    const myWork = await db.select({
+      id: tasks.id, number: tasks.number, title: tasks.title,
+      status: tasks.status, priority: tasks.priority, due_date: tasks.due_date,
+      updated_at: tasks.updated_at, assignee_id: tasks.assignee_id,
+      project_name: projects.name, project_prefix: projects.prefix, project_color: projects.color,
+    })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
+      .where(and(
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+        sql`(${tasks.assignee_id} = ${user.id} OR ${tasks.id} IN (SELECT ${taskAssignees.task_id} FROM ${taskAssignees} WHERE ${taskAssignees.user_id} = ${user.id}))`,
+      ))
+      .orderBy(tasks.priority, tasks.due_date);
 
     // 5. Spaces with unread — get user's spaces and last_read info
     const userSpaces = await db.select({
@@ -294,6 +313,7 @@ dashboardRoutes.get('/', async (c) => {
       due_this_week: dueThisWeek,
       overdue,
       in_progress: inProgress,
+      my_work: myWork,
       unread_spaces: unreadSpaces.slice(0, 8),
       recent_activity: activity,
       projects: projectStats,
@@ -480,6 +500,7 @@ dashboardRoutes.post('/standup', async (c) => {
     }
 
     // Insert standup
+    console.log('[standup] stage=insert');
     await db.insert(standups).values({
       org_id: user.org_id,
       date: now,
@@ -488,47 +509,55 @@ dashboardRoutes.post('/standup', async (c) => {
       raw_data: rawData,
     });
 
-    // Post to default space
-    const [defaultSpace] = await db
-      .select({ id: spaces.id })
-      .from(spaces)
-      .where(
-        and(
-          eq(spaces.org_id, user.org_id),
-          eq(spaces.is_default, true),
-        ),
-      )
-      .limit(1);
+    // Post to default space — wrap in its own try/catch so a message-insert
+    // failure (e.g. FK constraint on user_id) never kills the standup response.
+    console.log('[standup] stage=post-to-space');
+    try {
+      const [defaultSpace] = await db
+        .select({ id: spaces.id })
+        .from(spaces)
+        .where(
+          and(
+            eq(spaces.org_id, user.org_id),
+            eq(spaces.is_default, true),
+          ),
+        )
+        .limit(1);
 
-    if (defaultSpace) {
-      const [msg] = await db
-        .insert(messages)
-        .values({
-          org_id: user.org_id,
-          space_id: defaultSpace.id,
-          user_id: 'system',
-          content: `**Daily Standup Summary**\n\n${summary}`,
-        })
-        .returning();
+      if (defaultSpace) {
+        const [msg] = await db
+          .insert(messages)
+          .values({
+            org_id: user.org_id,
+            space_id: defaultSpace.id,
+            user_id: user.id, // must be a valid FK to users.id; 'system' is not
+            content: `**Daily Standup Summary**\n\n${summary}`,
+          })
+          .returning();
 
-      if (msg) {
-        const io = getIO();
-        if (io) {
-          io.to(`org:${user.org_id}`).emit('message:new', {
-            ...msg,
-            user_name: 'Deft',
-            user_avatar: null,
-          });
+        if (msg) {
+          const io = getIO();
+          if (io) {
+            io.to(`org:${user.org_id}`).emit('message:new', {
+              ...msg,
+              user_name: 'Deft',
+              user_avatar: null,
+            });
+          }
         }
       }
+    } catch (msgErr) {
+      // Non-fatal: standup was already persisted; just log and continue.
+      console.error('[standup] Failed to post standup message to space:', msgErr);
     }
 
+    console.log('[standup] stage=done');
     return c.json({
       standup: { summary, date: now.toISOString(), model: model || null },
       already_existed: false,
     });
   } catch (err) {
-    console.error('Standup generation error:', err);
+    console.error('[standup] unexpected error:', err);
     return c.json({ error: 'Failed to generate standup', code: 'INTERNAL_ERROR' }, 500);
   }
 });
@@ -748,6 +777,7 @@ dashboardRoutes.get('/agent-activity', async (c) => {
       executed_at: agentActions.executed_at,
       created_at: agentActions.created_at,
       error: agentActions.error,
+      agent_employee_id: agentActions.agent_employee_id,
     })
     .from(agentActions)
     .where(

@@ -28,4 +28,6 @@ export const env = {
   TRANSCRIPTION_PROVIDER: (process.env.TRANSCRIPTION_PROVIDER || 'openai') as 'local' | 'openai' | 'deepgram',
   WHISPER_URL: process.env.WHISPER_URL || 'http://localhost:9000', // local whisper container
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || '',
+  // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.
+  METRICS_SCRAPE_TOKEN: process.env.METRICS_SCRAPE_TOKEN || '',
 };
