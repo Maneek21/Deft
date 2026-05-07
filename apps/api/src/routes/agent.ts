@@ -985,12 +985,19 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     .set({ approval_status: 'approved', approved_at: new Date() })
     .where(eq(agentActions.id, actionId));
 
+  // Phase 6 invariant — the executor must receive the ORIGINAL proposer's
+  // user_id (action.user_id), not the approver's. Otherwise:
+  //   1. Inserted messages would be authored by the human approver,
+  //      not by the proposing agent.
+  //   2. The reply-storm guard would count the approver's replies
+  //      instead of the agent's, defeating Phase 6 in the manual-
+  //      approval path.
   const execResult = await executeAction(
     actionId,
     action.action,
     action.params as any,
     user.org_id,
-    user.id,
+    action.user_id,
     { agentEmployeeId: action.agent_employee_id ?? undefined },
   );
 
