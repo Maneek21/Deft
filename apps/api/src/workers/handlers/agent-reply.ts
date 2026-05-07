@@ -5,33 +5,7 @@ import { messages, users } from '@deft/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
-
-/** Well-known agent user email — we ensure this user exists per-org */
-const AGENT_EMAIL = 'deft-agent@system.local';
-const AGENT_NAME = 'Deft';
-
-/**
- * Ensure an agent system user exists in the users table.
- * Returns the agent user's ID.
- */
-async function ensureAgentUser(): Promise<string> {
-  const [existing] = await db.select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, AGENT_EMAIL))
-    .limit(1);
-
-  if (existing) return existing.id;
-
-  // Create the system user
-  const [created] = await db.insert(users).values({
-    email: AGENT_EMAIL,
-    name: AGENT_NAME,
-    email_verified: true,
-  }).returning();
-
-  console.log(`[agent-reply] Created agent system user: ${created!.id}`);
-  return created!.id;
-}
+import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
 
 export async function handleAgentReply(job: JobData): Promise<void> {
   const {
@@ -103,7 +77,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     // Add thread messages (reverse to get oldest first, excluding the trigger message)
     const orderedThread = [...threadMessages].reverse();
-    const agentUserId = await ensureAgentUser();
+    const agentUserId = await ensureDeftyMembership(orgId);
 
     for (const msg of orderedThread) {
       if (msg.id === messageId) continue; // skip the triggering message, it's sent as the main content
@@ -164,7 +138,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
 
     const messageWithUser = {
       ...agentMessage,
-      user_name: agentUserData?.name ?? AGENT_NAME,
+      user_name: agentUserData?.name ?? DEFTY_NAME,
       user_avatar: agentUserData?.avatar_url ?? null,
       reactions: [],
       reply_count: 0,
