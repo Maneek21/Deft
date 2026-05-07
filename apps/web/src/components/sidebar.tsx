@@ -99,6 +99,7 @@ function ChatSidebarContent({
   const pathname = usePathname();
   const router = useRouter();
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+  const [createDmOpen, setCreateDmOpen] = useState(false);
   const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
 
   useEffect(() => {
@@ -203,6 +204,14 @@ function ChatSidebarContent({
           >
             Direct Messages
           </span>
+          <button
+            onClick={() => setCreateDmOpen(true)}
+            className="p-0.5 rounded"
+            style={{ color: 'var(--outline)' }}
+            title="New direct message"
+          >
+            <Plus size={13} strokeWidth={1.5} />
+          </button>
         </div>
         {orgMembers
           .filter((m) => m.id !== user?.id)
@@ -342,6 +351,10 @@ function ChatSidebarContent({
 
       {createSpaceOpen && typeof document !== 'undefined' && createPortal(
         <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,
+        document.body
+      )}
+      {createDmOpen && typeof document !== 'undefined' && createPortal(
+        <CreateDmModal onClose={() => setCreateDmOpen(false)} />,
         document.body
       )}
     </>
