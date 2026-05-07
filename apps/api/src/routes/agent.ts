@@ -92,12 +92,12 @@ async function buildStreamContext(
     .limit(1);
   const agentEmployeeId = convo?.agent_employee_id ?? undefined;
 
-  // Load conversation history
+  // Load conversation history from the unified messages table (space_id = convoId).
   const history = await db
     .select()
-    .from(agentMessages)
-    .where(eq(agentMessages.conversation_id, convoId))
-    .orderBy(agentMessages.created_at);
+    .from(messages)
+    .where(eq(messages.space_id, convoId))
+    .orderBy(messages.created_at);
 
   const [org] = await db
     .select()
@@ -236,7 +236,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   // Auto-load relevant wiki context using the last user message as the search query
   try {
-    const lastUserMsg = [...history].reverse().find(m => m.role === 'user');
+    const lastUserMsg = [...history].reverse().find(m => m.user_id === user.id);
     const rawQuery = lastUserMsg?.content || '';
     const searchQuery = rawQuery.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
@@ -289,19 +289,8 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
   const reasonConfig = getModelConfig('reason');
 
-  // Rehydrate history into Anthropic message format. Rows with content_blocks
-  // use the structured form; legacy rows fall back to plain text. Skip empty rows.
-  const apiMessages: Anthropic.MessageParam[] = [];
-  for (const m of history) {
-    const blocks = (m as any).content_blocks;
-    if (blocks && Array.isArray(blocks) && blocks.length > 0) {
-      apiMessages.push({ role: m.role as 'user' | 'assistant', content: blocks as any });
-    } else if (m.content && m.content.trim().length > 0) {
-      apiMessages.push({ role: m.role as 'user' | 'assistant', content: m.content });
-    }
-  }
-
   // Resolve the agent's user_id from space_members (the non-current-user member).
+  // Must happen before history rehydration so we can distinguish user vs assistant rows.
   const otherMembers = await db
     .select({ user_id: spaceMembers.user_id })
     .from(spaceMembers)
@@ -312,6 +301,23 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   const resolvedAgentUserId = otherMembers[0]?.user_id;
   if (!resolvedAgentUserId) {
     return { _kind: 'error', error: 'Conversation has no agent member', code: 'INVALID_STATE', status: 400 };
+  }
+
+  // Rehydrate history into Anthropic message format.
+  // messages rows use user_id (not role) — agent user_id → 'assistant', current user → 'user'.
+  // metadata.agent_blocks carries structured content (replaces old content_blocks column).
+  // Rows with metadata.hidden=true are tool_use iterations that should stay in the
+  // message history so the model sees its previous reasoning (just not shown in UI).
+  const apiMessages: Anthropic.MessageParam[] = [];
+  for (const m of history) {
+    const meta = (m.metadata as any) ?? {};
+    const role: 'user' | 'assistant' = m.user_id === resolvedAgentUserId ? 'assistant' : 'user';
+    const blocks = meta.agent_blocks;
+    if (blocks && Array.isArray(blocks) && blocks.length > 0) {
+      apiMessages.push({ role, content: blocks as any });
+    } else if (m.content && m.content.trim().length > 0) {
+      apiMessages.push({ role, content: m.content });
+    }
   }
 
   return {
