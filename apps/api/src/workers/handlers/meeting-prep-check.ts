@@ -1,7 +1,7 @@
 // Handler: generate meeting prep briefings for upcoming meetings
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { env } from '../../lib/env.js';
+import { getOrgAIConfig, hasAnyAIProvider } from '../../lib/org-ai-config.js';
 import {
   agentEmployees,
   events,
@@ -257,9 +257,10 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
       // 2e. Generate brief
       let briefText: string;
 
-      if (env.ANTHROPIC_API_KEY) {
+      if (await hasAnyAIProvider(meeting.org_id)) {
         try {
           const { llm } = await import('../../lib/llm.js');
+          const orgConfig = await getOrgAIConfig(meeting.org_id);
 
           const response = await llm({
             task: 'summarize',
@@ -270,6 +271,7 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
               },
             ],
             maxTokens: 300,
+            orgConfig,
           });
 
           briefText = response.text || generateFallbackBrief(meeting.title, attendeeNames, attendeeTasks, relatedTasks);

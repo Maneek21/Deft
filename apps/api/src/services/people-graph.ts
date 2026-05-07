@@ -2,6 +2,7 @@
 // Builds interaction matrices, extracts expertise, analyzes patterns, detects relationships
 import { db } from '../lib/db.js';
 import { llm } from '../lib/llm.js';
+import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   messages,
   spaces,
@@ -219,6 +220,9 @@ export async function buildInteractionMatrix(orgId: string): Promise<void> {
 export async function extractExpertise(orgId: string): Promise<void> {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
+  // BYOK — resolve once, reuse across all batches below.
+  const orgConfig = await getOrgAIConfig(orgId);
+
   // Fetch recent messages (exclude DMs for privacy)
   const recentMessages = await db
     .select({
@@ -265,6 +269,7 @@ If a message has no clear expertise topic, use an empty topics array.`;
         task: 'extract',
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 1024,
+        orgConfig,
       });
 
       // Parse JSON from response
@@ -341,6 +346,7 @@ Respond ONLY with valid JSON array. Each element: { "idx": number, "topics": str
           task: 'extract',
           messages: [{ role: 'user', content: prompt }],
           maxTokens: 1024,
+          orgConfig,
         });
 
         const jsonMatch = response.text.match(/\[[\s\S]*\]/);

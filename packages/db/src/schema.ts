@@ -72,6 +72,9 @@ export const orgs = pgTable('orgs', {
   trust_level: trustLevelEnum('trust_level').default('conservative').notNull(),
   agent_name: text('agent_name').default('Deft'),
   agent_enabled: boolean('agent_enabled').default(true).notNull(),
+  // Per-org AI provider config (BYOK). Read via apps/api/src/lib/org-ai-config.ts.
+  // Schema documented in packages/db/drizzle/0061_org_ai_config.sql.
+  ai_config: jsonb('ai_config').$type<Record<string, unknown>>().notNull().default({}),
   ...timestamps(),
 });
 

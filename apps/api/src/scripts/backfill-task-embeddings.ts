@@ -17,62 +17,10 @@
  */
 import { db } from '../lib/db.js';
 import { sql } from 'drizzle-orm';
-import { env } from '../lib/env.js';
-import { createHash } from 'node:crypto';
+import { embed, EMBED_DIMS } from '../lib/embed.js';
 
-const EMBED_DIMS = 1536;
 const BATCH_LOG_EVERY = 50;
 const INTER_REQUEST_DELAY_MS = 0; // bump to e.g. 1000 if you see 429s
-
-type EmbedFn = (text: string) => Promise<number[]>;
-
-function pickProvider(): { name: string; embed: EmbedFn } {
-  if (env.OPENAI_API_KEY) {
-    return {
-      name: 'openai:text-embedding-3-small',
-      embed: async (text: string) => {
-        const r = await fetch('https://api.openai.com/v1/embeddings', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: 'text-embedding-3-small',
-            input: text.slice(0, 32000),
-            dimensions: EMBED_DIMS,
-          }),
-        });
-        if (!r.ok) {
-          throw new Error(`OpenAI embeddings ${r.status}: ${await r.text()}`);
-        }
-        const json = (await r.json()) as { data: { embedding: number[] }[] };
-        const embedding = json.data[0]?.embedding;
-        if (!embedding) throw new Error('OpenAI response missing data[0].embedding');
-        return embedding;
-      },
-    };
-  }
-
-  // Fallback: deterministic hash-based pseudo-embedding. Not good enough for
-  // search quality, but lets the migration land and smoke tests pass until
-  // OPENAI_API_KEY is wired up in prod.
-  return {
-    name: 'dev-fallback:sha256-pseudo',
-    embed: async (text: string) => {
-      const vec = new Array<number>(EMBED_DIMS).fill(0);
-      for (let chunk = 0; chunk < 32; chunk++) {
-        const h = createHash('sha256').update(`${chunk}:${text}`).digest();
-        for (let i = 0; i < 48; i++) {
-          const idx = chunk * 48 + i;
-          if (idx >= EMBED_DIMS) break;
-          vec[idx] = ((h[i % h.length] ?? 0) / 127.5) - 1;
-        }
-      }
-      return vec;
-    },
-  };
-}
 
 async function pgVectorAvailable(): Promise<boolean> {
   try {
@@ -97,8 +45,7 @@ async function main() {
     console.log('[backfill-task-embeddings] DRY RUN MODE — no changes will be written');
   }
 
-  const provider = pickProvider();
-  console.log(`[backfill-task-embeddings] provider=${provider.name}`);
+  console.log('[backfill-task-embeddings] provider=org-config (lib/embed.ts) — falls back to env OPENAI_API_KEY');
 
   if (!(await pgVectorAvailable())) {
     console.warn(
@@ -124,7 +71,7 @@ async function main() {
   // Use a raw query so this script works whether or not the embedding column
   // is in the currently-loaded Drizzle schema cache.
   const rows = await db.execute(
-    sql`SELECT id, title, description FROM tasks WHERE embedding IS NULL AND is_deleted = false`,
+    sql`SELECT id, org_id, title, description FROM tasks WHERE embedding IS NULL AND is_deleted = false`,
   );
   const pending = (rows as unknown as { rows?: Array<Record<string, unknown>> }).rows
     ?? (rows as unknown as Array<Record<string, unknown>>);
@@ -133,8 +80,9 @@ async function main() {
 
   let ok = 0;
   let errs = 0;
+  let skipped = 0;
   for (let i = 0; i < pending.length; i++) {
-    const t = pending[i] as { id: string; title: string; description: string | null };
+    const t = pending[i] as { id: string; org_id: string; title: string; description: string | null };
 
     if (isDryRun) {
       console.log(`[backfill-task-embeddings-dry] would embed task ${t.id}`);
@@ -152,9 +100,10 @@ async function main() {
     }
 
     try {
-      const vec = await provider.embed(text);
-      if (vec.length !== EMBED_DIMS) {
-        throw new Error(`provider returned ${vec.length} dims, expected ${EMBED_DIMS}`);
+      const vec = await embed(text, t.org_id);
+      if (!vec) {
+        skipped++;
+        continue;
       }
       const literal = `[${vec.join(',')}]`;
       await db.execute(
@@ -172,7 +121,7 @@ async function main() {
 
     if ((i + 1) % BATCH_LOG_EVERY === 0) {
       console.log(
-        `[backfill-task-embeddings] progress: ${i + 1}/${pending.length} (${ok} ok, ${errs} errs)`,
+        `[backfill-task-embeddings] progress: ${i + 1}/${pending.length} (${ok} ok, ${errs} errs, ${skipped} skipped)`,
       );
     }
   }

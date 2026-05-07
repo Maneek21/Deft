@@ -12,7 +12,7 @@ import {
   taskComments,
 } from '@deft/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
-import { env } from '../../lib/env.js';
+import { getOrgAIConfig, hasAnyAIProvider } from '../../lib/org-ai-config.js';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
@@ -117,13 +117,16 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     return;
   }
 
-  if (!env.ANTHROPIC_API_KEY) {
-    console.warn('[task-extract] No ANTHROPIC_API_KEY configured, skipping extraction');
+  // BYOK — fall back to env when org hasn't configured a key, but require at
+  // least one provider somewhere before we do real LLM work.
+  if (!(await hasAnyAIProvider(orgId))) {
+    console.warn('[task-extract] No AI provider configured (org or env), skipping extraction');
     return;
   }
 
   try {
     const { llm } = await import('../../lib/llm.js');
+    const orgConfig = await getOrgAIConfig(orgId);
 
     // Strip HTML for the LLM
     const plainContent = content.replace(/<[^>]+>/g, '');
@@ -138,6 +141,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
         },
       ],
       maxTokens: 256,
+      orgConfig,
     });
 
     const text = response.text;

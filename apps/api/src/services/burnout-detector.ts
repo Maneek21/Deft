@@ -2,6 +2,7 @@
 // PRIVACY: Never include message content in alerts. Only patterns.
 import { db } from '../lib/db.js';
 import { llm } from '../lib/llm.js';
+import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   orgMembers,
   users,
@@ -216,6 +217,9 @@ export async function detectBurnout(orgId: string): Promise<void> {
 
   const orgTimezone = org?.timezone ?? 'UTC';
 
+  // BYOK — resolve once, reuse for all per-member llm() calls below.
+  const orgConfig = await getOrgAIConfig(orgId);
+
   // Get all active org members
   const members = await db
     .select({
@@ -322,6 +326,7 @@ ${publicMessages.map((m, i) => `${i + 1}. ${m.content}`).join('\n')}`;
             task: 'classify',
             messages: [{ role: 'user', content: sentimentPrompt }],
             maxTokens: 10,
+            orgConfig,
           });
 
           const currentSentiment = parseFloat(sentimentResponse.text.trim());
@@ -559,6 +564,7 @@ RULES:
           task: 'summarize',
           messages: [{ role: 'user', content: alertPrompt }],
           maxTokens: 300,
+          orgConfig,
         });
 
         alertMessage = alertResponse.text;

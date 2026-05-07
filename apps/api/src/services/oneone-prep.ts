@@ -1,6 +1,7 @@
 // Service: 1:1 Prep — generates preparation material for manager-report 1:1 meetings
 import { db } from '../lib/db.js';
 import { llm } from '../lib/llm.js';
+import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   tasks,
   messages,
@@ -282,11 +283,13 @@ Be specific, reference task titles and numbers. Be supportive in tone — this i
 
 Return the response as valid JSON with keys: summary, wins, currentFocus, concerns, talkingPoints, commitments.`;
 
+    const orgConfig = await getOrgAIConfig(orgId);
     const response = await llm({
       task: 'reason',
       messages: [{ role: 'user', content: prompt }],
       system: 'You must respond with valid JSON only. No markdown, no code fences.',
       maxTokens: 1500,
+      orgConfig,
     });
 
     try {

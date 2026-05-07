@@ -12,7 +12,7 @@
  */
 import { Hono } from 'hono';
 import Anthropic from '@anthropic-ai/sdk';
-import { env } from '../lib/env.js';
+import { resolveAnthropicApiKey, resolveAnthropicModel } from '../lib/org-ai-config.js';
 import { z } from 'zod';
 
 const agentFollowupsRoutes = new Hono();
@@ -28,11 +28,17 @@ agentFollowupsRoutes.post('/', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid body', code: 'BAD_REQUEST' }, 400);
   }
-  if (!env.ANTHROPIC_API_KEY) {
+
+  // BYOK — pull org-level Anthropic config; fall back to env.
+  const user = c.get('user');
+  const orgId = user?.org_id;
+  const apiKey = await resolveAnthropicApiKey(orgId);
+  if (!apiKey) {
     return c.json({ followups: [] });
   }
+  const model = await resolveAnthropicModel(orgId, 'classify');
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey });
   const system =
     'You generate 3 SHORT follow-up question suggestions (5-8 words each) that a user might ask an AI assistant next. Return ONLY a JSON array of 3 strings. No markdown, no preamble.';
   const prompt = `The user asked: "${parsed.data.userPrompt}"
@@ -43,7 +49,7 @@ What might the user ask next? Return only a JSON array.`;
 
   try {
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model,
       max_tokens: 200,
       system,
       messages: [{ role: 'user', content: prompt }],

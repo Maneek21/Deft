@@ -4,6 +4,7 @@ import { db } from '../../lib/db.js';
 import { clips, messages, tasks, spaces } from '@deft/db/schema';
 import { transcribe } from '../../lib/transcription.js';
 import { llm } from '../../lib/llm.js';
+import { getOrgAIConfig } from '../../lib/org-ai-config.js';
 import { getIO } from '../../socket.js';
 import { join } from 'node:path';
 import type { JobData } from '../types.js';
@@ -29,7 +30,7 @@ export async function handleClipProcess(job: JobData): Promise<void> {
       .where(eq(clips.id, clip_id));
 
     const audioPath = join(CLIP_DIR, file_key);
-    transcription = await transcribe(audioPath);
+    transcription = await transcribe(audioPath, org_id);
 
     await db.update(clips)
       .set({
@@ -103,11 +104,13 @@ Analyze the transcript and return a JSON object with exactly these fields:
 
 Return ONLY valid JSON, no markdown fences, no extra text.`;
 
+      const orgConfig = await getOrgAIConfig(org_id);
       const result = await llm({
         task: 'summarize',
         system: systemPrompt,
         messages: [{ role: 'user', content: transcription.text }],
         maxTokens: 500,
+        orgConfig,
       });
 
       try {

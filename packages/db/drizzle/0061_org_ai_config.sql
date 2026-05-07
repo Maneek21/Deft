@@ -1,0 +1,26 @@
+-- BYOK — per-org AI provider config.
+--
+-- Stores encrypted provider API keys + model routing per org so that
+-- self-hosted Deft no longer requires a single shared ANTHROPIC_API_KEY
+-- in the env. The shape is:
+--
+--   {
+--     "api_keys": {
+--       "anthropic": "<aes-256-gcm encrypted via lib/encryption.ts>",
+--       "openai":    "<...>",
+--       "openrouter":"<...>"
+--     },
+--     "ai_models": {
+--       "classify":  { "provider": "anthropic", "model": "claude-haiku-4-5-20251001" },
+--       "reason":    { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+--       "summarize": { "provider": "ollama",    "model": "llama3.1:8b", "baseUrl": "http://localhost:11434" }
+--     },
+--     "ollama_url": "http://localhost:11434"
+--   }
+--
+-- The column resolves at call-time through `getOrgAIConfig(orgId)` and
+-- falls back to env vars when a provider key isn't set on the org.
+-- Existing installs with ANTHROPIC_API_KEY in env keep working with no
+-- change required.
+
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS ai_config jsonb NOT NULL DEFAULT '{}'::jsonb;

@@ -1,6 +1,6 @@
 // Shared Haiku message classifier — classifies chat messages for the agent pipeline
 import { llm } from './llm.js';
-import { env } from './env.js';
+import { getOrgAIConfig, hasAnyAIProvider } from './org-ai-config.js';
 
 export interface ClassificationResult {
   intent: 'task_create' | 'question' | 'discussion' | 'actionable' | 'none';
@@ -55,11 +55,13 @@ export async function classifyMessage(
   content: string,
   orgId: string,
 ): Promise<ClassificationResult> {
-  if (!env.ANTHROPIC_API_KEY) {
+  // BYOK — only short-circuit when neither org nor env has any AI provider.
+  if (!(await hasAnyAIProvider(orgId))) {
     return { ...DEFAULT_RESULT };
   }
 
   try {
+    const orgConfig = await getOrgAIConfig(orgId);
     const response = await llm({
       task: 'classify',
       system: CLASSIFICATION_PROMPT,
@@ -70,6 +72,7 @@ export async function classifyMessage(
         },
       ],
       maxTokens: 512,
+      orgConfig,
     });
 
     // Haiku sometimes wraps JSON in ```json ... ``` fences despite the prompt

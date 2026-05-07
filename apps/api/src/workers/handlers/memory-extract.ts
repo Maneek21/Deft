@@ -5,6 +5,7 @@ import { db } from '../../lib/db.js';
 import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions } from '@deft/db/schema';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
+import { getOrgAIConfig, type OrgAIConfigRuntime } from '../../lib/org-ai-config.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 
 interface MemoryExtractJobData {
@@ -97,6 +98,7 @@ async function decideWikiAction(
   fact: string,
   isDecision: boolean,
   existingPages: { title: string; slug: string; summary: string | null; type: string }[],
+  orgConfig: OrgAIConfigRuntime,
 ): Promise<WikiIngestResult> {
   const pageList = existingPages.length > 0
     ? existingPages.map(p => `- "${p.title}" (slug: ${p.slug}, type: ${p.type})${p.summary ? ': ' + p.summary : ''}`).join('\n')
@@ -127,6 +129,7 @@ For CREATE: {"action":"create","title":"Page Title","slug":"page-slug","type":"f
       task: 'extract',
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 500,
+      orgConfig,
     });
 
     // Parse JSON from response
@@ -363,6 +366,7 @@ async function cascadeIngest(
   newContent: string,
   orgId: string,
   messageId: string,
+  orgConfig: OrgAIConfigRuntime,
 ): Promise<void> {
   try {
     // Pre-filter: find top 20 candidate pages via full-text search
@@ -417,6 +421,7 @@ Return [] if no updates needed.`;
       task: 'extract',
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 600,
+      orgConfig,
     });
 
     const text = response.text.trim();
@@ -476,6 +481,9 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId, facts, decision } =
     job.data as MemoryExtractJobData;
 
+  // BYOK — resolve once, reuse across decideWikiAction + cascadeIngest below.
+  const orgConfig = await getOrgAIConfig(orgId);
+
   // Fetch existing wiki pages for context (lightweight: title, slug, summary, type)
   const existingPages = await db.select({
     title: wikiPages.title,
@@ -503,7 +511,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
   for (const item of allItems) {
     try {
       // LLM-powered wiki ingest
-      const result = await decideWikiAction(item.text, item.isDecision, existingPages);
+      const result = await decideWikiAction(item.text, item.isDecision, existingPages, orgConfig);
 
       // Determine tags and referenced_user_ids for commitment facts.
       const extraTags: string[] = isCommitmentFact(item.text) ? ['commitment'] : [];
@@ -514,7 +522,7 @@ export async function handleMemoryExtract(job: JobData): Promise<void> {
       // Cascade ingest: update related pages (Karpathy pattern)
       const triggerSlug = result.slug || (result.title ? slugify(result.title) : null);
       if (triggerSlug && result.content) {
-        await cascadeIngest(triggerSlug, result.content, orgId, messageId);
+        await cascadeIngest(triggerSlug, result.content, orgId, messageId, orgConfig);
       }
 
     } catch (err) {

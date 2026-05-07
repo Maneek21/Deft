@@ -24,8 +24,10 @@ export const env = {
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || '',
   GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET || '',
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',
-  // Transcription
-  TRANSCRIPTION_PROVIDER: (process.env.TRANSCRIPTION_PROVIDER || 'openai') as 'local' | 'openai' | 'deepgram',
+  // Transcription. Default to local Whisper so self-hosted Deft never
+  // pings a paid API for voice clips out of the box. Operators who want
+  // OpenAI Whisper or Deepgram override via env or per-org config.
+  TRANSCRIPTION_PROVIDER: (process.env.TRANSCRIPTION_PROVIDER || 'local') as 'local' | 'openai' | 'deepgram',
   WHISPER_URL: process.env.WHISPER_URL || 'http://localhost:9000', // local whisper container
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || '',
   // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.

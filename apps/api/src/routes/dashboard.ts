@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
-import { env } from '../lib/env.js';
 import { getIO } from '../socket.js';
 
 export const dashboardRoutes = new Hono();
@@ -473,9 +472,11 @@ dashboardRoutes.post('/standup', async (c) => {
     let summary: string;
     let model: string | undefined;
 
-    if (env.ANTHROPIC_API_KEY) {
+    const { hasAnyAIProvider, getOrgAIConfig } = await import('../lib/org-ai-config.js');
+    if (await hasAnyAIProvider(user.org_id)) {
       try {
         const { llm } = await import('../lib/llm.js');
+        const orgConfig = await getOrgAIConfig(user.org_id);
 
         const dataForPrompt = JSON.stringify(rawData, null, 2);
         const response = await llm({
@@ -487,6 +488,7 @@ dashboardRoutes.post('/standup', async (c) => {
             },
           ],
           maxTokens: 400,
+          orgConfig,
         });
 
         summary = response.text || generateFallbackStandupSummary(rawData);

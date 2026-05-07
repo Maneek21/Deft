@@ -4,11 +4,10 @@
 //   'background': write actions auto-execute based on org trust level
 
 import Anthropic from '@anthropic-ai/sdk';
-import { getModelConfig } from './llm.js';
 import { db } from './db.js';
 import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
 import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
-import { env } from './env.js';
+import { resolveAnthropicApiKey, resolveAnthropicModel } from './org-ai-config.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
@@ -47,11 +46,15 @@ async function verifyResponse(
   response: string,
   citations: any[],
   orgName: string,
+  orgId: string,
 ): Promise<string> {
   try {
-    const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
+    const apiKey = await resolveAnthropicApiKey(orgId);
+    if (!apiKey) return response;
+    const model = await resolveAnthropicModel(orgId, 'classify');
+    const anthropic = new Anthropic({ apiKey, timeout: 45_000, maxRetries: 1 });
     const verificationResult = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model,
       max_tokens: 1024,
       system: `You are a quality reviewer for an AI assistant at ${orgName}. Review the response briefly.`,
       messages: [{
@@ -123,11 +126,13 @@ export async function runAgentQuery(params: {
   tokensOut: number;
   assistantBlocks: Anthropic.ContentBlock[] | null;
 }> {
-  if (!env.ANTHROPIC_API_KEY) {
-    throw new Error('Anthropic API key not configured');
-  }
-
   const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride, agentEmployeeId } = params;
+
+  // BYOK — accept either an org-level Anthropic key or the env fallback.
+  const anthropicApiKey = await resolveAnthropicApiKey(orgId);
+  if (!anthropicApiKey) {
+    throw new Error('Anthropic API key not configured (org or env)');
+  }
 
   // Check connected accounts for dynamic tool availability
   const connections = await db.select({ provider: connectedAccounts.provider })
@@ -252,8 +257,8 @@ export async function runAgentQuery(params: {
       .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
   }
 
-  const reasonConfig = getModelConfig('reason');
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 45_000, maxRetries: 1 });
+  const reasonModel = await resolveAnthropicModel(orgId, 'reason');
+  const anthropic = new Anthropic({ apiKey: anthropicApiKey, timeout: 45_000, maxRetries: 1 });
 
   // Build messages array
   let apiMessages: Anthropic.MessageParam[] = [];
@@ -339,7 +344,7 @@ export async function runAgentQuery(params: {
         : tools;
 
     const response = await anthropic.messages.create({
-      model: reasonConfig.model,
+      model: reasonModel,
       max_tokens: 4096,
       system: cachedSystem,
       messages: apiMessages,
@@ -506,7 +511,7 @@ export async function runAgentQuery(params: {
     ? params.mode === 'background'
     : !params.skipVerification;
   if (shouldVerify && responseText && responseText.length > 50) {
-    verifiedText = await verifyResponse(content, responseText, allCitations, orgName);
+    verifiedText = await verifyResponse(content, responseText, allCitations, orgName, orgId);
   }
 
   return {
@@ -514,7 +519,7 @@ export async function runAgentQuery(params: {
     citations: allCitations,
     pendingActions,
     executedActions,
-    model: reasonConfig.model,
+    model: reasonModel,
     tokensIn: totalTokensIn,
     tokensOut: totalTokensOut,
     assistantBlocks: lastResponseContent,

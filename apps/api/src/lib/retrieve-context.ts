@@ -12,6 +12,7 @@
 import { eq, and, or, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import { wikiPages, agentMemory, notes, tasks } from '@deft/db/schema';
+import { embedQuiet, EMBED_DIMS } from './embed.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -88,10 +89,6 @@ function ilikeScore(text: string, queryWords: string[]): number {
 
 // ─── Hybrid vector helpers ────────────────────────────────────────────────────
 
-const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
-const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
-const EMBED_DIMS = 1536;
-
 // Warn only once per process when the <=> operator is unavailable (BYTEA env).
 let _byteFallbackWarned = false;
 
@@ -124,52 +121,13 @@ function isVectorOperatorError(err: unknown): boolean {
 }
 
 /**
- * Generate a query embedding via OpenAI text-embedding-3-small.
- * Returns null on any failure (missing key, API error, malformed response)
- * so callers can gracefully fall back to FTS-only ranking.
+ * Generate a query embedding for hybrid ranking. Routes through the BYO
+ * provider abstraction in lib/embed.ts so the same per-org config that drives
+ * write-side embedding (`embed-content` worker) governs read-side query
+ * vectors. Returns null on any failure so callers fall back to FTS-only.
  */
-async function generateQueryEmbedding(query: string): Promise<number[] | null> {
-  const apiKey = process.env.OPENAI_API_KEY ?? '';
-  if (!apiKey) {
-    return null;
-  }
-
-  try {
-    const response = await globalThis.fetch(OPENAI_EMBED_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: OPENAI_EMBED_MODEL,
-        input: query.slice(0, 32000),
-        dimensions: EMBED_DIMS,
-      }),
-    });
-
-    if (!response.ok) {
-      console.warn(`[retrieveContext] OpenAI embeddings returned ${response.status} — falling back to FTS`);
-      return null;
-    }
-
-    const json = (await response.json()) as { data?: { embedding?: number[] }[] };
-    const embedding = json.data?.[0]?.embedding;
-    if (!Array.isArray(embedding) || embedding.length !== EMBED_DIMS) {
-      console.warn('[retrieveContext] OpenAI embeddings response malformed — falling back to FTS');
-      return null;
-    }
-    // Guard against NaN/Infinity that would corrupt the SQL literal.
-    if (embedding.some((v) => !Number.isFinite(v))) {
-      console.warn('[retrieveContext] OpenAI embedding contains non-finite values — falling back to FTS');
-      return null;
-    }
-
-    return embedding;
-  } catch (err) {
-    console.warn('[retrieveContext] generateQueryEmbedding failed:', (err as Error).message, '— falling back to FTS');
-    return null;
-  }
+async function generateQueryEmbedding(query: string, org_id: string): Promise<number[] | null> {
+  return embedQuiet(query.slice(0, 32_000), org_id);
 }
 
 /**
@@ -728,7 +686,7 @@ export async function retrieveContext(
   const needsEmbedding =
     hybrid && (types.includes('wiki') || types.includes('decisions') || types.includes('tasks'));
   const queryEmbedding = needsEmbedding
-    ? await generateQueryEmbedding(forFTS)
+    ? await generateQueryEmbedding(forFTS, org_id)
     : null;
 
   // 4. Run all requested branches concurrently; each returns its own array.

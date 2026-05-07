@@ -1,4 +1,9 @@
-// Unified transcription provider — supports local Whisper, OpenAI Whisper API, Deepgram
+// Unified transcription provider — supports local Whisper, OpenAI Whisper API, Deepgram.
+// Provider precedence: per-org config (`orgs.ai_config.transcription.provider`)
+// → env.TRANSCRIPTION_PROVIDER (defaults to 'local').
+import { eq } from 'drizzle-orm';
+import { db } from './db.js';
+import { orgs } from '@deft/db/schema';
 import { env } from './env.js';
 import { readFile } from 'node:fs/promises';
 
@@ -145,9 +150,27 @@ async function transcribeDeepgram(audioPath: string): Promise<TranscriptionResul
   };
 }
 
+type StoredTranscriptionConfig = {
+  transcription?: { provider?: 'local' | 'openai' | 'deepgram' };
+};
+
+async function resolveProvider(orgId: string | null | undefined): Promise<'local' | 'openai' | 'deepgram'> {
+  if (orgId) {
+    try {
+      const [row] = await db.select({ ai_config: orgs.ai_config }).from(orgs).where(eq(orgs.id, orgId)).limit(1);
+      const cfg = (row?.ai_config ?? {}) as StoredTranscriptionConfig;
+      const p = cfg.transcription?.provider;
+      if (p === 'local' || p === 'openai' || p === 'deepgram') return p;
+    } catch {
+      // fall through to env
+    }
+  }
+  return env.TRANSCRIPTION_PROVIDER;
+}
+
 // ─── Public API ───
-export async function transcribe(audioPath: string): Promise<TranscriptionResult> {
-  const provider = env.TRANSCRIPTION_PROVIDER;
+export async function transcribe(audioPath: string, orgId?: string | null): Promise<TranscriptionResult> {
+  const provider = await resolveProvider(orgId);
 
   switch (provider) {
     case 'local':

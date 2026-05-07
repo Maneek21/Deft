@@ -5,6 +5,7 @@ import { db } from '../../lib/db.js';
 import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog } from '@deft/db/schema';
 import { eq, and, sql, lt, desc } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
+import { getOrgAIConfig } from '../../lib/org-ai-config.js';
 
 export async function handleWikiLint(job: JobData): Promise<void> {
   console.log('[wiki-lint] Starting daily wiki health check');
@@ -199,10 +200,12 @@ Rules:
 - Each item: {"pair": 1, "page_a": "slug", "page_b": "slug", "description": "what contradicts"}
 - Return [] if no contradictions found.`;
 
+      const orgConfig = await getOrgAIConfig(orgId);
       const response = await llm({
         task: 'extract',
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
+        orgConfig,
       });
 
       const text = response.text.trim();

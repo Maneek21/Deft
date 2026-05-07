@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { eq, and, desc, gt } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { messages, users, spaceMembers, spaces } from '@deft/db/schema';
-import { env } from '../lib/env.js';
 
 export const recapRoutes = new Hono();
 
@@ -71,8 +70,9 @@ recapRoutes.post('/:spaceId/recap', async (c) => {
     return `[${time}] ${m.user_name}: ${content}`;
   }).join('\n');
 
-  // Generate summary with AI (if key available)
-  if (!env.ANTHROPIC_API_KEY) {
+  // Generate summary with AI (if key available — org or env)
+  const { hasAnyAIProvider, getOrgAIConfig } = await import('../lib/org-ai-config.js');
+  if (!(await hasAnyAIProvider(user.org_id))) {
     const authors = [...new Set(recentMessages.map(m => m.user_name))];
     return c.json({
       summary: `${recentMessages.length} messages from ${authors.join(', ')}.`,
@@ -83,6 +83,7 @@ recapRoutes.post('/:spaceId/recap', async (c) => {
 
   try {
     const { llm } = await import('../lib/llm.js');
+    const orgConfig = await getOrgAIConfig(user.org_id);
 
     const response = await llm({
       task: 'summarize',
@@ -91,6 +92,7 @@ recapRoutes.post('/:spaceId/recap', async (c) => {
         content: `Summarize the following team conversation from #${space?.name || 'chat'} concisely. Highlight: key decisions made, action items, questions that need answers, and important updates. Keep it under 150 words. Be direct — no filler.\n\n${conversationText}`,
       }],
       maxTokens: 300,
+      orgConfig,
     });
 
     const summary = response.text || 'Unable to generate summary.';

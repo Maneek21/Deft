@@ -24,7 +24,14 @@ const DEFAULT_ROUTES: Record<LLMTask, LLMConfig> = {
 export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): LLMConfig {
   // If org has custom config for this task, use it
   if (orgConfig?.ai_models?.[task]) {
-    return orgConfig.ai_models[task];
+    const route = orgConfig.ai_models[task] as LLMConfig;
+    // For Ollama, ensure baseUrl falls through to org-level ollama_url if the
+    // route itself doesn't pin one. Precedence (highest first):
+    //   route.baseUrl → orgConfig.ollama_url → env.OLLAMA_URL (callOllama default)
+    if (route.provider === 'ollama' && !route.baseUrl && orgConfig?.ollama_url) {
+      return { ...route, baseUrl: orgConfig.ollama_url };
+    }
+    return route;
   }
   return DEFAULT_ROUTES[task];
 }

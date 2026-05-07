@@ -23,6 +23,7 @@ import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
+import { resolveAnthropicApiKey, resolveAnthropicModel } from '../lib/org-ai-config.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
@@ -78,7 +79,9 @@ async function buildStreamContext(
   user: { id: string; org_id: string },
   convoId: string,
 ): Promise<StreamContext> {
-  if (!env.ANTHROPIC_API_KEY) {
+  // BYOK — accept either an org-level Anthropic key or the env fallback.
+  const apiKey = await resolveAnthropicApiKey(user.org_id);
+  if (!apiKey) {
     return { _kind: 'error', error: 'Anthropic API key not configured', code: 'NO_API_KEY', status: 503 };
   }
 
@@ -294,6 +297,8 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   }
 
   const reasonConfig = getModelConfig('reason');
+  // BYOK — per-org model override falls back to llm.ts default if unset.
+  const reasonModel = await resolveAnthropicModel(user.org_id, 'reason') ?? reasonConfig.model;
 
   // Resolve the agent's user_id from space_members (the non-current-user member).
   // Must happen before history rehydration so we can distinguish user vs assistant rows.
@@ -333,7 +338,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     tools,
     allActionTools,
     trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
-    model: reasonConfig.model,
+    model: reasonModel,
     agentEmployeeId,
     agentUserId: resolvedAgentUserId,
   };

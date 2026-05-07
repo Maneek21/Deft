@@ -12,9 +12,9 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { agentActions, messages, spaces } from '@deft/db/schema';
+import { agentActions, agentConversations, agentMessages } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
-import { env } from './env.js';
+import { resolveAnthropicApiKey } from './org-ai-config.js';
 import { executeToolCall } from './agent-context.js';
 import { getApprovalTier, shouldAutoExecute, type TrustLevel } from './agent-approval.js';
 
@@ -22,7 +22,6 @@ export interface StreamLoopParams {
   convoId: string;
   userId: string;
   orgId: string;
-  agentUserId: string;  // Defty or BYOA — the message author for assistant turns
   agentEmployeeId: string | undefined;
   systemPrompt: string;
   tools: Anthropic.Tool[];
@@ -46,7 +45,9 @@ const MAX_INPUT_TOKENS = 200_000;
 const MAX_ITERATIONS = 50;
 
 export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<StreamLoopResult> {
-  const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  // BYOK — org-level Anthropic key takes precedence; env is the fallback.
+  const apiKey = await resolveAnthropicApiKey(p.orgId);
+  const anthropic = new Anthropic({ apiKey });
 
   let apiMessages = [...p.apiMessages];
   let finalText = '';
@@ -136,22 +137,18 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     // (accumulated at line 74 above after response.usage is read). The terminal
     // row gets the cumulative running sum so history reload can show the full
     // cost of a multi-iter response, not just the final API call's tokens.
-    const [assistantRow] = await db.insert(messages).values({
-      org_id: p.orgId,
-      space_id: p.convoId,
-      user_id: p.agentUserId,
+    const [assistantRow] = await db.insert(agentMessages).values({
+      conversation_id: p.convoId,
+      role: 'assistant',
       content: iterText,
-      metadata: {
-        is_agent_reply: true,
-        agent_blocks: response.content as any,
-        hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
-        tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
-          ? (cumulativeToolCalls as any)
-          : null,
-        model: p.model ?? null,
-        tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
-        tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
-      },
+      content_blocks: response.content as any,
+      hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
+      tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
+        ? (cumulativeToolCalls as any)
+        : null,
+      model: p.model,
+      tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
+      tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
     }).returning();
 
     // Stream this iteration's text word-by-word for typing effect.
@@ -233,16 +230,12 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
 
     // Persist the tool_result user turn (only if we produced results this iteration).
     if (toolResults.length > 0) {
-      await db.insert(messages).values({
-        org_id: p.orgId,
-        space_id: p.convoId,
-        user_id: p.userId,
+      await db.insert(agentMessages).values({
+        conversation_id: p.convoId,
+        role: 'user',
         content: '',
-        metadata: {
-          kind: 'tool_result',
-          agent_blocks: toolResults as any,
-          hidden: true,
-        },
+        content_blocks: toolResults as any,
+        hidden: true,
       });
 
       apiMessages = [
@@ -269,9 +262,9 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
             : `Queued ${newPendings.length} actions for your approval (${labels.join(', ')}) — confirm the cards above to proceed.`;
 
         await db
-          .update(messages)
+          .update(agentMessages)
           .set({ content: replacement })
-          .where(eq(messages.id, assistantRow!.id));
+          .where(eq(agentMessages.id, assistantRow!.id));
 
         await p.write({ type: 'text_replace', text: replacement });
         finalText = replacement;
@@ -282,11 +275,10 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     }
   }
 
-  // Touch the space's updated_at so the conversation list sorts correctly.
   await db
-    .update(spaces)
+    .update(agentConversations)
     .set({ updated_at: new Date() })
-    .where(eq(spaces.id, p.convoId));
+    .where(eq(agentConversations.id, p.convoId));
 
   return { finalText, citations: allCitations, pendingActions, totalTokensIn, totalTokensOut };
 }

@@ -1,6 +1,7 @@
 // Service: Weekly Digest — generates a comprehensive weekly summary for managers
 import { db } from '../lib/db.js';
 import { llm } from '../lib/llm.js';
+import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   tasks,
   taskActivity,
@@ -183,8 +184,10 @@ export async function generateWeeklyDigest(
 
   // Generate digest with LLM
   try {
+    const orgConfig = await getOrgAIConfig(orgId);
     const response = await llm({
       task: 'reason',
+      orgConfig,
       system: `You are a management assistant writing a weekly team digest. Write a clear, scannable summary in markdown format. Structure it as:
 
 ## Weekly Digest

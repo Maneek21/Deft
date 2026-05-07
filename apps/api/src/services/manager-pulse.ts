@@ -1,6 +1,7 @@
 // Service: Manager Pulse — generates team health cards, action items, and summary for managers
 import { db } from '../lib/db.js';
 import { llm } from '../lib/llm.js';
+import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   orgMembers,
   users,
@@ -299,10 +300,12 @@ Write a concise (3-5 sentence) daily team pulse summary for the manager. Highlig
 
 Be direct and helpful. Use a warm but professional tone.`;
 
+    const orgConfig = await getOrgAIConfig(orgId);
     const response = await llm({
       task: 'reason',
       messages: [{ role: 'user', content: prompt }],
       maxTokens: 500,
+      orgConfig,
     });
 
     summary = response.text || buildFallbackSummary(healthCards, actionItems, wins);
