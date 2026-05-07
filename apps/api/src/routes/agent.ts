@@ -18,6 +18,8 @@ import {
   messages,
   taskActivity,
   users,
+  spaces,
+  spaceMembers,
 } from '@deft/db/schema';
 import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
@@ -314,25 +316,46 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
 
 agentRoutes.get('/conversations', async (c) => {
   const user = c.get('user');
-  const employeeFilter = c.req.query('employee');
+  const employeeIdFilter = c.req.query('employee') ?? c.req.query('agent_employee_id') ?? null;
 
-  const conditions = [
-    eq(agentConversations.user_id, user.id),
-    eq(agentConversations.org_id, user.org_id),
-  ];
-  if (employeeFilter) {
-    conditions.push(eq(agentConversations.agent_employee_id, employeeFilter));
+  // Resolve the agent's user_id so we can filter by space membership.
+  let agentFilterUserId: string | null = null;
+  if (employeeIdFilter) {
+    const [emp] = await db.select({ user_id: agentEmployees.user_id })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, employeeIdFilter))
+      .limit(1);
+    agentFilterUserId = emp?.user_id ?? null;
   } else {
-    conditions.push(isNull(agentConversations.agent_employee_id));
+    // No employee filter → Defty conversations.
+    agentFilterUserId = await ensureDeftyMembership(user.org_id);
   }
 
-  const convos = await db
-    .select()
-    .from(agentConversations)
-    .where(and(...conditions))
-    .orderBy(desc(agentConversations.updated_at))
-    .limit(50);
-  return c.json(convos);
+  if (!agentFilterUserId) return c.json([], 200);
+
+  // Find spaces of type agent_conversation where BOTH the current user
+  // AND the target agent are members.
+  const result = await db.execute(sql`
+    SELECT s.id, s.name AS title, s.created_at, s.updated_at, s.org_id
+    FROM spaces s
+    WHERE s.org_id = ${user.org_id}
+      AND s.type = 'agent_conversation'
+      AND s.is_archived = false
+      AND EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${user.id})
+      AND EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = ${agentFilterUserId})
+    ORDER BY s.updated_at DESC NULLS LAST
+    LIMIT 100
+  `);
+
+  return c.json((result.rows as any[]).map((r) => ({
+    id: r.id,
+    user_id: user.id,
+    org_id: r.org_id,
+    agent_employee_id: employeeIdFilter ?? null,
+    title: r.title,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  })));
 });
 
 agentRoutes.post('/conversations', async (c) => {
