@@ -129,6 +129,19 @@ by `Inbox` with one aggregated red-badge count via `useInboxCount`.
 `/approvals` is a server redirect to `/inbox?tab=approvals` so external
 links keep working. No schema migrations — pure read-side aggregator.
 
+**Phase 6 (2026-05-07).** Multi-agent affordances. (1) Agents partitioned
+in `SpaceMembersPanel` into a separate "Agents" section with an
+`<AIBadge/>` per row, mirroring Phase 4's `CreateDmModal` pattern;
+backend member-add accepts any user kind unchanged. (2) Reply-storm
+detector at `apps/api/src/lib/storm-detector.ts`: counts agent-authored
+thread replies (per agent, per thread root) in a rolling 10-minute
+window. On `count >= 5`, the BYOA `sendMessage` MCP tool (thread_id
+target) and the Defty `post_thread_reply` executor return a
+`STORM_DETECTED` error so the agent's runtime can back off. Top-level
+posts and DMs are not throttled. (3) `<AIBadge/>` component extracted
+into `apps/web/src/components/ai-badge.tsx` and reused by both
+`CreateDmModal` and `SpaceMembersPanel`. No DB migration.
+
 **Skills primitive (agent-only).** A single `skills` table with three source tiers — `bundled` (shipped with Deft, `org_id IS NULL`), `marketplace` (installable catalog), `org` (tenant-authored). Carries an `agent_config` JSONB (tools, capability packs, triggers, prompt additions, heartbeat checklists). Agents install skills via the `agent_employee_skills` junction. Bundled skills are generated dynamically — one per available capability pack (Deft Workspace carries the 9 task tools) plus `deft-mcp-client` (Block 3 on-ramp for BYOA agents to talk back into the workspace via MCP). Task templates are a separate first-class primitive (`task_templates` table) — instantiated into any project via `POST /api/projects/:id/apply-template`. Project-level customization via `project_skills` / `skills.project_config` was retired 2026-04-18 in favor of fixed engineering defaults. See `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 
 **Observation pipeline:** Every chat message classified (Haiku): actionable? Intent? Entities? Urgency?
