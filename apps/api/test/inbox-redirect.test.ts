@@ -45,3 +45,28 @@ test('sidebar uses Inbox not Approvals', () => {
   assert.ok(!src.match(/name:\s*'Approvals'/), 'sidebar should NOT have Approvals nav entry');
   assert.ok(src.includes('useInboxCount'), 'sidebar should use useInboxCount badge hook');
 });
+
+test('SpaceMembersPanel partitions humans/agents and renders AIBadge', () => {
+  const p = resolve(ROOT, 'apps/web/src/components/space-members-panel.tsx');
+  const src = readFileSync(p, 'utf8');
+  assert.ok(src.includes('AIBadge'), 'should import the AIBadge component');
+  assert.ok(src.includes("kind === 'agent'"), 'should partition by kind');
+  assert.ok(src.includes('People'), 'should render the People section header');
+  assert.ok(src.includes('Agents'), 'should render the Agents section header');
+});
+
+test('AIBadge component exists', () => {
+  const p = resolve(ROOT, 'apps/web/src/components/ai-badge.tsx');
+  assert.ok(existsSync(p), `expected ${p} to exist`);
+  const src = readFileSync(p, 'utf8');
+  assert.ok(src.includes('export function AIBadge'), 'should export AIBadge function');
+});
+
+test('storm-detector module exists with documented constants', () => {
+  const p = resolve(ROOT, 'apps/api/src/lib/storm-detector.ts');
+  assert.ok(existsSync(p));
+  const src = readFileSync(p, 'utf8');
+  assert.ok(src.includes('STORM_THRESHOLD'), 'should export threshold constant');
+  assert.ok(src.includes('STORM_WINDOW_MS'), 'should export window constant');
+  assert.ok(src.includes('checkReplyStorm'), 'should export checkReplyStorm function');
+});
