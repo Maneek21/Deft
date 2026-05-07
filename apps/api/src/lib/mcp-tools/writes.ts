@@ -27,6 +27,7 @@ import {
   agentEmployees,
   projects,
   spaces,
+  spaceMembers,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -551,6 +552,7 @@ export async function messagePost(
   args: MessagePostArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  console.warn('[mcp] message_post is deprecated; use send_message');
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
 
@@ -559,4 +561,192 @@ export async function messagePost(
   }
 
   return executeMessagePost(args, ctx);
+}
+
+// ─── send_message (Phase 3 unified tool) ─────────────────────────────────
+
+export type SendMessageTarget =
+  | { space_id: string }
+  | { thread_id: string }
+  | { user_id: string };
+
+export type SendMessageArgs = {
+  caller_employee_slug: string;
+  target: SendMessageTarget;
+  content: string;
+};
+
+/**
+ * Phase 3 of agent-chat unification — unified message-send tool.
+ * Target is one of:
+ *   - { space_id }   — post in an existing space
+ *   - { thread_id }  — reply in a thread (parent message id)
+ *   - { user_id }    — DM target user; creates DM space if missing
+ *
+ * Tier 'full': queued for approval unless caller's trust is autonomous.
+ */
+export async function sendMessage(
+  args: SendMessageArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (!args.content?.trim()) return errorResult('send_message requires content');
+
+  const { target, content } = args;
+
+  // Resolve target → { spaceId, parentId? } so the rest is uniform.
+  let spaceId: string;
+  let parentId: string | null = null;
+
+  if ('space_id' in target) {
+    spaceId = target.space_id;
+  } else if ('thread_id' in target) {
+    const [parent] = await db
+      .select({ id: messages.id, space_id: messages.space_id })
+      .from(messages)
+      .where(and(eq(messages.id, target.thread_id), eq(messages.org_id, ctx.org_id)))
+      .limit(1);
+    if (!parent) {
+      return errorResult('send_message: thread_id not found');
+    }
+    spaceId = parent.space_id;
+    parentId = parent.id;
+  } else if ('user_id' in target) {
+    const shadowUserId = await getShadowUserId(ctx.employee_id);
+    if (!shadowUserId) {
+      return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);
+    }
+    spaceId = await findOrCreateDmSpace(ctx.org_id, shadowUserId, target.user_id);
+  } else {
+    return errorResult('send_message: target must include space_id, thread_id, or user_id');
+  }
+
+  // Org-scope guard
+  if (!(await verifySpaceInOrg(spaceId, ctx.org_id))) {
+    return errorResult(`send_message: space ${spaceId} not found in caller's org`);
+  }
+
+  if (!shouldAutoExecute('send_message', ctx.trust_level)) {
+    return queueAction(
+      'send_message',
+      { ...args, resolved_space_id: spaceId, parent_id: parentId } as Record<string, unknown>,
+      ctx,
+    );
+  }
+
+  return executeSendMessage({ orgId: ctx.org_id, spaceId, content, parentId, ctx });
+}
+
+async function executeSendMessage(opts: {
+  orgId: string;
+  spaceId: string;
+  content: string;
+  parentId: string | null;
+  ctx: ToolContext;
+}): Promise<ToolResult> {
+  const { orgId, spaceId, content, parentId, ctx } = opts;
+  try {
+    const shadowUserId = await getShadowUserId(ctx.employee_id);
+    if (!shadowUserId) {
+      return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);
+    }
+
+    const [row] = await db
+      .insert(messages)
+      .values({
+        org_id: orgId,
+        space_id: spaceId,
+        user_id: shadowUserId,
+        content,
+        parent_id: parentId,
+      })
+      .returning();
+
+    // Best-effort broadcast. Socket.io might not be initialized in tests.
+    try {
+      const { getIO } = await import('../../socket.js');
+      const io = getIO();
+      if (io && row) {
+        io.to(`space:${spaceId}`).emit('message:new', row);
+      }
+    } catch {
+      // swallow — broadcast must not roll back the write.
+    }
+
+    invalidatePlatformContextCacheFor(ctx.employee_id);
+
+    const resultPayload = {
+      message_id: row!.id,
+      space_id: row!.space_id,
+      user_id: row!.user_id,
+      content: row!.content,
+      parent_id: row!.parent_id,
+      created_at: row!.created_at,
+    };
+
+    const actionId = await insertAutoExecActionRow(
+      'send_message',
+      { space_id: spaceId, content, parent_id: parentId } as Record<string, unknown>,
+      ctx,
+    );
+    await patchActionResult(actionId, resultPayload);
+    if (actionId) {
+      await generateReceipt({
+        actionId,
+        orgId,
+        employeeId: ctx.employee_id,
+        proposer: 'employee',
+        proposerId: ctx.employee_id,
+        decision: 'auto_executed',
+        actionName: 'send_message',
+        actionParams: { space_id: spaceId, content, parent_id: parentId },
+        resultJson: resultPayload,
+      });
+    }
+
+    return textResult(resultPayload);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`send_message failed: ${msg}`);
+  }
+}
+
+/**
+ * Find an existing 1:1 DM space between two users in the same org,
+ * or create one if it doesn't exist.
+ */
+async function findOrCreateDmSpace(
+  orgId: string,
+  userIdA: string,
+  userIdB: string,
+): Promise<string> {
+  const existing = await db.execute(sql`
+    SELECT s.id FROM spaces s
+    WHERE s.org_id = ${orgId}
+      AND s.type = 'dm'
+      AND EXISTS (SELECT 1 FROM space_members WHERE space_id = s.id AND user_id = ${userIdA})
+      AND EXISTS (SELECT 1 FROM space_members WHERE space_id = s.id AND user_id = ${userIdB})
+      AND (SELECT COUNT(*) FROM space_members WHERE space_id = s.id) = 2
+    LIMIT 1
+  `);
+  if (existing.rows.length > 0) {
+    return (existing.rows[0] as { id: string }).id;
+  }
+
+  const [space] = await db
+    .insert(spaces)
+    .values({
+      org_id: orgId,
+      name: 'DM',
+      type: 'dm',
+      created_by: userIdA,
+    })
+    .returning();
+  await db
+    .insert(spaceMembers)
+    .values([
+      { space_id: space!.id, user_id: userIdA },
+      { space_id: space!.id, user_id: userIdB },
+    ])
+    .onConflictDoNothing();
+  return space!.id;
 }
