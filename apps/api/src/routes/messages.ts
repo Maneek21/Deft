@@ -10,7 +10,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { env } from '../lib/env.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
-import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 
 export const messageRoutes = new Hono();
 
@@ -312,11 +312,26 @@ messageRoutes.post('/:spaceId', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    // Normalize plain @deft / @agent (case-insensitive) into structured mentions
+    // so the renderer styles them as pills uniformly. Skip if a structured Defty
+    // mention is already present.
+    let normalizedContent = parsed.data.content;
+    if (!/<@[^|]+\|Deft>/i.test(normalizedContent)) {
+      const hasLegacyAgent = /(^|[^a-z0-9_])@(deft|agent)\b/i.test(normalizedContent);
+      if (hasLegacyAgent) {
+        const deftyUserId = await ensureDeftyMembership(user.org_id);
+        normalizedContent = normalizedContent.replace(
+          /(^|[^a-z0-9_])@(deft|agent)\b/gi,
+          (_match, prefix) => `${prefix}<@${deftyUserId}|Deft>`,
+        );
+      }
+    }
+
     const [message] = await db.insert(messages).values({
       org_id: user.org_id,
       space_id: spaceId,
       user_id: user.id,
-      content: parsed.data.content,
+      content: normalizedContent,
       parent_id: parsed.data.parent_id,
     }).returning();
 
