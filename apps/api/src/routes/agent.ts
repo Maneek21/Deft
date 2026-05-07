@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
+import { randomUUID } from 'node:crypto';
 import type { TrustLevel } from '../lib/agent-approval.js';
 import { eq, and, desc, lt, sql, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
@@ -18,6 +19,8 @@ import {
   taskActivity,
   users,
 } from '@deft/db/schema';
+import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
 import { getModelConfig } from '../lib/llm.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
@@ -335,16 +338,40 @@ agentRoutes.get('/conversations', async (c) => {
 agentRoutes.post('/conversations', async (c) => {
   const user = c.get('user');
   const body = await c.req.json().catch(() => ({}));
-  const [convo] = await db
-    .insert(agentConversations)
-    .values({
-      org_id: user.org_id,
-      user_id: user.id,
-      title: body.title || 'New conversation',
-      agent_employee_id: body.agent_employee_id || null,
-    })
-    .returning();
-  return c.json(convo, 201);
+
+  const conversationId = randomUUID();
+  let agentUserId: string;
+  if (body.agent_employee_id) {
+    const [emp] = await db.select({ user_id: agentEmployees.user_id })
+      .from(agentEmployees)
+      .where(eq(agentEmployees.id, body.agent_employee_id))
+      .limit(1);
+    if (!emp) {
+      return c.json({ error: 'Unknown agent employee', code: 'NOT_FOUND' }, 404);
+    }
+    agentUserId = emp.user_id;
+  } else {
+    agentUserId = await ensureDeftyMembership(user.org_id);
+  }
+
+  const title = body.title || 'New conversation';
+  await ensureAgentConversationSpace({
+    orgId: user.org_id,
+    userId: user.id,
+    agentUserId,
+    conversationId,
+    title,
+  });
+
+  return c.json({
+    id: conversationId,
+    user_id: user.id,
+    org_id: user.org_id,
+    agent_employee_id: body.agent_employee_id ?? null,
+    title,
+    created_at: new Date(),
+    updated_at: new Date(),
+  }, 201);
 });
 
 agentRoutes.get('/conversations/:id', async (c) => {
