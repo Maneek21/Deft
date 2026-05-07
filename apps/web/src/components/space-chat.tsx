@@ -49,6 +49,8 @@ import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
 import { ClipCard } from './clip-card';
 import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
+import { AgentActionCard, type AgentAction } from './agent-action-card';
+import useSWR, { mutate as swrMutate } from 'swr';
 import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
@@ -574,6 +576,28 @@ export function SpaceChat({
   const [profileCard, setProfileCard] = useState<{ userId: string; rect: { top: number; left: number; bottom: number } } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
+
+  // P4-4 — pending agent_actions keyed by message_id for this space.
+  // Polled every 5s so inline approval cards appear promptly.
+  const pendingBySpaceKey = spaceId
+    ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
+    : null;
+
+  const { data: pendingByMessage } = useSWR(
+    pendingBySpaceKey,
+    async (url: string) => {
+      const res = await api.get(url);
+      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      const list: Array<AgentAction & { message_id: string }> = await res.json();
+      const map: Record<string, AgentAction[]> = {};
+      for (const a of list) {
+        if (!a.message_id) continue;
+        (map[a.message_id] ??= []).push(a);
+      }
+      return map;
+    },
+    { refreshInterval: 5000, fallbackData: {} },
+  );
 
   // Load user's saved/bookmarked message IDs for this space
   useEffect(() => {
@@ -1728,6 +1752,20 @@ export function SpaceChat({
                                 />
                               );
                             })()}
+                            {pendingByMessage?.[msg.id]?.map((action) => (
+                              <AgentActionCard
+                                key={action.id}
+                                action={action}
+                                onApprove={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                                onReject={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                              />
+                            ))}
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1866,6 +1904,20 @@ export function SpaceChat({
                                 />
                               );
                             })()}
+                            {pendingByMessage?.[msg.id]?.map((action) => (
+                              <AgentActionCard
+                                key={action.id}
+                                action={action}
+                                onApprove={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                                onReject={async () => {
+                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                }}
+                              />
+                            ))}
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}

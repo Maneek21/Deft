@@ -759,6 +759,42 @@ agentRoutes.get('/actions/pending', async (c) => {
   return c.json({ actions });
 });
 
+// P4-4 — Pending actions keyed by message, scoped to a space.
+// The SpaceChat component polls this to render inline approval cards
+// directly below the message that triggered the action.
+// Space membership is checked before returning any rows.
+agentRoutes.get('/actions/pending-by-space', async (c) => {
+  const user = c.get('user');
+  const spaceId = c.req.query('space_id');
+  if (!spaceId) {
+    return c.json({ error: 'space_id required', code: 'VALIDATION_ERROR' }, 400);
+  }
+
+  // Membership check — callers outside the space get an empty list (not a 403)
+  // so the polling loop doesn't error on transitions.
+  const [membership] = await db
+    .select({ id: spaceMembers.id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
+    .limit(1);
+  if (!membership) {
+    return c.json([], 200);
+  }
+
+  const rows = await db.execute(sql`
+    SELECT a.*
+    FROM agent_actions a
+    JOIN messages msg ON msg.id = a.message_id
+    WHERE msg.space_id = ${spaceId}
+      AND msg.org_id = ${user.org_id}
+      AND a.approval_status = 'pending'
+    ORDER BY a.created_at DESC
+    LIMIT 100
+  `);
+
+  return c.json(rows.rows);
+});
+
 // Block 3.8 — Agent trace export. Downloads the full tool-call tree
 // for every assistant message in a conversation as a single JSON
 // document: conversation metadata + each message's content_blocks +
