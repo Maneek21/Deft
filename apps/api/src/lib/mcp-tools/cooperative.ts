@@ -153,6 +153,7 @@ export async function pollPendingWork(
   _args: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  console.warn('[mcp] poll_pending_work is deprecated; use fetch_unread (returns both unread messages + pending actions)');
   const pending = await db
     .select({
       id: agentActions.id,

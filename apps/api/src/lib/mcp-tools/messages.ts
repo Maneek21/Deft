@@ -6,9 +6,9 @@
  *
  * message_post (write) is Phase 4 and gated by trust level.
  */
-import { and, eq, asc, or } from 'drizzle-orm';
+import { and, eq, asc, or, desc } from 'drizzle-orm';
 import { db } from '../db.js';
-import { messages, users, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
+import { messages, users, spaces, spaceMembers, agentEmployees, agentActions } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 
@@ -127,5 +127,151 @@ export async function threadFetch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`thread_fetch failed: ${msg}`);
+  }
+}
+
+// ─── fetch_unread ────────────────────────────────────────────────────────────
+
+export type FetchUnreadArgs = {
+  caller_employee_slug: string;
+  limit?: number;
+  space_id?: string;
+};
+
+/**
+ * Phase 3 of agent-chat unification — unified inbox tool.
+ *
+ * Returns:
+ *   unread_messages: messages newer than caller's last_read_at in spaces they
+ *     are a member of (via their shadow user), excluding their own posts.
+ *   pending_actions: pending agent_actions for the calling employee.
+ *
+ * One MCP roundtrip surfaces both kinds of pending work, superseding
+ * poll_pending_work for agents that also need to track chat.
+ */
+export async function fetchUnread(
+  args: FetchUnreadArgs,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  const limit = Math.min(Math.max(1, args.limit ?? 20), 100);
+
+  try {
+    // Resolve the employee's shadow user_id so we can check space membership.
+    const [emp] = await db
+      .select({ user_id: agentEmployees.user_id })
+      .from(agentEmployees)
+      .where(
+        and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id)),
+      )
+      .limit(1);
+
+    if (!emp?.user_id) {
+      return errorResult('fetch_unread: employee has no shadow user — cannot resolve space membership');
+    }
+
+    const shadowUserId = emp.user_id;
+
+    // Unread chat messages (spaces the shadow user is a member of, newer than
+    // last_read_at, excluding the caller's own posts).
+    const unreadRows = await db
+      .select({
+        id: messages.id,
+        space_id: messages.space_id,
+        user_id: messages.user_id,
+        user_name: users.name,
+        content: messages.content,
+        parent_id: messages.parent_id,
+        space_type: spaces.type,
+        created_at: messages.created_at,
+      })
+      .from(messages)
+      .innerJoin(
+        spaceMembers,
+        and(
+          eq(spaceMembers.space_id, messages.space_id),
+          eq(spaceMembers.user_id, shadowUserId),
+        ),
+      )
+      .innerJoin(spaces, eq(spaces.id, messages.space_id))
+      .innerJoin(users, eq(users.id, messages.user_id))
+      .where(
+        and(
+          eq(messages.org_id, ctx.org_id),
+          eq(messages.is_deleted, false),
+          ...(args.space_id ? [eq(messages.space_id, args.space_id)] : []),
+        ),
+      )
+      .orderBy(desc(messages.created_at))
+      .limit(limit);
+
+    // Filter in JS: exclude caller's own posts and messages not newer than
+    // last_read_at. The join doesn't expose last_read_at on the select so we
+    // re-fetch it only for the space_ids we touched — but simpler is to do
+    // the filter via a subquery. For now we filter post-fetch to keep the
+    // query readable; the result set is already bounded by `limit`.
+    //
+    // Fetch last_read_at per space for the shadow user.
+    const spaceIds = [...new Set(unreadRows.map((r) => r.space_id))];
+    let lastReadMap: Record<string, Date | null> = {};
+    if (spaceIds.length > 0) {
+      const memberRows = await db
+        .select({ space_id: spaceMembers.space_id, last_read_at: spaceMembers.last_read_at })
+        .from(spaceMembers)
+        .where(
+          and(
+            eq(spaceMembers.user_id, shadowUserId),
+          ),
+        );
+      for (const row of memberRows) {
+        lastReadMap[row.space_id] = row.last_read_at ?? null;
+      }
+    }
+
+    const unreadMessages = unreadRows
+      .filter((r) => {
+        // Exclude caller's own shadow-user posts.
+        if (r.user_id === shadowUserId) return false;
+        // Exclude messages not newer than last_read_at.
+        const lastRead = lastReadMap[r.space_id];
+        if (lastRead && r.created_at <= lastRead) return false;
+        return true;
+      })
+      .map((r) => ({
+        id: r.id,
+        space_id: r.space_id,
+        user_id: r.user_id,
+        user_name: r.user_name,
+        content: r.content,
+        parent_id: r.parent_id,
+        is_dm: r.space_type === 'dm',
+        created_at: r.created_at,
+      }));
+
+    // Pending agent_actions for the calling employee.
+    const actionRows = await db
+      .select({
+        id: agentActions.id,
+        action: agentActions.action,
+        params: agentActions.params,
+        approval_tier: agentActions.approval_tier,
+        created_at: agentActions.created_at,
+      })
+      .from(agentActions)
+      .where(
+        and(
+          eq(agentActions.agent_employee_id, ctx.employee_id),
+          eq(agentActions.approval_status, 'pending'),
+        ),
+      )
+      .orderBy(desc(agentActions.created_at))
+      .limit(25);
+
+    return textResult({
+      unread_messages: unreadMessages,
+      pending_actions: actionRows,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return errorResult(`fetch_unread failed: ${msg}`);
   }
 }
