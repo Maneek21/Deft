@@ -79,6 +79,7 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   task_create: 'quick',
   task_update: 'quick',
   message_post: 'full',
+  send_message: 'full',
   memory_update: 'quick',
   space_memory_set: 'auto',
   space_memory_get: 'auto',
