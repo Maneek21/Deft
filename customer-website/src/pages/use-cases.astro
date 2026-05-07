@@ -1,0 +1,434 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SectionHeader from '../components/SectionHeader.astro';
+import CTABand from '../components/CTABand.astro';
+import PlanProposalMock from '../components/mock/PlanProposalMock.astro';
+---
+
+<Layout
+  title="Deft — what teams actually run on Deft"
+  description="Six concrete coordination loops where having native data plus governed agents pays off: launch triage, customer follow-up, standups, engineering execution, onboarding, decision capture."
+>
+
+  <!-- ================================================================
+       1. SUBPAGE HERO
+       ================================================================ -->
+  <div class="relative">
+    <div class="hero-bloom" aria-hidden="true"></div>
+    <div class="max-w-3xl mx-auto text-center pt-24 pb-16 px-6 relative">
+      <p class="eyebrow mb-4">Use cases</p>
+      <h1 class="display mb-6">Coordination loops, automated.</h1>
+      <p class="lede mx-auto max-w-[640px]">
+        Not "imagine if AI could…" — the actual loops product teams run every week. Each
+        one becomes a multi-step plan with receipts.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       2. SIX LOOPS
+       ================================================================ -->
+
+  <!-- L01: Launch blocker triage -->
+  <section class="py-16 border-t border-ghost">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L01</p>
+        <h2 class="section-title">From #launch-q2 chatter to a signed-off plan.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          An engineer flags a blocker in chat. Defty pulls open tasks tagged with the
+          launch, finds the dependency chain, and proposes a triage plan. No context
+          paste. No spreadsheet.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">
+              An @-mention lands in #launch-q2
+            </span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">3-step triage plan — query open tasks, group by dependency, propose assignments</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">Blockers assigned, commented, and tracked in the project</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/chat" class="text-primary hover:opacity-80">Chat</a>
+          · <a href="/tasks" class="text-primary hover:opacity-80">Tasks</a>
+        </p>
+      </div>
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="D"
+          title="Defty proposed a plan"
+          subtitle="in #launch-q2 · 2m ago"
+          steps={[
+            { status: 'done', label: 'Queried open tasks assigned to Maneek', detail: [
+              { text: "SELECT t.id, t.title FROM tasks t WHERE org_id = $1" },
+              { text: "  AND assignee_id = $2 AND status != 'done'" },
+              { text: "→ ENG-142, ENG-143, ENG-156", color: 'green' }
+            ]},
+            { status: 'done', label: 'Fetched related Acme events from calendar', detail: [
+              { text: "SELECT e.payload FROM events e" },
+              { text: "  JOIN tasks t ON e.task_id = t.id WHERE t.org_id = $1" },
+              { text: "→ 14 rows · 22ms", color: 'green' }
+            ]},
+            { status: 'in_progress', label: 'Generating executive briefing…', detail: [
+              { text: "Composing summary from 3 tasks + 14 event rows" },
+              { text: "→ running", color: 'amber' }
+            ]},
+            { status: 'pending', label: 'Post briefing to #launch-q2', detail: [
+              { text: "external · awaiting step 3", color: 'blue' }
+            ]}
+          ]}
+          primaryAction="Approve full plan"
+        />
+      </div>
+
+    </div>
+  </section>
+
+  <!-- L02: Customer follow-up -->
+  <section class="py-16 border-t border-ghost bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="D"
+          title="Defty drafted a reply"
+          subtitle="in #customer-acme · 4m ago"
+          steps={[
+            { status: 'done', label: 'Pulled past Acme decisions from notes', detail: [
+              { text: "SELECT d.title, d.body FROM decisions" },
+              { text: "  WHERE org_id = $1 AND title ILIKE '%acme%'" },
+              { text: "→ 6 rows · 18ms", color: 'green' }
+            ]},
+            { status: 'done', label: 'Linked 4 promised tasks', detail: [
+              { text: "→ ENG-118, ENG-129, ENG-138, ENG-156", color: 'green' }
+            ]},
+            { status: 'in_progress', label: 'Composing reply with promise refs…', detail: [
+              { text: "Drafting 3-paragraph response · cites 4 task IDs" },
+              { text: "→ running", color: 'amber' }
+            ]},
+            { status: 'pending', label: 'Send to acme-eng@', detail: [
+              { text: "external · awaiting human", color: 'blue' }
+            ]}
+          ]}
+          primaryAction="Send draft"
+        />
+      </div>
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L02</p>
+        <h2 class="section-title">Acme's question is answered before standup.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          A customer issue lands in Slack. The agent pulls past decisions, drafts a reply
+          referencing the relevant tasks, and waits for a human to send. Nobody has to
+          remember what was promised.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">A webhook from Slack fires, or someone @-mentions the agent in a customer space</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">Retrieve relevant decisions, pull linked tasks, compose a draft reply</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">Draft posted for review — human sends, agent logs the thread</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/chat" class="text-primary hover:opacity-80">Chat</a>
+          · <a href="/knowledge" class="text-primary hover:opacity-80">Knowledge</a>
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- L03: Engineering execution -->
+  <section class="py-16 border-t border-ghost">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L03</p>
+        <h2 class="section-title">PR merged → task done → people DMed.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          When a PR is merged, Deft scans its title and body for task references like
+          <code class="font-mono text-[13px] bg-surface-container px-1 py-0.5 rounded">PREFIX-N</code>.
+          Each matched task moves to done, assignees are notified, and an attribution
+          comment links the PR. No manual status updates. No Jira ceremony.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">A PR is merged with task references in its title or body</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">Parse references, close each matched task, leave a comment linking the PR</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">Clean attribution trail — tasks marked done, team DM'd, zero manual steps</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/tasks" class="text-primary hover:opacity-80">Tasks</a>
+        </p>
+      </div>
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="D"
+          title="Closed 3 tasks via PR #1248"
+          subtitle="in #eng · just now · auto-executed"
+          steps={[
+            { status: 'done', label: 'Parsed PR #1248 title for task refs', detail: [
+              { text: "Match: ENG-138, ENG-140, ENG-156", color: 'green' }
+            ]},
+            { status: 'done', label: 'Moved 3 tasks to done', detail: [
+              { text: "UPDATE tasks SET status='done' WHERE id IN ($1,$2,$3)" },
+              { text: "→ 3 rows · 14ms", color: 'green' }
+            ]},
+            { status: 'done', label: 'Posted attribution comments', detail: [
+              { text: "→ 3 comments inserted · linked to PR #1248", color: 'green' }
+            ]},
+            { status: 'done', label: "DM'd assignees", detail: [
+              { text: "→ Maneek, Sarah notified", color: 'green' }
+            ]}
+          ]}
+          primaryAction="View PR"
+          showReject={false}
+        />
+      </div>
+
+    </div>
+  </section>
+
+  <!-- L04: Standups, automated -->
+  <section class="py-16 border-t border-ghost bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="D"
+          title="Defty drafted today's standup"
+          subtitle="in #standup · 9:00 AM"
+          steps={[
+            { status: 'done', label: "Pulled yesterday's completed tasks", detail: [
+              { text: "SELECT t.id FROM tasks WHERE updated_at >= now() - '1 day'::interval" },
+              { text: "→ 7 closed · 3 PRs merged", color: 'green' }
+            ]},
+            { status: 'done', label: 'Found stalled items', detail: [
+              { text: "→ ENG-129 unowned · 48h since update", color: 'amber' }
+            ]},
+            { status: 'done', label: 'Composed structured summary', detail: [
+              { text: "Sections: Done · In progress · Blocked", color: 'outline' }
+            ]},
+            { status: 'pending', label: 'Post to #standup', detail: [
+              { text: "external · awaiting approval", color: 'blue' }
+            ]}
+          ]}
+          primaryAction="Post to #standup"
+        />
+      </div>
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L04</p>
+        <h2 class="section-title">9am: a real standup, not a recap.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          Defty pulls activity from yesterday — completed tasks, merged PRs, blocked
+          items — and posts a focused standup summary. If nobody owns a stalled item,
+          it says so. No bot that just parrots what the ticket tracker already shows.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">Posted at 9 AM each weekday</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">Query yesterday's activity, group by status, flag anything blocked or unowned</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">Posted to the designated space — structured, skimmable, actionable</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/dashboard" class="text-primary hover:opacity-80">Dashboard</a>
+          · <a href="/chat" class="text-primary hover:opacity-80">Chat</a>
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- L05: Onboarding loop -->
+  <section class="py-16 border-t border-ghost">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L05</p>
+        <h2 class="section-title">New hire joins. Their agent meets them in chat.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          The moment someone joins the workspace, the HR agent introduces itself, links
+          the relevant wiki pages, books the kickoff meeting, and assigns the first three
+          onboarding tasks. The new hire never reads a wiki page they don't need.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">A new member joins — routed via triggers to any subscribed agent</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">DM intro, link relevant wiki pages, send calendar invite, assign onboarding tasks</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">Day-one context delivered — zero manual pings from the people team</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/agents" class="text-primary hover:opacity-80">Agents</a>
+          · <a href="/knowledge" class="text-primary hover:opacity-80">Knowledge</a>
+        </p>
+      </div>
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="H"
+          title="HR Bot prepared onboarding"
+          subtitle="for @sarah · joined 3m ago"
+          steps={[
+            { status: 'done', label: "DM'd intro message to @sarah", detail: [
+              { text: "→ message sent · #dm-sarah", color: 'green' }
+            ]},
+            { status: 'done', label: 'Linked 4 wiki pages', detail: [
+              { text: "Eng onboarding, code-of-conduct, on-call, deploy" },
+              { text: "→ 4 mentions inserted", color: 'green' }
+            ]},
+            { status: 'done', label: 'Booked kickoff meeting', detail: [
+              { text: "Tomorrow 10:00 · @maneek + @sarah · 30 min", color: 'green' }
+            ]},
+            { status: 'in_progress', label: 'Assigning first 3 onboarding tasks…', detail: [
+              { text: "INSERT INTO tasks (org_id, assignee_id, ...)" },
+              { text: "→ running", color: 'amber' }
+            ]}
+          ]}
+          primaryAction="Mark complete"
+          showReject={false}
+        />
+      </div>
+
+    </div>
+  </section>
+
+  <!-- L06: Decision capture -->
+  <section class="py-16 border-t border-ghost bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6 grid gap-12 lg:grid-cols-2 items-center">
+
+      <div class="flex items-center justify-center lg:order-2">
+        <PlanProposalMock
+          avatar="D"
+          title="Defty linked a decision"
+          subtitle="in #eng-arch · just now"
+          steps={[
+            { status: 'done', label: "Saved decision: Use HMAC-SHA256 for webhooks", detail: [
+              { text: "INSERT INTO decisions (id, org_id, title, body)" },
+              { text: "→ dec_2k9a1m · stored", color: 'green' }
+            ]},
+            { status: 'done', label: 'Linked 2 implementation tasks', detail: [
+              { text: "→ ENG-142, ENG-156 · cross_references inserted", color: 'green' }
+            ]},
+            { status: 'done', label: 'Watching for PR merges on linked tasks', detail: [
+              { text: "→ 2 watchers registered", color: 'green' }
+            ]},
+            { status: 'pending', label: 'Mark implemented when both tasks close', detail: [
+              { text: "auto · 0/2 done", color: 'blue' }
+            ]}
+          ]}
+          primaryAction="View decision"
+        />
+      </div>
+
+      <div class="flex flex-col gap-5 lg:order-1">
+        <p class="eyebrow">L06</p>
+        <h2 class="section-title">What we agreed on, linked to what shipped.</h2>
+        <p class="text-[15px] text-ink-variant leading-relaxed max-w-[460px]">
+          A decision made in chat gets saved and linked to the tasks that implement it.
+          When the work ships, the decision is marked implemented — automatically.
+          No more "why did we do this?" six months later.
+        </p>
+        <ul class="flex flex-col gap-2 mt-1">
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">When</span>
+            <span class="text-ink-variant">The agent classifies an actionable message as a decision</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">What</span>
+            <span class="text-ink-variant">Save the decision, link it to the relevant tasks, watch for when a PR is merged</span>
+          </li>
+          <li class="flex items-start gap-3 text-[14px]">
+            <span class="font-semibold text-ink-variant min-w-[68px]">Result</span>
+            <span class="text-ink-variant">The decision is marked implemented when linked tasks close — durable, searchable history</span>
+          </li>
+        </ul>
+        <p class="text-[13px] text-ink-variant mt-4">
+          Read more: <a href="/notes" class="text-primary hover:opacity-80">Notes</a>
+          · <a href="/knowledge" class="text-primary hover:opacity-80">Knowledge</a>
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================================================================
+       3. OUTCOME METRICS BAND
+       ================================================================ -->
+  <section class="py-16 my-16 rounded-lg bg-surface-container-low border-y border-ghost">
+    <div class="max-w-[1200px] mx-auto px-6 grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+
+      <div class="flex flex-col items-center gap-2">
+        <span class="font-mono text-primary text-3xl font-semibold">12+ hrs/week</span>
+        <span class="text-[13px] text-ink-variant mt-1">coordination time recovered per team</span>
+      </div>
+
+      <div class="flex flex-col items-center gap-2">
+        <span class="font-mono text-primary text-3xl font-semibold">&lt;2 min</span>
+        <span class="text-[13px] text-ink-variant mt-1">from issue raised to plan proposed</span>
+      </div>
+
+      <div class="flex flex-col items-center gap-2">
+        <span class="font-mono text-primary text-3xl font-semibold">100%</span>
+        <span class="text-[13px] text-ink-variant mt-1">actions logged, every time</span>
+      </div>
+
+      <div class="flex flex-col items-center gap-2">
+        <span class="font-mono text-primary text-3xl font-semibold">0</span>
+        <span class="text-[13px] text-ink-variant mt-1">paste-the-context dances</span>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================================================================
+       4. CTA BAND
+       ================================================================ -->
+  <CTABand
+    title="Pick a loop. Run it for two weeks. Then tell us what's missing."
+    cta={{ href: '/pricing#waitlist', label: 'Join the waitlist' }}
+  />
+
+</Layout>

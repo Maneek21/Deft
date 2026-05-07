@@ -1,0 +1,132 @@
+---
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+---
+
+<aside
+  class:list={[
+    'flex flex-col bg-surface-container-low border-r border-ghost select-none',
+    className,
+  ]}
+  style="width: 240px; min-width: 200px; max-width: 240px; height: 100%; min-height: 480px; font-family: var(--font-sans, Inter, sans-serif);"
+>
+  <!-- Workspace header -->
+  <div class="flex items-center justify-between px-3 flex-shrink-0" style="height: 52px; border-bottom: 1px solid var(--ghost-border);">
+    <div class="flex items-center gap-2 min-w-0">
+      <img src="/brand/deft-icon.png" alt="Deft" class="flex-shrink-0" style="height: 20px; width: 20px; object-fit: contain;" />
+      <span class="text-ink font-semibold truncate" style="font-size: 13px;">Acme Inc.</span>
+    </div>
+    <!-- chevron-down -->
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="flex-shrink-0 text-ink-outline">
+      <path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+  <!-- Scrollable nav body -->
+  <div class="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-4">
+
+    <!-- Workspace section -->
+    <div>
+      <div class="eyebrow px-2 mb-1" style="font-size: 11px; letter-spacing: 0.05em;">Workspace</div>
+      <nav class="flex flex-col gap-0.5">
+        <!-- Dashboard — active -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg bg-surface-container text-ink" style="height: 34px; font-size: 13px; font-weight: 500; text-decoration: none;">
+          <!-- grid icon -->
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" class="flex-shrink-0" style="color: var(--primary);">
+            <rect x="1" y="1" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.8"/>
+            <rect x="8.5" y="1" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.5"/>
+            <rect x="1" y="8.5" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.5"/>
+            <rect x="8.5" y="8.5" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.3"/>
+          </svg>
+          <span>Dashboard</span>
+        </a>
+
+        <!-- Inbox with badge -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 34px; font-size: 13px; font-weight: 400; text-decoration: none;">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" class="flex-shrink-0">
+            <path d="M1.5 3.5A1 1 0 0 1 2.5 2.5h10A1 1 0 0 1 13.5 3.5v7A1 1 0 0 1 12.5 11.5H9l-2 2l-2-2H2.5A1 1 0 0 1 1.5 10.5V3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+          </svg>
+          <span class="flex-1">Inbox</span>
+          <span class="flex items-center justify-center rounded-full text-primary-on-container bg-primary-container font-bold px-1.5" style="font-size: 10px; min-width: 18px; height: 18px;">2</span>
+        </a>
+
+        <!-- Tasks -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 34px; font-size: 13px; font-weight: 400; text-decoration: none;">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" class="flex-shrink-0">
+            <rect x="2" y="2" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M4.5 7.5l2 2 4-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Tasks</span>
+        </a>
+
+        <!-- Wiki -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 34px; font-size: 13px; font-weight: 400; text-decoration: none;">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" class="flex-shrink-0">
+            <path d="M3 2.5h9a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M4.5 5.5h6M4.5 7.5h6M4.5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          <span>Wiki</span>
+        </a>
+      </nav>
+    </div>
+
+    <!-- Spaces section -->
+    <div>
+      <div class="eyebrow px-2 mb-1" style="font-size: 11px; letter-spacing: 0.05em;">Spaces</div>
+      <nav class="flex flex-col gap-0.5">
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="text-ink-outline" style="font-size: 13px; line-height: 1;">#</span>
+          <span>general</span>
+        </a>
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="text-ink-outline" style="font-size: 13px; line-height: 1;">#</span>
+          <span class="flex-1">product</span>
+          <!-- green status dot -->
+          <span class="status-pulse rounded-full" style="width: 6px; height: 6px; background: var(--status-green); flex-shrink: 0;"></span>
+        </a>
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="text-ink-outline" style="font-size: 13px; line-height: 1;">#</span>
+          <span class="flex-1">eng</span>
+          <!-- amber dot -->
+          <span class="rounded-full" style="width: 6px; height: 6px; background: var(--status-amber); flex-shrink: 0;"></span>
+        </a>
+      </nav>
+    </div>
+
+    <!-- Agents section -->
+    <div>
+      <div class="eyebrow px-2 mb-1" style="font-size: 11px; letter-spacing: 0.05em;">Agents</div>
+      <nav class="flex flex-col gap-0.5">
+        <!-- Defty -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 text-primary-on-container font-bold" style="width: 20px; height: 20px; background: var(--primary-container); font-size: 9px;">D</span>
+          <span>Defty</span>
+        </a>
+        <!-- PM Agent -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-bold text-white" style="width: 20px; height: 20px; background: var(--status-blue); font-size: 9px;">P</span>
+          <span class="truncate">PM Agent (Claude Code)</span>
+        </a>
+        <!-- Standup Bot -->
+        <a href="#" class="flex items-center gap-2.5 px-2 rounded-lg text-ink-variant hover:bg-surface-container-high" style="height: 32px; font-size: 13px; text-decoration: none;">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-bold text-white" style="width: 20px; height: 20px; background: var(--status-green); font-size: 9px;">S</span>
+          <span>Standup Bot</span>
+        </a>
+      </nav>
+    </div>
+
+  </div>
+
+  <!-- Bottom user row -->
+  <div class="flex items-center gap-2.5 px-3 flex-shrink-0" style="height: 52px; border-top: 1px solid var(--ghost-border);">
+    <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 26px; height: 26px; background: var(--status-amber); font-size: 10px;">MM</span>
+    <span class="flex-1 text-ink truncate" style="font-size: 13px;">Maneek M.</span>
+    <!-- settings cog -->
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="flex-shrink-0 text-ink-outline">
+      <path d="M7 9A2 2 0 1 0 7 5a2 2 0 0 0 0 4Z" stroke="currentColor" stroke-width="1.2"/>
+      <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.636 2.636l1.06 1.06M10.304 10.304l1.06 1.06M2.636 11.364l1.06-1.06M10.304 3.696l1.06-1.06" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>
+  </div>
+</aside>

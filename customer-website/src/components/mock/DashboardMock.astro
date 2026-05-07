@@ -1,0 +1,151 @@
+---
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+---
+
+<div class:list={['mock-window', className]} style="font-family: var(--font-sans, Inter, sans-serif);">
+  <!-- Window chrome -->
+  <div class="flex items-center gap-1.5 px-3 bg-surface-container-low flex-shrink-0" style="height: 28px; border-bottom: 1px solid var(--ghost-border);">
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+  </div>
+
+  <!-- Dashboard grid -->
+  <div class="p-4 bg-surface" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px;">
+
+    <!-- My Work widget -->
+    <div class="bg-surface-container-low rounded-lg border border-ghost p-3">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-ink font-semibold" style="font-size: 12px;">My Work</span>
+        <span class="text-ink-outline" style="font-size: 11px;">Today</span>
+      </div>
+      <!-- 2-col kanban -->
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+
+        <!-- To Do -->
+        <div>
+          <div class="flex items-center gap-2 mb-2" style="padding-bottom: 6px; border-bottom: 1px solid var(--ghost-border);">
+            <span class="rounded-full flex-shrink-0" style="width: 6px; height: 6px; background: var(--outline);"></span>
+            <span class="text-ink-outline font-bold" style="font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;">To Do</span>
+            <span class="ml-auto text-ink-outline font-mono flex-shrink-0" style="font-size: 10px;">2</span>
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <!-- card 1 -->
+            <div class="rounded-lg p-2 border border-ghost" style="background: var(--surface-container);">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="rounded-full" style="width: 4px; height: 4px; background: var(--status-red);"></span>
+                <span class="font-mono text-ink-outline" style="font-size: 9px; text-transform: uppercase;">ENG-142</span>
+                <span class="ml-auto font-bold" style="font-size: 8px; color: var(--status-red); opacity: 0.8;">P1</span>
+              </div>
+              <div class="text-ink" style="font-size: 11.5px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Migrate webhook auth to HMAC-SHA256</div>
+              <div class="font-mono text-ink-outline mt-1" style="font-size: 9px;">May 6</div>
+            </div>
+            <!-- card 2 -->
+            <div class="rounded-lg p-2 border border-ghost" style="background: var(--surface-container);">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="rounded-full" style="width: 4px; height: 4px; background: var(--status-amber);"></span>
+                <span class="font-mono text-ink-outline" style="font-size: 9px; text-transform: uppercase;">ENG-143</span>
+                <span class="ml-auto font-bold" style="font-size: 8px; color: var(--status-amber); opacity: 0.8;">P2</span>
+              </div>
+              <div class="text-ink" style="font-size: 11.5px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Triage launch blockers with eng team</div>
+              <div class="font-mono text-ink-outline mt-1" style="font-size: 9px;">May 7</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- In Progress -->
+        <div>
+          <div class="flex items-center gap-2 mb-2" style="padding-bottom: 6px; border-bottom: 1px solid var(--ghost-border);">
+            <span class="rounded-full status-pulse flex-shrink-0" style="width: 6px; height: 6px; background: var(--status-amber);"></span>
+            <span class="font-bold" style="font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--status-amber); white-space: nowrap;">In Progress</span>
+            <span class="ml-auto text-ink-outline font-mono flex-shrink-0" style="font-size: 10px;">2</span>
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <!-- card 1 -->
+            <div class="rounded-lg p-2 border border-ghost" style="background: var(--surface-container);">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="rounded-full" style="width: 4px; height: 4px; background: var(--status-red);"></span>
+                <span class="font-mono text-ink-outline" style="font-size: 9px; text-transform: uppercase;">ENG-138</span>
+                <span class="ml-auto font-bold" style="font-size: 8px; color: var(--status-red); opacity: 0.8;">P1</span>
+              </div>
+              <div class="text-ink" style="font-size: 11.5px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">pgvector cosine search fallback on embed timeout</div>
+              <div class="font-mono text-ink-outline mt-1" style="font-size: 9px;">May 5</div>
+            </div>
+            <!-- card 2 -->
+            <div class="rounded-lg p-2 border border-ghost" style="background: var(--surface-container);">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="rounded-full" style="width: 4px; height: 4px; background: var(--status-amber);"></span>
+                <span class="font-mono text-ink-outline" style="font-size: 9px; text-transform: uppercase;">ENG-140</span>
+                <span class="ml-auto font-bold" style="font-size: 8px; color: var(--status-amber); opacity: 0.8;">P2</span>
+              </div>
+              <div class="text-ink" style="font-size: 11.5px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Rate-limit agent action queue per org</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Agent Activity widget — col-span-1 -->
+    <div class="bg-surface-container-low rounded-lg border border-ghost p-3 flex flex-col gap-2">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-ink font-semibold" style="font-size: 12px;">Agent Activity</span>
+        <span class="rounded-full" style="width: 6px; height: 6px; background: var(--primary); opacity: 0.7;"></span>
+      </div>
+
+      <!-- event 1 — approved -->
+      <div class="flex items-start gap-2">
+        <span class="flex items-center justify-center rounded-md flex-shrink-0" style="width: 22px; height: 22px; background: rgba(48, 164, 108, 0.15); color: var(--status-green);">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 5.5l2.5 2.5L9 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="flex-1 min-w-0">
+          <p class="text-ink truncate" style="font-size: 11px; margin: 0;">Closed ENG-131 via PR #1248</p>
+          <p class="text-ink-outline" style="font-size: 10px; margin: 1px 0 0;">Defty · 4m ago</p>
+        </div>
+      </div>
+
+      <!-- event 2 — pending with approve/reject -->
+      <div class="flex flex-col gap-1.5 p-2 rounded-lg" style="background: var(--surface-container);">
+        <div class="flex items-start gap-2">
+          <span class="flex items-center justify-center rounded-md flex-shrink-0" style="width: 22px; height: 22px; background: rgba(245, 166, 35, 0.15); color: var(--status-amber);">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 3v2.5l1.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1.2"/></svg>
+          </span>
+          <div class="flex-1 min-w-0">
+            <p class="text-ink truncate" style="font-size: 11px; margin: 0;">Draft reply for Acme follow-up</p>
+            <p style="font-size: 10px; margin: 1px 0 0; color: var(--status-amber);">Awaiting approval · just now</p>
+          </div>
+        </div>
+        <div class="flex gap-1.5 pl-6">
+          <button class="rounded" style="height: 24px; padding: 0 8px; font-size: 10px; font-weight: 600; background: var(--primary-container); color: var(--on-primary-container); border: none; cursor: pointer; border-radius: var(--radius-md);">Approve</button>
+          <button class="rounded text-ink-variant" style="height: 24px; padding: 0 8px; font-size: 10px; font-weight: 500; background: transparent; border: 1px solid var(--ghost-border); cursor: pointer; border-radius: var(--radius-md);">Reject</button>
+        </div>
+      </div>
+
+      <!-- event 3 -->
+      <div class="flex items-start gap-2">
+        <span class="flex items-center justify-center rounded-md flex-shrink-0" style="width: 22px; height: 22px; background: rgba(59, 130, 246, 0.15); color: var(--status-blue);">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1.5" y="2" width="8" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 5h4M3.5 7h2.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        </span>
+        <div class="flex-1 min-w-0">
+          <p class="text-ink truncate" style="font-size: 11px; margin: 0;">Created ENG-142 from #eng mention</p>
+          <p class="text-ink-outline" style="font-size: 10px; margin: 1px 0 0;">Defty · 18m ago</p>
+        </div>
+      </div>
+
+      <!-- event 4 -->
+      <div class="flex items-start gap-2">
+        <span class="flex items-center justify-center rounded-md flex-shrink-0" style="width: 22px; height: 22px; background: rgba(48, 164, 108, 0.15); color: var(--status-green);">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 5.5l2.5 2.5L9 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="flex-1 min-w-0">
+          <p class="text-ink truncate" style="font-size: 11px; margin: 0;">Standup briefing generated</p>
+          <p class="text-ink-outline" style="font-size: 10px; margin: 1px 0 0;">Standup Bot · 9am</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>

@@ -1,0 +1,219 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════
+   DEFT — Design tokens ported verbatim from apps/web/src/app/globals.css
+   Single source of truth. Marketing site mirrors product UI tokens
+   so every visual surface lines up exactly.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Surface Hierarchy ("No-Line Rule") ────────────────────── */
+  --surface-lowest: #0E0E10;
+  --surface-dim: #131315;
+  --surface: #131315;
+  --surface-container-low: #1C1B1D;
+  --surface-container: #201F22;
+  --surface-container-high: #2A2A2C;
+  --surface-container-highest: #353437;
+  --surface-variant: #353437;
+  --surface-bright: #39393B;
+
+  /* ── Text ──────────────────────────────────────────────────── */
+  --on-surface: #E5E1E4;
+  --on-surface-variant: #C9C4D5;
+  --outline: #928F9F;
+  --outline-variant: #474553;
+
+  /* ── Primary — Muted Violet ────────────────────────────────── */
+  --primary: #C8BFFF;
+  --primary-container: #9080FA;
+  --on-primary: #2D0E94;
+  --on-primary-container: #FFFFFF;
+
+  /* ── Tertiary — Warm Amber ─────────────────────────────────── */
+  --tertiary: #F9BD45;
+
+  /* ── Status ─────────────────────────────────────────────────── */
+  --status-red: #E5484D;
+  --status-amber: #F5A623;
+  --status-green: #30A46C;
+  --status-blue: #3B82F6;
+  --status-gray: #5C5C5F;
+
+  /* ── Radius ─────────────────────────────────────────────────── */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* ── Glass ──────────────────────────────────────────────────── */
+  --glass-bg: rgba(53, 52, 55, 0.7);
+  --glass-shadow: 0px 8px 24px rgba(0, 0, 0, 0.4);
+  --ghost-border: rgba(71, 69, 83, 0.1);
+
+  /* ── Shadows ────────────────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: var(--glass-shadow);
+
+  --accent-muted: rgba(144, 128, 250, 0.15);
+
+  color-scheme: dark;
+}
+
+.light {
+  --surface-lowest: #FAFAFA;
+  --surface-dim: #F5F5F5;
+  --surface: #FFFFFF;
+  --surface-container-low: #F5F5F7;
+  --surface-container: #EFEFEF;
+  --surface-container-high: #E8E8E8;
+  --surface-container-highest: #DEDEDE;
+  --surface-variant: #E0E0E0;
+  --surface-bright: #FFFFFF;
+  --on-surface: #1C1C1E;
+  --on-surface-variant: #5C5C5F;
+  --outline: #8E8E93;
+  --outline-variant: #C7C7CC;
+  --primary: #6A59E0;
+  --primary-container: #7C6BF0;
+  --on-primary-container: #FFFFFF;
+  --ghost-border: rgba(0, 0, 0, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --accent-muted: rgba(106, 89, 224, 0.1);
+
+  color-scheme: light;
+}
+
+/* ── Base ────────────────────────────────────────────────────── */
+html, body {
+  background: var(--surface);
+  color: var(--on-surface);
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  transition-property: color, background-color, border-color, box-shadow, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+::selection {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface-container-highest); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--surface-bright); }
+* { scrollbar-width: thin; scrollbar-color: var(--surface-container-highest) transparent; }
+
+/* ── Marketing utility classes ───────────────────────────────── */
+.eyebrow {
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--outline);
+}
+
+.display {
+  font-size: clamp(2.25rem, 5vw, 3.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.section-title {
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.lede {
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  color: var(--on-surface-variant);
+}
+
+.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ── Hero gradient — subtle violet bloom over the canvas ─────── */
+.hero-bloom {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.hero-bloom::before {
+  content: '';
+  position: absolute;
+  top: -10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80vw;
+  height: 60vh;
+  background: radial-gradient(ellipse at center, rgba(144, 128, 250, 0.18), transparent 60%);
+  filter: blur(60px);
+}
+.light .hero-bloom::before {
+  background: radial-gradient(ellipse at center, rgba(124, 107, 240, 0.12), transparent 60%);
+}
+
+/* ── Card hover lift ─────────────────────────────────────────── */
+.card-lift {
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.card-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+/* ── Glass surface ───────────────────────────────────────────── */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--glass-shadow);
+}
+.light .glass {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Pulse for status dots ───────────────────────────────────── */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.status-pulse { animation: status-pulse 2s ease-in-out infinite; }
+
+/* ── Mock window chrome ──────────────────────────────────────── */
+.mock-window {
+  background: var(--surface-container-low);
+  border: 1px solid var(--ghost-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+  overflow: hidden;
+}
+
+/* ── Anchor scroll offset ────────────────────────────────────── */
+html { scroll-behavior: smooth; scroll-padding-top: 5rem; }

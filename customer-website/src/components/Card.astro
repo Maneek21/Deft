@@ -1,0 +1,41 @@
+---
+type Props = {
+  variant?: 'default' | 'glass' | 'subtle';
+  lift?: boolean;
+  class?: string;
+};
+
+const { variant = 'default', lift = false, class: className } = Astro.props;
+
+const variantClasses: Record<string, string> = {
+  default: 'bg-surface-container border border-ghost',
+  glass: 'glass border border-ghost',
+  subtle: 'bg-surface-container-low border border-ghost',
+};
+---
+
+<div
+  class:list={[
+    'rounded-lg p-6',
+    variantClasses[variant],
+    lift ? 'card-lift' : '',
+    className ?? '',
+  ]}
+>
+  <!-- Optional header slot -->
+  {Astro.slots.has('header') && (
+    <div class="mb-4">
+      <slot name="header" />
+    </div>
+  )}
+
+  <!-- Default / body slot -->
+  <slot />
+
+  <!-- Optional footer slot -->
+  {Astro.slots.has('footer') && (
+    <div class="mt-4 pt-4 border-t border-ghost">
+      <slot name="footer" />
+    </div>
+  )}
+</div>

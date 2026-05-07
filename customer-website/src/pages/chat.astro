@@ -1,0 +1,328 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SectionHeader from '../components/SectionHeader.astro';
+import Card from '../components/Card.astro';
+import CTABand from '../components/CTABand.astro';
+import ChatMessageMock from '../components/mock/ChatMessageMock.astro';
+import PlanProposalMock from '../components/mock/PlanProposalMock.astro';
+import SurfaceFooter from '../components/SurfaceFooter.astro';
+---
+
+<Layout
+  title="Deft — chat where work shows up"
+  description="Spaces, threads, mentions, reactions. Plus an AI in the room that already knows what your team is working on — no paste-the-context required."
+>
+
+  <!-- ================================================================
+       1. HERO
+       ================================================================ -->
+  <div class="relative">
+    <div class="hero-bloom" aria-hidden="true"></div>
+    <div class="max-w-3xl mx-auto text-center pt-24 pb-16 relative px-6">
+      <p class="eyebrow mb-4">Chat</p>
+      <h1 class="display">Where work shows up.</h1>
+      <p class="lede mt-6 mx-auto max-w-[580px]">
+        Spaces, threads, mentions, reactions. Plus an AI in the room that already knows what your
+        team is working on — no paste-the-context required.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       2. BIG VISUAL
+       ================================================================ -->
+  <section class="pb-20">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="flex justify-center mt-12">
+        <ChatMessageMock class="max-w-3xl w-full" />
+      </div>
+      <p class="text-center mt-5 eyebrow text-ink-outline">Live in the workspace right now.</p>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       3. SPACES
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low" id="spaces">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <SectionHeader
+        eyebrow="01 · Spaces"
+        title="Channels for what matters."
+        subtitle="Spaces group people and surface what matters. Pinned messages, member roles, scoped AI visibility. The chat tools you expect — minus the noise."
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Public spaces</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            #launch-q2, #eng, #acme. Anyone in the org can join. AI visibility follows
+            membership — if the AI isn't in the space, it doesn't read the messages.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Private spaces</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            For sensitive work. Membership controlled by owners. Access is enforced at
+            the API layer — not just in the UI.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Direct messages</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            1:1 and group DMs. The same AI capabilities apply. Deft can receive task
+            assignments and send notifications through DMs.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       4. MENTIONS
+       ================================================================ -->
+  <section class="py-20 md:py-28" id="mentions">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-start">
+
+        <!-- Left: copy -->
+        <SectionHeader
+          eyebrow="02 · Mentions"
+          title="@-mentions in chat. And task descriptions. And comments. And notes."
+          subtitle="Every mention lands in the recipient's inbox. The AI sees mentions across chat, tasks, notes, and comments — so it can find context that lives anywhere."
+        />
+
+        <!-- Right: context card -->
+        <Card variant="subtle">
+          <p class="text-[12px] font-semibold text-ink-variant uppercase tracking-wide mb-4">
+            Where @-mentions work
+          </p>
+          <div class="flex flex-col divide-y divide-ghost">
+            {[
+              'Chat message',
+              'Task description',
+              'Task comment',
+              'Notes',
+            ].map((ctx) => (
+              <div class="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                <span class="font-mono text-[13px] text-ink-variant">→</span>
+                <span class="font-mono text-[13px] text-ink-variant">{ctx}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       5. CLASSIFICATION PIPELINE
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low" id="classification">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <SectionHeader
+        eyebrow="03 · Classification"
+        title="Every message is classified. The AI knows what to do."
+        subtitle="Every message gets read by a fast classifier. It tags whether the message is a question, a blocker, or something to action — quietly, in the background, on every message."
+        align="center"
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-0 md:gap-4 items-stretch">
+
+        <!-- Step 1 -->
+        <Card variant="default" class="relative">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="font-mono text-[11px] text-ink-outline uppercase tracking-wider">Step 1 — Message arrives</span>
+          </div>
+          <!-- mini chat preview -->
+          <div class="rounded-lg p-3" style="border: 1px solid var(--ghost-border); background: var(--surface-container-low);">
+            <div class="flex items-start gap-2">
+              <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 22px; height: 22px; background: var(--status-amber); font-size: 9px; margin-top: 1px;">MM</span>
+              <div>
+                <span class="text-ink font-semibold" style="font-size: 12px;">Maneek</span>
+                <p class="text-ink" style="font-size: 12px; margin: 2px 0 0; line-height: 1.5;">
+                  <span style="background: rgba(144, 128, 250, 0.15); color: var(--primary); padding: 1px 5px; border-radius: 4px; font-size: 11px; font-weight: 500;">@maneek</span>
+                  {' '}the auth migration is blocking the demo
+                </p>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <!-- Arrow between 1 and 2 — desktop only -->
+        <div class="hidden md:flex items-center justify-center self-center text-ink-outline text-2xl select-none" aria-hidden="true">→</div>
+
+        <!-- Step 2 -->
+        <Card variant="default" class="relative">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="font-mono text-[11px] text-ink-outline uppercase tracking-wider">Step 2 — Classified</span>
+          </div>
+          <div class="flex flex-col gap-2">
+            {[
+              { key: 'actionable', val: 'true', color: 'var(--status-green)' },
+              { key: 'intent', val: 'blocker', color: 'var(--status-amber)' },
+              { key: 'entities', val: '[auth migration, demo]', color: 'var(--primary)' },
+              { key: 'urgency', val: 'high', color: 'var(--status-red)' },
+            ].map(({ key, val, color }) => (
+              <div class="flex items-center gap-2 flex-wrap">
+                <span
+                  class="font-mono rounded-md px-2 py-0.5 text-[11px] font-medium"
+                  style={`background: color-mix(in srgb, ${color} 12%, transparent); color: ${color};`}
+                >
+                  {key}: {val}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <!-- Mobile arrow -->
+        <div class="flex md:hidden items-center justify-center py-2 text-ink-outline text-2xl select-none" aria-hidden="true">↓</div>
+
+        <!-- Arrow between 2 and 3 — desktop only -->
+        <div class="hidden md:flex items-center justify-center self-center text-ink-outline text-2xl select-none" aria-hidden="true">→</div>
+
+        <!-- Step 3 -->
+        <Card variant="default" class="relative">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="font-mono text-[11px] text-ink-outline uppercase tracking-wider">Step 3 — Inline action</span>
+          </div>
+          <!-- mini approval card -->
+          <div class="rounded-lg p-3" style="background: rgba(144, 128, 250, 0.06); border: 1px solid var(--ghost-border);">
+            <div class="flex items-center gap-1.5 mb-2">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="color: var(--primary); flex-shrink: 0;"><rect x="1" y="1" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.1"/><path d="M3 5.5h5M3 7.5h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+              <span class="text-[12px] font-semibold" style="color: var(--primary);">Track as task?</span>
+            </div>
+            <p class="text-ink-variant" style="font-size: 12px; line-height: 1.4; margin: 0 0 8px;">
+              Fix auth migration blocking demo
+            </p>
+            <button
+              style="height: 26px; padding: 0 10px; font-size: 11px; font-weight: 600; background: var(--primary-container); color: var(--on-primary-container); border: none; border-radius: var(--radius-md); cursor: pointer;"
+            >
+              Create task
+            </button>
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       6. THE @DEFT HANDOFF
+       ================================================================ -->
+  <section class="py-20 md:py-28" id="agent">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+
+        <!-- Left: copy -->
+        <div>
+          <SectionHeader
+            eyebrow="04 · Agent in the room"
+            title="Mention @deft. Get a plan with sources."
+            subtitle="Mention @deft. Get a plan with sources. The AI shows you what it would change, what it would touch, and what's safe to run automatically. Approve, edit, or reject — every step is logged."
+          />
+        </div>
+
+        <!-- Right: mock -->
+        <div class="flex justify-center">
+          <PlanProposalMock
+            avatar="D"
+            title="Defty proposed a plan"
+            subtitle="in #launch-q2 · 2m ago"
+            steps={[
+              { status: 'done', label: 'Queried open tasks assigned to Maneek', detail: [
+                { text: "SELECT t.id, t.title FROM tasks t WHERE org_id = $1" },
+                { text: "  AND assignee_id = $2 AND status != 'done'" },
+                { text: "→ ENG-142, ENG-143, ENG-156", color: 'green' }
+              ]},
+              { status: 'done', label: 'Fetched related Acme events from calendar', detail: [
+                { text: "SELECT e.payload FROM events e" },
+                { text: "  JOIN tasks t ON e.task_id = t.id WHERE t.org_id = $1" },
+                { text: "→ 14 rows · 22ms", color: 'green' }
+              ]},
+              { status: 'in_progress', label: 'Generating executive briefing…', detail: [
+                { text: "Composing summary from 3 tasks + 14 event rows" },
+                { text: "→ running", color: 'amber' }
+              ]},
+              { status: 'pending', label: 'Post briefing to #launch-q2', detail: [
+                { text: "external · awaiting step 3", color: 'blue' }
+              ]}
+            ]}
+            primaryAction="Approve full plan"
+          />
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       7. PINNED + THREADS + SEARCH
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low" id="extras">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <SectionHeader
+        eyebrow="05 · The basics, done well"
+        title="Pinned, threaded, searchable."
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Pinned messages</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Per space, with quick access to older pins. The AI reads pins as priority context
+            when answering questions about a space's current work.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Threads</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Reply in thread without losing the channel. Threads are searchable, just like
+            top-level messages. The AI can reply to threads directly.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[14px] font-semibold text-ink mb-2">Search</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Find any message, attachment, or mention. Filter by space, sender, date, or
+            even surface — chat, task, or note.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       8. RELIABILITY WITHOUT AI
+       ================================================================ -->
+  <section class="py-20 md:py-28" id="reliable">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="bg-surface-container-low rounded-lg my-16 p-12 text-center max-w-3xl mx-auto">
+        <p class="eyebrow mb-4">Always works</p>
+        <p class="text-[16px] text-ink-variant leading-relaxed">
+          Send messages. Read pins. Search threads. Chat works whether or not the AI is
+          online — same as any chat tool you've used.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       9. SURFACE FOOTER + CTA BAND
+       ================================================================ -->
+  <SurfaceFooter current="chat" />
+  <CTABand
+    title="Stop pasting the context. Mention the AI."
+    cta={{ href: '/pricing#waitlist', label: 'Join the waitlist' }}
+  />
+
+</Layout>

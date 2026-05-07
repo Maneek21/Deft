@@ -1,0 +1,116 @@
+---
+type DetailColor = 'green' | 'amber' | 'blue' | 'outline';
+type DetailLine = { text: string; color?: DetailColor };
+
+type Step = {
+  status: 'done' | 'in_progress' | 'pending';
+  label: string;
+  detail: DetailLine[];
+};
+
+interface Props {
+  avatar?: string;
+  title: string;
+  subtitle: string;
+  steps: Step[];
+  primaryAction: string;
+  showReject?: boolean;
+  showEdit?: boolean;
+  class?: string;
+}
+
+const {
+  avatar = 'D',
+  title,
+  subtitle,
+  steps,
+  primaryAction,
+  showReject = true,
+  showEdit = true,
+  class: className = '',
+} = Astro.props;
+
+function colorVar(color: DetailColor | undefined): string {
+  if (!color) return 'var(--ink-outline)';
+  if (color === 'outline') return 'var(--outline)';
+  return `var(--status-${color})`;
+}
+---
+
+<div class:list={['mock-window', className]} style="max-width: 640px; width: 100%; font-family: var(--font-sans, Inter, sans-serif);">
+  <!-- Window chrome -->
+  <div class="flex items-center gap-1.5 px-3 bg-surface-container-low" style="height: 28px; border-bottom: 1px solid var(--ghost-border);">
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+  </div>
+
+  <!-- Body -->
+  <div class="bg-surface" style="padding: 18px 20px;">
+
+    <!-- Header -->
+    <div class="flex items-start gap-2.5 mb-4">
+      <span class="flex items-center justify-center rounded-lg font-bold text-primary-on-container flex-shrink-0" style="width: 30px; height: 30px; background: var(--primary-container); font-size: 13px; margin-top: 1px;">{avatar}</span>
+      <div>
+        <div class="text-ink font-semibold" style="font-size: 14px;">{title}</div>
+        <div class="text-ink-outline" style="font-size: 12px; margin-top: 1px;">{subtitle}</div>
+      </div>
+    </div>
+
+    <!-- Steps with vertical connector line -->
+    <div class="relative" style="padding-left: 28px;">
+      <!-- vertical line -->
+      <div class="absolute" style="left: 9px; top: 10px; bottom: 24px; width: 1px; background: var(--ghost-border);"></div>
+
+      <div class="flex flex-col gap-5">
+
+        {steps.map((step) => (
+          <div class="relative flex items-start gap-3">
+            {step.status === 'done' && (
+              <div class="absolute flex items-center justify-center rounded-full flex-shrink-0" style="left: -28px; width: 20px; height: 20px; background: rgba(48, 164, 108, 0.15); color: var(--status-green); border: 1.5px solid var(--status-green);">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.2 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            )}
+            {step.status === 'in_progress' && (
+              <div class="absolute flex items-center justify-center rounded-full flex-shrink-0 status-pulse" style="left: -28px; width: 20px; height: 20px; background: rgba(245, 166, 35, 0.15); color: var(--status-amber); border: 1.5px solid var(--status-amber);">
+                <span style="width: 6px; height: 6px; border-radius: 99px; background: var(--status-amber); display: block;"></span>
+              </div>
+            )}
+            {step.status === 'pending' && (
+              <div class="absolute flex items-center justify-center rounded-full flex-shrink-0" style="left: -28px; width: 20px; height: 20px; background: var(--surface-container-high); color: var(--outline); border: 1.5px solid var(--outline);">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="3.5" stroke="currentColor" stroke-width="1.2"/></svg>
+              </div>
+            )}
+            <div class="flex-1 min-w-0">
+              <div class={step.status === 'pending' ? 'text-ink-variant font-medium' : 'text-ink font-medium'} style="font-size: 13.5px;">{step.label}</div>
+              <div class="font-mono text-ink-outline mt-1" style="font-size: 11px; line-height: 1.5;">
+                {step.detail.map((line) => (
+                  <div>
+                    {line.color ? (
+                      <span style={`color: ${colorVar(line.color)};`}>{line.text}</span>
+                    ) : (
+                      <Fragment>{line.text}</Fragment>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="flex items-center gap-2 mt-5">
+      {showReject !== false && (
+        <button style="height: 32px; padding: 0 12px; font-size: 13px; font-weight: 500; background: transparent; border: 1px solid var(--ghost-border); border-radius: var(--radius-lg); color: var(--on-surface-variant); cursor: pointer;">Reject</button>
+      )}
+      <button style="height: 32px; padding: 0 14px; font-size: 13px; font-weight: 600; background: var(--primary-container); color: var(--on-primary-container); border: none; border-radius: var(--radius-lg); cursor: pointer;">{primaryAction}</button>
+      {showEdit !== false && (
+        <a href="#" class="text-ink-outline" style="font-size: 12px; margin-left: 4px; text-decoration: none; opacity: 0.8;">Edit</a>
+      )}
+    </div>
+
+  </div>
+</div>

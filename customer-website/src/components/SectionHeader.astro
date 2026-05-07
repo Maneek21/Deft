@@ -1,0 +1,39 @@
+---
+type Props = {
+  eyebrow?: string;
+  title: string;
+  subtitle?: string;
+  align?: 'left' | 'center';
+  id?: string;
+};
+
+const { eyebrow, title, subtitle, align = 'left', id } = Astro.props;
+
+const isCenter = align === 'center';
+---
+
+<div
+  id={id}
+  class:list={[
+    'flex flex-col gap-3',
+    isCenter ? 'items-center text-center' : 'items-start text-left',
+  ]}
+>
+  {eyebrow && (
+    <p class="eyebrow">{eyebrow}</p>
+  )}
+
+  <h2 class="section-title">{title}</h2>
+
+  {subtitle && (
+    <p
+      class:list={[
+        'lede',
+        isCenter ? 'mx-auto' : '',
+        'max-w-[640px]',
+      ]}
+    >
+      {subtitle}
+    </p>
+  )}
+</div>

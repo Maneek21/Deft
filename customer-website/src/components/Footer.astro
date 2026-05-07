@@ -1,0 +1,77 @@
+---
+import Logo from './brand/Logo.astro';
+import { GITHUB_URL } from '../config';
+
+const cols = [
+  {
+    heading: 'Workspace',
+    links: [
+      { href: '/workspace', label: 'Overview' },
+      { href: '/chat', label: 'Chat' },
+      { href: '/tasks', label: 'Tasks' },
+      { href: '/notes', label: 'Notes' },
+      { href: '/knowledge', label: 'Knowledge' },
+      { href: '/calendar', label: 'Calendar' },
+      { href: '/dashboard', label: 'Dashboard' },
+    ],
+  },
+  {
+    heading: 'Platform',
+    links: [
+      { href: '/product', label: 'Architecture' },
+      { href: '/agents', label: 'Agents' },
+      { href: '/use-cases', label: 'Use cases' },
+      { href: '/pricing', label: 'Pricing' },
+    ],
+  },
+  {
+    heading: 'Trust',
+    links: [
+      { href: '/security', label: 'Security' },
+      { href: '/open-source', label: 'Open source' },
+      { href: GITHUB_URL, label: 'GitHub' },
+      { href: '/pricing#waitlist', label: 'Waitlist' },
+    ],
+  },
+];
+---
+
+<footer class="border-t border-ghost mt-32">
+  <div class="mx-auto max-w-[1200px] px-6 py-16">
+    <div class="grid gap-12 md:grid-cols-[1.4fr_repeat(3,1fr)]">
+      <div class="space-y-4">
+        <a href="/" class="inline-block" aria-label="Deft home">
+          <Logo class="h-7 w-auto" />
+        </a>
+        <p class="max-w-xs text-[13px] text-ink-variant">
+          The AI-native workspace where the agent already knows your work.
+        </p>
+        <p class="text-[12px] text-ink-outline">
+          BSL 1.1 · Self-hostable · Multi-tenant
+        </p>
+      </div>
+
+      {cols.map((col) => (
+        <div>
+          <p class="eyebrow mb-4">{col.heading}</p>
+          <ul class="space-y-2.5">
+            {col.links.map((l) => (
+              <li>
+                <a href={l.href} class="text-[13px] text-ink-variant hover:text-ink">
+                  {l.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+
+    <div class="mt-16 flex flex-col items-start justify-between gap-3 border-t border-ghost pt-6 text-[12px] text-ink-outline md:flex-row md:items-center">
+      <p>© {new Date().getFullYear()} Deft. All rights reserved.</p>
+      <p>
+        Built on Next.js, Hono, Postgres, BullMQ, and Anthropic Claude.
+      </p>
+    </div>
+  </div>
+</footer>

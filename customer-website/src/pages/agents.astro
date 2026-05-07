@@ -1,0 +1,322 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SectionHeader from '../components/SectionHeader.astro';
+import Card from '../components/Card.astro';
+import CTABand from '../components/CTABand.astro';
+import SidebarMock from '../components/mock/SidebarMock.astro';
+import ApprovalCardMock from '../components/mock/ApprovalCardMock.astro';
+---
+
+<Layout
+  title="Deft — agents: Defty plus bring-your-own"
+  description="Defty is the built-in agent. Claude Code, Claude Desktop, Codex, Cursor, or any client speaking the Model Context Protocol connects with one API key. Per-agent trust levels, daily budgets, and a full audit trail."
+>
+
+  <!-- ================================================================
+       1. SUBPAGE HERO
+       ================================================================ -->
+  <div class="relative">
+    <div class="hero-bloom" aria-hidden="true"></div>
+    <div class="max-w-3xl mx-auto text-center pt-24 pb-16 px-6 relative">
+      <p class="eyebrow mb-4">Agents</p>
+      <h1 class="display mb-6">One agent built in. Any agent welcome.</h1>
+      <p class="lede mx-auto max-w-[620px]">
+        Defty ships in the workspace. Claude Code, Claude Desktop, Codex, Cursor, or any
+        runtime speaking the Model Context Protocol (MCP) connects with an API key.
+        Same approval rails. Same audit trail. Same trust tiers.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       2A. DEFTY BLOCK (text left, visual right)
+       ================================================================ -->
+  <section class="py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+
+        <!-- Left: copy -->
+        <div class="flex flex-col gap-5">
+          <p class="eyebrow">Built-in</p>
+          <h2 class="section-title">Meet Defty.</h2>
+          <p class="text-[16px] text-ink-variant leading-relaxed max-w-[480px]">
+            Native to the workspace. Direct SQL access. Multi-step planning. Memory across
+            conversations. Streams responses live as it works. Defty isn't an integration
+            — it's part of the product.
+          </p>
+        </div>
+
+        <!-- Right: visual -->
+        <div class="flex items-center justify-center">
+          <ApprovalCardMock />
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       2B. BYOA BLOCK (visual left, text right)
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+
+        <!-- Left: visual -->
+        <div class="flex items-center justify-center">
+          <div class="bg-surface-container-low rounded-lg p-6 max-w-sm overflow-hidden border border-ghost shadow-md">
+            <SidebarMock />
+          </div>
+        </div>
+
+        <!-- Right: copy -->
+        <div class="flex flex-col gap-5">
+          <p class="eyebrow">Bring your own</p>
+          <h2 class="section-title">Or connect any MCP client.</h2>
+          <p class="text-[16px] text-ink-variant leading-relaxed max-w-[480px]">
+            Run Claude Code locally, point Claude Desktop at the workspace, hand a Codex
+            agent a project, or wire up Cursor. Each agent gets its own API key, its own
+            trust level, and its own daily budget. They poll for work via the same MCP
+            endpoint.
+          </p>
+
+          <!-- Client pills -->
+          <div class="flex flex-wrap gap-2 pt-2">
+            {[
+              'Claude Code',
+              'Claude Desktop',
+              'Codex',
+              'Cursor',
+              'Any MCP runtime',
+            ].map((label) => (
+              <span class="bg-surface-container px-3 py-1 rounded-md text-[12px] text-ink-variant border border-ghost">
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       3. TRUST LEVELS GRID
+       ================================================================ -->
+  <section class="py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <SectionHeader
+        eyebrow="Per-agent trust levels"
+        title="Conservative. Standard. Autonomous."
+        subtitle="Trust tiers compose: Conservative auto-runs reads. Standard adds quick-approves. Autonomous runs full plans — except destructive admin tools, which always require an explicit human."
+        align="center"
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <!-- Conservative -->
+        <Card variant="default">
+          <div slot="header">
+            <div class="flex items-center gap-3 mb-1">
+              <span
+                class="inline-block rounded-sm w-1 self-stretch flex-shrink-0"
+                style="background: var(--status-blue); min-height: 20px;"
+                aria-hidden="true"
+              ></span>
+              <p class="text-[15px] font-semibold text-ink">Conservative</p>
+            </div>
+          </div>
+          <div style="border-left: 4px solid var(--status-blue); padding-left: 12px;">
+            <p class="text-[14px] text-ink-variant leading-relaxed">
+              Read-only by default. Reminders fire. Standups post. Anything that changes
+              external state waits for explicit human approval.
+            </p>
+          </div>
+        </Card>
+
+        <!-- Standard -->
+        <Card variant="default">
+          <div slot="header">
+            <div class="flex items-center gap-3 mb-1">
+              <span
+                class="inline-block rounded-sm w-1 self-stretch flex-shrink-0"
+                style="background: var(--status-amber); min-height: 20px;"
+                aria-hidden="true"
+              ></span>
+              <p class="text-[15px] font-semibold text-ink">Standard</p>
+            </div>
+          </div>
+          <div style="border-left: 4px solid var(--status-amber); padding-left: 12px;">
+            <p class="text-[14px] text-ink-variant leading-relaxed">
+              Adds one-tap approvals: create a task, schedule a meeting, post a draft.
+              The agent waits for a green-light per action before writing anything.
+            </p>
+          </div>
+        </Card>
+
+        <!-- Autonomous -->
+        <Card variant="default">
+          <div slot="header">
+            <div class="flex items-center gap-3 mb-1">
+              <span
+                class="inline-block rounded-sm w-1 self-stretch flex-shrink-0"
+                style="background: var(--status-green); min-height: 20px;"
+                aria-hidden="true"
+              ></span>
+              <p class="text-[15px] font-semibold text-ink">Autonomous</p>
+            </div>
+          </div>
+          <div style="border-left: 4px solid var(--status-green); padding-left: 12px;">
+            <p class="text-[14px] text-ink-variant leading-relaxed">
+              Runs full multi-step plans. External writes still go through the audit log.
+              Destructive ops — delete tasks, revoke connections, remove members — still
+              require human approval, every time.
+            </p>
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       4. COST GUARDRAILS
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-start">
+
+        <!-- Left: copy -->
+        <SectionHeader
+          eyebrow="Spend caps"
+          title="The agent gets fired before it gets expensive."
+          subtitle="Per-employee daily budget (default $100). Org-level monthly cap. Three consecutive errors trips a circuit breaker. Loops on an identical prompt are detected and skipped. None of this is configurable in JSON — it's the default behavior."
+        />
+
+        <!-- Right: metrics card -->
+        <Card variant="default">
+          <div class="flex flex-col divide-y divide-ghost">
+
+            <div class="flex items-center justify-between py-4 first:pt-0">
+              <span class="font-mono text-primary text-lg">$100/day</span>
+              <span class="text-[13px] text-ink-variant text-right">Default per-employee budget</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4">
+              <span class="font-mono text-primary text-lg">3 errors</span>
+              <span class="text-[13px] text-ink-variant text-right">Trips the circuit breaker</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4">
+              <span class="font-mono text-primary text-lg">prompt_sha</span>
+              <span class="text-[13px] text-ink-variant text-right">Idempotency key per heartbeat tick</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4 last:pb-0">
+              <span class="font-mono text-primary text-lg">org_spend_caps</span>
+              <span class="text-[13px] text-ink-variant text-right">Monthly org-level ceiling</span>
+            </div>
+
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       5. SKILLS
+       ================================================================ -->
+  <section class="py-20 md:py-28">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <SectionHeader
+        eyebrow="Skills"
+        title="Capability packs, not jailbreaks."
+        subtitle="Skills declare which tools an agent can call, which triggers it subscribes to, and which prompts it ships with. Bundled, marketplace, or org-authored. Approve once. Audit forever."
+        align="center"
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-2">Bundled</p>
+          <p class="text-[14px] text-ink-variant leading-relaxed">
+            Ships with Deft. One skill per capability pack. Plus
+            <code class="font-mono text-[12px] bg-surface-container px-1 py-0.5 rounded">deft-mcp-client</code>
+            for BYOA on-ramp — so external agents can talk back into the workspace over MCP.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-2">Marketplace</p>
+          <p class="text-[14px] text-ink-variant leading-relaxed">
+            ClawHub allowlist plus a sanitized SKILL.md pre-import check. Prompt-injection
+            and credential-exfil patterns are neutralized before install. Curated, not
+            chaotic.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-2">Org-authored</p>
+          <p class="text-[14px] text-ink-variant leading-relaxed">
+            Your team's own skills. Private to the org. Versioned. The same trust and
+            approval mechanics apply — internal authorship doesn't grant a free pass.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       6. DISCOVERY MODEL — PULL NOT PUSH
+       ================================================================ -->
+  <section class="py-20 md:py-28 bg-surface-container-low">
+    <div class="max-w-[1200px] mx-auto px-6">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-start">
+
+        <!-- Left: copy -->
+        <SectionHeader
+          eyebrow="How agents find work"
+          title="Pull, not push."
+          subtitle="Deft never pushes work to BYOA agents. They poll the MCP endpoint via poll_pending_work and find @mentions, heartbeat ticks, trigger fires, and assigned tasks waiting for them. Stateless from Deft's side. Resilient from yours."
+        />
+
+        <!-- Right: JSON mock -->
+        <Card variant="default">
+          <p class="text-[12px] font-semibold text-ink-variant mb-3 uppercase tracking-wide">
+            poll_pending_work response
+          </p>
+          <pre class="font-mono text-[12px] text-ink-variant bg-surface-container-low rounded-md p-4 overflow-x-auto leading-relaxed">{`[
+  {
+    "action": "chat_mention",
+    "source": "mention",
+    "task_id": "ENG-142",
+    "space": "#launch-q2",
+    "created_at": "2026-05-05T09:14:02Z"
+  },
+  {
+    "action": "trigger_dispatch",
+    "source": "trigger",
+    "trigger_kind": "task.status_changed",
+    "task_id": "ENG-156",
+    "payload": { "status": "in_review" },
+    "created_at": "2026-05-05T09:10:44Z"
+  }
+]`}</pre>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       7. CTA BAND
+       ================================================================ -->
+  <CTABand
+    title="Wire your agent into Deft today."
+    subtitle="Defty is in the workspace. Bring the rest yourself."
+    cta={{ href: '/pricing#waitlist', label: 'Join the waitlist' }}
+  />
+
+</Layout>

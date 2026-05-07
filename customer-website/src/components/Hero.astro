@@ -1,0 +1,56 @@
+---
+type Props = {
+  eyebrow?: string;
+  title: string;
+  subtitle: string;
+  primaryCta: { href: string; label: string };
+  secondaryCta?: { href: string; label: string };
+};
+
+const { eyebrow, title, subtitle, primaryCta, secondaryCta } = Astro.props;
+---
+
+<section class="relative overflow-hidden">
+  <!-- Violet bloom backdrop -->
+  <div class="hero-bloom" aria-hidden="true"></div>
+
+  <div class="relative mx-auto max-w-[1200px] px-6 py-20 md:py-28 lg:py-32">
+    <div class="grid grid-cols-1 gap-12 md:grid-cols-2 md:items-center md:gap-16">
+
+      <!-- Left: copy -->
+      <div class="flex flex-col gap-6">
+        {eyebrow && (
+          <p class="eyebrow">{eyebrow}</p>
+        )}
+
+        <h1 class="display">{title}</h1>
+
+        <p class="lede max-w-[480px]">{subtitle}</p>
+
+        <div class="flex flex-wrap items-center gap-3 pt-1">
+          <a
+            href={primaryCta.href}
+            class="inline-flex h-10 items-center justify-center rounded-lg bg-primary-container px-5 text-sm font-semibold text-primary-on-container shadow-sm transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          >
+            {primaryCta.label}
+          </a>
+
+          {secondaryCta && (
+            <a
+              href={secondaryCta.href}
+              class="inline-flex h-10 items-center justify-center rounded-lg border border-ghost px-5 text-sm font-semibold text-ink-variant transition-colors hover:border-ink-outline hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            >
+              {secondaryCta.label}
+            </a>
+          )}
+        </div>
+      </div>
+
+      <!-- Right: visual slot -->
+      <div class="flex items-center justify-center">
+        <slot name="visual" />
+      </div>
+
+    </div>
+  </div>
+</section>

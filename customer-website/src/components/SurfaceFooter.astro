@@ -1,0 +1,46 @@
+---
+type Props = {
+  current?: 'chat' | 'tasks' | 'notes' | 'knowledge' | 'calendar' | 'dashboard' | 'workspace';
+};
+
+const { current } = Astro.props;
+
+const surfaces = [
+  { href: '/chat', label: 'Chat', key: 'chat' },
+  { href: '/tasks', label: 'Tasks', key: 'tasks' },
+  { href: '/notes', label: 'Notes', key: 'notes' },
+  { href: '/knowledge', label: 'Knowledge', key: 'knowledge' },
+  { href: '/calendar', label: 'Calendar', key: 'calendar' },
+  { href: '/dashboard', label: 'Dashboard', key: 'dashboard' },
+];
+---
+
+<section class="py-12">
+  <div class="mx-auto max-w-[1200px] px-6">
+    <div class="border-t border-ghost pt-8 flex flex-col items-center gap-4">
+      <a
+        href="/workspace"
+        class="inline-flex items-center gap-1.5 text-[13px] font-medium text-primary hover:opacity-80"
+      >
+        <span aria-hidden="true">←</span>
+        Back to the workspace overview
+      </a>
+      <div class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[13px]">
+        {surfaces.map((s, i) => (
+          <>
+            {i > 0 && <span class="text-ink-outline" aria-hidden="true">·</span>}
+            <a
+              href={s.href}
+              class:list={[
+                'hover:text-ink',
+                current === s.key ? 'text-ink font-medium' : 'text-ink-variant',
+              ]}
+            >
+              {s.label}
+            </a>
+          </>
+        ))}
+      </div>
+    </div>
+  </div>
+</section>

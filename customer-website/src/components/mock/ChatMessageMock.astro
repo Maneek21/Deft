@@ -1,0 +1,101 @@
+---
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+---
+
+<div class:list={['mock-window', className]} style="max-width: 560px; width: 100%; font-family: var(--font-sans, Inter, sans-serif);">
+  <!-- Window chrome -->
+  <div class="flex items-center gap-1.5 px-3 bg-surface-container-low" style="height: 28px; border-bottom: 1px solid var(--ghost-border);">
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="ml-2 text-ink-outline" style="font-size: 11px;"># acme</span>
+  </div>
+
+  <!-- Messages -->
+  <div class="bg-surface flex flex-col gap-2" style="padding: 14px 16px;">
+
+    <!-- Message 1 — Sara -->
+    <div class="flex items-start gap-2.5">
+      <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 28px; height: 28px; background: var(--status-blue); font-size: 10px; margin-top: 1px;">SA</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline gap-2">
+          <span class="text-ink font-semibold" style="font-size: 13px;">Sara</span>
+          <span class="text-ink-outline" style="font-size: 11px;">10:32 AM</span>
+        </div>
+        <p class="text-ink" style="font-size: 13px; margin: 2px 0 0; line-height: 1.5;">the customer in #acme is asking about the migration freeze — can someone draft a reply?</p>
+      </div>
+    </div>
+
+    <!-- Message 2 — Maneek with @deft mention -->
+    <div class="flex items-start gap-2.5">
+      <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 28px; height: 28px; background: var(--status-amber); font-size: 10px; margin-top: 1px;">MM</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline gap-2">
+          <span class="text-ink font-semibold" style="font-size: 13px;">Maneek</span>
+          <span class="text-ink-outline" style="font-size: 11px;">10:34 AM</span>
+        </div>
+        <p class="text-ink" style="font-size: 13px; margin: 2px 0 0; line-height: 1.5;">
+          <span style="background: rgba(144, 128, 250, 0.2); color: var(--primary); padding: 1px 6px; border-radius: 4px; font-weight: 500; font-size: 13px;">@deft</span>
+          {' '}summarize what we promised acme and propose a reply
+        </p>
+      </div>
+    </div>
+
+    <!-- Message 3 — Defty with plan card -->
+    <div class="flex items-start gap-2.5">
+      <span class="flex items-center justify-center rounded-full flex-shrink-0 font-bold text-primary-on-container" style="width: 28px; height: 28px; background: var(--primary-container); font-size: 11px; margin-top: 1px;">D</span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline gap-2">
+          <span class="font-semibold" style="font-size: 13px; color: var(--primary);">Defty</span>
+          <span class="text-ink-outline" style="font-size: 11px;">10:34 AM</span>
+        </div>
+        <p class="text-ink" style="font-size: 13px; margin: 2px 0 4px; line-height: 1.5;">Found relevant context. Here's what we promised and a draft reply:</p>
+        <!-- Inline plan mini-card -->
+        <div class="rounded-lg p-3" style="border: 1px solid var(--ghost-border); background: rgba(144, 128, 250, 0.06);">
+          <div class="flex items-center gap-2 mb-2">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="color: var(--primary); flex-shrink: 0;"><rect x="1" y="1" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 4h5M3.5 6h5M3.5 8h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+            <span class="font-semibold" style="font-size: 12px; color: var(--primary);">Plan proposed</span>
+          </div>
+          <ul class="flex flex-col gap-1" style="margin: 0; padding: 0; list-style: none;">
+            <li class="flex items-start gap-1.5">
+              <span class="text-ink-outline mt-0.5" style="font-size: 10px;">•</span>
+              <span class="text-ink" style="font-size: 12px; line-height: 1.4;">Retrieve Acme commitments from task history (ENG-112, ENG-118)</span>
+            </li>
+            <li class="flex items-start gap-1.5">
+              <span class="text-ink-outline mt-0.5" style="font-size: 10px;">•</span>
+              <span class="text-ink" style="font-size: 12px; line-height: 1.4;">Check calendar for any scheduled migration calls</span>
+            </li>
+            <li class="flex items-start gap-1.5">
+              <span class="text-ink-outline mt-0.5" style="font-size: 10px;">•</span>
+              <span class="text-ink" style="font-size: 12px; line-height: 1.4;">Draft customer reply with timeline and next steps</span>
+            </li>
+            <li class="flex items-start gap-1.5">
+              <span class="text-ink-outline mt-0.5" style="font-size: 10px;">•</span>
+              <span class="text-ink" style="font-size: 12px; line-height: 1.4;">Post draft here for review before sending</span>
+            </li>
+          </ul>
+          <div class="mt-3">
+            <button style="height: 28px; padding: 0 12px; font-size: 12px; font-weight: 600; background: var(--primary-container); color: var(--on-primary-container); border: none; border-radius: var(--radius-lg); cursor: pointer;">Approve plan</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Composer -->
+  <div class="flex items-center gap-2 px-3" style="height: 48px; border-top: 1px solid var(--ghost-border); background: var(--surface-container-low);">
+    <div class="flex-1 rounded-lg px-3 flex items-center" style="height: 32px; background: var(--surface-container); border: 1px solid var(--ghost-border);">
+      <span class="text-ink-outline" style="font-size: 13px;">Reply in #acme…</span>
+    </div>
+    <!-- send button -->
+    <button class="flex items-center justify-center rounded-lg flex-shrink-0" style="width: 32px; height: 32px; background: var(--primary-container); border: none; cursor: pointer;">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <path d="M1.5 7h11M8 2.5l5.5 4.5L8 11.5" stroke="var(--on-primary-container)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</div>

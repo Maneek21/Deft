@@ -1,0 +1,258 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SectionHeader from '../components/SectionHeader.astro';
+import Card from '../components/Card.astro';
+import BentoGrid from '../components/BentoGrid.astro';
+import BentoItem from '../components/BentoItem.astro';
+import CTABand from '../components/CTABand.astro';
+import DashboardMock from '../components/mock/DashboardMock.astro';
+import BriefingMock from '../components/mock/BriefingMock.astro';
+import ApprovalCardMock from '../components/mock/ApprovalCardMock.astro';
+import SurfaceFooter from '../components/SurfaceFooter.astro';
+---
+
+<Layout
+  title="Deft — a dashboard that earns its place"
+  description="Not static widgets. Defty composes a daily briefing from yesterday's activity. My Work scoped to whoever's signed in. Agent Activity inline-approvable. Drag, resize, persist."
+>
+
+  <!-- ================================================================
+       1. SUBPAGE HERO
+       ================================================================ -->
+  <div class="relative">
+    <div class="hero-bloom" aria-hidden="true"></div>
+    <div class="max-w-3xl mx-auto text-center pt-24 pb-16 relative px-6">
+      <p class="eyebrow mb-4">Dashboard</p>
+      <h1 class="display mb-6">A dashboard that earns its place.</h1>
+      <p class="lede mx-auto max-w-[600px]">
+        Not static widgets. Defty composes a daily briefing from yesterday's activity.
+        My Work scoped to whoever's signed in. Agent Activity inline-approvable.
+        Drag, resize, persist.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       2. BIG VISUAL
+       ================================================================ -->
+  <div class="mx-auto max-w-5xl mt-4 mb-4 px-6 flex justify-center overflow-x-auto">
+    <DashboardMock />
+  </div>
+
+  <!-- ================================================================
+       3. BENTO LAYOUT
+       ================================================================ -->
+  <section id="layout" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+
+      <SectionHeader
+        eyebrow="01 · Layout"
+        title="Masonry. Drag, resize, persist."
+        subtitle="Each widget has a drag handle and a corner resize grip. Layout persists per user — your dashboard reflects how you work, not how the team-lead thinks you should."
+      />
+
+      <div class="mt-12 grid grid-cols-1 gap-6 md:grid-cols-3">
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">Drag</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Reorder widgets without touching JSON. Grab the handle,
+            drop it where it belongs. The layout auto-reflows.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">Resize</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            1×1 to 4×3. Cards adapt their density to available space.
+            The Briefing widget expands for more detail, the Focus timer
+            stays compact.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">Persist</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Layout saved per user, restored on next sign-in. No shared
+            "default dashboard" that gets clobbered by an admin change.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       4. WIDGETS THAT SHIP
+       ================================================================ -->
+  <section id="widgets" class="py-20 md:py-28 bg-surface-container-low">
+    <div class="mx-auto max-w-[1200px] px-6">
+
+      <SectionHeader
+        eyebrow="02 · Widgets"
+        title="Pre-built. Tuned for the loops teams actually run."
+        align="center"
+      />
+
+      <div class="mt-12">
+        <BentoGrid>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">My Work</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Your tasks, three columns: To Do, In Progress, In Review. Color-coded by priority.
+            </p>
+          </BentoItem>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">Agent Activity</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Pending AI actions. Approve or reject inline.
+            </p>
+          </BentoItem>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">Briefing</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Defty's daily briefing. Generated from yesterday's task closures, PR merges,
+              and today's calendar.
+            </p>
+          </BentoItem>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">Focus</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Pomodoro timer with a streak counter. Rings when the cycle ends. Keeps
+              deep-work blocks measurable without a separate app.
+            </p>
+          </BentoItem>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">Calendar Day</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Today's events from Google Calendar plus internal meetings.
+            </p>
+          </BentoItem>
+
+          <BentoItem span={4}>
+            <p class="text-[13px] font-semibold text-ink mb-1">Recent Decisions</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Decisions touched in the last 7 days. With status: open, implemented,
+              or superseded. Never lose the thread of what was decided and why.
+            </p>
+          </BentoItem>
+
+        </BentoGrid>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       5. BRIEFING WIDGET
+       ================================================================ -->
+  <section id="briefing" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <div class="grid grid-cols-1 gap-16 lg:grid-cols-2 lg:items-start">
+
+        <!-- Left: copy -->
+        <SectionHeader
+          eyebrow="03 · Briefing"
+          title="The widget that doesn't exist anywhere else."
+          subtitle="Each morning at 9 AM, Defty composes a fresh briefing from yesterday's activity — closed tasks, merged PRs, decisions touched, today's calendar. You skim instead of dredge. If no AI is configured to write the briefing, the widget falls back to a static activity recap."
+        />
+
+        <!-- Right: visual -->
+        <div class="flex justify-center lg:justify-end">
+          <BriefingMock />
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       6. AGENT ACTIVITY WIDGET
+       ================================================================ -->
+  <section id="activity" class="py-20 md:py-28 bg-surface-container-low">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <div class="grid grid-cols-1 gap-16 lg:grid-cols-2 lg:items-center">
+
+        <!-- Left: visual (flipped) -->
+        <div class="flex justify-center lg:justify-start">
+          <ApprovalCardMock />
+        </div>
+
+        <!-- Right: copy -->
+        <SectionHeader
+          eyebrow="04 · Agent Activity"
+          title="Approve, reject, or edit — without leaving the dashboard."
+          subtitle="New AI actions appear in real-time. One-tap approve fires the action. Reject closes it with an optional reason. Edit opens the full review. Every interaction is logged, with a full audit trail."
+        />
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       7. MY WORK WIDGET
+       ================================================================ -->
+  <section id="my-work" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+
+      <SectionHeader
+        eyebrow="05 · My Work"
+        title="Scoped to you. Always."
+        subtitle="The 'My Work' filter is scoped to whoever's signed in. Same logic as the AI would use to find your work."
+        align="center"
+      />
+
+      <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl mx-auto">
+
+        <Card variant="subtle">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full" style="width: 8px; height: 8px; background: var(--outline);"></span>
+            <p class="text-[12px] font-bold uppercase tracking-wide text-ink-outline">To Do</p>
+          </div>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Tasks assigned to you that haven't started. Priority color-coded:
+            red for P0–P1, amber for P2, blue for P3.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full" style="width: 8px; height: 8px; background: var(--status-amber);"></span>
+            <p class="text-[12px] font-bold uppercase tracking-wide" style="color: var(--status-amber);">In Progress</p>
+          </div>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            What you're actively working on. Overdue items surface with a
+            due-date callout. No scrolling to find what's late.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full" style="width: 8px; height: 8px; background: var(--status-blue);"></span>
+            <p class="text-[12px] font-bold uppercase tracking-wide" style="color: var(--status-blue);">In Review</p>
+          </div>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Waiting on a reviewer. PR merged → task closes automatically via
+            the GitHub sync worker. No manual status update.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       8. SURFACE FOOTER + CTA BAND
+       ================================================================ -->
+  <SurfaceFooter current="dashboard" />
+
+  <CTABand
+    title="Open the workspace. The dashboard's already loaded."
+    cta={{ href: '/pricing#waitlist', label: 'Join the waitlist' }}
+  />
+
+</Layout>

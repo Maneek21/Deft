@@ -1,0 +1,14 @@
+---
+// BentoGrid — 12-column responsive grid.
+// Children should be <BentoItem> components or any element using
+// style="grid-column: span N" directly.
+//
+// No props — the grid itself is layout-only. Use BentoItem for
+// per-cell span/rowSpan control.
+---
+
+<div
+  class="grid grid-cols-1 gap-4 sm:grid-cols-6 lg:grid-cols-12"
+>
+  <slot />
+</div>

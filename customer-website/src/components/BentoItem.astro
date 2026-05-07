@@ -1,0 +1,28 @@
+---
+import Card from './Card.astro';
+
+type Props = {
+  span?: number;
+  rowSpan?: number;
+  class?: string;
+};
+
+// span: how many of the 12 columns this cell occupies (desktop).
+// rowSpan: how many grid rows this cell spans.
+// On sm (6-col) we default to full width if span >= 6, else half.
+const { span = 4, rowSpan = 1, class: className } = Astro.props;
+
+// Build the inline grid-column / grid-row style for desktop (applied via style attr).
+// Tailwind can't generate arbitrary span values at runtime so we use inline styles.
+const colStyle = `grid-column: span ${span}`;
+const rowStyle = rowSpan > 1 ? `; grid-row: span ${rowSpan}` : '';
+---
+
+<div
+  class:list={['col-span-1 sm:col-span-3', className ?? '']}
+  style={`${colStyle}${rowStyle}`}
+>
+  <Card lift variant="default" class="h-full">
+    <slot />
+  </Card>
+</div>

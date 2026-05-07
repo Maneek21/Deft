@@ -1,0 +1,177 @@
+---
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+---
+
+<div class:list={['mock-window', className]} style="max-width: 560px; width: 100%; font-family: var(--font-sans, Inter, sans-serif);">
+  <!-- Window chrome -->
+  <div class="flex items-center gap-1.5 px-3 bg-surface-container-low" style="height: 28px; border-bottom: 1px solid var(--ghost-border);">
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <span class="rounded-full" style="width: 10px; height: 10px; background: var(--surface-container-highest);"></span>
+    <!-- breadcrumb -->
+    <div class="flex items-center gap-1 ml-3 flex-1">
+      <span class="text-ink-outline" style="font-size: 11px;">Tasks</span>
+      <span class="text-ink-outline" style="font-size: 11px; opacity: 0.5;">›</span>
+      <span class="text-ink-outline" style="font-size: 11px;">#launch-q2</span>
+      <span class="text-ink-outline" style="font-size: 11px; opacity: 0.5;">›</span>
+      <span class="font-mono text-ink-variant" style="font-size: 11px;">ENG-142</span>
+    </div>
+    <!-- action icons -->
+    <div class="flex items-center gap-2">
+      <button style="background: none; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--status-green);">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 6.5l3 3 6-6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button style="background: none; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--outline);">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 9M11 2l-9 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="bg-surface" style="padding: 20px 24px 0;">
+
+    <!-- Top row: status + priority + assignee + due date -->
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <!-- status pill -->
+      <span class="rounded-md font-semibold" style="font-size: 11px; padding: 2px 8px; background: rgba(59, 130, 246, 0.15); color: var(--status-blue);">in_progress</span>
+      <!-- priority pill -->
+      <span class="rounded-md font-bold" style="font-size: 11px; padding: 2px 8px; background: rgba(229, 72, 77, 0.15); color: var(--status-red);">P1</span>
+      <!-- assignee -->
+      <div class="flex items-center gap-1.5">
+        <span class="flex items-center justify-center rounded-full font-semibold text-white" style="width: 20px; height: 20px; background: var(--status-amber); font-size: 9px; flex-shrink: 0;">MM</span>
+        <span class="text-ink-variant" style="font-size: 12px;">Maneek M.</span>
+      </div>
+      <!-- due date -->
+      <span class="font-mono text-ink-outline ml-auto" style="font-size: 11px;">2026-04-22</span>
+    </div>
+
+    <!-- Title -->
+    <h2 class="text-ink font-semibold" style="font-size: 18px; line-height: 1.3; margin: 0 0 10px;">Replace cookie session with Postgres-backed sessions</h2>
+
+    <!-- Description -->
+    <p class="text-ink-variant" style="font-size: 14px; line-height: 1.6; margin: 0 0 20px; padding-bottom: 20px; border-bottom: 1px solid var(--ghost-border);">
+      <span style="background: rgba(144, 128, 250, 0.15); color: var(--primary); padding: 1px 6px; border-radius: 4px; font-weight: 500; font-size: 13px;">@sara</span>
+      {' '}flagged this in <span style="background: rgba(144, 128, 250, 0.1); color: var(--primary); padding: 0 5px; border-radius: 3px; font-size: 13px;">#launch-q2</span> — current cookie sessions can't be revoked server-side, which the Acme demo blocked on. Reading from <code style="font-family: monospace; font-size: 12px; background: var(--surface-container-low); padding: 1px 5px; border-radius: 3px;">sessions</code> table directly per request. Performance reviewed.
+    </p>
+
+    <!-- Subtasks -->
+    <div class="mb-5">
+      <div class="eyebrow mb-2.5">Subtasks (2 of 3 done)</div>
+      <div class="flex flex-col gap-2">
+        <!-- done -->
+        <div class="flex items-center gap-2.5">
+          <span class="flex items-center justify-center rounded-sm flex-shrink-0" style="width: 15px; height: 15px; background: var(--status-green); border-radius: 3px;">
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1.5 4.5l2 2 4-4" stroke="white" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="text-ink-variant" style="font-size: 13px; text-decoration: line-through; opacity: 0.6;">Write migration 0061_sessions_table.sql</span>
+        </div>
+        <!-- done -->
+        <div class="flex items-center gap-2.5">
+          <span class="flex items-center justify-center rounded-sm flex-shrink-0" style="width: 15px; height: 15px; background: var(--status-green); border-radius: 3px;">
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1.5 4.5l2 2 4-4" stroke="white" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="text-ink-variant" style="font-size: 13px; text-decoration: line-through; opacity: 0.6;">Update auth middleware to read from <code style="font-family: monospace; font-size: 11px; background: var(--surface-container-low); padding: 1px 4px; border-radius: 3px;">sessions</code></span>
+        </div>
+        <!-- open -->
+        <div class="flex items-center gap-2.5">
+          <span class="flex-shrink-0 rounded-sm" style="width: 15px; height: 15px; border: 1.5px solid var(--outline); border-radius: 3px;"></span>
+          <span class="text-ink" style="font-size: 13px;">Backfill existing cookie sessions</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity -->
+    <div class="mb-0" style="padding-bottom: 16px; border-bottom: 1px solid var(--ghost-border);">
+      <div class="eyebrow mb-2.5">Activity</div>
+      <div class="flex flex-col gap-0" style="position: relative;">
+        <!-- vertical line -->
+        <div style="position: absolute; left: 9px; top: 12px; bottom: 12px; width: 1px; background: var(--ghost-border);"></div>
+
+        <!-- entry 1 -->
+        <div class="flex items-start gap-2.5 py-1.5">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-bold" style="width: 20px; height: 20px; background: var(--primary-container); font-size: 8px; color: var(--on-primary-container); z-index: 1; flex-shrink: 0;">D</span>
+          <div class="flex-1 min-w-0">
+            <span class="font-mono text-ink-outline" style="font-size: 10px;">8:42 AM</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 4px;">·</span>
+            <span class="text-ink font-medium" style="font-size: 12px;">Defty</span>
+            <span class="text-ink-variant" style="font-size: 12px;"> added a comment: </span>
+            <span class="text-ink-variant" style="font-size: 12px; font-style: italic;">"Pulled the migration plan from #launch-q2 thread."</span>
+          </div>
+        </div>
+
+        <!-- entry 2 -->
+        <div class="flex items-start gap-2.5 py-1.5">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 20px; height: 20px; background: var(--status-blue); font-size: 8px; z-index: 1; flex-shrink: 0;">SA</span>
+          <div class="flex-1 min-w-0">
+            <span class="font-mono text-ink-outline" style="font-size: 10px;">9:14 AM</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 4px;">·</span>
+            <span class="text-ink font-medium" style="font-size: 12px;">Sara</span>
+            <span class="text-ink-variant" style="font-size: 12px;"> changed status: </span>
+            <span class="font-mono" style="font-size: 10px; background: rgba(92, 92, 95, 0.2); padding: 1px 5px; border-radius: 3px; color: var(--status-gray);">backlog</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 3px;">→</span>
+            <span class="font-mono" style="font-size: 10px; background: rgba(59, 130, 246, 0.15); padding: 1px 5px; border-radius: 3px; color: var(--status-blue);">in_progress</span>
+          </div>
+        </div>
+
+        <!-- entry 3 -->
+        <div class="flex items-start gap-2.5 py-1.5">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 20px; height: 20px; background: var(--surface-container-highest); font-size: 8px; z-index: 1; flex-shrink: 0;">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="color: var(--outline);"><circle cx="5" cy="3.5" r="2" stroke="currentColor" stroke-width="1.1"/><path d="M1 9c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+          </span>
+          <div class="flex-1 min-w-0">
+            <span class="font-mono text-ink-outline" style="font-size: 10px;">11:02 AM</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 4px;">·</span>
+            <span class="text-ink font-medium" style="font-size: 12px;">GitHub</span>
+            <span class="text-ink-variant" style="font-size: 12px;"> opened </span>
+            <span style="font-size: 12px; color: var(--primary);">PR #1247</span>
+          </div>
+        </div>
+
+        <!-- entry 4 -->
+        <div class="flex items-start gap-2.5 py-1.5">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-bold" style="width: 20px; height: 20px; background: var(--primary-container); font-size: 8px; color: var(--on-primary-container); z-index: 1; flex-shrink: 0;">D</span>
+          <div class="flex-1 min-w-0">
+            <span class="font-mono text-ink-outline" style="font-size: 10px;">1:30 PM</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 4px;">·</span>
+            <span class="text-ink font-medium" style="font-size: 12px;">Defty</span>
+            <span class="text-ink-variant" style="font-size: 12px;"> linked decision: </span>
+            <span class="text-ink-variant" style="font-size: 12px; font-style: italic;">"Move session storage from cookie to Postgres"</span>
+          </div>
+        </div>
+
+        <!-- entry 5 -->
+        <div class="flex items-start gap-2.5 py-1.5">
+          <span class="flex items-center justify-center rounded-full flex-shrink-0 font-semibold text-white" style="width: 20px; height: 20px; background: var(--status-amber); font-size: 8px; z-index: 1; flex-shrink: 0;">MM</span>
+          <div class="flex-1 min-w-0">
+            <span class="font-mono text-ink-outline" style="font-size: 10px;">3:45 PM</span>
+            <span class="text-ink-outline" style="font-size: 10px; margin: 0 4px;">·</span>
+            <span class="text-ink font-medium" style="font-size: 12px;">Maneek</span>
+            <span class="text-ink-variant" style="font-size: 12px;"> added subtask: </span>
+            <span class="text-ink-variant" style="font-size: 12px; font-style: italic;">"Backfill existing cookie sessions"</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Reactions row -->
+    <div class="flex items-center gap-2 py-3">
+      <button class="flex items-center gap-1.5 rounded-lg" style="padding: 3px 8px; background: var(--surface-container-low); border: 1px solid var(--ghost-border); cursor: pointer; font-size: 12px;">
+        <span>🚀</span>
+        <span class="text-ink-variant font-mono" style="font-size: 11px;">3</span>
+      </button>
+      <button class="flex items-center gap-1.5 rounded-lg" style="padding: 3px 8px; background: var(--surface-container-low); border: 1px solid var(--ghost-border); cursor: pointer; font-size: 12px;">
+        <span>👀</span>
+        <span class="text-ink-variant font-mono" style="font-size: 11px;">1</span>
+      </button>
+      <button class="flex items-center gap-1.5 rounded-lg text-ink-outline" style="padding: 3px 8px; background: transparent; border: 1px dashed var(--ghost-border); cursor: pointer; font-size: 12px;">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span style="font-size: 11px;">Add reaction</span>
+      </button>
+    </div>
+
+  </div>
+</div>

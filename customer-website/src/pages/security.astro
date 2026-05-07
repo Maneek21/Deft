@@ -1,0 +1,332 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SectionHeader from '../components/SectionHeader.astro';
+import Card from '../components/Card.astro';
+import CTABand from '../components/CTABand.astro';
+---
+
+<Layout
+  title="Deft — security, audit, isolation, and approval rails"
+  description="Multi-tenant from day one. Three-tier approvals. Full audit trail. Spend caps. Circuit breakers. Open source means you can read the code."
+>
+
+  <!-- ================================================================
+       1. SUBPAGE HERO
+       ================================================================ -->
+  <div class="relative">
+    <div class="hero-bloom" aria-hidden="true"></div>
+    <div class="max-w-3xl mx-auto text-center pt-24 pb-16 relative px-6">
+      <p class="eyebrow mb-4">Security</p>
+      <h1 class="display mb-6">Autonomy with the brakes built in.</h1>
+      <p class="lede mx-auto max-w-[600px]">
+        Tenant isolation on every query. Approval rails on every external write.
+        An audit log on every action. Spend caps that fire before the bill arrives.
+      </p>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       2. TENANT ISOLATION
+       ================================================================ -->
+  <section id="isolation" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <SectionHeader
+        eyebrow="01 · Tenant isolation"
+        title="org_id on every row. Every query. No exceptions."
+        subtitle="Multi-tenant SaaS from day one. There's no shared table, no global cache, no 'oh we'll add isolation later'. The schema enforces it. The query layer enforces it. The agent is the same code path as the dashboard, so it can't bypass it."
+      />
+
+      <div class="mt-12 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
+
+        <!-- Left: org_id table reference -->
+        <Card variant="default">
+          <div slot="header">
+            <p class="text-[12px] font-mono text-ink-variant uppercase tracking-wide">schema enforcement</p>
+          </div>
+          <div class="flex flex-col gap-2 font-mono text-[13px] leading-relaxed">
+            <div class="flex items-center gap-3">
+              <span class="text-ink w-32 flex-shrink-0">tasks</span>
+              <span class="text-[color:var(--status-green)]">✓ org_id</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-ink w-32 flex-shrink-0">messages</span>
+              <span class="text-[color:var(--status-green)]">✓ org_id</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-ink w-32 flex-shrink-0">decisions</span>
+              <span class="text-[color:var(--status-green)]">✓ org_id</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-ink w-32 flex-shrink-0">events</span>
+              <span class="text-[color:var(--status-green)]">✓ org_id</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="text-ink w-32 flex-shrink-0">agent_actions</span>
+              <span class="text-[color:var(--status-green)]">✓ org_id</span>
+            </div>
+          </div>
+        </Card>
+
+        <!-- Right: explanation -->
+        <div class="flex flex-col gap-4">
+          <Card variant="subtle">
+            <p class="text-[13px] font-semibold text-ink mb-1">Drizzle ORM + direct SQL</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              All application queries go through Drizzle ORM with <code class="font-mono text-[12px] text-primary">org_id</code> on every
+              table. The agent's direct SQL access is the one exception — and it still
+              binds <code class="font-mono text-[12px] text-primary">org_id = $1</code> as the first query parameter, without exception.
+            </p>
+          </Card>
+          <Card variant="subtle">
+            <p class="text-[13px] font-semibold text-ink mb-1">Every authenticated route enforces it</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              The JWT carries the org context. API middleware extracts it. Route handlers
+              never accept an <code class="font-mono text-[12px] text-primary">org_id</code> from the request body — it comes from the
+              verified token. There's no path where a tenant's data is reachable from
+              another tenant's session.
+            </p>
+          </Card>
+          <Card variant="subtle">
+            <p class="text-[13px] font-semibold text-ink mb-1">Soft deletes preserve history</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Nothing is hard-deleted. The agent has historical context. Audit trails
+              survive user-initiated deletes. Data stays in your tenant's rows — it
+              just becomes invisible to the UI.
+            </p>
+          </Card>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       3. THREE-TIER APPROVAL SYSTEM
+       ================================================================ -->
+  <section id="approvals" class="py-20 md:py-28 bg-surface-container-low">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <SectionHeader
+        eyebrow="02 · Approval rails"
+        title="Auto. Quick. Full. Plus a destructive-tool override."
+      />
+
+      <div class="mt-12 grid grid-cols-1 gap-6 md:grid-cols-3">
+
+        <!-- Auto-execute -->
+        <Card variant="default">
+          <div style="border-left: 4px solid var(--status-green); padding-left: 14px;">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="inline-block h-2 w-2 rounded-full bg-[color:var(--status-green)]"></span>
+              <p class="text-[12px] font-semibold text-ink uppercase tracking-wide font-mono">Auto-execute</p>
+            </div>
+            <p class="text-[15px] font-semibold text-ink mb-2">PR-merged → task done. Reminder fired. Standup posted.</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Reads-only. No prompt. Conservative trust allows this tier by default.
+              Auto-execute actions never touch external writes unless the org explicitly
+              opts in at a higher trust level.
+            </p>
+          </div>
+        </Card>
+
+        <!-- Quick-approve -->
+        <Card variant="default">
+          <div style="border-left: 4px solid var(--status-amber); padding-left: 14px;">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="inline-block h-2 w-2 rounded-full bg-[color:var(--status-amber)]"></span>
+              <p class="text-[12px] font-semibold text-ink uppercase tracking-wide font-mono">Quick-approve</p>
+            </div>
+            <p class="text-[15px] font-semibold text-ink mb-2">Create task. Schedule meeting. Post a draft.</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              One-tap approval card surfaces in the inbox. The agent waits. Standard trust
+              unlocks this tier — the default for most teams. No write leaves the workspace
+              without a recorded approval.
+            </p>
+          </div>
+        </Card>
+
+        <!-- Full-review -->
+        <Card variant="default">
+          <div style="border-left: 4px solid var(--status-red); padding-left: 14px;">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="inline-block h-2 w-2 rounded-full bg-[color:var(--status-red)]"></span>
+              <p class="text-[12px] font-semibold text-ink uppercase tracking-wide font-mono">Full-review</p>
+            </div>
+            <p class="text-[15px] font-semibold text-ink mb-2">Multi-step plans, email drafts, external writes.</p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              Plan visible and editable before anything runs. Full audit trail on execute.
+              Autonomous trust enables this tier for non-destructive operations. Destructive
+              tools never clear this gate automatically.
+            </p>
+          </div>
+        </Card>
+
+      </div>
+
+      <!-- Destructive-tool callout -->
+      <div class="mt-8">
+        <Card variant="default" class="border-l-4 border-[color:var(--status-red)]">
+          <div style="border-left: 4px solid var(--status-red); padding-left: 16px; margin-left: -1px;">
+            <p class="text-[14px] font-semibold text-ink mb-2">
+              Destructive admin tools always require human approval
+            </p>
+            <p class="text-[13px] text-ink-variant leading-relaxed">
+              <code class="font-mono text-[12px] text-primary">manage_agent_employee</code>,
+              <code class="font-mono text-[12px] text-primary">manage_mcp_connection</code>,
+              <code class="font-mono text-[12px] text-primary">remove_member</code>,
+              any <code class="font-mono text-[12px] text-primary">delete_*</code>, or any call with
+              <code class="font-mono text-[12px] text-primary">params.mode: delete|pause|revoke</code> —
+              these never auto-execute. Even at Autonomous trust. There's a 35-case approval
+              matrix in the test suite.
+            </p>
+          </div>
+        </Card>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================================================================
+       4. AUDIT TRAIL
+       ================================================================ -->
+  <section id="audit" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <SectionHeader
+        eyebrow="03 · Audit"
+        title="Every agent action is a row."
+        subtitle="agent_actions stores the action, the params, the approval status, the source. agent_heartbeat_turns logs every tick. You don't trust the agent — you read the log."
+      />
+
+      <div class="mt-12 grid grid-cols-1 gap-6 md:grid-cols-3">
+
+        <Card variant="default">
+          <p class="font-mono text-primary text-xl font-semibold mb-2">agent_actions</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Every action queued or executed. Carries the action kind, params, approval
+            status, source (<code class="font-mono text-[12px]">mention</code>,
+            <code class="font-mono text-[12px]">heartbeat</code>,
+            <code class="font-mono text-[12px]">trigger</code>,
+            <code class="font-mono text-[12px]">task_assignment</code>),
+            and the agent employee that triggered it.
+          </p>
+        </Card>
+
+        <Card variant="default">
+          <p class="font-mono text-primary text-xl font-semibold mb-2">agent_heartbeat_turns</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Every heartbeat tick with <code class="font-mono text-[12px] text-primary">prompt_sha</code>,
+            action count, tokens in and out, cost in cents, outcome, and a summary. Per-tick
+            logging means drift is visible before it becomes a problem.
+          </p>
+        </Card>
+
+        <Card variant="default">
+          <p class="font-mono text-primary text-xl font-semibold mb-2">agent_employees</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Per-employee trust level, daily budget, circuit-breaker status, and the
+            <code class="font-mono text-[12px] text-primary">unhealthy</code> flag.
+            The full lifecycle of every BYOA agent is readable here — not inferred from logs.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       5. SPEND CAPS + CIRCUIT BREAKERS
+       ================================================================ -->
+  <section id="caps" class="py-20 md:py-28 bg-surface-container-low">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <div class="grid grid-cols-1 gap-16 lg:grid-cols-2 lg:items-start">
+
+        <!-- Left: copy -->
+        <SectionHeader
+          eyebrow="04 · Cost & loop guardrails"
+          title="Three failures, then the agent is paused."
+          subtitle="Per-employee daily budget. Per-org monthly cap. Three consecutive errors trip the circuit breaker. Identical prompts on consecutive ticks are detected and skipped. The agent gets fired before it gets expensive — or stuck."
+        />
+
+        <!-- Right: metrics card -->
+        <Card variant="default">
+          <div class="flex flex-col divide-y divide-ghost">
+
+            <div class="flex items-center justify-between py-4 first:pt-0">
+              <span class="font-mono text-primary text-lg">$100/day</span>
+              <span class="text-[13px] text-ink-variant text-right">Default per-employee budget</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4">
+              <span class="font-mono text-primary text-lg">3 errors</span>
+              <span class="text-[13px] text-ink-variant text-right">Trips the circuit breaker</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4">
+              <span class="font-mono text-primary text-lg">prompt_sha</span>
+              <span class="text-[13px] text-ink-variant text-right">Idempotency per tick</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4 last:pb-0">
+              <span class="font-mono text-primary text-lg">org_spend_caps</span>
+              <span class="text-[13px] text-ink-variant text-right">Monthly org ceiling</span>
+            </div>
+
+          </div>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       6. RELIABLE WITHOUT AI
+       ================================================================ -->
+  <section id="reliable" class="py-20 md:py-28">
+    <div class="mx-auto max-w-[1200px] px-6">
+      <SectionHeader
+        eyebrow="05 · Reliable without AI"
+        title="Pull the model out. The product still works."
+        subtitle="Chat sends messages. Kanban moves cards. Standups still post. The agent is a feature, not a dependency. If Anthropic is down, your team still ships — and the audit trail still records that no agent ran."
+        align="center"
+      />
+
+      <div class="mt-12 grid grid-cols-1 gap-6 md:grid-cols-3 max-w-3xl mx-auto">
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">Chat still delivers</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Messages send. Threads reply. Pins pin. The real-time layer is Socket.io
+            over your own infrastructure — no LLM in the critical path.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">Tasks still move</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            Kanban, list, timeline, and calendar views work. Status, assignee, priority —
+            all editable. No agent required for the core workflow.
+          </p>
+        </Card>
+
+        <Card variant="subtle">
+          <p class="text-[13px] font-semibold text-ink mb-1">No silent failures</p>
+          <p class="text-[13px] text-ink-variant leading-relaxed">
+            If no BYOA agent subscribes to <code class="font-mono text-[12px] text-primary">cron:standup</code>,
+            admins get a single <code class="font-mono text-[12px] text-primary">standup_unconfigured</code>
+            notification (7-day dedup) pointing at the agent library.
+          </p>
+        </Card>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       7. CTA BAND
+       ================================================================ -->
+  <CTABand
+    title="Autonomy you can audit, line by line."
+    subtitle="Open source means you don't have to take our word for it."
+    cta={{ href: '/pricing#waitlist', label: 'Join the waitlist' }}
+  />
+
+</Layout>
