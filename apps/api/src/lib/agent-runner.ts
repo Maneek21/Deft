@@ -115,6 +115,13 @@ export async function runAgentQuery(params: {
   citations: any[];
   pendingActions: any[];
   executedActions: any[];
+  // Phase 2 — last assistant API response, exposed so agent-reply can
+  // populate metadata.agent_blocks / model / tokens_* on the inserted
+  // message (parity with agent-stream-loop).
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  assistantBlocks: Anthropic.ContentBlock[] | null;
 }> {
   if (!env.ANTHROPIC_API_KEY) {
     throw new Error('Anthropic API key not configured');
@@ -269,6 +276,14 @@ export async function runAgentQuery(params: {
   let executedActions: any[] = [];
   let finalText = '';
   let intermediateText = ''; // Text from iterations with tool calls (preamble — usually discarded)
+  // Phase 2 — capture metadata from the final API response so agent-reply
+  // can populate metadata.agent_blocks / model / tokens_* parity with
+  // agent-stream-loop. Without these the rendered chat falls back to
+  // plain-text and Phase 4's <AgentMessageBlocks/> can't show tool chips
+  // or the model+tokens footer.
+  let lastResponseContent: Anthropic.ContentBlock[] | null = null;
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
 
   let iterations = 0;
   const maxIterations = params.mode === 'background' ? 25 : 8;
@@ -339,7 +354,10 @@ export async function runAgentQuery(params: {
           `[agent-runner] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
         );
       }
+      totalTokensIn += response.usage.input_tokens ?? 0;
+      totalTokensOut += response.usage.output_tokens ?? 0;
     }
+    lastResponseContent = response.content;
 
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
@@ -496,5 +514,9 @@ export async function runAgentQuery(params: {
     citations: allCitations,
     pendingActions,
     executedActions,
+    model: reasonConfig.model,
+    tokensIn: totalTokensIn,
+    tokensOut: totalTokensOut,
+    assistantBlocks: lastResponseContent,
   };
 }

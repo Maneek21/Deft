@@ -116,7 +116,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       return;
     }
 
-    // Insert the agent's reply as a message in the space
+    // Insert the agent's reply as a message in the space.
+    // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
+    // can render tool chips, citations footer, and the model+tokens detail
+    // (parity with the agent-stream-loop path).
     const [agentMessage] = await db.insert(messages).values({
       org_id: orgId,
       space_id: spaceId,
@@ -125,9 +128,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       parent_id: threadParentId,
       metadata: {
         is_agent_reply: true,
+        agent_blocks: result.assistantBlocks ?? undefined,
+        model: result.model,
+        tokens_in: result.tokensIn,
+        tokens_out: result.tokensOut,
         citations: result.citations.length > 0 ? result.citations : undefined,
         pending_actions: result.pendingActions.length > 0 ? result.pendingActions : undefined,
-      },
+      } as never,
     }).returning();
 
     // Get the agent user info for the broadcast
