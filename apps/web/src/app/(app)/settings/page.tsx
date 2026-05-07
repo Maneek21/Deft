@@ -13,6 +13,8 @@ const settingsSections = [
   { name: 'Groups', href: '/settings/groups' },
   { name: 'Tags', href: '/settings/tags' },
   { name: 'Integrations', href: '/settings/integrations' },
+  { name: 'AI', href: '/settings/ai' },
+  { name: 'Calendar', href: '/settings/calendar' },
   { name: 'Agent', href: '/settings/agent' },
   { name: 'Agent Employees', href: '/settings/agent-employees' },
   { name: 'API Access', href: '/settings/api-access' },
@@ -57,10 +59,7 @@ export default function SettingsPage() {
       <div className="max-w-2xl mx-auto px-6 py-10">
         {/* Profile Section */}
         <section className="mb-10">
-          <h2
-            className="text-sm font-semibold uppercase tracking-wide mb-4"
-            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-          >
+          <h2 className="eyebrow mb-4" style={{ fontFamily: 'var(--font-heading)' }}>
             Profile
           </h2>
           <div
@@ -91,10 +90,7 @@ export default function SettingsPage() {
 
         {/* Appearance Section */}
         <section className="mb-10">
-          <h2
-            className="text-sm font-semibold uppercase tracking-wide mb-4"
-            style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-          >
+          <h2 className="eyebrow mb-4" style={{ fontFamily: 'var(--font-heading)' }}>
             Appearance
           </h2>
           <div

@@ -2,11 +2,27 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { UserPlus, X, ChevronDown, Trash2 } from 'lucide-react';
+import { UserPlus, X, ChevronDown, Trash2, Copy, Check, KeyRound } from 'lucide-react';
 
 type Member = { id: string; name: string; email: string; avatar_url: string | null; role: string };
 
 const ROLE_OPTIONS = ['admin', 'member', 'guest'] as const;
+
+type ShareLink = {
+  url: string;
+  expiresAt: string | null;
+  context: string;
+};
+
+function formatExpiry(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const hrs = Math.round((d.getTime() - Date.now()) / 3_600_000);
+  if (hrs <= 0) return 'expired';
+  if (hrs < 48) return `expires in ${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `expires in ${days}d`;
+}
 
 export default function MembersPage() {
   const { user } = useAuth();
@@ -16,9 +32,11 @@ export default function MembersPage() {
   const [inviteRole, setInviteRole] = useState<string>('member');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState('');
-  const [inviteSuccess, setInviteSuccess] = useState('');
+  const [shareLink, setShareLink] = useState<ShareLink | null>(null);
+  const [copied, setCopied] = useState(false);
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [recoveringId, setRecoveringId] = useState<string | null>(null);
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
 
@@ -32,19 +50,20 @@ export default function MembersPage() {
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteError('');
-    setInviteSuccess('');
+    setShareLink(null);
     setInviteLoading(true);
     try {
       const res = await api.post('/api/members/invite', { email: inviteEmail, role: inviteRole });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to invite');
-      }
-      setInviteSuccess(`Invitation sent to ${inviteEmail}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create invite');
+      setShareLink({
+        url: data.invite_url,
+        expiresAt: data.expires_at,
+        context: `Invite link for ${inviteEmail}`,
+      });
       setInviteEmail('');
       setInviteRole('member');
       fetchMembers();
-      setTimeout(() => { setInviteSuccess(''); setShowInvite(false); }, 2000);
     } catch (err: any) {
       setInviteError(err.message);
     } finally {
@@ -68,16 +87,42 @@ export default function MembersPage() {
     setConfirmRemove(null);
   };
 
+  const handleRecoveryLink = async (m: Member) => {
+    setRecoveringId(m.id);
+    setShareLink(null);
+    try {
+      const res = await api.post(`/api/members/${m.id}/recovery-url`, {});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to generate recovery link');
+      setShareLink({
+        url: data.recovery_url,
+        expiresAt: data.expires_at,
+        context: `Password recovery link for ${m.name} (${m.email})`,
+      });
+    } catch (err: any) {
+      setInviteError(err.message);
+    } finally {
+      setRecoveringId(null);
+    }
+  };
+
+  const copyShareLink = async () => {
+    if (!shareLink) return;
+    await navigator.clipboard.writeText(shareLink.url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
     <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[600px]">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-[18px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+        <h2 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>
           Members
         </h2>
         {isAdmin && (
           <button
-            onClick={() => setShowInvite(!showInvite)}
+            onClick={() => { setShowInvite(!showInvite); setShareLink(null); setInviteError(''); }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
             style={{
               background: 'var(--accent)',
@@ -94,14 +139,12 @@ export default function MembersPage() {
       {/* Invite form */}
       {showInvite && (
         <form onSubmit={handleInvite} className="mb-4 p-4 rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+          <p className="mb-3 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+            Generate an invite link. Copy it and share it with the new teammate however you like — Slack, in person, anywhere. The link expires in 7 days and works once.
+          </p>
           {inviteError && (
             <div className="mb-3 px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>
               {inviteError}
-            </div>
-          )}
-          {inviteSuccess && (
-            <div className="mb-3 px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(0,120,80,0.2)', color: 'var(--accent)' }}>
-              {inviteSuccess}
             </div>
           )}
           <div className="flex gap-2">
@@ -130,16 +173,57 @@ export default function MembersPage() {
               className="h-9 px-4 text-[12px] font-medium rounded-md disabled:opacity-50"
               style={{ background: 'var(--accent)', color: 'white' }}
             >
-              {inviteLoading ? '...' : 'Send'}
+              {inviteLoading ? '...' : 'Generate link'}
             </button>
           </div>
         </form>
       )}
 
+      {/* Share-link panel — shown after invite or recovery generation */}
+      {shareLink && (
+        <div className="mb-4 p-4 rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--accent)' }}>
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>{shareLink.context}</p>
+              {shareLink.expiresAt && (
+                <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>{formatExpiry(shareLink.expiresAt)}</p>
+              )}
+            </div>
+            <button
+              onClick={() => setShareLink(null)}
+              className="text-[12px]"
+              style={{ color: 'var(--muted)' }}
+              aria-label="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              readOnly
+              value={shareLink.url}
+              onFocus={e => e.currentTarget.select()}
+              className="flex-1 h-9 px-3 text-[12px] rounded-md outline-none font-mono"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+            />
+            <button
+              type="button"
+              onClick={copyShareLink}
+              className="h-9 px-3 flex items-center gap-1.5 text-[12px] font-medium rounded-md"
+              style={{ background: copied ? 'var(--accent)' : 'var(--surface)', color: copied ? 'white' : 'var(--foreground)', border: '1px solid var(--border)' }}
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Member list */}
       <div className="space-y-2">
         {members.map(m => (
-          <div key={m.id} className="flex items-center gap-3 px-4 py-3 rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+          <div key={m.id} className="group flex items-center gap-3 px-4 py-3 rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
             <div className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white" style={{ background: 'var(--avatar-bg)' }}>
               {m.avatar_url ? (
                 <img src={m.avatar_url} alt="" className="w-full h-full rounded-full object-cover" />
@@ -154,6 +238,19 @@ export default function MembersPage() {
               </p>
               <p className="text-[12px] truncate" style={{ color: 'var(--muted)' }}>{m.email}</p>
             </div>
+
+            {/* Recovery link button (admin only, not for self) */}
+            {isAdmin && m.id !== user?.id && (
+              <button
+                onClick={() => handleRecoveryLink(m)}
+                disabled={recoveringId === m.id}
+                className="p-1.5 rounded opacity-0 group-hover:opacity-100 disabled:opacity-100"
+                style={{ color: 'var(--muted)' }}
+                title="Generate password recovery link"
+              >
+                <KeyRound size={13} />
+              </button>
+            )}
 
             {/* Role badge / dropdown */}
             {isAdmin && m.role !== 'owner' && m.id !== user?.id ? (

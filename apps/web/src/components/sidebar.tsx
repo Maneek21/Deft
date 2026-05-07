@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { useTheme } from './theme-provider';
+import { Logo } from './brand/logo';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
 import Link from 'next/link';
@@ -656,31 +657,7 @@ export function Sidebar({
         style={{ height: '56px' }}
       >
         <div className="flex items-center gap-2.5">
-          <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: 'var(--primary-container)' }}
-          >
-            {/* Deft icon — stacked diamond shape */}
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 1L11 5H5L8 1Z" fill="white" opacity="0.9"/>
-              <path d="M8 5L12 9H4L8 5Z" fill="white" opacity="0.7"/>
-              <path d="M8 9L13 14H3L8 9Z" fill="white" opacity="0.5"/>
-            </svg>
-          </div>
-          <div>
-            <span
-              className="text-[13px] font-semibold leading-tight"
-              style={{ color: 'var(--on-surface)', letterSpacing: '-0.02em' }}
-            >
-              Deft AI
-            </span>
-            <p
-              className="text-[0.5625rem] font-semibold uppercase leading-tight"
-              style={{ color: 'var(--outline)', letterSpacing: '0.05em' }}
-            >
-              The Quiet Workspace
-            </p>
-          </div>
+          <Logo variant="wordmark" className="h-7 w-auto flex-shrink-0" priority />
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -866,17 +843,9 @@ export function Sidebar({
 
   const collapsedContent = (
     <div className="flex flex-col h-full items-center py-3 gap-1">
-      {/* Logo */}
-      <div
-        className="w-8 h-8 rounded-lg flex items-center justify-center mb-2 flex-shrink-0"
-        style={{ background: 'var(--primary-container)' }}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <path d="M8 1L11 5H5L8 1Z" fill="white" opacity="0.9"/>
-          <path d="M8 5L12 9H4L8 5Z" fill="white" opacity="0.7"/>
-          <path d="M8 9L13 14H3L8 9Z" fill="white" opacity="0.5"/>
-        </svg>
-      </div>
+      {/* Logo (collapsed) */}
+      <Logo variant="icon" className="w-8 h-8 mb-2 flex-shrink-0" />
+
 
       {/* Nav icons */}
       {navItems.map((item) => {

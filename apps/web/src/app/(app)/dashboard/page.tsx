@@ -14,6 +14,7 @@ import {
   LayoutGrid, RotateCcw,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { AIProviderBanner } from '@/components/ai-provider-banner';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { formatMessageTime, formatFullDateLong } from '@/lib/time';
 
@@ -91,7 +92,7 @@ function Hero({
   const heroActions = [
     { label: 'New task', icon: Plus, href: '/tasks', primary: true },
     { label: 'Message', icon: MessageSquare, href: '/chat', primary: false },
-    { label: 'Ask Deft', icon: Bot, href: '/chat', primary: false },
+    { label: 'Ask Deft', icon: Bot, href: '/agent', primary: false },
   ] as const;
 
   return (
@@ -106,23 +107,23 @@ function Hero({
         gap: 24, flexWrap: 'wrap',
       }}>
         <div style={{ maxWidth: 780 }}>
-          <div style={{
-            fontSize: 11, fontWeight: 600, letterSpacing: '0.12em',
-            textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 8,
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--text-tertiary)' }} />
+          <div
+            className="eyebrow"
+            style={{
+              marginBottom: 8,
+              display: 'inline-flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            <span style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--outline)' }} />
             {formatFullDateLong(new Date())}
           </div>
-          <h1 style={{
-            fontSize: 'clamp(32px, 4.2vw, 48px)', fontWeight: 700,
-            letterSpacing: '-0.025em', lineHeight: 1.05, margin: 0,
-            color: 'var(--text-primary)',
-          }}>{greetingText}, {firstName}.</h1>
-          <p style={{
-            fontSize: 18, lineHeight: 1.5, color: 'var(--text-secondary)',
-            margin: '18px 0 0', maxWidth: 720, letterSpacing: '-0.005em',
-          }}>
+          <h1 className="display" style={{ margin: 0 }}>{greetingText}, {firstName}.</h1>
+          <p
+            className="lede"
+            style={{
+              margin: '18px 0 0', maxWidth: 720,
+            }}
+          >
             {dueTodayN === 0 && inProgressN === 0 && totalUnread === 0 && overdueN === 0 ? (
               <>A clear slate today. No tasks pending, your inbox is empty, and nothing is mid-flight. A rare kind of quiet.</>
             ) : (
@@ -484,6 +485,7 @@ function DashboardBody() {
       `}</style>
 
       <div style={{ width: '100%', maxWidth: 1320, margin: '0 auto', padding: '0 24px 64px' }}>
+        <AIProviderBanner />
         <Hero
           onStandup={handleStandup}
           standupGenerating={standupGenerating}

@@ -8,17 +8,21 @@ import { useChatContext } from '@/lib/chat-context';
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
-  const { activeSpaceId, setActiveSpaceId, spaces, threadMessage, setThreadMessage } = useChatContext();
+  const { activeSpaceId, syncActiveSpaceIdFromUrl, spaces, threadMessage, setThreadMessage } = useChatContext();
 
   const urlSpaceId = searchParams.get('space');
   const urlMessageId = searchParams.get('message');
 
-  // If URL has ?space=, switch to that space
+  // Sync layout's activeSpaceId state from the URL (back/forward, deep links).
+  // MUST use the state-only setter — calling the navigating setActiveSpaceId
+  // here re-issues a router.replace mid-transition and races against the
+  // in-flight nav from the sidebar click, wedging the router and starving
+  // React's event loop until the chat sidebar stops responding to clicks.
   useEffect(() => {
     if (urlSpaceId && urlSpaceId !== activeSpaceId && spaces.some(s => s.id === urlSpaceId)) {
-      setActiveSpaceId(urlSpaceId);
+      syncActiveSpaceIdFromUrl(urlSpaceId);
     }
-  }, [urlSpaceId, activeSpaceId, spaces, setActiveSpaceId]);
+  }, [urlSpaceId, activeSpaceId, spaces, syncActiveSpaceIdFromUrl]);
 
   const effectiveSpaceId = urlSpaceId || activeSpaceId;
   const activeSpace = spaces.find((s) => s.id === effectiveSpaceId);

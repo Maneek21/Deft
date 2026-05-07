@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff } from 'lucide-react';
+import { Logo } from '@/components/brand/logo';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -77,23 +78,10 @@ function LoginContent() {
       <main className="w-full max-w-[400px] flex flex-col items-center gap-8">
         {/* Brand identity */}
         <div className="flex flex-col items-center gap-4 text-center">
-          {/* Deft stacked stones icon */}
-          <div className="w-12 h-12 flex items-center justify-center rounded-xl"
-            style={{ background: 'var(--surface-container-low)' }}>
-            <div className="flex flex-col items-center">
-              <div className="w-4 h-2 rounded-full" style={{ background: 'var(--primary)', opacity: 0.6 }} />
-              <div className="w-6 h-2 rounded-full -mt-0.5" style={{ background: 'var(--primary)', opacity: 0.8 }} />
-              <div className="w-8 h-2.5 rounded-full -mt-0.5" style={{ background: 'var(--primary-container)' }} />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <h1 className="text-[1.25rem] font-semibold" style={{ color: 'var(--on-surface)', letterSpacing: '-0.01em' }}>
-              Deft AI
-            </h1>
-            <p className="text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>
-              Sign in to your workspace
-            </p>
-          </div>
+          <Logo variant="wordmark" className="h-12 w-auto" priority />
+          <p className="text-[0.875rem]" style={{ color: 'var(--on-surface-variant)' }}>
+            Sign in to your workspace
+          </p>
         </div>
 
         {/* Auth card */}

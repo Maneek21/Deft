@@ -142,11 +142,10 @@ export default function WorkflowsPage() {
       <div className="max-w-[820px] mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-[22px] font-semibold"
-              style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em' }}>
+            <h1 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>
               Workflows
             </h1>
-            <p className="text-[13px] mt-0.5" style={{ color: 'var(--muted)' }}>
+            <p className="lede mt-0.5">
               Automate simple rules like "when a task moves to Done, add the <em>shipped</em> label."
             </p>
           </div>

@@ -175,8 +175,13 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const base = currentSpace ? `/chat?space=${currentSpace}&thread=${messageId}` : `/chat?thread=${messageId}`;
     router.replace(base);
     return () => {
-      // On unmount (panel closed), strip the thread param
-      const sp = currentSpace ? `/chat?space=${currentSpace}` : '/chat';
+      // Strip ?thread= only if the user is still on /chat. If they navigated
+      // away (e.g. clicked Tasks/Notes in the sidebar), Next.js has already
+      // started pushing the new route — running router.replace here would
+      // race with and override that navigation, sending them back to /chat.
+      if (typeof window === 'undefined' || window.location.pathname !== '/chat') return;
+      const currentSpaceNow = new URLSearchParams(window.location.search).get('space');
+      const sp = currentSpaceNow ? `/chat?space=${currentSpaceNow}` : '/chat';
       router.replace(sp);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

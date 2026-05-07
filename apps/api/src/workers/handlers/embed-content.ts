@@ -1,56 +1,14 @@
-// Handler: embed-content — generates vector embeddings for wiki pages and writes to pgvector column
+// Handler: embed-content — generates vector embeddings for wiki pages and tasks
+// and writes to the pgvector column. Routes through lib/embed.ts so the
+// provider is BYO-configurable per org.
 import { db } from '../../lib/db.js';
 import { sql } from 'drizzle-orm';
 import type { JobData } from '../types.js';
-
-const EMBED_DIMS = 1536;
-const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
-const OPENAI_EMBED_MODEL = 'text-embedding-3-small';
-// ~32k chars ≈ 8k tokens — safe input limit for text-embedding-3-small
-const MAX_INPUT_CHARS = 32000;
+import { embed, EMBED_DIMS } from '../../lib/embed.js';
 
 interface EmbedContentJobData {
   source_type: string;
   source_id: string;
-}
-
-/**
- * Call OpenAI embeddings API with the given text.
- * Throws on non-OK response so BullMQ retries the job.
- */
-async function embedText(text: string, apiKey: string): Promise<number[]> {
-  const response = await globalThis.fetch(OPENAI_EMBED_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_EMBED_MODEL,
-      input: text.slice(0, MAX_INPUT_CHARS),
-      dimensions: EMBED_DIMS,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI embeddings ${response.status}: ${body}`);
-  }
-
-  const json = (await response.json()) as { data: { embedding: number[] }[] };
-  const embedding = json.data[0]?.embedding;
-  if (!embedding) {
-    throw new Error('OpenAI embeddings response missing data[0].embedding');
-  }
-  if (embedding.length !== EMBED_DIMS) {
-    throw new Error(
-      `OpenAI returned ${embedding.length} dims, expected ${EMBED_DIMS}`,
-    );
-  }
-  if (embedding.some((v) => !Number.isFinite(v))) {
-    throw new Error('OpenAI embedding contains non-finite values');
-  }
-  return embedding;
 }
 
 export async function handleEmbedContent(job: JobData): Promise<void> {
@@ -68,23 +26,14 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
     return;
   }
 
-  // Read OPENAI_API_KEY from process.env at call-time so test stubs work.
-  const apiKey = process.env.OPENAI_API_KEY ?? '';
-  if (!apiKey) {
-    console.warn(
-      `[embed-content] OPENAI_API_KEY is unset — skipping embedding for ${source_type}:${source_id}`,
-    );
-    return;
-  }
-
   if (source_type === 'task') {
-    await embedTask(job, source_id, apiKey);
+    await embedTask(job, source_id);
     return;
   }
 
-  // Fetch the wiki page.
+  // Fetch the wiki page (with org_id so embed() can pick the right provider).
   const rows = await db.execute(
-    sql`SELECT id, title, summary, content
+    sql`SELECT id, org_id, title, summary, content
         FROM wiki_pages
         WHERE id = ${source_id}
           AND is_deleted = false
@@ -103,6 +52,7 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
 
   const page = pending[0] as {
     id: string;
+    org_id: string;
     title: string;
     summary: string | null;
     content: string;
@@ -114,56 +64,25 @@ export async function handleEmbedContent(job: JobData): Promise<void> {
 
   const inputText = `${page.title}\n\n${page.summary ?? ''}\n\n${page.content}`.trim();
 
-  // embedText throws on API error → job retries automatically.
-  const embedding = await embedText(inputText, apiKey);
-
-  // Write via raw SQL. Try pgvector first; fall back to BYTEA (dev environments
-  // where the pgvector extension is not installed and the column is BYTEA).
-  const literal = `[${embedding.join(',')}]`;
-  let usedFallback = false;
-  try {
-    await db.execute(
-      sql`UPDATE wiki_pages
-          SET embedding = ${literal}::vector
-          WHERE id = ${page.id}`,
-    );
-  } catch (err: unknown) {
-    const msg = (err as Error)?.message ?? '';
-    // Code 42704 = undefined_object (type "vector" does not exist).
-    const cause = (err as { cause?: { code?: string } })?.cause;
-    const isNoVector =
-      msg.includes('type "vector" does not exist') ||
-      cause?.code === '42704';
-    if (!isNoVector) {
-      // Unrelated DB error — let the job queue retry.
-      throw err;
-    }
-    // pgvector not available — store JSON bytes so the row is non-null and
-    // the handler is still considered successful. The value will be replaced
-    // when migration 0011 is applied in a pgvector-enabled environment.
-    usedFallback = true;
-    const jsonBytes = Buffer.from(JSON.stringify(embedding));
-    await db.execute(
-      sql`UPDATE wiki_pages
-          SET embedding = ${jsonBytes}
-          WHERE id = ${page.id}`,
-    );
+  // embed() throws on provider error → job retries automatically.
+  // Returns null when the org has disabled embeddings or no key is set;
+  // skip silently in that case.
+  const embedding = await embed(inputText, page.org_id);
+  if (!embedding) {
+    console.warn(`[embed-content] embedding provider unavailable for org ${page.org_id} — skipping wiki_page ${page.id}`);
+    return;
   }
 
+  await writeEmbedding('wiki_pages', page.id, embedding);
+
   console.log(
-    `[embed-content] wrote ${EMBED_DIMS}-dim embedding for wiki_page ${page.id} (job ${job.id})${usedFallback ? ' [bytea-fallback: pgvector not available]' : ''}`,
+    `[embed-content] wrote ${EMBED_DIMS}-dim embedding for wiki_page ${page.id} (job ${job.id})`,
   );
 }
 
-/**
- * Task 3.8 — embed a task's title + description and write to tasks.embedding.
- * Mirrors the wiki_page branch: hard-throws on OpenAI errors (so BullMQ retries),
- * soft-returns on "task not found / deleted", and falls back to BYTEA on
- * environments without the pgvector extension.
- */
-async function embedTask(job: JobData, source_id: string, apiKey: string): Promise<void> {
+async function embedTask(job: JobData, source_id: string): Promise<void> {
   const rows = await db.execute(
-    sql`SELECT id, title, description
+    sql`SELECT id, org_id, title, description
         FROM tasks
         WHERE id = ${source_id}
           AND is_deleted = false
@@ -182,6 +101,7 @@ async function embedTask(job: JobData, source_id: string, apiKey: string): Promi
 
   const task = pending[0] as {
     id: string;
+    org_id: string;
     title: string;
     description: string | null;
   };
@@ -192,35 +112,42 @@ async function embedTask(job: JobData, source_id: string, apiKey: string): Promi
   }
 
   const inputText = `${task.title}\n${task.description ?? ''}`.trim();
-  const embedding = await embedText(inputText, apiKey);
+  const embedding = await embed(inputText, task.org_id);
+  if (!embedding) {
+    console.warn(`[embed-content] embedding provider unavailable for org ${task.org_id} — skipping task ${task.id}`);
+    return;
+  }
 
+  await writeEmbedding('tasks', task.id, embedding);
+
+  console.log(
+    `[embed-content] wrote ${EMBED_DIMS}-dim embedding for task ${task.id} (job ${job.id})`,
+  );
+}
+
+// Write to a vector column, falling back to JSON BYTEA when the pgvector
+// extension is not installed (dev environments + the test harness).
+async function writeEmbedding(table: 'wiki_pages' | 'tasks', id: string, embedding: number[]): Promise<void> {
   const literal = `[${embedding.join(',')}]`;
-  let usedFallback = false;
   try {
-    await db.execute(
-      sql`UPDATE tasks
-          SET embedding = ${literal}::vector
-          WHERE id = ${task.id}`,
-    );
+    if (table === 'wiki_pages') {
+      await db.execute(sql`UPDATE wiki_pages SET embedding = ${literal}::vector WHERE id = ${id}`);
+    } else {
+      await db.execute(sql`UPDATE tasks SET embedding = ${literal}::vector WHERE id = ${id}`);
+    }
   } catch (err: unknown) {
     const msg = (err as Error)?.message ?? '';
     const cause = (err as { cause?: { code?: string } })?.cause;
     const isNoVector =
-      msg.includes('type "vector" does not exist') ||
-      cause?.code === '42704';
-    if (!isNoVector) {
-      throw err;
-    }
-    usedFallback = true;
-    const jsonBytes = Buffer.from(JSON.stringify(embedding));
-    await db.execute(
-      sql`UPDATE tasks
-          SET embedding = ${jsonBytes}
-          WHERE id = ${task.id}`,
-    );
-  }
+      msg.includes('type "vector" does not exist') || cause?.code === '42704';
+    if (!isNoVector) throw err;
 
-  console.log(
-    `[embed-content] wrote ${EMBED_DIMS}-dim embedding for task ${task.id} (job ${job.id})${usedFallback ? ' [bytea-fallback: pgvector not available]' : ''}`,
-  );
+    const jsonBytes = Buffer.from(JSON.stringify(embedding));
+    if (table === 'wiki_pages') {
+      await db.execute(sql`UPDATE wiki_pages SET embedding = ${jsonBytes} WHERE id = ${id}`);
+    } else {
+      await db.execute(sql`UPDATE tasks SET embedding = ${jsonBytes} WHERE id = ${id}`);
+    }
+    console.warn(`[embed-content] pgvector unavailable — wrote BYTEA fallback for ${table}:${id}`);
+  }
 }

@@ -30,6 +30,7 @@ type AuthContextType = {
   login: (email: string, password: string) => Promise<void>;
   signup: (name: string, email: string, password: string, orgName: string) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -99,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     api.setTokens(data.accessToken, data.refreshToken);
     await fetchMe();
-    router.push('/chat');
+    router.push('/setup-ai');
   };
 
   const logout = async () => {
@@ -120,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, org, loading, login, signup, logout, refreshUser: fetchMe }}>
       {children}
     </AuthContext.Provider>
   );

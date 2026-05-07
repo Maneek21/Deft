@@ -88,17 +88,30 @@ Navigate to **http://localhost:3000**. You should see the Deft sign-up screen.
 
 The very first user to complete sign-up becomes the **organisation owner** — the account with full admin rights over the workspace. Choose this account carefully; it will be the admin seat going forward.
 
-After the first account is created, direct sign-up is blocked for all subsequent users. The org owner invites additional users from **Settings → Members → Invite**. Invited users receive an email link (requires `RESEND_API_KEY` in `.env`) or you can copy the invite link from the UI and share it manually.
+After the first account is created, direct sign-up is blocked for all subsequent users. To add a teammate, the owner or any admin opens **Settings → Members → Invite**, enters the new person's email and role, and clicks **Generate link**. Deft returns a one-time invite URL — copy it and share it however you like (Slack, email, in person). Invite links expire in 7 days and work once.
 
-Password reset also requires email configured. Without `RESEND_API_KEY`, you can reset passwords directly in the database:
+When the new teammate opens the link, they land on a sign-up page that already knows who invited them. They pick a name, set a password, and Deft drops them into a brief onboarding wizard at `/welcome` that introduces the workspace and Defty.
+
+**No outbound email is required or supported.** Self-hosted Deft does not send invite or password-reset emails. This is intentional: every install can run fully offline behind a firewall.
+
+### Lost password
+
+Self-service "Forgot password" is disabled. To recover an account, an owner or admin opens **Settings → Members**, hovers the locked-out user, clicks the key icon next to their name, and shares the recovery URL that Deft generates. The user opens the link, sets a new password, and signs in. Recovery URLs expire in 24 hours and work once.
+
+### If the owner is locked out
+
+The owner has no admin above them, so a database-side reset is the only escape hatch:
 
 ```sql
--- Connect to the container
+-- Connect to the Postgres container
 docker compose exec postgres psql -U postgres deft
 
--- Update password hash (use bcrypt — generate at bcrypt-generator.com)
-UPDATE users SET password_hash = '<new-bcrypt-hash>' WHERE email = 'user@example.com';
+-- Set password_hash to NULL so the owner can use any admin-issued
+-- recovery link, or paste a freshly bcrypted hash directly:
+UPDATE users SET password_hash = NULL WHERE email = 'owner@example.com';
 ```
+
+After clearing the hash, generate a recovery URL via SQL by signing a password-reset JWT with the same `JWT_SECRET` from your `.env`, or simply set a known bcrypt hash directly.
 
 ## Hiring Your First Crew Member
 
@@ -163,8 +176,6 @@ Defty is powered by the `defty` agent template. The template slug is `defty`. Yo
 | `NEXT_PUBLIC_WS_URL` | No | WebSocket URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_APP_URL` | No | App base URL (used in invite links) | `http://localhost:3000` |
 | `API_PORT` | No | Port the API listens on | `3001` |
-| `RESEND_API_KEY` | No | Sends invite and password-reset emails | none |
-| `FROM_EMAIL` | No | From address for outbound email | `noreply@deft.dev` |
 | `GOOGLE_CLIENT_ID` | No | Enables Google OAuth login | none |
 | `GOOGLE_CLIENT_SECRET` | No | Enables Google OAuth login | none |
 | `R2_ENDPOINT` | No | Cloudflare R2 endpoint for file storage | none (uses local disk) |

@@ -31,16 +31,21 @@ type OrgMember = {
   id: string;
   name: string;
   email: string;
+  kind?: 'human' | 'agent' | 'system';
   avatar_url: string | null;
   status_emoji?: string | null;
   status_text?: string | null;
-  kind?: 'human' | 'agent' | 'system';
 };
 
 type ChatContextType = {
   spaces: Space[];
   activeSpaceId: string | null;
+  /** Navigates to the space — updates state AND pushes/replaces the URL. */
   setActiveSpaceId: (id: string) => void;
+  /** State-only sync from URL. Does NOT navigate. Used by chat/page when the
+   *  URL changes (back/forward, deep link) to keep activeSpaceId in step
+   *  without re-entering setActiveSpaceId's router.replace and racing it. */
+  syncActiveSpaceIdFromUrl: (id: string) => void;
   /** userId → 'online' | 'idle' | 'offline' */
   presence: Map<string, 'online' | 'idle' | 'offline'>;
   threadMessage: ThreadMessage | null;
@@ -61,6 +66,7 @@ export const ChatContext = createContext<ChatContextType>({
   spaces: [],
   activeSpaceId: null,
   setActiveSpaceId: () => {},
+  syncActiveSpaceIdFromUrl: () => {},
   presence: new Map(),
   threadMessage: null,
   setThreadMessage: () => {},

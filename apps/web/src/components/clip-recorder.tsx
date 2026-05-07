@@ -14,7 +14,7 @@ type ClipRecorderProps = {
 };
 
 export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComplete, onCancel }: ClipRecorderProps) {
-  const [state, setState] = useState<'starting' | 'recording' | 'uploading' | 'error'>('starting');
+  const [state, setState] = useState<'starting' | 'recording' | 'uploading' | 'error' | 'idle'>('starting');
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -161,7 +161,7 @@ export function ClipRecorder({ spaceId, contextType, contextId, parentId, onComp
       onComplete?.(data.id, data.message_id);
     } catch (err) {
       setError((err as Error).message);
-      setState('idle');
+      setState('error');
       cleanup();
     }
   }, [contextType, contextId, spaceId, parentId, duration, cleanup, onComplete]);

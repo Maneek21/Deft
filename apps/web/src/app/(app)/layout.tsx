@@ -16,6 +16,7 @@ import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
 import { HuddleRingToast } from '@/components/huddle-ring-toast';
+import { Logo } from '@/components/brand/logo';
 
 type Space = {
   id: string;
@@ -53,7 +54,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map());
   const [mentionCounts, setMentionCounts] = useState<Map<string, number>>(new Map());
-  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null; kind?: 'human' | 'agent' | 'system' }[]>([]);
+  const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null }[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pendingChord = useRef<string | null>(null);
@@ -67,6 +68,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       router.push('/login');
     }
   }, [user, loading, router]);
+
+  // Redirect users with incomplete onboarding to /welcome. Owners who
+  // bootstrap a workspace go through /setup; everyone else (invited members)
+  // flows through /welcome. Skip if we're already there to avoid loops.
+  useEffect(() => {
+    if (!user) return;
+    const role = (user as { role?: string }).role;
+    if (role === 'owner') return; // owners use /setup, not /welcome
+    if (pathname === '/welcome' || pathname === '/setup') return;
+    api.get('/api/auth/onboarding').then(async (r) => {
+      if (!r.ok) return;
+      const state = await r.json();
+      if (state && state.completed === false) {
+        router.replace('/welcome');
+      }
+    }).catch(() => {});
+  }, [user, pathname, router]);
 
   // Auto-detect and save timezone if not set or still default 'UTC'
   useEffect(() => {
@@ -289,7 +307,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               case 'd': router.push('/dashboard'); break;
               case 'c': router.push('/chat'); break;
               case 't': router.push('/tasks'); break;
-              case 'a': router.push('/chat'); break;
+              case 'a': router.push('/agent'); break;
               case 's': router.push('/settings'); break;
               case 'n': router.push('/notes'); break;
               case 'l': router.push('/calendar'); break;
@@ -311,8 +329,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('keydown', handler);
   }, [router, activeSpaceId, pathname, spaces, markSpaceRead]);
 
+  // Tracks the space id we just clicked. The URL update from router.replace
+  // commits one render after our setState, so during that gap chat/page's
+  // URL→state sync would call back into the state setter with the STALE
+  // urlSpaceId, causing the sidebar highlight to flash old→new→old→new. We
+  // gate syncActiveSpaceIdFromUrl on this ref to ignore intermediate URL
+  // states until the URL catches up to our intended target.
+  const pendingSpaceIdRef = useRef<string | null>(null);
+
   const handleSelectSpace = useCallback(
     (id: string) => {
+      pendingSpaceIdRef.current = id;
       setActiveSpaceId(id);
       setThreadMessage(null);
       if (pathname.startsWith('/chat')) {
@@ -326,6 +353,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     },
     [pathname, router],
   );
+
+  const syncActiveSpaceIdFromUrl = useCallback((urlId: string) => {
+    if (pendingSpaceIdRef.current !== null) {
+      // URL has caught up to our pending click — clear the gate, the URL is
+      // already the source of truth from here on.
+      if (pendingSpaceIdRef.current === urlId) {
+        pendingSpaceIdRef.current = null;
+      }
+      // Either way, don't override the just-set state with an in-flight
+      // intermediate URL value.
+      return;
+    }
+    setActiveSpaceId(urlId);
+  }, []);
 
   const openDmWith = useCallback(
     async (memberId: string) => {
@@ -349,14 +390,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--background)' }}>
-        <div className="flex items-center gap-3">
-          <div
-            className="w-8 h-8 rounded-xl flex items-center justify-center text-[11px] font-bold text-white"
-            style={{ background: 'var(--accent)', fontFamily: 'var(--font-heading)' }}
-          >
-            D
-          </div>
+      <div
+        className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--surface-lowest)' }}
+      >
+        <div className="flex items-center gap-4">
+          <Logo variant="icon" className="h-9 w-auto" priority />
           <div className="flex gap-1.5">
             <div className="skeleton w-1.5 h-1.5 rounded-full" />
             <div className="skeleton w-1.5 h-1.5 rounded-full" style={{ animationDelay: '0.2s' }} />
@@ -375,6 +414,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         spaces,
         activeSpaceId,
         setActiveSpaceId: handleSelectSpace,
+        syncActiveSpaceIdFromUrl,
         presence,
         threadMessage,
         setThreadMessage,

@@ -35,12 +35,20 @@ function AgentWidget(_props: WidgetProps) {
             const color = a.approval_status === 'approved'
               ? (a.error ? 'var(--status-red)' : 'var(--status-green)')
               : 'var(--status-amber)';
+            const isPending = a.approval_status === 'pending';
             return (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <span style={{
-                  display: 'grid', placeItems: 'center', width: 20, height: 20,
-                  borderRadius: 5, flexShrink: 0, background: `${color}14`, color,
-                }}>{agentActionIcon(a.action)}</span>
+              <div
+                key={a.id}
+                className={isPending ? 'card-lift' : undefined}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}
+              >
+                <span
+                  className={isPending ? 'status-pulse' : undefined}
+                  style={{
+                    display: 'grid', placeItems: 'center', width: 20, height: 20,
+                    borderRadius: 5, flexShrink: 0, background: `${color}14`, color,
+                  }}
+                >{agentActionIcon(a.action)}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{
                     fontSize: 12, color: 'var(--text-primary)', margin: 0,

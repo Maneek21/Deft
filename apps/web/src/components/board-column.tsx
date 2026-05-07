@@ -71,7 +71,7 @@ export function BoardColumn({
             </span>
           )}
           <div
-            className="w-2 h-2 rounded-full flex-shrink-0"
+            className={`w-2 h-2 rounded-full flex-shrink-0${id === 'in_progress' ? ' status-pulse' : ''}`}
             style={{ background: color || STATUS_COLORS[id] || 'var(--muted)' }}
           />
           <span

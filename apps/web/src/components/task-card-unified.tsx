@@ -309,7 +309,7 @@ function BoardVariant({
         transition: 'box-shadow 150ms, border-color 150ms',
         cursor: 'pointer',
       }}
-      className="rounded-lg p-3 group relative"
+      className="rounded-lg p-3 group relative card-lift"
       onClick={handleCardClick}
       onMouseEnter={(e) => {
         if (!isSelected) e.currentTarget.style.boxShadow = 'var(--shadow-sm)';

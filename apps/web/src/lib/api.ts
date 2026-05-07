@@ -143,6 +143,13 @@ class ApiClient {
     });
   }
 
+  async put(path: string, body?: unknown) {
+    return this.fetch(path, {
+      method: 'PUT',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+
   async delete(path: string) {
     return this.fetch(path, { method: 'DELETE' });
   }
