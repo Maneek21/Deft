@@ -19,8 +19,8 @@ import { memoryRecall, memoryWrite, memoryList } from './memory.js';
 import { memoryUpdate } from './memory-update.js';
 import { taskQuery } from './tasks.js';
 import { memberList } from './members.js';
-import { threadFetch } from './messages.js';
-import { taskCreate, taskUpdate, messagePost } from './writes.js';
+import { threadFetch, fetchUnread } from './messages.js';
+import { taskCreate, taskUpdate, messagePost, sendMessage } from './writes.js';
 import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
 import { eventsQuery } from './events.js';
@@ -57,6 +57,7 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   // always-available reads.
   poll_pending_work: pollPendingWork as ToolHandler,
   ping_alive: pingAlive as ToolHandler,
+  fetch_unread: fetchUnread as ToolHandler,
 };
 
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
@@ -65,6 +66,7 @@ export const WRITE_TOOLS: Record<string, ToolHandler> = {
   task_create: taskCreate as ToolHandler,
   task_update: taskUpdate as ToolHandler,
   message_post: messagePost as ToolHandler,
+  send_message: sendMessage as ToolHandler,
   space_memory_set: spaceMemorySet as ToolHandler,
   delegation_self_report: delegationSelfReport as ToolHandler,
   // Self-hosted v1 — cooperative knowledge. Aspirational, no approval
@@ -232,6 +234,23 @@ export const toolSchemas: ToolSchema[] = [
     },
   },
   {
+    name: 'fetch_unread',
+    description:
+      'Fetch unread messages (in spaces the caller is a member of) plus pending ' +
+      'agent_actions. One roundtrip surfaces both kinds of pending work. ' +
+      'Replaces poll_pending_work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        caller_employee_slug: { type: 'string' },
+        limit: { type: 'number', minimum: 1, maximum: 100, default: 20 },
+        space_id: { type: 'string', description: 'Optional — restrict to one space.' },
+      },
+      required: ['caller_employee_slug'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'member_list',
     description:
       'List org members with role + email. Used to resolve @mentions and ' +
@@ -348,6 +367,54 @@ export const toolSchemas: ToolSchema[] = [
         parent_id: { type: 'string', description: 'Optional thread parent id' },
       },
       required: ['caller_employee_slug', 'space_id', 'content'],
+    },
+  },
+  {
+    name: 'send_message',
+    description:
+      'Send a chat message. Target is one of: a space, a thread (reply to a ' +
+      'parent message), or a user (DM — auto-creates a 1:1 space if needed). ' +
+      'Replaces message_post + post_thread_reply.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        caller_employee_slug: { type: 'string', description: 'Slug of the calling employee.' },
+        target: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['space_id'],
+              properties: { space_id: { type: 'string' } },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['thread_id'],
+              properties: {
+                thread_id: {
+                  type: 'string',
+                  description: 'Parent message id — reply lands as a thread reply under it.',
+                },
+              },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['user_id'],
+              properties: {
+                user_id: {
+                  type: 'string',
+                  description: 'DM target user. Auto-creates a 1:1 DM space if one does not exist.',
+                },
+              },
+              additionalProperties: false,
+            },
+          ],
+        },
+        content: { type: 'string', minLength: 1 },
+      },
+      required: ['caller_employee_slug', 'target', 'content'],
+      additionalProperties: false,
     },
   },
   {
