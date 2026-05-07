@@ -14,6 +14,7 @@ const timestamps = () => ({
 
 // ═══ ENUMS ═══
 export const orgRoleEnum = pgEnum('org_role', ['owner', 'admin', 'member', 'guest']);
+export const userKindEnum = pgEnum('user_kind', ['human', 'agent', 'system']);
 export const spaceTypeEnum = pgEnum('space_type', ['public', 'private', 'dm', 'group_dm']);
 export const taskPriorityEnum = pgEnum('task_priority', ['p0', 'p1', 'p2', 'p3']);
 export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']);
@@ -79,6 +80,7 @@ export const users = pgTable('users', {
   ...id(),
   email: text('email').unique(),
   name: text('name').notNull(),
+  kind: userKindEnum('kind').default('human').notNull(),
   is_agent: boolean('is_agent').default(false).notNull(),
   agent_employee_id: text('agent_employee_id'),
   avatar_url: text('avatar_url'),
