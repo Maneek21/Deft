@@ -31,6 +31,7 @@ import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
+import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -1452,6 +1453,16 @@ export async function executeAction(
           .limit(1);
         if (!parent) {
           return { success: false, result: null, error: 'Parent message not found in this org' };
+        }
+
+        // Phase 6 — reply-storm guard.
+        const storm = await checkReplyStorm(userId, parent.id);
+        if (storm.tripped) {
+          return {
+            success: false,
+            result: null,
+            error: `STORM_DETECTED: agent exceeded ${STORM_THRESHOLD} replies in this thread within the rate-limit window; backing off`,
+          };
         }
 
         const [msg] = await db
