@@ -72,6 +72,7 @@ type StreamContextOk = {
   trustLevel: TrustLevel;
   model: string;
   agentEmployeeId: string | undefined;
+  agentUserId: string;
 };
 type StreamContext = StreamContextOk | StreamContextError;
 
@@ -300,6 +301,19 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     }
   }
 
+  // Resolve the agent's user_id from space_members (the non-current-user member).
+  const otherMembers = await db
+    .select({ user_id: spaceMembers.user_id })
+    .from(spaceMembers)
+    .where(and(
+      eq(spaceMembers.space_id, convoId),
+      sql`${spaceMembers.user_id} != ${user.id}`,
+    ));
+  const resolvedAgentUserId = otherMembers[0]?.user_id;
+  if (!resolvedAgentUserId) {
+    return { _kind: 'error', error: 'Conversation has no agent member', code: 'INVALID_STATE', status: 400 };
+  }
+
   return {
     _kind: 'ok',
     apiMessages,
@@ -309,6 +323,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
     model: reasonConfig.model,
     agentEmployeeId,
+    agentUserId: resolvedAgentUserId,
   };
 }
 
@@ -495,12 +510,12 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
   const body = await c.req.json();
   const { content, agent_employee_id, hidden } = body;
 
-  // Insert the user message first so buildStreamContext picks it up.
-  await db.insert(agentMessages).values({
-    conversation_id: convoId,
-    role: 'user',
+  // Insert the user message into the unified messages table (space_id = convoId).
+  await db.insert(messages).values({
+    org_id: user.org_id,
+    space_id: convoId,
+    user_id: user.id,
     content,
-    hidden: hidden || false,
   });
 
   // Auto-set agent_employee_id on conversation if provided and not yet set.
@@ -551,6 +566,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
         convoId,
         userId: user.id,
         orgId: user.org_id,
+        agentUserId: ctx.agentUserId,
         agentEmployeeId: ctx.agentEmployeeId,
         systemPrompt: ctx.systemPrompt,
         tools: ctx.tools,
@@ -606,6 +622,7 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
         convoId,
         userId: user.id,
         orgId: user.org_id,
+        agentUserId: ctx.agentUserId,
         agentEmployeeId: ctx.agentEmployeeId,
         systemPrompt: ctx.systemPrompt,
         tools: ctx.tools,
