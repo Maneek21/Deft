@@ -15,7 +15,7 @@ const timestamps = () => ({
 // ═══ ENUMS ═══
 export const orgRoleEnum = pgEnum('org_role', ['owner', 'admin', 'member', 'guest']);
 export const userKindEnum = pgEnum('user_kind', ['human', 'agent', 'system']);
-export const spaceTypeEnum = pgEnum('space_type', ['public', 'private', 'dm', 'group_dm']);
+export const spaceTypeEnum = pgEnum('space_type', ['public', 'private', 'dm', 'group_dm', 'agent_conversation']);
 export const taskPriorityEnum = pgEnum('task_priority', ['p0', 'p1', 'p2', 'p3']);
 export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']);
 export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard', 'autonomous']);
