@@ -285,6 +285,7 @@ spaceRoutes.get('/:id/members', async (c) => {
       name: users.name,
       email: users.email,
       avatar_url: users.avatar_url,
+      kind: users.kind,
       last_seen_at: users.last_seen_at,
       status_emoji: users.status_emoji,
       status_text: users.status_text,
