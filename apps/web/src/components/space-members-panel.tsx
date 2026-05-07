@@ -4,8 +4,17 @@ import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { X, Plus, UserMinus, Search } from 'lucide-react';
+import { AIBadge } from './ai-badge';
 
-type Member = { id: string; name: string; email: string; avatar_url: string | null; status_emoji?: string | null; status_text?: string | null };
+type Member = {
+  id: string;
+  name: string;
+  email: string;
+  avatar_url: string | null;
+  kind?: 'human' | 'agent' | 'system';
+  status_emoji?: string | null;
+  status_text?: string | null;
+};
 
 type Props = {
   spaceId: string;
@@ -18,6 +27,50 @@ function avatarColor(name: string) {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
   return colors[Math.abs(hash) % colors.length];
+}
+
+function renderPickerRow(
+  member: Member,
+  isAgent: boolean,
+  onAdd: (id: string) => void,
+) {
+  const color = avatarColor(member.name || '');
+  return (
+    <button
+      key={member.id}
+      onClick={() => onAdd(member.id)}
+      className="flex items-center gap-3 w-full px-2 py-2 rounded-md transition-colors"
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLElement).style.background = 'transparent';
+      }}
+    >
+      {member.avatar_url ? (
+        <img src={member.avatar_url} className="w-7 h-7 rounded-full" alt={member.name} />
+      ) : (
+        <div
+          className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
+          style={{ background: color }}
+        >
+          {member.name?.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="flex-1 min-w-0 text-left">
+        <div className="flex items-center gap-1.5">
+          <p className="text-[13px] font-medium truncate" style={{ color: 'var(--foreground)' }}>
+            {member.name}
+          </p>
+          {isAgent && <AIBadge />}
+        </div>
+        <p className="text-[11px] truncate" style={{ color: 'var(--muted)' }}>
+          {member.email}
+        </p>
+      </div>
+      <Plus size={14} style={{ color: 'var(--accent)' }} />
+    </button>
+  );
 }
 
 export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
@@ -54,6 +107,8 @@ export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
     m.name.toLowerCase().includes(search.toLowerCase()) ||
     m.email.toLowerCase().includes(search.toLowerCase())
   );
+  const filteredHumans = filtered.filter(m => m.kind !== 'agent' && m.kind !== 'system');
+  const filteredAgents = filtered.filter(m => m.kind === 'agent' || m.kind === 'system');
 
   const addMember = async (userId: string) => {
     const res = await api.post(`/api/spaces/${spaceId}/members`, { user_id: userId });
@@ -145,9 +200,12 @@ export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
                         </div>
                       )}
                       <div className="flex-1 min-w-0">
-                        <p className="text-[13px] font-medium truncate" style={{ fontFamily: 'var(--font-body)' }}>
-                          {member.name}{isCurrentUser ? ' (you)' : ''}
-                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-[13px] font-medium truncate" style={{ fontFamily: 'var(--font-body)' }}>
+                            {member.name}{isCurrentUser ? ' (you)' : ''}
+                          </p>
+                          {(member.kind === 'agent' || member.kind === 'system') && <AIBadge />}
+                        </div>
                         <p className="text-[11px] truncate" style={{ color: 'var(--muted)' }}>
                           {member.status_emoji ? `${member.status_emoji} ${member.status_text || ''}` : member.email}
                         </p>
@@ -215,42 +273,30 @@ export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
                           {nonMembers.length === 0 ? 'All org members are in this space' : 'No matches found'}
                         </p>
                       ) : (
-                        filtered.map((member) => {
-                          const color = avatarColor(member.name || '');
-                          return (
-                            <button
-                              key={member.id}
-                              onClick={() => addMember(member.id)}
-                              className="flex items-center gap-3 w-full px-2 py-2 rounded-md transition-colors"
-                              onMouseEnter={(e) => {
-                                (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
-                              }}
-                              onMouseLeave={(e) => {
-                                (e.currentTarget as HTMLElement).style.background = 'transparent';
-                              }}
-                            >
-                              {member.avatar_url ? (
-                                <img src={member.avatar_url} className="w-7 h-7 rounded-full" alt={member.name} />
-                              ) : (
-                                <div
-                                  className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
-                                  style={{ background: color }}
-                                >
-                                  {member.name?.charAt(0).toUpperCase()}
-                                </div>
-                              )}
-                              <div className="flex-1 min-w-0 text-left">
-                                <p className="text-[13px] font-medium truncate" style={{ color: 'var(--foreground)' }}>
-                                  {member.name}
-                                </p>
-                                <p className="text-[11px] truncate" style={{ color: 'var(--muted)' }}>
-                                  {member.email}
-                                </p>
+                        <>
+                          {filteredHumans.length > 0 && (
+                            <div className="mb-2">
+                              <div
+                                className="text-[10px] font-semibold uppercase tracking-wider mb-1 px-2"
+                                style={{ color: 'var(--muted)' }}
+                              >
+                                People
                               </div>
-                              <Plus size={14} style={{ color: 'var(--accent)' }} />
-                            </button>
-                          );
-                        })
+                              {filteredHumans.map((m) => renderPickerRow(m, false, addMember))}
+                            </div>
+                          )}
+                          {filteredAgents.length > 0 && (
+                            <div>
+                              <div
+                                className="text-[10px] font-semibold uppercase tracking-wider mb-1 px-2"
+                                style={{ color: 'var(--muted)' }}
+                              >
+                                Agents
+                              </div>
+                              {filteredAgents.map((m) => renderPickerRow(m, true, addMember))}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
