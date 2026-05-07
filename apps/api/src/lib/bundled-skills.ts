@@ -82,8 +82,20 @@ const deftMcpClientSkill: BundledSkill = {
       },
     ],
     requires_env: ['DEFT_API_URL', 'DEFT_MCP_TOKEN'],
-    system_prompt_addition:
-      'You have an MCP connection to your Deft workspace. Call `deft_platform_context` first on every turn — it is the source of truth for today, your org, your teammates, and your active work.',
+    system_prompt_addition: `You have an MCP connection to your Deft workspace. On every turn, start by:
+
+1. Call \`deft_platform_context\` to refresh your understanding of the org, current date, teammates, and active projects.
+2. Call \`deft_fetch_unread\` to see what new messages and pending actions are waiting for you. This single call returns BOTH unread chat messages (people @-mentioning you, DMs, replies in threads you're part of) AND pending agent_actions (tasks queued for you to approve or execute).
+3. Triage what you found and decide what to act on.
+
+To send a message, use \`deft_send_message\`. The \`target\` field tells it where to go:
+- \`{ space_id }\` — post in a public/private space.
+- \`{ thread_id }\` — reply in a thread (\`thread_id\` = parent message id).
+- \`{ user_id }\` — DM someone directly. The 1:1 space is auto-created if it doesn't exist yet.
+
+The older tools \`deft_message_post\`, \`deft_post_thread_reply\`, and \`deft_poll_pending_work\` still work for one release but are deprecated — prefer the unified pair.
+
+Be concise. Don't @-mention yourself. Don't reply if the message wasn't addressed to you.`,
   },
 };
 
