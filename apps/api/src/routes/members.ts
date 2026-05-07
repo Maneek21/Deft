@@ -1,12 +1,21 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and } from 'drizzle-orm';
-import bcrypt from 'bcryptjs';
-import crypto from 'node:crypto';
+import jwt from 'jsonwebtoken';
 import { db } from '../lib/db.js';
 import { users, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
 import { env } from '../lib/env.js';
-import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+
+const INVITE_TTL = '7d';
+const RECOVERY_TTL = '24h';
+
+function buildInviteUrl(token: string): string {
+  return `${env.NEXT_PUBLIC_APP_URL}/invite/${token}`;
+}
+
+function buildRecoveryUrl(token: string): string {
+  return `${env.NEXT_PUBLIC_APP_URL}/reset-password?token=${token}`;
+}
 
 export const memberRoutes = new Hono();
 
@@ -19,12 +28,12 @@ memberRoutes.get('/', async (c) => {
       id: users.id,
       name: users.name,
       email: users.email,
+      kind: users.kind,
       avatar_url: users.avatar_url,
       status_emoji: users.status_emoji,
       status_text: users.status_text,
       status_expires_at: users.status_expires_at,
       role: orgMembers.role,
-      kind: users.kind,
     })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
@@ -64,6 +73,7 @@ memberRoutes.get('/:id', async (c) => {
       id: users.id,
       name: users.name,
       email: users.email,
+      kind: users.kind,
       avatar_url: users.avatar_url,
       title: users.title,
       timezone: users.timezone,
@@ -71,7 +81,6 @@ memberRoutes.get('/:id', async (c) => {
       status_text: users.status_text,
       last_seen_at: users.last_seen_at,
       role: orgMembers.role,
-      kind: users.kind,
     })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
@@ -117,17 +126,10 @@ memberRoutes.post('/invite', async (c) => {
 
     const { email, role } = parsed.data;
 
-    // Track the invite result so we can surface the temp password to the
-    // inviting admin when email delivery is not configured. NEVER log the
-    // temp password — hosted environments almost always expose stdout.
-    let tempPasswordForResponse: string | null = null;
-    let emailSent = false;
-
     // Check if user already exists
     let [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
 
     if (existingUser) {
-      // Check if already a member of this org
       const [existingMembership] = await db.select()
         .from(orgMembers)
         .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, existingUser.id)))
@@ -135,7 +137,6 @@ memberRoutes.post('/invite', async (c) => {
 
       if (existingMembership) {
         if (!existingMembership.is_active) {
-          // Reactivate
           await db.update(orgMembers)
             .set({ is_active: true, role })
             .where(eq(orgMembers.id, existingMembership.id));
@@ -144,50 +145,13 @@ memberRoutes.post('/invite', async (c) => {
         return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
       }
     } else {
-      // Create new user with temp password
-      const tempPassword = crypto.randomBytes(16).toString('hex');
-      const passwordHash = await bcrypt.hash(tempPassword, 12);
+      // Create the user with no password — they'll set one when accepting.
       const [newUser] = await db.insert(users).values({
         name: email.split('@')[0]!,
         email,
-        password_hash: passwordHash,
+        password_hash: null,
       }).returning();
       existingUser = newUser!;
-
-      // Send invite email if Resend configured
-      if (env.RESEND_API_KEY) {
-        try {
-          const resendRes = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              from: process.env.FROM_EMAIL || 'noreply@deft.dev',
-              to: email,
-              subject: 'You\'ve been invited to Deft',
-              html: `<p>You've been invited to a Deft workspace. Sign in at <a href="${env.NEXT_PUBLIC_APP_URL}/login">${env.NEXT_PUBLIC_APP_URL}/login</a> with this email. Your temporary password is: <strong>${tempPassword}</strong></p><p>Please change your password after signing in.</p>`,
-            }),
-          });
-          emailSent = resendRes.ok;
-          if (!resendRes.ok) {
-            // Email call failed; fall back to returning the password in the
-            // API response so the admin can relay it manually.
-            tempPasswordForResponse = tempPassword;
-          }
-        } catch (err) {
-          // Log the ERROR metadata but never the password itself.
-          console.error('[members] Failed to send invite email:', err);
-          tempPasswordForResponse = tempPassword;
-        }
-      } else {
-        // Resend not configured — return the temp password in the response
-        // so the admin can relay it manually via their own channel. This
-        // replaces the previous stdout log which exposed credentials to any
-        // log aggregator on the host.
-        tempPasswordForResponse = tempPassword;
-      }
     }
 
     // Add to org
@@ -196,13 +160,6 @@ memberRoutes.post('/invite', async (c) => {
       user_id: existingUser.id,
       role,
     });
-
-    try {
-      await ensureDeftyMembership(currentUser.org_id);
-    } catch (err) {
-      console.error('[ensureDeftyMembership] failed for org', currentUser.org_id, err);
-      // Don't fail invite — Defty will be lazily created on first @deft mention.
-    }
 
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
@@ -216,42 +173,85 @@ memberRoutes.post('/invite', async (c) => {
       }).onConflictDoNothing();
     }
 
-    // Block 2.7 — fan out a `member.joined` trigger to any agent subscribed
-    // to it (opt-in via HR-style skill install). Fire-and-forget so a
-    // misconfigured subscriber doesn't block the invite response.
-    (async () => {
-      try {
-        const { emitMemberJoinedTrigger } = await import('../lib/member-joined-trigger.js');
-        const count = await emitMemberJoinedTrigger({
-          org_id: currentUser.org_id,
-          new_user_id: existingUser.id,
-          inviter_user_id: currentUser.id,
-          role,
-        });
-        if (count > 0) {
-          console.log(`[members] Fired member.joined trigger to ${count} employee(s)`);
-        }
-      } catch (err) {
-        console.warn('[members] member.joined trigger failed:', (err as Error).message);
-      }
-    })();
+    // Generate an invite URL the admin shares out-of-band (Slack, in person,
+    // whatever). The `member.joined` trigger fires on accept, not here, so
+    // agents only react when the user actually shows up.
+    const inviteToken = jwt.sign(
+      {
+        purpose: 'invite-accept',
+        user_id: existingUser.id,
+        org_id: currentUser.org_id,
+        email,
+        inviter_id: currentUser.id,
+        role,
+      },
+      env.JWT_SECRET,
+      { expiresIn: INVITE_TTL },
+    );
+
+    const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
+    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null;
 
     return c.json(
       {
         success: true,
-        message: emailSent ? 'Invitation sent' : 'Invitation created',
+        message: 'Invitation created',
         user_id: existingUser.id,
-        email_sent: emailSent,
-        // temp_password is only present when email delivery is not
-        // configured or failed. The admin UI should display it once and
-        // prompt the admin to send it to the user out-of-band.
-        temp_password: tempPasswordForResponse,
+        invite_url: buildInviteUrl(inviteToken),
+        expires_at: expiresAt,
       },
       201,
     );
   } catch (err) {
     console.error('Failed to invite member:', err);
     return c.json({ error: 'Failed to invite member', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/members/:id/recovery-url — admin-only password recovery URL.
+// Returns a short-lived password-reset link the admin shares out of band.
+// Self-hosted Deft has no email; admin recovery is the supported path.
+memberRoutes.post('/:id/recovery-url', async (c) => {
+  try {
+    const currentUser = c.get('user');
+    const memberId = c.req.param('id');
+
+    const [currentMembership] = await db.select({ role: orgMembers.role })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, currentUser.id)))
+      .limit(1);
+
+    if (!currentMembership || !['owner', 'admin'].includes(currentMembership.role)) {
+      return c.json({ error: 'Only admins can generate recovery links', code: 'FORBIDDEN' }, 403);
+    }
+
+    const [target] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .innerJoin(orgMembers, eq(orgMembers.user_id, users.id))
+      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(users.id, memberId), eq(orgMembers.is_active, true)))
+      .limit(1);
+
+    if (!target) {
+      return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const resetToken = jwt.sign(
+      { id: target.id, email: target.email, purpose: 'password-reset' },
+      env.JWT_SECRET,
+      { expiresIn: RECOVERY_TTL },
+    );
+
+    const decoded = jwt.decode(resetToken) as { exp?: number } | null;
+    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null;
+
+    return c.json({
+      recovery_url: buildRecoveryUrl(resetToken),
+      expires_at: expiresAt,
+    });
+  } catch (err) {
+    console.error('Failed to generate recovery URL:', err);
+    return c.json({ error: 'Failed to generate recovery URL', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

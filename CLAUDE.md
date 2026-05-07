@@ -34,7 +34,7 @@ deft/
 - Background jobs: BullMQ with Redis
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: Anthropic Claude API (Sonnet for reasoning, Haiku for classification)
-- Email: Resend (transactional)
+- Email: none. Invites and password recovery are admin-generated one-time URLs (`apps/api/src/routes/invites.ts`, `POST /api/members/:id/recovery-url`), shared out-of-band. Self-hosted Deft never sends mail.
 - Monorepo: pnpm workspaces
 
 ## Database Design Principles

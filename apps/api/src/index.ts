@@ -12,6 +12,7 @@ import { notificationRoutes } from './routes/notifications.js';
 import { inboxRoutes } from './routes/inbox.js';
 import { orgRoutes } from './routes/org.js';
 import { icsRoutes, icsPublicRoutes } from './routes/ics.js';
+import { inviteRoutes } from './routes/invites.js';
 import { uploadRoutes, fileServingRoutes } from './routes/upload.js';
 import { memberRoutes } from './routes/members.js';
 import { projectRoutes } from './routes/projects.js';
@@ -92,6 +93,10 @@ app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
 // credential; mounted before authMiddleware so calendar clients can
 // subscribe without a JWT.
 app.route('/api/ics', icsPublicRoutes);
+
+// Public invite preview/accept. Token in URL path; admin shares link
+// out-of-band per "Email: none" design. Mounted before authMiddleware.
+app.route('/api/invites', inviteRoutes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);

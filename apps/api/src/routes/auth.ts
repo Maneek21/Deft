@@ -90,13 +90,6 @@ authRoutes.post('/signup', async (c) => {
     role: 'owner',
   });
 
-  try {
-    await ensureDeftyMembership(org!.id);
-  } catch (err) {
-    console.error('[ensureDeftyMembership] failed for org', org!.id, err);
-    // Don't fail signup — Defty will be lazily created on first @deft mention.
-  }
-
   // Create #general space
   const [generalSpace] = await db.insert(spaces).values({
     org_id: org!.id,
@@ -112,6 +105,14 @@ authRoutes.post('/signup', async (c) => {
     space_id: generalSpace!.id,
     user_id: user!.id,
   });
+
+  // Phase 1 invariant — ensure Defty system user has an org_members row in
+  // every org. Idempotent.
+  try {
+    await ensureDeftyMembership(org!.id);
+  } catch (err) {
+    console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+  }
 
   // Create onboarding state
   await db.insert(onboardingState).values({
@@ -260,61 +261,16 @@ const profileUpdateSchema = z.object({
   avatar_url: z.string().url().nullable().optional(),
 });
 
-// POST /api/auth/forgot-password — send password reset email
-const forgotPasswordSchema = z.object({
-  email: z.string().email(),
-});
-
+// POST /api/auth/forgot-password — self-hosted Deft has no outbound email.
+// Returns a generic 200 so the public surface keeps the same shape, but no
+// link is generated and no message is sent. Users locked out should ask an
+// admin to generate a recovery URL via Settings → Members.
 authRoutes.post('/forgot-password', async (c) => {
-  const body = await c.req.json();
-  const parsed = forgotPasswordSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
-  }
-
-  const { email } = parsed.data;
-
-  const [user] = await db.select({ id: users.id, email: users.email }).from(users).where(eq(users.email, email)).limit(1);
-
-  // Always return 200 to prevent email enumeration
-  if (!user) {
-    return c.json({ success: true, message: 'If an account exists with this email, a reset link has been sent.' });
-  }
-
-  // Generate reset token (15 min expiry)
-  const resetToken = jwt.sign(
-    { id: user.id, email: user.email, purpose: 'password-reset' },
-    env.JWT_SECRET,
-    { expiresIn: '15m' }
-  );
-
-  const resetUrl = `${env.NEXT_PUBLIC_APP_URL}/reset-password?token=${resetToken}`;
-
-  // Send email via Resend if configured, otherwise log
-  if (env.RESEND_API_KEY) {
-    try {
-      const resendRes = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: process.env.FROM_EMAIL || 'noreply@deft.dev',
-          to: email,
-          subject: 'Reset your Deft password',
-          html: `<p>Click the link below to reset your password. This link expires in 15 minutes.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
-        }),
-      });
-      await resendRes.text();
-    } catch (err) {
-      console.error('[auth] Failed to send reset email:', err);
-    }
-  } else {
-    console.log(`[auth] Password reset link for ${email}: ${resetUrl}`);
-  }
-
-  return c.json({ success: true, message: 'If an account exists with this email, a reset link has been sent.' });
+  return c.json({
+    success: true,
+    message: 'Password reset is handled by your workspace admin. Ask an admin to generate a recovery link from Settings → Members.',
+    self_service: false,
+  });
 });
 
 // POST /api/auth/reset-password — reset password with token
@@ -439,13 +395,6 @@ authRoutes.get('/google/callback', async (c) => {
         role: 'owner',
       });
 
-      try {
-        await ensureDeftyMembership(org!.id);
-      } catch (err) {
-        console.error('[ensureDeftyMembership] failed for org', org!.id, err);
-        // Don't fail OAuth signup — Defty will be lazily created on first @deft mention.
-      }
-
       // Create #general space
       const [generalSpace] = await db.insert(spaces).values({
         org_id: org!.id,
@@ -460,6 +409,14 @@ authRoutes.get('/google/callback', async (c) => {
         space_id: generalSpace!.id,
         user_id: user.id,
       });
+
+      // Phase 1 invariant — ensure Defty system user has an org_members
+      // row in every org. Idempotent.
+      try {
+        await ensureDeftyMembership(org!.id);
+      } catch (err) {
+        console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+      }
 
       await db.insert(onboardingState).values({
         user_id: user.id,
@@ -480,6 +437,66 @@ authRoutes.get('/google/callback', async (c) => {
   } catch (err) {
     console.error('[auth] Google OAuth error:', err);
     return c.redirect(`${env.NEXT_PUBLIC_APP_URL}/login?error=oauth_failed`);
+  }
+});
+
+// GET /api/auth/onboarding — fetch the caller's onboarding state, creating it lazily
+authRoutes.get('/onboarding', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
+  }
+  const token = authHeader.slice(7);
+  try {
+    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string };
+    let [state] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
+    if (!state) {
+      const [created] = await db.insert(onboardingState).values({ user_id: payload.id }).returning();
+      state = created!;
+    }
+    return c.json(state);
+  } catch {
+    return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
+  }
+});
+
+// PATCH /api/auth/onboarding — set onboarding flags (profile_set, agent_tried, completed, …)
+const onboardingUpdateSchema = z.object({
+  profile_set: z.boolean().optional(),
+  first_space_created: z.boolean().optional(),
+  first_message_sent: z.boolean().optional(),
+  first_invite_sent: z.boolean().optional(),
+  first_task_created: z.boolean().optional(),
+  agent_tried: z.boolean().optional(),
+  completed: z.boolean().optional(),
+});
+
+authRoutes.patch('/onboarding', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
+  }
+  const token = authHeader.slice(7);
+  try {
+    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string };
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = onboardingUpdateSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    // Ensure the row exists
+    const [existing] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
+    if (!existing) {
+      await db.insert(onboardingState).values({ user_id: payload.id, ...parsed.data });
+    } else {
+      await db.update(onboardingState).set(parsed.data).where(eq(onboardingState.user_id, payload.id));
+    }
+
+    const [refreshed] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
+    return c.json(refreshed);
+  } catch {
+    return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
 
