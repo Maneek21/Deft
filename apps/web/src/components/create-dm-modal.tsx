@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { X, Search, Bot } from 'lucide-react';
 import { useChatContext } from '@/lib/chat-context';
 import { useAuth } from '@/lib/auth-context';
+import { AIBadge } from './ai-badge';
 
 type Member = {
   id: string;
@@ -71,14 +72,7 @@ function MemberRow({
       >
         {member.name}
       </span>
-      {isAgent && (
-        <span
-          className="text-[10px] px-1.5 py-0.5 rounded-full"
-          style={{ background: 'var(--surface)', color: 'var(--muted)' }}
-        >
-          AI
-        </span>
-      )}
+      {isAgent && <AIBadge />}
     </button>
   );
 }
