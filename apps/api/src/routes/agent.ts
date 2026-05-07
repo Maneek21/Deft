@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import type { TrustLevel } from '../lib/agent-approval.js';
-import { eq, and, desc, lt, sql, isNull } from 'drizzle-orm';
+import { eq, and, asc, desc, lt, sql, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentConversations,
@@ -462,6 +462,7 @@ agentRoutes.delete('/conversations/:id', async (c) => {
 });
 
 agentRoutes.get('/conversations/:id/messages', async (c) => {
+  const user = c.get('user');
   const id = c.req.param('id');
 
   // Expire stale pending actions (older than 1 hour)
@@ -473,14 +474,32 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
     ));
 
-  const messageList = await db
+  // P2-7: Read from unified messages table (space_id = conversation id).
+  const rows = await db
     .select()
-    .from(agentMessages)
+    .from(messages)
     .where(and(
-      eq(agentMessages.conversation_id, id),
-      eq(agentMessages.hidden, false),
+      eq(messages.space_id, id),
+      eq(messages.org_id, user.org_id),
+      eq(messages.is_deleted, false),
     ))
-    .orderBy(agentMessages.created_at);
+    .orderBy(asc(messages.created_at));
+
+  // Determine the agent user id for role assignment (the non-current-user member of the DM space).
+  const otherMembers = await db
+    .select({ user_id: spaceMembers.user_id })
+    .from(spaceMembers)
+    .where(and(
+      eq(spaceMembers.space_id, id),
+      sql`${spaceMembers.user_id} != ${user.id}`,
+    ));
+  const agentUserId = otherMembers[0]?.user_id ?? null;
+
+  // Filter out tool_result rows and explicitly hidden rows (user-visible list only).
+  const visible = rows.filter((r) => {
+    const m = (r.metadata as any) || {};
+    return m.kind !== 'tool_result' && m.hidden !== true;
+  });
 
   // Fetch all actions for this conversation
   const actionList = await db
@@ -488,22 +507,37 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
     .from(agentActions)
     .where(eq(agentActions.conversation_id, id));
 
-  // Attach actions to their messages
-  const messagesWithActions = messageList.map((m) => ({
-    ...m,
-    pending_actions: actionList
-      .filter((a) => a.message_id === m.id)
-      .map((a) => ({
-        id: a.id,
-        action: a.action,
-        params: a.params,
-        approval_tier: a.approval_tier,
-        status: a.approval_status,
-        result: a.result,
-        executed_at: a.executed_at,
-        error: a.error,
-      })),
-  }));
+  // Map to the shape AgentChat expects and attach pending_actions.
+  const messagesWithActions = visible.map((r) => {
+    const m = (r.metadata as any) || {};
+    const role = (agentUserId && r.user_id === agentUserId) ? 'assistant' : 'user';
+    return {
+      id: r.id,
+      conversation_id: id,
+      role,
+      content: r.content,
+      content_blocks: m.agent_blocks ?? [{ type: 'text', text: r.content }],
+      citations: m.citations ?? null,
+      tool_calls: m.tool_calls ?? null,
+      hidden: m.hidden ?? false,
+      model: m.model ?? null,
+      tokens_in: m.tokens_in ?? null,
+      tokens_out: m.tokens_out ?? null,
+      created_at: r.created_at,
+      pending_actions: actionList
+        .filter((a) => a.message_id === r.id)
+        .map((a) => ({
+          id: a.id,
+          action: a.action,
+          params: a.params,
+          approval_tier: a.approval_tier,
+          status: a.approval_status,
+          result: a.result,
+          executed_at: a.executed_at,
+          error: a.error,
+        })),
+    };
+  });
 
   return c.json(messagesWithActions);
 });
@@ -713,29 +747,61 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
   const user = c.get('user');
   const convoId = c.req.param('id');
 
+  // P2-7: Look up from spaces (conversations are now spaces of type agent_conversation).
+  // Ownership check: the caller must be a member of the space within their org.
   const [convo] = await db
     .select()
-    .from(agentConversations)
-    .where(and(eq(agentConversations.id, convoId), eq(agentConversations.org_id, user.org_id)))
+    .from(spaces)
+    .where(and(eq(spaces.id, convoId), eq(spaces.org_id, user.org_id)))
     .limit(1);
   if (!convo) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
-  const msgs = await db
-    .select({
-      id: agentMessages.id,
-      role: agentMessages.role,
-      content: agentMessages.content,
-      content_blocks: agentMessages.content_blocks,
-      citations: agentMessages.citations,
-      tool_calls: agentMessages.tool_calls,
-      model: agentMessages.model,
-      tokens_in: agentMessages.tokens_in,
-      tokens_out: agentMessages.tokens_out,
-      created_at: agentMessages.created_at,
-    })
-    .from(agentMessages)
-    .where(and(eq(agentMessages.conversation_id, convoId), eq(agentMessages.hidden, false)))
-    .orderBy(agentMessages.created_at);
+  // Verify caller is a member of this space.
+  const [membership] = await db
+    .select({ user_id: spaceMembers.user_id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, convoId), eq(spaceMembers.user_id, user.id)))
+    .limit(1);
+  if (!membership) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+
+  // P2-7: Read from unified messages table. Trace export keeps full fidelity —
+  // includes hidden + tool_result rows for audit purposes (no is_deleted filter either).
+  const msgRows = await db
+    .select()
+    .from(messages)
+    .where(and(
+      eq(messages.space_id, convoId),
+      eq(messages.org_id, user.org_id),
+    ))
+    .orderBy(asc(messages.created_at));
+
+  // Determine agent user id for role assignment.
+  const traceOtherMembers = await db
+    .select({ user_id: spaceMembers.user_id })
+    .from(spaceMembers)
+    .where(and(
+      eq(spaceMembers.space_id, convoId),
+      sql`${spaceMembers.user_id} != ${user.id}`,
+    ));
+  const traceAgentUserId = traceOtherMembers[0]?.user_id ?? null;
+
+  const msgs = msgRows.map((r) => {
+    const m = (r.metadata as any) || {};
+    const role = (traceAgentUserId && r.user_id === traceAgentUserId) ? 'assistant' : 'user';
+    return {
+      id: r.id,
+      role,
+      content: r.content,
+      content_blocks: m.agent_blocks ?? null,
+      citations: m.citations ?? null,
+      tool_calls: m.tool_calls ?? null,
+      hidden: m.hidden ?? false,
+      model: m.model ?? null,
+      tokens_in: m.tokens_in ?? null,
+      tokens_out: m.tokens_out ?? null,
+      created_at: r.created_at,
+    };
+  });
 
   const actions = await db
     .select({
