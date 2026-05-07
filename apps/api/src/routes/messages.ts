@@ -482,9 +482,28 @@ messageRoutes.post('/:spaceId', async (c) => {
       console.error('Message notification error:', err);
     }
 
-    // Detect @agent or @deft mention — enqueue agent reply job
-    const agentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
-    if (agentMentionRegex.test(parsed.data.content) && env.ANTHROPIC_API_KEY) {
+    // Detect @deft mention — first by joining parsed mention IDs to users.kind=agent
+    // (real agent users incl. Defty + BYOA), with the legacy regex as a fallback for
+    // freeform `@deft` typing or pre-Phase-1 messages with `<@agent|Deft>`.
+    let agentMentioned = false;
+    if (mentionedUserIds.length > 0) {
+      const mentionedAgents = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(
+          inArray(users.id, mentionedUserIds),
+          eq(users.kind, 'agent'),
+        ))
+        .limit(1);
+      agentMentioned = mentionedAgents.length > 0;
+    }
+    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@deft` still trigger.
+    const legacyAgentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
+    if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
+      agentMentioned = true;
+    }
+
+    if (agentMentioned && env.ANTHROPIC_API_KEY) {
       try {
         const [org] = await db.select({ name: orgs.name })
           .from(orgs)
