@@ -35,6 +35,7 @@ import {
   BookOpen,
   Smile,
   Library,
+  ShieldCheck,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
@@ -77,7 +78,7 @@ const navItems = [
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
-  { name: 'Agent', href: '/agent', icon: Bot },
+  { name: 'Approvals', href: '/approvals', icon: ShieldCheck },
   { name: 'Library', href: '/library', icon: Library },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
@@ -894,7 +895,7 @@ export function Sidebar({
                   {totalUnread > 99 ? '99+' : totalUnread}
                 </div>
               )}
-              {item.name === 'Agent' && pendingApprovalCount > 0 && (
+              {item.name === 'Approvals' && pendingApprovalCount > 0 && (
                 <div
                   className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
                   style={{ background: 'var(--danger, #ef4444)' }}

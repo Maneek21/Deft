@@ -55,19 +55,6 @@ type Employee = {
   avg_latency_ms_24h?: number | null;
 };
 
-type PendingAction = {
-  id: string;
-  action: string;
-  params: any;
-  approval_tier: string;
-  created_at: string;
-  agent_employee_id: string | null;
-  employee_name: string | null;
-  employee_slug: string | null;
-  employee_avatar: string | null;
-  proposer: 'employee' | 'defty';
-};
-
 type Turn = SessionTurn;
 
 type Toast = { id: string; kind: 'success' | 'error' | 'info'; text: string };
@@ -150,8 +137,6 @@ export default function AgentSettingsPage() {
       setRowMenuOpen(null);
     }
   }, []);
-  const [pending, setPending] = useState<PendingAction[]>([]);
-  const [pendingLoading, setPendingLoading] = useState(true);
 
   const [drawerEmp, setDrawerEmp] = useState<Employee | null>(null);
   const [drawerTurns, setDrawerTurns] = useState<Turn[]>([]);
@@ -166,9 +151,6 @@ export default function AgentSettingsPage() {
   // Phase 10 — typed-confirmation modals for the drawer's destructive actions.
   const [confirmAutonomous, setConfirmAutonomous] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const [rejectTarget, setRejectTarget] = useState<PendingAction | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
 
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -196,23 +178,9 @@ export default function AgentSettingsPage() {
     }
   }, []);
 
-  const fetchPending = useCallback(async () => {
-    setPendingLoading(true);
-    try {
-      const res = await api.get('/api/agent/actions/pending');
-      if (res.ok) {
-        const data = await res.json();
-        setPending(data.actions || []);
-      }
-    } finally {
-      setPendingLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     void fetchActions();
     void fetchEmployees();
-    void fetchPending();
     void (async () => {
       const res = await api.get('/api/agent/settings');
       if (res.ok) {
@@ -220,7 +188,7 @@ export default function AgentSettingsPage() {
         setTrustLevel(data.trust_level || 'conservative');
       }
     })();
-  }, [fetchActions, fetchEmployees, fetchPending]);
+  }, [fetchActions, fetchEmployees]);
 
   const fetchTurns = useCallback(
     async (empId: string, limit: number, trigger: string, result: string) => {
@@ -308,45 +276,6 @@ export default function AgentSettingsPage() {
     setDrawerEmp(null);
   }, [drawerEmp, flash]);
 
-  const scrollToPending = useCallback(() => {
-    const el = document.getElementById('pending-approvals-section');
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
-  const approvePending = useCallback(
-    async (p: PendingAction) => {
-      const res = await api.post(`/api/agent/actions/${p.id}/approve`, {});
-      if (res.ok) {
-        setPending((prev) => prev.filter((x) => x.id !== p.id));
-        flash('success', `Approved ${p.action}`);
-        void fetchEmployees();
-        void fetchActions();
-      } else {
-        const body = await res.json().catch(() => ({} as any));
-        flash('error', body.error || `Failed to approve ${p.action}`);
-      }
-    },
-    [flash, fetchEmployees, fetchActions],
-  );
-
-  const doReject = useCallback(async () => {
-    if (!rejectTarget) return;
-    const p = rejectTarget;
-    const res = await api.post(`/api/agent/actions/${p.id}/reject`, {
-      reason: rejectReason || undefined,
-    });
-    if (res.ok) {
-      setPending((prev) => prev.filter((x) => x.id !== p.id));
-      flash('info', `Rejected ${p.action}`);
-      void fetchEmployees();
-      void fetchActions();
-    } else {
-      flash('error', `Failed to reject ${p.action}`);
-    }
-    setRejectTarget(null);
-    setRejectReason('');
-  }, [rejectTarget, rejectReason, flash, fetchEmployees, fetchActions]);
-
   const labels: Record<string, string> = {
     create_task: 'Create task',
     update_task_status: 'Update status',
@@ -375,6 +304,18 @@ export default function AgentSettingsPage() {
       >
         Agent Settings
       </h2>
+
+      {/* Approvals moved banner */}
+      <div
+        className="mb-4 px-4 py-3 rounded-lg text-[13px]"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+      >
+        Pending approvals moved to{' '}
+        <a href="/approvals" className="underline" style={{ color: 'var(--accent)' }}>
+          Approvals
+        </a>
+        .
+      </div>
 
       {/* Trust level — unchanged */}
       <div className="mb-8">
@@ -530,12 +471,9 @@ export default function AgentSettingsPage() {
                     <span>heartbeat {formatRelative(emp.last_heartbeat_at)}</span>
                   </div>
                   {pendingCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        scrollToPending();
-                      }}
+                    <Link
+                      href="/approvals"
+                      onClick={(e) => e.stopPropagation()}
                       className="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 relative z-10"
                       style={{
                         background: 'var(--accent)',
@@ -544,7 +482,7 @@ export default function AgentSettingsPage() {
                       data-testid={`employee-pending-${emp.slug}`}
                     >
                       {pendingCount} pending
-                    </button>
+                    </Link>
                   )}
                   {/* UX sweep — per-employee kebab menu. Keeps the big-click
                       drawer affordance AND surfaces the deep links that
@@ -625,100 +563,6 @@ export default function AgentSettingsPage() {
             })}
           </div>
           </>
-        )}
-      </div>
-
-      {/* Pending approvals — Phase 6.5 */}
-      <div className="mb-8" id="pending-approvals-section">
-        <h3
-          className="text-[14px] font-semibold mb-3"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-        >
-          Pending Approvals
-        </h3>
-        {pendingLoading ? (
-          <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
-            Loading...
-          </p>
-        ) : pending.length === 0 ? (
-          <p className="text-[13px]" style={{ color: 'var(--muted)' }}>
-            No pending approvals. Routine actions auto-execute per trust level.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {pending.map((p) => {
-              const proposerStyle = p.proposer === 'employee'
-                ? PROPOSER_STYLE.employee
-                : PROPOSER_STYLE.defty;
-              const preview = JSON.stringify(p.params ?? {}).slice(0, 80);
-              return (
-                <div
-                  key={p.id}
-                  data-testid={`pending-row-${p.id}`}
-                  className="flex items-center gap-3 px-4 py-3 rounded-lg"
-                  style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
-                >
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-medium text-white"
-                      style={{ background: 'var(--accent)' }}
-                    >
-                      {(p.employee_name ?? 'Defty').charAt(0).toUpperCase()}
-                    </div>
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                      style={{ background: proposerStyle.bg, color: proposerStyle.fg }}
-                    >
-                      {p.proposer === 'employee' ? p.employee_name ?? 'Employee' : 'Defty'}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className="text-[12px] font-medium truncate"
-                      style={{
-                        color: 'var(--foreground)',
-                        fontFamily: 'var(--font-mono, monospace)',
-                      }}
-                    >
-                      {p.action}
-                    </p>
-                    <p
-                      className="text-[11px] truncate"
-                      style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono, monospace)' }}
-                    >
-                      {preview}
-                    </p>
-                  </div>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--muted)' }}>
-                    {formatRelative(p.created_at)}
-                  </span>
-                  <button
-                    onClick={() => approvePending(p)}
-                    data-testid={`approve-${p.id}`}
-                    className="text-[11px] px-3 py-1 rounded font-medium"
-                    style={{ background: 'var(--accent)', color: 'white' }}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => {
-                      setRejectTarget(p);
-                      setRejectReason('');
-                    }}
-                    data-testid={`reject-${p.id}`}
-                    className="text-[11px] px-3 py-1 rounded"
-                    style={{
-                      background: 'var(--surface-container)',
-                      color: 'var(--foreground-secondary)',
-                      border: '1px solid var(--border)',
-                    }}
-                  >
-                    Reject
-                  </button>
-                </div>
-              );
-            })}
-          </div>
         )}
       </div>
 
@@ -1070,112 +914,6 @@ export default function AgentSettingsPage() {
                 </>
               )}
 
-              {/* Pending approvals scoped to this employee */}
-              <h4
-                className="text-[12px] font-semibold mt-5 mb-2"
-                style={{ color: 'var(--foreground)' }}
-              >
-                Pending approvals
-              </h4>
-              {pending.filter((p) => p.agent_employee_id === drawerEmp.id).length === 0 ? (
-                <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                  None pending for this employee.
-                </p>
-              ) : (
-                <div className="space-y-1.5">
-                  {pending
-                    .filter((p) => p.agent_employee_id === drawerEmp.id)
-                    .map((p) => (
-                      <div
-                        key={p.id}
-                        className="rounded px-2 py-1.5 text-[11px]"
-                        style={{
-                          background: 'var(--card-bg)',
-                          border: '1px solid var(--border)',
-                        }}
-                      >
-                        <p
-                          style={{
-                            color: 'var(--foreground)',
-                            fontFamily: 'var(--font-mono, monospace)',
-                          }}
-                        >
-                          {p.action}
-                        </p>
-                        <p
-                          className="text-[10px] truncate"
-                          style={{ color: 'var(--muted)' }}
-                        >
-                          {JSON.stringify(p.params ?? {}).slice(0, 80)}
-                        </p>
-                      </div>
-                    ))}
-                </div>
-              )}
-
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Reject dialog */}
-      {rejectTarget && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.5)' }}
-          onClick={() => setRejectTarget(null)}
-        >
-          <div
-            className="w-full max-w-[400px] rounded-xl p-5 flex flex-col gap-4"
-            style={{
-              background: 'var(--card-bg)',
-              border: '1px solid var(--border)',
-              boxShadow: 'var(--glass-shadow)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              className="text-[0.9375rem] font-semibold"
-              style={{ color: 'var(--on-surface)' }}
-            >
-              Reject action?
-            </div>
-            <div className="text-[0.8125rem]" style={{ color: 'var(--on-surface-variant)' }}>
-              Optional reason — this is stored on the audit row.
-            </div>
-            <textarea
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="Why are you rejecting this?"
-              rows={3}
-              data-testid="reject-reason-input"
-              className="w-full text-[12px] p-2 rounded"
-              style={{
-                background: 'var(--surface-container-low)',
-                color: 'var(--foreground)',
-                border: '1px solid var(--outline-variant)',
-              }}
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setRejectTarget(null)}
-                className="px-4 py-2 text-[0.8125rem] rounded-lg font-medium"
-                style={{
-                  color: 'var(--on-surface-variant)',
-                  background: 'var(--surface-container-low)',
-                  border: '1px solid var(--outline-variant)',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={doReject}
-                data-testid="reject-confirm"
-                className="px-4 py-2 text-[0.8125rem] rounded-lg font-medium"
-                style={{ background: 'var(--danger)', color: '#fff' }}
-              >
-                Reject
-              </button>
             </div>
           </div>
         </div>
