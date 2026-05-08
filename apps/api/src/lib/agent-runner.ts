@@ -113,6 +113,16 @@ export async function runAgentQuery(params: {
    * task-detail UI can render a live status strip. No-op when unset.
    */
   taskId?: string;
+  /**
+   * Surface context — what kind of space the agent is replying in. Drives
+   * tone (DM = 1:1 conversation, channel = many viewers) and is appended
+   * to the system prompt. Optional; agent works without it.
+   */
+  spaceContext?: {
+    type: 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private';
+    name: string;
+    otherMemberName?: string;
+  };
 }): Promise<{
   text: string;
   citations: any[];
@@ -191,6 +201,18 @@ export async function runAgentQuery(params: {
   let systemPrompt = SYSTEM_PROMPT
     .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
     .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
+
+  // Surface context — let the agent adapt to DM vs channel.
+  if (params.spaceContext) {
+    const sc = params.spaceContext;
+    if (sc.type === 'dm' || sc.type === 'agent_conversation') {
+      systemPrompt += `\n\nYou are in a private 1:1 direct message${sc.otherMemberName ? ` with ${sc.otherMemberName}` : ''}. This is a personal conversation — reply directly and conversationally. No one else sees this thread.`;
+    } else if (sc.type === 'group_dm') {
+      systemPrompt += `\n\nYou are in a small private group DM. Other members can see your replies — keep them concise and inclusive of the group.`;
+    } else {
+      systemPrompt += `\n\nYou are in #${sc.name} (a ${sc.type} channel). Multiple people may see your reply — keep it useful for the broader audience and avoid leaking 1:1 context.`;
+    }
+  }
 
   // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
   try {

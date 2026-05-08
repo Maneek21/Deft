@@ -1,8 +1,8 @@
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users } from '@deft/db/schema';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { messages, users, spaces, spaceMembers } from '@deft/db/schema';
+import { eq, and, desc, sql, ne } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
@@ -29,62 +29,113 @@ export async function handleAgentReply(job: JobData): Promise<void> {
   console.log(`[agent-reply] Processing agent reply for message ${messageId} in space ${spaceId}`);
 
   try {
-    // Determine the thread parent: if the triggering message is already in a thread,
-    // reply under the same parent. Otherwise, reply under the triggering message itself.
-    const threadParentId = parentId || messageId;
-
-    // Load thread context (last 10 messages in the thread) for conversation history
-    const threadMessages = await db.select({
-      id: messages.id,
-      content: messages.content,
-      user_id: messages.user_id,
-      user_name: users.name,
-      created_at: messages.created_at,
-    })
-      .from(messages)
-      .innerJoin(users, eq(messages.user_id, users.id))
-      .where(
-        and(
-          eq(messages.parent_id, threadParentId),
-          eq(messages.org_id, orgId),
-          eq(messages.is_deleted, false),
-        ),
-      )
-      .orderBy(desc(messages.created_at))
-      .limit(10);
-
-    // Also load the parent message itself for context
-    const [parentMsg] = await db.select({
-      id: messages.id,
-      content: messages.content,
-      user_id: messages.user_id,
-      user_name: users.name,
-    })
-      .from(messages)
-      .innerJoin(users, eq(messages.user_id, users.id))
-      .where(eq(messages.id, threadParentId))
+    // Load space context — type drives both threading behavior and the
+    // system-prompt hint so the agent adapts tone (DM vs channel).
+    const [space] = await db
+      .select({ type: spaces.type, name: spaces.name })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
       .limit(1);
 
-    // Build conversation history (oldest first)
+    const isDmLike = space?.type === 'dm' || space?.type === 'group_dm' || space?.type === 'agent_conversation';
+
+    // Threading rule:
+    // - In channels: thread off the triggering message (or its parent thread root)
+    //   so the channel isn't cluttered.
+    // - In DMs: reply flat (no parent_id) UNLESS the user explicitly threaded —
+    //   DMs read like a normal conversation, not a tree of threads.
+    const threadParentId = isDmLike ? (parentId ?? null) : (parentId || messageId);
+    // The thread we load history from — for DMs without explicit threading,
+    // we still want recent flat history; agent-runner gets it via conversationHistory.
+    const historyParentId = parentId || messageId;
+
+    // Load conversation history.
+    // - DM (no explicit thread): last 10 top-level messages in the space.
+    // - Channel or explicit thread: last 10 messages in the thread + the
+    //   thread root for context.
+    const agentUserId = await ensureDeftyMembership(orgId);
     const conversationHistory: { role: string; content: string }[] = [];
 
-    if (parentMsg && parentMsg.id !== messageId) {
-      conversationHistory.push({
-        role: 'user',
-        content: `[${parentMsg.user_name}]: ${parentMsg.content}`,
-      });
+    if (isDmLike && !parentId) {
+      const recent = await db.select({
+        id: messages.id,
+        content: messages.content,
+        user_id: messages.user_id,
+        user_name: users.name,
+      })
+        .from(messages)
+        .innerJoin(users, eq(messages.user_id, users.id))
+        .where(and(
+          eq(messages.space_id, spaceId),
+          eq(messages.org_id, orgId),
+          eq(messages.is_deleted, false),
+          sql`${messages.parent_id} IS NULL`,
+          ne(messages.id, messageId),
+        ))
+        .orderBy(desc(messages.created_at))
+        .limit(10);
+      for (const msg of recent.reverse()) {
+        conversationHistory.push({
+          role: msg.user_id === agentUserId ? 'assistant' : 'user',
+          content: msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`,
+        });
+      }
+    } else {
+      const threadMessages = await db.select({
+        id: messages.id,
+        content: messages.content,
+        user_id: messages.user_id,
+        user_name: users.name,
+      })
+        .from(messages)
+        .innerJoin(users, eq(messages.user_id, users.id))
+        .where(and(
+          eq(messages.parent_id, historyParentId),
+          eq(messages.org_id, orgId),
+          eq(messages.is_deleted, false),
+        ))
+        .orderBy(desc(messages.created_at))
+        .limit(10);
+
+      const [parentMsg] = await db.select({
+        id: messages.id,
+        content: messages.content,
+        user_id: messages.user_id,
+        user_name: users.name,
+      })
+        .from(messages)
+        .innerJoin(users, eq(messages.user_id, users.id))
+        .where(eq(messages.id, historyParentId))
+        .limit(1);
+
+      if (parentMsg && parentMsg.id !== messageId) {
+        conversationHistory.push({
+          role: parentMsg.user_id === agentUserId ? 'assistant' : 'user',
+          content: parentMsg.user_id === agentUserId ? parentMsg.content : `[${parentMsg.user_name}]: ${parentMsg.content}`,
+        });
+      }
+
+      for (const msg of [...threadMessages].reverse()) {
+        if (msg.id === messageId) continue;
+        conversationHistory.push({
+          role: msg.user_id === agentUserId ? 'assistant' : 'user',
+          content: msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`,
+        });
+      }
     }
 
-    // Add thread messages (reverse to get oldest first, excluding the trigger message)
-    const orderedThread = [...threadMessages].reverse();
-    const agentUserId = await ensureDeftyMembership(orgId);
-
-    for (const msg of orderedThread) {
-      if (msg.id === messageId) continue; // skip the triggering message, it's sent as the main content
-      conversationHistory.push({
-        role: msg.user_id === agentUserId ? 'assistant' : 'user',
-        content: msg.user_id === agentUserId ? msg.content : `[${msg.user_name}]: ${msg.content}`,
-      });
+    // Resolve the other DM member's name (if any) for the system prompt hint.
+    let otherMemberName: string | undefined;
+    if (isDmLike) {
+      const [other] = await db.select({ name: users.name })
+        .from(spaceMembers)
+        .innerJoin(users, eq(users.id, spaceMembers.user_id))
+        .where(and(
+          eq(spaceMembers.space_id, spaceId),
+          ne(spaceMembers.user_id, agentUserId),
+        ))
+        .limit(1);
+      otherMemberName = other?.name;
     }
 
     // Strip the @agent/@deft mention from the content for a cleaner prompt
@@ -105,6 +156,11 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         // create_task can inherit source_message_id without the LLM having
         // to know about it.
         sourceMessageId: messageId,
+        spaceContext: space ? {
+          type: space.type as 'dm' | 'group_dm' | 'agent_conversation' | 'public' | 'private',
+          name: space.name,
+          otherMemberName,
+        } : undefined,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
@@ -157,27 +213,27 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     if (io) {
       io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
 
-      // Also emit thread:updated for the parent message
-      const [replyStats] = await db.select({
-        count: sql<number>`count(*)::int`,
-        latest: sql<string>`to_char(max(${messages.created_at}), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
-      })
-        .from(messages)
-        .where(
-          and(
+      // Only emit thread:updated when the reply is actually in a thread.
+      if (threadParentId) {
+        const [replyStats] = await db.select({
+          count: sql<number>`count(*)::int`,
+          latest: sql<string>`to_char(max(${messages.created_at}), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+        })
+          .from(messages)
+          .where(and(
             eq(messages.parent_id, threadParentId),
             eq(messages.is_deleted, false),
-          ),
-        );
+          ));
 
-      io.to(`space:${spaceId}`).emit('thread:updated', {
-        parent_id: threadParentId,
-        reply_count: replyStats?.count ?? 1,
-        latest_reply_at: replyStats?.latest ?? agentMessage!.created_at,
-      });
+        io.to(`space:${spaceId}`).emit('thread:updated', {
+          parent_id: threadParentId,
+          reply_count: replyStats?.count ?? 1,
+          latest_reply_at: replyStats?.latest ?? agentMessage!.created_at,
+        });
+      }
     }
 
-    console.log(`[agent-reply] Posted agent reply ${agentMessage!.id} in thread ${threadParentId}`);
+    console.log(`[agent-reply] Posted agent reply ${agentMessage!.id} in space ${spaceId}${threadParentId ? ` thread ${threadParentId}` : ' (flat)'}`);
   } catch (err) {
     console.error('[agent-reply] Failed to generate agent reply:', err);
     throw err; // Re-throw so BullMQ can retry

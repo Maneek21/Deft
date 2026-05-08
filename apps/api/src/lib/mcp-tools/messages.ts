@@ -243,7 +243,8 @@ export async function fetchUnread(
         user_name: r.user_name,
         content: r.content,
         parent_id: r.parent_id,
-        is_dm: r.space_type === 'dm',
+        space_type: r.space_type,
+        is_dm: r.space_type === 'dm' || r.space_type === 'group_dm' || r.space_type === 'agent_conversation',
         created_at: r.created_at,
       }));
 
