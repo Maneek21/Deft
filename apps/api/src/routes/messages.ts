@@ -526,6 +526,21 @@ messageRoutes.post('/:spaceId', async (c) => {
     if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
       agentMentioned = true;
     }
+    // Auto-trigger Defty in DM-with-Defty / agent_conversation spaces — no mention required.
+    if (!agentMentioned) {
+      const [spaceRow] = await db.select({ type: spaces.type })
+        .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+      if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
+        const deftyUserId = await ensureDeftyMembership(user.org_id);
+        if (deftyUserId !== user.id) {
+          const [deftyMember] = await db.select({ user_id: spaceMembers.user_id })
+            .from(spaceMembers)
+            .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, deftyUserId)))
+            .limit(1);
+          if (deftyMember) agentMentioned = true;
+        }
+      }
+    }
 
     if (agentMentioned && env.ANTHROPIC_API_KEY) {
       try {
@@ -549,28 +564,41 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    // Detect agent-employee mentions → enqueue agent-employee-message per employee
-    if (mentionedUserIds.length > 0 && env.ANTHROPIC_API_KEY) {
+    // Detect agent-employee mentions → enqueue agent-employee-message per employee.
+    // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention required.
+    if (env.ANTHROPIC_API_KEY) {
       try {
-        const mentionedEmployees = await db.select({
-          id: agentEmployees.id,
-          user_id: agentEmployees.user_id,
-        })
-          .from(agentEmployees)
-          .where(and(
-            eq(agentEmployees.org_id, user.org_id),
-            eq(agentEmployees.is_active, true),
-            inArray(agentEmployees.user_id, mentionedUserIds),
-          ));
+        const targetUserIds = new Set<string>(mentionedUserIds);
+        const [spaceRow] = await db.select({ type: spaces.type })
+          .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+        if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
+          const dmMembers = await db.select({ user_id: spaceMembers.user_id })
+            .from(spaceMembers)
+            .where(and(eq(spaceMembers.space_id, spaceId), sql`${spaceMembers.user_id} != ${user.id}`));
+          for (const m of dmMembers) targetUserIds.add(m.user_id);
+        }
 
-        for (const emp of mentionedEmployees) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
-            messageId: message!.id,
-            spaceId,
-            orgId: user.org_id,
-            employeeId: emp.id,
-            isDM: false,
-          });
+        if (targetUserIds.size > 0) {
+          const targetEmployees = await db.select({
+            id: agentEmployees.id,
+            user_id: agentEmployees.user_id,
+          })
+            .from(agentEmployees)
+            .where(and(
+              eq(agentEmployees.org_id, user.org_id),
+              eq(agentEmployees.is_active, true),
+              inArray(agentEmployees.user_id, Array.from(targetUserIds)),
+            ));
+
+          for (const emp of targetEmployees) {
+            await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
+              messageId: message!.id,
+              spaceId,
+              orgId: user.org_id,
+              employeeId: emp.id,
+              isDM: spaceRow?.type === 'dm' || spaceRow?.type === 'agent_conversation',
+            });
+          }
         }
       } catch (err) {
         console.error('Failed to enqueue agent-employee-message:', err);
