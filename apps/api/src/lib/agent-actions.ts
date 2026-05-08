@@ -32,6 +32,7 @@ import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
+import { DEFTY_NAME } from './ensure-defty-membership.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -336,7 +337,7 @@ export async function executeAction(
               const io = getIO();
               if (io && msg) {
                 io.to(`space:${ls.space_id}`).emit('message:new', {
-                  ...msg, user_name: actor?.name || 'Deft', user_avatar: null,
+                  ...msg, user_name: actor?.name || DEFTY_NAME, user_avatar: null,
                 });
               }
             }
@@ -514,7 +515,7 @@ export async function executeAction(
         if (io) {
           io.to(`space:${space.id}`).emit('message:new', {
             ...msg,
-            user_name: 'Deft',
+            user_name: DEFTY_NAME,
             user_avatar: null,
           });
         }
@@ -1489,7 +1490,7 @@ export async function executeAction(
         if (io) {
           io.to(`space:${parent.space_id}`).emit('message:new', {
             ...msg,
-            user_name: 'Deft',
+            user_name: DEFTY_NAME,
             user_avatar: null,
           });
         }

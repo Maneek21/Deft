@@ -1321,7 +1321,7 @@ export function SpaceChat({
             const isSystemMessage = msgMeta.kind === 'system_note'
               || msg.user_id === 'system'
               || /^[\u2713\u2714\u2716\u26A0]/.test(msg.content.replace(/<[^>]*>/g, '').trim());
-            const isBot = msg.user_name === 'Deft' || (msg as any).metadata?.is_agent_reply;
+            const isBot = msg.user_name === 'Defty' || msg.user_name === 'Deft' || (msg as any).metadata?.is_agent_reply;
 
             // Show "New messages" divider after the last-read message
             const showUnreadDivider = lastReadMsgIdRef.current

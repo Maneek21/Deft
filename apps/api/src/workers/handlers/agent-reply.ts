@@ -139,7 +139,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     }
 
     // Strip the @agent/@deft mention from the content for a cleaner prompt
-    const cleanContent = content.replace(/<@agent\|Deft>/gi, '').replace(/@(agent|deft)\b/gi, '').trim();
+    const cleanContent = content.replace(/<@[^|]*\|Defty?>/gi, '').replace(/@(agent|defty|deft)\b/gi, '').trim();
     const promptContent = cleanContent || 'Hey, what can you help me with?';
 
     // Call the agent reasoning engine with a 60s hard timeout so a stuck

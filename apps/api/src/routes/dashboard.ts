@@ -3,6 +3,7 @@ import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
 import { getIO } from '../socket.js';
+import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -542,7 +543,7 @@ dashboardRoutes.post('/standup', async (c) => {
           if (io) {
             io.to(`org:${user.org_id}`).emit('message:new', {
               ...msg,
-              user_name: 'Deft',
+              user_name: DEFTY_NAME,
               user_avatar: null,
             });
           }

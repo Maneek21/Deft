@@ -12,13 +12,14 @@ import { users, orgMembers } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 
 export const DEFTY_EMAIL = 'deft-agent@system.local';
-export const DEFTY_NAME = 'Deft';
+export const DEFTY_NAME = 'Defty';
 
 export async function ensureDeftyMembership(orgId: string): Promise<string> {
   // 1. Find or create the Defty user. If it already exists (created by the
   //    legacy ensureAgentUser which didn't set kind/is_agent), patch it so
-  //    the canonical fields are always present.
-  let [user] = await db.select({ id: users.id, kind: users.kind, is_agent: users.is_agent })
+  //    the canonical fields are always present (and the display name stays
+  //    in sync with DEFTY_NAME — earlier rows shipped with name='Deft').
+  let [user] = await db.select({ id: users.id, name: users.name, kind: users.kind, is_agent: users.is_agent })
     .from(users)
     .where(eq(users.email, DEFTY_EMAIL))
     .limit(1);
@@ -30,11 +31,11 @@ export async function ensureDeftyMembership(orgId: string): Promise<string> {
       kind: 'agent',
       is_agent: true,
       email_verified: true,
-    }).returning({ id: users.id, kind: users.kind, is_agent: users.is_agent });
-  } else if (user.kind !== 'agent' || !user.is_agent) {
-    // Patch legacy row created without kind=agent / is_agent=true.
+    }).returning({ id: users.id, name: users.name, kind: users.kind, is_agent: users.is_agent });
+  } else if (user.kind !== 'agent' || !user.is_agent || user.name !== DEFTY_NAME) {
+    // Patch legacy row (missing kind/is_agent, or name='Deft' from before rename).
     await db.update(users)
-      .set({ kind: 'agent', is_agent: true })
+      .set({ kind: 'agent', is_agent: true, name: DEFTY_NAME })
       .where(eq(users.email, DEFTY_EMAIL));
   }
 

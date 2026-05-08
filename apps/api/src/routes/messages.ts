@@ -320,17 +320,17 @@ messageRoutes.post('/:spaceId', async (c) => {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 
-    // Normalize plain @deft / @agent (case-insensitive) into structured mentions
-    // so the renderer styles them as pills uniformly. Skip if a structured Defty
-    // mention is already present.
+    // Normalize plain @defty / @deft / @agent (case-insensitive) into structured
+    // mentions so the renderer styles them as pills uniformly. Skip if a
+    // structured Defty mention is already present.
     let normalizedContent = parsed.data.content;
-    if (!/<@[^|]+\|Deft>/i.test(normalizedContent)) {
-      const hasLegacyAgent = /(^|[^a-z0-9_])@(deft|agent)\b/i.test(normalizedContent);
+    if (!/<@[^|]+\|Defty?>/i.test(normalizedContent)) {
+      const hasLegacyAgent = /(^|[^a-z0-9_])@(defty|deft|agent)\b/i.test(normalizedContent);
       if (hasLegacyAgent) {
         const deftyUserId = await ensureDeftyMembership(user.org_id);
         normalizedContent = normalizedContent.replace(
-          /(^|[^a-z0-9_])@(deft|agent)\b/gi,
-          (_match, prefix) => `${prefix}<@${deftyUserId}|Deft>`,
+          /(^|[^a-z0-9_])@(defty|deft|agent)\b/gi,
+          (_match, prefix) => `${prefix}<@${deftyUserId}|Defty>`,
         );
       }
     }
@@ -521,8 +521,8 @@ messageRoutes.post('/:spaceId', async (c) => {
         .limit(1);
       agentMentioned = deftyMatch.length > 0;
     }
-    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@deft` still trigger Defty.
-    const legacyAgentMentionRegex = /@(agent|deft)\b|<@agent\|Deft>/i;
+    // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@defty`/`@deft`/`@agent` still trigger Defty.
+    const legacyAgentMentionRegex = /@(agent|defty|deft)\b|<@agent\|Defty?>/i;
     if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
       agentMentioned = true;
     }
