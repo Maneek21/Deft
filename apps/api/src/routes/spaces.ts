@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages } from '@deft/db/schema';
 import { getIO } from '../socket.js';
@@ -39,30 +39,30 @@ spaceRoutes.post('/', async (c) => {
       ? (parsed.data.type as typeof VALID_SPACE_TYPES[number])
       : 'public';
 
-    // Check for existing DM before creating a duplicate
-    if (type === 'dm' && user_ids && user_ids.length > 0) {
-      const targetUserId = user_ids[0]!;
-      const existingDms = await db.select({ space_id: spaceMembers.space_id })
+    // Dedup DMs and group_dms by exact member set (caller + user_ids).
+    // Slack semantics: same set of people = same conversation.
+    if ((type === 'dm' || type === 'group_dm') && user_ids && user_ids.length > 0) {
+      const targetSet = new Set<string>([user.id, ...user_ids.filter((id) => id !== user.id)]);
+      // 1:1 dm requires exactly the caller + one other; group_dm requires >= 3 members.
+      const expectedSize = targetSet.size;
+      const candidateSpaces = await db.select({ space_id: spaceMembers.space_id })
         .from(spaceMembers)
         .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
         .where(and(
-          eq(spaces.type, 'dm'),
+          eq(spaces.type, type),
           eq(spaces.org_id, user.org_id),
           eq(spaceMembers.user_id, user.id),
         ));
-
-      for (const dm of existingDms) {
-        const otherMember = await db.select()
+      for (const cand of candidateSpaces) {
+        const memberRows = await db.select({ user_id: spaceMembers.user_id })
           .from(spaceMembers)
-          .where(and(
-            eq(spaceMembers.space_id, dm.space_id),
-            eq(spaceMembers.user_id, targetUserId),
-          ))
-          .limit(1);
-
-        if (otherMember.length > 0) {
-          // DM already exists, return it
-          const [existingSpace] = await db.select().from(spaces).where(eq(spaces.id, dm.space_id)).limit(1);
+          .where(eq(spaceMembers.space_id, cand.space_id));
+        if (memberRows.length !== expectedSize) continue;
+        const memberSet = new Set(memberRows.map((m) => m.user_id));
+        let allMatch = true;
+        for (const id of targetSet) if (!memberSet.has(id)) { allMatch = false; break; }
+        if (allMatch) {
+          const [existingSpace] = await db.select().from(spaces).where(eq(spaces.id, cand.space_id)).limit(1);
           return c.json(existingSpace, 200);
         }
       }
@@ -139,7 +139,30 @@ spaceRoutes.get('/', async (c) => {
         )
       );
 
-    return c.json(orgSpaces);
+    // Attach member_ids to DM and group_dm rows so the sidebar can render
+    // them without name string-matching. Single bulk query.
+    const dmSpaceIds = orgSpaces.filter((s) => s.type === 'dm' || s.type === 'group_dm').map((s) => s.id);
+    let memberIdsBySpace = new Map<string, string[]>();
+    if (dmSpaceIds.length > 0) {
+      const memberRows = await db.select({
+        space_id: spaceMembers.space_id,
+        user_id: spaceMembers.user_id,
+      })
+        .from(spaceMembers)
+        .where(inArray(spaceMembers.space_id, dmSpaceIds));
+      for (const row of memberRows) {
+        const existing = memberIdsBySpace.get(row.space_id) ?? [];
+        existing.push(row.user_id);
+        memberIdsBySpace.set(row.space_id, existing);
+      }
+    }
+
+    const enriched = orgSpaces.map((s) => ({
+      ...s,
+      member_ids: memberIdsBySpace.get(s.id),
+    }));
+
+    return c.json(enriched);
   } catch (err) {
     console.error('Failed to fetch spaces:', err);
     return c.json({ error: 'Failed to fetch spaces', code: 'INTERNAL_ERROR' }, 500);

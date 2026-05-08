@@ -1272,6 +1272,7 @@ export function SpaceChat({
           <SpaceMembersPanel
             spaceId={spaceId}
             spaceName={spaceName}
+            spaceType={spaceType}
             onClose={() => setShowMembers(false)}
           />
         )}

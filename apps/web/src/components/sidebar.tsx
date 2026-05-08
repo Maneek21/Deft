@@ -60,6 +60,7 @@ type Space = {
   description: string | null;
   is_default: boolean;
   is_muted?: boolean;
+  member_ids?: string[];
 };
 
 type Project = {
@@ -215,47 +216,45 @@ function ChatSidebarContent({
             <Plus size={13} strokeWidth={1.5} />
           </button>
         </div>
-        {orgMembers
-          .filter((m) => m.id !== user?.id)
+        {dmSpaces
           .slice()
           .sort((a, b) => {
-            // Defty pinned at top
-            if (a.email === 'deft-agent@system.local') return -1;
-            if (b.email === 'deft-agent@system.local') return 1;
-            // Then other agents before humans
-            const aAgent = a.kind === 'agent' || a.kind === 'system';
-            const bAgent = b.kind === 'agent' || b.kind === 'system';
-            if (aAgent && !bAgent) return -1;
-            if (!aAgent && bAgent) return 1;
-            // Then alphabetical by name
+            // Pin Defty's 1:1 DM at top
+            const aHasDefty = (a.member_ids ?? []).some((id) => orgMembers.find((m) => m.id === id)?.email === 'deft-agent@system.local');
+            const bHasDefty = (b.member_ids ?? []).some((id) => orgMembers.find((m) => m.id === id)?.email === 'deft-agent@system.local');
+            if (a.type === 'dm' && aHasDefty && !(b.type === 'dm' && bHasDefty)) return -1;
+            if (b.type === 'dm' && bHasDefty && !(a.type === 'dm' && aHasDefty)) return 1;
+            // Then 1:1 DMs before group DMs
+            if (a.type === 'dm' && b.type !== 'dm') return -1;
+            if (b.type === 'dm' && a.type !== 'dm') return 1;
             return (a.name || '').localeCompare(b.name || '');
           })
-          .map((member) => {
-            const isAgent = member.kind === 'agent' || member.kind === 'system';
-            const dmSpace = dmSpaces.find((s) => {
-              const names = s.name.split(',').map((n) => n.trim());
-              return names.includes(member.name);
-            });
-            const active = dmSpace ? activeSpaceId === dmSpace.id && pathname.startsWith('/chat') : false;
-            const unread = dmSpace ? unreadCounts.get(dmSpace.id) || 0 : 0;
-            const mentions = dmSpace ? mentionCounts.get(dmSpace.id) || 0 : 0;
+          .map((space) => {
+            const otherIds = (space.member_ids ?? []).filter((id) => id !== user?.id);
+            const others = otherIds
+              .map((id) => orgMembers.find((m) => m.id === id))
+              .filter((m): m is NonNullable<typeof m> => Boolean(m));
+            const active = activeSpaceId === space.id && pathname.startsWith('/chat');
+            const unread = unreadCounts.get(space.id) || 0;
+            const mentions = mentionCounts.get(space.id) || 0;
             const hasUnread = unread > 0;
             const hasMentions = mentions > 0;
-            const initial = member.name.charAt(0).toUpperCase();
-            const memberStatus = presence.get(member.id) || 'offline';
 
-            const handleClick = () => {
-              if (dmSpace) {
-                onSpaceClick(dmSpace.id);
-              } else {
-                openDmWith(member.id);
-              }
-            };
+            const isGroup = space.type === 'group_dm' || others.length > 1;
+            const primary = others[0];
+            const isAgent = !isGroup && primary && (primary.kind === 'agent' || primary.kind === 'system');
+            const memberStatus = primary ? (presence.get(primary.id) || 'offline') : 'offline';
+
+            const label = isGroup
+              ? others.map((m) => m.name?.split(/\s+/)[0]).filter(Boolean).join(', ')
+              : (primary?.name ?? 'Unknown');
+
+            const initial = primary?.name?.charAt(0).toUpperCase() ?? '?';
 
             return (
               <button
-                key={member.id}
-                onClick={handleClick}
+                key={space.id}
+                onClick={() => onSpaceClick(space.id)}
                 className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
                 style={{
                   background: active ? 'var(--bg-active)' : 'transparent',
@@ -265,24 +264,55 @@ function ChatSidebarContent({
                   borderRadius: 'var(--radius-lg)',
                 }}
               >
-                <div className="relative flex-shrink-0">
-                  <div
-                    className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                    style={{ background: 'var(--primary-container)' }}
-                  >
-                    {initial}
-                  </div>
-                  {memberStatus !== 'offline' && (
-                    <div
-                      className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
-                      style={{
-                        background: memberStatus === 'online' ? 'var(--status-green)' : 'var(--status-amber)',
-                        border: '2px solid var(--surface-container-low)',
-                      }}
-                    />
+                <div className="relative flex-shrink-0 w-6 h-6">
+                  {isGroup ? (
+                    <div className="relative w-6 h-6">
+                      {others.slice(0, 2).map((m, i) => (
+                        <div
+                          key={m.id}
+                          className="absolute w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-medium text-white"
+                          style={{
+                            background: 'var(--primary-container)',
+                            border: '1.5px solid var(--surface-container-low)',
+                            top: i === 0 ? 0 : 'auto',
+                            bottom: i === 1 ? 0 : 'auto',
+                            left: i === 0 ? 0 : 'auto',
+                            right: i === 1 ? 0 : 'auto',
+                          }}
+                        >
+                          {m.name?.charAt(0).toUpperCase() ?? '?'}
+                        </div>
+                      ))}
+                      {others.length > 2 && (
+                        <div
+                          className="absolute -bottom-0.5 -right-0.5 text-[8px] font-medium"
+                          style={{ color: 'var(--outline)' }}
+                        >
+                          +{others.length - 2}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                        style={{ background: 'var(--primary-container)' }}
+                      >
+                        {initial}
+                      </div>
+                      {!isAgent && memberStatus !== 'offline' && (
+                        <div
+                          className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
+                          style={{
+                            background: memberStatus === 'online' ? 'var(--status-green)' : 'var(--status-amber)',
+                            border: '2px solid var(--surface-container-low)',
+                          }}
+                        />
+                      )}
+                    </>
                   )}
                 </div>
-                <span className="truncate flex-1">{member.name}</span>
+                <span className="truncate flex-1">{label}</span>
                 {isAgent && !hasMentions && !hasUnread && (
                   <span
                     className="text-[9px] font-semibold px-1 py-0 rounded-full flex-shrink-0 leading-[16px]"
@@ -290,9 +320,6 @@ function ChatSidebarContent({
                   >
                     AI
                   </span>
-                )}
-                {member.status_emoji && !isAgent && (
-                  <span className="text-[11px] flex-shrink-0" title={member.status_text || ''}>{member.status_emoji}</span>
                 )}
                 {hasMentions ? (
                   <div

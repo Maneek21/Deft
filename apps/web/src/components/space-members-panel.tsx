@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { X, Plus, UserMinus, Search } from 'lucide-react';
+import { X, Plus, UserMinus, Search, Users } from 'lucide-react';
 import { AIBadge } from './ai-badge';
+import { CreateDmModal } from './create-dm-modal';
 
 type Member = {
   id: string;
@@ -19,6 +20,7 @@ type Member = {
 type Props = {
   spaceId: string;
   spaceName: string;
+  spaceType?: string;
   onClose: () => void;
 };
 
@@ -73,13 +75,16 @@ function renderPickerRow(
   );
 }
 
-export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
+export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Props) {
   const { user } = useAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [allMembers, setAllMembers] = useState<Member[]>([]);
   const [search, setSearch] = useState('');
   const [showAddSection, setShowAddSection] = useState(false);
+  const [showNewGroupDm, setShowNewGroupDm] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const isDmLike = spaceType === 'dm' || spaceType === 'group_dm';
 
   useEffect(() => {
     async function load() {
@@ -233,9 +238,26 @@ export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
                 })}
               </div>
 
-              {/* Add member section */}
+              {/* Add member section — DMs spawn a fresh group DM (Slack semantics);
+                  channels mutate in place. */}
               <div className="px-3 pb-3">
-                {!showAddSection ? (
+                {isDmLike ? (
+                  <button
+                    onClick={() => setShowNewGroupDm(true)}
+                    className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-[13px] font-medium transition-colors"
+                    style={{ color: 'var(--accent)' }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.background = 'transparent';
+                    }}
+                    title="Adding people to a DM creates a new group conversation. The original stays as-is."
+                  >
+                    <Users size={14} strokeWidth={2} />
+                    Start a new group DM with these people
+                  </button>
+                ) : !showAddSection ? (
                   <button
                     onClick={() => setShowAddSection(true)}
                     className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-[13px] font-medium transition-colors"
@@ -306,6 +328,19 @@ export function SpaceMembersPanel({ spaceId, spaceName, onClose }: Props) {
           )}
         </div>
       </div>
+      {showNewGroupDm && (
+        <CreateDmModal
+          onClose={() => setShowNewGroupDm(false)}
+          initialSelected={members
+            .filter((m) => m.id !== user?.id)
+            .map((m) => ({
+              id: m.id,
+              name: m.name,
+              avatar: m.avatar_url,
+              kind: m.kind,
+            }))}
+        />
+      )}
     </div>
   );
 }
