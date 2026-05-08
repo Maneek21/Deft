@@ -164,6 +164,10 @@ inboxRoutes.get('/', async (c) => {
       .where(and(
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.approval_status, 'pending'),
+        // Auto-tier rows don't need human approval (chat_mention routing,
+        // heartbeat ticks, trigger dispatch, task assignments are
+        // pull-queue entries for BYOA runtimes — not user-actionable).
+        inArray(agentActions.approval_tier, ['quick', 'full']),
       ))
       .orderBy(desc(agentActions.created_at))
       .limit(limit);

@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import type { TrustLevel } from '../lib/agent-approval.js';
-import { eq, and, asc, desc, lt, sql, isNull } from 'drizzle-orm';
+import { eq, and, asc, desc, lt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -752,6 +752,10 @@ agentRoutes.get('/actions/pending', async (c) => {
       and(
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.approval_status, 'pending'),
+        // Auto-tier rows are routing/queue entries (chat_mention, heartbeat,
+        // trigger, task assignment) that BYOA runtimes pull via MCP. Not
+        // user-actionable — exclude from approvals view.
+        inArray(agentActions.approval_tier, ['quick', 'full']),
       ),
     )
     .orderBy(desc(agentActions.created_at))
@@ -793,6 +797,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     WHERE msg.space_id = ${spaceId}
       AND msg.org_id = ${user.org_id}
       AND a.approval_status = 'pending'
+      AND a.approval_tier IN ('quick', 'full')
     ORDER BY a.created_at DESC
     LIMIT 100
   `);
