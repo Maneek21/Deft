@@ -92,7 +92,7 @@ function Hero({
   const heroActions = [
     { label: 'New task', icon: Plus, href: '/tasks', primary: true },
     { label: 'Message', icon: MessageSquare, href: '/chat', primary: false },
-    { label: 'Ask Deft', icon: Bot, href: '/agent', primary: false },
+    { label: 'Ask Deft', icon: Bot, href: '/chat', primary: false },
   ] as const;
 
   return (
