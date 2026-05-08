@@ -85,18 +85,21 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
 
   // Post a subtle system note so the human knows the mention landed.
   // Authored by the Defty system user, not the BYOA agent itself —
-  // this is a platform notice, not a reply from the agent.
+  // this is a platform notice rendered as a centered pill via
+  // `metadata.kind === 'system_note'` (no avatar, no author block).
   try {
     const io = getIO();
     const deftyUserId = await ensureDeftyMembership(orgId);
+    const cadence = employee.heartbeat_interval_min ?? 30;
     const [sysMsg] = await db
       .insert(messages)
       .values({
         org_id: orgId,
         space_id: spaceId,
         user_id: deftyUserId,
-        content: `_${employee.name} was mentioned. They run on a BYOA runtime (Claude Code / MCP client) — they'll respond when their client is online and polls for pending work._`,
+        content: `${employee.name} will respond when their runtime polls (every ${cadence}m).`,
         parent_id: triggerMsg.parent_id ?? null,
+        metadata: { kind: 'system_note', subtype: 'byoa_mention_received' } as never,
       })
       .returning();
     if (sysMsg && io) {

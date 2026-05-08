@@ -1316,8 +1316,11 @@ export function SpaceChat({
             const isHovered = hoveredId === msg.id;
             const color = avatarColor(msg.user_name || '');
 
-            // Detect system messages (e.g. task status changes posted by backend)
-            const isSystemMessage = msg.user_id === 'system' || /^[\u2713\u2714\u2716\u26A0]/.test(msg.content.replace(/<[^>]*>/g, '').trim());
+            // Detect system messages (task status changes, BYOA mention notices, etc.)
+            const msgMeta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
+            const isSystemMessage = msgMeta.kind === 'system_note'
+              || msg.user_id === 'system'
+              || /^[\u2713\u2714\u2716\u26A0]/.test(msg.content.replace(/<[^>]*>/g, '').trim());
             const isBot = msg.user_name === 'Deft' || (msg as any).metadata?.is_agent_reply;
 
             // Show "New messages" divider after the last-read message
