@@ -70,7 +70,7 @@ export async function handleManagerPulse(job: JobData): Promise<void> {
             type: 'system',
             title: notifTitle,
             body: result.summary,
-            link: '/manager/pulse',
+            link: '/dashboard',
             metadata: {
               type: 'manager_pulse',
               healthCards: result.healthCards.length,
