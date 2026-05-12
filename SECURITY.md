@@ -13,7 +13,7 @@ Deft is in private alpha. We provide security updates for the latest tagged rele
 
 If you've found a security issue, please report it **privately** rather than opening a public GitHub issue.
 
-**Preferred:** [GitHub Security Advisories](https://github.com/deft-dev/deft/security/advisories/new) (private to maintainers).
+**Preferred:** [GitHub Security Advisories](https://github.com/Maneek21/Deft/security/advisories/new) (private to maintainers).
 
 **Or email:** security@deft.ing
 

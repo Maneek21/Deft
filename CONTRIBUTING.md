@@ -11,7 +11,7 @@
 ### Setup
 
 ```bash
-git clone https://github.com/deft-dev/deft.git
+git clone https://github.com/Maneek21/Deft.git
 cd deft
 pnpm install
 cp .env.example .env

@@ -23,7 +23,7 @@ Get to first login in under 5 minutes.
 ### Steps
 
 ```bash
-git clone https://github.com/deft-dev/deft.git
+git clone https://github.com/Maneek21/Deft.git
 cd deft
 
 # 1. Create your env file
@@ -64,7 +64,7 @@ For a deeper setup guide — environment variable reference, backups, upgrades, 
 
 ```bash
 # Prerequisites: Node.js 18+, pnpm, PostgreSQL 16, Redis
-git clone https://github.com/deft-dev/deft.git
+git clone https://github.com/Maneek21/Deft.git
 cd deft
 pnpm install
 cp .env.example .env
