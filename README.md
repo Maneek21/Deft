@@ -47,7 +47,11 @@ pnpm db:push   # applies schema
 pnpm db:seed   # seeds Defty and starter data
 ```
 
+> **Note:** Use `pnpm db:push`, not `pnpm db:migrate`. The migration journal is canonical as of v0.1 but `push` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts` and applies what's missing. `db:migrate` is for upgrade paths once we ship versioned releases.
+
 Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
+
+> **Want to poke around without creating an account?** `pnpm db:seed` populates five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts-after-seeding). Use those for a guided tour, then delete them via Settings → Members before inviting real testers.
 
 > **Single-org note:** Deft is designed for one workspace per deployment. Additional users join via invite link from Settings → Members — direct signups after the first account are blocked.
 
