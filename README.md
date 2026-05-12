@@ -84,7 +84,7 @@ pnpm dev        # Starts web (3000) + API (3001)
 ```
 deft/
 ├── apps/
-│   ├── web/          # Next.js 14 (App Router, TypeScript)
+│   ├── web/          # Next.js 16 (App Router, TypeScript)
 │   └── api/          # Hono on Node.js (REST + WebSocket + agent engine)
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + migrations

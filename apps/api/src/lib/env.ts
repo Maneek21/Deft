@@ -7,7 +7,7 @@ dotenv.config({ path: resolve(process.cwd(), '..', '..', '.env') });
 dotenv.config();
 
 export const env = {
-  DATABASE_URL: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn',
+  DATABASE_URL: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft',
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me',

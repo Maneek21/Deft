@@ -98,7 +98,8 @@ deft/
 
 ## Design System
 
-See `stitch-reference/cairn_obsidian/DESIGN.md` for the full design specification. Key rules:
+Key rules:
 - No borders for layout — use tonal layering
 - Inter for text, JetBrains Mono for technical data
-- All colors via CSS variables in `globals.css`
+- All colors via CSS variables in `apps/web/src/app/globals.css`
+- Brand assets live in `apps/web/public/brand/`; use the `<Logo />` component (`apps/web/src/components/brand/logo.tsx`) rather than inlining SVGs.

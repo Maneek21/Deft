@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto';
 const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'maneek@deft.test';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@deft.test';
 const SEED_PASSWORD = 'DeftTest2026!';
 
 // Anchor "now" to real time; used for deterministic time offsets.
