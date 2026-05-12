@@ -25,7 +25,7 @@ The following will get a comment removed and, if repeated, a ban:
 
 ## Reporting
 
-If you see something that violates this, email **conduct@deft.dev**. We aim to reply within 3 business days. We'll keep your report confidential to the extent that resolving the situation allows. Maintainers are also subject to this code — feel free to report us too.
+If you see something that violates this, email **conduct@deft.ing**. We aim to reply within 3 business days. We'll keep your report confidential to the extent that resolving the situation allows. Maintainers are also subject to this code — feel free to report us too.
 
 ## Scope
 

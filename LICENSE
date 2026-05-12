@@ -1,9 +1,9 @@
 Business Source License 1.1
 
-Licensor: Cairn
+Licensor: Maneek Mohan
 
-Licensed Work: Cairn
-                The Licensed Work is (c) 2026 Cairn
+Licensed Work: Deft
+                The Licensed Work is (c) 2026 Maneek Mohan
 
 Additional Use Grant: You may use, copy, modify, and distribute the Licensed
                       Work for any purpose, subject to these conditions:
@@ -13,7 +13,7 @@ Additional Use Grant: You may use, copy, modify, and distribute the Licensed
                          managed service.
 
                       2. All copies, forks, and derivative works MUST retain
-                         visible attribution to the original Cairn project
+                         visible attribution to the original Deft project
                          in the following locations:
                          - The README file (with link to the original repository)
                          - The project documentation
@@ -21,8 +21,8 @@ Additional Use Grant: You may use, copy, modify, and distribute the Licensed
                            to end users
 
                          Attribution must include the text:
-                         "Based on Cairn (https://github.com/[org]/cairn),
-                         created by [Your Name / Company]."
+                         "Based on Deft (https://github.com/deft-dev/deft),
+                         created by Maneek Mohan."
 
 Change Date: Four years from each release date.
 
@@ -30,7 +30,7 @@ Change License: Apache License, Version 2.0, with the attribution
                 requirement in clause 2 above preserved.
 
 For information about alternative licensing arrangements for the Licensed Work,
-please contact: [your email]
+please contact: hello@deft.ing
 
 Notice
 

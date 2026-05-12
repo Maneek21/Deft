@@ -15,7 +15,7 @@ If you've found a security issue, please report it **privately** rather than ope
 
 **Preferred:** [GitHub Security Advisories](https://github.com/deft-dev/deft/security/advisories/new) (private to maintainers).
 
-**Or email:** security@deft.dev
+**Or email:** security@deft.ing
 
 Please include:
 - A description of the issue and its impact
