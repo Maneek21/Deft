@@ -11,7 +11,6 @@ import {
   labels,
   taskRelationships,
   users,
-  spaceKnowledge,
   wikiPages,
   wikiLinks,
   wikiOpsLog,
@@ -19,7 +18,6 @@ import {
   reminders,
   notes,
   canvases,
-  decisions,
   crossReferences,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
@@ -543,25 +541,51 @@ export async function executeAction(
           .limit(1);
         if (!space) return { success: false, result: null, error: `Space "${params.space_name}" not found` };
 
+        // Map legacy 4-type knowledge to wiki's 7-type taxonomy.
+        const legacyToWiki: Record<string, string> = {
+          decision: 'decision',
+          resource: 'resource',
+          action_item: 'procedure',
+          note: 'fact',
+        };
+        const wikiType = (legacyToWiki[params.type as string] || 'fact') as
+          'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact';
+
+        const title = params.title as string;
+        const baseSlug = title.toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, '')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 80) || 'knowledge';
+
+        const [existingSlug] = await db.select({ id: wikiPages.id })
+          .from(wikiPages)
+          .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, baseSlug)))
+          .limit(1);
+        const slug = existingSlug ? `${baseSlug}-${Date.now().toString(36)}` : baseSlug;
+
         const [entry] = await db
-          .insert(spaceKnowledge)
+          .insert(wikiPages)
           .values({
             org_id: orgId,
+            scope: 'space',
             space_id: space.id,
-            type: params.type,
-            title: params.title,
-            content: params.content || null,
-            metadata: params.metadata || null,
-            created_by: userId,
+            user_id: userId,
+            type: wikiType,
+            title,
+            slug,
+            content: (params.content as string) || title,
+            confidence: 1.0,
           })
           .returning();
 
         await db
           .update(agentActions)
           .set({
-            result: { knowledge_id: entry!.id, title: params.title, space: space.name },
+            result: { knowledge_id: entry!.id, title, space: space.name },
             before_state: null,
-            after_state: { id: entry!.id, type: params.type, title: params.title, space_id: space.id },
+            after_state: { id: entry!.id, type: wikiType, title, space_id: space.id },
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -574,11 +598,11 @@ export async function executeAction(
           entityType: 'knowledge',
           entityId: entry!.id,
           beforeState: null,
-          afterState: { type: params.type, title: params.title, space: space.name },
+          afterState: { type: wikiType, title, space: space.name },
           metadata: { action_id: actionId },
         });
 
-        return { success: true, result: { knowledge_id: entry!.id, title: params.title, space: space.name } };
+        return { success: true, result: { knowledge_id: entry!.id, title, space: space.name } };
       }
 
       case 'wiki_write': {
@@ -1218,9 +1242,14 @@ export async function executeAction(
         if (taskIds.length === 0) return { success: false, result: null, error: 'task_ids must be a non-empty array' };
 
         const [decision] = await db
-          .select({ id: decisions.id })
-          .from(decisions)
-          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .select({ id: wikiPages.id })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.id, decisionId),
+            eq(wikiPages.org_id, orgId),
+            eq(wikiPages.type, 'decision'),
+            eq(wikiPages.is_deleted, false),
+          ))
           .limit(1);
         if (!decision) return { success: false, result: null, error: 'Decision not found' };
 
@@ -1279,29 +1308,38 @@ export async function executeAction(
       }
 
       case 'mark_decision_implemented': {
-        // Block 2.6 — stamp decisions.implemented_at.
+        // Block 2.6 — flag a wiki decision page as implemented via tag.
+        // The legacy `decisions.implemented_at` column was retired with the
+        // table drop (2026-05-12); we use the `implemented` tag + updated_at
+        // as the durable record.
         const decisionId = typeof params.decision_id === 'string' ? params.decision_id : '';
         if (!decisionId) return { success: false, result: null, error: 'decision_id is required' };
 
         const [decision] = await db
-          .select()
-          .from(decisions)
-          .where(and(eq(decisions.id, decisionId), eq(decisions.org_id, orgId)))
+          .select({ id: wikiPages.id, tags: wikiPages.tags, updated_at: wikiPages.updated_at })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.id, decisionId),
+            eq(wikiPages.org_id, orgId),
+            eq(wikiPages.type, 'decision'),
+            eq(wikiPages.is_deleted, false),
+          ))
           .limit(1);
         if (!decision) return { success: false, result: null, error: 'Decision not found' };
 
-        if (decision.implemented_at) {
+        const currentTags: string[] = decision.tags ?? [];
+        if (currentTags.includes('implemented')) {
           return {
             success: true,
-            result: { decision_id: decisionId, implemented_at: decision.implemented_at, already_implemented: true },
+            result: { decision_id: decisionId, implemented_at: decision.updated_at, already_implemented: true },
           };
         }
 
         const now = new Date();
         await db
-          .update(decisions)
-          .set({ implemented_at: now })
-          .where(eq(decisions.id, decisionId));
+          .update(wikiPages)
+          .set({ tags: [...currentTags, 'implemented'], updated_at: now })
+          .where(eq(wikiPages.id, decisionId));
 
         await db
           .update(agentActions)

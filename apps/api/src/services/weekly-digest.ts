@@ -5,7 +5,7 @@ import { getOrgAIConfig } from '../lib/org-ai-config.js';
 import {
   tasks,
   taskActivity,
-  decisions,
+  wikiPages,
   agentNudges,
   burnoutAlerts,
   users,
@@ -67,21 +67,25 @@ export async function generateWeeklyDigest(
     );
   const overdueCount = Number(overdueRow?.count ?? 0);
 
-  // 5. Decisions made this week
+  // 5. Decisions made this week (sourced from wiki_pages WHERE type='decision').
+  //    The legacy `decisions` table was retired 2026-05-12. wikiPages.user_id is
+  //    nullable (agent-authored pages have no human author), so we left-join.
   const weekDecisions = await db
     .select({
-      decision_text: decisions.decision_text,
+      decision_text: wikiPages.title,
       decided_by_name: users.name,
     })
-    .from(decisions)
-    .innerJoin(users, eq(decisions.decided_by, users.id))
+    .from(wikiPages)
+    .leftJoin(users, eq(wikiPages.user_id, users.id))
     .where(
       and(
-        eq(decisions.org_id, orgId),
-        gte(decisions.created_at, oneWeekAgo),
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.type, 'decision'),
+        eq(wikiPages.is_deleted, false),
+        gte(wikiPages.created_at, oneWeekAgo),
       ),
     )
-    .orderBy(desc(decisions.created_at))
+    .orderBy(desc(wikiPages.created_at))
     .limit(10);
 
   // 6. Blockers — open/resolved nudges

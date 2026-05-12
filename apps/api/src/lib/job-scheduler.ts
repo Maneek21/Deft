@@ -10,7 +10,6 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'manager-pulse', 'cron:manager-pulse');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'burnout-detect', 'cron:burnout-detect');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'wiki-lint', 'cron:wiki-lint');
-  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'deprecation-warning', 'cron:deprecation-warning');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'weekly-digest', 'cron:weekly-digest');
   // BYOA agents pull pending work over MCP, so no server-side push scan
   // is required. The heartbeat cron only fires for in-process schedulers

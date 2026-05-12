@@ -18,7 +18,6 @@ import {
   peoplePatterns,
   peopleRelationships,
   burnoutAlerts,
-  spaceKnowledge,
   connectedAccounts,
   wikiPages,
   wikiLinks,
@@ -1444,20 +1443,47 @@ export async function executeToolCall(
         return { result: { error: `Space "${spaceName}" not found` }, citations };
       }
 
-      const [entry] = await db.insert(spaceKnowledge).values({
+      // Map legacy 4-type knowledge to wiki's 7-type taxonomy.
+      const legacyToWiki: Record<string, string> = {
+        decision: 'decision',
+        resource: 'resource',
+        action_item: 'procedure',
+        note: 'fact',
+      };
+      const wikiType = (legacyToWiki[params.type as string] || 'fact') as
+        'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact';
+
+      const title = params.title as string;
+      const baseSlug = title.toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 80) || 'knowledge';
+
+      // Ensure unique slug within org (append timestamp suffix on collision).
+      const [existingSlug] = await db.select({ id: wikiPages.id })
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.slug, baseSlug)))
+        .limit(1);
+      const slug = existingSlug ? `${baseSlug}-${Date.now().toString(36)}` : baseSlug;
+
+      const [entry] = await db.insert(wikiPages).values({
         org_id: orgId,
+        scope: 'space',
         space_id: space.id,
-        type: params.type as any,
-        title: params.title as string,
-        content: (params.content as string) || null,
-        metadata: params.metadata || null,
-        created_by: _userId,
+        user_id: _userId,
+        type: wikiType,
+        title,
+        slug,
+        content: (params.content as string) || title,
+        confidence: 1.0,
       }).returning();
 
-      citations.push({ type: 'knowledge', id: entry!.id, title: `${params.type}: ${params.title}` });
+      citations.push({ type: 'knowledge', id: entry!.id, title: `${wikiType}: ${title}` });
 
       return {
-        result: { success: true, id: entry!.id, message: `Added "${params.title}" to #${spaceName} knowledge` },
+        result: { success: true, id: entry!.id, message: `Added "${title}" to #${spaceName} knowledge` },
         citations,
       };
     }

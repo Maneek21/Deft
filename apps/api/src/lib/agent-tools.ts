@@ -561,7 +561,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
     name: 'mark_decision_implemented',
     description:
-      'Mark a decision as implemented (sets decisions.implemented_at = now()). Use after the linked tasks have been completed.',
+      'Mark a decision (wiki page with type=decision) as implemented by adding the "implemented" tag. Use after the linked tasks have been completed.',
     input_schema: {
       type: 'object' as const,
       properties: {

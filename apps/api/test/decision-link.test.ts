@@ -2,12 +2,16 @@
  * Block 2.6 — decision link/implemented tests.
  *
  * Run: pnpm --filter @deft/api exec tsx --env-file=../../.env --test test/decision-link.test.ts
+ *
+ * Note: decisions live on wikiPages WHERE type='decision' since the legacy
+ * `decisions` table was retired 2026-05-12. `mark_decision_implemented` now
+ * stamps the page with the `implemented` tag (returned as `implemented_at`).
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { eq, inArray, and } from 'drizzle-orm';
 import {
-  db, tasks, projects, decisions, spaces, messages, crossReferences,
+  db, tasks, projects, wikiPages, spaces, messages, crossReferences,
   orgs, users, orgMembers,
 } from '@deft/db';
 import { executeActionDirect } from '../src/lib/agent-actions.js';
@@ -50,7 +54,7 @@ before(async () => {
     { id: taskB, org_id: testOrgId, project_id: projectId, number: 2, title: 'B', created_by: testUserId },
   ]);
 
-  // A decision needs an anchoring space+message.
+  // A decision needs an anchoring space+message (for the citation context).
   const existingSpace = await db.query.spaces.findFirst({ where: (s, { eq }) => eq(s.org_id, testOrgId) });
   if (existingSpace) {
     spaceId = existingSpace.id;
@@ -65,16 +69,25 @@ before(async () => {
     id: parentMsgId, org_id: testOrgId, space_id: spaceId, user_id: testUserId,
     content: 'Decision anchor message',
   });
+
   decisionId = crypto.randomUUID();
-  await db.insert(decisions).values({
-    id: decisionId, org_id: testOrgId, space_id: spaceId, message_id: parentMsgId,
-    decision_text: 'We will migrate to PostgreSQL 16.', decided_by: testUserId,
+  await db.insert(wikiPages).values({
+    id: decisionId,
+    org_id: testOrgId,
+    scope: 'space',
+    space_id: spaceId,
+    user_id: testUserId,
+    type: 'decision',
+    title: 'We will migrate to PostgreSQL 16.',
+    slug: `b26-decision-${Date.now().toString(36)}`,
+    content: 'We will migrate to PostgreSQL 16.',
+    confidence: 1.0,
   });
 });
 
 after(async () => {
   await db.delete(crossReferences).where(eq(crossReferences.source_id, decisionId));
-  await db.delete(decisions).where(eq(decisions.id, decisionId));
+  await db.delete(wikiPages).where(eq(wikiPages.id, decisionId));
   await db.delete(messages).where(eq(messages.id, parentMsgId));
   await db.delete(tasks).where(inArray(tasks.id, [taskA, taskB]));
   await db.delete(projects).where(eq(projects.id, projectId));
@@ -132,7 +145,7 @@ test('link_decision_to_tasks rejects empty task_ids', async () => {
   assert.equal(r.success, false);
 });
 
-test('mark_decision_implemented stamps implemented_at', async () => {
+test('mark_decision_implemented tags the wiki page as implemented', async () => {
   const r = await executeActionDirect(
     'mark_decision_implemented',
     { decision_id: decisionId },
@@ -141,8 +154,9 @@ test('mark_decision_implemented stamps implemented_at', async () => {
   assert.equal(r.success, true, JSON.stringify(r));
   assert.ok(r.result.implemented_at);
 
-  const [dec] = await db.select().from(decisions).where(eq(decisions.id, decisionId));
-  assert.ok(dec!.implemented_at);
+  const [page] = await db.select().from(wikiPages).where(eq(wikiPages.id, decisionId));
+  assert.ok(page, 'wiki page must exist');
+  assert.ok((page!.tags ?? []).includes('implemented'), 'page must carry the implemented tag');
 });
 
 test('mark_decision_implemented is idempotent', async () => {

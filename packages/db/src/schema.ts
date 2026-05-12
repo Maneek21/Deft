@@ -22,7 +22,6 @@ export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard',
 export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full']);
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
-export const knowledgeTypeEnum = pgEnum('knowledge_type', ['decision', 'resource', 'action_item', 'note']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
 export const mcpTransportEnum = pgEnum('mcp_transport', ['stdio', 'sse', 'streamable-http']);
@@ -703,31 +702,6 @@ export const canvases = pgTable('canvases', {
   ...timestamps(),
 });
 
-// ═══ SPACE KNOWLEDGE ═══
-/**
- * @deprecated Migrated to wikiPages in feat/phase2-4-mcp-agents-plans (2026-04-16).
- * Writes stopped in Phase 2 (Tasks 2.2 and 2.3). Reads migrated.
- * Safe to drop after 30 days (2026-05-16) if the deprecation-warning cron
- * continues to report zero new rows. No remaining legitimate consumers.
- */
-export const spaceKnowledge = pgTable('space_knowledge', {
-  ...id(),
-  ...orgId(),
-  space_id: text('space_id').notNull().references(() => spaces.id),
-  type: knowledgeTypeEnum('type').notNull(),
-  title: text('title').notNull(),
-  content: text('content'),
-  metadata: jsonb('metadata'),
-  source_message_id: text('source_message_id').references(() => messages.id),
-  created_by: text('created_by').notNull().references(() => users.id),
-  is_deleted: boolean('is_deleted').default(false).notNull(),
-  ...timestamps(),
-}, (t) => [
-  index('space_knowledge_org_idx').on(t.org_id),
-  index('space_knowledge_space_idx').on(t.space_id),
-  index('space_knowledge_type_idx').on(t.space_id, t.type),
-]);
-
 // ═══ MESSAGE BOOKMARKS (Saved Messages) ═══
 export const messageBookmarks = pgTable('message_bookmarks', {
   ...id(),
@@ -842,33 +816,6 @@ export const agentMemory = pgTable('agent_memory', {
   ...timestamps(),
 }, (t) => [
   uniqueIndex('agent_memory_upsert_unique').on(t.user_id, t.conversation_id, t.key),
-]);
-
-// ═══ DECISIONS ═══
-/**
- * @deprecated Migrated to wikiPages in feat/phase2-4-mcp-agents-plans (2026-04-16).
- * Writes stopped in Phase 2 (Tasks 2.2 and 2.3). Reads migrated.
- * Safe to drop after 30 days (2026-05-16) if the deprecation-warning cron
- * continues to report zero new rows. No remaining legitimate consumers.
- */
-export const decisions = pgTable('decisions', {
-  ...id(),
-  ...orgId(),
-  space_id: text('space_id').notNull().references(() => spaces.id),
-  message_id: text('message_id').notNull().references(() => messages.id),
-  decision_text: text('decision_text').notNull(),
-  decided_by: text('decided_by').notNull().references(() => users.id),
-  context: text('context'), // surrounding context / why
-  tags: jsonb('tags'), // ['payments', 'infrastructure']
-  is_reversed: boolean('is_reversed').default(false).notNull(),
-  // Block 2.6 — set when the decision has been acted on (agent tool
-  // mark_decision_implemented, or the decision-wiki UI).
-  implemented_at: timestamp('implemented_at'),
-  ...timestamps(),
-}, (t) => [
-  index('decisions_org_idx').on(t.org_id),
-  index('decisions_space_idx').on(t.space_id),
-  index('decisions_implemented_idx').on(t.implemented_at),
 ]);
 
 // ═══ CROSS REFERENCES ═══

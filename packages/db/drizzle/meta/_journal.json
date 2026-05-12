@@ -435,6 +435,34 @@
       "when": 1776600055000,
       "tag": "0062_ics_calendar_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1776600056000,
+      "tag": "0063_user_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1776600057000,
+      "tag": "0064_agent_conversation_space_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1776600058000,
+      "tag": "0065_drop_agent_conversations_and_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1776600059000,
+      "tag": "0066_drop_deprecated_tables",
+      "breakpoints": true
     }
   ]
 }
