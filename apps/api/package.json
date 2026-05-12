@@ -21,6 +21,7 @@
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.9",
+    "hono-rate-limiter": "^0.5.3",
     "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.3",
     "node-ical": "^0.26.1",

@@ -52,6 +52,7 @@ import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
+import { authLimiter, agentLimiter, uploadLimiter, defaultLimiter } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
@@ -65,6 +66,7 @@ app.use('*', cors({
 }));
 
 // Public routes
+app.use('/api/auth/*', authLimiter);
 app.route('/api/auth', authRoutes);
 app.route('/api/files', fileServingRoutes);
 
@@ -100,6 +102,9 @@ app.route('/api/invites', inviteRoutes);
 
 // Protected routes
 app.use('/api/*', authMiddleware);
+app.use('/api/*', defaultLimiter);
+app.use('/api/agent/*', agentLimiter);
+app.use('/api/upload/*', uploadLimiter);
 app.route('/api/agent-webhooks', agentWebhookRoutes);
 app.route('/api/spaces', spaceRoutes);
 app.route('/api/messages', messageRoutes);
