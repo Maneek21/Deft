@@ -48,6 +48,18 @@ openssl rand -hex 32   # paste result into JWT_REFRESH_SECRET
 
 Everything else in `.env` is optional for a first boot. Leave the database and Redis URLs as-is — Docker Compose overrides them automatically.
 
+> **⚠️ Deploying to a remote server (VPS, droplet, cloud)?** Set the three `NEXT_PUBLIC_*` URLs **before** running `docker compose up`. They're baked into the browser JavaScript bundle at build time, so editing them later requires a full rebuild.
+>
+> ```bash
+> NEXT_PUBLIC_APP_URL=http://<your-public-ip-or-domain>:3000
+> NEXT_PUBLIC_API_URL=http://<your-public-ip-or-domain>:3001
+> NEXT_PUBLIC_WS_URL=http://<your-public-ip-or-domain>:3001
+> ```
+>
+> If your browser shows **"Failed to fetch"** on signup, it's because these were left at the `localhost:*` defaults — your browser is hitting *its own* localhost, not the server. Fix the values in `.env` and run `docker compose up -d --build` to rebake them into the client bundle.
+>
+> Leave the defaults alone if you'll only ever access Deft from the same machine that runs it (e.g., local development).
+
 ### 2. Start the stack
 
 ```bash
