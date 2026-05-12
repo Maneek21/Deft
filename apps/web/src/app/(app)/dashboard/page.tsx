@@ -25,6 +25,7 @@ import { useLayoutStorage } from './lib/use-layout-storage';
 import { getWidget } from './lib/registry';
 import type { BreakpointLayoutEntry, DashboardLayout } from './lib/widget-types';
 import { registerBuiltInWidgets } from './widgets';
+import { StarterCards } from './starter-cards';
 
 registerBuiltInWidgets();
 
@@ -493,6 +494,8 @@ function DashboardBody() {
           editMode={editMode}
           onToggleEdit={() => setEditMode(e => !e)}
         />
+
+        <StarterCards />
 
         {editMode && (
           <EditBar onAdd={() => setAddOpen(true)} onReset={handleReset} />
