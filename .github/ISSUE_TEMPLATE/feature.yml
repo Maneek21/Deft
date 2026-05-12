@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a new capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain are you trying to solve? Be specific.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would the feature look like? Sketch the UX or the API shape.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Workarounds, other tools, prior art.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Chat
+        - Tasks
+        - Agent
+        - Wiki / knowledge
+        - Dashboard
+        - Settings / admin
+        - Self-host / deployment
+        - Other
+    validations:
+      required: true

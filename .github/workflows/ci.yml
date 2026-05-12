@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
-    branches: [main]
+    branches: [master, main]
 
 jobs:
   typecheck:
@@ -25,10 +25,59 @@ jobs:
       - name: Type check Web
         run: cd apps/web && npx tsc --noEmit
 
+  test:
+    name: Test API
+    runs-on: ubuntu-latest
+    needs: typecheck
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-secret-not-for-prod
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Enable pgvector extension
+        run: psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+      - name: Push schema
+        run: pnpm --filter @deft/db push --force
+      - name: Run tests
+        run: pnpm --filter @deft/api test
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: typecheck
+    needs: [typecheck, test]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

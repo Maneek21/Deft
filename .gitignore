@@ -50,4 +50,30 @@ deft-human-test-results.md
 # Claude Code agent runtime state
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.claude/settings.local.json
 .deploy-tokens
+
+# Internal-only documentation — kept on local disk, not pushed to public repo.
+# These contain product strategy, internal QA workflows, deployment runbooks,
+# and pre-shipped feature specs that aren't appropriate for the public mirror.
+# Drop a file here only after deciding it's permanently internal; for a one-off
+# private note that might later get published, leave it tracked.
+AGENT-TEST-GUIDE.md
+AGENT-TEST-PLAN.md
+BROWSER-TEST-PROMPT.md
+CAIRN-PRODUCT-DOC.md
+COMPETITIVE-ANALYSIS.md
+DEFT-BUILD-DOC.md
+DEPLOYMENT-PLAN.md
+DEPLOYMENT-READINESS-REPORT.md
+DISSONANCE-AUDIT-2026-05-04.md
+HUMAN-TEST-GUIDE.md
+ROADMAP.md
+deft-feature-roadmap.md
+deft-huddles-spec.md
+deft-qa-test-results.md
+week-1-session-1.md
+ALPHA-PLAYBOOK.md
+demo-video-structure.md
+apps/web-demo/
+docs/superpowers/audits/.screenshots/
