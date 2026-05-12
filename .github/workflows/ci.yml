@@ -90,3 +90,43 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build web
         run: pnpm --filter @deft/web build
+
+  docker-build:
+    name: Docker Image Build
+    # The production Dockerfile drifted multiple times without being noticed
+    # because nobody runs `docker build` locally during dev (we use `pnpm dev`).
+    # First deploy from a fresh clone surfaced 5 Dockerfile bugs in one go.
+    # This job exercises the full image build on every PR so the same class of
+    # rot can't sneak back in.
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: deft:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_APP_URL=http://localhost:3000
+            NEXT_PUBLIC_API_URL=http://localhost:3001
+            NEXT_PUBLIC_WS_URL=http://localhost:3001
+      - name: Smoke-test the image (binaries resolve)
+        # Catches the "next CLI not on PATH from apps/web" and
+        # "pnpm not in runner stage" classes of bug — both real bugs we hit
+        # on the first deploy. Doesn't start the actual servers (that'd need
+        # postgres+redis sidecars and would dup the `test` job's work).
+        run: |
+          docker run --rm --entrypoint sh deft:ci -c '
+            set -e
+            command -v pnpm
+            command -v node
+            cd /app/apps/web && pnpm exec next --version
+            test -d /app/apps/api && test -d /app/packages/db
+            test -d /app/apps/web/node_modules
+            test -d /app/packages/mcp/node_modules
+          '
