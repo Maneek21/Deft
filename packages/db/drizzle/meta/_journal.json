@@ -120,6 +120,321 @@
       "when": 1776600010000,
       "tag": "0017_seed_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1776600011000,
+      "tag": "0018_gateway_ping",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1776600012000,
+      "tag": "0019_action_receipts_signed_at_tz",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1776600013000,
+      "tag": "0020_expand_role_enum",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1776600014000,
+      "tag": "0021_wiki_pages_tags_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1776600015000,
+      "tag": "0022_notes_visibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1776600016000,
+      "tag": "0023_knowledge_dependency_relationship",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1776600017000,
+      "tag": "0024_message_classifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1776600018000,
+      "tag": "0025_task_relationship_type_enum",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1776600019000,
+      "tag": "0026_notification_type_enum",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776600020000,
+      "tag": "0027_task_labels_pk",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1776600021000,
+      "tag": "0028_task_child_tables_org_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1776600022000,
+      "tag": "0029_tasks_parent_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1776600023000,
+      "tag": "0030_duplicate_flags",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1776600024000,
+      "tag": "0031_cross_references_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1776600025000,
+      "tag": "0032_task_activity_agent_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1776600026000,
+      "tag": "0033_tasks_embedding",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1776600027000,
+      "tag": "0034_agent_plans_fail_fast",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1776600028000,
+      "tag": "0035_skills_extend",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1776600029000,
+      "tag": "0036_skill_junctions",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1776600030000,
+      "tag": "0037_migrate_caps_to_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1776600031000,
+      "tag": "0038_drop_native_tools",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1776600032000,
+      "tag": "0039_notification_type_skill_update",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1776600033000,
+      "tag": "0040_tasks_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1776600034000,
+      "tag": "0041_projects_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1776600035000,
+      "tag": "0042_task_reactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1776600036000,
+      "tag": "0043_agent_heartbeat_overrides",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1776600037000,
+      "tag": "0044_agent_heartbeat_turns",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1776600038000,
+      "tag": "0045_task_templates_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1776600039000,
+      "tag": "0046_drop_project_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1776600040000,
+      "tag": "0047_clawhub_allowlist",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1776600041000,
+      "tag": "0048_org_spend_caps",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1776600042000,
+      "tag": "0049_skill_secrets",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1776600043000,
+      "tag": "0050_decision_implemented",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1776600044000,
+      "tag": "0051_org_scoped_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1776600045000,
+      "tag": "0052_agent_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1776600046000,
+      "tag": "0053_drop_orphaned_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1776600047000,
+      "tag": "0054_agent_cooperative_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1776600048000,
+      "tag": "0055_add_superintendent_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1776600049000,
+      "tag": "0056_drop_orphaned_deploy_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1776600050000,
+      "tag": "0057_user_delete_cascades",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1776600051000,
+      "tag": "0058_agent_employees_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1776600052000,
+      "tag": "0059_remove_openclaw_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776600053000,
+      "tag": "0060_webhook_hmac_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776600054000,
+      "tag": "0061_org_ai_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776600055000,
+      "tag": "0062_ics_calendar_sync",
+      "breakpoints": true
     }
   ]
 }
