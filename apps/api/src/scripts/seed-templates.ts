@@ -123,8 +123,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/productivity/daily-standup/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'designer',
@@ -151,8 +150,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/creative/ux-researcher/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'qa',
@@ -180,8 +178,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/development/qa-tester/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'cs',
@@ -208,8 +205,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/customer-success/onboarding-guide/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'community',
@@ -234,8 +230,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-haiku-4-5-20251001',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/marketing/social-media/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'on-call',
@@ -257,21 +252,18 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'github_list_pulls',
       'github_get_pr',
       'events_upcoming',
-      'shell_exec',
     ],
     default_capability_packs: [
       'deft-workspace',
       'tavily',
       'github',
-      // TODO: re-add when shell-exec capability pack ships as a non-coming_soon pack
     ],
     default_trust_level: 'conservative',
     default_trigger_subscriptions: [],
     model_recommendation: 'anthropic/claude-opus-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution:
-      'Adapted from mergisi/awesome-openclaw-agents (MIT): agents/devops/incident-responder/SOUL.md',
+    source_attribution: 'bundled',
   },
   {
     slug: 'cfo',
@@ -319,12 +311,10 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'delegation_self_report',
       'github_list_pulls',
       'github_get_pr',
-      'shell_exec',
     ],
     default_capability_packs: [
       'deft-workspace',
       'github',
-      // TODO: re-add when shell-exec capability pack ships as a non-coming_soon pack
     ],
     default_trust_level: 'standard',
     default_trigger_subscriptions: ['webhook:pr-merged'],
