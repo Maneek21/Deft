@@ -11,7 +11,7 @@ COPY apps/web/package.json apps/web/
 COPY apps/api/package.json apps/api/
 COPY packages/db/package.json packages/db/
 COPY packages/shared/package.json packages/shared/
-COPY packages/ai/package.json packages/ai/
+COPY packages/mcp/package.json packages/mcp/
 RUN pnpm install --frozen-lockfile
 
 # Stage 2: Build
