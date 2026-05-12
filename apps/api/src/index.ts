@@ -52,7 +52,7 @@ import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { authMiddleware } from './middleware/auth.js';
-import { authLimiter, agentLimiter, uploadLimiter, defaultLimiter } from './middleware/rate-limit.js';
+import { authLimiter, agentLimiter, uploadLimiter, defaultLimiter, webhookLimiter } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
@@ -83,12 +83,14 @@ app.route('/api/metrics', metricsRoutes);
 // Task 8.7 — external webhook endpoints (GitHub). Verified via provider-
 // specific HMAC header (GITHUB_WEBHOOK_SECRET), not JWT — mounted before
 // authMiddleware.
+app.use('/api/webhooks/*', webhookLimiter);
 app.route('/api/webhooks', githubWebhookRoutes);
 
 // Block 3.3 — per-agent external webhooks. POST with secret in header,
 // no JWT. Management routes under /api/agent-webhooks are JWT-gated and
 // mounted AFTER authMiddleware below.
 const { publicAgentWebhookRoutes, agentWebhookRoutes } = await import('./routes/agent-webhooks.js');
+app.use('/api/agent-webhooks/*', webhookLimiter);
 app.route('/api/agent-webhooks', publicAgentWebhookRoutes);
 
 // Public ICS calendar feed. The publish token in the URL is the only
