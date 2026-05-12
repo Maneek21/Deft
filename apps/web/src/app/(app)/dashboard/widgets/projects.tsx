@@ -57,7 +57,7 @@ function ProjectsWidget(_props: WidgetProps) {
 
 export const projectsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.projects',
+  id: 'deft.projects',
   title: 'Projects',
   description: 'Project progress at a glance.',
   category: 'work',

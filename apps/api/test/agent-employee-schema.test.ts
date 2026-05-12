@@ -16,7 +16,7 @@ import pg from 'pg';
 import { SEMVER_REGEX, isValidSemver } from '@deft/shared/schemas';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ALEX_PM_ID = '7e79b0a9-f88c-49f4-b79d-ab8a7c7f1633';
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {

@@ -134,7 +134,7 @@ function CalendarWidget(_props: WidgetProps) {
 
 export const calendarDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.calendar',
+  id: 'deft.calendar',
   title: 'Calendar',
   description: 'Monthly overview of events, tasks, and notes.',
   category: 'calendar',

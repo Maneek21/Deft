@@ -14,7 +14,7 @@ import { BUNDLED_SKILLS } from '../src/lib/bundled-skills.js';
 import { CAPABILITY_PACKS } from '../src/lib/capability-packs.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const EXPECTED_SLUGS = [
   // 6 capability-pack skills (one per available pack)

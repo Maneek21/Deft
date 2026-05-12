@@ -73,7 +73,7 @@ export type WidgetProps<Config = unknown> = {
 export type WidgetDefinition<Config = unknown> = {
   /** Contract version. Always 1 for now. */
   apiVersion: 1;
-  /** Globally unique, dot-namespaced: "cairn.today", "acme.github-prs". */
+  /** Globally unique, dot-namespaced: "deft.today", "acme.github-prs". */
   id: string;
   title: string;
   description?: string;

@@ -82,7 +82,7 @@ function TodayWidget(_props: WidgetProps) {
 
 export const todayDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.today',
+  id: 'deft.today',
   title: 'Today',
   description: 'Overdue + tasks due today, priority-sorted.',
   category: 'work',

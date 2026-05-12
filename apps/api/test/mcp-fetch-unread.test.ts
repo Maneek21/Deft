@@ -18,7 +18,7 @@ import { fetchUnread } from '../src/lib/mcp-tools/messages.js';
 import type { ToolContext } from '../src/lib/mcp-tools/types.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Use the fixed seed org — same as every other MCP test.
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';

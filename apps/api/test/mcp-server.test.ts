@@ -25,7 +25,7 @@ import { Hono } from 'hono';
 // We import the MCP router directly (NOT apps/api/src/index.ts) because
 // importing index.ts would call serve() and open a real TCP port.
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6'; // Maneek seed org
 const TEST_EMPLOYEE_ID = 'test-mcp-phase3-employee';
 const TEST_EMPLOYEE_SLUG = 'mcp-phase3-test';

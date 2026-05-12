@@ -123,7 +123,7 @@ function AgentSuggestionsWidget(_props: WidgetProps) {
 
 export const agentSuggestionsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.agent-suggestions',
+  id: 'deft.agent-suggestions',
   title: 'Nudges',
   description: 'What the agent could do for you right now.',
   icon: Lightbulb,

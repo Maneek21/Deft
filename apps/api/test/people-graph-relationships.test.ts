@@ -11,7 +11,7 @@
  *   3. tension is intentionally stubbed — no edge is created (stub behaviour
  *      confirmed by absence of 'tension' rows for the test pair).
  *
- * Uses the real local Postgres DB (postgres://postgres:postgres@localhost:5432/cairn).
+ * Uses the real local Postgres DB (postgres://postgres:postgres@localhost:5432/deft).
  * All inserted rows are cleaned up in finally blocks.
  */
 
@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 

@@ -60,7 +60,7 @@ function CelebrationsWidget(_props: WidgetProps) {
 
 export const celebrationsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.celebrations',
+  id: 'deft.celebrations',
   title: 'Celebrations',
   description: 'Birthdays, work anniversaries, onboarding milestones.',
   icon: PartyPopper,

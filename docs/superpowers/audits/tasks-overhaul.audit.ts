@@ -45,7 +45,7 @@ const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const ALEX_PM_EMPLOYEE_ID = '7e79b0a9-f88c-49f4-b79d-ab8a7c7f1633';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const RUN_SUFFIX = Date.now();
 const ENG_PROJECT = { name: `Audit Eng ${RUN_SUFFIX}`, prefix: `AE${(RUN_SUFFIX % 10000).toString().padStart(3, '0').slice(-3)}` };

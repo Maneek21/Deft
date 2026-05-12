@@ -60,7 +60,7 @@ WHERE a.message_id IS NULL
 
 - [ ] **Step 2: Run the migration against the database**
 
-Run: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/cairn" --file="migration-agent-backfill.sql"`
+Run: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/deft" --file="migration-agent-backfill.sql"`
 Expected: `UPDATE N` for each statement, no errors.
 
 - [ ] **Step 3: Verify with API**

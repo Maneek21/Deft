@@ -128,7 +128,7 @@ function FocusWidget({ instanceId }: WidgetProps) {
 
 export const focusDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.focus',
+  id: 'deft.focus',
   title: 'Focus',
   description: 'Pomodoro timer — 25 focus, 5 break.',
   icon: Timer,

@@ -53,7 +53,7 @@ function ReviewWidget(_props: WidgetProps) {
 
 export const reviewDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.review',
+  id: 'deft.review',
   title: 'In review',
   description: 'Tasks parked in review waiting on you.',
   icon: Inbox,

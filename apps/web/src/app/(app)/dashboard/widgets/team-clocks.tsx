@@ -96,7 +96,7 @@ const isManager = (ctx: WidgetContext) =>
 
 export const teamClocksDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.team-clocks',
+  id: 'deft.team-clocks',
   title: 'Team clocks',
   description: 'Current local time for each teammate.',
   icon: Clock,

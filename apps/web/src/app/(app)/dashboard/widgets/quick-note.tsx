@@ -44,7 +44,7 @@ function QuickNoteWidget({ config, onConfigChange }: WidgetProps<QuickNoteConfig
 
 export const quickNoteDefinition: WidgetDefinition<QuickNoteConfig> = {
   apiVersion: 1,
-  id: 'cairn.quick-note',
+  id: 'deft.quick-note',
   title: 'Quick note',
   description: 'A scratchpad that stays with your dashboard.',
   icon: StickyNote,

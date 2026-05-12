@@ -7,7 +7,7 @@
  * referenced_user_ids=[reportId], then calls generateOneOnePrep and asserts
  * the returned prep includes the seeded commitment content.
  *
- * Uses the real local Postgres DB (postgres://postgres:postgres@localhost:5432/cairn).
+ * Uses the real local Postgres DB (postgres://postgres:postgres@localhost:5432/deft).
  * All inserted rows are cleaned up in finally blocks.
  *
  * The LLM call inside generateOneOnePrep is mocked via fetch interception
@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Use the shared org from the test suite
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';

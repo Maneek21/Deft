@@ -41,7 +41,7 @@ const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const GENERAL_SPACE_ID = 'ad508864-7533-40d2-b126-9fb0d975c3fd';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Employee fixture. `slug` must match an OpenClaw agent id (default/main).
 const TEST_EMPLOYEE = {

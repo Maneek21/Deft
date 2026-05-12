@@ -32,7 +32,7 @@ const OPENCLAW_TOKEN = 'd4f5ef9e8bd3771c0399cbf9f237b0bc5909ecbafa4c9055';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const LAST_RUN_PATH = 'docs/superpowers/audits/deploy-wizard.last-run.txt';
 

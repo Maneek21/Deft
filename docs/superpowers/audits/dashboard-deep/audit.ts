@@ -23,7 +23,7 @@ const API_URL  = process.env.DEFT_API_URL  || 'http://localhost:3001';
 const WEB_URL  = process.env.DEFT_WEB_URL  || 'http://localhost:3000';
 const EMAIL    = process.env.DEFT_TEST_EMAIL    || 'maneek@test.com';
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'test1234';
-const DB_URL   = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+const DB_URL   = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const AUDIT_DIR  = 'docs/superpowers/audits/dashboard-deep';
 const LOG_FILE   = join(AUDIT_DIR, 'run.log');

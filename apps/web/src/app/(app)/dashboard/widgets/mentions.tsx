@@ -57,7 +57,7 @@ function MentionsWidget(_props: WidgetProps) {
 
 export const mentionsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.mentions',
+  id: 'deft.mentions',
   title: 'Mentions',
   description: 'Messages that @ you across spaces.',
   icon: AtSign,

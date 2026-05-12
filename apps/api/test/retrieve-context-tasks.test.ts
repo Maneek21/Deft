@@ -14,7 +14,7 @@ import pg from 'pg';
 import { retrieveContext } from '../src/lib/retrieve-context.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 
 const USER_ID = `rctasks-test-user-${Date.now()}`;

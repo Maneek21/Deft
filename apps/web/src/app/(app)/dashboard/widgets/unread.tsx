@@ -67,7 +67,7 @@ function UnreadWidget(_props: WidgetProps) {
 
 export const unreadDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.unread',
+  id: 'deft.unread',
   title: 'Unread',
   description: 'Channels and DMs with unread messages.',
   category: 'activity',

@@ -65,7 +65,7 @@ export async function seedDeftyUser(
 
 async function main(): Promise<void> {
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn',
+    connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft',
   });
   const db = drizzle(pool, { schema });
 

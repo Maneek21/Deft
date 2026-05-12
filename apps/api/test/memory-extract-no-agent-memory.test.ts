@@ -7,7 +7,7 @@
  * (the legacy dual-write COMPAT block has been removed), while still writing
  * to wiki_pages as expected.
  *
- * Uses a real Postgres DB (defaults to postgres://postgres:postgres@localhost:5432/cairn).
+ * Uses a real Postgres DB (defaults to postgres://postgres:postgres@localhost:5432/deft).
  * All inserted rows are cleaned up in finally blocks.
  */
 
@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 // Use Alex PM's real user_id — agent_memory has a FK to users.id, so we need

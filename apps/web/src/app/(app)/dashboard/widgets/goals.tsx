@@ -71,7 +71,7 @@ function GoalsWidget(_props: WidgetProps) {
 
 export const goalsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.goals',
+  id: 'deft.goals',
   title: 'Goals',
   description: 'Quarterly goals and OKR progress.',
   icon: Target,

@@ -56,7 +56,7 @@ ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS agent_employee_id text;
 ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false;
 ```
 
-Run: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/cairn" --file="migration-agent-conv-fixes.sql"`
+Run: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/deft" --file="migration-agent-conv-fixes.sql"`
 
 - [ ] **Step 4: Typecheck**
 

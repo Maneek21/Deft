@@ -107,7 +107,7 @@ function TeamWidget(_props: WidgetProps) {
 
 export const teamDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.team',
+  id: 'deft.team',
   title: 'Team',
   description: 'Team health signals, visible to managers.',
   category: 'team',

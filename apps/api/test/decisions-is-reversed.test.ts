@@ -8,7 +8,7 @@
  *     appends 'reversed' to tags on the wiki_pages row.
  *  2. PATCH with { is_reversed: false } restores confidence=0.9 and removes 'reversed'.
  *
- * Uses a real Postgres DB (defaults to postgres://postgres:postgres@localhost:5432/cairn).
+ * Uses a real Postgres DB (defaults to postgres://postgres:postgres@localhost:5432/deft).
  * All inserted rows are cleaned up in finally blocks.
  */
 
@@ -18,7 +18,7 @@ import pg from 'pg';
 import { Hono } from 'hono';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const USER_ID = '329fe0f6-39b3-4f66-8e6d-539ad7f4906a'; // Alex PM

@@ -2,7 +2,7 @@
  * Widget Registry
  *
  * Widgets register themselves at module load. The grid looks up by id.
- * Namespaced ids (cairn.*, acme.*) prevent collisions between first- and
+ * Namespaced ids (deft.*, acme.*) prevent collisions between first- and
  * third-party widgets. No page.tsx edits required to add a widget.
  */
 import type { WidgetDefinition } from './widget-types';

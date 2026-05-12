@@ -4,7 +4,7 @@ import crypto from 'crypto';
 
 const { Pool } = pg;
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn',
+  connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft',
 });
 const uuid = () => crypto.randomUUID();
 

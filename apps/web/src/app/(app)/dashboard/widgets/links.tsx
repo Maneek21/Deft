@@ -144,7 +144,7 @@ function LinksWidget({ config, onConfigChange }: WidgetProps<LinksConfig>) {
 
 export const linksDefinition: WidgetDefinition<LinksConfig> = {
   apiVersion: 1,
-  id: 'cairn.links',
+  id: 'deft.links',
   title: 'Links',
   description: 'Quick launcher for URLs you open often.',
   icon: LinkIcon,

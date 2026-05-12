@@ -66,7 +66,7 @@ function PinnedWidget(_props: WidgetProps) {
 
 export const pinnedDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.pinned',
+  id: 'deft.pinned',
   title: 'Pinned',
   description: 'Starred tasks and saved messages.',
   icon: Pin,

@@ -99,7 +99,7 @@ function MyWorkWidget(_props: WidgetProps) {
 
 export const myWorkDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.my-work',
+  id: 'deft.my-work',
   title: 'My work',
   description: 'Your kanban — to do, in progress, in review.',
   category: 'work',

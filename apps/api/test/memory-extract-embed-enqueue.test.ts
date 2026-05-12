@@ -12,7 +12,7 @@
  * pattern as embed-content.test.ts. It does NOT require pgvector.
  *
  * Trade-off: uses real DB, so it needs DATABASE_URL set (defaults to
- * postgres://postgres:postgres@localhost:5432/cairn). The test cleans up
+ * postgres://postgres:postgres@localhost:5432/deft). The test cleans up
  * all inserted rows in finally blocks.
  */
 
@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const USER_ID = 'test-user-mem-embed-uuid';
 const SPACE_ID = 'test-space-mem-embed-uuid';

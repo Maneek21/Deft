@@ -28,7 +28,7 @@ import pg from 'pg';
 import { executeToolCall } from '../src/lib/agent-context.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Use the shared dev org so FK constraints (org_id) are satisfied.
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';

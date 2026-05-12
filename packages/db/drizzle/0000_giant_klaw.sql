@@ -196,7 +196,7 @@ CREATE TABLE "orgs" (
 	"logo_url" text,
 	"timezone" text DEFAULT 'UTC' NOT NULL,
 	"trust_level" "trust_level" DEFAULT 'conservative' NOT NULL,
-	"agent_name" text DEFAULT 'Cairn',
+	"agent_name" text DEFAULT 'Deft',
 	"agent_enabled" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,

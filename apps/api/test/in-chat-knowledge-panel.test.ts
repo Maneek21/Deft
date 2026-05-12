@@ -11,7 +11,7 @@
  *   5. DELETE soft-deletes the entry (is_deleted=true)
  *
  * Uses a real Postgres DB against the dev instance. Cleans up after itself.
- * Requires DATABASE_URL or defaults to postgres://postgres:postgres@localhost:5432/cairn.
+ * Requires DATABASE_URL or defaults to postgres://postgres:postgres@localhost:5432/deft.
  */
 
 import { test, before, after } from 'node:test';
@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Use the existing dev org so FK constraints on org_id are satisfied.
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';

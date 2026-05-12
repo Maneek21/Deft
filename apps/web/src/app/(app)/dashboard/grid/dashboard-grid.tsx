@@ -25,15 +25,15 @@ const ResponsiveGridLayout = WidthProvider(Responsive);
 type ViewLinkResolver = (widgetId: string) => string | undefined;
 
 const DEFAULT_VIEW_LINKS: Record<string, string> = {
-  'cairn.today': '/tasks',
-  'cairn.my-work': '/tasks',
-  'cairn.calendar': '/calendar',
-  'cairn.unread': '/chat',
-  'cairn.projects': '/tasks',
-  'cairn.activity': '',
-  'cairn.agent': '/chat',
-  'cairn.team': '',
-  'cairn.insights': '',
+  'deft.today': '/tasks',
+  'deft.my-work': '/tasks',
+  'deft.calendar': '/calendar',
+  'deft.unread': '/chat',
+  'deft.projects': '/tasks',
+  'deft.activity': '',
+  'deft.agent': '/chat',
+  'deft.team': '',
+  'deft.insights': '',
 };
 
 export type DashboardGridProps = {

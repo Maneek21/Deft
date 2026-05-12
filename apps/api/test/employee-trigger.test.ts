@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const TEST_USER_ID = 'test-phase9-trigger-user';
 const EMP_ID = 'test-phase9-trigger-emp';

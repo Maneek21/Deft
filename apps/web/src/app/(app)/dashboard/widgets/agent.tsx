@@ -99,7 +99,7 @@ function AgentWidget(_props: WidgetProps) {
 
 export const agentDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.agent',
+  id: 'deft.agent',
   title: 'Agent',
   description: 'Recent agent actions and pending approvals.',
   category: 'agent',

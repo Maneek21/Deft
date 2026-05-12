@@ -48,7 +48,7 @@ function ActivityWidget(_props: WidgetProps) {
 
 export const activityDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.activity',
+  id: 'deft.activity',
   title: 'Activity',
   description: 'Recent workspace activity from teammates.',
   category: 'activity',

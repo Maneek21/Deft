@@ -69,7 +69,7 @@ function InsightsWidget(_props: WidgetProps) {
 
 export const insightsDefinition: WidgetDefinition = {
   apiVersion: 1,
-  id: 'cairn.insights',
+  id: 'deft.insights',
   title: 'My insights',
   description: 'Your personal activity snapshot.',
   category: 'insights',

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 // Unique org id per test run so parallel CI invocations don't collide and so
 // the admin/overloaded-user fixtures never collide with the real seed org.

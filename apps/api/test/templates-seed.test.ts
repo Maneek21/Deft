@@ -24,7 +24,7 @@ import { seedTemplates, TEMPLATE_META } from '../src/scripts/seed-templates.js';
 import { CAPABILITY_PACKS } from '../src/lib/capability-packs.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
 const VALID_ROLES = [

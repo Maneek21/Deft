@@ -68,7 +68,7 @@ ALTER TABLE agent_employees ADD COLUMN IF NOT EXISTS heartbeat_config jsonb;
 ALTER TABLE agent_employees ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamp;
 ```
 
-Run via psql: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/cairn" --file="migration-file.sql"`
+Run via psql: `"/c/Program Files/PostgreSQL/16/bin/psql.exe" --dbname="postgres://postgres:postgres@localhost:5432/deft" --file="migration-file.sql"`
 
 - [ ] **Step 4: Typecheck**
 

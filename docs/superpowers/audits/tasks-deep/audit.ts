@@ -17,7 +17,7 @@ const WEB_URL = process.env.DEFT_WEB_URL || 'http://localhost:3000';
 const API_URL = process.env.DEFT_API_URL || 'http://localhost:3001';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/cairn';
+  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const EMAIL = process.env.DEFT_TEST_EMAIL || 'maneek@test.com';
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'test1234';
 

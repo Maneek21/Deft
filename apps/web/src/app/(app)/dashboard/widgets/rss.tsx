@@ -127,7 +127,7 @@ function RssWidget({ config, onConfigChange }: WidgetProps<RssConfig>) {
 
 export const rssDefinition: WidgetDefinition<RssConfig> = {
   apiVersion: 1,
-  id: 'cairn.rss',
+  id: 'deft.rss',
   title: 'Feed',
   description: 'External RSS / Atom feed — sample third-party widget.',
   icon: Rss,
