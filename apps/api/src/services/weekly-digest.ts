@@ -252,7 +252,7 @@ function generateFallbackDigest(data: any): string {
   if (data.decisions.length > 0) {
     lines.push('### Decisions');
     for (const d of data.decisions.slice(0, 5)) {
-      lines.push(`- ${d.decision} (by ${d.by})`);
+      lines.push(`- ${d.decision} (by ${d.by ?? 'agent'})`);
     }
     lines.push('');
   }
