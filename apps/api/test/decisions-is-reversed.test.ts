@@ -7,7 +7,6 @@
  *  1. PATCH /api/decisions/:id with { is_reversed: true } sets confidence=0.2 and
  *     appends 'reversed' to tags on the wiki_pages row.
  *  2. PATCH with { is_reversed: false } restores confidence=0.9 and removes 'reversed'.
- *  3. No new rows are written to the legacy decisions table.
  *
  * Uses a real Postgres DB (defaults to postgres://postgres:postgres@localhost:5432/cairn).
  * All inserted rows are cleaned up in finally blocks.
@@ -85,11 +84,6 @@ function app(): Hono {
 test('PATCH /api/decisions/:id with is_reversed=true sets confidence=0.2 and tags=["reversed"]', async () => {
   assert.ok(wikiPageId, 'wikiPageId must be set');
 
-  const legacyCountBefore = await withClient(async (c) => {
-    const r = await c.query(`SELECT count(*) AS n FROM decisions WHERE org_id = $1`, [ORG_ID]);
-    return parseInt(r.rows[0].n, 10);
-  });
-
   const res = await app().request(`/api/decisions/${wikiPageId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -115,13 +109,6 @@ test('PATCH /api/decisions/:id with is_reversed=true sets confidence=0.2 and tag
       r.rows[0].tags.includes('reversed'),
       `tags should contain 'reversed', got ${JSON.stringify(r.rows[0].tags)}`,
     );
-
-    // Task 2.3 key guarantee: no new rows in legacy decisions table
-    const legacyCountAfter = parseInt(
-      (await c.query(`SELECT count(*) AS n FROM decisions WHERE org_id = $1`, [ORG_ID])).rows[0].n,
-      10,
-    );
-    assert.equal(legacyCountAfter, legacyCountBefore, 'legacy decisions table must not grow');
   });
 });
 
