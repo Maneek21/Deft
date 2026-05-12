@@ -54,6 +54,10 @@ const CARDS: readonly CardDef[] = [
   },
 ] as const;
 
+// IDs are coupled to localStorage keys (`deft.dashboard.starter.<id>.dismissed`).
+// Renaming a card id will orphan existing users' dismissals and re-show that
+// card to anyone who'd previously dismissed it. Don't rename without a
+// migration story for existing alpha users.
 const STORAGE_PREFIX = 'deft.dashboard.starter.';
 const storageKey = (id: CardId) => `${STORAGE_PREFIX}${id}.dismissed`;
 
@@ -125,11 +129,13 @@ export function StarterCards() {
   if (visible.length === 0) return null;
 
   const dismiss = (id: CardId) => {
+    if (dismissed[id]) return;
     writeDismissed(id);
     setDismissed((prev) => ({ ...prev, [id]: true }));
   };
 
   const handleCta = (card: CardDef) => {
+    if (dismissed[card.id]) return;
     writeDismissed(card.id);
     setDismissed((prev) => ({ ...prev, [card.id]: true }));
     router.push(card.href);

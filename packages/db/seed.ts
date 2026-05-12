@@ -24,7 +24,7 @@
  *   # or directly:
  *   pnpm --filter @deft/db seed
  *
- * Importable: `seedPlatformBundles(db)` — used by `seed-demo.ts` to restore the
+ * Importable: `seedDeftyUser(db)` — used by `seed-demo.ts` to restore the
  * Defty user after the demo wipe.
  */
 import 'dotenv/config';
@@ -39,14 +39,19 @@ const AGENT_EMAIL = 'deft-agent@system.local';
 const AGENT_NAME = 'Deft';
 
 /**
- * Idempotent platform-bundle seeder. Inserts the well-known Defty system user
- * if not already present. Safe to call repeatedly — uses ON CONFLICT DO NOTHING
- * on the unique `email` column.
+ * Idempotent seeder for the well-known Defty system user
+ * (`deft-agent@system.local`). Safe to call repeatedly — uses
+ * ON CONFLICT DO NOTHING on the unique `email` column.
  *
  * Accepts an existing Drizzle handle so demo seeders can chain into this without
  * opening a second connection pool.
+ *
+ * NOTE: This only seeds the Defty user. Bundled skills / task templates /
+ * employee templates live in the api-side orchestrator (also confusingly
+ * named `seedPlatformBundles`) at
+ * `apps/api/src/scripts/seed-platform-bundles.ts`.
  */
-export async function seedPlatformBundles(
+export async function seedDeftyUser(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
 ): Promise<void> {
@@ -65,7 +70,7 @@ async function main(): Promise<void> {
   const db = drizzle(pool, { schema });
 
   console.log('Seeding database (prod-safe, idempotent)...');
-  await seedPlatformBundles(db);
+  await seedDeftyUser(db);
 
   console.log('\nPlatform seed complete.');
   console.log('Next: run `pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts`');

@@ -1,9 +1,25 @@
+/**
+ * Demo seeder — wipes the database and inserts 5 test users (maneek/rahul/priya/arjun/sara
+ * with password test1234), demo orgs, spaces, messages, tasks. After repopulating, calls
+ * `seedDeftyUser` to re-insert the Defty system user (the wipe removes him too).
+ *
+ * Bundled skills / task templates / employee templates live in `@deft/api` and are NOT
+ * re-seeded here — run `pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts`
+ * after this script to re-populate them. The root `db:seed:demo` proxy chains both.
+ *
+ * DO NOT run this in production — it deletes EVERY user, org, message, and task. Reserved
+ * for `pnpm dev` workflows, CI, audit harnesses, and the apps/api/test suite which depends
+ * on the seeded credentials.
+ *
+ * For production-safe seeding (idempotent, platform-bundle only), use `pnpm db:seed`.
+ */
 import 'dotenv/config';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, asc } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import * as schema from './src/schema.js';
+import { seedDeftyUser } from './seed.js';
 
 const { Pool } = pg;
 
@@ -876,7 +892,14 @@ async function seed() {
 
   console.log('Set read positions for other users');
 
-  console.log('\nSeed complete!');
+  // ── Re-seed the platform bundle (Defty system user) ──
+  // The wipe above deletes the well-known Defty user (deft-agent@system.local). Re-insert
+  // him so chat @deft mentions keep working in the demo workspace. Bundled skills/templates
+  // and employee templates are re-seeded by the api-side `seed-platform-bundles.ts`,
+  // which the root `db:seed:demo` proxy runs after this script.
+  await seedDeftyUser(db);
+
+  console.log('\nDemo seed complete!');
   console.log('Login credentials:');
   console.log('  maneek@test.com / test1234 (owner)');
   console.log('  rahul@test.com  / test1234 (member)');

@@ -787,7 +787,7 @@ pnpm db:seed   # seeds Defty and starter data
 Find the line `> **Single-org note:**` (around line 52). Just above it, add:
 
 ```markdown
-> **Want to poke around without creating an account?** `pnpm db:seed` populates five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts). Use those for a guided tour, then delete them via Settings → Members before inviting real testers.
+> **Want to poke around without creating an account?** `pnpm db:seed:demo` populates five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts). Use those for a guided tour, then delete them via Settings → Members before inviting real testers. (`pnpm db:seed` is now the prod-safe path — it only inserts the Defty system user and bundled platform content, no test accounts.)
 ```
 
 - [ ] **Step 3: Commit**
