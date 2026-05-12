@@ -43,15 +43,18 @@ Open `.env` and set three values:
 docker compose up -d
 
 # 3. Initialize the database (run once on first boot)
-pnpm db:push   # applies schema
-pnpm db:seed   # seeds Defty and starter data
+pnpm db:push        # applies schema
+pnpm db:seed        # seeds Defty + bundled skills/templates (prod-safe, idempotent)
+# pnpm db:seed:demo # ALSO inserts 5 test users for poking around — dev only, NEVER in prod
 ```
 
 > **Note:** Use `pnpm db:push`, not `pnpm db:migrate`. The migration journal is canonical as of v0.1 but `push` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts` and applies what's missing. `db:migrate` is for upgrade paths once we ship versioned releases.
 
+> **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, bundled skills, bundled task templates, first-party employee templates). It never inserts test accounts.
+
 Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
 
-> **Want to poke around without creating an account?** `pnpm db:seed` populates five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts-after-seeding). Use those for a guided tour, then delete them via Settings → Members before inviting real testers.
+> **Want to poke around without creating an account?** Run `pnpm db:seed:demo` (dev only — wipes the DB and inserts five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts-after-seeding)). Use them for a guided tour, then re-init the DB before inviting real testers.
 
 > **Single-org note:** Deft is designed for one workspace per deployment. Additional users join via invite link from Settings → Members — direct signups after the first account are blocked.
 
@@ -69,7 +72,8 @@ cp .env.example .env
 
 # Set up database
 pnpm db:push
-pnpm db:seed    # Optional: populate with sample data
+pnpm db:seed         # Platform bundle only (prod-safe)
+# pnpm db:seed:demo  # OR: wipe + populate with 5 test users + demo content (dev only)
 
 # Start dev servers
 pnpm dev        # Starts web (3000) + API (3001)

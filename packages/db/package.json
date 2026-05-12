@@ -12,6 +12,7 @@
     "push": "drizzle-kit push",
     "migrate": "drizzle-kit migrate",
     "seed": "tsx seed.ts",
+    "seed:demo": "tsx seed-demo.ts",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {

@@ -21,8 +21,12 @@ cp .env.example .env
 createdb deft
 pnpm db:push
 
-# Seed with sample data (optional but recommended)
-pnpm db:seed
+# Seed demo data (5 test users + demo org + sample messages/tasks).
+# This wipes the DB — dev only, NEVER run in production.
+pnpm db:seed:demo
+
+# Or, for a prod-safe seed (Defty + bundled skills/templates only):
+#   pnpm db:seed
 
 # Start development servers
 pnpm dev
