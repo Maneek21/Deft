@@ -27,8 +27,8 @@ Defty, the built-in native agent, is seeded automatically on first run. Think of
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/deft-dev/deft.git
-cd deft
+git clone https://github.com/Maneek21/Deft.git
+cd Deft
 cp .env.example .env
 ```
 
