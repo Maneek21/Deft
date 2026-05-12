@@ -25,6 +25,8 @@ try {
   // fall through — root .env is optional
 }
 
+const apiOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
 const nextConfig: NextConfig = {
   transpilePackages: ['@deft/shared'],
   // Hide the floating Next.js dev-tools indicator — it overlapped composer/FAB
@@ -53,7 +55,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' ws: wss: http://localhost:3001 https:",
+              `connect-src 'self' ws: wss: ${apiOrigin} https:`,
               "media-src 'self' blob:",
               "frame-ancestors 'none'",
             ].join('; '),
