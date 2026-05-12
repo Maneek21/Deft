@@ -69,11 +69,14 @@ authRoutes.post('/signup', async (c) => {
 
   const passwordHash = await bcrypt.hash(password, 12);
 
-  // Create user
+  // Create user. Self-hosted Deft has no outbound email — the bootstrap user
+  // is implicitly verified (they own the instance). Subsequent accounts go
+  // through invites, which flip the flag on acceptance.
   const [user] = await db.insert(users).values({
     name,
     email,
     password_hash: passwordHash,
+    email_verified: true,
   }).returning();
 
   // Create org
@@ -147,6 +150,16 @@ authRoutes.post('/login', async (c) => {
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) {
     return c.json({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' }, 401);
+  }
+
+  // Private-alpha gate: block sign-in until the account has been verified.
+  // Set by the signup handler (first user → owner), invite acceptance, and
+  // Google OAuth. An admin can flip it manually via SQL for locked-out users.
+  if (!user.email_verified) {
+    return c.json({
+      error: 'Please verify your email before signing in. Check your inbox or ask an admin for a verification link.',
+      code: 'EMAIL_NOT_VERIFIED',
+    }, 403);
   }
 
   // Get user's org
@@ -374,11 +387,13 @@ authRoutes.get('/google/callback', async (c) => {
         );
       }
 
-      // New user — create user + org
+      // New user — create user + org. Google has already verified the email
+      // address before issuing the OAuth token, so mark it verified.
       const [newUser] = await db.insert(users).values({
         name: googleUser.name,
         email: googleUser.email,
         avatar_url: googleUser.picture,
+        email_verified: true,
       }).returning();
       user = newUser!;
 
