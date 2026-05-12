@@ -41,6 +41,9 @@ COPY --from=builder /app/apps/web/.next ./apps/web/.next
 COPY --from=builder /app/apps/web/public ./apps/web/public
 COPY --from=builder /app/apps/web/package.json ./apps/web/
 COPY --from=builder /app/apps/web/next.config.ts ./apps/web/
+# pnpm puts the apps/web-scoped binary symlinks (including .bin/next) here;
+# without this, `pnpm exec next start` can't resolve the next CLI.
+COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./
