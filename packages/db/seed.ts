@@ -56,9 +56,12 @@ export async function seedDeftyUser(
   db: any,
 ): Promise<void> {
   console.log('[seed-platform] Upserting Defty system user (deft-agent@system.local)');
+  // users.id is text NOT NULL with no DB default — Drizzle generates ids client-
+  // side in the typed insert API, but raw SQL bypasses that. Pin a stable id
+  // for the well-known system account so other code can reference it directly.
   await db.execute(sql`
-    INSERT INTO users (email, name, email_verified, is_agent)
-    VALUES (${AGENT_EMAIL}, ${AGENT_NAME}, true, true)
+    INSERT INTO users (id, email, name, email_verified, is_agent, kind)
+    VALUES ('deft-system-agent', ${AGENT_EMAIL}, ${AGENT_NAME}, true, true, 'agent')
     ON CONFLICT (email) DO NOTHING
   `);
 }
