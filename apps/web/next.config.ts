@@ -31,6 +31,38 @@ const nextConfig: NextConfig = {
   // on mobile audits. The badge is dev-only either way; this also hides the
   // build-activity spinner during dev.
   devIndicators: false,
+  // Task 4 (private-alpha): security headers. `unsafe-inline` + `unsafe-eval`
+  // on script-src are temporary — Next.js 16 + Tailwind v4 + TipTap need them
+  // today. Tightening to nonce-based CSP is post-alpha. `microphone=(self)`
+  // keeps the voice-clip recorder working. `connect-src` includes the dev API
+  // URL; production operators can widen via env-driven config later.
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(self), geolocation=()' },
+          {
+            key: 'Content-Security-Policy',
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob: https:",
+              "font-src 'self' data:",
+              "connect-src 'self' ws: wss: http://localhost:3001 https:",
+              "media-src 'self' blob:",
+              "frame-ancestors 'none'",
+            ].join('; '),
+          },
+          { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

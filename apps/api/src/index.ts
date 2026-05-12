@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { secureHeaders } from 'hono/secure-headers';
 import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { setupSocket } from './socket.js';
@@ -63,6 +64,17 @@ app.use('*', cors({
   credentials: true,
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+}));
+
+// Task 4 (private-alpha): security headers. Browsers loading API responses
+// cross-origin only see JSON — no script-src needed here. xFrameOptions
+// blocks the API itself from being iframed even though there's no HTML;
+// defense in depth.
+app.use('*', secureHeaders({
+  xFrameOptions: 'DENY',
+  xContentTypeOptions: 'nosniff',
+  referrerPolicy: 'strict-origin-when-cross-origin',
+  strictTransportSecurity: 'max-age=31536000; includeSubDomains',
 }));
 
 // Public routes
