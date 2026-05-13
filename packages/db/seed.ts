@@ -27,7 +27,15 @@
  * Importable: `seedDeftyUser(db)` — used by `seed-demo.ts` to restore the
  * Defty user after the demo wipe.
  */
-import 'dotenv/config';
+// `pnpm db:seed` invokes this with cwd = packages/db, so the bare
+// `dotenv/config` import would miss the repo-root .env. Resolve it explicitly.
+import { config as loadEnv } from 'dotenv';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: path.resolve(__dirname, '../../.env') });
+
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
@@ -66,9 +74,19 @@ export async function seedDeftyUser(
   `);
 }
 
+function resolveDatabaseUrl(): string {
+  // Prefer explicit DATABASE_URL. If it's missing or still carries the .env.example
+  // placeholder, construct it from POSTGRES_PASSWORD — the same value docker-compose
+  // uses for the container. Self-hosters never have to touch DATABASE_URL.
+  const explicit = process.env.DATABASE_URL;
+  if (explicit && !explicit.includes('CHANGE_ME')) return explicit;
+  const pw = process.env.POSTGRES_PASSWORD || 'postgres';
+  return `postgres://postgres:${pw}@localhost:5432/deft`;
+}
+
 async function main(): Promise<void> {
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft',
+    connectionString: resolveDatabaseUrl(),
   });
   const db = drizzle(pool, { schema });
 
