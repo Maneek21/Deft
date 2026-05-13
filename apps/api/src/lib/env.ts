@@ -1,13 +1,28 @@
 import dotenv from 'dotenv';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Load .env from project root (../../.env from apps/api/src/lib/)
-dotenv.config({ path: resolve(process.cwd(), '..', '..', '.env') });
-// Also try CWD
+// Resolve .env from the repo root via the source file's location, NOT
+// process.cwd() — when this module loads under tsx / pnpm --filter / docker /
+// a heartbeat worker, cwd is unpredictable. Anchor to the file path instead so
+// `pnpm db:seed`, `pnpm dev`, and the production runner all see the same .env.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dirname, '..', '..', '..', '..', '.env') });
+// Fallback to CWD-relative .env (no-ops if absent).
 dotenv.config();
 
+// Same fallback the db package uses: if DATABASE_URL is unset or still carries
+// the .env.example placeholder, construct it from POSTGRES_PASSWORD — the value
+// docker-compose actually boots Postgres with.
+function resolveDatabaseUrl(): string {
+  const explicit = process.env.DATABASE_URL;
+  if (explicit && !explicit.includes('CHANGE_ME')) return explicit;
+  const pw = process.env.POSTGRES_PASSWORD || 'postgres';
+  return `postgres://postgres:${pw}@localhost:5432/deft`;
+}
+
 export const env = {
-  DATABASE_URL: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft',
+  DATABASE_URL: resolveDatabaseUrl(),
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me',
