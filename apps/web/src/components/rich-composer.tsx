@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -135,6 +136,25 @@ export function RichComposer({
   const [focused, setFocused] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [customScheduleTime, setCustomScheduleTime] = useState('');
+  const scheduleBtnRef = useRef<HTMLButtonElement>(null);
+  const [schedulePos, setSchedulePos] = useState<{ top: number; right: number } | null>(null);
+  useEffect(() => {
+    if (!scheduleOpen) return;
+    const update = () => {
+      const r = scheduleBtnRef.current?.getBoundingClientRect();
+      if (!r) return;
+      // Place popup above the schedule button, right-aligned to it.
+      setSchedulePos({ top: r.top - 8, right: window.innerWidth - r.right });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [scheduleOpen]);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [formatSheetOpen, setFormatSheetOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
@@ -773,45 +793,121 @@ export function RichComposer({
           <div className="flex items-center gap-1">
             {hasContent && (
               <div className="relative">
-                <button onClick={() => setScheduleOpen(!scheduleOpen)}
+                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)}
                   className="p-1.5 rounded-md" style={{ color: 'var(--outline)' }} title="Schedule send">
                   <Clock size={14} strokeWidth={1.5} />
                 </button>
-                {scheduleOpen && (
-                  <div className="absolute bottom-full right-0 mb-2 w-48 py-1 rounded-lg z-50"
-                    style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)' }}>
+                {scheduleOpen && schedulePos && createPortal(
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setScheduleOpen(false)} />
+                  <div
+                    className="fixed w-60 py-2 rounded-lg z-50"
+                    style={{
+                      top: schedulePos.top,
+                      right: schedulePos.right,
+                      transform: 'translateY(-100%)',
+                      background: 'var(--surface-container-high)',
+                      border: '1px solid var(--outline-variant)',
+                      boxShadow: 'var(--glass-shadow)',
+                    }}
+                  >
+                    <div
+                      className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                      style={{ color: 'var(--outline)', fontFamily: 'var(--font-heading)' }}
+                    >
+                      Schedule for
+                    </div>
                     {[
                       { label: 'In 30 minutes', mins: 30 },
                       { label: 'In 1 hour', mins: 60 },
                       { label: 'In 3 hours', mins: 180 },
                       { label: 'Tomorrow 9:00 AM', mins: null as number | null },
-                    ].map(opt => (
-                      <button key={opt.label} onClick={() => {
-                        const time = opt.mins
-                          ? new Date(Date.now() + opt.mins * 60000)
-                          : (() => { const d = new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return d; })();
-                        const html = editor.getHTML();
-                        const text = editor.getText();
-                        onScheduleSend?.(time.toISOString(), html, text);
-                        editor.commands.clearContent();
-                        setScheduleOpen(false);
-                      }}
-                        className="w-full text-left px-3 py-1.5 text-[0.75rem]"
-                        style={{ color: 'var(--on-surface-variant)' }}>
+                    ].map((opt) => (
+                      <button
+                        key={opt.label}
+                        onClick={() => {
+                          const time = opt.mins
+                            ? new Date(Date.now() + opt.mins * 60000)
+                            : (() => {
+                                const d = new Date();
+                                d.setDate(d.getDate() + 1);
+                                d.setHours(9, 0, 0, 0);
+                                return d;
+                              })();
+                          const html = editor.getHTML();
+                          const text = editor.getText();
+                          onScheduleSend?.(time.toISOString(), html, text);
+                          editor.commands.clearContent();
+                          setScheduleOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-[12px]"
+                        style={{ color: 'var(--on-surface)' }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
                         {opt.label}
                       </button>
                     ))}
+                    <div className="h-px my-1" style={{ background: 'var(--outline-variant)' }} />
+                    <div className="px-3 py-1.5 space-y-1.5">
+                      <label
+                        className="block text-[10px] font-semibold uppercase tracking-wide"
+                        style={{ color: 'var(--outline)', fontFamily: 'var(--font-heading)' }}
+                      >
+                        Custom time
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="datetime-local"
+                          value={customScheduleTime}
+                          min={new Date(Date.now() + 60000).toISOString().slice(0, 16)}
+                          onChange={(e) => setCustomScheduleTime(e.target.value)}
+                          className="flex-1 text-[11px] px-2 py-1 rounded-md outline-none"
+                          style={{
+                            background: 'var(--surface-container-low)',
+                            color: 'var(--on-surface)',
+                            border: '1px solid var(--outline-variant)',
+                          }}
+                        />
+                        <button
+                          disabled={!customScheduleTime}
+                          onClick={() => {
+                            const time = new Date(customScheduleTime);
+                            if (isNaN(time.getTime()) || time.getTime() <= Date.now()) return;
+                            const html = editor.getHTML();
+                            const text = editor.getText();
+                            onScheduleSend?.(time.toISOString(), html, text);
+                            editor.commands.clearContent();
+                            setCustomScheduleTime('');
+                            setScheduleOpen(false);
+                          }}
+                          className="text-[11px] font-medium px-2 py-1 rounded-md disabled:opacity-40"
+                          style={{ background: 'var(--primary-container)', color: 'var(--on-primary-container)' }}
+                        >
+                          Send
+                        </button>
+                      </div>
+                    </div>
                     {onViewScheduled && (
                       <>
-                        <div className="h-px my-1" style={{ background: 'var(--ghost-border)' }} />
-                        <button onClick={() => { onViewScheduled(); setScheduleOpen(false); }}
-                          className="w-full text-left px-3 py-1.5 text-[0.75rem]"
-                          style={{ color: 'var(--primary)' }}>
+                        <div className="h-px my-1" style={{ background: 'var(--outline-variant)' }} />
+                        <button
+                          onClick={() => {
+                            onViewScheduled();
+                            setScheduleOpen(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-[12px]"
+                          style={{ color: 'var(--primary)' }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
                           View scheduled messages
                         </button>
                       </>
                     )}
                   </div>
+                  </>,
+                  document.body,
                 )}
               </div>
             )}
