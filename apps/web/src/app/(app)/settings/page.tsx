@@ -11,6 +11,7 @@ const settingsSections = [
   { name: 'General', href: '/settings' },
   { name: 'Members', href: '/settings/members' },
   { name: 'Groups', href: '/settings/groups' },
+  { name: 'Projects', href: '/settings/projects' },
   { name: 'Tags', href: '/settings/tags' },
   { name: 'Integrations', href: '/settings/integrations' },
   { name: 'AI', href: '/settings/ai' },
