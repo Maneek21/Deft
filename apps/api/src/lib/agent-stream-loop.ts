@@ -16,6 +16,7 @@ import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { env } from './env.js';
 import { executeToolCall } from './agent-context.js';
+import { executeActionDirect } from './agent-actions.js';
 import { getApprovalTier, shouldAutoExecute, type TrustLevel } from './agent-approval.js';
 import { resolveAnthropicApiKey } from './org-ai-config.js';
 
@@ -180,15 +181,21 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
 
       if (isAction) {
         if (shouldAutoExecute(tool.name, p.trustLevel, tool.input)) {
-          try {
-            const { result, citations } = await executeToolCall(
-              tool.name, tool.input as any, p.orgId, p.userId, p.convoId, p.agentEmployeeId,
-            );
-            allCitations.push(...citations);
+          const approvalTier = getApprovalTier(tool.name);
+          const { success, result, error } = await executeActionDirect(
+            tool.name,
+            tool.input as any,
+            p.orgId,
+            p.userId,
+            p.convoId,
+            approvalTier,
+            { agentEmployeeId: p.agentEmployeeId, source: 'auto_execute' },
+          );
+          if (success) {
             await p.write({ type: 'tool_result', tool: tool.name, count: Array.isArray(result) ? result.length : 1 });
             toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result) });
-          } catch (err) {
-            const errorMsg = err instanceof Error ? err.message : 'Tool execution failed';
+          } else {
+            const errorMsg = error ?? 'Tool execution failed';
             await p.write({ type: 'tool_result', tool: tool.name, error: errorMsg });
             toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify({ error: errorMsg }), is_error: true });
           }

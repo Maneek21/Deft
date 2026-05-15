@@ -4,10 +4,13 @@
  * Task 16: project-workflow skills (engineering, marketing-campaign,
  * sales-pipeline) retired — 6 bundled skills remain.
  *
- * Idempotent: uses the (source, COALESCE(org_id,''), slug) unique index
- * from migration 0035 as the conflict target. Re-running refreshes
- * name/description/version/config in place without breaking FKs held by
- * agent_employee_skills or project_skills.
+ * Idempotent: select-then-insert-or-update keyed on
+ * (source='bundled', org_id IS NULL, slug, is_deleted=false). We can't use
+ * ON CONFLICT against the partial unique index `skills_source_org_slug_idx`
+ * because its key uses `COALESCE(org_id,'')` and Postgres's
+ * infer_arbiter_indexes can't normalize the seeder's expression to match
+ * (plancat.c:920). Re-running refreshes name/description/version/config in
+ * place without breaking FKs held by agent_employee_skills.
  *
  * Run:
  *   pnpm --filter @deft/api exec tsx src/scripts/seed-bundled-skills.ts
@@ -31,34 +34,46 @@ export async function seedBundledSkills(
   log(`[seed-bundled-skills] Upserting ${BUNDLED_SKILLS.length} bundled skills`);
 
   for (const skill of BUNDLED_SKILLS) {
-    // Raw SQL: the declarative Drizzle unique index can't model
-    // COALESCE(org_id,''), so we target the partial unique index by name.
-    await db.execute(sql`
-      INSERT INTO skills (
-        id, org_id, source, slug, name, description, icon, version,
-        agent_config, is_deleted, usage_count
-      ) VALUES (
-        ${skill.id},
-        NULL,
-        'bundled',
-        ${skill.slug},
-        ${skill.name},
-        ${skill.description},
-        ${skill.icon},
-        ${skill.version},
-        ${JSON.stringify(skill.agent_config)}::jsonb,
-        false,
-        0
+    const [existing] = await db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(
+        and(
+          eq(skills.source, 'bundled'),
+          isNull(skills.org_id),
+          eq(skills.slug, skill.slug),
+          eq(skills.is_deleted, false),
+        ),
       )
-      ON CONFLICT (source, (COALESCE(org_id,'')), slug) WHERE is_deleted = false
-      DO UPDATE SET
-        name = EXCLUDED.name,
-        description = EXCLUDED.description,
-        icon = EXCLUDED.icon,
-        version = EXCLUDED.version,
-        agent_config = EXCLUDED.agent_config,
-        updated_at = now()
-    `);
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(skills)
+        .set({
+          name: skill.name,
+          description: skill.description,
+          icon: skill.icon,
+          version: skill.version,
+          agent_config: skill.agent_config,
+          updated_at: sql`now()`,
+        })
+        .where(eq(skills.id, existing.id));
+    } else {
+      await db.insert(skills).values({
+        id: skill.id,
+        org_id: null,
+        source: 'bundled',
+        slug: skill.slug,
+        name: skill.name,
+        description: skill.description,
+        icon: skill.icon,
+        version: skill.version,
+        agent_config: skill.agent_config,
+        is_deleted: false,
+        usage_count: 0,
+      });
+    }
     log(`  upserted ${skill.slug}`);
   }
 

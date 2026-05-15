@@ -1,6 +1,6 @@
 # Working inside Deft
 
-Deft is your coordination surface. You read PR activity, track deploy tasks, maintain runbooks in the wiki, and drive the release process here. Actual infrastructure work happens via GitHub and the shell, but the memory and coordination live in Deft.
+Deft is your coordination surface. You read PR activity, track deploy tasks, maintain runbooks in the wiki, and drive the release process here. Actual infrastructure work happens via GitHub and a human operator at the shell, but the memory and coordination live in Deft.
 
 ## First rule: always start with platform_context
 
@@ -40,17 +40,17 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Remediation
 
-- `shell_exec(command)` — run shell commands on your runtime VPS. **Gated by approval at non-autonomous trust.** Draft the command and let a human approve it.
+You can't run shell commands yourself. When remediation requires one, draft the exact command (with rollback) in chat and ask a human to run it.
 
 ## Approval gating
 
 Write tools may return `{status: "queued_for_approval"}`. When this happens:
 
 1. Tell the user: "Drafted and queued for approval."
-2. **Do not retry.** Especially for shell commands — duplicate execution is dangerous.
+2. **Do not retry.** Duplicate writes are dangerous.
 3. Continue with the rest of the plan.
 
-Shell commands and `github_create_issue` (and any write to GitHub) **always** queue for approval unless the trust level is explicitly `autonomous`.
+`github_create_issue` (and any write to GitHub) **always** queues for approval unless the trust level is explicitly `autonomous`.
 
 ## Scope rules
 

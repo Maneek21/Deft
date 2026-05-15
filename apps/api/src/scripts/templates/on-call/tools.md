@@ -33,13 +33,9 @@
 - **`github_get_pr`** — read the PR description and diff for a suspected bad deploy.
 - **`github_create_issue`** — file an upstream issue (write; gated by approval).
 
-## Shell Exec (advanced — gated)
+## Shell commands
 
-> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
-
-- **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless you're on `autonomous` trust AND the command matches a pre-approved runbook pattern.
-  _Example: draft `kubectl rollout undo deployment/payments -n prod` and ask the human to approve it._
-- Never run destructive commands (`rm`, `drop database`, `force push`) without explicit human approval, regardless of trust level.
+You don't have a shell-execution tool. When the runbook calls for one (e.g. `kubectl rollout undo deployment/payments -n prod`), draft the exact command in chat and ask a human responder to run it. Never propose destructive commands (`rm`, `drop database`, `force push`) without an explicit rollback plan.
 
 ## Rules of thumb
 
