@@ -764,17 +764,17 @@ async function seed() {
 
   // ── More task comments — real development discussion ──
   await db.insert(schema.taskComments).values([
-    { task_id: createdTasks[4]!, user_id: priya!.id, content: 'Started the notification preferences UI. Using a simple dropdown per channel: All messages / Mentions only / Nothing. Screenshot in the PR.' },
-    { task_id: createdTasks[4]!, user_id: sara!.id, content: 'Looks clean. One thought — add a "Same as default" option so users don\'t have to configure every single channel.' },
-    { task_id: createdTasks[5]!, user_id: sara!.id, content: 'CI pipeline is live! GitHub Actions workflow: lint → type-check → build. Takes about 2 minutes. Deploy to Railway triggered on push to main.' },
-    { task_id: createdTasks[5]!, user_id: rahul!.id, content: 'Nice, just saw it run on my PR. One thing — can we cache the pnpm install step? It\'s taking 45 seconds and the cache should bring it to ~5s.' },
-    { task_id: createdTasks[5]!, user_id: sara!.id, content: 'Good call, added `actions/cache@v4` with pnpm store path. Install now takes 4 seconds on cache hit. Total pipeline: 1m 20s.' },
-    { task_id: createdTasks[6]!, user_id: arjun!.id, content: 'Onboarding flow wireframes done. 4 steps: 1) Create account 2) Name your org 3) Invite teammates 4) Create your first channel. Each step has a progress bar and skip option.' },
-    { task_id: createdTasks[9]!, user_id: arjun!.id, content: 'Task detail panel v2 is up. Added tabbed view (Details / Comments / Activity / Linked). Status is a dropdown now. Priority uses colored dots. Assignee shows avatar + name with click-to-change.' },
-    { task_id: createdTasks[9]!, user_id: maneek!.id, content: 'This looks really good. The tabbed approach is much cleaner than the scroll-everything-in-one-view approach. Ship it.' },
-    { task_id: createdTasks[11]!, user_id: priya!.id, content: 'Member management is ready for review. Covers: add member by email, remove member, role badges (owner/admin/member/guest), and a "Leave channel" option in the member panel.' },
-    { task_id: dsTIds[3]!, user_id: arjun!.id, content: 'Color palette documented with full WCAG contrast ratios. Every text/background pairing passes AA. The accent violet (#9080FA) on dark surface (#201F22) has a 5.8:1 ratio — well above the 4.5:1 minimum.' },
-    { task_id: dsTIds[6]!, user_id: priya!.id, content: 'Dark mode tokens are in. 28 CSS custom properties organized by function: surface hierarchy (8), text (5), accent (6), status (5), utility (4). All referenced via var() — zero hardcoded colors in components.' },
+    { org_id: org!.id, task_id: createdTasks[4]!, user_id: priya!.id, content: 'Started the notification preferences UI. Using a simple dropdown per channel: All messages / Mentions only / Nothing. Screenshot in the PR.' },
+    { org_id: org!.id, task_id: createdTasks[4]!, user_id: sara!.id, content: 'Looks clean. One thought — add a "Same as default" option so users don\'t have to configure every single channel.' },
+    { org_id: org!.id, task_id: createdTasks[5]!, user_id: sara!.id, content: 'CI pipeline is live! GitHub Actions workflow: lint → type-check → build. Takes about 2 minutes. Deploy to Railway triggered on push to main.' },
+    { org_id: org!.id, task_id: createdTasks[5]!, user_id: rahul!.id, content: 'Nice, just saw it run on my PR. One thing — can we cache the pnpm install step? It\'s taking 45 seconds and the cache should bring it to ~5s.' },
+    { org_id: org!.id, task_id: createdTasks[5]!, user_id: sara!.id, content: 'Good call, added `actions/cache@v4` with pnpm store path. Install now takes 4 seconds on cache hit. Total pipeline: 1m 20s.' },
+    { org_id: org!.id, task_id: createdTasks[6]!, user_id: arjun!.id, content: 'Onboarding flow wireframes done. 4 steps: 1) Create account 2) Name your org 3) Invite teammates 4) Create your first channel. Each step has a progress bar and skip option.' },
+    { org_id: org!.id, task_id: createdTasks[9]!, user_id: arjun!.id, content: 'Task detail panel v2 is up. Added tabbed view (Details / Comments / Activity / Linked). Status is a dropdown now. Priority uses colored dots. Assignee shows avatar + name with click-to-change.' },
+    { org_id: org!.id, task_id: createdTasks[9]!, user_id: maneek!.id, content: 'This looks really good. The tabbed approach is much cleaner than the scroll-everything-in-one-view approach. Ship it.' },
+    { org_id: org!.id, task_id: createdTasks[11]!, user_id: priya!.id, content: 'Member management is ready for review. Covers: add member by email, remove member, role badges (owner/admin/member/guest), and a "Leave channel" option in the member panel.' },
+    { org_id: org!.id, task_id: dsTIds[3]!, user_id: arjun!.id, content: 'Color palette documented with full WCAG contrast ratios. Every text/background pairing passes AA. The accent violet (#9080FA) on dark surface (#201F22) has a 5.8:1 ratio — well above the 4.5:1 minimum.' },
+    { org_id: org!.id, task_id: dsTIds[6]!, user_id: priya!.id, content: 'Dark mode tokens are in. 28 CSS custom properties organized by function: surface hierarchy (8), text (5), accent (6), status (5), utility (4). All referenced via var() — zero hardcoded colors in components.' },
   ]);
 
   // ── Add due dates to some tasks ──
@@ -855,13 +855,13 @@ async function seed() {
 
   // ── More task activity — realistic history ──
   await db.insert(schema.taskActivity).values([
-    { task_id: createdTasks[4]!, user_id: sara!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: priya!.id },
-    { task_id: createdTasks[5]!, user_id: maneek!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: rahul!.id },
-    { task_id: createdTasks[5]!, user_id: sara!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
-    { task_id: createdTasks[6]!, user_id: sara!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: arjun!.id },
-    { task_id: createdTasks[9]!, user_id: maneek!.id, action: 'priority_changed', field: 'priority', old_value: 'p2', new_value: 'p1' },
-    { task_id: dsTIds[6]!, user_id: arjun!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: priya!.id },
-    { task_id: dsTIds[6]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
+    { org_id: org!.id, task_id: createdTasks[4]!, user_id: sara!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: priya!.id },
+    { org_id: org!.id, task_id: createdTasks[5]!, user_id: maneek!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: rahul!.id },
+    { org_id: org!.id, task_id: createdTasks[5]!, user_id: sara!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
+    { org_id: org!.id, task_id: createdTasks[6]!, user_id: sara!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: arjun!.id },
+    { org_id: org!.id, task_id: createdTasks[9]!, user_id: maneek!.id, action: 'priority_changed', field: 'priority', old_value: 'p2', new_value: 'p1' },
+    { org_id: org!.id, task_id: dsTIds[6]!, user_id: arjun!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: priya!.id },
+    { org_id: org!.id, task_id: dsTIds[6]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
   ]);
 
   console.log('Added more task activity history');
