@@ -538,27 +538,27 @@ async function seed() {
 
   // ── Task Comments ──
   await db.insert(schema.taskComments).values([
-    { task_id: createdTasks[7]!, user_id: rahul!.id, content: 'Started on this. The main challenge is handling socket reconnection when the parent message is scrolled out of view. Using IntersectionObserver.' },
-    { task_id: createdTasks[7]!, user_id: maneek!.id, content: 'Good approach. Make sure to handle the case where the thread panel is already open when a new reply comes in via socket.' },
-    { task_id: createdTasks[8]!, user_id: maneek!.id, content: 'Using @dnd-kit/core for drag-and-drop. The column layout is working, now need to wire up the PATCH /api/tasks/:id call on drop.' },
-    { task_id: createdTasks[10]!, user_id: rahul!.id, content: 'Moved to review. The middleware handles both access token validation and automatic refresh via the API client interceptor. Edge case: refresh token expired while tab is in background — redirects to login.' },
-    { task_id: createdTasks[12]!, user_id: maneek!.id, content: 'All good. Schema pushed cleanly to local Postgres. 30 tables, all indexes in place.' },
-    { task_id: dsTIds[5]!, user_id: arjun!.id, content: 'Set up the initial structure. Using CSS custom properties for all tokens so they can be overridden per-org in the future.' },
+    { org_id: org!.id, task_id: createdTasks[7]!, user_id: rahul!.id, content: 'Started on this. The main challenge is handling socket reconnection when the parent message is scrolled out of view. Using IntersectionObserver.' },
+    { org_id: org!.id, task_id: createdTasks[7]!, user_id: maneek!.id, content: 'Good approach. Make sure to handle the case where the thread panel is already open when a new reply comes in via socket.' },
+    { org_id: org!.id, task_id: createdTasks[8]!, user_id: maneek!.id, content: 'Using @dnd-kit/core for drag-and-drop. The column layout is working, now need to wire up the PATCH /api/tasks/:id call on drop.' },
+    { org_id: org!.id, task_id: createdTasks[10]!, user_id: rahul!.id, content: 'Moved to review. The middleware handles both access token validation and automatic refresh via the API client interceptor. Edge case: refresh token expired while tab is in background — redirects to login.' },
+    { org_id: org!.id, task_id: createdTasks[12]!, user_id: maneek!.id, content: 'All good. Schema pushed cleanly to local Postgres. 30 tables, all indexes in place.' },
+    { org_id: org!.id, task_id: dsTIds[5]!, user_id: arjun!.id, content: 'Set up the initial structure. Using CSS custom properties for all tokens so they can be overridden per-org in the future.' },
   ]);
 
   // ── Task Activity Log ──
   await db.insert(schema.taskActivity).values([
-    { task_id: createdTasks[7]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
-    { task_id: createdTasks[8]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
-    { task_id: createdTasks[10]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'in_review' },
-    { task_id: createdTasks[11]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'in_review' },
-    { task_id: createdTasks[12]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'done' },
-    { task_id: createdTasks[13]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
-    { task_id: createdTasks[14]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
-    { task_id: createdTasks[15]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
-    { task_id: createdTasks[7]!, user_id: maneek!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: rahul!.id },
-    { task_id: dsTIds[5]!, user_id: arjun!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
-    { task_id: dsTIds[7]!, user_id: arjun!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
+    { org_id: org!.id, task_id: createdTasks[7]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
+    { org_id: org!.id, task_id: createdTasks[8]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
+    { org_id: org!.id, task_id: createdTasks[10]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'in_review' },
+    { org_id: org!.id, task_id: createdTasks[11]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'in_review' },
+    { org_id: org!.id, task_id: createdTasks[12]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'in_progress', new_value: 'done' },
+    { org_id: org!.id, task_id: createdTasks[13]!, user_id: maneek!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
+    { org_id: org!.id, task_id: createdTasks[14]!, user_id: rahul!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
+    { org_id: org!.id, task_id: createdTasks[15]!, user_id: priya!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
+    { org_id: org!.id, task_id: createdTasks[7]!, user_id: maneek!.id, action: 'assigned', field: 'assignee_id', old_value: null, new_value: rahul!.id },
+    { org_id: org!.id, task_id: dsTIds[5]!, user_id: arjun!.id, action: 'status_changed', field: 'status', old_value: 'todo', new_value: 'in_progress' },
+    { org_id: org!.id, task_id: dsTIds[7]!, user_id: arjun!.id, action: 'status_changed', field: 'status', old_value: 'in_review', new_value: 'done' },
   ]);
 
   // ── Labels ──
