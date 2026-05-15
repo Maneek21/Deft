@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { formatRelative } from '@/lib/time';
 import {
   AtSign, MessageSquare, CheckSquare, AlertTriangle, Link as LinkIcon,
-  BookOpen, Bell,
+  BookOpen, Bell, X,
 } from 'lucide-react';
 import type { InboxItem, InboxItemKind } from '@/hooks/use-inbox';
 
@@ -23,20 +23,21 @@ const KIND_ICON: Record<InboxItemKind, typeof AtSign> = {
 type Props = {
   item: InboxItem;
   onClick?: () => void; // mark-read on visit
+  onDismiss?: () => void; // mark-read without navigating
 };
 
-export function InboxRow({ item, onClick }: Props) {
+export function InboxRow({ item, onClick, onDismiss }: Props) {
   const Icon = KIND_ICON[item.kind] ?? Bell;
   const content = (
     <div
-      className="flex items-start gap-3 px-4 py-3 rounded-lg cursor-pointer"
+      className="group flex items-start gap-3 px-4 py-3 rounded-lg cursor-pointer relative"
       style={{
         background: item.read ? 'transparent' : 'var(--bg-active)',
         borderLeft: item.read ? '2px solid transparent' : '2px solid var(--primary)',
       }}
     >
       <Icon size={16} strokeWidth={1.5} style={{ color: 'var(--primary)', marginTop: 2 }} />
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 pr-7">
         <div
           className="text-[13px] font-medium truncate"
           style={{ color: 'var(--on-surface)', fontWeight: item.read ? 400 : 600 }}
@@ -52,6 +53,23 @@ export function InboxRow({ item, onClick }: Props) {
           {formatRelative(item.created_at)}
         </div>
       </div>
+      {!item.read && onDismiss && (
+        <button
+          type="button"
+          onClick={(e) => {
+            // Stop the Link wrapper from navigating; just mark read.
+            e.preventDefault();
+            e.stopPropagation();
+            onDismiss();
+          }}
+          className="absolute top-2.5 right-2.5 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--bg-hover)]"
+          style={{ color: 'var(--muted)' }}
+          title="Dismiss"
+          aria-label="Dismiss notification"
+        >
+          <X size={13} strokeWidth={1.75} />
+        </button>
+      )}
     </div>
   );
 

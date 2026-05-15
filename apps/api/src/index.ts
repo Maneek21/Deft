@@ -47,7 +47,6 @@ import { mcpConnectionRoutes } from './routes/mcp-connections.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
 import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
-import { agentFollowupsRoutes } from './routes/agent-followups.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
@@ -158,7 +157,6 @@ app.route('/api/events', eventRoutes);
 app.route('/api/agent-employees', agentEmployeeRoutes);
 app.route('/api/mcp-connections', mcpConnectionRoutes);
 app.route('/api/api-keys', apiKeyRoutes);
-app.route('/api/agent/followups', agentFollowupsRoutes);
 app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/skills', skillsRoutes);
 // Task 4.11 — /api/projects/:id/apply-template (template bulk-create)

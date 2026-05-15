@@ -424,39 +424,6 @@ wikiRoutes.get('/:slug', async (c) => {
   }
 });
 
-// GET /api/wiki/:slug/backlinks — pages linking to this one
-wikiRoutes.get('/:slug/backlinks', async (c) => {
-  try {
-    const user = c.get('user');
-    const slug = c.req.param('slug');
-
-    const [page] = await db.select({ id: wikiPages.id })
-      .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug)))
-      .limit(1);
-
-    if (!page) {
-      return c.json({ error: 'Page not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const backlinks = await db.select({
-      slug: wikiPages.slug,
-      title: wikiPages.title,
-      type: wikiPages.type,
-      summary: wikiPages.summary,
-      confidence: wikiPages.confidence,
-      context: wikiLinks.context,
-    })
-      .from(wikiLinks)
-      .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
-      .where(eq(wikiLinks.target_page_id, page.id));
-
-    return c.json(backlinks);
-  } catch (err) {
-    console.error('Failed to fetch backlinks:', err);
-    return c.json({ error: 'Failed to fetch backlinks', code: 'INTERNAL_ERROR' }, 500);
-  }
-});
 
 // POST /api/wiki — create a wiki page
 const createPageSchema = z.object({

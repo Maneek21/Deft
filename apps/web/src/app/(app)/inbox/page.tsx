@@ -145,6 +145,7 @@ export default function InboxPage() {
                   key={item.id}
                   item={item}
                   onClick={handleRowClick(item.id)}
+                  onDismiss={() => void markRead([item.id])}
                 />
               );
             })}
