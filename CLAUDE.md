@@ -336,7 +336,7 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0059 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0059 applied.
+- **Use `pnpm db:push`, not `pnpm db:migrate`, for fresh installs.** The Drizzle `_journal.json` was rebuilt and is current through 0066. A couple of orphan migration files predating the rebuild remain on disk (`0002_subtasks_parent_task_id.sql`, `0020_wiki_search_vector.sql`) and aren't tracked, but their schema changes are folded into later migrations and the live schema. Fresh installs use `drizzle-kit push` which diffs the live schema against `schema.ts` — that's the supported path. Versioned `db:migrate` upgrades will be wired up post-alpha once orphan migration files are reconciled.
 
 ## What NOT To Do
 

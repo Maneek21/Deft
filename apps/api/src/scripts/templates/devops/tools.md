@@ -30,13 +30,9 @@
 - **`github_get_issue`** — fetch a specific issue.
 - **`github_create_issue`** — open an upstream issue (write; gated by approval).
 
-## Shell Exec (advanced — gated)
+## Shell commands
 
-> **Not yet available as a capability pack.** These tools require manual MCP server configuration.
-
-- **`shell_exec(command)`** — run a shell command on your runtime VPS. **Every shell command goes through approval** unless the trust level is `autonomous` and the command matches a pre-approved runbook entry.
-  _Example: draft `kubectl get pods -n prod` and let a human approve it before execution._
-- Never run destructive commands (`rm -rf`, `drop database`, `terraform destroy`, force push) without explicit human approval regardless of trust level.
+You don't have a shell-execution tool. When remediation needs one, draft the exact command (with rollback) in chat and ask a human to run it. Never propose destructive commands (`rm -rf`, `drop database`, `terraform destroy`, force push) without an explicit rollback plan.
 
 ## Rules of thumb
 
