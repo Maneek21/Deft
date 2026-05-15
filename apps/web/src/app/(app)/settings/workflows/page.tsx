@@ -52,7 +52,7 @@ export default function WorkflowsPage() {
     try {
       const [rulesRes, labelsRes, membersRes] = await Promise.all([
         api.get('/api/workflows'),
-        api.get('/api/labels'),
+        api.get('/api/tasks/labels'),
         api.get('/api/members'),
       ]);
       if (rulesRes.ok) setRules(await rulesRes.json());

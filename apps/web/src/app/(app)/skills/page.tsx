@@ -61,11 +61,6 @@ type AgentEmployee = {
   avatar_url: string | null;
 };
 
-type Project = {
-  id: string;
-  name: string;
-};
-
 const SOURCE_LABEL: Record<SourceTab, string> = {
   bundled: 'Bundled',
   marketplace: 'Marketplace',
@@ -113,10 +108,8 @@ export default function SkillsPage() {
   const [loading, setLoading] = useState(true);
 
   const [agents, setAgents] = useState<AgentEmployee[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
 
   const [installSkill, setInstallSkill] = useState<Skill | null>(null);
-  const [attachSkill, setAttachSkill] = useState<Skill | null>(null);
   const [forking, setForking] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -138,14 +131,10 @@ export default function SkillsPage() {
   }, [loadSkills]);
 
   useEffect(() => {
-    // Supporting data for install/attach modals.
+    // Supporting data for the install modal.
     (async () => {
-      const [empRes, projRes] = await Promise.all([
-        api.get('/api/agent-employees'),
-        api.get('/api/projects'),
-      ]);
+      const empRes = await api.get('/api/agent-employees');
       if (empRes.ok) setAgents(await empRes.json());
-      if (projRes.ok) setProjects(await projRes.json());
     })();
   }, []);
 
@@ -211,7 +200,7 @@ export default function SkillsPage() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <PageHeader
         title="Skills"
-        description="Reusable bundles you can install on agents or attach to projects."
+        description="Reusable bundles you can install on agents."
         primary={
           tab === 'org' ? (
             <Link
@@ -335,11 +324,6 @@ export default function SkillsPage() {
                       Installed on <b>{stats.installed_on_agents}</b> agent
                       {stats.installed_on_agents === 1 ? '' : 's'}
                     </span>
-                    <span>·</span>
-                    <span>
-                      Attached to <b>{stats.attached_to_projects}</b> project
-                      {stats.attached_to_projects === 1 ? '' : 's'}
-                    </span>
                   </div>
 
                   {tokens > 0 && (
@@ -376,20 +360,6 @@ export default function SkillsPage() {
                     >
                       <Download className="w-3 h-3" />
                       Install
-                    </button>
-                    <button
-                      onClick={() => {
-                        setActionError(null);
-                        setAttachSkill(skill);
-                      }}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium"
-                      style={{
-                        background: 'var(--surface)',
-                        border: '1px solid var(--border-default)',
-                      }}
-                    >
-                      <Plus className="w-3 h-3" />
-                      Attach
                     </button>
                     {skill.source !== 'org' && (
                       <button
@@ -450,29 +420,6 @@ export default function SkillsPage() {
         />
       )}
 
-      {/* Attach modal */}
-      {attachSkill && (
-        <AttachModal
-          skill={attachSkill}
-          projects={projects}
-          onClose={() => setAttachSkill(null)}
-          onDone={async () => {
-            setAttachSkill(null);
-            try {
-              const r = await api.get(
-                `/api/skills/${encodeURIComponent(attachSkill.slug)}/stats`,
-              );
-              if (r.ok) {
-                const s: SkillStats = await r.json();
-                setStatsById((prev) => ({ ...prev, [attachSkill.id]: s }));
-              }
-            } catch {
-              /* ignore */
-            }
-          }}
-          onError={setActionError}
-        />
-      )}
     </div>
   );
 }
@@ -613,102 +560,3 @@ function InstallModal({
   );
 }
 
-// ─── Attach modal ─────────────────────────────────────────────────────
-function AttachModal({
-  skill,
-  projects,
-  onClose,
-  onDone,
-  onError,
-}: {
-  skill: Skill;
-  projects: Project[];
-  onClose: () => void;
-  onDone: () => void;
-  onError: (msg: string) => void;
-}) {
-  const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null);
-  const [busy, setBusy] = useState(false);
-
-  const handleAttach = async () => {
-    if (!projectId) return;
-    setBusy(true);
-    try {
-      const res = await api.post(`/api/projects/${projectId}/skills`, {
-        skill_id: skill.id,
-      });
-      if (!res.ok && res.status !== 404) {
-        const j = await res.json().catch(() => ({}));
-        onError(j?.error ?? 'Attach failed');
-        return;
-      }
-      onDone();
-    } catch (err) {
-      onError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
-    >
-      <div
-        className="w-full max-w-md mx-4 rounded-xl p-5 space-y-3"
-        style={{
-          background: 'var(--surface-container)',
-          border: '1px solid var(--border-default)',
-        }}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">Attach {skill.name}</h2>
-          <button onClick={onClose}>
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <label className="block text-xs font-medium">Attach to project</label>
-        <select
-          value={projectId ?? ''}
-          onChange={(e) => setProjectId(e.target.value)}
-          className="w-full px-3 py-2 rounded-md text-sm"
-          style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--border-default)',
-          }}
-        >
-          <option value="">— select a project —</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 rounded text-sm"
-            style={{ background: 'var(--surface)' }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleAttach}
-            disabled={!projectId || busy}
-            className="px-3 py-1.5 rounded text-sm font-medium"
-            style={{
-              background: 'var(--accent)',
-              color: 'white',
-              opacity: !projectId || busy ? 0.6 : 1,
-            }}
-          >
-            {busy ? 'Attaching…' : 'Attach'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
