@@ -987,7 +987,7 @@ export function SpaceChat({
       content = content + '\n' + fileLines.join('\n');
     }
     setPendingFiles([]);
-    await api.post('/api/scheduled-messages/schedule', {
+    await api.post('/api/scheduled-messages', {
       space_id: spaceId,
       content: content || '(attached files)',
       scheduled_for: scheduledFor,
