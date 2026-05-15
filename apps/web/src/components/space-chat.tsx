@@ -1096,7 +1096,10 @@ export function SpaceChat({
   const typingText = Array.from(typingUsers.values());
   const isDm = spaceType === 'dm' || spaceType === 'group_dm';
   const displayName = isDm
-    ? spaceName.split(',').map(n => n.trim()).find(n => n !== user?.name) || spaceName
+    ? (() => {
+        const others = spaceName.split(',').map((n) => n.trim()).filter((n) => n !== user?.name);
+        return others.length ? others.join(', ') : spaceName;
+      })()
     : spaceName;
 
   return (
@@ -1192,7 +1195,7 @@ export function SpaceChat({
             </button>
 
             {/* Huddle button */}
-            {!isDm && (() => {
+            {(() => {
               const inThisHuddle = huddleSpaceId === spaceId;
               const huddleHere = activeHuddles.get(spaceId);
               const othersInHuddle = !inThisHuddle && huddleHere && huddleHere.participants.length > 0;
