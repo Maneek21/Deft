@@ -10,6 +10,7 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import { TagPicker } from './tag-picker';
+import { LabelPicker } from './label-picker';
 import { TaskReactionBar } from './task-card-unified';
 import {
   X,
@@ -1522,35 +1523,15 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   <Tag size={12} className="inline mr-1" />
                   Labels
                 </span>
-                <div className="flex flex-wrap gap-1">
-                  {task.labels.length > 0 ? (
-                    task.labels.map((label) => (
-                      <span
-                        key={label.id}
-                        className="text-[11px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1"
-                        style={{
-                          background: `${label.color}20`,
-                          color: label.color,
-                        }}
-                      >
-                        {label.name}
-                        <button
-                          onClick={async () => {
-                            await api.delete(`/api/tasks/${taskId}/labels/${label.id}`);
-                            loadTask();
-                          }}
-                          className="hover:opacity-70"
-                        >
-                          <X size={10} />
-                        </button>
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[13px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
-                      None
-                    </span>
-                  )}
-                </div>
+                <LabelPicker
+                  taskId={taskId}
+                  appliedLabels={task.labels}
+                  onLabelsChange={(labels) => {
+                    const next = { ...task, labels };
+                    setTask(next);
+                    onUpdated(next);
+                  }}
+                />
 
                 {/* Task 4.11 — Custom fields from resolved skill config */}
                 {(resolvedConfig?.custom_fields ?? []).map((field) => {
