@@ -671,7 +671,7 @@ export default function TasksPage() {
               </div>
             ) : (
               /* Project selector */
-              <div className="relative">
+              <div className="relative z-50">
                 <button
                   onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-md"
@@ -701,9 +701,9 @@ export default function TasksPage() {
                 )}
                 {projectDropdownOpen && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setProjectDropdownOpen(false)} />
+                    <div className="fixed inset-0 z-40" onClick={() => setProjectDropdownOpen(false)} />
                     <div
-                      className="absolute top-full left-0 mt-1 w-56 rounded-lg py-1 z-20"
+                      className="absolute top-full left-0 mt-1 w-56 rounded-lg py-1 z-50"
                       style={{
                         background: 'var(--card-bg)',
                         border: '1px solid var(--border)',
