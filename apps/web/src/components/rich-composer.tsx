@@ -4,9 +4,14 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node, mergeAttributes } from '@tiptap/core';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
+import { createBaseExtensions } from '@/lib/editor/shared-config';
+import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { registerChatCommands } from '@/lib/editor/chat-commands';
+import { CodeBlock } from '@/lib/editor/blocks/code-block';
+
+registerChatCommands();
+registerBuiltInCommands();
 
 // ─── Mention node ─────────────────────────────────────────────────────
 // Inline atom that renders as a styled pill in the composer and serializes
@@ -74,7 +79,6 @@ import {
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
 import { MentionAutocomplete } from './mention-autocomplete';
-import { SlashCommandAutocomplete } from './slash-command-autocomplete';
 import { MobileActionSheet } from './mobile-action-sheet';
 
 type TaskResult = {
@@ -167,30 +171,35 @@ export function RichComposer({
   // delete the correct range even if the editor has lost focus (clicking
   // the dropdown blurs the editor, which resets selection.from to 0).
   const mentionRangeRef = useRef<{ from: number; to: number } | null>(null);
-  const [slashQuery, setSlashQuery] = useState('');
-  const [showSlashCommands, setShowSlashCommands] = useState(false);
   const emojiBtnRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const onEditLastMessageRef = useRef(onEditLastMessage);
   onEditLastMessageRef.current = onEditLastMessage;
+  // Keep slash-command callback in a ref so the slash menu extension (baked
+  // into the editor at mount) always sees the latest handler from props.
+  const onSlashCommandRef = useRef(onSlashCommand);
+  onSlashCommandRef.current = onSlashCommand;
+  // True while the BlockSlashMenu popup is open — `editorProps.handleKeyDown`
+  // checks this to let Enter fall through to the Suggestion plugin so the
+  // user's selected command actually fires.
+  const slashMenuOpenRef = useRef(false);
 
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      // StarterKit bundles its own Link extension since TipTap 2.4; disable it
-      // so our explicit Link.configure below is the only one registered.
-      StarterKit.configure({
-        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
-        code: { HTMLAttributes: { class: 'deft-inline-code' } },
-        heading: false,
-        link: false,
+      ...createBaseExtensions({
+        surface: 'chat',
+        placeholder: placeholder ?? 'Message #channel… Type / for commands.',
+        disable: ['link', 'codeBlock', 'heading'],
+        onChatCommand: (name, args) => onSlashCommandRef.current?.(name, args),
+        onMenuStateChange: (open) => { slashMenuOpenRef.current = open; },
       }),
-      Placeholder.configure({ placeholder }),
       Link.configure({
         openOnClick: false,
         HTMLAttributes: { class: 'deft-link' },
       }),
       MentionNode,
+      CodeBlock,
     ],
     editorProps: {
       attributes: {
@@ -208,13 +217,17 @@ export function RichComposer({
         }
         // Don't send on Enter when autocomplete is open
         if (event.key === 'Enter' && !event.shiftKey) {
+          // Slash menu (Suggestion plugin) handles Enter itself — don't
+          // swallow it, or the selected command never fires.
+          if (slashMenuOpenRef.current) {
+            return false;
+          }
           const { from } = view.state.selection;
           const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@+(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
-            // Prevent the default Enter behavior (which would insert a
-            // newline) and let the autocomplete's document-level listener
-            // handle the keystroke. Returning true + preventDefault stops
-            // ProseMirror from running its own Enter handler.
+          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@+(\w*)$/)) {
+            // # / @ autocomplete are React popups with document-level
+            // listeners — prevent ProseMirror's default but let the
+            // listener catch the key.
             event.preventDefault();
             return true;
           }
@@ -224,9 +237,10 @@ export function RichComposer({
         }
         // Don't handle arrow keys when autocomplete is open
         if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !event.shiftKey) {
+          if (slashMenuOpenRef.current) return false;
           const { from } = view.state.selection;
           const textBefore = view.state.doc.textBetween(Math.max(0, from - 20), from);
-          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@(\w*)$/) || view.state.doc.textContent.match(/^\/(\w*)$/)) {
+          if (textBefore.match(/#(\w*)$/) || textBefore.match(/@(\w*)$/)) {
             return false;
           }
         }
@@ -268,16 +282,7 @@ export function RichComposer({
         mentionRangeRef.current = null;
       }
 
-      // Slash command autocomplete (/) — only show when typing the command name, not args
-      const fullText = editor.state.doc.textContent;
-      const slashMatch = fullText.match(/^\/(\w*)$/);
-      if (slashMatch && !fullText.includes(' ')) {
-        setShowSlashCommands(true);
-        setSlashQuery(slashMatch[1] || '');
-      } else {
-        setShowSlashCommands(false);
-        setSlashQuery('');
-      }
+      // (Slash command discovery is handled by the unified BlockSlashMenu now.)
     },
   });
 
@@ -387,25 +392,6 @@ export function RichComposer({
 
   return (
     <div className="px-6 py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
-      {showSlashCommands && (
-        <SlashCommandAutocomplete
-          query={slashQuery}
-          onSelect={(cmd) => {
-            setShowSlashCommands(false);
-            if (cmd.needsArgs) {
-              // Replace editor content with "/<command> " so user can type args
-              editor?.commands.setContent(`<p>/${cmd.name} </p>`);
-              // Move cursor to end
-              editor?.commands.focus('end');
-            } else {
-              // Execute immediately for no-arg commands
-              editor?.commands.clearContent();
-              onSlashCommand?.(cmd.name, '');
-            }
-          }}
-          onClose={() => setShowSlashCommands(false)}
-        />
-      )}
       {showMentions && (
         <MentionAutocomplete
           query={mentionQuery}

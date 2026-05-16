@@ -3,9 +3,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/time';
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
 import { X, FileText } from 'lucide-react';
+import { createBaseExtensions } from '@/lib/editor/shared-config';
+import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { registerAICommands } from '@/lib/editor/ai-commands';
+import { AILoadingListener } from '@/components/editor/ai-loading-listener';
+import { Callout } from '@/lib/editor/blocks/callout';
+import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
+import { CodeBlock } from '@/lib/editor/blocks/code-block';
+
+registerBuiltInCommands();
+registerAICommands();
 
 function useIsMobile(breakpoint = 768) {
   const [isMobile, setIsMobile] = useState(false);
@@ -30,8 +38,16 @@ export function CanvasPanel({ spaceId, onClose }: Props) {
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: { HTMLAttributes: { class: 'deft-code-block' } } }),
-      Placeholder.configure({ placeholder: 'Start writing... This canvas is shared with everyone in this space.' }),
+      ...createBaseExtensions({
+        surface: 'canvas',
+        placeholder: 'Start writing... Type / for commands. This canvas is shared with everyone in this space.',
+        disable: ['codeBlock'],
+      }),
+      Callout,
+      Toggle,
+      ToggleSummary,
+      ToggleContent,
+      CodeBlock,
     ],
     editorProps: { attributes: { class: 'deft-editor' } },
     onUpdate: ({ editor }) => {
@@ -64,6 +80,7 @@ export function CanvasPanel({ spaceId, onClose }: Props) {
 
   return (
     <div className={isMobile ? "fixed inset-0 z-50 flex flex-col" : "w-[400px] h-full flex flex-col flex-shrink-0"} style={{ background: 'var(--surface-container-low)' }}>
+      <AILoadingListener />
       <div className="h-12 flex items-center justify-between px-4 flex-shrink-0">
         <div className="flex items-center gap-2">
           <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
