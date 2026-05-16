@@ -58,6 +58,7 @@ deft/
 - Styling: Tailwind only, no CSS modules, no styled-components
 - State: React hooks + context for client state, SWR or React Query for server state
 - File naming: kebab-case for files, PascalCase for components
+- **Slash menu for editor surfaces.** All TipTap editor surfaces (chat, task description, task comment, notes, canvas) mount the `BlockSlashMenu` extension via `createBaseExtensions({ surface })` in `apps/web/src/lib/editor/shared-config.ts`. Add new slash commands by registering them on `slashRegistry` in `apps/web/src/lib/editor/commands.ts` — declare which surfaces they appear in via the `surfaces` array. Block commands live in `built-in-commands.ts`; AI actions live in `ai-commands.ts`. AI actions hit `POST /api/ai/transform` (one endpoint, action-typed).
 
 ## Agent Architecture
 
