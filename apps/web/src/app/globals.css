@@ -507,3 +507,9 @@ input:focus, textarea:focus {
     font-size: 16px !important;
   }
 }
+
+/* Slash menu popup positioning fix — tippy renders into body */
+.tippy-box[data-theme~='slash-menu'] {
+  background: transparent;
+  box-shadow: none;
+}
