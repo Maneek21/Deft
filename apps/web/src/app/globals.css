@@ -565,3 +565,18 @@ input:focus, textarea:focus {
 .deft-toggle-content {
   padding: 4px 0 4px 22px;
 }
+
+/* lowlight / highlight.js token colors (one-dark-ish) */
+.deft-code-block code { display: block; }
+.hljs-comment, .hljs-quote { color: #5c6370; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag { color: #c678dd; }
+.hljs-string, .hljs-meta-string { color: #98c379; }
+.hljs-number, .hljs-literal { color: #d19a66; }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-title.class_ { color: #e6c07b; }
+.hljs-function, .hljs-title.function_ { color: #61afef; }
+.hljs-variable, .hljs-attr { color: #e06c75; }
+.hljs-tag { color: #e06c75; }
+.hljs-name { color: #e06c75; }
+.hljs-attribute { color: #d19a66; }
+.hljs-regexp { color: #56b6c2; }
+.hljs-symbol, .hljs-bullet { color: #56b6c2; }
