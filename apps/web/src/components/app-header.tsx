@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useRef, useEffect, ReactNode } from 'react';
+import { useState, useRef, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { Search, Bell, Menu, Moon } from 'lucide-react';
 import { NotificationPanel } from './notification-panel';
-import { api } from '@/lib/api';
-import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
+import { useInboxCount } from '@/hooks/use-inbox-count';
 
 const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
@@ -21,34 +20,12 @@ export function AppHeader({
   const { user } = useAuth();
   const isDnd = user?.status_text === 'Do Not Disturb';
   const [notifOpen, setNotifOpen] = useState(false);
-  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const { count: unreadNotifCount } = useInboxCount();
   const bellRef = useRef<HTMLButtonElement>(null);
 
   let placeholder = 'Search workspace... ⌘K';
   if (pathname.startsWith('/chat')) placeholder = 'Search messages... ⌘K';
   if (pathname.startsWith('/tasks')) placeholder = 'Search tasks... ⌘K';
-
-  // Fetch unread notification count on mount
-  useEffect(() => {
-    api.get('/api/notifications').then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        setUnreadNotifCount(data.unread_count ?? 0);
-      }
-    });
-  }, []);
-
-  // Listen for real-time notifications
-  useEffect(() => {
-    const token = localStorage.getItem('deft-access-token');
-    if (!token) return;
-    const socket = getSocket(token);
-    const handler = () => {
-      setUnreadNotifCount(prev => prev + 1);
-    };
-    socket.on('notification:new', handler);
-    return () => { socket.off('notification:new', handler); };
-  }, []);
 
   const handleSearchClick = () => {
     document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
@@ -56,10 +33,6 @@ export function AppHeader({
 
   const handleNotifOpen = () => {
     setNotifOpen(!notifOpen);
-  };
-
-  const handleCountSync = (count: number) => {
-    setUnreadNotifCount(count);
   };
 
   return (
@@ -126,7 +99,7 @@ export function AppHeader({
             </div>
           )}
         </button>
-        {notifOpen && <NotificationPanel onClose={() => setNotifOpen(false)} onCountSync={handleCountSync} />}
+        {notifOpen && <NotificationPanel onClose={() => setNotifOpen(false)} />}
       </div>
     </div>
   );

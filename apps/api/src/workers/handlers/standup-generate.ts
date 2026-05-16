@@ -141,7 +141,7 @@ export async function handleStandupGenerate(job: JobData): Promise<void> {
             'No agent is subscribed to the daily standup yet. Attach a ' +
             'standup-capable skill to an agent employee to get the morning ' +
             'summary.',
-          link: '/library',
+          link: '/settings/library',
           metadata: { subtype: 'standup_unconfigured' },
         });
       }

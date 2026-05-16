@@ -11,7 +11,6 @@ import { formatRelative } from '@/lib/time';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
-  LayoutDashboard,
   MessageSquare,
   CheckSquare,
   Bot,
@@ -35,14 +34,11 @@ import {
   Headphones,
   BookOpen,
   Smile,
-  Library,
-  Inbox,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
-import { useInboxCount } from '@/hooks/use-inbox-count';
 
 type AgentEmployee = {
   id: string;
@@ -74,15 +70,11 @@ type Project = {
 };
 
 const navItems = [
-  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Notes', href: '/notes', icon: FileText },
   { name: 'Calendar', href: '/calendar', icon: CalendarDays },
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
-  { name: 'Inbox', href: '/inbox', icon: Inbox },
-  { name: 'Library', href: '/library', icon: Library },
-  { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
 // ── Chat sidebar content (Spaces + DMs) ──────────────────────────────
@@ -534,6 +526,7 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
     { name: 'Agent', href: '/settings/agent' },
     { name: 'Agent Employees', href: '/settings/agent-employees' },
     { name: 'API Access', href: '/settings/api-access' },
+    { name: 'Library', href: '/settings/library' },
   ];
 
   return (
@@ -642,10 +635,6 @@ export function Sidebar({
   // Total unread across all spaces
   const totalUnread = Array.from(unreadCounts.values()).reduce((sum, c) => sum + c, 0);
 
-  // Block 0.2 — poll the agent-actions pending queue so the Agent nav entry
-  // renders a red badge whenever an agent is waiting on approval.
-  const { count: inboxCount } = useInboxCount();
-
   const handleSpaceClick = (id: string) => {
     onSelectSpace(id);
     setMobileOpen(false);
@@ -685,7 +674,9 @@ export function Sidebar({
         style={{ height: '56px' }}
       >
         <div className="flex items-center gap-2.5">
-          <Logo variant="wordmark" className="h-7 w-auto flex-shrink-0" priority />
+          <Link href="/dashboard" title="Dashboard" className="hover:opacity-80 transition-opacity">
+            <Logo variant="wordmark" className="h-7 w-auto flex-shrink-0" priority />
+          </Link>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -733,15 +724,6 @@ export function Sidebar({
                   style={{ background: 'var(--primary-container)' }}
                 >
                   {totalUnread > 99 ? '99+' : totalUnread}
-                </div>
-              )}
-              {item.name === 'Inbox' && inboxCount > 0 && (
-                <div
-                  className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
-                  style={{ background: 'var(--danger, #ef4444)' }}
-                  title={`${inboxCount} unread item${inboxCount === 1 ? '' : 's'}`}
-                >
-                  {inboxCount > 99 ? '99+' : inboxCount}
                 </div>
               )}
             </Link>
@@ -872,7 +854,9 @@ export function Sidebar({
   const collapsedContent = (
     <div className="flex flex-col h-full items-center py-3 gap-1">
       {/* Logo (collapsed) */}
-      <Logo variant="icon" className="w-8 h-8 mb-2 flex-shrink-0" />
+      <Link href="/dashboard" title="Dashboard" className="hover:opacity-80 transition-opacity">
+        <Logo variant="icon" className="w-8 h-8 mb-2 flex-shrink-0" />
+      </Link>
 
 
       {/* Nav icons */}
