@@ -6,8 +6,11 @@ import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
+import { createBaseExtensions } from '@/lib/editor/shared-config';
+import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { Callout } from '@/lib/editor/blocks/callout';
+import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
+import { CodeBlock } from '@/lib/editor/blocks/code-block';
 import LinkExt from '@tiptap/extension-link';
 import { Table } from '@tiptap/extension-table';
 import { TableRow } from '@tiptap/extension-table-row';
@@ -33,6 +36,9 @@ import { EmojiPicker } from '@/components/emoji-picker';
 import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
 import { OverflowMenu } from '@/components/overflow-menu';
+
+// Register built-in slash menu commands (idempotent).
+registerBuiltInCommands();
 
 type NoteFolder = {
   id: string;
@@ -230,16 +236,12 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
     immediatelyRender: false,
     editable: isNoteOwner,
     extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2] },
-        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
-        code: { HTMLAttributes: { class: 'deft-inline-code' } },
-        // Disable bundled link+underline so the standalone copies below take
-        // precedence. Prevents "Duplicate extension names" console warnings.
-        link: false,
-        underline: false,
+      ...createBaseExtensions({
+        surface: 'note',
+        placeholder: 'Type / for commands…',
+        disable: ['link', 'underline', 'codeBlock'],
+        headingLevels: [1, 2],
       }),
-      Placeholder.configure({ placeholder: 'Start writing…' }),
       LinkExt.configure({ openOnClick: true, HTMLAttributes: { class: 'deft-link' } }),
       Table.configure({ resizable: true }),
       TableRow,
@@ -250,6 +252,11 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       TaskItem.configure({ nested: true }),
       Highlight.configure({ multicolor: false }),
       Underline,
+      Callout,
+      Toggle,
+      ToggleSummary,
+      ToggleContent,
+      CodeBlock,
     ],
     editorProps: {
       attributes: { class: 'deft-editor deft-notes-editor' },
