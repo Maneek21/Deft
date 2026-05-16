@@ -265,6 +265,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       // Don't trigger in inputs
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
 
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        router.push('/settings');
+        return;
+      }
+
       if (e.key === 'Escape' && e.shiftKey) {
         e.preventDefault();
         // Mark all notifications as read

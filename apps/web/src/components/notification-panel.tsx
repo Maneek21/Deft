@@ -1,89 +1,21 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api';
-import { formatRelative } from '@/lib/time';
-import { Bell, Check, MessageSquare, AtSign, CheckSquare, AlertCircle, Clock, Headphones, Sparkles, ArrowUp } from 'lucide-react';
-
-type Notification = {
-  id: string;
-  type: string;
-  title: string;
-  body: string | null;
-  is_read: boolean;
-  link: string | null;
-  created_at: string;
-  metadata?: Record<string, unknown> | null;
-};
-
-// relativeTime imported as formatRelative from @/lib/time
-
-function notificationIcon(type: string) {
-  switch (type) {
-    case 'mention': return AtSign;
-    case 'message': return MessageSquare;
-    case 'task': return CheckSquare;
-    case 'task_assigned': return CheckSquare;
-    case 'task_updated': return CheckSquare;
-    case 'reminder': return Clock;
-    case 'huddle_started': return Headphones;
-    case 'agent_suggestion': return Sparkles;
-    // Task 4.14 — skill version update available for an installed agent skill.
-    case 'skill_update_available': return ArrowUp;
-    default: return AlertCircle;
-  }
-}
-
-function notificationHref(n: Notification): string | null {
-  if (n.type === 'agent_suggestion') {
-    const meta = (n.metadata ?? {}) as Record<string, unknown>;
-    const messageId =
-      (typeof meta.source_message_id === 'string' && meta.source_message_id) ||
-      (typeof meta.message_id === 'string' && meta.message_id) ||
-      (typeof meta.messageId === 'string' && meta.messageId) ||
-      null;
-    if (messageId) return `/chat?messageId=${encodeURIComponent(messageId)}`;
-    // Fallback: if link points at chat already, honor it; otherwise route to chat
-    if (n.link && n.link.startsWith('/chat')) return n.link;
-    return '/chat';
-  }
-  return n.link;
-}
+import { Bell, ChevronRight } from 'lucide-react';
+import { useInbox, type InboxItem } from '@/hooks/use-inbox';
+import { InboxRow } from '@/components/inbox-row';
+import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
 
 type Props = {
   onClose: () => void;
-  onCountSync?: (count: number) => void;
 };
 
-export function NotificationPanel({ onClose, onCountSync }: Props) {
+export function NotificationPanel({ onClose }: Props) {
   const router = useRouter();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { items, isLoading, markRead, markAllRead } = useInbox();
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    async function load() {
-      try {
-        const res = await api.get('/api/notifications');
-        if (res.ok) {
-          const data = await res.json();
-          const notifs = data.notifications || data || [];
-          setNotifications(notifs);
-          // Sync accurate unread count back to the header badge
-          if (onCountSync) {
-            const unreadCount = notifs.filter((n: Notification) => !n.is_read).length;
-            onCountSync(unreadCount);
-          }
-        }
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -102,36 +34,22 @@ export function NotificationPanel({ onClose, onCountSync }: Props) {
     };
   }, [onClose]);
 
-  const handleMarkRead = async (id: string) => {
-    await api.patch(`/api/notifications/${id}/read`);
-    setNotifications((prev) => {
-      const updated = prev.map((n) => (n.id === id ? { ...n, is_read: true } : n));
-      if (onCountSync) {
-        onCountSync(updated.filter((n) => !n.is_read).length);
-      }
-      return updated;
-    });
+  const handleApprovalNav = (item: InboxItem) => {
+    void markRead([item.id]);
+    router.push('/inbox?tab=approvals');
+    onClose();
   };
 
-  const handleMarkAllRead = async () => {
-    await api.post('/api/notifications/read-all');
-    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    if (onCountSync) onCountSync(0);
-  };
-
-  const handleClick = (n: Notification) => {
-    if (!n.is_read) handleMarkRead(n.id);
-    const href = notificationHref(n);
-    if (href) {
-      router.push(href);
-    }
+  const handleRowClick = (item: InboxItem) => {
+    void markRead([item.id]);
+    // InboxRow wraps content in a Link if item.link exists; navigation happens there.
     onClose();
   };
 
   return (
     <div
       ref={ref}
-      className="fixed bottom-0 left-0 right-0 z-[9999] max-h-[70vh] flex flex-col overflow-hidden rounded-t-2xl md:rounded-xl md:absolute md:bottom-auto md:left-auto md:right-0 md:top-full md:mt-2 md:w-[340px] md:max-h-[480px]"
+      className="fixed bottom-0 left-0 right-0 z-[9999] max-h-[70vh] flex flex-col overflow-hidden rounded-t-2xl md:rounded-xl md:absolute md:bottom-auto md:left-auto md:right-0 md:top-full md:mt-2 md:w-[360px] md:max-h-[520px]"
       style={{
         background: 'var(--surface-container-highest)',
         boxShadow: 'var(--glass-shadow)',
@@ -151,7 +69,7 @@ export function NotificationPanel({ onClose, onCountSync }: Props) {
           Notifications
         </span>
         <button
-          onClick={handleMarkAllRead}
+          onClick={() => void markAllRead()}
           className="text-[11px] font-medium px-2 py-2 md:py-1 rounded-md min-h-[36px] flex items-center"
           style={{ color: 'var(--accent)', fontFamily: 'var(--font-body)' }}
         >
@@ -161,7 +79,7 @@ export function NotificationPanel({ onClose, onCountSync }: Props) {
 
       {/* List */}
       <div className="flex-1 overflow-y-auto">
-        {loading ? (
+        {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="flex gap-1.5">
               <div className="skeleton w-1.5 h-1.5 rounded-full" />
@@ -169,76 +87,62 @@ export function NotificationPanel({ onClose, onCountSync }: Props) {
               <div className="skeleton w-1.5 h-1.5 rounded-full" style={{ animationDelay: '0.4s' }} />
             </div>
           </div>
-        ) : notifications.length === 0 ? (
+        ) : items.length === 0 ? (
           <div
             className="flex flex-col items-center justify-center py-12 gap-2"
             style={{ color: 'var(--muted)' }}
           >
             <Bell size={24} strokeWidth={1.5} />
             <span className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
-              No notifications
+              You're caught up.
             </span>
           </div>
         ) : (
-          notifications.map((n) => {
-            const Icon = notificationIcon(n.type);
-            return (
-              <button
-                key={n.id}
-                onClick={() => handleClick(n)}
-                className="w-full text-left px-4 py-3 flex gap-3 transition-colors"
-                style={{
-                  background: n.is_read ? 'transparent' : 'var(--hover-tint)',
-                  borderBottom: '1px solid var(--border)',
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = 'var(--hover-tint)';
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = n.is_read
-                    ? 'transparent'
-                    : 'var(--hover-tint)';
-                }}
-              >
-                <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{ background: 'var(--surface)', color: 'var(--muted)' }}
-                >
-                  <Icon size={14} strokeWidth={1.5} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p
-                    className="text-[13px] leading-snug"
-                    style={{
-                      color: 'var(--foreground)',
-                      fontFamily: 'var(--font-body)',
-                      fontWeight: n.is_read ? 400 : 500,
-                    }}
-                  >
-                    {n.title}
-                  </p>
-                  {n.body && (
-                    <p
-                      className="text-[12px] mt-0.5 truncate"
-                      style={{ color: 'var(--muted)' }}
-                    >
-                      {n.body}
-                    </p>
-                  )}
-                  <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
-                    {formatRelative(n.created_at)}
-                  </p>
-                </div>
-                {!n.is_read && (
-                  <div
-                    className="w-2 h-2 rounded-full flex-shrink-0 mt-1.5"
-                    style={{ background: 'var(--accent)' }}
-                  />
-                )}
-              </button>
-            );
-          })
+          <div className="flex flex-col gap-1 p-2">
+            {items.map((item) => {
+              if (item.kind === 'pending_approval' && item.approval) {
+                const action: AgentAction = {
+                  id: item.approval.action_id,
+                  action: item.approval.action,
+                  params: item.approval.params as Record<string, any>,
+                };
+                return (
+                  <div key={item.id} onClick={() => handleApprovalNav(item)}>
+                    <AgentActionCard
+                      action={action}
+                      onApprove={() => handleApprovalNav(item)}
+                      onReject={() => handleApprovalNav(item)}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <InboxRow
+                  key={item.id}
+                  item={item}
+                  onClick={() => handleRowClick(item)}
+                  onDismiss={() => void markRead([item.id])}
+                />
+              );
+            })}
+          </div>
         )}
+      </div>
+
+      {/* Footer — always visible */}
+      <div
+        className="flex-shrink-0"
+        style={{ borderTop: '1px solid var(--border)' }}
+      >
+        <Link
+          href="/inbox"
+          onClick={onClose}
+          className="flex items-center justify-center gap-1 px-4 py-2.5 text-[12px] font-medium"
+          style={{ color: 'var(--accent)', fontFamily: 'var(--font-body)' }}
+        >
+          View all
+          <ChevronRight size={13} strokeWidth={1.75} />
+        </Link>
       </div>
     </div>
   );
