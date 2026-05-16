@@ -32,6 +32,14 @@ export const SlashMenu = Extension.create<SlashMenuOptions>({
         startOfLine: false,
         // Allow trigger after start, space, or newline.
         allowedPrefixes: [' ', '\n'],
+        // In the chat surface, suppress when the slash is at the very start
+        // of the message — the legacy chat-level slash autocomplete (/remind,
+        // /task, etc.) owns that case and we'd otherwise show two popups.
+        allow: ({ state, range }) => {
+          if (surface !== 'chat') return true;
+          const before = state.doc.textBetween(0, range.from, '\n').trim();
+          return before.length > 0;
+        },
         items: ({ query }) => {
           const all = slashRegistry.all();
           return filterCommands(all, query, surface).slice(0, 12);
