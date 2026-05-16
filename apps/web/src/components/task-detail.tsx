@@ -7,8 +7,11 @@ import { sanitizeHtml } from '@/lib/sanitize';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
+import { createBaseExtensions } from '@/lib/editor/shared-config';
+import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { Callout } from '@/lib/editor/blocks/callout';
+import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
+import { CodeBlock } from '@/lib/editor/blocks/code-block';
 import { TagPicker } from './tag-picker';
 import { LabelPicker } from './label-picker';
 import { TaskReactionBar } from './task-card-unified';
@@ -38,6 +41,9 @@ import {
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type CanonicalPriority } from '@/hooks/use-project-resolved-config';
+
+// Register built-in slash menu commands (idempotent).
+registerBuiltInCommands();
 
 type Task = {
   id: string;
@@ -473,8 +479,16 @@ function DescriptionEditor({ value, onChange }: { value: string; onChange: (html
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ heading: false }),
-      Placeholder.configure({ placeholder: 'Add a description...' }),
+      ...createBaseExtensions({
+        surface: 'task',
+        placeholder: 'Add a description... Type / for commands.',
+        disable: ['codeBlock'],
+      }),
+      Callout,
+      Toggle,
+      ToggleSummary,
+      ToggleContent,
+      CodeBlock,
     ],
     content: value || '',
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
@@ -563,12 +577,12 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const commentEditor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({
-        heading: false,
-        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
-        code: { HTMLAttributes: { class: 'deft-inline-code' } },
+      ...createBaseExtensions({
+        surface: 'task-comment',
+        placeholder: 'Add a comment... Type / for commands.',
+        disable: ['heading', 'codeBlock'],
       }),
-      Placeholder.configure({ placeholder: 'Add a comment...' }),
+      CodeBlock,
     ],
     editorProps: { attributes: { class: 'deft-editor' } },
   });
