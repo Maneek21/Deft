@@ -6,11 +6,14 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import { X, FileText } from 'lucide-react';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { registerAICommands } from '@/lib/editor/ai-commands';
+import { AILoadingListener } from '@/components/editor/ai-loading-listener';
 import { Callout } from '@/lib/editor/blocks/callout';
 import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
 
 registerBuiltInCommands();
+registerAICommands();
 
 function useIsMobile(breakpoint = 768) {
   const [isMobile, setIsMobile] = useState(false);
@@ -77,6 +80,7 @@ export function CanvasPanel({ spaceId, onClose }: Props) {
 
   return (
     <div className={isMobile ? "fixed inset-0 z-50 flex flex-col" : "w-[400px] h-full flex flex-col flex-shrink-0"} style={{ background: 'var(--surface-container-low)' }}>
+      <AILoadingListener />
       <div className="h-12 flex items-center justify-between px-4 flex-shrink-0">
         <div className="flex items-center gap-2">
           <FileText size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />

@@ -8,6 +8,8 @@ import { api } from '@/lib/api';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { registerAICommands } from '@/lib/editor/ai-commands';
+import { AILoadingListener } from '@/components/editor/ai-loading-listener';
 import { Callout } from '@/lib/editor/blocks/callout';
 import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
@@ -39,6 +41,7 @@ import { OverflowMenu } from '@/components/overflow-menu';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
+registerAICommands();
 
 type NoteFolder = {
   id: string;
@@ -1161,6 +1164,7 @@ export default function NotesPage() {
 
   return (
     <div className="h-full overflow-y-auto">
+      <AILoadingListener />
       {/* ── PageHeader: title hidden on mobile (AppHeader carries search); primary = New Note ── */}
       <PageHeader
         title="Notes"

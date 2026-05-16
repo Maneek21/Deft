@@ -9,6 +9,8 @@ import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { registerAICommands } from '@/lib/editor/ai-commands';
+import { AILoadingListener } from '@/components/editor/ai-loading-listener';
 import { Callout } from '@/lib/editor/blocks/callout';
 import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
@@ -44,6 +46,7 @@ import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type Canoni
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
+registerAICommands();
 
 type Task = {
   id: string;
@@ -1052,6 +1055,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
   return (
     <>
+      <AILoadingListener />
       {/* Click-away for dropdowns */}
       {openDropdown && (
         <div className="fixed inset-0 z-10" onClick={() => setOpenDropdown(null)} />
