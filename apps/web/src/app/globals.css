@@ -534,3 +534,34 @@ input:focus, textarea:focus {
 }
 .deft-callout-body > *:first-child { margin-top: 0; }
 .deft-callout-body > *:last-child { margin-bottom: 0; }
+
+.deft-toggle {
+  margin: 8px 0;
+  border-radius: 6px;
+}
+.deft-toggle-summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.deft-toggle-summary::before {
+  content: '▶';
+  font-size: 10px;
+  transition: transform 120ms;
+  color: var(--outline);
+}
+.deft-toggle-open > .deft-toggle-summary::before {
+  transform: rotate(90deg);
+}
+.deft-toggle-summary:hover {
+  background: var(--bg-hover);
+}
+.deft-toggle-content {
+  padding: 4px 0 4px 22px;
+}

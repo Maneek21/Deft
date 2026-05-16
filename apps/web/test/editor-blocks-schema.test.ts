@@ -38,3 +38,12 @@ test('Callout node parses from a div[data-callout]', () => {
   const rule = parseRules[0]!;
   assert.equal(rule.tag, 'div[data-callout]');
 });
+
+import { Toggle, ToggleSummary, ToggleContent } from '../src/lib/editor/blocks/toggle.js';
+
+test('Toggle extension registers details + summary + content nodes', () => {
+  const schema = getSchema([...baseExtensions, Toggle, ToggleSummary, ToggleContent]);
+  assert.ok(schema.nodes.details, 'details node should be registered');
+  assert.ok(schema.nodes.detailsSummary, 'detailsSummary node should be registered');
+  assert.ok(schema.nodes.detailsContent, 'detailsContent node should be registered');
+});
