@@ -4,9 +4,12 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Node, mergeAttributes } from '@tiptap/core';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
+import { createBaseExtensions } from '@/lib/editor/shared-config';
+import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
+import { CodeBlock } from '@/lib/editor/blocks/code-block';
+
+registerBuiltInCommands();
 
 // ─── Mention node ─────────────────────────────────────────────────────
 // Inline atom that renders as a styled pill in the composer and serializes
@@ -177,20 +180,17 @@ export function RichComposer({
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      // StarterKit bundles its own Link extension since TipTap 2.4; disable it
-      // so our explicit Link.configure below is the only one registered.
-      StarterKit.configure({
-        codeBlock: { HTMLAttributes: { class: 'deft-code-block' } },
-        code: { HTMLAttributes: { class: 'deft-inline-code' } },
-        heading: false,
-        link: false,
+      ...createBaseExtensions({
+        surface: 'chat',
+        placeholder: placeholder ?? 'Message #channel… Type / for commands.',
+        disable: ['link', 'codeBlock', 'heading'],
       }),
-      Placeholder.configure({ placeholder }),
       Link.configure({
         openOnClick: false,
         HTMLAttributes: { class: 'deft-link' },
       }),
       MentionNode,
+      CodeBlock,
     ],
     editorProps: {
       attributes: {
