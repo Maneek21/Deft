@@ -7,12 +7,20 @@
 import type { Editor, Range } from '@tiptap/core';
 
 export type EditorSurface = 'chat' | 'note' | 'task' | 'task-comment' | 'canvas';
-export type CommandGroup = 'block' | 'ai' | 'insert';
+export type CommandGroup = 'commands' | 'block' | 'ai' | 'insert';
+
+/**
+ * Callback for chat-only "command" items (mute, remind, task, etc.) — they
+ * fire side effects in the host React component rather than transforming the
+ * editor's document. Block/AI commands ignore this.
+ */
+export type ChatCommandHandler = (name: string, args: string) => void;
 
 export type SlashCommandContext = {
   editor: Editor;
   range: Range;
   surface: EditorSurface;
+  chatCommand?: ChatCommandHandler;
 };
 
 export type SlashCommand = {
@@ -26,6 +34,20 @@ export type SlashCommand = {
   surfaces: EditorSurface[];
   /** Lucide icon name (rendered by the popup component); optional */
   iconName?: string;
+  /**
+   * Optional dynamic label override evaluated at render time. Used by
+   * context-sensitive commands (e.g. "Mute channel" / "Unmute channel"
+   * collapses to one entry whose label flips with the current state).
+   * The static `label` is still used for filter matching and as a
+   * fallback when `getLabel` returns falsy.
+   */
+  getLabel?: () => string;
+  /**
+   * If true, this command only appears when the slash is at the very start of
+   * the editor content. Used by chat-level action commands (mute, dnd, etc.)
+   * which only make sense when the whole message is the command.
+   */
+  requireStartOfMessage?: boolean;
   /** Invoked when the user selects the command */
   run: (ctx: SlashCommandContext) => void | Promise<void>;
 };
@@ -62,9 +84,15 @@ export function filterCommands(
   commands: SlashCommand[],
   query: string,
   surface: EditorSurface,
+  opts: { isStartOfMessage?: boolean } = {},
 ): SlashCommand[] {
   const q = query.trim().toLowerCase();
-  const surfaceCmds = commands.filter(c => c.surfaces.includes(surface));
+  const atStart = opts.isStartOfMessage ?? false;
+  const surfaceCmds = commands.filter(c => {
+    if (!c.surfaces.includes(surface)) return false;
+    if (c.requireStartOfMessage && !atStart) return false;
+    return true;
+  });
   if (!q) return surfaceCmds;
 
   const scored: Array<{ cmd: SlashCommand; score: number }> = [];

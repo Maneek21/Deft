@@ -185,27 +185,60 @@ async function testChat(page: Page) {
   await composer.click();
   await page.waitForTimeout(300);
 
-  // CASE A: type "/" at start — expect legacy only, NO block menu
+  // CASE A: type "/" at start — unified menu, BOTH sections visible
   await composer.type('/');
   await page.waitForTimeout(800);
   await shot(page, 'chat-slash-at-start');
   let menus = await countMenus(page);
-  t(menus.commands, 'chat: legacy COMMANDS menu shows on /');
-  t(!menus.blocks, 'chat: block menu HIDDEN at start of msg (no collision)');
+  t(menus.commands, 'chat: Commands section visible at start of msg');
+  t(menus.blocks, 'chat: Blocks section visible at start of msg (unified)');
 
   await clearEditor(page);
   await page.waitForTimeout(300);
 
-  // CASE B: type "hi " then "/" — expect block menu, NOT legacy
+  // CASE B: type "hi " then "/" — Blocks only; Commands hidden mid-msg
   await composer.type('hi ');
   await composer.type('/');
   await page.waitForTimeout(800);
   await shot(page, 'chat-slash-midmsg');
   menus = await countMenus(page);
-  t(menus.blocks, 'chat: block menu appears mid-msg');
-  t(!menus.commands, 'chat: legacy menu NOT showing mid-msg');
+  t(menus.blocks, 'chat: block section appears mid-msg');
+  t(!menus.commands, 'chat: Commands hidden mid-msg (requireStartOfMessage)');
 
   await clearEditor(page);
+  await page.waitForTimeout(300);
+
+  // CASE C: prefill command — picking "Remind" must replace the slash with
+  // "/remind " so the user can type duration + message, NOT fire empty.
+  await composer.type('/remind');
+  await page.waitForTimeout(800);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(500);
+  await shot(page, 'chat-remind-prefilled');
+  const afterRemind = (await composer.textContent()) ?? '';
+  t(afterRemind.trim().startsWith('/remind'), `chat: /remind prefills "/remind " (got: ${JSON.stringify(afterRemind.slice(0, 30))})`);
+  // The popup should be closed now (slash was deleted + replaced).
+  const stillOpen = await page.locator('text=Commands').isVisible({ timeout: 500 }).catch(() => false);
+  t(!stillOpen, 'chat: popup closes after picking prefill command');
+
+  await clearEditor(page);
+  await page.waitForTimeout(300);
+
+  // CASE D: fire command — "/search" + Enter dispatches the command palette
+  // event (no DB write, easy to undo by pressing Escape).
+  await composer.type('/search');
+  await page.waitForTimeout(800);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(800);
+  await shot(page, 'chat-search-fired');
+  const paletteVisible = await page
+    .locator('input[placeholder="Search anything..."]')
+    .isVisible({ timeout: 2000 })
+    .catch(() => false);
+  t(paletteVisible, 'chat: /search + Enter opens the command palette');
+  // Close palette
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
 }
 
 async function main() {

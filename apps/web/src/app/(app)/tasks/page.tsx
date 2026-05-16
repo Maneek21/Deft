@@ -10,6 +10,7 @@ import { TaskList } from '@/components/task-list';
 import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
+import { registerOpenTaskQuickCreate } from '@/lib/quick-actions';
 import { TaskCalendarView } from '@/components/task-calendar-view';
 import { TaskPipelineView } from '@/components/task-pipeline-view';
 import { statusLabel } from '@/lib/task-status-labels';
@@ -420,6 +421,26 @@ export default function TasksPage() {
       setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} deleted`);
     }
   };
+
+  // External callers (command palette, etc.) can request the quick-create
+  // dialog two ways: a module-level callback for in-page calls, and the
+  // `?new=1` URL param for cross-page navigation (avoids a mount-time race).
+  useEffect(() => {
+    return registerOpenTaskQuickCreate(() => {
+      setQuickCreateStatus(undefined);
+      setQuickCreateOpen(true);
+    });
+  }, []);
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setQuickCreateStatus(undefined);
+      setQuickCreateOpen(true);
+      // Strip the param so reloads don't keep re-opening it.
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete('new');
+      router.replace(`/tasks${params.toString() ? `?${params.toString()}` : ''}`);
+    }
+  }, [searchParams, router]);
 
   // Keyboard shortcut: 'c' to quick-create
   useEffect(() => {

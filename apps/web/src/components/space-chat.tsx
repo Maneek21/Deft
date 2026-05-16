@@ -8,6 +8,7 @@ import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
+import { setCurrentSpaceMuted } from '@/lib/editor/chat-commands';
 import {
   Pencil,
   Trash2,
@@ -575,6 +576,9 @@ export function SpaceChat({
   const [quotedMessage, setQuotedMessage] = useState<{ userName: string; content: string } | null>(null);
   const [profileCard, setProfileCard] = useState<{ userId: string; rect: { top: number; left: number; bottom: number } } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  // Mirror mute state to the slash-menu's chat-mute-toggle command so its
+  // label + dispatched action match what the user actually expects.
+  useEffect(() => { setCurrentSpaceMuted(isMuted); }, [isMuted]);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
 
   // P4-4 — pending agent_actions keyed by message_id for this space.
@@ -2099,7 +2103,7 @@ export function SpaceChat({
                 const emojiMatch = args.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F?)\s*(.*)/u);
                 const emoji = emojiMatch?.[1] || '💬';
                 const text = emojiMatch?.[2]?.trim() || args || 'Busy';
-                await api.patch('/api/users/status', { status_emoji: emoji, status_text: text });
+                await api.patch('/api/users/status', { emoji, text });
                 setCmdToast(`Status set: ${emoji} ${text}`);
                 break;
               }

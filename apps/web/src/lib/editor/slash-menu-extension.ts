@@ -1,4 +1,5 @@
 import { Extension } from '@tiptap/core';
+import type { EditorState } from '@tiptap/pm/state';
 import Suggestion, { type SuggestionProps, type SuggestionKeyDownProps } from '@tiptap/suggestion';
 import { ReactRenderer } from '@tiptap/react';
 import tippy, { type Instance as TippyInstance } from 'tippy.js';
@@ -6,6 +7,7 @@ import { SlashMenuPopup, type SlashMenuRef } from '@/components/editor/slash-men
 import {
   filterCommands,
   slashRegistry,
+  type ChatCommandHandler,
   type EditorSurface,
   type SlashCommand,
   type SlashCommandContext,
@@ -13,7 +15,24 @@ import {
 
 export type SlashMenuOptions = {
   surface: EditorSurface;
+  /**
+   * Host hook for chat-level action commands (mute, remind, task, etc.).
+   * Items with `requireStartOfMessage: true` invoke this in their `run`.
+   */
+  onChatCommand?: ChatCommandHandler;
+  /**
+   * Fired when the popup opens / closes. The chat composer uses this to know
+   * when to *not* swallow Enter in its own `editorProps.handleKeyDown` — so
+   * the Suggestion plugin gets a chance to dispatch the selected command.
+   */
+  onMenuStateChange?: (open: boolean) => void;
 };
+
+/** True when the slash is at the very first character of the document. */
+function isAtStartOfDoc(state: EditorState, slashFrom: number) {
+  const before = state.doc.textBetween(0, slashFrom, '\n');
+  return before.length === 0;
+}
 
 export const SlashMenu = Extension.create<SlashMenuOptions>({
   name: 'slashMenu',
@@ -24,6 +43,8 @@ export const SlashMenu = Extension.create<SlashMenuOptions>({
 
   addProseMirrorPlugins() {
     const surface = this.options.surface;
+    const onChatCommand = this.options.onChatCommand;
+    const onMenuStateChange = this.options.onMenuStateChange;
 
     return [
       Suggestion<SlashCommand, SlashCommand>({
@@ -32,24 +53,22 @@ export const SlashMenu = Extension.create<SlashMenuOptions>({
         startOfLine: false,
         // Allow trigger after start, space, or newline.
         allowedPrefixes: [' ', '\n'],
-        // In the chat surface, suppress when the slash is at the very start
-        // of the message — the legacy chat-level slash autocomplete (/remind,
-        // /task, etc.) owns that case and we'd otherwise show two popups.
-        allow: ({ state, range }) => {
-          if (surface !== 'chat') return true;
-          const before = state.doc.textBetween(0, range.from, '\n').trim();
-          return before.length > 0;
-        },
-        items: ({ query }) => {
+        items: ({ query, editor: ed }) => {
           const all = slashRegistry.all();
-          return filterCommands(all, query, surface).slice(0, 12);
+          // The Suggestion plugin doesn't pass `range` into `items`, so derive
+          // start-of-message from the current selection — the slash is one
+          // char back from selection.from while the user is typing the query.
+          const selFrom = ed.state.selection.from;
+          const slashFrom = Math.max(0, selFrom - 1 - query.length);
+          const isStart = isAtStartOfDoc(ed.state, slashFrom);
+          return filterCommands(all, query, surface, { isStartOfMessage: isStart }).slice(0, 12);
         },
         command: ({ editor, range, props }) => {
-          // `props` is the selected SlashCommand
           const ctx: SlashCommandContext = {
             editor,
             range,
             surface,
+            chatCommand: onChatCommand,
           };
           props.run(ctx);
         },
@@ -65,6 +84,7 @@ export const SlashMenu = Extension.create<SlashMenuOptions>({
 
           return {
             onStart: (props: SuggestionProps<SlashCommand, SlashCommand>) => {
+              onMenuStateChange?.(true);
               const renderer = new ReactRenderer<SlashMenuRef, PopupProps>(SlashMenuPopup, {
                 props: { items: props.items, command: props.command },
                 editor: props.editor,
@@ -99,6 +119,7 @@ export const SlashMenu = Extension.create<SlashMenuOptions>({
               return component?.ref?.onKeyDown(props.event) ?? false;
             },
             onExit: () => {
+              onMenuStateChange?.(false);
               popup[0]?.destroy();
               component?.destroy();
             },

@@ -243,7 +243,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         surface: 'note',
         placeholder: 'Type / for commands…',
         disable: ['link', 'underline', 'codeBlock'],
-        headingLevels: [1, 2],
+        headingLevels: [1, 2, 3],
       }),
       LinkExt.configure({ openOnClick: true, HTMLAttributes: { class: 'deft-link' } }),
       Table.configure({ resizable: true }),

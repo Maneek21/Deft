@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useImperativeHandle, forwardRef, useMemo } from 'react';
+import { useEffect, useState, useImperativeHandle, forwardRef, useMemo, useRef } from 'react';
 import * as Icons from 'lucide-react';
 import type { SlashCommand } from '@/lib/editor/commands';
 
@@ -18,8 +18,13 @@ export const SlashMenuPopup = forwardRef<SlashMenuRef, Props>(function SlashMenu
   ref,
 ) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useEffect(() => setSelectedIndex(0), [items]);
+
+  useEffect(() => {
+    itemRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
 
   // Group items by group field for visual sectioning
   const grouped = useMemo(() => {
@@ -88,7 +93,13 @@ export const SlashMenuPopup = forwardRef<SlashMenuRef, Props>(function SlashMenu
             className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
             style={{ color: 'var(--outline)' }}
           >
-            {group === 'ai' ? 'AI Actions' : group === 'block' ? 'Blocks' : 'Insert'}
+            {group === 'ai'
+              ? 'AI Actions'
+              : group === 'block'
+                ? 'Blocks'
+                : group === 'commands'
+                  ? 'Commands'
+                  : 'Insert'}
           </div>
           {cmds.map(cmd => {
             const myIndex = flatIndex++;
@@ -97,6 +108,7 @@ export const SlashMenuPopup = forwardRef<SlashMenuRef, Props>(function SlashMenu
             return (
               <button
                 key={cmd.id}
+                ref={el => { itemRefs.current[myIndex] = el; }}
                 onClick={() => selectItem(myIndex)}
                 onMouseEnter={() => setSelectedIndex(myIndex)}
                 className="w-full text-left px-3 py-2 flex items-center gap-3 transition-colors"
@@ -111,7 +123,7 @@ export const SlashMenuPopup = forwardRef<SlashMenuRef, Props>(function SlashMenu
                 />
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium" style={{ color: 'var(--on-surface)' }}>
-                    {cmd.label}
+                    {cmd.getLabel?.() || cmd.label}
                   </div>
                   <div className="text-[11px]" style={{ color: 'var(--outline)' }}>
                     {cmd.description}

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
+import { registerOpenCreateSpace } from '@/lib/quick-actions';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { api } from '@/lib/api';
@@ -83,17 +84,18 @@ function ChatSidebarContent({
   activeSpaceId,
   onSpaceClick,
   presence,
+  onOpenCreateSpace,
 }: {
   spaces: Space[];
   activeSpaceId: string | null;
   onSpaceClick: (id: string) => void;
   presence: Map<string, 'online' | 'idle' | 'offline'>;
+  onOpenCreateSpace: () => void;
 }) {
   const { user } = useAuth();
   const { unreadCounts, mentionCounts, orgMembers, openDmWith, activeHuddles, joinHuddleBySpace } = useChatContext();
   const pathname = usePathname();
   const router = useRouter();
-  const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
   const [createDmOpen, setCreateDmOpen] = useState(false);
   const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
 
@@ -121,7 +123,7 @@ function ChatSidebarContent({
             Spaces
           </span>
           <button
-            onClick={() => setCreateSpaceOpen(true)}
+            onClick={onOpenCreateSpace}
             className="p-0.5 rounded"
             style={{ color: 'var(--outline)' }}
             title="Create space"
@@ -391,10 +393,6 @@ function ChatSidebarContent({
         </div>
       )}
 
-      {createSpaceOpen && typeof document !== 'undefined' && createPortal(
-        <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,
-        document.body
-      )}
       {createDmOpen && typeof document !== 'undefined' && createPortal(
         <CreateDmModal onClose={() => setCreateDmOpen(false)} />,
         document.body
@@ -586,6 +584,12 @@ export function Sidebar({
   const pathname = usePathname();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
+  // Create-space modal lifted from ChatSidebarContent — the parent Sidebar
+  // is always mounted across all routes (chat, tasks, settings…) so the
+  // module-level `registerOpenCreateSpace` callback never goes stale when
+  // navigating off /chat.
+  const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+  useEffect(() => registerOpenCreateSpace(() => setCreateSpaceOpen(true)), []);
   const [savedOpen, setSavedOpen] = useState(false);
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -662,6 +666,7 @@ export function Sidebar({
         activeSpaceId={activeSpaceId}
         onSpaceClick={handleSpaceClick}
         presence={presence}
+        onOpenCreateSpace={() => setCreateSpaceOpen(true)}
       />
     );
   };
@@ -924,6 +929,10 @@ export function Sidebar({
       >
         {collapsed ? collapsedContent : sidebarContent}
       </aside>
+      {createSpaceOpen && typeof document !== 'undefined' && createPortal(
+        <CreateSpaceModal onClose={() => setCreateSpaceOpen(false)} />,
+        document.body
+      )}
     </>
   );
 }

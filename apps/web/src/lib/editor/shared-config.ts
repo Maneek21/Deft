@@ -2,7 +2,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import type { Extensions } from '@tiptap/core';
 import { SlashMenu } from './slash-menu-extension';
-import type { EditorSurface } from './commands';
+import type { ChatCommandHandler, EditorSurface } from './commands';
 
 type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -13,6 +13,10 @@ export type EditorConfigOptions = {
   headingLevels?: HeadingLevel[];
   /** Disable specific StarterKit features. */
   disable?: Array<'link' | 'underline' | 'codeBlock' | 'heading'>;
+  /** Chat-surface side-effect dispatcher (mute, remind, task, etc.). */
+  onChatCommand?: ChatCommandHandler;
+  /** Notified when the slash menu opens / closes (for host Enter-key gating). */
+  onMenuStateChange?: (open: boolean) => void;
 };
 
 /**
@@ -36,6 +40,10 @@ export function createBaseExtensions(opts: EditorConfigOptions): Extensions {
       ...(disable.has('underline') ? { underline: false as const } : {}),
     }),
     Placeholder.configure({ placeholder: opts.placeholder ?? 'Type / for commands…' }),
-    SlashMenu.configure({ surface: opts.surface }),
+    SlashMenu.configure({
+      surface: opts.surface,
+      onChatCommand: opts.onChatCommand,
+      onMenuStateChange: opts.onMenuStateChange,
+    }),
   ];
 }

@@ -30,6 +30,8 @@ ui-audit-*.png
 alex-pm-test-*.png
 audit-*.png
 docs/superpowers/audits/pr-a-screenshots/
+docs/superpowers/audits/screenshots/
+docs/superpowers/audits/*.last-run.txt
 bug-test-*.png
 demo-*.png
 fix-*.png

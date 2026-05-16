@@ -1,14 +1,27 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { api } from '@/lib/api';
 import {
   Search, Hash, CheckSquare, User, MessageSquare,
-  Sun, Moon, Plus, Settings, X, Bot, Tag, CalendarDays,
-  BookOpen, FileText, Scale,
+  Sun, Plus, Settings, Bot, Tag, CalendarDays,
+  BookOpen, FileText, Scale, BellOff, Smile, Clock,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { useAuth } from '@/lib/auth-context';
+import { useChatContext } from '@/lib/chat-context';
+import { useTheme } from './theme-provider';
+import {
+  openTaskQuickCreate,
+  openCreateSpace,
+  createNoteAndOpen,
+  toggleDnd,
+  setStatusFromArgs,
+  createReminderFromArgs,
+  openDeftyDm,
+} from '@/lib/quick-actions';
+import { parseReminderTime } from './slash-command-autocomplete';
 
 const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 
@@ -30,7 +43,17 @@ type SearchResults = {
 type Command = {
   label: string;
   icon: any;
-  action: () => void;
+  /** Immediate-fire action. Mutually exclusive with `prompt`. */
+  action?: () => void | Promise<void>;
+  /**
+   * Argument-prompt mode. When picked, the palette switches the input into
+   * an "args" field and calls `submit(args)` on Enter — same UX as the
+   * chat slash menu's prefill commands.
+   */
+  prompt?: {
+    placeholder: string;
+    submit: (args: string) => void | Promise<void>;
+  };
 };
 
 function formatStatus(status: string): string {
@@ -39,30 +62,92 @@ function formatStatus(status: string): string {
 
 export function CommandPalette() {
   const router = useRouter();
+  const pathname = usePathname();
+  const { user, refreshUser } = useAuth();
+  const { openDmWith } = useChatContext();
+  const { toggleTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // When set, the palette is in "args prompt" sub-mode for the picked command.
+  const [activePrompt, setActivePrompt] = useState<{ label: string; placeholder: string; submit: (args: string) => Promise<void> | void } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
-
-  const mode = query.startsWith('>') ? 'commands' : 'search';
-
-  const COMMANDS: Command[] = useMemo(() => [
-    { label: 'Create task', icon: Plus, action: () => { router.push('/tasks'); close(); } },
-    { label: 'New space', icon: Hash, action: () => { router.push('/chat'); close(); } },
-    { label: 'Toggle dark mode', icon: Sun, action: () => { document.documentElement.classList.toggle('dark'); close(); } },
-    { label: 'Open settings', icon: Settings, action: () => { router.push('/settings'); close(); } },
-    { label: 'Ask Deft', icon: Bot, action: () => { router.push('/chat'); close(); } },
-    { label: 'Go to Calendar', icon: CalendarDays, action: () => { router.push('/calendar'); close(); } },
-  ], [router]);
 
   const close = useCallback(() => {
     setOpen(false);
     setQuery('');
     setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
+    setActivePrompt(null);
   }, []);
+
+  const mode = activePrompt ? 'prompt' : query.startsWith('/') ? 'commands' : 'search';
+
+  const COMMANDS: Command[] = useMemo(() => [
+    {
+      label: 'Create task',
+      icon: Plus,
+      action: () => { openTaskQuickCreate(router, pathname || ''); close(); },
+    },
+    {
+      label: 'New note',
+      icon: FileText,
+      action: async () => { await createNoteAndOpen(api, router); close(); },
+    },
+    {
+      label: 'New space',
+      icon: Hash,
+      action: () => { openCreateSpace(); close(); },
+    },
+    {
+      label: 'Set reminder',
+      icon: Clock,
+      prompt: {
+        placeholder: 'e.g. 30m check email',
+        submit: async (args) => {
+          await createReminderFromArgs(api, parseReminderTime, args);
+        },
+      },
+    },
+    {
+      label: 'Set status',
+      icon: Smile,
+      prompt: {
+        placeholder: 'e.g. 🍕 Lunch',
+        submit: async (args) => {
+          await setStatusFromArgs(api, args);
+          await refreshUser();
+        },
+      },
+    },
+    {
+      label: 'Toggle Do Not Disturb',
+      icon: BellOff,
+      action: async () => { await toggleDnd(api, user?.status_text ?? null); await refreshUser(); close(); },
+    },
+    {
+      label: 'Toggle dark mode',
+      icon: Sun,
+      action: () => { toggleTheme(); close(); },
+    },
+    {
+      label: 'Ask Defty',
+      icon: Bot,
+      action: async () => { await openDeftyDm(api, openDmWith); close(); },
+    },
+    {
+      label: 'Open settings',
+      icon: Settings,
+      action: () => { router.push('/settings'); close(); },
+    },
+    {
+      label: 'Go to Calendar',
+      icon: CalendarDays,
+      action: () => { router.push('/calendar'); close(); },
+    },
+  ], [router, pathname, toggleTheme, user?.status_text, refreshUser, openDmWith, close]);
 
   // Keyboard shortcut: Cmd+K / Ctrl+K
   useEffect(() => {
@@ -102,7 +187,7 @@ export function CommandPalette() {
 
   // Debounced search
   useEffect(() => {
-    if (!query || query.startsWith('>')) {
+    if (!query || query.startsWith('/') || activePrompt) {
       setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
       return;
     }
@@ -127,10 +212,11 @@ export function CommandPalette() {
       }
     }, 200);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, activePrompt]);
 
   // Build flat items list for keyboard navigation
   const flatItems = useMemo(() => {
+    if (mode === 'prompt') return [];
     if (mode === 'commands') {
       const commandQuery = query.slice(1).toLowerCase().trim();
       return COMMANDS
@@ -160,35 +246,57 @@ export function CommandPalette() {
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // Escape from a prompt rolls back to the commands list, not all the
+        // way out — gives the user a way to cancel without re-typing `>`.
+        if (activePrompt) {
+          setActivePrompt(null);
+          setQuery('/');
+          return;
+        }
         close();
         return;
       }
       if (e.key === 'ArrowDown') {
+        if (activePrompt) return;
         e.preventDefault();
         setSelectedIndex((prev) => Math.min(prev + 1, flatItems.length - 1));
         return;
       }
       if (e.key === 'ArrowUp') {
+        if (activePrompt) return;
         e.preventDefault();
         setSelectedIndex((prev) => Math.max(prev - 1, 0));
         return;
       }
       if (e.key === 'Enter') {
         e.preventDefault();
+        // Prompt mode: submit the typed args (current query) to the active prompt.
+        if (activePrompt) {
+          const args = query.trim();
+          if (!args) return; // require at least something
+          void Promise.resolve(activePrompt.submit(args)).finally(close);
+          return;
+        }
         const selected = flatItems[selectedIndex];
         if (!selected) return;
         if (selected.type === 'command') {
-          (selected.item as Command).action();
+          const cmd = selected.item as Command;
+          if (cmd.prompt) {
+            // Enter sub-mode: blank the input, swap to prompt placeholder.
+            setActivePrompt({ label: cmd.label, placeholder: cmd.prompt.placeholder, submit: cmd.prompt.submit });
+            setQuery('');
+            return;
+          }
+          if (cmd.action) void Promise.resolve(cmd.action());
         } else if (selected.type === 'space') {
-          router.push('/chat');
+          router.push(`/chat?space=${selected.item.id}`);
           close();
         } else if (selected.type === 'task') {
           const t = selected.item;
           router.push(`/tasks?task=${t.project_prefix}-${t.number}`);
           close();
         } else if (selected.type === 'person') {
-          router.push('/chat');
-          close();
+          void openDmWith(selected.item.id).finally(close);
         } else if (selected.type === 'message') {
           const m = selected.item;
           router.push(`/chat?space=${m.space_id}&message=${m.id}`);
@@ -210,7 +318,7 @@ export function CommandPalette() {
         }
       }
     },
-    [flatItems, selectedIndex, router, close]
+    [flatItems, selectedIndex, router, close, activePrompt, query, openDmWith]
   );
 
   // Scroll selected item into view
@@ -255,13 +363,21 @@ export function CommandPalette() {
           >
             <Search size={12} strokeWidth={2} style={{ color: '#fff' }} />
           </div>
+          {activePrompt && (
+            <span
+              className="text-[11px] px-2 py-1 rounded flex-shrink-0"
+              style={{ background: 'var(--surface-container-highest)', color: 'var(--on-surface-variant)', fontFamily: 'var(--font-mono)' }}
+            >
+              {activePrompt.label}
+            </span>
+          )}
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search anything..."
+            placeholder={activePrompt ? activePrompt.placeholder : 'Search anything...'}
             className="flex-1 bg-transparent text-[13px] outline-none"
             style={{
               color: 'var(--on-surface)',
@@ -290,7 +406,15 @@ export function CommandPalette() {
           ref={resultsRef}
           className="max-h-[360px] overflow-y-auto py-2"
         >
-          {mode === 'commands' ? (
+          {mode === 'prompt' ? (
+            <div className="py-6 text-center">
+              <p className="text-[12px]" style={{ color: 'var(--outline)' }}>
+                Press <kbd className="px-1.5 py-0.5 rounded mx-1" style={{ background: 'var(--surface-container-highest)', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>↵</kbd>
+                to submit · <kbd className="px-1.5 py-0.5 rounded mx-1" style={{ background: 'var(--surface-container-highest)', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>esc</kbd>
+                to go back
+              </p>
+            </div>
+          ) : mode === 'commands' ? (
             <>
               <div className="px-3 py-1.5">
                 <span
@@ -314,11 +438,23 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => cmd.action()}
+                    onClick={() => {
+                      if (cmd.prompt) {
+                        setActivePrompt({ label: cmd.label, placeholder: cmd.prompt.placeholder, submit: cmd.prompt.submit });
+                        setQuery('');
+                      } else if (cmd.action) {
+                        void Promise.resolve(cmd.action());
+                      }
+                    }}
                     onMouseEnter={() => setSelectedIndex(i)}
                   >
                     <cmd.icon size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px]">{cmd.label}</span>
+                    {cmd.prompt && (
+                      <span className="ml-auto text-[10px]" style={{ color: 'var(--outline)' }}>
+                        ↵ to enter
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -342,7 +478,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push('/chat'); close(); }}
+                    onClick={() => { router.push(`/chat?space=${item.id}`); close(); }}
                   >
                     <span
                       className="text-[11px] px-1.5 py-0.5 rounded"
@@ -400,7 +536,7 @@ export function CommandPalette() {
                       color: 'var(--on-surface)',
                       transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
-                    onClick={() => { router.push('/chat'); close(); }}
+                    onClick={() => { void openDmWith(item.id).finally(close); }}
                   >
                     <User size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
                     <span className="text-[13px] flex-1 truncate">{item.name}</span>
@@ -550,7 +686,7 @@ export function CommandPalette() {
                 Start typing to search...
               </p>
               <p className="text-[11px] mt-1" style={{ color: 'var(--outline)' }}>
-                Type <kbd className="px-1 py-0.5 rounded" style={{ background: 'var(--surface-container-highest)', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>&gt;</kbd> for commands
+                Type <kbd className="px-1 py-0.5 rounded" style={{ background: 'var(--surface-container-highest)', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>/</kbd> for commands
               </p>
             </div>
           )}
