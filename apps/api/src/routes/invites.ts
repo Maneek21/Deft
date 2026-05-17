@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { users, orgs, orgMembers } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 
 export const inviteRoutes = new Hono();
 
@@ -136,6 +137,20 @@ inviteRoutes.post('/accept', async (c) => {
   if (parsed.data.name) updates.name = parsed.data.name;
 
   await db.update(users).set(updates).where(eq(users.id, payload.user_id));
+
+  // Ensure Defty is in the org and materialize the 1:1 DM so the new
+  // member sees it in their sidebar immediately. Both are idempotent;
+  // failure must not block sign-in.
+  try {
+    await ensureDeftyMembership(payload.org_id);
+  } catch (err) {
+    console.error('[ensureDeftyMembership] failed for org', payload.org_id, err);
+  }
+  try {
+    await ensureDeftyDm(payload.org_id, payload.user_id);
+  } catch (err) {
+    console.error('[ensureDeftyDm] failed for org', payload.org_id, 'user', payload.user_id, err);
+  }
 
   // Fire member.joined trigger now that the user has actually joined.
   // Fire-and-forget — a failing subscriber must not block sign-in.

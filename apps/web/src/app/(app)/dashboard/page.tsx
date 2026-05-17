@@ -14,9 +14,12 @@ import {
   LayoutGrid, RotateCcw,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useChatContext } from '@/lib/chat-context';
 import { AIProviderBanner } from '@/components/ai-provider-banner';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { formatMessageTime, formatFullDateLong } from '@/lib/time';
+import { api } from '@/lib/api';
+import { openDeftyDm } from '@/lib/quick-actions';
 
 import { DashboardDataProvider, useDashboardData } from './lib/data-provider';
 import { DashboardGrid } from './grid/dashboard-grid';
@@ -66,6 +69,7 @@ function Hero({
   editMode: boolean; onToggleEdit: () => void;
 }) {
   const { user } = useAuth();
+  const { openDmWith } = useChatContext();
   const { core } = useDashboardData();
   const [clientGreeting, setClientGreeting] = useState<string | null>(null);
 
@@ -91,9 +95,9 @@ function Hero({
   );
 
   const heroActions = [
-    { label: 'New task', icon: Plus, href: '/tasks', primary: true },
-    { label: 'Message', icon: MessageSquare, href: '/chat', primary: false },
-    { label: 'Ask Deft', icon: Bot, href: '/chat', primary: false },
+    { label: 'New task', icon: Plus, href: '/tasks', primary: true, onClick: null },
+    { label: 'Message', icon: MessageSquare, href: '/chat', primary: false, onClick: null },
+    { label: 'Ask Defty', icon: Bot, href: null, primary: false, onClick: () => { void openDeftyDm(api, openDmWith); } },
   ] as const;
 
   return (
@@ -176,8 +180,8 @@ function Hero({
             maxWidth: '100%',
           }}
         >
-          {heroActions.map(a => (
-            <Link key={a.label} href={a.href} className="fc-btn" style={{
+          {heroActions.map(a => {
+            const style = {
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               minHeight: 44,
               minWidth: 44,
@@ -188,11 +192,30 @@ function Hero({
                 ? 'color-mix(in srgb, var(--bg-hover) 75%, white 4%)'
                 : 'transparent',
               textDecoration: 'none',
-            }} aria-label={a.label} title={a.label}>
-              <a.icon size={13} strokeWidth={1.8} />
-              <span className="hidden md:inline">{a.label}</span>
-            </Link>
-          ))}
+              border: 'none',
+              cursor: 'pointer',
+            } as const;
+            const body = (
+              <>
+                <a.icon size={13} strokeWidth={1.8} />
+                <span className="hidden md:inline">{a.label}</span>
+              </>
+            );
+            if (a.onClick) {
+              return (
+                <button key={a.label} type="button" onClick={a.onClick} className="fc-btn"
+                  style={style} aria-label={a.label} title={a.label}>
+                  {body}
+                </button>
+              );
+            }
+            return (
+              <Link key={a.label} href={a.href!} className="fc-btn"
+                style={style} aria-label={a.label} title={a.label}>
+                {body}
+              </Link>
+            );
+          })}
           <span className="hidden md:block" style={{ width: 1, height: 20, background: 'var(--border-default)', margin: '0 2px' }} />
           <button onClick={onStandup} disabled={standupGenerating} className="fc-btn" style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,

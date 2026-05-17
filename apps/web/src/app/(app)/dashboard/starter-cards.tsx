@@ -15,6 +15,8 @@ import { useEffect, useState, type ComponentType } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bot, Users, FolderPlus, X } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useChatContext } from '@/lib/chat-context';
+import { openDeftyDm } from '@/lib/quick-actions';
 
 type CardId = 'defty' | 'invite' | 'project';
 
@@ -34,7 +36,7 @@ const CARDS: readonly CardDef[] = [
     title: 'Ask Defty to plan your day',
     body: 'Defty can read your tasks, calendar, and messages, then suggest a focused half-day plan.',
     cta: 'Open Defty',
-    href: '/agent',
+    href: '',
   },
   {
     id: 'invite',
@@ -81,6 +83,7 @@ function writeDismissed(id: CardId) {
 
 export function StarterCards() {
   const router = useRouter();
+  const { openDmWith } = useChatContext();
   // `null` = haven't decided yet (still loading onboarding state).
   // `false` = should not render at all (onboarding completed or fetch failed).
   // `true` = render based on per-card dismissal state.
@@ -138,6 +141,10 @@ export function StarterCards() {
     if (dismissed[card.id]) return;
     writeDismissed(card.id);
     setDismissed((prev) => ({ ...prev, [card.id]: true }));
+    if (card.id === 'defty') {
+      void openDeftyDm(api, openDmWith);
+      return;
+    }
     router.push(card.href);
   };
 

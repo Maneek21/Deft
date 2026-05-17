@@ -8,7 +8,7 @@ import { db } from '../lib/db.js';
 import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revokedTokens } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
-import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 
 export const authRoutes = new Hono();
 
@@ -115,6 +115,14 @@ authRoutes.post('/signup', async (c) => {
     await ensureDeftyMembership(org!.id);
   } catch (err) {
     console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+  }
+
+  // Materialize Defty's 1:1 DM so the user sees it in the sidebar
+  // immediately. Failure must not block signup.
+  try {
+    await ensureDeftyDm(org!.id, user!.id);
+  } catch (err) {
+    console.error('[ensureDeftyDm] failed for org', org!.id, 'user', user!.id, err);
   }
 
   // Create onboarding state
@@ -431,6 +439,14 @@ authRoutes.get('/google/callback', async (c) => {
         await ensureDeftyMembership(org!.id);
       } catch (err) {
         console.error('[ensureDeftyMembership] failed for org', org!.id, err);
+      }
+
+      // Materialize Defty's 1:1 DM so the user sees it in the sidebar
+      // immediately. Failure must not block signup.
+      try {
+        await ensureDeftyDm(org!.id, user.id);
+      } catch (err) {
+        console.error('[ensureDeftyDm] failed for org', org!.id, 'user', user.id, err);
       }
 
       await db.insert(onboardingState).values({
