@@ -45,8 +45,8 @@ async function seedWikiPage(
   const slug = `test-kd-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const r = await c.query(
     `INSERT INTO wiki_pages
-       (org_id, user_id, slug, title, content, type, scope, confidence)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (id, org_id, user_id, slug, title, content, type, scope, confidence)
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
     [ORG_ID, userId, slug, `KD test page ${suffix}`, 'Test content.', 'decision', 'org', 0.9],
   );

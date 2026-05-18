@@ -111,8 +111,8 @@ test('generateOneOnePrep includes commitment from seeded wiki_page', async () =>
     const slug = `test-commitment-${Date.now()}`;
     const r = await c.query(
       `INSERT INTO wiki_pages
-         (org_id, slug, title, summary, content, type, scope, confidence, tags, referenced_user_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10::text[])
+         (id, org_id, slug, title, summary, content, type, scope, confidence, tags, referenced_user_ids)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10::text[])
        RETURNING id`,
       [
         ORG_ID,

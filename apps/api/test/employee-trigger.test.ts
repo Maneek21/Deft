@@ -59,8 +59,8 @@ async function seedFixtures() {
       TEST_SPACE_ID = sp.rows[0].id;
     } else {
       const r = await c.query(
-        `INSERT INTO spaces (org_id, name, type, created_by)
-         VALUES ($1, 'phase9-trigger-test-space', 'public', $2)
+        `INSERT INTO spaces (id, org_id, name, type, created_by)
+         VALUES (gen_random_uuid()::text, $1, 'phase9-trigger-test-space', 'public', $2)
          RETURNING id`,
         [ORG_ID, TEST_USER_ID],
       );

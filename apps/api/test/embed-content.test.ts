@@ -62,8 +62,8 @@ test('1. writes a 1536-dim embedding to the target wiki page', async () => {
   const pageId = await withClient(async (c) => {
     const r = await c.query(
       `INSERT INTO wiki_pages
-        (org_id, slug, title, content, summary, type, scope, confidence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (id, org_id, slug, title, content, summary, type, scope, confidence)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         ORG_ID,
@@ -171,8 +171,8 @@ test('4. throws on non-OK OpenAI response so the queue retries', async () => {
     const pageId = await withClient(async (c) => {
       const r = await c.query(
         `INSERT INTO wiki_pages
-          (org_id, slug, title, content, type, scope, confidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (id, org_id, slug, title, content, type, scope, confidence)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
         [ORG_ID, `test-embed-err-${Date.now()}`, 'Err page', 'content', 'decision', 'org', 1.0],
       );

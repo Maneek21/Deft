@@ -102,8 +102,8 @@ async function seedFixtures() {
       TEST_PROJECT_ID = proj.rows[0].id;
     } else {
       const r = await c.query(
-        `INSERT INTO projects (org_id, name, prefix, lead_id, task_counter)
-         VALUES ($1, 'MCP Phase4 Test Project', 'MCPP4', $2, 0)
+        `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+         VALUES (gen_random_uuid()::text, $1, 'MCP Phase4 Test Project', 'MCPP4', $2, 0)
          RETURNING id`,
         [ORG_ID, TEST_USER_ID]
       );
@@ -120,8 +120,8 @@ async function seedFixtures() {
       TEST_SPACE_ID = sp.rows[0].id;
     } else {
       const r = await c.query(
-        `INSERT INTO spaces (org_id, name, type, created_by)
-         VALUES ($1, 'mcp-phase4-test-space', 'public', $2)
+        `INSERT INTO spaces (id, org_id, name, type, created_by)
+         VALUES (gen_random_uuid()::text, $1, 'mcp-phase4-test-space', 'public', $2)
          RETURNING id`,
         [ORG_ID, TEST_USER_ID]
       );

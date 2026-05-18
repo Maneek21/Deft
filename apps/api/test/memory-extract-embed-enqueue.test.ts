@@ -219,8 +219,8 @@ test('2. enqueue embed-content called after wiki page UPDATE', async () => {
   const slug = `test-existing-page-update-${Date.now()}`;
   const pageId: string = await withClient(async (c) => {
     const r = await c.query(
-      `INSERT INTO wiki_pages (org_id, slug, title, content, type, scope, confidence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      `INSERT INTO wiki_pages (id, org_id, slug, title, content, type, scope, confidence)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [ORG_ID, slug, 'Existing Test Page', 'Original content.', 'fact', 'org', 0.9],
     );
     return r.rows[0].id;

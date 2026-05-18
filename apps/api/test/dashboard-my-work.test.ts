@@ -70,8 +70,8 @@ async function seedFixtures() {
       projectId = proj.rows[0].id as string;
     } else {
       const r = await c.query(
-        `INSERT INTO projects (org_id, name, prefix, lead_id, task_counter)
-         VALUES ($1, 'My Work Test Project', 'MYW', $2, 0)
+        `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+         VALUES (gen_random_uuid()::text, $1, 'My Work Test Project', 'MYW', $2, 0)
          RETURNING id`,
         [ORG_ID, USER_A_ID],
       );
