@@ -62,8 +62,8 @@ test('1. delegation_chain edge created when user-A assigns >=5 tasks to user-B w
     if (r.rows.length > 0) return r.rows[0].id as string;
     // Create a minimal project if none exists
     const ins = await c.query(
-      `INSERT INTO projects (org_id, name, slug, created_by)
-       VALUES ($1, 'Test Project (delegation)', 'test-delegation-proj', $2)
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES (gen_random_uuid()::text, $1, 'Test Project (delegation)', 'TDP', $2, 0)
        RETURNING id`,
       [ORG_ID, USER_A],
     );

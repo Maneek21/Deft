@@ -75,10 +75,10 @@ async function seedEmployee(opts: {
         const cfg = { heartbeat_checklist: opts.skillChecklists[i] };
         await c.query(
           `INSERT INTO skills (id, slug, name, description, version, source,
-                                author_user_id, agent_config)
+                                org_id, created_by, agent_config)
            VALUES ($1, $2, 'Phase 8 Prompt Skill', 'test skill', '0.1.0',
-                   'org', $3, $4::jsonb)`,
-          [skillId, `phase8-prompt-skill-${i}-${crypto.randomUUID()}`, userId, JSON.stringify(cfg)],
+                   'org', $3, $4, $5::jsonb)`,
+          [skillId, `phase8-prompt-skill-${i}-${crypto.randomUUID()}`, orgId, userId, JSON.stringify(cfg)],
         );
         skillIds.push(skillId);
 

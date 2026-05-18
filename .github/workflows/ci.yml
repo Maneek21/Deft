@@ -70,7 +70,7 @@ jobs:
       - name: Enable pgvector extension
         run: psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Push schema
-        run: pnpm --filter @deft/db push --force
+        run: pnpm --filter @deft/db push-full
       - name: Run tests
         run: pnpm --filter @deft/api test
 

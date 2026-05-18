@@ -55,8 +55,8 @@ async function seedWikiPage(
   const slug = `test-burnout-authorship-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const r = await c.query(
     `INSERT INTO wiki_pages
-       (org_id, user_id, slug, title, content, type, scope, confidence, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (id, org_id, user_id, slug, title, content, type, scope, confidence, created_at)
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id`,
     [
       ORG_ID,
@@ -87,8 +87,8 @@ async function seedCommitmentPage(
   const slug = `test-burnout-commitment-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const r = await c.query(
     `INSERT INTO wiki_pages
-       (org_id, user_id, slug, title, content, type, scope, confidence, tags, referenced_user_ids, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ARRAY['commitment']::text[], ARRAY[$9]::text[], $10)
+       (id, org_id, user_id, slug, title, content, type, scope, confidence, tags, referenced_user_ids, updated_at)
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, $7, $8, ARRAY['commitment']::text[], ARRAY[$9]::text[], $10)
      RETURNING id`,
     [
       ORG_ID,

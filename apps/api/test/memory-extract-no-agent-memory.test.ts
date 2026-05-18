@@ -127,11 +127,26 @@ async function cleanupTest(slugPrefix: string) {
         );
       }
     }
-    // Clean up decisions rows
-    await c.query(
-      `DELETE FROM decisions WHERE org_id = $1 AND message_id = $2`,
+    // Clean up any decision-typed wiki_pages created from this message
+    // (legacy `decisions` table was retired 2026-05-12; decisions now live on
+    // wiki_pages where type='decision', linked to messages via wiki_citations).
+    const decisionPages = await c.query(
+      `SELECT wp.id
+         FROM wiki_pages wp
+         JOIN wiki_citations wc ON wc.page_id = wp.id
+        WHERE wp.org_id = $1
+          AND wp.type = 'decision'
+          AND wc.source_type = 'message'
+          AND wc.source_id = $2`,
       [ORG_ID, MESSAGE_ID],
     );
+    const decisionIds: string[] = decisionPages.rows.map((r: any) => r.id);
+    if (decisionIds.length) {
+      await c.query(`DELETE FROM wiki_citations WHERE page_id = ANY($1)`, [decisionIds]);
+      await c.query(`DELETE FROM wiki_links WHERE source_page_id = ANY($1) OR target_page_id = ANY($1)`, [decisionIds]);
+      await c.query(`DELETE FROM wiki_ops_log WHERE page_id = ANY($1)`, [decisionIds]);
+      await c.query(`DELETE FROM wiki_pages WHERE id = ANY($1)`, [decisionIds]);
+    }
     // Remove any stray agent_memory rows for the test user (should be zero, but clean anyway)
     await c.query(
       `DELETE FROM agent_memory WHERE org_id = $1 AND user_id = $2`,
@@ -230,9 +245,25 @@ test('handleMemoryExtract still writes to wiki_pages after removing dual-write',
   } finally {
     delete (globalThis as any).__mockAnthropicResponseNoAgMem;
     await cleanupTest('no-agent-mem-wiki-check-');
-    // Also clean up the wiki-check message decisions
-    await withClient((c) =>
-      c.query(`DELETE FROM decisions WHERE org_id = $1 AND message_id = $2`, [ORG_ID, `${MESSAGE_ID}-wiki-check`]),
-    );
+    // Also clean up any decision-typed wiki_pages cited from the wiki-check message
+    await withClient(async (c) => {
+      const r = await c.query(
+        `SELECT wp.id
+           FROM wiki_pages wp
+           JOIN wiki_citations wc ON wc.page_id = wp.id
+          WHERE wp.org_id = $1
+            AND wp.type = 'decision'
+            AND wc.source_type = 'message'
+            AND wc.source_id = $2`,
+        [ORG_ID, `${MESSAGE_ID}-wiki-check`],
+      );
+      const ids: string[] = r.rows.map((row: any) => row.id);
+      if (ids.length) {
+        await c.query(`DELETE FROM wiki_citations WHERE page_id = ANY($1)`, [ids]);
+        await c.query(`DELETE FROM wiki_links WHERE source_page_id = ANY($1) OR target_page_id = ANY($1)`, [ids]);
+        await c.query(`DELETE FROM wiki_ops_log WHERE page_id = ANY($1)`, [ids]);
+        await c.query(`DELETE FROM wiki_pages WHERE id = ANY($1)`, [ids]);
+      }
+    });
   }
 });
