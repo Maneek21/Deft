@@ -123,6 +123,28 @@ let detectStalledCommitments: (userId: string, orgId: string) => Promise<{
 }>;
 
 before(async () => {
+  // FK cluster fix: ensure org + the three hardcoded users exist before
+  // any wiki_pages/tasks insert with these ids. The seed org sometimes
+  // exists in CI but the user rows may not — ON CONFLICT keeps it safe.
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID, 'Burnout Detector Test Org'],
+    );
+    for (const [uid, name] of [
+      [USER_A, 'Alex PM'],
+      [USER_B, 'Priya'],
+      [USER_C, 'Rahul'],
+    ] as const) {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent)
+         VALUES ($1, $2, $3, false)
+         ON CONFLICT (id) DO NOTHING`,
+        [uid, `burnout-${uid}@test.local`, name],
+      );
+    }
+  });
+
   const mod = await import('../src/services/burnout-detector.js');
   detectAuthorshipOverload = mod.detectAuthorshipOverload;
   detectStalledCommitments = mod.detectStalledCommitments;

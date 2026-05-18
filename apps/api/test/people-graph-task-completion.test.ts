@@ -37,6 +37,21 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 let extractExpertise: (orgId: string) => Promise<void>;
 
 before(async () => {
+  // FK cluster fix: ensure org + USER_A exist before tasks (assignee_id FK)
+  // and projects (lead_id FK) inserts.
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID, 'Task Completion Test Org'],
+    );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, $3, false)
+       ON CONFLICT (id) DO NOTHING`,
+      [USER_A, `tc-${USER_A}@test.local`, 'Alex PM'],
+    );
+  });
+
   const mod = await import('../src/services/people-graph.js');
   extractExpertise = mod.extractExpertise;
 });

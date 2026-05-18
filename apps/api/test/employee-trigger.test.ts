@@ -113,6 +113,14 @@ async function teardownFixtures() {
       `DELETE FROM agent_employees WHERE id = ANY($1::text[])`,
       [empIds],
     );
+    // FK cluster fix: a space may have been created with
+    // created_by = TEST_USER_ID in seedFixtures() when the org had no
+    // existing unarchived space. Null out spaces.created_by so the user
+    // delete below succeeds. spaces.created_by is nullable.
+    await c.query(
+      `UPDATE spaces SET created_by = NULL WHERE created_by = $1`,
+      [TEST_USER_ID],
+    );
     await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
   });
 }

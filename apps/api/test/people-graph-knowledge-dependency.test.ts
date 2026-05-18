@@ -75,6 +75,26 @@ async function seedWikiLink(
 let detectRelationships: (orgId: string) => Promise<void>;
 
 before(async () => {
+  // FK cluster fix: ensure org + the two hardcoded users exist before any
+  // wiki_pages insert with these ids.
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID, 'KD Test Org'],
+    );
+    for (const [uid, name] of [
+      [USER_A, 'Alex PM'],
+      [USER_B, 'Priya'],
+    ] as const) {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent)
+         VALUES ($1, $2, $3, false)
+         ON CONFLICT (id) DO NOTHING`,
+        [uid, `kd-${uid}@test.local`, name],
+      );
+    }
+  });
+
   const mod = await import('../src/services/people-graph.js');
   detectRelationships = mod.detectRelationships;
 });
