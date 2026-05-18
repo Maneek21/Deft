@@ -48,7 +48,7 @@ before(async () => {
   // any tasks (assignee_id FK) / spaces (created_by FK) insert.
   await withClient(async (c) => {
     await c.query(
-      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
       [ORG_ID, 'PG Relationships Test Org'],
     );
     for (const [uid, name] of [

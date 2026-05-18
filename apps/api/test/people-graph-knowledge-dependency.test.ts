@@ -79,7 +79,7 @@ before(async () => {
   // wiki_pages insert with these ids.
   await withClient(async (c) => {
     await c.query(
-      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
       [ORG_ID, 'KD Test Org'],
     );
     for (const [uid, name] of [

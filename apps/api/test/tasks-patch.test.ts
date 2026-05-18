@@ -48,7 +48,7 @@ async function seedFixtures() {
     // FK cluster fix: seed orgs row so task_activity.org_id FK holds when
     // PATCH writes activity log entries on title changes.
     await c.query(
-      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
       [ORG_ID, 'Tasks Patch Test Org'],
     );
     await c.query(

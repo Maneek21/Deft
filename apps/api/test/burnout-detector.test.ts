@@ -128,7 +128,7 @@ before(async () => {
   // exists in CI but the user rows may not — ON CONFLICT keeps it safe.
   await withClient(async (c) => {
     await c.query(
-      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
       [ORG_ID, 'Burnout Detector Test Org'],
     );
     for (const [uid, name] of [

@@ -41,7 +41,7 @@ before(async () => {
   // and projects (lead_id FK) inserts.
   await withClient(async (c) => {
     await c.query(
-      `INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
       [ORG_ID, 'Task Completion Test Org'],
     );
     await c.query(
