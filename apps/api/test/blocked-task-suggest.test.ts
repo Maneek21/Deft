@@ -11,7 +11,7 @@ import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { eq, and, inArray } from 'drizzle-orm';
 import {
-  db, agentActions, spaces, messages,
+  db, agentActions, agentNudges, spaces, messages,
   orgs, users, orgMembers,
 } from '@deft/db';
 import { handleBlockedAlert } from '../src/workers/handlers/blocked-alert.js';
@@ -56,6 +56,14 @@ afterEach(async () => {
       eq(agentActions.org_id, testOrgId),
       eq(agentActions.user_id, testUserId),
       eq(agentActions.source, 'blocked_classifier'),
+    ),
+  );
+  // Clear the dedup nudge too so the next test isn't skipped by the
+  // 4h "already alerted" guard in handleBlockedAlert.
+  await db.delete(agentNudges).where(
+    and(
+      eq(agentNudges.user_id, testUserId),
+      eq(agentNudges.nudge_type, 'blocked'),
     ),
   );
 });

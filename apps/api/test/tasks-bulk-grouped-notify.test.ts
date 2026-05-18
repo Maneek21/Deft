@@ -46,6 +46,11 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 before(async () => {
   projectPrefix = `BULKN${randomLetters(4)}`;
   await withClient(async (c) => {
+    // FK cluster fix: seed orgs row so task_activity.org_id FK holds.
+    await c.query(
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID, 'Bulk Grouped Notify Test Org'],
+    );
     for (const [uid, email, name] of [
       [ACTOR_ID, ACTOR_EMAIL, 'Bulk Actor'],
       [ASSIGNEE_ID, ASSIGNEE_EMAIL, 'Bulk Assignee'],

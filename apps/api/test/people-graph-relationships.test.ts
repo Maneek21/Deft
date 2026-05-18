@@ -44,6 +44,27 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 let detectRelationships: (orgId: string) => Promise<void>;
 
 before(async () => {
+  // FK cluster fix: ensure org + the three hardcoded users exist before
+  // any tasks (assignee_id FK) / spaces (created_by FK) insert.
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $1) ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID, 'PG Relationships Test Org'],
+    );
+    for (const [uid, name] of [
+      [USER_A, 'Alex PM'],
+      [USER_B, 'Priya'],
+      [USER_C, 'Rahul'],
+    ] as const) {
+      await c.query(
+        `INSERT INTO users (id, email, name, is_agent)
+         VALUES ($1, $2, $3, false)
+         ON CONFLICT (id) DO NOTHING`,
+        [uid, `pg-rel-${uid}@test.local`, name],
+      );
+    }
+  });
+
   const mod = await import('../src/services/people-graph.js');
   detectRelationships = mod.detectRelationships;
 });

@@ -116,6 +116,14 @@ async function teardownFixtures() {
       `DELETE FROM agent_employees WHERE id = $1`,
       [EMP_ID],
     );
+    // FK cluster fix: a project may have been created with lead_id =
+    // SHADOW_USER_ID in seedFixtures() when the org had no existing
+    // project. Drop the FK reference (null-out lead_id) so the user
+    // delete below succeeds.
+    await c.query(
+      `UPDATE projects SET lead_id = NULL WHERE lead_id IN ($1, $2)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID],
+    );
     await c.query(
       `DELETE FROM users WHERE id IN ($1, $2)`,
       [SHADOW_USER_ID, APPROVER_USER_ID],

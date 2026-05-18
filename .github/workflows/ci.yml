@@ -71,6 +71,13 @@ jobs:
         run: psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Push schema
         run: pnpm --filter @deft/db push-full
+      - name: Seed demo data + platform bundles
+        # Tests depend on the seeded credentials (maneek@test.com /
+        # test1234) and on the Alex PM bundled-template employee.
+        # seed-demo.ts explicitly enumerates CI + the apps/api/test
+        # suite as supported callers; without this step, login-based
+        # tests get 401 and templates assertions fail.
+        run: pnpm db:seed:demo
       - name: Run tests
         run: pnpm --filter @deft/api test
 
