@@ -832,6 +832,7 @@ export const crossReferences = pgTable('cross_references', {
 }, (t) => [
   index('cross_ref_source_idx').on(t.source_type, t.source_id),
   index('cross_ref_target_idx').on(t.target_type, t.target_id),
+  uniqueIndex('cross_ref_unique_edge').on(t.source_type, t.source_id, t.target_type, t.target_id),
 ]);
 
 // ═══ DUPLICATE FLAGS ═══
