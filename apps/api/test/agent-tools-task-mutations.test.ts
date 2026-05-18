@@ -18,6 +18,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import { ensureDeftyMembership } from '../src/lib/ensure-defty-membership.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
@@ -45,6 +46,12 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 }
 
 before(async () => {
+  // Seed the Defty system agent user + org_members row for ORG_ID. Several
+  // downstream code paths (notifications, agent-reply dispatch heuristics)
+  // assume Defty exists for the org and fail with FK violations on
+  // notifications.user_id otherwise.
+  await ensureDeftyMembership(ORG_ID);
+
   await withClient(async (c) => {
     // Caller user (human, member of org)
     await c.query(
