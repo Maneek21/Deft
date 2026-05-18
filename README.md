@@ -43,12 +43,12 @@ Open `.env` and set three values:
 docker compose up -d
 
 # 3. Initialize the database (run once on first boot)
-pnpm db:push        # applies schema
+pnpm db:push-full   # applies schema + the two extras SQL files (FTS columns / triggers)
 pnpm db:seed        # seeds Defty + bundled skills/templates (prod-safe, idempotent)
 # pnpm db:seed:demo # ALSO inserts 5 test users for poking around — dev only, NEVER in prod
 ```
 
-> **Note:** Use `pnpm db:push`, not `pnpm db:migrate`. The migration journal is canonical as of v0.1 but `push` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts` and applies what's missing. `db:migrate` is for upgrade paths once we ship versioned releases.
+> **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. The migration journal is canonical as of v0.1 but `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies two orphan SQL files (`0020_wiki_search_vector.sql` and `0033_tasks_embedding.sql`) that create generated tsvector columns and GIN indexes Drizzle's pushed schema can't express. Plain `pnpm db:push` skips the orphans and leaves wiki/task FTS broken. `db:migrate` is for upgrade paths once we ship versioned releases.
 
 > **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, bundled skills, bundled task templates, first-party employee templates). It never inserts test accounts.
 
@@ -71,7 +71,7 @@ cp .env.example .env
 # Edit .env with your database URL
 
 # Set up database
-pnpm db:push
+pnpm db:push-full
 pnpm db:seed         # Platform bundle only (prod-safe)
 # pnpm db:seed:demo  # OR: wipe + populate with 5 test users + demo content (dev only)
 
