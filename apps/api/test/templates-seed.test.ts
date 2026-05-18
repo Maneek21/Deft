@@ -40,6 +40,7 @@ const VALID_ROLES = [
   'cfo',
 ];
 const EXPECTED_SLUGS = [
+  'defty',
   'alex-pm',
   'designer',
   'qa',
@@ -70,7 +71,7 @@ before(async () => {
   await seedTemplates({ silent: true });
 });
 
-test('seed produces exactly 8 first-party template rows', async () => {
+test('seed produces exactly 9 first-party template rows', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ count: string }>(
       `SELECT count(*)::text FROM agent_employee_templates
@@ -242,8 +243,8 @@ test('every AGENTS.md contains queued_for_approval rule', async () => {
   });
 });
 
-test('TEMPLATE_META has exactly 8 templates matching expected slugs', () => {
-  assert.equal(TEMPLATE_META.length, 8);
+test('TEMPLATE_META has exactly 9 templates matching expected slugs', () => {
+  assert.equal(TEMPLATE_META.length, 9);
   const slugs = TEMPLATE_META.map((t) => t.slug).sort();
   assert.deepEqual(slugs, [...EXPECTED_SLUGS].sort());
 });
