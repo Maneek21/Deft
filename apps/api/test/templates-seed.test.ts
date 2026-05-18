@@ -38,6 +38,8 @@ const VALID_ROLES = [
   'customer_success',
   'community_manager',
   'cfo',
+  // Defty system template uses the 'superintendent' role.
+  'superintendent',
 ];
 const EXPECTED_SLUGS = [
   'defty',
@@ -78,11 +80,11 @@ test('seed produces exactly 9 first-party template rows', async () => {
        WHERE slug = ANY($1::text[])`,
       [EXPECTED_SLUGS],
     );
-    assert.equal(res.rows[0]!.count, '8');
+    assert.equal(res.rows[0]!.count, '9');
   });
 });
 
-test('all 8 templates have valid semver in version', async () => {
+test('all 9 templates have valid semver in version', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ slug: string; version: string }>(
       `SELECT slug, version FROM agent_employee_templates
@@ -95,7 +97,7 @@ test('all 8 templates have valid semver in version', async () => {
   });
 });
 
-test('all 8 templates have non-empty markdown fields', async () => {
+test('all 9 templates have non-empty markdown fields', async () => {
   await withClient(async (c) => {
     const res = await c.query<{
       slug: string;
@@ -117,7 +119,7 @@ test('all 8 templates have non-empty markdown fields', async () => {
   });
 });
 
-test('all 8 templates declare valid default_capability_packs', async () => {
+test('all 9 templates declare valid default_capability_packs', async () => {
   const validSlugs = new Set(CAPABILITY_PACKS.map((p) => p.slug));
   await withClient(async (c) => {
     const res = await c.query<{ slug: string; default_capability_packs: string[] | null }>(
@@ -140,7 +142,7 @@ test('all 8 templates declare valid default_capability_packs', async () => {
   });
 });
 
-test('all 8 templates have valid default_trigger_subscriptions', async () => {
+test('all 9 templates have valid default_trigger_subscriptions', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ slug: string; default_trigger_subscriptions: string[] | null }>(
       `SELECT slug, default_trigger_subscriptions FROM agent_employee_templates
@@ -157,7 +159,7 @@ test('all 8 templates have valid default_trigger_subscriptions', async () => {
   });
 });
 
-test('all 8 templates have role values from agentEmployeeRoleEnum', async () => {
+test('all 9 templates have role values from agentEmployeeRoleEnum', async () => {
   await withClient(async (c) => {
     const res = await c.query<{ slug: string; role: string }>(
       `SELECT slug, role FROM agent_employee_templates
