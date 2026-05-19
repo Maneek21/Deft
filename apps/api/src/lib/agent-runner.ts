@@ -21,7 +21,7 @@ Rules:
 - Use search tools to find data before answering — don't guess
 - Cite your sources (the tools return source IDs)
 - Be concise and direct
-- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do
+- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do. When invoked from a chat mention, write actions are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use markdown formatting (bold, lists, headers) for structure but keep it compact.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -472,7 +472,7 @@ export async function runAgentQuery(params: {
               status: 'skipped',
               message: mode === 'background'
                 ? 'Action requires approval. Trust level does not permit auto-execution.'
-                : 'Write actions are not auto-executed from chat mentions. Suggest the user use the Agent panel for this action.',
+                : 'Write actions from chat mentions require user approval. The action has been queued — an Approve/Reject card will appear inline on this message, and it is also listed in the user\'s Inbox under the Approvals tab.',
             }),
           });
         }
