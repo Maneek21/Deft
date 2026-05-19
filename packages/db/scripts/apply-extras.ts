@@ -1,9 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config as loadEnv } from 'dotenv';
 import pg from 'pg';
 
 const { Client } = pg;
+
+// drizzle.config.ts loads the repo-root .env, so `drizzle-kit push` sees
+// DATABASE_URL. apply-extras.ts runs as a separate `tsx` invocation in the
+// `db:push-full` chain and didn't — so a fresh-clone `pnpm db:push-full`
+// would push the schema, then die at the extras step. Load the same .env
+// here so both halves of push-full see the same env.
+const __filename = fileURLToPath(import.meta.url);
+loadEnv({ path: resolve(dirname(__filename), '..', '..', '..', '.env') });
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
