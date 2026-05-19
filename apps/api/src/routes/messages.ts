@@ -7,10 +7,10 @@ import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { env } from '../lib/env.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { resolveAnthropicApiKey } from '../lib/org-ai-config.js';
 
 export const messageRoutes = new Hono();
 
@@ -542,7 +542,9 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    if (agentMentioned && env.ANTHROPIC_API_KEY) {
+    const anthropicAvailable = Boolean(await resolveAnthropicApiKey(user.org_id));
+
+    if (agentMentioned && anthropicAvailable) {
       try {
         const [org] = await db.select({ name: orgs.name })
           .from(orgs)
@@ -566,7 +568,7 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // Detect agent-employee mentions → enqueue agent-employee-message per employee.
     // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention required.
-    if (env.ANTHROPIC_API_KEY) {
+    if (anthropicAvailable) {
       try {
         const targetUserIds = new Set<string>(mentionedUserIds);
         const [spaceRow] = await db.select({ type: spaces.type })

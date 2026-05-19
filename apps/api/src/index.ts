@@ -3,9 +3,6 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
-import { serve } from '@hono/node-server';
-import type { Server } from 'node:http';
-import { setupSocket } from './socket.js';
 import { authRoutes } from './routes/auth.js';
 import { spaceRoutes } from './routes/spaces.js';
 import { messageRoutes } from './routes/messages.js';
@@ -60,7 +57,11 @@ const app = new Hono();
 
 app.use('*', logger());
 app.use('*', cors({
-  origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+  origin: [
+    process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ],
   credentials: true,
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -187,54 +188,6 @@ app.get('/health/queue', async (c) => {
     return c.json({ error: 'Failed to query queue health', code: 'INTERNAL_ERROR' }, 500);
   }
 });
-
-// Prefer Railway/Fly's PORT env, then API_PORT, then local default.
-const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
-
-// Guard: only start the HTTP server when running as the main entry point,
-// not when imported by tests (avoids EADDRINUSE in test environments).
-// In ESM, there's no require.main; we use process.argv[1] vs import.meta.url.
-const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/index.js') ||
-               process.argv[1]?.replace(/\\/g, '/').endsWith('/index.ts');
-
-let server: ReturnType<typeof serve> | null = null;
-if (isMain) {
-  server = serve({ fetch: app.fetch, port }, async (info) => {
-    console.log(`Deft API running on http://localhost:${info.port}`);
-
-    // Start background job workers — uses Postgres, no Redis needed
-    try {
-      const { startWorkers } = await import('./workers/index.js');
-      const { initScheduler } = await import('./lib/job-scheduler.js');
-      startWorkers();
-      await initScheduler();
-      console.log('[startup] Job workers and scheduler started');
-    } catch (err) {
-      console.warn('[startup] Job workers failed to start:', (err as Error).message);
-    }
-
-    // Self-hosted v1 — single-org hard-block. Warn the operator if the DB
-    // already holds more than one workspace; signup is blocked server-side
-    // but a legacy DB carried over from a pre-hard-block build can slip
-    // through. See apps/api/src/lib/single-org-guard.ts.
-    try {
-      const { countOrgs } = await import('./lib/single-org-guard.js');
-      const count = await countOrgs();
-      if (count > 1) {
-        console.warn(
-          `[startup] This Deft instance has ${count} orgs. Self-hosted ` +
-            'Deft is licensed for a single workspace per deployment ' +
-            '(BSL 1.1). Check LICENSE and consolidate before opening ' +
-            'signup to external users.',
-        );
-      }
-    } catch (err) {
-      console.warn('[startup] single-org check skipped:', (err as Error).message);
-    }
-  });
-
-  setupSocket(server as unknown as Server);
-}
 
 export { app };
 export default app;

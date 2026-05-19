@@ -58,4 +58,4 @@ EXPOSE 3000 3001
 # Start both web and API. Use the locally-installed next binary (pnpm exec),
 # not `npx next start` — npx downloads a fresh next install to ~/.npm/_npx/
 # that lacks the Turbopack runtime files our build produced.
-CMD sh -c "cd /app/apps/api && node --import tsx src/index.ts & cd /app/apps/web && pnpm exec next start -p 3000"
+CMD sh -c "cd /app/apps/api && node --import tsx src/server.ts & cd /app/apps/web && pnpm exec next start -p 3000"
