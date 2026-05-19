@@ -318,6 +318,21 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'list_projects',
+    description:
+      'List all projects in the workspace. Call this BEFORE proposing a write action that names a project, to verify the project actually exists. Returns project id, name, prefix, and whether archived. Empty array means no projects exist yet — in that case, do not propose to attach a task to any project; either ask the user to create a project first, or propose with project_name="".',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        include_archived: {
+          type: 'boolean',
+          description: 'Whether to include archived/deleted projects (default false)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'remember',
     description:
       "Store a fact or preference for future reference. Use 'conversation' scope for this chat, 'user' scope for all future conversations with this user, 'org' scope for team-wide knowledge visible to everyone in the org.",

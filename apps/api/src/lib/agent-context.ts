@@ -671,6 +671,26 @@ export async function executeToolCall(
       return { result, citations };
     }
 
+    case 'list_projects': {
+      const includeArchived = params.include_archived === true;
+      const conditions = [eq(projects.org_id, orgId)];
+      if (!includeArchived) {
+        conditions.push(eq(projects.is_archived, false));
+        conditions.push(eq(projects.is_deleted, false));
+      }
+      const rows = await db
+        .select({
+          id: projects.id,
+          name: projects.name,
+          prefix: projects.prefix,
+          is_archived: projects.is_archived,
+        })
+        .from(projects)
+        .where(and(...conditions))
+        .orderBy(projects.name);
+      return { result: rows, citations: [] };
+    }
+
     case 'get_project_progress': {
       const [project] = await db
         .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
