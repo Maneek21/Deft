@@ -20,10 +20,11 @@ import { getIO } from '../socket.js';
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
 Rules:
-- Use search tools to find data before answering — don't guess
+- ALWAYS use the search/list tools to ground your answer before responding. Even for simple questions about workspace data (members, tasks, projects, recent messages), call the relevant tool — never answer from conversation context alone. Use the tools silently (see narration rule below); just don't skip them.
 - Cite your sources (the tools return source IDs)
 - Be concise and direct
-- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do
+- Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user hasn't named a project, OR explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
+- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do. When invoked from a chat mention, write actions are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use markdown formatting (bold, lists, headers) for structure but keep it compact.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -417,9 +418,9 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
+        const approvalTier = getApprovalTier(tool.name);
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input)) {
           // Background mode: auto-execute if trust level permits
-          const approvalTier = getApprovalTier(tool.name);
           // Thread the triggering message id into write actions that understand
           // source_message_id. The LLM never has to know about it — we inject
           // it here for create_task and similar tools.
@@ -456,6 +457,8 @@ export async function runAgentQuery(params: {
           pendingActions.push({
             action: tool.name,
             params: pendingParams,
+            tool_use_id: tool.id,
+            approval_tier: approvalTier,
           });
           toolResults.push({
             type: 'tool_result' as const,
@@ -464,7 +467,7 @@ export async function runAgentQuery(params: {
               status: 'skipped',
               message: mode === 'background'
                 ? 'Action requires approval. Trust level does not permit auto-execution.'
-                : 'Write actions are not auto-executed from chat mentions. Suggest the user use the Agent panel for this action.',
+                : 'Write actions from chat mentions require user approval. The action has been queued — an Approve/Reject card will appear inline on this message, and it is also listed in the user\'s Inbox under the Approvals tab.',
             }),
           });
         }
