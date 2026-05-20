@@ -42,6 +42,12 @@ export async function createAgentMessage(p: CreateAgentMessageParams): Promise<A
     case 'anthropic':
       return callAnthropicAgent(p);
     case 'openai':
+      // GPT-5 family + o-series are reasoning models. With function tools +
+      // reasoning_effort they're only supported on the Responses API
+      // (/v1/responses), not Chat Completions. Route them there.
+      return isOpenAIReasoningModel(p.resolved.model)
+        ? callOpenAIResponsesAgent(p)
+        : callOpenAIAgent(p);
     case 'openrouter':
       return callOpenAIAgent(p);
     case 'ollama':
@@ -49,6 +55,10 @@ export async function createAgentMessage(p: CreateAgentMessageParams): Promise<A
     default:
       throw new Error(`Unsupported agent provider: ${(p.resolved as any).provider}`);
   }
+}
+
+function isOpenAIReasoningModel(model: string): boolean {
+  return /^(gpt-5|o1|o3|o4)/i.test(model);
 }
 
 // ─── Anthropic (native passthrough + prompt caching) ───
@@ -98,11 +108,21 @@ async function callOpenAIAgent(p: CreateAgentMessageParams): Promise<AgentMessag
   }
   const baseURL = (p.resolved.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
 
+  // GPT-5 family + o-series are reasoning models: they reject `max_tokens`
+  // (require `max_completion_tokens`), accept `reasoning_effort`, and need a
+  // larger budget since hidden reasoning tokens count against the limit.
+  const isReasoning = /^(gpt-5|o1|o3|o4)/i.test(p.resolved.model);
+
   const body: any = {
     model: p.resolved.model,
     messages: toOpenAIMessages(p.system, p.messages),
-    max_tokens: p.maxTokens,
   };
+  if (isReasoning) {
+    body.max_completion_tokens = Math.max(p.maxTokens, 16384);
+    if (p.resolved.reasoningEffort) body.reasoning_effort = p.resolved.reasoningEffort;
+  } else {
+    body.max_tokens = p.maxTokens;
+  }
   if (p.tools.length > 0) {
     body.tools = toOpenAITools(p.tools);
     body.tool_choice = 'auto';
@@ -131,6 +151,54 @@ async function callOpenAIAgent(p: CreateAgentMessageParams): Promise<AgentMessag
     usage: {
       input_tokens: data.usage?.prompt_tokens ?? 0,
       output_tokens: data.usage?.completion_tokens ?? 0,
+    },
+  };
+}
+
+// ─── OpenAI Responses API (/v1/responses — reasoning models w/ tools) ───
+
+async function callOpenAIResponsesAgent(p: CreateAgentMessageParams): Promise<AgentMessageResult> {
+  if (!p.resolved.apiKey) throw new Error('openai API key not configured (org or env)');
+  const baseURL = (p.resolved.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
+
+  const body: any = {
+    model: p.resolved.model,
+    instructions: p.system,
+    input: toResponsesInput(p.messages),
+    // Reasoning tokens count against this budget — keep headroom above the
+    // caller's output target so tool-calling turns aren't starved.
+    max_output_tokens: Math.max(p.maxTokens, 16384),
+    store: false,
+  };
+  if (p.resolved.reasoningEffort) body.reasoning = { effort: p.resolved.reasoningEffort };
+  if (p.tools.length > 0) {
+    body.tools = toResponsesTools(p.tools);
+    body.tool_choice = 'auto';
+  }
+
+  const res = await fetch(`${baseURL}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${p.resolved.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: p.abortSignal ?? AbortSignal.timeout(120_000),
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`openai responses API error (${res.status}): ${t.slice(0, 500)}`);
+  }
+
+  const data = await res.json();
+  const hasToolCall = (data.output ?? []).some((o: any) => o.type === 'function_call');
+  return {
+    content: fromResponsesOutput(data),
+    stop_reason: hasToolCall ? 'tool_use' : 'end_turn',
+    usage: {
+      input_tokens: data.usage?.input_tokens ?? 0,
+      output_tokens: data.usage?.output_tokens ?? 0,
     },
   };
 }
@@ -270,6 +338,52 @@ function toOllamaMessages(system: string, messages: Anthropic.MessageParam[]): a
   return out;
 }
 
+// Responses API uses flat function tools (no nested `function` wrapper).
+function toResponsesTools(tools: Anthropic.Tool[]): any[] {
+  return tools.map((t) => ({
+    type: 'function',
+    name: t.name,
+    description: (t as any).description || '',
+    parameters: (t as any).input_schema || { type: 'object', properties: {} },
+  }));
+}
+
+/**
+ * Anthropic message history → Responses API `input` items.
+ *   - string content → { role, content }
+ *   - assistant text → message item; assistant tool_use → function_call items
+ *   - user tool_result → function_call_output items (matched by call_id)
+ */
+function toResponsesInput(messages: Anthropic.MessageParam[]): any[] {
+  const out: any[] = [];
+  for (const m of messages) {
+    if (typeof m.content === 'string') {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const blocks = m.content as any[];
+
+    if (m.role === 'assistant') {
+      const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (text) out.push({ role: 'assistant', content: text });
+      for (const b of blocks.filter((b) => b.type === 'tool_use')) {
+        out.push({ type: 'function_call', call_id: b.id, name: b.name, arguments: JSON.stringify(b.input ?? {}) });
+      }
+    } else {
+      const toolResults = blocks.filter((b) => b.type === 'tool_result');
+      if (toolResults.length > 0) {
+        for (const tr of toolResults) {
+          out.push({ type: 'function_call_output', call_id: tr.tool_use_id, output: contentToString(tr.content) });
+        }
+      } else {
+        const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+        out.push({ role: 'user', content: text });
+      }
+    }
+  }
+  return out;
+}
+
 function contentToString(c: any): string {
   if (typeof c === 'string') return c;
   if (Array.isArray(c)) {
@@ -291,6 +405,29 @@ function fromOpenAIMessage(message: any): Anthropic.ContentBlock[] {
       input = {};
     }
     blocks.push({ type: 'tool_use', id: tc.id || `call_${blocks.length}`, name: tc.function?.name, input });
+  }
+  if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
+  return blocks as Anthropic.ContentBlock[];
+}
+
+function fromResponsesOutput(data: any): Anthropic.ContentBlock[] {
+  const blocks: any[] = [];
+  for (const item of data.output ?? []) {
+    if (item.type === 'message') {
+      const text = (item.content ?? [])
+        .filter((c: any) => c.type === 'output_text')
+        .map((c: any) => c.text)
+        .join('');
+      if (text) blocks.push({ type: 'text', text });
+    } else if (item.type === 'function_call') {
+      let input: any = {};
+      try {
+        input = JSON.parse(item.arguments || '{}');
+      } catch {
+        input = {};
+      }
+      blocks.push({ type: 'tool_use', id: item.call_id, name: item.name, input });
+    }
   }
   if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
   return blocks as Anthropic.ContentBlock[];

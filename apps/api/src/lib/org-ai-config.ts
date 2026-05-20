@@ -37,6 +37,8 @@ export type ModelRoute = {
   provider: LLMProvider;
   model: string;
   baseUrl?: string;
+  /** OpenAI reasoning models (gpt-5*, o1/o3/o4) only: minimal | low | medium | high. */
+  reasoning_effort?: string;
 };
 
 export type OrgAIConfigStored = {
@@ -152,6 +154,8 @@ export type ResolvedReasonProvider = {
   apiKey: string;
   /** Set for openai/openrouter/ollama; undefined for anthropic (SDK default host). */
   baseUrl?: string;
+  /** OpenAI reasoning models only: minimal | low | medium | high. */
+  reasoningEffort?: string;
 };
 
 /**
@@ -199,7 +203,7 @@ export async function resolveReasonProvider(orgId: string | null | undefined): P
   if (provider === 'openrouter' && !baseUrl) baseUrl = OPENROUTER_BASE_URL;
   if (provider === 'ollama' && !baseUrl) baseUrl = ollamaUrl || env.OLLAMA_URL;
 
-  return { provider, model, apiKey, baseUrl };
+  return { provider, model, apiKey, baseUrl, reasoningEffort: route?.reasoning_effort };
 }
 
 /**
