@@ -14,11 +14,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
 import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
-import { env } from './env.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
 import { getApprovalTier, shouldAutoExecute, type TrustLevel } from './agent-approval.js';
-import { resolveAnthropicApiKey } from './org-ai-config.js';
+import { createAgentMessage } from './agent-llm.js';
+import type { ResolvedReasonProvider } from './org-ai-config.js';
 
 export interface StreamLoopParams {
   convoId: string;
@@ -33,7 +33,8 @@ export interface StreamLoopParams {
   apiMessages: Anthropic.MessageParam[];
   write: (data: any) => Promise<void>;
   abortSignal: AbortSignal;
-  model: string;
+  /** Resolved provider context (provider | model | apiKey | baseUrl) for the reason task. */
+  resolved: ResolvedReasonProvider;
 }
 
 export interface StreamLoopResult {
@@ -48,10 +49,6 @@ const MAX_INPUT_TOKENS = 200_000;
 const MAX_ITERATIONS = 50;
 
 export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<StreamLoopResult> {
-  // BYOK — resolve per-org Anthropic key, fall back to env.
-  const apiKey = await resolveAnthropicApiKey(p.orgId);
-  const anthropic = new Anthropic({ apiKey });
-
   let apiMessages = [...p.apiMessages];
   let finalText = '';
   const allCitations: any[] = [];
@@ -68,42 +65,24 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     iterations++;
     console.log(`[agent-loop] iter=${iterations} tokens=${totalTokensIn}/${MAX_INPUT_TOKENS} msgs=${apiMessages.length}`);
 
-    // Two cache breakpoints per Anthropic's prompt-caching limit of 4:
-    //   1. End of system prompt (the employee role + MCP capabilities +
-    //      connections + memory + wiki section — ~4-6k tokens, stable
-    //      across all iterations in a turn).
-    //   2. End of tools list (38+ tool definitions, ~4-6k tokens, also
-    //      stable across iterations).
-    // Subsequent iterations within 5 minutes read both at 10% of the
-    // normal input cost. See docs/superpowers/plans/2026-04-12-agent-ui-session-2.5-prompt-caching.md
-    const cachedSystem: Anthropic.TextBlockParam[] = [
-      {
-        type: 'text',
-        text: p.systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      },
-    ];
-    const cachedTools: Anthropic.Tool[] =
-      p.tools.length > 0
-        ? [
-            ...p.tools.slice(0, -1),
-            { ...p.tools[p.tools.length - 1]!, cache_control: { type: 'ephemeral' } },
-          ]
-        : p.tools;
-
-    const response = await anthropic.messages.create({
-      model: p.model,
-      max_tokens: 4096,
-      system: cachedSystem,
+    // Provider-agnostic reasoning call. For Anthropic the adapter applies the
+    // two prompt-cache breakpoints (system + tools) internally; for OpenAI /
+    // OpenRouter / Ollama it translates the request and normalizes the response
+    // back to Anthropic-shaped content blocks.
+    const response = await createAgentMessage({
+      resolved: p.resolved,
+      system: p.systemPrompt,
       messages: apiMessages,
-      tools: cachedTools,
-    }, { signal: p.abortSignal });
+      tools: p.tools,
+      maxTokens: 4096,
+      abortSignal: p.abortSignal,
+    });
 
     if (response.usage) {
       totalTokensIn += response.usage.input_tokens || 0;
       totalTokensOut += response.usage.output_tokens || 0;
-      const cacheRead = (response.usage as any).cache_read_input_tokens ?? 0;
-      const cacheWrite = (response.usage as any).cache_creation_input_tokens ?? 0;
+      const cacheRead = response.usage.cache_read ?? 0;
+      const cacheWrite = response.usage.cache_write ?? 0;
       if (cacheRead > 0 || cacheWrite > 0) {
         console.log(
           `[agent-loop] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
@@ -152,7 +131,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
         tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
           ? (cumulativeToolCalls as any)
           : null,
-        model: p.model ?? null,
+        model: p.resolved.model ?? null,
         tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
         tokens_out: isTerminalIteration ? totalTokensOut : (response.usage?.output_tokens ?? null),
       },

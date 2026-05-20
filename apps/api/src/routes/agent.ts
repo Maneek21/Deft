@@ -22,8 +22,7 @@ import {
 import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
-import { getModelConfig } from '../lib/llm.js';
-import { resolveAnthropicApiKey, resolveAnthropicModel } from '../lib/org-ai-config.js';
+import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
@@ -69,7 +68,7 @@ type StreamContextOk = {
   tools: Anthropic.Tool[];
   allActionTools: Set<string>;
   trustLevel: TrustLevel;
-  model: string;
+  resolved: ResolvedReasonProvider;
   agentEmployeeId: string | undefined;
   agentUserId: string;
 };
@@ -79,10 +78,11 @@ async function buildStreamContext(
   user: { id: string; org_id: string },
   convoId: string,
 ): Promise<StreamContext> {
-  // BYOK — accept either an org-level Anthropic key or the env fallback.
-  const apiKey = await resolveAnthropicApiKey(user.org_id);
-  if (!apiKey) {
-    return { _kind: 'error', error: 'Anthropic API key not configured', code: 'NO_API_KEY', status: 503 };
+  // BYOK — resolve the org's chosen reasoning provider (anthropic | openai |
+  // openrouter | ollama) with env fallback. Ollama needs no key.
+  const resolved = await resolveReasonProvider(user.org_id);
+  if (!resolved.apiKey && resolved.provider !== 'ollama') {
+    return { _kind: 'error', error: `${resolved.provider} API key not configured`, code: 'NO_API_KEY', status: 503 };
   }
 
   // Derive agent_employee_id from the space members: find the non-user member,
@@ -296,10 +296,6 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     systemPrompt = systemPrompt + connectionInfo + memoryContext + wikiSection + mcpCapabilitiesSection;
   }
 
-  const reasonConfig = getModelConfig('reason');
-  // BYOK — per-org model override falls back to llm.ts default if unset.
-  const reasonModel = await resolveAnthropicModel(user.org_id, 'reason') ?? reasonConfig.model;
-
   // Resolve the agent's user_id from space_members (the non-current-user member).
   // Must happen before history rehydration so we can distinguish user vs assistant rows.
   const otherMembers = await db
@@ -338,7 +334,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     tools,
     allActionTools,
     trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
-    model: reasonModel,
+    resolved,
     agentEmployeeId,
     agentUserId: resolvedAgentUserId,
   };
@@ -643,12 +639,12 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
         apiMessages: ctx.apiMessages,
         write,
         abortSignal: abortController.signal,
-        model: ctx.model,
+        resolved: ctx.resolved,
       });
       if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
       if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
       clearInterval(keepalive);
-      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
+      await write({ type: 'done', model: ctx.resolved.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -699,12 +695,12 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
         apiMessages: ctx.apiMessages,
         write,
         abortSignal: abortController.signal,
-        model: ctx.model,
+        resolved: ctx.resolved,
       });
       if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
       if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
       clearInterval(keepalive);
-      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
+      await write({ type: 'done', model: ctx.resolved.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
