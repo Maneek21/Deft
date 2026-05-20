@@ -35,11 +35,14 @@ import {
   Headphones,
   BookOpen,
   Smile,
+  Library,
+  Inbox,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
+import { useInboxCount } from '@/hooks/use-inbox-count';
 
 type AgentEmployee = {
   id: string;
@@ -76,6 +79,8 @@ const navItems = [
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
+  { name: 'Inbox', href: '/inbox', icon: Inbox },
+  { name: 'Library', href: '/library', icon: Library },
 ];
 
 // ── Chat sidebar content (Spaces + DMs) ──────────────────────────────
@@ -639,6 +644,9 @@ export function Sidebar({
   // Total unread across all spaces
   const totalUnread = Array.from(unreadCounts.values()).reduce((sum, c) => sum + c, 0);
 
+  // Inbox unread count (mentions, DMs, pending approvals)
+  const { count: inboxCount } = useInboxCount();
+
   const handleSpaceClick = (id: string) => {
     onSelectSpace(id);
     setMobileOpen(false);
@@ -729,6 +737,15 @@ export function Sidebar({
                   style={{ background: 'var(--primary-container)' }}
                 >
                   {totalUnread > 99 ? '99+' : totalUnread}
+                </div>
+              )}
+              {item.name === 'Inbox' && inboxCount > 0 && (
+                <div
+                  className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
+                  style={{ background: 'var(--danger, #ef4444)' }}
+                  title={`${inboxCount} unread item${inboxCount === 1 ? '' : 's'}`}
+                >
+                  {inboxCount > 99 ? '99+' : inboxCount}
                 </div>
               )}
             </Link>

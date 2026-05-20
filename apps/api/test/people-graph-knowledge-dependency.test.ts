@@ -61,8 +61,8 @@ async function seedWikiLink(
   suffix: string,
 ): Promise<string> {
   const r = await c.query(
-    `INSERT INTO wiki_links (org_id, source_page_id, target_page_id, context)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO wiki_links (id, org_id, source_page_id, target_page_id, context)
+     VALUES (gen_random_uuid()::text, $1, $2, $3, $4)
      ON CONFLICT (source_page_id, target_page_id) DO UPDATE SET context = EXCLUDED.context
      RETURNING id`,
     [ORG_ID, sourcePageId, targetPageId, `test-kd-link-${suffix}`],
