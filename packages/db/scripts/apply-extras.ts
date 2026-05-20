@@ -37,6 +37,17 @@ async function main() {
       await client.query(sql);
       console.log(`[apply-extras] applied ${file}`);
     }
+
+    // Expression-based unique indexes can't be declared in schema.ts, so
+    // `drizzle-kit push` silently drops them — migrate-built DBs have them,
+    // push-built DBs don't. Re-create the ones the app depends on so both
+    // paths behave identically. (migration 0051: org-scoped template slug
+    // uniqueness — COALESCE keeps first-party rows globally unique per slug.)
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS agent_employee_templates_org_slug_uniq
+         ON agent_employee_templates (COALESCE(org_id, ''), slug)`,
+    );
+    console.log('[apply-extras] ensured agent_employee_templates_org_slug_uniq');
   } finally {
     await client.end();
   }

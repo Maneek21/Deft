@@ -57,6 +57,11 @@ jobs:
       REDIS_URL: redis://localhost:6379
       JWT_SECRET: ci-test-secret-not-for-prod
       JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
+      # Fake, non-functional key. The memory-extract tests mock the Anthropic
+      # HTTP call, but the SDK throws at construction when no key is set, and
+      # the agent-reply dispatch is gated on the key being present. Setting a
+      # dummy unblocks both without ever making a real API call.
+      ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -78,6 +83,12 @@ jobs:
         # suite as supported callers; without this step, login-based
         # tests get 401 and templates assertions fail.
         run: pnpm db:seed:demo
+      - name: Seed canonical test fixtures
+        # seed-demo uses random ids, but a chunk of the suite hardcodes fixed
+        # org/user/agent ids from the original dev-db snapshot. This adds
+        # exactly those fixed-id rows (idempotent, isolated). Without it ~13
+        # tests fail with FK violations / 0-row assertions.
+        run: pnpm --filter @deft/api exec tsx src/scripts/seed-test-fixtures.ts
       - name: Run tests
         run: pnpm --filter @deft/api test
 
