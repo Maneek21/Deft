@@ -7,7 +7,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
 import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
 import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
-import { resolveAnthropicApiKey, resolveAnthropicModel } from './org-ai-config.js';
+import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
+import { createAgentMessage } from './agent-llm.js';
+import { llm } from './llm.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
@@ -18,10 +20,11 @@ import { getIO } from '../socket.js';
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
 Rules:
-- Use search tools to find data before answering — don't guess
+- ALWAYS use the search/list tools to ground your answer before responding. Even for simple questions about workspace data (members, tasks, projects, recent messages), call the relevant tool — never answer from conversation context alone. Use the tools silently (see narration rule below); just don't skip them.
 - Cite your sources (the tools return source IDs)
 - Be concise and direct
-- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do
+- Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user hasn't named a project, OR explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
+- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do. When invoked from a chat mention, write actions are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use markdown formatting (bold, lists, headers) for structure but keep it compact.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -49,13 +52,17 @@ async function verifyResponse(
   orgId: string,
 ): Promise<string> {
   try {
-    const apiKey = await resolveAnthropicApiKey(orgId);
-    if (!apiKey) return response;
-    const model = await resolveAnthropicModel(orgId, 'classify');
-    const anthropic = new Anthropic({ apiKey, timeout: 45_000, maxRetries: 1 });
-    const verificationResult = await anthropic.messages.create({
-      model,
-      max_tokens: 1024,
+    // Route through the provider-agnostic llm() router (classify task) so the
+    // verify pass honors whichever provider the org configured — not Anthropic
+    // only. Returns the original response unchanged if no provider is set up.
+    const orgConfig = await getOrgAIConfig(orgId).catch(() => undefined);
+    const hasOrgProvider = orgConfig?.api_keys && Object.values(orgConfig.api_keys).some(Boolean);
+    if (!hasOrgProvider && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY && !process.env.OPENROUTER_API_KEY) {
+      return response;
+    }
+    const verificationResult = await llm({
+      task: 'classify',
+      maxTokens: 1024,
       system: `You are a quality reviewer for an AI assistant at ${orgName}. Review the response briefly.`,
       messages: [{
         role: 'user',
@@ -71,9 +78,10 @@ Check: Does it answer the question? Any fabricated claims? Anything important mi
 If good, reply exactly: VERIFIED
 If issues, provide a corrected version (same style/length).`,
       }],
+      orgConfig: orgConfig as any,
     });
 
-    const text = (verificationResult.content[0] as any).text?.trim() || 'VERIFIED';
+    const text = verificationResult.text?.trim() || 'VERIFIED';
     // Pass if the first word is VERIFIED — Haiku often appends meta-commentary
     // like "VERIFIED\n\nThe response accurately..." which would otherwise
     // replace the real answer with a self-review.
@@ -138,10 +146,11 @@ export async function runAgentQuery(params: {
 }> {
   const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride, agentEmployeeId } = params;
 
-  // BYOK — accept either an org-level Anthropic key or the env fallback.
-  const anthropicApiKey = await resolveAnthropicApiKey(orgId);
-  if (!anthropicApiKey) {
-    throw new Error('Anthropic API key not configured (org or env)');
+  // BYOK — resolve the org's chosen reasoning provider (anthropic | openai |
+  // openrouter | ollama) with env fallback. Ollama needs no key.
+  const reasonProvider = await resolveReasonProvider(orgId);
+  if (!reasonProvider.apiKey && reasonProvider.provider !== 'ollama') {
+    throw new Error(`${reasonProvider.provider} API key not configured (org or env)`);
   }
 
   // Check connected accounts for dynamic tool availability
@@ -279,8 +288,7 @@ export async function runAgentQuery(params: {
       .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
   }
 
-  const reasonModel = await resolveAnthropicModel(orgId, 'reason');
-  const anthropic = new Anthropic({ apiKey: anthropicApiKey, timeout: 45_000, maxRetries: 1 });
+  const reasonModel = reasonProvider.model;
 
   // Build messages array
   let apiMessages: Anthropic.MessageParam[] = [];
@@ -347,35 +355,20 @@ export async function runAgentQuery(params: {
       'started',
     );
 
-    // Prompt caching: wrap system prompt and mark the last tool with
-    // cache_control so both blocks read at 10% cost on subsequent
-    // iterations. See agent-stream-loop.ts for the same pattern.
-    const cachedSystem: Anthropic.TextBlockParam[] = [
-      {
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      },
-    ];
-    const cachedTools: Anthropic.Tool[] =
-      tools.length > 0
-        ? [
-            ...tools.slice(0, -1),
-            { ...tools[tools.length - 1]!, cache_control: { type: 'ephemeral' } },
-          ]
-        : tools;
-
-    const response = await anthropic.messages.create({
-      model: reasonModel,
-      max_tokens: 4096,
-      system: cachedSystem,
+    // Provider-agnostic reasoning call. The adapter applies Anthropic prompt
+    // caching internally (no-op for other providers) and normalizes the
+    // response back to Anthropic-shaped content blocks.
+    const response = await createAgentMessage({
+      resolved: reasonProvider,
+      system: systemPrompt,
       messages: apiMessages,
-      tools: cachedTools,
+      tools,
+      maxTokens: 4096,
     });
 
     if (response.usage) {
-      const cacheRead = (response.usage as any).cache_read_input_tokens ?? 0;
-      const cacheWrite = (response.usage as any).cache_creation_input_tokens ?? 0;
+      const cacheRead = response.usage.cache_read ?? 0;
+      const cacheWrite = response.usage.cache_write ?? 0;
       if (cacheRead > 0 || cacheWrite > 0) {
         console.log(
           `[agent-runner] cache: read=${cacheRead} write=${cacheWrite} fresh=${response.usage.input_tokens}`,
@@ -425,9 +418,9 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
+        const approvalTier = getApprovalTier(tool.name);
         if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input)) {
           // Background mode: auto-execute if trust level permits
-          const approvalTier = getApprovalTier(tool.name);
           // Thread the triggering message id into write actions that understand
           // source_message_id. The LLM never has to know about it — we inject
           // it here for create_task and similar tools.
@@ -464,6 +457,8 @@ export async function runAgentQuery(params: {
           pendingActions.push({
             action: tool.name,
             params: pendingParams,
+            tool_use_id: tool.id,
+            approval_tier: approvalTier,
           });
           toolResults.push({
             type: 'tool_result' as const,
@@ -472,7 +467,7 @@ export async function runAgentQuery(params: {
               status: 'skipped',
               message: mode === 'background'
                 ? 'Action requires approval. Trust level does not permit auto-execution.'
-                : 'Write actions are not auto-executed from chat mentions. Suggest the user use the Agent panel for this action.',
+                : 'Write actions from chat mentions require user approval. The action has been queued — an Approve/Reject card will appear inline on this message, and it is also listed in the user\'s Inbox under the Approvals tab.',
             }),
           });
         }

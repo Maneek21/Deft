@@ -29,6 +29,7 @@ const apiOrigin = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@deft/shared'],
+  allowedDevOrigins: ['localhost', '127.0.0.1'],
   // Hide the floating Next.js dev-tools indicator — it overlapped composer/FAB
   // on mobile audits. The badge is dev-only either way; this also hides the
   // build-activity spinner during dev.

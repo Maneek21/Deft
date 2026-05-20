@@ -7,7 +7,7 @@ import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { env } from '../lib/env.js';
+import { resolveReasonProvider, hasAnyAIProvider } from '../lib/org-ai-config.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
@@ -542,7 +542,17 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    if (agentMentioned && env.ANTHROPIC_API_KEY) {
+    // Defty dispatch is gated on the org having a usable reasoning provider —
+    // not specifically Anthropic. Reasoning is provider-agnostic (anthropic /
+    // openai / openrouter / ollama), and the key usually lives in org config,
+    // not env. Gating on Anthropic here silently dropped Defty whenever the
+    // org ran on OpenAI/etc. with no Anthropic key.
+    let deftyProviderReady = false;
+    if (agentMentioned) {
+      const reason = await resolveReasonProvider(user.org_id);
+      deftyProviderReady = Boolean(reason.apiKey) || reason.provider === 'ollama';
+    }
+    if (agentMentioned && deftyProviderReady) {
       try {
         const [org] = await db.select({ name: orgs.name })
           .from(orgs)
@@ -566,7 +576,8 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // Detect agent-employee mentions → enqueue agent-employee-message per employee.
     // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention required.
-    if (env.ANTHROPIC_API_KEY) {
+    // Gate on any usable AI provider (org or env), not Anthropic specifically.
+    if (await hasAnyAIProvider(user.org_id)) {
       try {
         const targetUserIds = new Set<string>(mentionedUserIds);
         const [spaceRow] = await db.select({ type: spaces.type })

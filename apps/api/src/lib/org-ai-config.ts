@@ -37,6 +37,8 @@ export type ModelRoute = {
   provider: LLMProvider;
   model: string;
   baseUrl?: string;
+  /** OpenAI reasoning models (gpt-5*, o1/o3/o4) only: minimal | low | medium | high. */
+  reasoning_effort?: string;
 };
 
 export type OrgAIConfigStored = {
@@ -140,6 +142,68 @@ export async function resolveAnthropicModel(orgId: string | null | undefined, ta
     if (route?.provider === 'anthropic' && route.model) return route.model;
   }
   return HARDCODED_DEFAULTS[task];
+}
+
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+export type ResolvedReasonProvider = {
+  provider: LLMProvider;
+  model: string;
+  /** Plain (decrypted) key. Empty string when none configured — callers must gate on truthiness. */
+  apiKey: string;
+  /** Set for openai/openrouter/ollama; undefined for anthropic (SDK default host). */
+  baseUrl?: string;
+  /** OpenAI reasoning models only: minimal | low | medium | high. */
+  reasoningEffort?: string;
+};
+
+/**
+ * Resolves the full provider context for the agent's reasoning loop (the
+ * `reason` task). Unlike resolveAnthropicModel/resolveAnthropicApiKey — which
+ * assume Anthropic — this honors whichever provider the org pinned for `reason`
+ * (anthropic | openai | openrouter | ollama), with env fallback per provider.
+ * Used by the provider-agnostic agent loop (agent-llm.ts).
+ */
+export async function resolveReasonProvider(orgId: string | null | undefined): Promise<ResolvedReasonProvider> {
+  let route: ModelRoute | undefined;
+  let apiKeys: Partial<Record<LLMProvider, string>> = {};
+  let ollamaUrl: string | undefined;
+
+  if (orgId) {
+    const cfg = await getOrgAIConfig(orgId).catch(() => null);
+    route = cfg?.ai_models?.reason;
+    apiKeys = cfg?.api_keys ?? {};
+    ollamaUrl = cfg?.ollama_url;
+  }
+
+  const provider: LLMProvider = route?.provider ?? 'anthropic';
+  const model = route?.model || HARDCODED_DEFAULTS.reason;
+
+  let apiKey = apiKeys[provider] ?? '';
+  if (!apiKey) {
+    switch (provider) {
+      case 'anthropic':
+        apiKey = env.ANTHROPIC_API_KEY || '';
+        break;
+      case 'openai':
+        apiKey = env.OPENAI_API_KEY || '';
+        break;
+      case 'openrouter':
+        apiKey = env.OPENROUTER_API_KEY || '';
+        break;
+      case 'ollama':
+        apiKey = ''; // local — no key needed
+        break;
+    }
+  }
+
+  let baseUrl = route?.baseUrl;
+  if (provider === 'openai' && !baseUrl) baseUrl = OPENAI_BASE_URL;
+  if (provider === 'openrouter' && !baseUrl) baseUrl = OPENROUTER_BASE_URL;
+  if (provider === 'ollama' && !baseUrl) baseUrl = ollamaUrl || env.OLLAMA_URL;
+
+  return { provider, model, apiKey, baseUrl, reasoningEffort: route?.reasoning_effort };
 }
 
 /**

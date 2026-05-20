@@ -22,8 +22,7 @@ import {
 import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
-import { getModelConfig } from '../lib/llm.js';
-import { resolveAnthropicApiKey, resolveAnthropicModel } from '../lib/org-ai-config.js';
+import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
@@ -43,10 +42,11 @@ export const agentRoutes = new Hono();
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
 Rules:
-- Use search tools to find data before answering — don't guess
+- ALWAYS use the search/list tools to ground your answer before responding. Even for simple questions about workspace data (members, tasks, projects, recent messages), call the relevant tool — never answer from conversation context alone. Use the tools silently (see narration rule below); just don't skip them.
 - Cite your sources (the tools return source IDs)
 - Be concise and direct
-- For write actions (create_task, update_task_status, assign_task, post_message), clearly explain what you'll do
+- Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user hasn't named a project, OR explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
+- For write actions (create_task, update_task_status, assign_task, post_message), clearly explain what you'll do. Write actions that require approval are queued for the user — an Approve/Reject card appears inline on your reply, and pending actions are also listed in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
 - Use the remember tool to store important facts about users and conversations for future reference
 - Use the recall tool to retrieve previously stored context when relevant
 - For "why" questions (why is X behind, why is X blocked), do a multi-step investigation:
@@ -69,7 +69,7 @@ type StreamContextOk = {
   tools: Anthropic.Tool[];
   allActionTools: Set<string>;
   trustLevel: TrustLevel;
-  model: string;
+  resolved: ResolvedReasonProvider;
   agentEmployeeId: string | undefined;
   agentUserId: string;
 };
@@ -79,10 +79,11 @@ async function buildStreamContext(
   user: { id: string; org_id: string },
   convoId: string,
 ): Promise<StreamContext> {
-  // BYOK — accept either an org-level Anthropic key or the env fallback.
-  const apiKey = await resolveAnthropicApiKey(user.org_id);
-  if (!apiKey) {
-    return { _kind: 'error', error: 'Anthropic API key not configured', code: 'NO_API_KEY', status: 503 };
+  // BYOK — resolve the org's chosen reasoning provider (anthropic | openai |
+  // openrouter | ollama) with env fallback. Ollama needs no key.
+  const resolved = await resolveReasonProvider(user.org_id);
+  if (!resolved.apiKey && resolved.provider !== 'ollama') {
+    return { _kind: 'error', error: `${resolved.provider} API key not configured`, code: 'NO_API_KEY', status: 503 };
   }
 
   // Derive agent_employee_id from the space members: find the non-user member,
@@ -296,10 +297,6 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     systemPrompt = systemPrompt + connectionInfo + memoryContext + wikiSection + mcpCapabilitiesSection;
   }
 
-  const reasonConfig = getModelConfig('reason');
-  // BYOK — per-org model override falls back to llm.ts default if unset.
-  const reasonModel = await resolveAnthropicModel(user.org_id, 'reason') ?? reasonConfig.model;
-
   // Resolve the agent's user_id from space_members (the non-current-user member).
   // Must happen before history rehydration so we can distinguish user vs assistant rows.
   const otherMembers = await db
@@ -338,7 +335,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     tools,
     allActionTools,
     trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
-    model: reasonModel,
+    resolved,
     agentEmployeeId,
     agentUserId: resolvedAgentUserId,
   };
@@ -643,12 +640,12 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
         apiMessages: ctx.apiMessages,
         write,
         abortSignal: abortController.signal,
-        model: ctx.model,
+        resolved: ctx.resolved,
       });
       if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
       if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
       clearInterval(keepalive);
-      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
+      await write({ type: 'done', model: ctx.resolved.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -699,12 +696,12 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
         apiMessages: ctx.apiMessages,
         write,
         abortSignal: abortController.signal,
-        model: ctx.model,
+        resolved: ctx.resolved,
       });
       if (result.citations.length > 0) await write({ type: 'citations', citations: result.citations });
       if (result.pendingActions.length > 0) await write({ type: 'actions', actions: result.pendingActions });
       clearInterval(keepalive);
-      await write({ type: 'done', model: ctx.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
+      await write({ type: 'done', model: ctx.resolved.model, tokens_in: result.totalTokensIn, tokens_out: result.totalTokensOut });
     } catch (err) {
       clearInterval(keepalive);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -990,11 +987,6 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     return c.json({ error: 'Already processed', code: 'ALREADY_PROCESSED' }, 400);
   }
 
-  await db
-    .update(agentActions)
-    .set({ approval_status: 'approved', approved_at: new Date() })
-    .where(eq(agentActions.id, actionId));
-
   // Phase 6 invariant — the executor must receive the ORIGINAL proposer's
   // user_id (action.user_id), not the approver's. Otherwise:
   //   1. Inserted messages would be authored by the human approver,
@@ -1010,6 +1002,24 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     action.user_id,
     { agentEmployeeId: action.agent_employee_id ?? undefined },
   );
+
+  // Only mark approved after execution succeeds. If the executor failed
+  // (e.g. "Project not found" because the named project was deleted between
+  // proposal and approval), leave the row pending and record the error so
+  // the user can retry without losing the proposed params. Without this,
+  // a failed exec left the row stuck in approved+null-result, invisible
+  // to "/api/agent/actions/pending" but unactionable.
+  if (execResult.success) {
+    await db
+      .update(agentActions)
+      .set({ approval_status: 'approved', approved_at: new Date() })
+      .where(eq(agentActions.id, actionId));
+  } else {
+    await db
+      .update(agentActions)
+      .set({ error: execResult.error ?? 'Action failed' })
+      .where(eq(agentActions.id, actionId));
+  }
 
   // Insert a hidden tool_result message into the unified messages table so
   // the next streaming turn (via /continue) sees a valid Anthropic tool_use →

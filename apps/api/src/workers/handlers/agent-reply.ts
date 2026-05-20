@@ -1,7 +1,8 @@
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users, spaces, spaceMembers } from '@deft/db/schema';
+import { messages, users, spaces, spaceMembers, agentActions } from '@deft/db/schema';
+import { getApprovalTier } from '../../lib/agent-approval.js';
 import { eq, and, desc, sql, ne } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
@@ -192,6 +193,32 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         pending_actions: result.pendingActions.length > 0 ? result.pendingActions : undefined,
       } as never,
     }).returning();
+
+    // Persist pending write actions as agent_actions rows so the inline
+    // <AgentActionCard/> on the reply and the /inbox?tab=approvals queue
+    // can render them. Without this, write-intent chat mentions were
+    // ghost-queued — stored in metadata.pending_actions but invisible to
+    // the approval UI (parity with agent-stream-loop.ts:208).
+    if (result.pendingActions.length > 0) {
+      try {
+        await db.insert(agentActions).values(
+          result.pendingActions.map((p: any) => ({
+            org_id: orgId,
+            user_id: userId,
+            conversation_id: spaceId,
+            message_id: agentMessage!.id,
+            action: p.action,
+            params: p.params,
+            approval_tier: (p.approval_tier ?? getApprovalTier(p.action)) as 'auto' | 'quick' | 'full',
+            approval_status: 'pending' as const,
+            source: 'mention',
+            tool_use_id: p.tool_use_id ?? null,
+          })),
+        );
+      } catch (err) {
+        console.error('[agent-reply] Failed to persist pending agent_actions:', err);
+      }
+    }
 
     // Get the agent user info for the broadcast
     const [agentUserData] = await db.select({
