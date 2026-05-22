@@ -21,7 +21,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Run `pnpm db:push`
+        1. Run `pnpm db:push-full`
         2. Sign up at /signup
         3. ...
     validations:

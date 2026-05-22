@@ -1,6 +1,6 @@
 # Deft — The AI-Native Workspace
 
-> Chat, tasks, and an AI agent that actually understands your work. Open source.
+> Chat, tasks, and an AI agent that actually understands your work. Source-available.
 
 ## What is Deft?
 
@@ -11,6 +11,12 @@ Deft combines team chat, task management, and an AI agent into one workspace. Th
 - **AI Agent** — Ask questions, create tasks, summarize conversations, execute multi-step workflows with approval gates
 - **Dashboard** — Morning pulse briefing, task overview, activity feed, project progress
 
+> **License:** Source-available under the [Business Source License 1.1](./LICENSE). Use it for any purpose — including self-hosting — **except** offering Deft as a hosted or managed service to third parties. Forks must retain attribution. Converts to Apache License 2.0 four years from each release date.
+
+## Project status
+
+Deft is in **alpha** — usable and self-hostable today, but expect breaking changes and rough edges until a tagged `v0.1.0`. Designed for **one workspace per deployment**. Source-available under BSL 1.1.
+
 ## Quick Start
 
 Get to first login in under 5 minutes.
@@ -18,7 +24,7 @@ Get to first login in under 5 minutes.
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
-- A free [Anthropic API key](https://console.anthropic.com) — no other accounts required
+- (Optional) An [Anthropic API key](https://console.anthropic.com) for AI features — chat and tasks work without one
 
 ### Steps
 
@@ -30,13 +36,14 @@ cd deft
 cp .env.example .env
 ```
 
-Open `.env` and set three values:
+Open `.env` and set the three required values (plus the optional AI key if you want AI features):
 
-| Variable | How to get it |
-|---|---|
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com — free tier works |
-| `JWT_SECRET` | Run `openssl rand -hex 32` |
-| `JWT_REFRESH_SECRET` | Run `openssl rand -hex 32` again |
+| Variable | Required? | How to get it |
+|---|---|---|
+| `POSTGRES_PASSWORD` | **Required** | Any strong string — `openssl rand -hex 32` |
+| `JWT_SECRET` | **Required** | `openssl rand -hex 32` |
+| `JWT_REFRESH_SECRET` | **Required** | `openssl rand -hex 32` (run it again) |
+| `ANTHROPIC_API_KEY` | Optional | [console.anthropic.com](https://console.anthropic.com) — only for AI features; can also be set per-org in Settings → AI |
 
 ```bash
 # 2. Start the stack (Postgres + Redis + Deft)
@@ -48,7 +55,7 @@ pnpm db:seed        # seeds Defty + bundled skills/templates (prod-safe, idempot
 # pnpm db:seed:demo # ALSO inserts 5 test users for poking around — dev only, NEVER in prod
 ```
 
-> **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. The migration journal is canonical as of v0.1 but `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies two orphan SQL files (`0020_wiki_search_vector.sql` and `0033_tasks_embedding.sql`) that create generated tsvector columns and GIN indexes Drizzle's pushed schema can't express. Plain `pnpm db:push` skips the orphans and leaves wiki/task FTS broken. `db:migrate` is for upgrade paths once we ship versioned releases.
+> **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies two orphan SQL files (`0020_wiki_search_vector.sql` and `0033_tasks_embedding.sql`) that create generated tsvector columns and GIN indexes Drizzle's pushed schema can't express. Plain `pnpm db:push` skips the orphans and leaves wiki/task FTS broken. Versioned `db:migrate` upgrade paths are not yet supported and will arrive post-alpha.
 
 > **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, bundled skills, bundled task templates, first-party employee templates). It never inserts test accounts.
 
@@ -167,9 +174,11 @@ Every write action goes through an approval flow. The user sees what the agent w
 
 See `.env.example` for all configuration options with inline documentation. Three variables are required for first boot:
 
+- `POSTGRES_PASSWORD` — Database password (`openssl rand -hex 32`)
 - `JWT_SECRET` — Secret for JWT signing (`openssl rand -hex 32`)
 - `JWT_REFRESH_SECRET` — Secret for refresh tokens (`openssl rand -hex 32`)
-- `ANTHROPIC_API_KEY` — For AI agent features (app boots without it but AI is disabled)
+
+`ANTHROPIC_API_KEY` is optional — the app boots without it and AI features stay disabled until a key is configured (via env or per-org in Settings → AI).
 
 Full reference: [docs/self-hosting.md#environment-variables-reference](docs/self-hosting.md#environment-variables-reference)
 
