@@ -35,7 +35,6 @@ import {
   Headphones,
   BookOpen,
   Smile,
-  Library,
   Inbox,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
@@ -80,7 +79,6 @@ const navItems = [
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { name: 'Inbox', href: '/inbox', icon: Inbox },
-  { name: 'Library', href: '/library', icon: Library },
 ];
 
 // ── Chat sidebar content (Spaces + DMs) ──────────────────────────────
@@ -526,6 +524,7 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
     { name: 'Projects', href: '/settings/projects' },
     { name: 'Tags', href: '/settings/tags' },
     { name: 'Integrations', href: '/settings/integrations' },
+    { name: 'AI Providers', href: '/settings/ai' },
     { name: 'Agent', href: '/settings/agent' },
     { name: 'Agent Employees', href: '/settings/agent-employees' },
     { name: 'API Access', href: '/settings/api-access' },
