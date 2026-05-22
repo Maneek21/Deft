@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Deft is in private alpha. We provide security updates for the latest tagged release only.
+Deft is in alpha. Security fixes land on the latest commit of the `master` branch. We don't yet publish tagged releases — versioned release support will begin when we cut `v0.1.0`.
 
 | Version | Supported |
 | ------- | --------- |
-| Latest `main` | ✅ |
-| Older tags    | ❌ |
+| `master` (latest commit) | ✅ |
+| Older commits / forks | ❌ |
 
 ## Reporting a Vulnerability
 

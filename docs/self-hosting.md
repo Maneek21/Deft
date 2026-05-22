@@ -15,8 +15,8 @@ Defty, the built-in native agent, is seeded automatically on first run. Think of
 | Requirement | Notes |
 |---|---|
 | Docker Desktop 4.x+ | Includes Docker Compose v2. [Download](https://www.docker.com/products/docker-desktop/) |
-| Anthropic API key | Free tier at [console.anthropic.com](https://console.anthropic.com). Required for AI features. |
 | `openssl` (any version) | For generating secrets. Ships with macOS, Linux, Git for Windows. |
+| Anthropic API key *(optional)* | Free tier at [console.anthropic.com](https://console.anthropic.com). Only needed for AI features — chat and tasks work without one. |
 
 **Alternative AI provider:** If you prefer not to use Anthropic, [Ollama](https://ollama.com) can serve a local model. You will need to update `ANTHROPIC_API_KEY` and the model references in Settings → Agent after first boot. Ollama support is community-maintained.
 
@@ -36,15 +36,17 @@ Open `.env` in your editor. You must set these three variables before starting:
 
 ```bash
 # Generate secrets — run each command separately
+openssl rand -hex 32   # paste result into POSTGRES_PASSWORD
 openssl rand -hex 32   # paste result into JWT_SECRET
 openssl rand -hex 32   # paste result into JWT_REFRESH_SECRET
 ```
 
 | Variable | Where to get it | Required |
 |---|---|---|
-| `JWT_SECRET` | `openssl rand -hex 32` | Yes |
-| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` | Yes |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com | Yes for AI features |
+| `POSTGRES_PASSWORD` | `openssl rand -hex 32` | **Yes** |
+| `JWT_SECRET` | `openssl rand -hex 32` | **Yes** |
+| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` | **Yes** |
+| `ANTHROPIC_API_KEY` | https://console.anthropic.com | Optional — only for AI features; can also be set per-org in Settings → AI |
 
 Everything else in `.env` is optional for a first boot. Leave the database and Redis URLs as-is — Docker Compose overrides them automatically.
 
@@ -81,14 +83,14 @@ All three services should show `healthy` or `running`.
 The container does not auto-migrate on startup. Run these from the repo root **once**, after the stack is up:
 
 ```bash
-# Apply the schema
-pnpm db:push
+# Apply the schema + full-text-search extras
+pnpm db:push-full
 
 # Seed Defty and starter data
 pnpm db:seed
 ```
 
-`pnpm db:push` talks to Postgres at `localhost:5432` (exposed by Docker Compose). `pnpm db:seed` seeds the Defty agent template, default skills, and starter prompts. Both commands are idempotent — safe to run again if something goes wrong.
+`pnpm db:push-full` syncs the schema to Postgres at `localhost:5432` (exposed by Docker Compose) and applies two extra SQL files that create the wiki/task full-text-search columns and indexes Drizzle's pushed schema can't express — plain `pnpm db:push` skips them and leaves search broken. `pnpm db:seed` seeds the Defty agent template, default skills, and starter prompts. Both commands are idempotent — safe to run again if something goes wrong.
 
 > **No pnpm locally?** Install it with `npm install -g pnpm`, then run the commands above. Node.js 18+ is required.
 
@@ -181,9 +183,10 @@ Defty is powered by the `defty` agent template. The template slug is `defty`. Yo
 |---|---|---|---|
 | `DATABASE_URL` | Yes (auto-set by Docker) | Postgres connection string | `postgres://postgres:postgres@localhost:5432/deft` |
 | `REDIS_URL` | Yes (auto-set by Docker) | Redis connection string | `redis://localhost:6379` |
+| `POSTGRES_PASSWORD` | **Yes** | Database password (Docker Compose auth) | none |
 | `JWT_SECRET` | **Yes** | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | **Yes** | Signs refresh tokens | none |
-| `ANTHROPIC_API_KEY` | Yes for AI | Anthropic Claude API key | none |
+| `ANTHROPIC_API_KEY` | Optional | Anthropic Claude API key — app boots without it; AI features disabled until set (env or per-org) | none |
 | `NEXT_PUBLIC_API_URL` | No | API base URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_WS_URL` | No | WebSocket URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_APP_URL` | No | App base URL (used in invite links) | `http://localhost:3000` |
@@ -231,11 +234,11 @@ Deft follows semantic versioning. Minor and patch releases are safe to roll forw
 docker compose pull
 docker compose up -d
 
-# Apply any new schema changes
-pnpm db:migrate   # uses Drizzle migrations (safer than db:push in production)
+# Apply any new schema changes (+ full-text-search extras)
+pnpm db:push-full
 ```
 
-`db:migrate` applies only pending migrations. `db:push` force-syncs the schema and is fine for development but should be avoided in production where you want a migration history.
+`pnpm db:push-full` diffs the live schema against `packages/db/src/schema.ts`, applies the full-text-search extras, and is idempotent — it is the supported path for both fresh installs and schema updates during the current alpha. Versioned `pnpm db:migrate` upgrade paths are **not yet supported** and will arrive post-alpha once the migration journal is wired for sequential upgrades. Do **not** use `pnpm db:migrate` — it is not a supported command at this stage.
 
 **Rollback:** Docker Compose does not keep the old image by default. Before upgrading, tag the current image or snapshot the `pgdata` volume so you have a restore point.
 

@@ -17,9 +17,9 @@ pnpm install
 cp .env.example .env
 # Edit .env with your database credentials
 
-# Create database and push schema
+# Create database and push schema (+ full-text-search extras)
 createdb deft
-pnpm db:push
+pnpm db:push-full
 
 # Seed demo data (5 test users + demo org + sample messages/tasks).
 # This wipes the DB — dev only, NEVER run in production.
