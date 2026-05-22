@@ -227,7 +227,7 @@ Schedule this with cron or any job scheduler. For production, consider streaming
 
 ## Upgrading
 
-Deft follows semantic versioning. Minor and patch releases are safe to roll forward; major releases may include breaking schema changes — check the release notes before upgrading.
+Deft is in alpha and does not publish tagged releases yet — roll forward by pulling the latest image and re-applying the schema (below). Semantic-versioning guarantees and release notes will apply once tagged releases begin; until then, expect occasional breaking schema changes between commits on `master`.
 
 ```bash
 # Pull the latest image and restart
