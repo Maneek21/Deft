@@ -205,7 +205,7 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 
 ## Known Limitations (deployment blockers)
 
-- **Drizzle `_journal.json` stale.** The Drizzle migration journal has been stale since migration 0017. Migrations 0025-0052 were applied manually and are not tracked in the journal. Production deploy must apply these manually via `drizzle-kit push` or direct SQL — `pnpm db:migrate` will not pick them up automatically. Any new migration must be tested against a DB that already has 0025-0052 applied.
+- **Use `pnpm db:push-full` for fresh installs; `pnpm db:migrate` is not supported yet.** The Drizzle `_journal.json` was rebuilt and is current through 0066. Plain `drizzle-kit push` (`pnpm db:push`) can't express the generated tsvector/GIN full-text-search objects, so `push-full` runs `push` and then applies the orphan SQL files (`0020_wiki_search_vector.sql`, `0033_tasks_embedding.sql`) plus the expression-based unique index push drops — see `packages/db/scripts/apply-extras.ts`. `pnpm db:migrate` will not pick up the current schema; versioned migrate is post-alpha. (See the matching note in CLAUDE.md.)
 - **No live OpenClaw gateway in dev.** All `openclaw`-kind agent_employees rows currently have `connection_url IS NULL`. Block 1's live-gateway smoke tests run only once a gateway is provisioned; unit tests use MockTransport + `_setGatewayResolver` seams to exercise the forwarding code paths end-to-end.
 
 ## What NOT To Do
