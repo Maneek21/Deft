@@ -1,0 +1,32 @@
+# Dependabot config — Deft monorepo.
+#
+# Scope: root package.json + GitHub Actions workflows. Workspace packages
+# (apps/api, apps/web, packages/*) get security alerts through Dependabot
+# Alerts (auto-enabled for public repos, separate from this config). For
+# routine version bumps inside workspace dirs, add per-directory `npm`
+# entries here as the project matures — keeping it narrow during alpha
+# to minimize PR noise.
+#
+# Grouping: patch + minor updates are batched into one PR per ecosystem
+# per week to reduce review overhead. Major bumps still open individual
+# PRs so each is reviewed in isolation.
+
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
