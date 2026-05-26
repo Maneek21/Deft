@@ -1,5 +1,6 @@
 {
   "name": "deft",
+  "version": "0.1.0-alpha",
   "private": true,
   "scripts": {
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
