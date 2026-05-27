@@ -40,7 +40,7 @@ export default function SetupAIPage() {
       // Org-configured provider already exists — no reason to be here.
       const hasOrgKey = Object.values(data.api_keys ?? {}).some((k: any) => k?.configured);
       if (hasOrgKey) {
-        router.replace('/chat');
+        router.replace('/dashboard');
         return;
       }
       setHasEnvFallback(Boolean(data.has_provider));
@@ -65,7 +65,7 @@ export default function SetupAIPage() {
         const j = await r.json().catch(() => ({}));
         throw new Error(j.error || 'Save failed');
       }
-      router.push('/chat');
+      router.push('/dashboard');
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -129,7 +129,7 @@ export default function SetupAIPage() {
           {hasEnvFallback ? (
             <div className="flex justify-end mt-2">
               <button
-                onClick={() => router.push('/chat')}
+                onClick={() => router.push('/dashboard')}
                 className="h-10 px-5 flex items-center gap-2 text-[0.875rem] font-semibold"
                 style={{ background: 'var(--primary-container)', color: '#FFFFFF', borderRadius: '0.5rem' }}
               >
@@ -216,7 +216,7 @@ export default function SetupAIPage() {
 
               <div className="flex justify-between items-center mt-2">
                 <Link
-                  href="/chat"
+                  href="/dashboard"
                   className="text-[0.8125rem]"
                   style={{ color: 'var(--on-surface-variant)' }}
                 >
