@@ -85,3 +85,10 @@ ALPHA-PLAYBOOK.md
 demo-video-structure.md
 apps/web-demo/
 docs/superpowers/audits/.screenshots/
+
+# Public-repo hygiene: keep marketing site sources, ad-hoc screenshots,
+# logo exports, and design-reference drops out of the product repo.
+customer-website/
+screenshots/
+Logos/
+stitch-reference/
