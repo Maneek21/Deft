@@ -16,6 +16,7 @@
 import { config as loadEnv } from 'dotenv';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import bcrypt from 'bcryptjs';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,6 +41,11 @@ async function main() {
   const c = new pg.Client({ connectionString: DATABASE_URL });
   await c.connect();
   try {
+    // Tests in apps/api/test login as maneek@test.com / test1234 (the repo
+    // convention). Pre-hash here so the fixture is self-contained — neither
+    // the demo seed nor any other script needs to know about it.
+    const maneekHash = await bcrypt.hash('test1234', 12);
+
     await c.query(
       `INSERT INTO orgs (id, name, slug) VALUES
          ($1, 'Test Fixtures Org A', 'test-fixtures-org-a'),
@@ -49,12 +55,14 @@ async function main() {
     );
 
     await c.query(
-      `INSERT INTO users (id, name, email, kind, is_agent, email_verified) VALUES
-         ($1, 'Maneek (fixture)', 'maneek-fixture@test.local', 'human', false, true),
-         ($2, 'Alex PM (fixture)', 'alexpm-fixture@test.local', 'agent', true,  true),
-         ($3, 'Priya (fixture)',  'priya-fixture@test.local',  'human', false, true)
-       ON CONFLICT (id) DO NOTHING`,
-      [USER_MANEEK, USER_ALEXPM, USER_PRIYA],
+      `INSERT INTO users (id, name, email, password_hash, kind, is_agent, email_verified) VALUES
+         ($1, 'Maneek (fixture)', 'maneek@test.com',         $4,   'human', false, true),
+         ($2, 'Alex PM (fixture)', 'alexpm-fixture@test.local', NULL, 'agent', true,  true),
+         ($3, 'Priya (fixture)',  'priya-fixture@test.local',  NULL, 'human', false, true)
+       ON CONFLICT (id) DO UPDATE SET
+         email = EXCLUDED.email,
+         password_hash = COALESCE(EXCLUDED.password_hash, users.password_hash)`,
+      [USER_MANEEK, USER_ALEXPM, USER_PRIYA, maneekHash],
     );
 
     await c.query(
