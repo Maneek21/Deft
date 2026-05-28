@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     api.setTokens(data.accessToken, data.refreshToken);
     await fetchMe();
-    router.push('/chat');
+    router.push('/dashboard');
   };
 
   const signup = async (name: string, email: string, password: string, orgName: string) => {
