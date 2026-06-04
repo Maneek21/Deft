@@ -11,13 +11,13 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.98.0",
+    "@anthropic-ai/sdk": "^0.100.1",
     "@deft/db": "workspace:*",
     "@deft/mcp": "workspace:*",
     "@deft/shared": "workspace:*",
     "@hono/node-server": "^1.19.11",
     "bcryptjs": "^3.0.3",
-    "bullmq": "^5.77.4",
+    "bullmq": "^5.78.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.23",
@@ -27,7 +27,7 @@
     "node-ical": "^0.26.1",
     "pg": "^8.21.0",
     "socket.io": "^4.8.3",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
