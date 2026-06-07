@@ -4,6 +4,8 @@ import { db } from '../lib/db.js';
 import { wikiPages, wikiCitations, messages, users, spaces } from '@deft/db/schema';
 import { getIO } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
+import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 
 export const knowledgeRoutes = new Hono();
 export const knowledgeAggRoutes = new Hono();
@@ -61,6 +63,7 @@ knowledgeAggRoutes.get('/', async (c) => {
     const conditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
     ];
 
     if (typeFilter) {
@@ -123,6 +126,11 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
     const typeFilter = c.req.query('type');
     const limitParam = Math.min(parseInt(c.req.query('limit') || '50'), 100);
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
     // Find page IDs that have a citation from a message in this space
     const citedPageIds = await db.select({ page_id: wikiCitations.page_id })
       .from(wikiCitations)
@@ -145,6 +153,7 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
     const conditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
       spaceCondition!,
     ];
 
@@ -192,6 +201,11 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
     const spaceId = c.req.param('spaceId');
     const body = await c.req.json();
     const { type, title, content } = body;
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
 
     if (!type || !title) {
       return c.json({ error: 'type and title are required', code: 'VALIDATION_ERROR' }, 400);
@@ -268,6 +282,11 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
     const entryId = c.req.param('id');
     const body = await c.req.json();
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
     const updates: Record<string, unknown> = {};
     if (body.title !== undefined) updates.title = body.title;
     if (body.content !== undefined) updates.content = body.content;
@@ -282,6 +301,8 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
       .where(and(
         eq(wikiPages.id, entryId),
         eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.space_id, spaceId),
+        visibleWikiPageCondition(user.id),
         eq(wikiPages.is_deleted, false),
       ))
       .returning();
@@ -326,11 +347,18 @@ knowledgeRoutes.delete('/:spaceId/knowledge/:id', async (c) => {
     const spaceId = c.req.param('spaceId');
     const entryId = c.req.param('id');
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
     const [deleted] = await db.update(wikiPages)
       .set({ is_deleted: true })
       .where(and(
         eq(wikiPages.id, entryId),
         eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.space_id, spaceId),
+        visibleWikiPageCondition(user.id),
       ))
       .returning();
 

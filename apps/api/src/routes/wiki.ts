@@ -4,6 +4,8 @@ import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
+import { requireSpaceMembership } from '../lib/space-membership.js';
+import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 
 /** Notify all org members about a wiki change (except the actor) */
 async function notifyWikiChange(orgId: string, actorId: string, title: string, body: string, slug: string) {
@@ -56,6 +58,7 @@ wikiRoutes.get('/', async (c) => {
     const conditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
     ];
 
     if (typeFilter && ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(typeFilter)) {
@@ -156,7 +159,7 @@ wikiRoutes.get('/graph', async (c) => {
       confidence: wikiPages.confidence,
     })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .orderBy(desc(wikiPages.confidence))
       .limit(200);
 
@@ -172,10 +175,8 @@ wikiRoutes.get('/graph', async (c) => {
         .from(wikiLinks)
         .where(and(
           eq(wikiLinks.org_id, user.org_id),
-          or(
-            inArray(wikiLinks.source_page_id, nodeIds),
-            inArray(wikiLinks.target_page_id, nodeIds),
-          ),
+          inArray(wikiLinks.source_page_id, nodeIds),
+          inArray(wikiLinks.target_page_id, nodeIds),
         ));
     }
 
@@ -234,14 +235,14 @@ wikiRoutes.get('/stats', async (c) => {
 
     const [totals] = await db.select({ count: sql<number>`count(*)` })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false)));
+      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)));
 
     const byType = await db.select({
       type: wikiPages.type,
       count: sql<number>`count(*)`,
     })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .groupBy(wikiPages.type);
 
     const byConfidence = await db.select({
@@ -253,7 +254,7 @@ wikiRoutes.get('/stats', async (c) => {
       count: sql<number>`count(*)`,
     })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .groupBy(sql`CASE WHEN confidence >= 0.8 THEN 'high' WHEN confidence >= 0.5 THEN 'medium' ELSE 'low' END`);
 
     const [linkCount] = await db.select({ count: sql<number>`count(*)` })
@@ -269,7 +270,7 @@ wikiRoutes.get('/stats', async (c) => {
       type: wikiPages.type,
     })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false), sql`confidence < 0.5`))
+      .where(and(eq(wikiPages.org_id, orgId), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id), sql`confidence < 0.5`))
       .orderBy(wikiPages.confidence)
       .limit(10);
 
@@ -331,7 +332,7 @@ wikiRoutes.get('/export', async (c) => {
 
     const pages = await db.select()
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .orderBy(desc(wikiPages.confidence), desc(wikiPages.updated_at));
 
     if (format === 'md') {
@@ -374,6 +375,7 @@ wikiRoutes.get('/:slug', async (c) => {
         eq(wikiPages.org_id, user.org_id),
         eq(wikiPages.slug, slug),
         eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
       ))
       .limit(1);
 
@@ -460,6 +462,10 @@ wikiRoutes.post('/', async (c) => {
         .limit(1);
       if (!space) {
         return c.json({ error: 'Space not found in your organization', code: 'FORBIDDEN' }, 403);
+      }
+      const isMember = await requireSpaceMembership(space_id, user.id);
+      if (!isMember) {
+        return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
       }
     }
 
@@ -548,7 +554,7 @@ wikiRoutes.patch('/:slug', async (c) => {
 
     const [existing] = await db.select()
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .limit(1);
 
     if (!existing) {
@@ -634,7 +640,7 @@ wikiRoutes.delete('/:slug', async (c) => {
 
     const [page] = await db.select({ id: wikiPages.id })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
       .limit(1);
 
     if (!page) {
@@ -665,7 +671,7 @@ wikiRoutes.get('/:slug/history', async (c) => {
 
     const [page] = await db.select({ id: wikiPages.id })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), visibleWikiPageCondition(user.id)))
       .limit(1);
 
     if (!page) {
@@ -693,7 +699,7 @@ wikiRoutes.get('/:slug/history/:version', async (c) => {
 
     const [page] = await db.select({ id: wikiPages.id })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug)))
+      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), visibleWikiPageCondition(user.id)))
       .limit(1);
 
     if (!page) {

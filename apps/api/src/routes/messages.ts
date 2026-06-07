@@ -57,6 +57,31 @@ async function getReactionsForMessages(messageIds: string[]) {
   return result;
 }
 
+async function getVisibleMessage(messageId: string, orgId: string, userId: string) {
+  const [msg] = await db.select({
+    id: messages.id,
+    org_id: messages.org_id,
+    space_id: messages.space_id,
+    user_id: messages.user_id,
+    content: messages.content,
+    created_at: messages.created_at,
+    edited_at: messages.edited_at,
+  })
+    .from(messages)
+    .innerJoin(spaceMembers, and(
+      eq(messages.space_id, spaceMembers.space_id),
+      eq(spaceMembers.user_id, userId),
+    ))
+    .where(and(
+      eq(messages.id, messageId),
+      eq(messages.org_id, orgId),
+      eq(messages.is_deleted, false),
+    ))
+    .limit(1);
+
+  return msg ?? null;
+}
+
 // Helper: get reply counts and latest_reply_at for a set of message IDs
 async function getReplyStats(messageIds: string[]) {
   if (messageIds.length === 0) return new Map();
@@ -318,6 +343,13 @@ messageRoutes.post('/:spaceId', async (c) => {
     const isMember = await requireSpaceMembership(spaceId, user.id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
+    if (parsed.data.parent_id) {
+      const parentMsg = await getVisibleMessage(parsed.data.parent_id, user.org_id, user.id);
+      if (!parentMsg || parentMsg.space_id !== spaceId) {
+        return c.json({ error: 'Parent message not found', code: 'NOT_FOUND' }, 404);
+      }
     }
 
     // Normalize plain @defty / @deft / @agent (case-insensitive) into structured
@@ -718,7 +750,7 @@ messageRoutes.patch('/:id', async (c) => {
     return c.json({ error: 'Content required', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+  const existing = await getVisibleMessage(messageId, user.org_id, user.id);
   if (!existing) {
     return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
   }
@@ -751,7 +783,7 @@ messageRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const messageId = c.req.param('id');
 
-  const [existing] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
+  const existing = await getVisibleMessage(messageId, user.org_id, user.id);
   if (!existing) {
     return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
   }
@@ -784,15 +816,7 @@ messageRoutes.post('/:id/reactions', async (c) => {
       return c.json({ error: 'Emoji required', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    // Check that the message exists
-    const [msg] = await db.select({
-      id: messages.id,
-      space_id: messages.space_id,
-    })
-      .from(messages)
-      .where(eq(messages.id, messageId))
-      .limit(1);
-
+    const msg = await getVisibleMessage(messageId, user.org_id, user.id);
     if (!msg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
@@ -842,15 +866,7 @@ messageRoutes.delete('/:id/reactions/:emoji', async (c) => {
     const messageId = c.req.param('id');
     const emoji = decodeURIComponent(c.req.param('emoji'));
 
-    // Check that the message exists
-    const [msg] = await db.select({
-      id: messages.id,
-      space_id: messages.space_id,
-    })
-      .from(messages)
-      .where(eq(messages.id, messageId))
-      .limit(1);
-
+    const msg = await getVisibleMessage(messageId, user.org_id, user.id);
     if (!msg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
@@ -891,21 +907,9 @@ messageRoutes.get('/:id/thread', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    // Verify parent message exists and user has access
-    const [parentMsg] = await db.select({
-      id: messages.id,
-      org_id: messages.org_id,
-    })
-      .from(messages)
-      .where(eq(messages.id, messageId))
-      .limit(1);
-
+    const parentMsg = await getVisibleMessage(messageId, user.org_id, user.id);
     if (!parentMsg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    if (parentMsg.org_id !== user.org_id) {
-      return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
     }
 
     const replies = await db.select({
@@ -955,6 +959,11 @@ messageRoutes.post('/:parentId/thread-read', async (c) => {
     const user = c.get('user');
     const parentId = c.req.param('parentId');
 
+    const parentMsg = await getVisibleMessage(parentId, user.org_id, user.id);
+    if (!parentMsg) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+
     await db.insert(threadReads).values({
       user_id: user.id,
       parent_message_id: parentId,
@@ -977,9 +986,8 @@ messageRoutes.get('/:id/history', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('id');
 
-    const [msg] = await db.select({ org_id: messages.org_id }).from(messages)
-      .where(eq(messages.id, messageId)).limit(1);
-    if (!msg || msg.org_id !== user.org_id) {
+    const msg = await getVisibleMessage(messageId, user.org_id, user.id);
+    if (!msg) {
       return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -1003,6 +1011,11 @@ messageRoutes.get('/:spaceId/read-receipts', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
 
     const receipts = await db.select({
       user_id: spaceMembers.user_id,

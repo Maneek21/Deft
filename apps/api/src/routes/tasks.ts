@@ -7,6 +7,7 @@ import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
@@ -2223,6 +2224,9 @@ taskRoutes.get('/:id/attachments', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const results = await db.select({
       id: files.id,
       filename: files.filename,
@@ -2244,7 +2248,12 @@ taskRoutes.get('/:id/attachments', async (c) => {
 // GET /api/tasks/:id/wiki-links — get wiki pages linked to this task
 taskRoutes.get('/:id/wiki-links', async (c) => {
   try {
+    const user = c.get('user');
     const taskId = c.req.param('id');
+
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const links = await db.select({
       citation_id: wikiCitations.id,
       page_id: wikiPages.id,
@@ -2258,7 +2267,9 @@ taskRoutes.get('/:id/wiki-links', async (c) => {
       .where(and(
         eq(wikiCitations.source_type, 'task'),
         eq(wikiCitations.source_id, taskId),
+        eq(wikiPages.org_id, user.org_id),
         eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
       ));
     return c.json({ wiki_links: links });
   } catch (err) {
@@ -2275,9 +2286,17 @@ taskRoutes.post('/:id/wiki-links', async (c) => {
     const { slug } = await c.req.json();
     if (!slug) return c.json({ error: 'slug required', code: 'VALIDATION_ERROR' }, 400);
 
-    // Find the wiki page
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
+    // Find a wiki page visible to this caller.
     const [page] = await db.select({ id: wikiPages.id }).from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+      .where(and(
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.slug, slug),
+        eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
+      ))
       .limit(1);
     if (!page) return c.json({ error: 'Wiki page not found', code: 'NOT_FOUND' }, 404);
 
@@ -2302,11 +2321,7 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
     const taskId = c.req.param('id');
     const citationId = c.req.param('citationId');
 
-    const [task] = await db.select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
-      .limit(1);
-
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -2324,7 +2339,12 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
 // GET /api/tasks/:id/subtree — recursive subtask tree
 taskRoutes.get('/:id/subtree', async (c) => {
   try {
+    const user = c.get('user');
     const taskId = c.req.param('id');
+
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const result = await db.execute(sql`
       WITH RECURSIVE subtree AS (
         SELECT id, title, status, priority, parent_task_id, 0 as depth
