@@ -73,6 +73,19 @@ before(async () => {
        ON CONFLICT (org_id, user_id) DO NOTHING`,
       [ORG_ID, USER_ID],
     );
+
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id, is_muted, notification_level, joined_at)
+       VALUES (gen_random_uuid()::text, $1, $2, false, 'all', NOW())
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [SPACE_ID, USER_ID],
+    );
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id, is_muted, notification_level, joined_at)
+       VALUES (gen_random_uuid()::text, $1, $2, false, 'all', NOW())
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [ALT_SPACE_ID, USER_ID],
+    );
   });
 });
 
