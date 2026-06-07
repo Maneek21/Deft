@@ -2,17 +2,72 @@
 import { Hono } from 'hono';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { clips, messages, users } from '@deft/db/schema';
+import { clips, messages, projects, spaceMembers, tasks, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { getIO } from '../socket.js';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { requireSpaceMembership } from '../lib/space-membership.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 
 export const clipRoutes = new Hono();
 
 const CLIP_DIR = join(process.cwd(), '..', '..', 'uploads', 'clips');
+
+async function canAccessMessage(messageId: string, orgId: string, userId: string) {
+  const [row] = await db.select({ id: messages.id, space_id: messages.space_id })
+    .from(messages)
+    .innerJoin(spaceMembers, and(
+      eq(messages.space_id, spaceMembers.space_id),
+      eq(spaceMembers.user_id, userId),
+    ))
+    .where(and(
+      eq(messages.id, messageId),
+      eq(messages.org_id, orgId),
+      eq(messages.is_deleted, false),
+    ))
+    .limit(1);
+  return row ?? null;
+}
+
+async function canAccessTask(taskId: string, orgId: string, userId: string) {
+  const [row] = await db.select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      visibleTaskCondition(userId),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function projectExists(projectId: string, orgId: string) {
+  const [row] = await db.select({ id: projects.id })
+    .from(projects)
+    .where(and(
+      eq(projects.id, projectId),
+      eq(projects.org_id, orgId),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function canAccessClip(clip: typeof clips.$inferSelect, orgId: string, userId: string) {
+  if (clip.org_id !== orgId || clip.is_deleted) return false;
+  if (clip.message_id) return Boolean(await canAccessMessage(clip.message_id, orgId, userId));
+  if (clip.space_id) return requireSpaceMembership(clip.space_id, userId);
+  if (clip.context_type === 'space') return requireSpaceMembership(clip.context_id, userId);
+  if (clip.context_type === 'thread') return Boolean(await canAccessMessage(clip.context_id, orgId, userId));
+  if (clip.context_type === 'task') return canAccessTask(clip.context_id, orgId, userId);
+  if (clip.context_type === 'project') return projectExists(clip.context_id, orgId);
+  return clip.created_by === userId;
+}
 
 // POST /api/clips — upload a clip recording
 clipRoutes.post('/', async (c) => {
@@ -39,6 +94,39 @@ clipRoutes.post('/', async (c) => {
       return c.json({ error: 'Clip too large (max 50MB)', code: 'FILE_TOO_LARGE' }, 400);
     }
 
+    if (!['space', 'thread', 'task', 'project'].includes(contextType)) {
+      return c.json({ error: 'Invalid context_type', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const targetSpaceId = spaceId || (contextType === 'space' ? contextId : null);
+    if (!targetSpaceId) {
+      return c.json({ error: 'space_id is required for this clip context', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const isMember = await requireSpaceMembership(targetSpaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+    if (contextType === 'thread') {
+      const parent = await canAccessMessage(contextId, user.org_id, user.id);
+      if (!parent) return c.json({ error: 'Thread not found', code: 'NOT_FOUND' }, 404);
+      if (targetSpaceId && parent.space_id !== targetSpaceId) {
+        return c.json({ error: 'Thread is not in this space', code: 'VALIDATION_ERROR' }, 400);
+      }
+    }
+    if (contextType === 'task' && !(await canAccessTask(contextId, user.org_id, user.id))) {
+      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (contextType === 'project' && !(await projectExists(contextId, user.org_id))) {
+      return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (parentId) {
+      const parent = await canAccessMessage(parentId, user.org_id, user.id);
+      if (!parent) return c.json({ error: 'Parent message not found', code: 'NOT_FOUND' }, 404);
+      if (targetSpaceId && parent.space_id !== targetSpaceId) {
+        return c.json({ error: 'Parent message is not in this space', code: 'VALIDATION_ERROR' }, 400);
+      }
+    }
+
     // Look up user name
     const [userRecord] = await db.select({ name: users.name })
       .from(users).where(eq(users.id, user.id)).limit(1);
@@ -54,7 +142,7 @@ clipRoutes.post('/', async (c) => {
     // Create clip record
     const [clip] = await db.insert(clips).values({
       org_id: user.org_id,
-      space_id: spaceId || null,
+      space_id: targetSpaceId || null,
       context_type: contextType as any,
       context_id: contextId,
       mode: 'async',
@@ -71,7 +159,7 @@ clipRoutes.post('/', async (c) => {
     const placeholderContent = `[[clip:${clip!.id}:uploading]]`;
     const [msg] = await db.insert(messages).values({
       org_id: user.org_id,
-      space_id: spaceId || contextId,
+      space_id: targetSpaceId || contextId,
       user_id: user.id,
       content: placeholderContent,
       parent_id: parentId || null,
@@ -85,7 +173,7 @@ clipRoutes.post('/', async (c) => {
 
     // Broadcast the message in real time
     const io = getIO();
-    io?.to(`space:${spaceId || contextId}`).emit('message:new', {
+    io?.to(`space:${targetSpaceId}`).emit('message:new', {
       id: msg!.id,
       content: placeholderContent,
       user_id: user.id,
@@ -100,7 +188,7 @@ clipRoutes.post('/', async (c) => {
       file_ids: [],
       files: [],
       metadata: { clip_id: clip!.id, clip_status: 'processing' },
-      space_id: spaceId || contextId,
+      space_id: targetSpaceId || contextId,
       parent_id: parentId || null,
     });
 
@@ -109,7 +197,7 @@ clipRoutes.post('/', async (c) => {
       clip_id: clip!.id,
       org_id: user.org_id,
       message_id: msg!.id,
-      space_id: spaceId || contextId,
+      space_id: targetSpaceId || contextId,
       file_key: fileKey,
       context_type: contextType,
       context_id: contextId,
@@ -139,7 +227,7 @@ clipRoutes.get('/:id', async (c) => {
       .where(and(eq(clips.id, clipId), eq(clips.org_id, user.org_id)))
       .limit(1);
 
-    if (!clip) {
+    if (!clip || !(await canAccessClip(clip, user.org_id, user.id))) {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -153,14 +241,15 @@ clipRoutes.get('/:id', async (c) => {
 // GET /api/clips/:id/audio — stream clip audio
 clipRoutes.get('/:id/audio', async (c) => {
   try {
+    const user = c.get('user');
     const clipId = c.req.param('id');
 
     const [clip] = await db.select()
       .from(clips)
-      .where(eq(clips.id, clipId))
+      .where(and(eq(clips.id, clipId), eq(clips.org_id, user.org_id)))
       .limit(1);
 
-    if (!clip || clip.is_deleted) {
+    if (!clip || !(await canAccessClip(clip, user.org_id, user.id))) {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 
@@ -190,6 +279,11 @@ clipRoutes.get('/space/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
     const result = await db.select()
       .from(clips)
       .where(and(
@@ -218,7 +312,7 @@ clipRoutes.delete('/:id', async (c) => {
       .where(and(eq(clips.id, clipId), eq(clips.org_id, user.org_id)))
       .limit(1);
 
-    if (!clip) {
+    if (!clip || !(await canAccessClip(clip, user.org_id, user.id))) {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 

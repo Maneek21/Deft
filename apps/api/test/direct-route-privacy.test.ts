@@ -39,6 +39,11 @@ let restrictedTaskId: string;
 let restrictedTaskFileId: string;
 let restrictedTaskStorageKey: string;
 let taskWikiCitationId: string;
+let privateClipId: string;
+let privateClipFileKey: string;
+let privateDecisionId: string;
+let privateSpaceNoteId: string;
+let privateAgentPlanId: string;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -119,6 +124,18 @@ before(async () => {
     );
     ids.push({ table: 'messages', id: privateReplyId });
 
+    privateClipId = `drp-private-clip-${stamp}`;
+    privateClipFileKey = `drp-private-clip-${stamp}.webm`;
+    const clipDir = join(process.cwd(), '..', '..', 'uploads', 'clips');
+    await mkdir(clipDir, { recursive: true });
+    await writeFile(join(clipDir, privateClipFileKey), 'private clip audio');
+    await c.query(
+      `INSERT INTO clips (id, org_id, space_id, context_type, context_id, mode, created_by, file_key, file_size, mime_type, status, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, $3, 'space', $3, 'async', $4, $5, 18, 'audio/webm', 'ready', false, NOW(), NOW())`,
+      [privateClipId, ORG_ID, privateSpaceId, OTHER_USER_ID, privateClipFileKey],
+    );
+    ids.push({ table: 'clips', id: privateClipId });
+
     privateWikiSlug = `drp-private-wiki-${stamp}`;
     await c.query(
       `INSERT INTO wiki_pages (id, org_id, scope, user_id, type, title, slug, content, confidence, is_deleted, created_at, updated_at)
@@ -134,6 +151,22 @@ before(async () => {
       [privateSpaceWikiId, ORG_ID, privateSpaceId, OTHER_USER_ID, `${SECRET_TERM} private space wiki`, `drp-space-wiki-${stamp}`, `${SECRET_TERM} private space wiki content`],
     );
     ids.push({ table: 'wiki_pages', id: privateSpaceWikiId });
+
+    privateDecisionId = `drp-private-decision-${stamp}`;
+    await c.query(
+      `INSERT INTO wiki_pages (id, org_id, scope, space_id, user_id, type, title, slug, content, confidence, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'space', $3, $4, 'decision', $5, $6, $7, 1, false, NOW(), NOW())`,
+      [privateDecisionId, ORG_ID, privateSpaceId, OTHER_USER_ID, `${SECRET_TERM} private decision`, `drp-private-decision-${stamp}`, `${SECRET_TERM} private decision content`],
+    );
+    ids.push({ table: 'wiki_pages', id: privateDecisionId });
+
+    privateSpaceNoteId = `drp-space-note-${stamp}`;
+    await c.query(
+      `INSERT INTO notes (id, org_id, user_id, title, content, visibility, visibility_space_id, is_deleted, is_pinned, is_template, version, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'space', $6, false, false, false, 1, NOW(), NOW())`,
+      [privateSpaceNoteId, ORG_ID, OTHER_USER_ID, `${SECRET_TERM} private space note`, `${SECRET_TERM} private space note content`, privateSpaceId],
+    );
+    ids.push({ table: 'notes', id: privateSpaceNoteId });
 
     privateFileId = `drp-file-${stamp}`;
     privateStorageKey = `drp-file-${stamp}.txt`;
@@ -196,6 +229,21 @@ before(async () => {
       [taskWikiCitationId, privateSpaceWikiId, visibleTaskId],
     );
     ids.push({ table: 'wiki_citations', id: taskWikiCitationId });
+
+    privateAgentPlanId = `drp-agent-plan-${stamp}`;
+    await c.query(
+      `INSERT INTO agent_plans (id, org_id, user_id, title, description, steps, status, current_step, fail_fast, rollback_on_fail, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'draft', 0, false, false, NOW(), NOW())`,
+      [
+        privateAgentPlanId,
+        ORG_ID,
+        OTHER_USER_ID,
+        `${SECRET_TERM} private agent plan`,
+        `${SECRET_TERM} private agent plan description`,
+        JSON.stringify([{ id: 'step-1', title: 'Private step', status: 'pending' }]),
+      ],
+    );
+    ids.push({ table: 'agent_plans', id: privateAgentPlanId });
   });
 });
 
@@ -214,9 +262,10 @@ after(async () => {
   });
   await rm(join(process.cwd(), 'uploads', privateStorageKey), { force: true });
   await rm(join(process.cwd(), 'uploads', restrictedTaskStorageKey), { force: true });
+  await rm(join(process.cwd(), '..', '..', 'uploads', 'clips', privateClipFileKey), { force: true });
 });
 
-async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowledge' | 'files' | 'tasks', path: string, userId = USER_ID, init?: RequestInit) {
+async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowledge' | 'files' | 'tasks' | 'clips' | 'decisions' | 'daily-notes' | 'agent-plans', path: string, userId = USER_ID, init?: RequestInit) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Direct Privacy User' });
@@ -229,6 +278,10 @@ async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowle
   if (routeName === 'knowledge') app.route('/api/spaces', (await import('../src/routes/knowledge.js')).knowledgeRoutes);
   if (routeName === 'files') app.route('/api/files', (await import('../src/routes/upload.js')).fileServingRoutes);
   if (routeName === 'tasks') app.route('/api/tasks', (await import('../src/routes/tasks.js')).taskRoutes);
+  if (routeName === 'clips') app.route('/api/clips', (await import('../src/routes/clips.js')).clipRoutes);
+  if (routeName === 'decisions') app.route('/api/decisions', (await import('../src/routes/decisions.js')).decisionRoutes);
+  if (routeName === 'daily-notes') app.route('/api/daily-notes', (await import('../src/routes/daily-notes.js')).dailyNoteRoutes);
+  if (routeName === 'agent-plans') app.route('/api/agent-plans', (await import('../src/routes/agent-plans.js')).agentPlanRoutes);
 
   return app.request(path, init);
 }
@@ -296,4 +349,57 @@ test('task detail adjunct routes respect restricted task and wiki visibility', a
   assert.equal(visibleTaskLinks.status, 200);
   const visibleTaskLinksBody = await visibleTaskLinks.json() as any;
   assert.ok(!visibleTaskLinksBody.wiki_links.some((p: any) => p.page_id === privateSpaceWikiId));
+});
+
+test('clip detail, audio, and space listing require clip context visibility', async () => {
+  assert.equal((await routeResponse('clips', `/api/clips/${privateClipId}`)).status, 404);
+  assert.equal((await routeResponse('clips', `/api/clips/${privateClipId}/audio`)).status, 404);
+  assert.equal((await routeResponse('clips', `/api/clips/space/${privateSpaceId}`)).status, 403);
+
+  assert.equal((await routeResponse('clips', `/api/clips/${privateClipId}`, OTHER_USER_ID)).status, 200);
+  const audio = await routeResponse('clips', `/api/clips/${privateClipId}/audio`, OTHER_USER_ID);
+  assert.equal(audio.status, 200);
+  assert.equal(await audio.text(), 'private clip audio');
+  const list = await routeResponse('clips', `/api/clips/space/${privateSpaceId}`, OTHER_USER_ID);
+  assert.equal(list.status, 200);
+  assert.ok((await list.json() as any[]).some((clip: any) => clip.id === privateClipId));
+});
+
+test('decisions inherit wiki page visibility', async () => {
+  const list = await routeResponse('decisions', `/api/decisions?query=${encodeURIComponent(SECRET_TERM)}`);
+  assert.equal(list.status, 200);
+  assert.ok(!(await list.json() as any).decisions.some((d: any) => d.id === privateDecisionId));
+  assert.equal((await routeResponse('decisions', `/api/decisions/${privateDecisionId}`)).status, 404);
+  assert.equal((await routeResponse('decisions', `/api/decisions/${privateDecisionId}`, USER_ID, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_reversed: true }),
+  })).status, 404);
+  assert.equal((await routeResponse('decisions', `/api/decisions/${privateDecisionId}`, OTHER_USER_ID)).status, 200);
+});
+
+test('space-visible notes require membership and agent plans are owner-scoped', async () => {
+  assert.equal((await routeResponse('daily-notes', `/api/daily-notes/${privateSpaceNoteId}`)).status, 404);
+  const noteList = await routeResponse('daily-notes', `/api/daily-notes?q=${encodeURIComponent(SECRET_TERM)}`);
+  assert.equal(noteList.status, 200);
+  assert.ok(!(await noteList.json() as any[]).some((n: any) => n.id === privateSpaceNoteId));
+  assert.equal((await routeResponse('daily-notes', `/api/daily-notes/${privateSpaceNoteId}`, OTHER_USER_ID)).status, 200);
+
+  const createSpaceNote = await routeResponse('daily-notes', '/api/daily-notes', USER_ID, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: `${SECRET_TERM} forbidden note`,
+      visibility: 'space',
+      visibility_space_id: privateSpaceId,
+    }),
+  });
+  assert.equal(createSpaceNote.status, 403);
+
+  const plans = await routeResponse('agent-plans', `/api/agent-plans?status=draft`);
+  assert.equal(plans.status, 200);
+  assert.ok(!(await plans.json() as any[]).some((p: any) => p.id === privateAgentPlanId));
+  assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}`)).status, 404);
+  assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}/approve`, USER_ID, { method: 'POST' })).status, 404);
+  assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}`, OTHER_USER_ID)).status, 200);
 });

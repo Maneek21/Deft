@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { eq, and, desc, ilike, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { wikiPages } from '@deft/db/schema';
+import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 
 export const decisionRoutes = new Hono();
 
@@ -18,6 +19,7 @@ decisionRoutes.get('/', async (c) => {
     eq(wikiPages.org_id, user.org_id),
     eq(wikiPages.type, 'decision'),
     eq(wikiPages.is_deleted, false),
+    visibleWikiPageCondition(user.id),
   ];
 
   if (query) {
@@ -78,6 +80,7 @@ decisionRoutes.get('/:id', async (c) => {
         eq(wikiPages.org_id, user.org_id),
         eq(wikiPages.type, 'decision'),
         eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
       ),
     )
     .limit(1);
@@ -107,6 +110,7 @@ decisionRoutes.patch('/:id', async (c) => {
         eq(wikiPages.org_id, user.org_id),
         eq(wikiPages.type, 'decision'),
         eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
       ),
     )
     .limit(1);

@@ -14,7 +14,7 @@ agentPlanRoutes.get('/', async (c) => {
     const status = c.req.query('status');
     const employeeId = c.req.query('employee_id');
 
-    const conditions = [eq(agentPlans.org_id, user.org_id)];
+    const conditions = [eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)];
     if (status) {
       conditions.push(eq(agentPlans.status, status as any));
     }
@@ -45,7 +45,7 @@ agentPlanRoutes.get('/:id', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -108,7 +108,7 @@ agentPlanRoutes.put('/:id', async (c) => {
     const [existing] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!existing) {
@@ -154,7 +154,7 @@ agentPlanRoutes.post('/:id/approve', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -190,7 +190,7 @@ agentPlanRoutes.post('/:id/execute', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -226,7 +226,7 @@ agentPlanRoutes.post('/:id/pause', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -262,7 +262,7 @@ agentPlanRoutes.post('/:id/resume', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
@@ -311,7 +311,7 @@ agentPlanRoutes.post('/:id/abort', async (c) => {
     const [plan] = await db
       .select()
       .from(agentPlans)
-      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id)))
+      .where(and(eq(agentPlans.id, planId), eq(agentPlans.org_id, user.org_id), eq(agentPlans.user_id, user.id)))
       .limit(1);
 
     if (!plan) {
