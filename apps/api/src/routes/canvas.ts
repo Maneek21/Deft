@@ -3,6 +3,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { canvases } from '@deft/db/schema';
 import { getIO } from '../socket.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
 
 export const canvasRoutes = new Hono();
 
@@ -11,9 +12,12 @@ canvasRoutes.get('/:spaceId/canvas', async (c) => {
   const user = c.get('user');
   const spaceId = c.req.param('spaceId');
 
+  const isMember = await requireSpaceMembership(spaceId, user.id);
+  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
   const [existing] = await db.select()
     .from(canvases)
-    .where(eq(canvases.space_id, spaceId))
+    .where(and(eq(canvases.space_id, spaceId), eq(canvases.org_id, user.org_id)))
     .limit(1);
 
   if (existing) {
@@ -38,6 +42,9 @@ canvasRoutes.patch('/:spaceId/canvas', async (c) => {
   const body = await c.req.json();
   const { title, content } = body;
 
+  const isMember = await requireSpaceMembership(spaceId, user.id);
+  if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
   const updates: Record<string, unknown> = {
     last_edited_by: user.id,
     last_edited_at: new Date(),
@@ -48,7 +55,7 @@ canvasRoutes.patch('/:spaceId/canvas', async (c) => {
 
   const [updated] = await db.update(canvases)
     .set(updates)
-    .where(eq(canvases.space_id, spaceId))
+    .where(and(eq(canvases.space_id, spaceId), eq(canvases.org_id, user.org_id)))
     .returning();
 
   if (!updated) {
