@@ -11,8 +11,9 @@
 
 import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes, tasks, spaceMembers } from '@deft/db/schema';
+import { wikiPages, agentMemory, notes, tasks, spaceMembers, projects } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
+import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -578,6 +579,7 @@ async function fetchNotes(
 
 async function fetchTasks(
   org_id: string,
+  user_id: string | undefined,
   forFTS: string,
   limit: number,
   queryEmbedding: number[] | null,
@@ -609,10 +611,12 @@ async function fetchTasks(
         rawScore: scoreExpr,
       })
       .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
       .where(
         and(
           eq(tasks.org_id, org_id),
           eq(tasks.is_deleted, false),
+          user_id ? visibleTaskCondition(user_id) : unrestrictedTaskCondition(),
           sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
         ),
       )
@@ -733,7 +737,7 @@ export async function retrieveContext(
     //    filtered by org_id + is_deleted. Backing store is tasks.search_vector
     //    (generated tsvector) + tasks.embedding (pgvector).
     types.includes('tasks')
-      ? fetchTasks(org_id, forFTS, limit, queryEmbedding, hybrid)
+      ? fetchTasks(org_id, user_id, forFTS, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
   ]);
 

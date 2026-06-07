@@ -3,6 +3,7 @@ import { eq, and, ilike, desc, or, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 
 export const searchRoutes = new Hono();
 
@@ -61,7 +62,7 @@ searchRoutes.get('/', async (c) => {
     })
       .from(tasks)
       .innerJoin(projects, eq(tasks.project_id, projects.id))
-      .where(and(...taskConditions))
+      .where(and(...taskConditions, visibleTaskCondition(user.id)))
       .orderBy(desc(tasks.updated_at))
       .limit(5);
 

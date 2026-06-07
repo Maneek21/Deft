@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { projects, tasks, taskLabels, labels, users, taskActivity, notifications } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 import {
   getProjectResolvedConfig,
 } from '../lib/project-resolved-config.js';
@@ -42,12 +43,46 @@ projectRoutes.get('/', async (c) => {
         select count(*)::int from "tasks"
         where "tasks"."project_id" = "projects"."id"
           and "tasks"."is_deleted" = false
+          and (
+            coalesce("tasks"."metadata"->>'visibility', 'org') != 'restricted'
+            or "tasks"."assignee_id" = ${user.id}
+            or "tasks"."created_by" = ${user.id}
+            or "projects"."lead_id" = ${user.id}
+            or coalesce("tasks"."metadata"->'visible_user_ids', '[]'::jsonb) ? ${user.id}
+            or exists (
+              select 1 from "task_watchers"
+              where "task_watchers"."task_id" = "tasks"."id"
+                and "task_watchers"."user_id" = ${user.id}
+            )
+            or exists (
+              select 1 from "task_assignees"
+              where "task_assignees"."task_id" = "tasks"."id"
+                and "task_assignees"."user_id" = ${user.id}
+            )
+          )
       )`.as('total_tasks'),
       done_tasks: sql<number>`(
         select count(*)::int from "tasks"
         where "tasks"."project_id" = "projects"."id"
           and "tasks"."is_deleted" = false
           and "tasks"."status" = 'done'
+          and (
+            coalesce("tasks"."metadata"->>'visibility', 'org') != 'restricted'
+            or "tasks"."assignee_id" = ${user.id}
+            or "tasks"."created_by" = ${user.id}
+            or "projects"."lead_id" = ${user.id}
+            or coalesce("tasks"."metadata"->'visible_user_ids', '[]'::jsonb) ? ${user.id}
+            or exists (
+              select 1 from "task_watchers"
+              where "task_watchers"."task_id" = "tasks"."id"
+                and "task_watchers"."user_id" = ${user.id}
+            )
+            or exists (
+              select 1 from "task_assignees"
+              where "task_assignees"."task_id" = "tasks"."id"
+                and "task_assignees"."user_id" = ${user.id}
+            )
+          )
       )`.as('done_tasks'),
       is_archived: projects.is_archived,
       created_at: projects.created_at,
@@ -144,6 +179,9 @@ projectRoutes.post('/', async (c) => {
     return c.json({ error: 'Failed to create project', code: 'INTERNAL_ERROR' }, 500);
   }
 });
+
+// Register before GET /:id so the generic detail route cannot swallow it.
+projectRoutes.get('/:id/tasks', listProjectTasks);
 
 // GET /api/projects/:id — get single project with task counts per status
 projectRoutes.get('/:id', async (c) => {
@@ -416,7 +454,7 @@ const createTaskSchema = z.object({
 });
 
 // GET /api/projects/:id/tasks — list all tasks for a project
-projectRoutes.get('/:id/tasks', async (c) => {
+async function listProjectTasks(c: any) {
   try {
     const user = c.get('user');
     const projectId = c.req.param('id');
@@ -464,6 +502,7 @@ projectRoutes.get('/:id/tasks', async (c) => {
       assignee_avatar: users.avatar_url,
     })
       .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
       .leftJoin(users, eq(tasks.assignee_id, users.id))
       .where(
         and(
@@ -471,6 +510,7 @@ projectRoutes.get('/:id/tasks', async (c) => {
           eq(tasks.is_deleted, false),
           eq(tasks.is_template, false),
           isNull(tasks.parent_task_id),
+          visibleTaskCondition(user.id),
         )
       )
       .orderBy(tasks.sort_order);
@@ -524,7 +564,7 @@ projectRoutes.get('/:id/tasks', async (c) => {
     console.error('Failed to fetch project tasks:', err);
     return c.json({ error: 'Failed to fetch tasks', code: 'INTERNAL_ERROR' }, 500);
   }
-});
+}
 
 // POST /api/projects/:id/tasks — create task in project
 projectRoutes.post('/:id/tasks', async (c) => {

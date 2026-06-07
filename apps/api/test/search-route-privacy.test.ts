@@ -17,7 +17,7 @@ const USER_ID = `srp-user-${Date.now()}`;
 const USER_EMAIL = `srp-user-${Date.now()}@test.local`;
 const OTHER_USER_ID = `srp-other-${Date.now()}`;
 const OTHER_USER_EMAIL = `srp-other-${Date.now()}@test.local`;
-const SEARCH_TERM = `searchprivacy${Date.now()}`;
+const SEARCH_TERM = `searchprivacy${Date.now()}z`;
 
 const ids: { table: string; id: string }[] = [];
 
@@ -27,6 +27,9 @@ let visibleMessageId: string;
 let privateMessageId: string;
 let ownNoteId: string;
 let otherPrivateNoteId: string;
+let projectId: string;
+let visibleTaskId: string;
+let restrictedTaskId: string;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -128,6 +131,38 @@ before(async () => {
       [otherPrivateNoteId, ORG_ID, OTHER_USER_ID, `${SEARCH_TERM} other note`, `Other ${SEARCH_TERM} note.`],
     );
     ids.push({ table: 'notes', id: otherPrivateNoteId });
+
+    projectId = `srp-project-${Date.now()}`;
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter, is_archived, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 2, false, false, NOW(), NOW())`,
+      [projectId, ORG_ID, `${SEARCH_TERM} task project`, `SP${Date.now() % 10000}`, OTHER_USER_ID],
+    );
+    ids.push({ table: 'projects', id: projectId });
+
+    visibleTaskId = `srp-visible-task-${Date.now()}`;
+    await c.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, description, status, priority, assignee_id, created_by, is_deleted, is_template, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 1, $4, $5, 'todo', 'p2', $6, $6, false, false, 1, NOW(), NOW())`,
+      [visibleTaskId, ORG_ID, projectId, `${SEARCH_TERM} visible task`, `Visible ${SEARCH_TERM} task.`, OTHER_USER_ID],
+    );
+    ids.push({ table: 'tasks', id: visibleTaskId });
+
+    restrictedTaskId = `srp-restricted-task-${Date.now()}`;
+    await c.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, description, status, priority, assignee_id, created_by, is_deleted, is_template, sort_order, metadata, created_at, updated_at)
+       VALUES ($1, $2, $3, 2, $4, $5, 'todo', 'p1', $6, $6, false, false, 2, $7::jsonb, NOW(), NOW())`,
+      [
+        restrictedTaskId,
+        ORG_ID,
+        projectId,
+        `${SEARCH_TERM} restricted task`,
+        `Restricted ${SEARCH_TERM} task.`,
+        OTHER_USER_ID,
+        JSON.stringify({ visibility: 'restricted', visible_user_ids: [OTHER_USER_ID] }),
+      ],
+    );
+    ids.push({ table: 'tasks', id: restrictedTaskId });
   });
 });
 
@@ -136,6 +171,11 @@ after(async () => {
     for (const { table, id } of [...ids].reverse()) {
       await c.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
     }
+    await c.query(`DELETE FROM people_patterns WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
+    await c.query(`DELETE FROM people_expertise WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
+    await c.query(`DELETE FROM people_influence WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
+    await c.query(`DELETE FROM people_interactions WHERE user_a_id IN ($1, $2) OR user_b_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
+    await c.query(`DELETE FROM people_relationships WHERE user_a_id IN ($1, $2) OR user_b_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
   });
@@ -154,6 +194,32 @@ async function callSearch(userId = USER_ID): Promise<any> {
   const res = await app.fetch(new Request(`http://localhost/?q=${encodeURIComponent(SEARCH_TERM)}`));
   assert.equal(res.status, 200);
   return res.json();
+}
+
+async function callTaskRoute(path: string, userId = USER_ID): Promise<Response> {
+  const { taskRoutes } = await import('../src/routes/tasks.js');
+  const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Search Privacy User' });
+    await next();
+  });
+  app.route('/api/tasks', taskRoutes);
+
+  return app.request(path, { method: 'GET' });
+}
+
+async function callProjectRoute(path: string, userId = USER_ID): Promise<Response> {
+  const { projectRoutes } = await import('../src/routes/projects.js');
+  const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Search Privacy User' });
+    await next();
+  });
+  app.route('/api/projects', projectRoutes);
+
+  return app.request(path, { method: 'GET' });
 }
 
 test('global search only returns spaces and messages the caller can access', async () => {
@@ -178,4 +244,34 @@ test('global search retrieved privateNotes group respects private-note ownership
 
   assert.ok(body.privateNotes.some((n: any) => n.id === ownNoteId));
   assert.ok(!body.privateNotes.some((n: any) => n.id === otherPrivateNoteId));
+});
+
+test('global search hides restricted tasks unless caller has direct access', async () => {
+  const memberBody = await callSearch(USER_ID);
+
+  assert.ok(memberBody.tasks.some((t: any) => t.id === visibleTaskId));
+  assert.ok(!memberBody.tasks.some((t: any) => t.id === restrictedTaskId));
+
+  const assigneeBody = await callSearch(OTHER_USER_ID);
+  assert.ok(assigneeBody.tasks.some((t: any) => t.id === restrictedTaskId));
+});
+
+test('task and project routes hide restricted tasks from unrelated members', async () => {
+  const memberSearch = await callTaskRoute(`/api/tasks/search?q=${encodeURIComponent(SEARCH_TERM)}`, USER_ID);
+  assert.equal(memberSearch.status, 200);
+  const memberSearchBody = await memberSearch.json() as any[];
+  assert.ok(memberSearchBody.some((t: any) => t.id === visibleTaskId));
+  assert.ok(!memberSearchBody.some((t: any) => t.id === restrictedTaskId));
+
+  const memberDetail = await callTaskRoute(`/api/tasks/${restrictedTaskId}`, USER_ID);
+  assert.equal(memberDetail.status, 404);
+
+  const assigneeDetail = await callTaskRoute(`/api/tasks/${restrictedTaskId}`, OTHER_USER_ID);
+  assert.equal(assigneeDetail.status, 200);
+
+  const memberProject = await callProjectRoute(`/api/projects/${projectId}/tasks`, USER_ID);
+  assert.equal(memberProject.status, 200);
+  const memberProjectBody = await memberProject.json() as any[];
+  assert.ok(memberProjectBody.some((t: any) => t.id === visibleTaskId));
+  assert.ok(!memberProjectBody.some((t: any) => t.id === restrictedTaskId));
 });
