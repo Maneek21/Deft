@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { eq, and, ilike, desc, or, gte, lte } from 'drizzle-orm';
+import { eq, and, ilike, desc, or, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, projects, spaces, users, messages, orgMembers, tags, notes } from '@deft/db/schema';
+import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 
 export const searchRoutes = new Hono();
@@ -19,10 +19,18 @@ searchRoutes.get('/', async (c) => {
     const pattern = `%${q}%`;
 
     // Search spaces
+    const visibleSpaceIds = db.select({ space_id: spaceMembers.space_id })
+      .from(spaceMembers)
+      .where(eq(spaceMembers.user_id, user.id));
+
     const spaceResults = await db.select({
       id: spaces.id, name: spaces.name, type: spaces.type,
     })
       .from(spaces)
+      .innerJoin(spaceMembers, and(
+        eq(spaces.id, spaceMembers.space_id),
+        eq(spaceMembers.user_id, user.id),
+      ))
       .where(and(eq(spaces.org_id, user.org_id), eq(spaces.is_archived, false), ilike(spaces.name, pattern)))
       .limit(5);
 
@@ -94,6 +102,10 @@ searchRoutes.get('/', async (c) => {
       .from(messages)
       .innerJoin(users, eq(messages.user_id, users.id))
       .innerJoin(spaces, eq(messages.space_id, spaces.id))
+      .innerJoin(spaceMembers, and(
+        eq(messages.space_id, spaceMembers.space_id),
+        eq(spaceMembers.user_id, user.id),
+      ))
       .where(and(...msgConditions))
       .orderBy(desc(messages.created_at))
       .limit(10);
@@ -110,7 +122,19 @@ searchRoutes.get('/', async (c) => {
     const noteResults = await db.select({
       id: notes.id, title: notes.title, icon: notes.icon, updated_at: notes.updated_at,
     }).from(notes)
-      .where(and(eq(notes.org_id, user.org_id), eq(notes.is_deleted, false), or(ilike(notes.title, pattern), ilike(notes.content, pattern))))
+      .where(and(
+        eq(notes.org_id, user.org_id),
+        eq(notes.is_deleted, false),
+        or(ilike(notes.title, pattern), ilike(notes.content, pattern)),
+        or(
+          eq(notes.user_id, user.id),
+          eq(notes.visibility, 'org'),
+          and(
+            eq(notes.visibility, 'space'),
+            inArray(notes.visibility_space_id, visibleSpaceIds),
+          ),
+        ),
+      ))
       .orderBy(desc(notes.updated_at))
       .limit(5);
 

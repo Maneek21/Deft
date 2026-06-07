@@ -9,9 +9,9 @@
  * Tasks 1.3–1.5 will swap the existing call sites over to this gateway.
  */
 
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { db } from './db.js';
-import { wikiPages, agentMemory, notes, tasks } from '@deft/db/schema';
+import { wikiPages, agentMemory, notes, tasks, spaceMembers } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -521,9 +521,16 @@ async function fetchNotes(
     // to avoid sequential scans on ILIKE. Until then this will scan.
     //
     // Task 5.2: include org-visible notes for all callers. When user_id is
-    // present we return the user's own notes (any visibility) plus org-visible
-    // notes from other users. When user_id is absent (system queries) we return
-    // only org-visible notes so private notes are never leaked.
+    // present we return the user's own notes (any visibility), org-visible
+    // notes from other users, and space-visible notes only for spaces the user
+    // belongs to. When user_id is absent (system queries) we return only
+    // org-visible notes so private/space notes are never leaked.
+    const visibleSpaceIds = user_id
+      ? db.select({ space_id: spaceMembers.space_id })
+        .from(spaceMembers)
+        .where(eq(spaceMembers.user_id, user_id))
+      : undefined;
+
     const rows = await db
       .select({
         id: notes.id,
@@ -538,8 +545,17 @@ async function fetchNotes(
           or(
             user_id ? eq(notes.user_id, user_id) : undefined,
             eq(notes.visibility, 'org'),
+            user_id && visibleSpaceIds
+              ? and(
+                  eq(notes.visibility, 'space'),
+                  inArray(notes.visibility_space_id, visibleSpaceIds),
+                )
+              : undefined,
           ),
-          sql`${notes.content} ILIKE ${`%${forIlike}%`}`,
+          or(
+            sql`${notes.title} ILIKE ${`%${forIlike}%`}`,
+            sql`${notes.content} ILIKE ${`%${forIlike}%`}`,
+          ),
         ),
       )
       .limit(limit);
