@@ -287,9 +287,9 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'events_query',
     description:
-      'Query the unified events stream for connected-tool activity (GitHub ' +
-      'webhooks, Google Calendar reminders, Slack notifications, Gmail, ' +
-      'Linear, etc.). Filter by type, source, and a since/until time window. ' +
+      'Query the unified events stream for native activity, calendar events, ' +
+      'imported ICS feeds, and connected-tool events. ' +
+      'Filter by type, source, and a since/until time window. ' +
       'Returns the most recent events ordered by event timestamp descending. ' +
       'Default limit is 50, max 200. Scoped to your org automatically.',
     inputSchema: {
@@ -299,8 +299,7 @@ export const toolSchemas: ToolSchema[] = [
         type: {
           type: 'string',
           description:
-            'Single event_type to filter by (e.g. "pr_merged", ' +
-            '"calendar_event", "pr_opened"). Mutually exclusive with `types`.',
+            'Single event_type to filter by (e.g. "calendar_event"). Mutually exclusive with `types`.',
         },
         types: {
           type: 'array',
@@ -309,7 +308,7 @@ export const toolSchemas: ToolSchema[] = [
         },
         source: {
           type: 'string',
-          enum: ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear'],
+          enum: ['native', 'google_calendar', 'ics', 'github', 'linear'],
           description: 'Optional provider source filter.',
         },
         since: {

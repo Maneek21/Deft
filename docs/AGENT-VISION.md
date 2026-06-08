@@ -111,7 +111,6 @@ MCP (Model Context Protocol) gives agents access to external tools without custo
 | Playwright / Browserbase | Browse the web, research, fill forms, verify information |
 | GitHub | Read PRs, create issues, search code, review diffs |
 | Google Drive | Read/create documents, sheets, slides |
-| Slack | Read/send messages across Slack channels |
 | Sentry | Monitor errors, investigate incidents |
 | n8n | Custom workflow automation |
 

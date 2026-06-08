@@ -27,7 +27,6 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 - `memory_recall({query})` — find the spec, the PR description, or the known-regression list. Always start here for a new bug.
 - `tasks_list({space_id, status})` — scope to the current release's task board.
 - `messages_recent({space_id, limit})` — catch up on recent bug reports and discussion.
-- `github_list_pulls({repo})` / `github_get_pr({repo, number})` — read the PR description and diff for whatever's under test.
 
 ### Writing work
 

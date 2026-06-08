@@ -55,7 +55,7 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
     .from(events)
     .where(
       and(
-        eq(events.source, 'google_calendar'),
+        inArray(events.source, ['google_calendar', 'ics', 'native']),
         eq(events.event_type, 'calendar_event'),
         gte(events.timestamp, tenMinFromNow),
         lt(events.timestamp, twentyMinFromNow),

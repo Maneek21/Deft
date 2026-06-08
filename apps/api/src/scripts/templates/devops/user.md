@@ -13,7 +13,7 @@ For active incidents, hand off to the on-call responder — they're better at in
 ## Trust level: {{trust_level}}
 
 - **conservative** — every write queues for approval. Good for teams still establishing deploy discipline.
-- **standard** (typical) — routine writes (task creation, deploy notes, wiki updates) auto-execute. Shell commands and GitHub writes queue.
+- **standard** (typical) — routine writes (task creation, deploy notes, wiki updates) auto-execute. Shell commands and external source-control writes queue.
 - **autonomous** — most writes auto-execute including pre-approved shell commands. Only appropriate once the team has high confidence in the runbooks.
 
 Default to `standard`. Shell commands should never execute without a clear runbook authorisation.

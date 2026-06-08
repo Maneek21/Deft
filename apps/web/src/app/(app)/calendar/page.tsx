@@ -49,10 +49,7 @@ export default function CalendarPage() {
   const [calData, setCalData] = useState<CalendarData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState<boolean | null>(null);
 
-  // Feature 2: Sync
-  const [syncing, setSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   // Feature 3: Briefs
@@ -97,19 +94,6 @@ export default function CalendarPage() {
     refetchCalData().finally(() => setLoading(false));
   }, [refetchCalData]);
 
-  // Check connection status once
-  useEffect(() => {
-    api.get('/api/connections').then(async (res) => {
-      if (res.ok) {
-        const conns = await res.json();
-        setIsConnected(
-          Array.isArray(conns) && conns.some(
-            (c: any) => c.provider === 'google_calendar' && c.status === 'connected'
-          )
-        );
-      }
-    }).catch(() => {});
-  }, []);
 
   // ── Feature 3: Fetch briefs for visible events ──
 
@@ -228,22 +212,6 @@ export default function CalendarPage() {
     setSelectedDay(null);
   }, [setQuery]);
 
-  // ── Feature 2: Sync ──
-
-  const handleSync = useCallback(async () => {
-    setSyncing(true);
-    try {
-      const res = await api.post('/api/connections/google_calendar/sync');
-      if (res.ok) {
-        const data = await res.json();
-        setToast(`Synced ${data.synced} events`);
-        await refetchCalData();
-      } else {
-        setToast('Sync failed');
-      }
-    } catch { setToast('Sync failed'); }
-    finally { setSyncing(false); }
-  }, [refetchCalData]);
 
   // ── Feature 4: Create event ──
 
@@ -313,9 +281,6 @@ export default function CalendarPage() {
           onNext={goNext}
           onToday={goToday}
           onViewChange={handleViewChange}
-          isConnected={isConnected}
-          onSync={handleSync}
-          syncing={syncing}
           onNewEvent={handleNewEvent}
         />
 

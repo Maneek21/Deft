@@ -14,6 +14,12 @@ import { env } from '../lib/env.js';
 export const icsPublicRoutes = new Hono();
 export const icsRoutes = new Hono();
 
+function publicApiBase(c: { req: { url: string } }): string {
+  const configured = process.env.NEXT_PUBLIC_API_URL || process.env.DEFT_API_URL;
+  if (configured) return configured.replace(/\/$/, '');
+  return new URL(c.req.url).origin.replace(/\/$/, '');
+}
+
 // ─── Public feed ─────────────────────────────────────────────────────────────
 // GET /api/ics/feed/:token — token IS the auth. No JWT, no session.
 // Returns a text/calendar VCALENDAR with the user's tasks-with-due-dates and
@@ -231,7 +237,7 @@ icsRoutes.get('/my-feed-url', async (c) => {
     token = newPublishToken();
     await db.update(users).set({ ics_publish_token: token }).where(eq(users.id, user.id));
   }
-  const apiBase = env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '').replace('localhost:3000', 'localhost:3001');
+  const apiBase = publicApiBase(c);
   // Public feed URL — clients paste this into their calendar app.
   const url = `${apiBase}/api/ics/feed/${token}`;
   return c.json({ feed_url: url });
@@ -243,6 +249,6 @@ icsRoutes.post('/my-feed-url/regenerate', async (c) => {
   const user = c.get('user') as { id: string; org_id: string };
   const token = newPublishToken();
   await db.update(users).set({ ics_publish_token: token }).where(eq(users.id, user.id));
-  const apiBase = env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '').replace('localhost:3000', 'localhost:3001');
+  const apiBase = publicApiBase(c);
   return c.json({ feed_url: `${apiBase}/api/ics/feed/${token}` });
 });

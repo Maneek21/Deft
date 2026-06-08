@@ -6,6 +6,7 @@ export async function initScheduler(): Promise<void> {
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'standup-generate', 'cron:standup');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'nudge-check', 'cron:nudge');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'meeting-prep-check', 'cron:meeting-prep');
+  await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'ics-sync', 'cron:ics-sync');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'people-graph', 'cron:people-graph');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'manager-pulse', 'cron:manager-pulse');
   await ensureCronJob(QUEUE_NAMES.SCHEDULED_JOBS, 'burnout-detect', 'cron:burnout-detect');

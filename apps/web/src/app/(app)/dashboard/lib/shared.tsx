@@ -45,7 +45,6 @@ export function fmtAgentAction(a: AgentActivity): string {
     case 'post_message': return `Posted in #${p.space_name}`;
     case 'add_knowledge': return `Added ${p.type}: \u201c${p.title}\u201d`;
     case 'wiki_write': return `Updated wiki: ${p.title || p.slug}`;
-    case 'create_calendar_event': return `Created event: ${p.title}`;
     default: return a.action.replace(/_/g, ' ');
   }
 }

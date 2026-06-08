@@ -173,7 +173,7 @@ memberRoutes.post('/invite', async (c) => {
       }).onConflictDoNothing();
     }
 
-    // Generate an invite URL the admin shares out-of-band (Slack, in person,
+    // Generate an invite URL the admin shares out-of-band (chat, in person,
     // whatever). The `member.joined` trigger fires on accept, not here, so
     // agents only react when the user actually shows up.
     const inviteToken = jwt.sign(

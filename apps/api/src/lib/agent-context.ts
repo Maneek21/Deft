@@ -18,7 +18,6 @@ import {
   peoplePatterns,
   peopleRelationships,
   burnoutAlerts,
-  connectedAccounts,
   wikiPages,
   wikiLinks,
   wikiCitations,
@@ -29,8 +28,6 @@ import {
 } from '@deft/db/schema';
 import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { mcpClientManager } from '@deft/mcp';
-import { decrypt } from './encryption.js';
-import { env } from './env.js';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { retrieveContext } from './retrieve-context.js';
 import { isManager } from '../middleware/privacy-guard.js';
@@ -391,7 +388,7 @@ export async function executeToolCall(
       const dayEnd = new Date(dateStr + 'T23:59:59');
 
       const conditions: any[] = [
-        eq(events.source, 'google_calendar'),
+        inArray(events.source, ['google_calendar', 'ics', 'native']),
         eq(events.event_type, 'calendar_event'),
         gte(events.timestamp, dayStart),
         lt(events.timestamp, dayEnd),
@@ -403,110 +400,11 @@ export async function executeToolCall(
       }
 
       const results = await db.select({
-        title: events.title, url: events.url, timestamp: events.timestamp, metadata: events.metadata,
+        title: events.title, url: events.url, timestamp: events.timestamp, source: events.source, metadata: events.metadata,
       }).from(events).where(and(...conditions)).orderBy(events.timestamp).limit(20);
 
       results.forEach(e => citations.push({ type: 'event', id: e.url || '', title: e.title || 'Calendar event' }));
       return { result: results, citations };
-    }
-
-    case 'create_calendar_event': {
-      // Get user's Google Calendar connection
-      const [calConn] = await db.select().from(connectedAccounts)
-        .where(and(
-          eq(connectedAccounts.user_id, _userId),
-          eq(connectedAccounts.provider, 'google_calendar'),
-        ))
-        .limit(1);
-
-      if (!calConn) {
-        return { result: { error: 'No Google Calendar connected. Please connect Google Calendar in Settings > Integrations.' }, citations: [] };
-      }
-
-      // Get access token (refresh if needed)
-      let calAccessToken = decrypt(calConn.access_token_encrypted);
-
-      if (calConn.token_expires_at && new Date(calConn.token_expires_at) < new Date(Date.now() + 5 * 60 * 1000)) {
-        if (!calConn.refresh_token_encrypted) {
-          return { result: { error: 'Calendar token expired and no refresh token available' }, citations: [] };
-        }
-        const refreshRes = await fetch('https://oauth2.googleapis.com/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            client_id: env.GOOGLE_CLIENT_ID,
-            client_secret: env.GOOGLE_CLIENT_SECRET,
-            refresh_token: decrypt(calConn.refresh_token_encrypted),
-            grant_type: 'refresh_token',
-          }),
-        });
-        const refreshData = await refreshRes.json() as any;
-        if (refreshData.access_token) {
-          calAccessToken = refreshData.access_token;
-        } else {
-          return { result: { error: 'Failed to refresh calendar token' }, citations: [] };
-        }
-      }
-
-      // Create event via Google Calendar API
-      const calEventBody: any = {
-        summary: params.title,
-        start: { dateTime: params.start },
-        end: { dateTime: params.end },
-      };
-      if (params.description) calEventBody.description = params.description;
-      if (params.location) calEventBody.location = params.location;
-      if (params.attendees?.length) {
-        calEventBody.attendees = params.attendees.map((email: string) => ({ email }));
-      }
-
-      const calRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${calAccessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(calEventBody),
-      });
-
-      if (!calRes.ok) {
-        const errText = await calRes.text();
-        return { result: { error: `Google Calendar API error: ${calRes.status} - ${errText}` }, citations: [] };
-      }
-
-      const created = await calRes.json() as any;
-
-      // Insert into local events table for immediate visibility
-      await db.insert(events).values({
-        org_id: orgId,
-        source: 'google_calendar' as const,
-        event_type: 'calendar_event',
-        external_id: created.id,
-        title: created.summary || params.title,
-        body: created.description || null,
-        url: created.htmlLink || null,
-        actor: null,
-        timestamp: new Date(created.start?.dateTime || created.start?.date || params.start),
-        metadata: {
-          start: created.start?.dateTime || created.start?.date,
-          end: created.end?.dateTime || created.end?.date,
-          location: created.location || null,
-          attendees: (created.attendees || []).map((a: any) => ({
-            email: a.email, displayName: a.displayName || null, responseStatus: a.responseStatus || null,
-          })),
-          hangoutLink: created.hangoutLink || null,
-          status: created.status || null,
-          allDay: !created.start?.dateTime,
-        },
-        user_id: _userId,
-        connected_account_id: calConn.id,
-      });
-
-      citations.push({ type: 'event', id: created.htmlLink || '', title: created.summary || params.title });
-      return {
-        result: { success: true, title: created.summary, link: created.htmlLink, start: params.start, end: params.end },
-        citations,
-      };
     }
 
     case 'check_github_prs': {

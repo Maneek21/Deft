@@ -556,7 +556,7 @@ const PROJECT_GROWTH: SeedTask2[] = [
   { title: 'Tester interview #1 — Aditi', description: '30-min 1:1 with first tester after 48 hours of use. Capture quotes, pain points, aha moments.', status: 'todo', priority: 'p1', assignee: 'Maneek', daysAgo: 4, dueDaysFromNow: 2, labels: ['research'] },
   { title: 'Tester interview #2 — Karthik', description: 'Same format as #1. Aiming for 1 interview per day during launch week.', status: 'backlog', priority: 'p1', assignee: 'Maneek', daysAgo: 4, dueDaysFromNow: 4, labels: ['research'] },
   { title: 'Write launch blog post', description: '1500 words. Narrative: why agent-native workspaces, what makes Deft different, honest limitations list.', status: 'backlog', priority: 'p2', assignee: 'Maneek', daysAgo: 8, dueDaysFromNow: 14, labels: ['marketing'] },
-  { title: 'Competitive tear-down v2', description: 'Update the comparison doc with Linear, Notion, Slack, Obsidian, Cursor. Focus on agent capabilities.', status: 'in_progress', priority: 'p3', assignee: 'Maneek', daysAgo: 6, dueDaysFromNow: 10 },
+  { title: 'Competitive tear-down v2', description: 'Update the comparison doc with Linear, Notion, Obsidian, Cursor. Focus on agent capabilities.', status: 'in_progress', priority: 'p3', assignee: 'Maneek', daysAgo: 6, dueDaysFromNow: 10 },
   { title: 'Usage analytics pipeline (privacy-first)', description: 'We need to know what features testers actually touch. PostHog self-hosted is the leading option.', status: 'backlog', priority: 'p2', assignee: 'Rahul Mehta', daysAgo: 10, dueDaysFromNow: 21, labels: ['infra', 'privacy'] },
   { title: 'NPS survey after week 1', description: 'Send a 1-question NPS to each tester at day 7. Use the result + interviews to inform sprint 7.', status: 'todo', priority: 'p2', assignee: 'Maneek', daysAgo: 2, dueDaysFromNow: 7 },
   { title: 'Twitter/X thread on private beta', description: 'Light brag post: what we built, who it is for, how to get access.', status: 'backlog', priority: 'p3', assignee: 'Maneek', daysAgo: 5, dueDaysFromNow: 14, labels: ['marketing'] },
@@ -791,7 +791,7 @@ const EXTRA_NOTES: { user: string; title: string; icon: string; content: string;
     user: 'Sara Kim',
     title: 'Onboarding flow v3 — rationale',
     icon: '🎨',
-    content: '<h1>Onboarding flow v3</h1><p>Third iteration after user testing with Priya and Rahul.</p><h2>Changes from v2</h2><ol><li>Dropped the Slack-style product tour — everyone clicked through without reading</li><li>Dropped the optional calendar connect — felt like busywork on day 1</li><li>Combined "Meet Deft" and welcome screens — was doing the same thing twice</li></ol><h2>Measurement plan</h2><p>Track completion rate per step. If step 4 (first space) drops below 80%, the copy is still too long.</p>',
+    content: '<h1>Onboarding flow v3</h1><p>Third iteration after user testing with Priya and Rahul.</p><h2>Changes from v2</h2><ol><li>Dropped the generic chat-app product tour — everyone clicked through without reading</li><li>Dropped the optional calendar connect — felt like busywork on day 1</li><li>Combined "Meet Deft" and welcome screens — was doing the same thing twice</li></ol><h2>Measurement plan</h2><p>Track completion rate per step. If step 4 (first space) drops below 80%, the copy is still too long.</p>',
     daysAgo: 6,
   },
   {
@@ -812,7 +812,7 @@ const EXTRA_NOTES: { user: string; title: string; icon: string; content: string;
     user: 'Maneek',
     title: 'Tester interview — question bank',
     icon: '❓',
-    content: '<h1>Tester interviews — question bank</h1><h2>Open-ended</h2><ul><li>Walk me through the first 10 minutes after sign-in. What did you do, what did you notice?</li><li>What felt broken? Be specific.</li><li>What felt magical, even if unfinished?</li><li>What did you reach for that wasn\'t there?</li></ul><h2>Targeted</h2><ul><li>Did you use the agent? Why or why not?</li><li>Did you find the knowledge wiki useful? Did you trust it?</li><li>How did the chat compare to Slack/Discord/etc for you?</li></ul><h2>Don\'t ask</h2><ul><li>"Would you pay for this?" — meaningless in a private beta</li><li>"What features should we build next?" — they\'ll hallucinate a backlog</li></ul>',
+    content: '<h1>Tester interviews — question bank</h1><h2>Open-ended</h2><ul><li>Walk me through the first 10 minutes after sign-in. What did you do, what did you notice?</li><li>What felt broken? Be specific.</li><li>What felt magical, even if unfinished?</li><li>What did you reach for that wasn\'t there?</li></ul><h2>Targeted</h2><ul><li>Did you use the agent? Why or why not?</li><li>Did you find the knowledge wiki useful? Did you trust it?</li><li>How did the chat compare to other team chat tools for you?</li></ul><h2>Don\'t ask</h2><ul><li>"Would you pay for this?" — meaningless in a private beta</li><li>"What features should we build next?" — they\'ll hallucinate a backlog</li></ul>',
     daysAgo: 3,
   },
 ];

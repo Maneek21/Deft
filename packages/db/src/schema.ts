@@ -320,7 +320,7 @@ export const taskComments = pgTable('task_comments', {
 ]);
 
 // ═══ TASK REACTIONS ═══
-// Task 6.3 — Slack-style emoji reactions on tasks. A (task, user, emoji)
+// Task 6.3 — emoji reactions on tasks. A (task, user, emoji)
 // tuple is unique; duplicate POST toggles off, DELETE removes explicitly.
 export const taskReactions = pgTable('task_reactions', {
   ...id(),
@@ -566,7 +566,7 @@ export const tools = pgTable('tools', {
   ...id(),
   name: text('name').notNull().unique(),
   description: text('description').notNull(),
-  category: text('category').notNull(), // 'native', 'google_calendar', 'github', 'slack', 'gmail'
+  category: text('category').notNull(), // 'native', 'google_calendar', 'github'
   params_schema: jsonb('params_schema').notNull(),
   approval_tier: approvalTierEnum('approval_tier').default('quick').notNull(),
   is_active: boolean('is_active').default(true).notNull(),
@@ -595,13 +595,13 @@ export const connectedAccounts = pgTable('connected_accounts', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
-  provider: text('provider').notNull(), // 'google_calendar', 'github', 'slack', 'gmail'
+  provider: text('provider').notNull(), // 'google_calendar', 'github'
   provider_account_id: text('provider_account_id'),
   access_token_encrypted: text('access_token_encrypted').notNull(),
   refresh_token_encrypted: text('refresh_token_encrypted'),
   token_expires_at: timestamp('token_expires_at'),
   scopes: text('scopes'),
-  metadata: jsonb('metadata'), // provider-specific data (slack workspace, github org, etc.)
+  metadata: jsonb('metadata'), // provider-specific data (github org, calendar metadata, etc.)
   last_sync_at: timestamp('last_sync_at'),
   sync_error: text('sync_error'),
   ...timestamps(),
@@ -614,7 +614,7 @@ export const events = pgTable('events', {
   ...id(),
   ...orgId(),
   source: eventSourceEnum('source').notNull(),
-  event_type: text('event_type').notNull(), // 'calendar_event', 'pr_opened', 'pr_merged', 'slack_message', 'email_received'
+  event_type: text('event_type').notNull(), // 'calendar_event', 'pr_opened', 'pr_merged'
   external_id: text('external_id'), // ID in the source system
   title: text('title'),
   body: text('body'),

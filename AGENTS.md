@@ -2,7 +2,7 @@
 
 ## What is this?
 
-Deft is an open-source AI-native workspace. Native chat + tasks + an AI agent that plans and executes multi-step workflows across native data and connected external tools (Google Calendar, GitHub, Slack, Gmail). The agent has direct SQL access to native data — not API calls — making it fundamentally faster and smarter than bolt-on AI features.
+Deft is an open-source AI-native workspace. Native chat + tasks + an AI agent that plans and executes multi-step workflows across native data and connected calendar feeds and BYOA-provided external tools. The agent has direct SQL access to native data — not API calls — making it fundamentally faster and smarter than bolt-on AI features.
 
 One Next.js app. One Postgres database. Multi-tenant SaaS with org_id on every table.
 
@@ -77,12 +77,12 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 **Three-tier approval:**
 - Auto-execute: task status from PR merge, meeting prep, reminders
 - Quick-approve: create task, schedule meeting (one-click card)
-- Full-review: multi-step plans, email drafts, external writes (preview + edit)
+- Full-review: multi-step plans and external writes (preview + edit)
 
 **Trust levels (per org):** Conservative → Standard → Autonomous
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
-**Connected actions (API):** Create calendar events, GitHub issues, Slack messages, Gmail drafts
+**Connected actions (API):** Create calendar events and read connected work events
 
 **Event-driven triggers (BullMQ crons):**
 - Task overdue → DM assignee + alert lead
@@ -164,7 +164,7 @@ approval forwarding, reasoning trace, per-org gateway reuse).
 - **Live skill install/remove on attach.** `ensureSkillInstalled` fires `gateway.skills.install(slug, version)` live for connected openclaw employees alongside the junction insert. New `removeSkillFromEmployee` helper + `DELETE /api/skills/:id/install` route mirrors the semantics. Fire-and-forget — gateway errors don't roll back the DB write; reconciliation loop retries.
 - **`skill_secrets` table.** Migration 0049. Encrypted per-org, per-skill credential store with helpers in `apps/api/src/lib/skill-secrets.ts`. Least-privilege: `getSecretsForSkill` only returns the keys declared by a skill's manifest.
 - **ClawHub browse + import.** `GET /api/clawhub/browse` reads the VoltAgent-seeded allowlist; `POST /api/clawhub/import { slug }` materializes as a marketplace skill. New "ClawHub" tab on the Library page with per-entry Import button.
-- **Pre-deploy install flow.** `resolveSecretsForInstall(orgId, skillId, requiredKeys)` — OAuth-first (connected_accounts) with skill_secrets fallback, env-var → provider prefix map (SLACK_/GITHUB_/GMAIL_/GOOGLE_/LINEAR_). `pushSkillSecretsToGateway` calls `config.set('skills/<slug>/<KEY>', value)`. Orchestrator `installMarketplaceSkillWithSecrets(employeeId, skillId)` wires it end-to-end. New routes: `POST /api/skills/:id/install/marketplace`, `POST /api/skills/:id/secrets`.
+- **Pre-deploy install flow.** `resolveSecretsForInstall(orgId, skillId, requiredKeys)` — OAuth-first (connected_accounts) with skill_secrets fallback, env-var → provider prefix map (GITHUB_/GOOGLE_/LINEAR_). `pushSkillSecretsToGateway` calls `config.set('skills/<slug>/<KEY>', value)`. Orchestrator `installMarketplaceSkillWithSecrets(employeeId, skillId)` wires it end-to-end. New routes: `POST /api/skills/:id/install/marketplace`, `POST /api/skills/:id/secrets`.
 - **Runtime install tool.** `request_skill_install(slug, agent_employee_id?, rationale?)` — new native tool, always queues for approval (tier='full' + DESTRUCTIVE_ADMIN_TOOLS). Executor looks up the slug on the allowlist (imports as marketplace skill on first use) and runs the pre-deploy flow. Slugs off the allowlist are rejected; full-ClawHub install stays admin-only.
 - **Skill reconciliation loop.** `reconcileSkillsForEmployee` fires best-effort from the openclaw heartbeat branch. Diffs `agent_employee_skills` against `gateway.skills.list()`, auto-reinstalls missing via `gateway.skills.install`, emits `skill_drift` system notification to org admins after > 2 consecutive drifting ticks (24h dedupe).
 - **Exec/plugin approval forwarding.** `startApprovalSubscriberFor(employeeId)` subscribes to `exec.approval.request` + `plugin.approval.request` events on the gateway and mirrors them as `agent_actions` rows (action=`openclaw_exec_approval`/`openclaw_plugin_approval`, tier=full). Existing approval-inbox UI renders them with no change. Approve/reject forwards back via `gateway.exec.approval.resolve(approvalId, approved, reason)`. Bootstrap from `workers/index.ts`.

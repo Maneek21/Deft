@@ -23,11 +23,6 @@
 
 - **`browser_navigate`** / **`browser_snapshot`** — open public pages a user is referring to (pricing page, docs page, public roadmap) so you can speak to what they're actually looking at.
 
-## Coming soon (not yet available)
-
-- **Gmail** — will let you read and draft email replies directly. Until then, draft replies as messages and the user will copy them into their email client.
-- **Linear / Slack** — will let you pull tickets from Linear and post in Slack channels. Until then, work inside Deft.
-
 ## Rules of thumb
 
 - Always read the wiki before answering a policy question.

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { CalEvent, DayBucket, HOURS, ITEM_COLORS, formatHourLabel, toDateKey } from '@/lib/calendar';
+import { CalEvent, DayBucket, HOURS, ITEM_COLORS, formatHourLabel, toDateKey, getEventSourceColor } from '@/lib/calendar';
 import { formatEventTime } from '@/lib/time';
 import { MapPin, ExternalLink, CheckCircle2, Circle } from 'lucide-react';
 import Link from 'next/link';
@@ -63,7 +63,7 @@ export function DayView({
           {allDayEvents.map((e) => (
             <div key={e.id} className="flex items-center gap-2 py-1 cursor-pointer hover:opacity-80"
               onClick={() => onEventClick?.(e)}>
-              <div className="w-2 h-2 rounded-full" style={{ background: ITEM_COLORS.event }} />
+              <div className="w-2 h-2 rounded-full" style={{ background: getEventSourceColor(e.source) }} />
               <span className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>{e.title}</span>
               {e.url && (
                 <a href={e.url} target="_blank" rel="noopener noreferrer"
@@ -135,14 +135,15 @@ export function DayView({
           {timedEvents.map(({ event: e, startMin, durationMin }) => {
             const startTime = formatEventTime(e.metadata.start);
             const endTime = e.metadata.end ? formatEventTime(e.metadata.end) : null;
+            const eventColor = getEventSourceColor(e.source);
             return (
               <div key={e.id}
                 className="absolute left-1 right-1 rounded-lg px-3 py-1.5 overflow-hidden cursor-pointer hover:opacity-90 z-[1]"
                 style={{
                   top: startMin * (ROW_HEIGHT / 60),
                   height: Math.max(28, durationMin * (ROW_HEIGHT / 60)),
-                  background: `${ITEM_COLORS.event}20`,
-                  borderLeft: `4px solid ${ITEM_COLORS.event}`,
+                  background: `${eventColor}20`,
+                  borderLeft: `4px solid ${eventColor}`,
                 }}
                 onClick={() => onEventClick?.(e)}>
                 <div className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>

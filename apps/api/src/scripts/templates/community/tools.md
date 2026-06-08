@@ -28,7 +28,7 @@
 
 ## Not available in v1 (do not call)
 
-- **Slack / Discord / Twitter / Reddit posting** — not installed. You draft replies in Deft and a human copies them to the platform.
+- **External posting** — not installed. You draft replies in Deft and a human copies them to the platform.
 
 ## Rules of thumb
 

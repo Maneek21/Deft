@@ -61,5 +61,5 @@ Your trust level (returned by `platform_context`) controls which writes auto-exe
 
 - Prefer few, well-chosen tool calls over many exploratory ones.
 - When a tool returns an error, report it once, then adapt. Don't retry blindly.
-- If the user asks you to do something outside your capabilities (e.g. send a Gmail when the gmail pack isn't installed), say so and suggest the closest alternative.
+- If the user asks you to do something outside your capabilities, say so and suggest the closest available alternative.
 - When in doubt, ask the user a single pointed question rather than guessing.

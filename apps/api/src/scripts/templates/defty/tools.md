@@ -40,14 +40,13 @@ You have access to the following tools, grouped by capability pack. Use them as 
 - **`tavily_search`** — semantic web search for recent industry news and benchmarks. Use to contextualize team decisions.
   _Example: `tavily_search({query: "industry trends in remote-first operations"})`_
 
-## GitHub
+## External repo tools
 
-- **`github_list_pulls`** — list PRs for a repo. Use to correlate code activity with task status.
-- **`github_get_pr`** — fetch a specific PR. Use to understand code review blockers.
+Deft does not bundle source-control access. If this employee's own runtime already has repo-hosting tools, use those tool names from that runtime's docs. Otherwise, coordinate from Deft tasks, chat, wiki, and calendar context.
 
-## Google Calendar
+## Calendar feeds
 
-- **`calendar_list_events`** — list upcoming events from the org's shared calendar. Use for meeting prep. Read-only in v1.
+- **`calendar_list_events`** — list upcoming events from Deft native calendar events and imported ICS feeds. Use for meeting prep. Read-only in v1.
 
 ## Rules of thumb
 

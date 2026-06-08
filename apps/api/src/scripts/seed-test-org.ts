@@ -115,7 +115,7 @@ const ENGINEERING_MESSAGES: SeedMessage[] = [
 ];
 
 const DESIGN_MESSAGES: SeedMessage[] = [
-  { user: 'Sara Kim', text: "<p>Updated the onboarding flow mock. Four steps instead of six — dropped the optional calendar connect and the Slack-style tour. Both felt like busy work.</p>", days: 11, hours: 14 },
+  { user: 'Sara Kim', text: "<p>Updated the onboarding flow mock. Four steps instead of six — dropped the optional calendar connect and the generic chat-app tour. Both felt like busy work.</p>", days: 11, hours: 14 },
   { user: 'Arjun Rao', text: "<p>Agree. Step 5 'Meet Deft' is doing too much — could we fold that into the welcome message on step 1?</p>", days: 11, hours: 12 },
   { user: 'Sara Kim', text: "<p>Yeah. Collapsing. Also reworking the empty states for the Knowledge page — they're too text-heavy right now.</p>", days: 11, hours: 11 },
   { user: 'Priya Shah', text: "<p>While you're there — the wiki type filter tabs are rendering 'Entitie' instead of 'Entities'. Known gap #9, but worth fixing the label copy at the same time.</p>", days: 10, hours: 17 },
@@ -140,7 +140,7 @@ const RANDOM_MESSAGES: SeedMessage[] = [
 
 const LAUNCH_MESSAGES: SeedMessage[] = [
   { user: 'Maneek', text: "<p>Tester list for private beta:</p><ol><li>Aditi (ex-Notion, now at Linear)</li><li>Karthik (founder, FounderPad)</li><li>Mira (writer, tech/ops focus)</li><li>Dev (ex-teammate, CTO at Zelestic)</li><li>Chris (PM at Ramp)</li></ol><p>Everyone on this list is someone I've worked with or know well. Low-risk trusted cohort. Invites going out once the deploy is green.</p>", days: 8, hours: 11 },
-  { user: 'Priya Shah', text: "<p>What's our feedback loop — Slack DM, email, or do we give them a form?</p>", days: 8, hours: 10 },
+  { user: 'Priya Shah', text: "<p>What's our feedback loop — direct message, email, or do we give them a form?</p>", days: 8, hours: 10 },
   { user: 'Maneek', text: "<p>DM for now. We're 5 testers; a form is overkill. I'll batch-summarize into this channel every Friday.</p>", days: 8, hours: 9 },
   { user: 'Rahul Mehta', text: "<p>What do we tell them about limitations? File uploads are still ephemeral, XSS sanitizer isn't landed.</p>", days: 7, hours: 18 },
   { user: 'Maneek', text: "<p>Writing the invite email now. I'll list the known limitations upfront — 'don't upload anything you'd cry about losing', 'don't paste untrusted HTML', etc. Trusted cohort should be fine with those caveats.</p>", days: 7, hours: 17, reactions: [{ user: 'Rahul Mehta', emoji: '👍' }] },

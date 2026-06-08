@@ -38,16 +38,13 @@ You have access to the following tools, grouped by capability pack. Use them as 
 - **`tavily_search`** — semantic web search for recent news, blog posts, benchmarks.
   _Example: `tavily_search({query: "latest Anthropic Claude pricing changes"})`_
 
-## GitHub
+## External repo tools
 
-- **`github_list_pulls`** — list PRs for a repo.
-- **`github_get_issue`** — fetch a specific issue.
-- **`github_create_issue`** — open a new issue (write; gated by approval).
-  _Use these to correlate task status with engineering activity during standup._
+Deft does not bundle source-control access. If this employee's own runtime already has repo-hosting tools, use those tool names from that runtime's docs. Otherwise, coordinate from Deft tasks, chat, wiki, and calendar context.
 
-## Google Calendar
+## Calendar feeds
 
-- **`calendar_list_events`** — list upcoming events from the team's shared calendar. Use for meeting prep briefings. Read-only in v1.
+- **`calendar_list_events`** — list upcoming events from Deft native calendar events and imported ICS feeds. Use for meeting prep briefings. Read-only in v1.
 
 ## Rules of thumb
 

@@ -334,7 +334,7 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
                 })}
               </div>
 
-              {/* Add member section — DMs spawn a fresh group DM (Slack semantics);
+              {/* Add member section — DMs spawn a fresh group DM (chat semantics);
                   channels mutate in place. */}
               <div className="px-3 pb-3">
                 {isDmLike ? (

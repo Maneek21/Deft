@@ -16,14 +16,6 @@ const PROVIDERS: Record<string, {
   clientId: () => string;
   clientSecret: () => string;
 }> = {
-  google_calendar: {
-    name: 'Google Calendar',
-    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    tokenUrl: 'https://oauth2.googleapis.com/token',
-    scopes: ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events'],
-    clientId: () => env.GOOGLE_CLIENT_ID,
-    clientSecret: () => env.GOOGLE_CLIENT_SECRET,
-  },
   github: {
     name: 'GitHub',
     authUrl: 'https://github.com/login/oauth/authorize',
@@ -85,8 +77,6 @@ connectionRoutes.post('/:provider/connect', async (c) => {
     scope: config.scopes.join(' '),
     state,
     response_type: 'code',
-    access_type: 'offline', // Google-specific for refresh token
-    prompt: 'consent',
   });
 
   return c.json({ url: `${config.authUrl}?${params.toString()}` });
@@ -146,8 +136,6 @@ connectionRoutes.get('/:provider/callback', async (c) => {
       });
       const ghUser = await userRes.json() as Record<string, any>;
       providerAccountId = String(ghUser.id);
-    } else if (provider === 'google_calendar') {
-      providerAccountId = tokenData.id_token ? 'google' : 'google-calendar';
     }
 
     // Upsert connection
@@ -181,15 +169,6 @@ connectionRoutes.get('/:provider/callback', async (c) => {
     }
 
     // Trigger immediate sync
-    if (provider === 'google_calendar') {
-      const [conn] = await db.select({ id: connectedAccounts.id })
-        .from(connectedAccounts)
-        .where(and(eq(connectedAccounts.user_id, stateData.user_id), eq(connectedAccounts.provider, provider)))
-        .limit(1);
-      if (conn) {
-        import('../workers/calendar-sync.js').then(m => m.syncCalendarForUser(conn.id)).catch(console.error);
-      }
-    }
     if (provider === 'github') {
       const [conn] = await db.select({ id: connectedAccounts.id })
         .from(connectedAccounts)
@@ -218,11 +197,6 @@ connectionRoutes.post('/:provider/sync', async (c) => {
     .limit(1);
   if (!conn) return c.json({ error: 'Not connected' }, 404);
 
-  if (provider === 'google_calendar') {
-    const { syncCalendarForUser } = await import('../workers/calendar-sync.js');
-    const result = await syncCalendarForUser(conn.id);
-    return c.json(result);
-  }
   if (provider === 'github') {
     const { syncGitHubForUser } = await import('../workers/github-sync.js');
     const result = await syncGitHubForUser(conn.id);

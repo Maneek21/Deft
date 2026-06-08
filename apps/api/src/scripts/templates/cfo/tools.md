@@ -18,9 +18,9 @@
 - **`delegation_self_report`** — hand scheduling to alex-pm, vendor negotiations to the founder.
 - **`events_upcoming`** — board meetings, renewal dates, payroll dates.
 
-## Google Calendar
+## Calendar feeds
 
-- **`calendar_list_events`** — see upcoming board meetings and vendor calls. Read-only in v1.
+- **`calendar_list_events`** — see upcoming board meetings and vendor calls from Deft native calendar events and imported ICS feeds. Read-only in v1.
   _Example: `calendar_list_events({window_days: 14})`_
 
 ## Not available in v1 (do not call)

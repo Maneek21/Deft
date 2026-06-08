@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CalEvent, CalTask, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS } from '@/lib/calendar';
+import { CalEvent, CalTask, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS, getEventSourceColor } from '@/lib/calendar';
 import { CalendarItem } from './calendar-item';
 import { TaskCardUnified } from '@/components/task-card-unified';
 import {
@@ -133,6 +133,7 @@ export function MonthView({
                         title={item.title}
                         time={item.time}
                         hasBrief={item.hasBrief}
+                        color={item.color}
                         onClick={item.type === 'event' && item.event ? () => onEventClick?.(item.event!) : undefined}
                       />
                     )
@@ -205,14 +206,14 @@ function DraggableTask({ id, children }: { id: string; children: React.ReactNode
 
 // ── Helpers ──
 
-type FlatItem = { id: string; type: 'event' | 'task' | 'note' | 'reminder'; title: string; time?: string; hasBrief?: boolean; event?: CalEvent; task?: CalTask };
+type FlatItem = { id: string; type: 'event' | 'task' | 'note' | 'reminder'; title: string; time?: string; hasBrief?: boolean; color?: string; event?: CalEvent; task?: CalTask };
 
 function getItems(bucket: DayBucket | undefined, briefs?: Map<string, string>): FlatItem[] {
   if (!bucket) return [];
   const items: FlatItem[] = [];
   for (const e of bucket.events) {
     const time = new Date(e.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    items.push({ id: e.id, type: 'event', title: e.title, time, hasBrief: briefs?.has(e.id), event: e });
+    items.push({ id: e.id, type: 'event', title: e.title, time, hasBrief: briefs?.has(e.id), color: getEventSourceColor(e.source), event: e });
   }
   for (const t of bucket.tasks) {
     items.push({ id: t.id, type: 'task', title: t.title, task: t });
