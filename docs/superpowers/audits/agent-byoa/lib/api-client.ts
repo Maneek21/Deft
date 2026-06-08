@@ -12,11 +12,13 @@ export interface DeftRest {
 export function createDeftRest(opts: { apiUrl: string; email: string; password: string }): DeftRest {
   let token: string | null = null;
   let user: { id: string; org_id: string } | null = null;
+  const auditToken = process.env.DEFT_AUDIT_BYPASS_TOKEN;
 
   async function fetchJson<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!token && path !== '/api/auth/login') throw new Error('Call login() first');
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
+    if (auditToken) headers['x-deft-audit-token'] = auditToken;
     const res = await fetch(`${opts.apiUrl}${path}`, {
       method,
       headers,

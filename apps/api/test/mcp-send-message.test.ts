@@ -306,3 +306,37 @@ test('send_message queues for approval when trust is conservative', async () => 
   );
   assert.ok(result.approval_id, 'queued result should have approval_id');
 });
+
+test('approved queued send_message inserts an agent-authored message', async () => {
+  const content = `approved send_message ${Date.now()}`;
+  const r = await sendMessage(
+    { caller_employee_slug: empSlug, target: { space_id: publicSpaceId }, content },
+    mkCtx('standard'),
+  );
+  assert.ok(!r.isError, `unexpected queue error: ${r.content?.[0]?.text}`);
+
+  const queued = parseResult(r);
+  assert.equal(queued.status, 'queued_for_approval');
+  assert.ok(queued.approval_id, 'queued result should have approval_id');
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const approved = await approveAction(queued.approval_id, humanUserId);
+  assert.equal(
+    approved.status,
+    'approved',
+    `approval should execute send_message: ${JSON.stringify(approved)}`,
+  );
+
+  const result = 'result' in approved ? approved.result as any : null;
+  assert.ok(result?.message_id, `approval result should include message_id: ${JSON.stringify(approved)}`);
+
+  const [row] = await db
+    .select()
+    .from(messages)
+    .where(eq(messages.id, result.message_id))
+    .limit(1);
+  assert.ok(row, 'message row should exist after approval');
+  assert.equal(row?.content, content);
+  assert.equal(row?.space_id, publicSpaceId);
+  assert.equal(row?.user_id, agentUserId, 'message should be authored by agent shadow user');
+});

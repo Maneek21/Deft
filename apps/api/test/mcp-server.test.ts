@@ -9,10 +9,11 @@
  *   3. POST /tools/list with valid bearer returns tool catalog
  *   4. POST /tools/call platform_context returns JSON with date/org/employee fields
  *   5. POST /tools/call memory_recall returns at least one page for "BSL"
- *   6. POST /tools/call memory_write creates a wiki page row
- *   7. Calling an unknown tool returns MCP tool error
- *   8. Invalid caller_employee_slug returns 403
- *   9. platform_context second call within 60s hits the LRU cache
+ *   6. POST /tools/call wiki_search aliases memory_recall
+ *   7. POST /tools/call memory_write creates a wiki page row
+ *   8. Calling an unknown tool returns MCP tool error
+ *   9. Invalid caller_employee_slug returns 403
+ *   10. platform_context second call within 60s hits the LRU cache
  *
  * The test uses a dedicated throwaway BYOA employee seeded in setup()
  * and deleted in teardown() so the 2026-04-13 Alex PM seed row is untouched.
@@ -86,6 +87,7 @@ async function teardownTestEmployee() {
   await withClient(async (c) => {
     // Delete any wiki pages created by the test employee
     await c.query(`DELETE FROM wiki_pages WHERE agent_employee_id = $1`, [TEST_EMPLOYEE_ID]);
+    await c.query(`DELETE FROM agent_mcp_call_audit WHERE employee_id = $1`, [TEST_EMPLOYEE_ID]);
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [TEST_EMPLOYEE_ID]);
     if (TEST_USER_ID) {
       await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
@@ -148,6 +150,7 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   const names = new Set<string>(body.tools.map((t: any) => t.name));
   assert.ok(names.has('platform_context'), 'platform_context in catalog');
   assert.ok(names.has('memory_recall'), 'memory_recall in catalog');
+  assert.ok(names.has('wiki_search'), 'wiki_search compatibility alias in catalog');
   assert.ok(names.has('memory_write'), 'memory_write in catalog');
   assert.ok(names.has('task_query'), 'task_query in catalog');
   assert.ok(names.has('thread_fetch'), 'thread_fetch in catalog');
@@ -204,7 +207,42 @@ test('5. POST /tools/call memory_recall returns at least one page for "BSL"', as
   }
 });
 
-test('6. POST /tools/call memory_write creates a wiki_pages row', async () => {
+test('6. POST /tools/call wiki_search aliases memory_recall and records canonical audit metadata', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    {
+      name: 'wiki_search',
+      arguments: {
+        caller_employee_slug: TEST_EMPLOYEE_SLUG,
+        query: 'BSL license',
+        limit: 5,
+      },
+    },
+    RAW_TOKEN!
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(!body.isError, `wiki_search alias should not error: ${JSON.stringify(body)}`);
+  const parsed = JSON.parse(body.content[0].text);
+  assert.ok(Array.isArray(parsed), 'alias result is array');
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT tool_name, metadata
+       FROM agent_mcp_call_audit
+       WHERE employee_id = $1 AND tool_name = 'wiki_search'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [TEST_EMPLOYEE_ID]
+    );
+    assert.equal(r.rows.length, 1, 'wiki_search audit row exists');
+    assert.equal(r.rows[0].tool_name, 'wiki_search');
+    assert.equal(r.rows[0].metadata?.requested_tool_name, 'wiki_search');
+    assert.equal(r.rows[0].metadata?.canonical_tool_name, 'memory_recall');
+  });
+});
+
+test('7. POST /tools/call memory_write creates a wiki_pages row', async () => {
   const title = `Phase3 MCP test memory ${Date.now()}`;
   const res = await mcpPost(
     '/tools/call',
@@ -238,7 +276,7 @@ test('6. POST /tools/call memory_write creates a wiki_pages row', async () => {
   });
 });
 
-test('7. Calling an unknown tool returns MCP error result', async () => {
+test('8. Calling an unknown tool returns MCP error result', async () => {
   const res = await mcpPost(
     '/tools/call',
     {
@@ -256,7 +294,7 @@ test('7. Calling an unknown tool returns MCP error result', async () => {
   );
 });
 
-test('8. Invalid caller_employee_slug returns 403', async () => {
+test('9. Invalid caller_employee_slug returns 403', async () => {
   const res = await mcpPost(
     '/tools/call',
     {
@@ -268,7 +306,7 @@ test('8. Invalid caller_employee_slug returns 403', async () => {
   assert.equal(res.status, 403);
 });
 
-test('9. platform_context second call within 60s hits LRU cache', async () => {
+test('10. platform_context second call within 60s hits LRU cache', async () => {
   // Clear cache first by calling with a fresh random trigger to force compute.
   // Then call twice and check cached flag or consistent output.
   const args = {
