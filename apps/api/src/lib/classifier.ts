@@ -28,15 +28,80 @@ const DEFAULT_RESULT: ClassificationResult = {
   decision: null,
 };
 
+function plainText(content: string): string {
+  return content
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function trimMemoryText(value: string): string {
+  return value
+    .replace(/^[\s:;,-]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.]+$/, '');
+}
+
+function localMemoryHints(content: string): Partial<ClassificationResult> {
+  const text = plainText(content);
+  const facts: string[] = [];
+  let decision: string | null = null;
+
+  const decisionPatterns = [
+    /\bdecision\s*:\s*([^.!?\n]+(?:[.!?](?!\s|$)[^.!?\n]*)?)/i,
+    /\bwe\s+(?:have\s+)?decided\s+(?:that\s+|to\s+)?([^.!?\n]+)/i,
+    /\bwe\s+agreed\s+(?:that\s+|to\s+)?([^.!?\n]+)/i,
+    /\blet'?s\s+use\s+([^.!?\n]+)/i,
+    /\bgoing forward\s*,?\s+([^.!?\n]+)/i,
+  ];
+
+  for (const pattern of decisionPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      decision = trimMemoryText(match[1]);
+      if (/^use\s+/i.test(match[0]) && !/^use\s+/i.test(decision)) {
+        decision = `Use ${decision}`;
+      }
+      break;
+    }
+  }
+
+  const factPatterns = [
+    /\bfact\s*:\s*([^.!?\n]+)/ig,
+    /\bpolicy\s*:\s*([^.!?\n]+)/ig,
+    /\bpreference\s*:\s*([^.!?\n]+)/ig,
+    /\b((?:always|never)\s+[^.!?\n]{8,160})/ig,
+  ];
+
+  for (const pattern of factPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      if (match[1]) facts.push(trimMemoryText(match[1]));
+    }
+  }
+
+  const uniqueFacts = Array.from(new Set(facts)).filter((fact) => fact && fact !== decision);
+  if (!decision && uniqueFacts.length === 0) return {};
+
+  return {
+    intent: 'discussion',
+    confidence: 0.78,
+    memorable_facts: uniqueFacts,
+    decision,
+  };
+}
+
 function localClassificationHints(content: string): Partial<ClassificationResult> {
-  const lower = content.toLowerCase();
-  const taskRefs = Array.from(content.matchAll(/\b[A-Z][A-Z0-9]+-\d+\b/g), (m) => m[0]);
-  const agentMentioned = /(^|\s)@(agent|deft|defty)\b/i.test(content);
-  const blocked = /\b(blocked|blocker|stuck|held up|waiting on|dependency|dependencies|can't proceed|cannot proceed|can't move forward|cannot move forward|unable to proceed)\b/i.test(content);
-  const explicitTask = /\b(create|add|make|open|track)\b.{0,40}\b(task|todo|ticket)\b/i.test(content);
+  const text = plainText(content);
+  const lower = text.toLowerCase();
+  const taskRefs = Array.from(text.matchAll(/\b[A-Z][A-Z0-9]+-\d+\b/g), (m) => m[0]);
+  const agentMentioned = /(^|\s)@(agent|deft|defty)\b/i.test(text);
+  const blocked = /\b(blocked|blocker|stuck|held up|waiting on|dependency|dependencies|can't proceed|cannot proceed|can't move forward|cannot move forward|unable to proceed)\b/i.test(text);
+  const explicitTask = /\b(create|add|make|open|track)\b.{0,40}\b(task|todo|ticket)\b/i.test(text);
   const actionable = blocked || explicitTask || /\b(need to|should|please|can someone|follow up)\b/i.test(lower);
 
   return {
+    ...localMemoryHints(content),
     agent_mentioned: agentMentioned,
     blocked,
     task_refs: taskRefs,
@@ -59,6 +124,8 @@ function mergeLocalHints(
     agent_mentioned: result.agent_mentioned || Boolean(hints.agent_mentioned),
     blocked: result.blocked || Boolean(hints.blocked),
     task_refs: Array.from(new Set([...(result.task_refs ?? []), ...(hints.task_refs ?? [])])),
+    memorable_facts: Array.from(new Set([...(result.memorable_facts ?? []), ...(hints.memorable_facts ?? [])])),
+    decision: result.decision || hints.decision || null,
   };
 }
 

@@ -470,6 +470,13 @@
       "when": 1780876800000,
       "tag": "0067_byoa_certification",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1780916400000,
+      "tag": "0068_wiki_pages_metadata",
+      "breakpoints": true
     }
   ]
 }

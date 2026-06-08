@@ -1219,6 +1219,7 @@ export const wikiPages = pgTable('wiki_pages', {
   slug: text('slug').notNull(),
   summary: text('summary'),
   content: text('content').notNull(),
+  metadata: jsonb('metadata'),
   confidence: real('confidence').default(1.0).notNull(),
   version: integer('version').default(1).notNull(),
   previous_content: text('previous_content'),

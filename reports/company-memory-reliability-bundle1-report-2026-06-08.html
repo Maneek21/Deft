@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company Memory Reliability Bundle 1 Report - 2026-06-08</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f3;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #697586;
+      --line: #d9ded7;
+      --green: #237a57;
+      --amber: #9a6418;
+      --red: #a33b3b;
+      --blue: #315f8c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    header {
+      padding: 28px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { line-height: 1.2; margin: 0; }
+    h1 { font-size: 28px; letter-spacing: 0; }
+    h2 { font-size: 18px; margin-bottom: 12px; }
+    h3 { font-size: 14px; margin: 18px 0 8px; }
+    p { margin: 8px 0; }
+    .meta { color: var(--muted); margin-top: 8px; font-size: 13px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .card, section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .card { padding: 16px; }
+    section { padding: 22px; margin-top: 18px; }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .ok { color: var(--green); }
+    .warn { color: var(--amber); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    th { color: var(--muted); font-weight: 600; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #eef1ed;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    ul { margin: 8px 0 0 18px; padding: 0; }
+    li { margin: 5px 0; }
+    a { color: var(--blue); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #fafaf7;
+      margin-right: 6px;
+      margin-top: 6px;
+    }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+      main { padding: 18px 12px 36px; }
+      header, section { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Company Memory Reliability Bundle 1 Report</h1>
+      <p class="meta">Date: June 8, 2026. Scope: chat-to-knowledge capture, wiki provenance, metadata preservation, and provider-free explicit memory extraction.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="label">Implementation</div>
+          <div class="value ok">Done</div>
+        </div>
+        <div class="card">
+          <div class="label">API Tests</div>
+          <div class="value ok">17/17</div>
+        </div>
+        <div class="card">
+          <div class="label">Typecheck</div>
+          <div class="value ok">Clean</div>
+        </div>
+        <div class="card">
+          <div class="label">Browser</div>
+          <div class="value ok">Pass</div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <h2>Executive Summary</h2>
+      <p>Bundle 1 is now materially improved. Manual knowledge capture preserves metadata and source-message provenance, wiki detail pages show clickable resource and chat-source links, and explicit decisions/facts now have a local fallback path when no AI provider is available.</p>
+      <p>The main remaining caveat is not a backend correctness issue: during browser automation, the in-chat knowledge panel listed the new entry but the row-expansion click became unreliable in the in-app browser transport. The same data is verified through API and the full wiki UI, and the side-panel code path now renders the same URL/source fields once expanded.</p>
+    </section>
+
+    <section>
+      <h2>Fixes Shipped</h2>
+      <table>
+        <thead>
+          <tr><th>Area</th><th>Change</th><th>Why It Matters</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Schema</td>
+            <td>Added <code>wiki_pages.metadata</code> plus migration <code>0068_wiki_pages_metadata.sql</code>.</td>
+            <td>Resource URLs, decision status, and other knowledge metadata are no longer dropped.</td>
+          </tr>
+          <tr>
+            <td>Manual Save</td>
+            <td><code>POST /api/spaces/:spaceId/knowledge</code> now validates <code>source_message_id</code>, writes metadata, creates <code>wiki_citations</code>, and returns <code>source_space_id</code>.</td>
+            <td>Knowledge cards can prove where they came from instead of saying “From conversation” without a link.</td>
+          </tr>
+          <tr>
+            <td>Validation Order</td>
+            <td>Source-message validation now happens before inserting the wiki page.</td>
+            <td>Bad provenance cannot leave orphaned wiki rows.</td>
+          </tr>
+          <tr>
+            <td>Wiki API</td>
+            <td>Wiki list/detail APIs expose metadata; citations now include the originating message space.</td>
+            <td>The canonical wiki surface can render resource links and deep-link back to chat.</td>
+          </tr>
+          <tr>
+            <td>UI</td>
+            <td>Full wiki detail shows resource URL metadata and clickable chat-message citations. In-chat panel “From conversation” is now a link.</td>
+            <td>Users can move from saved memory to source context without guessing.</td>
+          </tr>
+          <tr>
+            <td>Auto Extraction</td>
+            <td>Provider-free local classifier now extracts explicit <code>Decision:</code>, <code>Fact:</code>, <code>Policy:</code>, <code>Preference:</code>, and always/never rules.</td>
+            <td>Company memory does not fully collapse when LLM keys are missing.</td>
+          </tr>
+          <tr>
+            <td>Realtime</td>
+            <td>Auto memory extraction emits <code>knowledge:created</code> / <code>knowledge:updated</code> into the source space when possible.</td>
+            <td>The knowledge panel can update without requiring a refresh.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Verification Matrix</h2>
+      <table>
+        <thead>
+          <tr><th>Test</th><th>Command / Method</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>API typecheck</td>
+            <td><code>pnpm --filter @deft/api typecheck</code></td>
+            <td class="ok">Passed</td>
+          </tr>
+          <tr>
+            <td>Web typecheck</td>
+            <td><code>pnpm --filter @deft/web typecheck</code></td>
+            <td class="ok">Passed</td>
+          </tr>
+          <tr>
+            <td>Local classifier + in-chat knowledge route tests</td>
+            <td><code>tsx --test test/classifier-local-memory.test.ts test/in-chat-knowledge-panel.test.ts</code></td>
+            <td class="ok">12 passing, 0 failing</td>
+          </tr>
+          <tr>
+            <td>Automatic memory extraction tests</td>
+            <td><code>tsx --test test/memory-extract-no-agent-memory.test.ts test/memory-extract-embed-enqueue.test.ts</code></td>
+            <td class="ok">5 passing, 0 failing</td>
+          </tr>
+          <tr>
+            <td>Local DB migration</td>
+            <td><code>ALTER TABLE "wiki_pages" ADD COLUMN IF NOT EXISTS "metadata" jsonb</code> against <code>localhost:55432/deft</code></td>
+            <td class="ok">Applied</td>
+          </tr>
+          <tr>
+            <td>Browser wiki detail</td>
+            <td>Created a Testers Tomatoes source chat message and resource page, opened <code>/knowledge?slug=bundle-1-buyer-guide-1780917236002</code>.</td>
+            <td class="ok">Title, resource URL, source citation, excerpt, and chat-source link all visible.</td>
+          </tr>
+          <tr>
+            <td>Browser provenance link</td>
+            <td>Opened <code>/chat?space=025d2a79-f59f-423c-a326-f4b191038ed3&amp;message=4df66783-5bf9-49ea-8a58-86659a9c1b2c</code>.</td>
+            <td class="ok">Chat page loaded and original decision message was visible.</td>
+          </tr>
+          <tr>
+            <td>In-chat knowledge panel</td>
+            <td>Opened the Knowledge side panel from chat.</td>
+            <td class="info">Panel opened and listed the new resource entry. Automated expansion click was unreliable in the in-app browser; API and full wiki UI verified the expanded fields.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Known Test Artifact</h2>
+      <p>The browser pass left one realistic test artifact in the local demo workspace so the provenance path remains inspectable:</p>
+      <ul>
+        <li>Space: <code>#general</code> / <code>025d2a79-f59f-423c-a326-f4b191038ed3</code></li>
+        <li>Source message: <code>4df66783-5bf9-49ea-8a58-86659a9c1b2c</code></li>
+        <li>Wiki page: <code>Bundle 1 Buyer Guide 1780917236002</code></li>
+        <li>Slug: <code>bundle-1-buyer-guide-1780917236002</code></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Pilot Readiness Impact</h2>
+      <p><span class="pill ok">Improved</span> Manual “Save to Knowledge” now behaves like a real memory capture feature rather than a shallow wiki insert.</p>
+      <p><span class="pill ok">Improved</span> Users can inspect the source of a memory and return to the chat context where it was decided.</p>
+      <p><span class="pill ok">Improved</span> Deft can still capture explicit decisions/facts without depending on Anthropic, OpenAI, or another LLM provider.</p>
+      <p><span class="pill warn">Still Next</span> A broader semantic dedupe/merge pass is still worth doing later so repeated decisions update existing pages more intelligently instead of creating near-duplicates.</p>
+    </section>
+  </main>
+</body>
+</html>

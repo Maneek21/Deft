@@ -7,6 +7,7 @@ import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { llm } from '../../lib/llm.js';
 import { getOrgAIConfig, type OrgAIConfigRuntime } from '../../lib/org-ai-config.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
+import { getIO } from '../../socket.js';
 
 interface MemoryExtractJobData {
   messageId: string;
@@ -26,6 +27,35 @@ interface WikiIngestResult {
   content?: string;     // page content (full for create, appended text for update)
   summary?: string;     // one-liner summary
   related_slugs?: string[];
+}
+
+function emitKnowledgeChange(
+  event: 'knowledge:created' | 'knowledge:updated',
+  page: typeof wikiPages.$inferSelect,
+  messageId: string,
+  sourceSpaceId?: string,
+): void {
+  if (!sourceSpaceId) return;
+  const io = getIO();
+  if (!io) return;
+
+  io.to(`space:${sourceSpaceId}`).emit(event, {
+    id: page.id,
+    type: page.type,
+    title: page.title,
+    content: page.content,
+    metadata: page.metadata ?? null,
+    source_message_id: messageId,
+    source_space_id: sourceSpaceId,
+    space_id: page.space_id,
+    created_by: page.user_id,
+    created_at: page.created_at,
+    updated_at: page.updated_at,
+    author_name: null,
+    author_avatar: null,
+    slug: page.slug,
+    scope: page.scope,
+  });
 }
 
 /**
@@ -235,6 +265,13 @@ async function executeWikiIngest(
       });
 
       console.log(`[memory-extract] Updated wiki page "${existing.slug}" (v${existing.version + 1})`);
+      emitKnowledgeChange('knowledge:updated', {
+        ...existing,
+        content: updatedContent,
+        previous_content: existing.content,
+        version: existing.version + 1,
+        updated_at: new Date(),
+      }, messageId, spaceId);
 
       // Enqueue embedding regeneration for the updated page.
       try {
@@ -322,6 +359,7 @@ async function executeWikiIngest(
     });
 
     console.log(`[memory-extract] Created wiki page "${slug}" (type: ${pageType})`);
+    emitKnowledgeChange('knowledge:created', page!, messageId, spaceId);
 
     // Enqueue embedding generation for the new page.
     try {
