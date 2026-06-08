@@ -42,9 +42,11 @@ import {
   executeTaskCreate,
   executeTaskUpdate,
   executeMessagePost,
+  executeSendMessage,
   type TaskCreateArgs,
   type TaskUpdateArgs,
   type MessagePostArgs,
+  type SendMessageArgs,
 } from './mcp-tools/writes.js';
 import {
   executeMemoryUpdate,
@@ -55,6 +57,7 @@ export const MCP_ACTION_KINDS = new Set([
   'task_create',
   'task_update',
   'message_post',
+  'send_message',
   'memory_update',
 ]);
 
@@ -136,6 +139,35 @@ async function dispatchAction(
       return executeTaskUpdate(params as unknown as TaskUpdateArgs, ctx, opts);
     case 'message_post':
       return executeMessagePost(params as unknown as MessagePostArgs, ctx, opts);
+    case 'send_message': {
+      const p = params as unknown as SendMessageArgs & {
+        resolved_space_id?: string;
+        parent_id?: string | null;
+      };
+      const target = (p.target ?? {}) as Partial<{ space_id: string }>;
+      const spaceId =
+        p.resolved_space_id ??
+        target.space_id;
+      if (!spaceId) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'send_message approval is missing resolved_space_id',
+          }],
+          isError: true,
+        };
+      }
+      return executeSendMessage(
+        {
+          orgId: ctx.org_id,
+          spaceId,
+          content: p.content,
+          parentId: p.parent_id ?? null,
+          ctx,
+        },
+        opts,
+      );
+    }
     case 'memory_update':
       return executeMemoryUpdate(params as unknown as MemoryUpdateArgs, ctx, opts);
     default:

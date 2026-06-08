@@ -20,12 +20,16 @@ import { db } from './db.js';
 import { users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 
+export type AgentTaskDispatchResult =
+  | { queued: true; employeeId: string }
+  | { queued: false; reason: 'not_agent' | 'enqueue_failed' };
+
 export async function dispatchAgentEmployeeTask(params: {
   taskId: string;
   orgId: string;
   assigneeUserId: string;
   assignedBy: string;
-}): Promise<void> {
+}): Promise<AgentTaskDispatchResult> {
   const { taskId, orgId, assigneeUserId, assignedBy } = params;
   try {
     const [assigneeUser] = await db
@@ -44,8 +48,11 @@ export async function dispatchAgentEmployeeTask(params: {
         employeeId: assigneeUser.agent_employee_id,
         assignedBy,
       });
+      return { queued: true, employeeId: assigneeUser.agent_employee_id };
     }
+    return { queued: false, reason: 'not_agent' };
   } catch (err) {
     console.error('[dispatch-agent-task] enqueue failed:', err);
+    return { queued: false, reason: 'enqueue_failed' };
   }
 }

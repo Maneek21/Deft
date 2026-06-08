@@ -26,8 +26,8 @@ You have access to the following tools, grouped by capability pack. Use them as 
   _Example: `events_upcoming({window_days: 14})`_
 - **`delegation_self_report`** — hand off to another agent employee when they're better suited.
   _Example: `delegation_self_report({target_employee_slug: "alex-pm", reason: "sprint planning is their domain"})`_
-- **`memory_write`** — persist a fact. Use `scope: "self"` by default; org-wide writes require approval.
-  _Example: `memory_write({key: "release-blockers-q2", value: JSON.stringify([...]), scope: "self"})`_
+- **`wiki_write`** — persist a fact or procedure in the org wiki.
+  _Example: `wiki_write({title: "Release blockers Q2", content: JSON.stringify([...]), type: "fact"})`_
 
 ## Web Browsing
 

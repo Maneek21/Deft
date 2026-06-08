@@ -28,6 +28,44 @@ const DEFAULT_RESULT: ClassificationResult = {
   decision: null,
 };
 
+function localClassificationHints(content: string): Partial<ClassificationResult> {
+  const lower = content.toLowerCase();
+  const taskRefs = Array.from(content.matchAll(/\b[A-Z][A-Z0-9]+-\d+\b/g), (m) => m[0]);
+  const agentMentioned = /(^|\s)@(agent|deft|defty)\b/i.test(content);
+  const blocked = /\b(blocked|blocker|stuck|held up|waiting on|dependency|dependencies|can't proceed|cannot proceed|can't move forward|cannot move forward|unable to proceed)\b/i.test(content);
+  const explicitTask = /\b(create|add|make|open|track)\b.{0,40}\b(task|todo|ticket)\b/i.test(content);
+  const actionable = blocked || explicitTask || /\b(need to|should|please|can someone|follow up)\b/i.test(lower);
+
+  return {
+    agent_mentioned: agentMentioned,
+    blocked,
+    task_refs: taskRefs,
+    ...(explicitTask
+      ? { intent: 'task_create' as const, confidence: 0.82 }
+      : actionable
+        ? { intent: 'actionable' as const, confidence: blocked ? 0.85 : 0.72 }
+        : {}),
+  };
+}
+
+function mergeLocalHints(
+  result: ClassificationResult,
+  hints: Partial<ClassificationResult>,
+): ClassificationResult {
+  return {
+    ...result,
+    intent: result.intent === 'none' && hints.intent ? hints.intent : result.intent,
+    confidence: Math.max(result.confidence, hints.confidence ?? 0),
+    agent_mentioned: result.agent_mentioned || Boolean(hints.agent_mentioned),
+    blocked: result.blocked || Boolean(hints.blocked),
+    task_refs: Array.from(new Set([...(result.task_refs ?? []), ...(hints.task_refs ?? [])])),
+  };
+}
+
+export function classifyMessageLocally(content: string): ClassificationResult {
+  return mergeLocalHints({ ...DEFAULT_RESULT }, localClassificationHints(content));
+}
+
 const CLASSIFICATION_PROMPT = `You are a workspace message classifier. Analyze the message and return JSON only.
 
 Fields:
@@ -55,9 +93,11 @@ export async function classifyMessage(
   content: string,
   orgId: string,
 ): Promise<ClassificationResult> {
+  const localHints = localClassificationHints(content);
+
   // BYOK — only short-circuit when neither org nor env has any AI provider.
   if (!(await hasAnyAIProvider(orgId))) {
-    return { ...DEFAULT_RESULT };
+    return classifyMessageLocally(content);
   }
 
   try {
@@ -84,7 +124,7 @@ export async function classifyMessage(
       .trim();
     const parsed = JSON.parse(cleaned);
 
-    return {
+    return mergeLocalHints({
       intent: parsed.intent ?? 'none',
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
       agent_mentioned: Boolean(parsed.agent_mentioned),
@@ -97,9 +137,9 @@ export async function classifyMessage(
       },
       memorable_facts: Array.isArray(parsed.memorable_facts) ? parsed.memorable_facts : [],
       decision: typeof parsed.decision === 'string' ? parsed.decision : null,
-    };
+    }, localHints);
   } catch (err) {
     console.error('[classifier] Classification failed:', (err as Error).message);
-    return { ...DEFAULT_RESULT };
+    return classifyMessageLocally(content);
   }
 }

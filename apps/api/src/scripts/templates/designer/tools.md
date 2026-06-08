@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call every turn.
   _Example: `deft_platform_context({caller_employee_slug: "designer"})`_
-- **`wiki_search`** — semantic search over the wiki, including design-system pages.
-  _Example: `wiki_search({query: "button variants"})`_
+- **`memory_recall`** — semantic search over the wiki, including design-system pages.
+  _Example: `memory_recall({query: "button variants"})`_
 - **`tasks_list`** — scope to a product-area space.
   _Example: `tasks_list({space_id: "sp_design", status: "in_review"})`_
 - **`task_create`** — file a design ticket.

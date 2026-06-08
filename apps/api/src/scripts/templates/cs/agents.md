@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — use for pricing, FAQ, policy, and known-issue lookups. Search here before answering any "how do I..." question.
+- `memory_recall({query})` — use for pricing, FAQ, policy, and known-issue lookups. Search here before answering any "how do I..." question.
 - `tasks_list({space_id, status})` — the open customer-success task board.
 - `messages_recent({space_id, limit})` — catch up on recent customer conversations in the support space.
 

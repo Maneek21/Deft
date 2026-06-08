@@ -89,6 +89,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         org_id: orgId,
         user_id: userId,
         action: 'create_task',
+        message_id: messageId,
         params: {
           title: `Blocker: ${draftSnippet}`,
           description: content,

@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — use before proposing a new pattern. Search for "design system", "component library", or the specific flow name.
+- `memory_recall({query})` — use before proposing a new pattern. Search for "design system", "component library", or the specific flow name.
 - `tasks_list({space_id, status})` — see what's currently in flight for a given product area.
 - `messages_recent({space_id, limit})` — pick up on recent user-facing complaints or product discussion.
 - `events_upcoming({window_days})` — find upcoming design reviews and user interviews.

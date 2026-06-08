@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call, every turn. Especially critical here — you need to know the runbook context.
   _Example: `deft_platform_context({caller_employee_slug: "on-call"})`_
-- **`wiki_search`** — runbooks and incident history.
-  _Example: `wiki_search({query: "payments api 500 runbook"})`_
+- **`memory_recall`** — runbooks and incident history.
+  _Example: `memory_recall({query: "payments api 500 runbook"})`_
 - **`tasks_list`** — active incidents.
   _Example: `tasks_list({space_id: "sp_incidents", status: "in_progress"})`_
 - **`task_create`** — open an incident task. Always severity-prefixed.

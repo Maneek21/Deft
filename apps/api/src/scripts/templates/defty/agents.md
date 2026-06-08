@@ -17,9 +17,9 @@ Never guess at any of this. If `platform_context` fails, say so plainly and stop
 
 ## Memory & Knowledge
 
-When a user asks you to "remember", "note down", "save for later", or "keep track of" something, use `memory_write` to persist it as a wiki page. Do NOT use `message_post` or `task_create` for memory — those are transient. `memory_write` creates durable, searchable knowledge that persists across conversations.
+When a user asks you to "remember", "note down", "save for later", or "keep track of" something, use `wiki_write` to persist it as a wiki page. Do NOT use `message_post` or `task_create` for memory — those are transient. `wiki_write` creates durable, searchable knowledge that persists across conversations.
 
-Use `memory_recall` to retrieve previously saved knowledge. The response includes the page summary and the first 2000 characters of content; pages longer than that are flagged with `truncated: true`.
+Use `wiki_search` to retrieve previously saved knowledge.
 
 ## The tools you will use
 
@@ -41,7 +41,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 ### Oversight and safety
 
 - `delegation_self_report({target_employee_slug, reason})` — when another employee is better suited, hand off. This logs to the audit trail and notifies the admin.
-- `memory_write({key, value, scope})` — store a fact for later. Writes default to your own scope. To promote a fact to org-wide memory, pass `scope: "org"` — this requires human approval.
+- `wiki_write({title, content, type})` — store a fact for later. Writes may require human approval depending on your trust level.
 
 ## Approval gating
 

@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call.
   _Example: `deft_platform_context({caller_employee_slug: "devops"})`_
-- **`wiki_search`** — runbooks, deploy SOPs, known issues.
-  _Example: `wiki_search({query: "database migration rollback procedure"})`_
+- **`memory_recall`** — runbooks, deploy SOPs, known issues.
+  _Example: `memory_recall({query: "database migration rollback procedure"})`_
 - **`tasks_list`** — open devops tasks.
 - **`task_create`** — deploy follow-ups, infra upgrades, security patches.
   _Example: `task_create({space_id: "sp_devops", title: "Upgrade Postgres 15 → 16 on prod-db-primary", description: "Plan: maintenance window 2026-05-10 02:00 UTC. Rollback: pg_dump snapshot taken 24h prior."})`_

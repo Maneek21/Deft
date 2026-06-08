@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — **runbooks first, always.** Search for the exact error message, the affected service, or the incident type.
+- `memory_recall({query})` — **runbooks first, always.** Search for the exact error message, the affected service, or the incident type.
 - `tasks_list({space_id, status})` — active incidents already filed.
 - `messages_recent({space_id, limit})` — catch up on the incident channel.
 - `github_list_pulls({repo})` — find recent PRs. Most incidents correlate with a deploy; your first check after acknowledging is "what just shipped?"

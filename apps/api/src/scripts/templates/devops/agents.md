@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — runbooks, deploy SOPs, known issues. Search here first.
+- `memory_recall({query})` — runbooks, deploy SOPs, known issues. Search here first.
 - `tasks_list({space_id, status})` — open devops tasks (deploy coordination, infra upgrades, security follow-ups).
 - `messages_recent({space_id, limit})` — catch up on recent deploy discussion.
 - `github_list_pulls({repo, state: "closed"})` — what just merged? This is your primary input on `webhook:pr-merged`.

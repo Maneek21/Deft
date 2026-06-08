@@ -14,6 +14,7 @@ import { db } from './db.js';
 import { wikiPages, agentMemory, notes, tasks, spaceMembers, projects } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
+import { visibleWikiPageCondition } from './wiki-visibility.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -88,6 +89,25 @@ function ilikeScore(text: string, queryWords: string[]): number {
   return clampScore(0.5 + 0.5 * (matched / queryWords.length));
 }
 
+const WIKI_FALLBACK_STOPWORDS = new Set([
+  'about', 'after', 'agent', 'answer', 'based', 'before', 'could', 'defty',
+  'from', 'give', 'have', 'just', 'know', 'knowledge', 'please', 'read',
+  'should', 'tell', 'that', 'their', 'there', 'this', 'using', 'what', 'when',
+  'where', 'wiki', 'with', 'workspace',
+]);
+
+function wikiFallbackTerms(forIlike: string, words: string[]): string[] {
+  const phrase = forIlike.trim();
+  const terms = words
+    .filter((w) => w.length >= 4 && !WIKI_FALLBACK_STOPWORDS.has(w))
+    .slice(0, 10);
+  return Array.from(new Set([phrase, ...terms].filter((term) => term.length >= 2)));
+}
+
+function wikiSnippet(row: Pick<WikiRow, 'title' | 'slug' | 'summary' | 'content'>): string {
+  return [row.title, row.slug, row.summary ?? '', row.content ?? ''].join(' ');
+}
+
 // ─── Hybrid vector helpers ────────────────────────────────────────────────────
 
 // Warn only once per process when the <=> operator is unavailable (BYTEA env).
@@ -153,6 +173,7 @@ function ftsScoreExpr(forFTS: string) {
  */
 async function runWikiQuery(
   org_id: string,
+  user_id: string | undefined,
   forFTS: string,
   agent_employee_id: string | undefined,
   limit: number,
@@ -180,6 +201,7 @@ async function runWikiQuery(
             eq(wikiPages.org_id, org_id),
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
+            ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
             eq(wikiPages.agent_employee_id, agent_employee_id),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
@@ -206,6 +228,7 @@ async function runWikiQuery(
             eq(wikiPages.org_id, org_id),
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
+            ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
             sql`${wikiPages.agent_employee_id} IS NULL`,
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
@@ -235,6 +258,7 @@ async function runWikiQuery(
         eq(wikiPages.org_id, org_id),
         eq(wikiPages.is_deleted, false),
         sql`${wikiPages.type} != 'decision'`,
+        ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
         sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
       ),
     )
@@ -323,7 +347,10 @@ function mapWikiRows(
 
 async function fetchWiki(
   org_id: string,
+  user_id: string | undefined,
   forFTS: string,
+  forIlike: string,
+  words: string[],
   agent_employee_id: string | undefined,
   limit: number,
   queryEmbedding: number[] | null,
@@ -338,9 +365,22 @@ async function fetchWiki(
 
   try {
     const { tier1Rows, tier2Rows, singleRows } = await runWikiQuery(
-      org_id, forFTS, agent_employee_id, limit, scoreExpr, orderExpr,
+      org_id, user_id, forFTS, agent_employee_id, limit, scoreExpr, orderExpr,
     );
-    return mapWikiRows(tier1Rows, tier2Rows, singleRows);
+    const mapped = mapWikiRows(tier1Rows, tier2Rows, singleRows);
+    if (mapped.length >= limit) {
+      return mapped;
+    }
+    const fallback = await fetchWikiIlike(
+      org_id,
+      user_id,
+      forIlike,
+      words,
+      agent_employee_id,
+      limit - mapped.length,
+      new Set(mapped.map((r) => r.source_id)),
+    );
+    return [...mapped, ...fallback];
   } catch (err) {
     if (useHybrid && isVectorOperatorError(err)) {
       // BYTEA fallback: pgvector <=> operator not available — retry with FTS only.
@@ -351,9 +391,22 @@ async function fetchWiki(
       try {
         const ftsSE = ftsScoreExpr(forFTS);
         const { tier1Rows: t1, tier2Rows: t2, singleRows: sr } = await runWikiQuery(
-          org_id, forFTS, agent_employee_id, limit, ftsSE, ftsSE,
+          org_id, user_id, forFTS, agent_employee_id, limit, ftsSE, ftsSE,
         );
-        return mapWikiRows(t1, t2, sr);
+        const mapped = mapWikiRows(t1, t2, sr);
+        if (mapped.length >= limit) {
+          return mapped;
+        }
+        const fallback = await fetchWikiIlike(
+          org_id,
+          user_id,
+          forIlike,
+          words,
+          agent_employee_id,
+          limit - mapped.length,
+          new Set(mapped.map((r) => r.source_id)),
+        );
+        return [...mapped, ...fallback];
       } catch (ftsErr) {
         console.warn('[retrieveContext] wiki branch failed (FTS fallback):', (ftsErr as Error).message);
         return [];
@@ -363,6 +416,111 @@ async function fetchWiki(
     console.warn('[retrieveContext] wiki branch failed:', (err as Error).message);
     return [];
   }
+}
+
+async function fetchWikiIlike(
+  org_id: string,
+  user_id: string | undefined,
+  forIlike: string,
+  words: string[],
+  agent_employee_id: string | undefined,
+  limit: number,
+  excludeIds = new Set<string>(),
+): Promise<ContextResult[]> {
+  if (limit <= 0) return [];
+
+  const terms = wikiFallbackTerms(forIlike, words);
+  if (terms.length === 0) return [];
+
+  const matchClauses = terms.flatMap((term) => {
+    const pattern = `%${term}%`;
+    return [
+      sql`${wikiPages.title} ILIKE ${pattern}`,
+      sql`${wikiPages.slug} ILIKE ${pattern}`,
+      sql`${wikiPages.summary} ILIKE ${pattern}`,
+      sql`${wikiPages.content} ILIKE ${pattern}`,
+    ];
+  });
+
+  const baseConditions = [
+    eq(wikiPages.org_id, org_id),
+    eq(wikiPages.is_deleted, false),
+    sql`${wikiPages.type} != 'decision'`,
+    ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
+    or(...matchClauses),
+  ];
+
+  const selectColumns = {
+    id: wikiPages.id,
+    title: wikiPages.title,
+    slug: wikiPages.slug,
+    summary: wikiPages.summary,
+    content: wikiPages.content,
+    scope: wikiPages.scope,
+    confidence: wikiPages.confidence,
+    type: wikiPages.type,
+    agent_employee_id: wikiPages.agent_employee_id,
+  };
+
+  const rows: Array<Omit<WikiRow, 'rawScore'>> = [];
+  if (agent_employee_id) {
+    const [tier1Rows, tier2Rows] = await Promise.all([
+      db
+        .select(selectColumns)
+        .from(wikiPages)
+        .where(and(...baseConditions, eq(wikiPages.agent_employee_id, agent_employee_id)))
+        .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
+        .limit(Math.min(2, limit)),
+      db
+        .select(selectColumns)
+        .from(wikiPages)
+        .where(and(...baseConditions, sql`${wikiPages.agent_employee_id} IS NULL`))
+        .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
+        .limit(limit),
+    ]);
+    rows.push(...tier1Rows, ...tier2Rows);
+  } else {
+    const singleRows = await db
+      .select(selectColumns)
+      .from(wikiPages)
+      .where(and(...baseConditions))
+      .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
+      .limit(limit);
+    rows.push(...singleRows);
+  }
+
+  const out: ContextResult[] = [];
+  for (const row of rows) {
+    if (excludeIds.has(row.id) || out.some((r) => r.source_id === row.id)) {
+      continue;
+    }
+    const tier = agent_employee_id && row.agent_employee_id === agent_employee_id
+      ? 'employee'
+      : agent_employee_id && !row.agent_employee_id
+        ? 'org'
+        : undefined;
+    out.push({
+      source_type: 'wiki_page',
+      source_id: row.id,
+      title: row.title,
+      content: row.content,
+      score: clampScore(ilikeScore(wikiSnippet(row), words) + (tier === 'employee' ? 0.1 : 0)),
+      scope: row.scope ?? undefined,
+      confidence: row.confidence,
+      metadata: {
+        type: row.type,
+        ...(tier ? { tier } : {}),
+        slug: row.slug,
+        summary: row.summary ?? null,
+        agent_employee_id: row.agent_employee_id ?? null,
+        retrieval: 'text_fallback',
+      },
+    });
+    if (out.length >= limit) {
+      break;
+    }
+  }
+  return out;
 }
 
 async function fetchDecisions(
@@ -712,7 +870,7 @@ export async function retrieveContext(
   // 4. Run all requested branches concurrently; each returns its own array.
   const [wikiRows, decisionRows, memRows, noteRows, taskRows] = await Promise.all([
     types.includes('wiki')
-      ? fetchWiki(org_id, forFTS, agent_employee_id, limit, queryEmbedding, hybrid)
+      ? fetchWiki(org_id, user_id, forFTS, forIlike, words, agent_employee_id, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
     // 5. Decisions branch: queries wikiPages WHERE type='decision'. Forward-

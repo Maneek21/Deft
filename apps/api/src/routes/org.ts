@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { orgMembers } from '@deft/db/schema';
 import {
   getOrgAIConfigMasked,
+  getReasonProviderReadiness,
   setOrgAPIKey,
   setOrgModelRoute,
   setOrgOllamaUrl,
@@ -46,9 +47,17 @@ orgRoutes.get('/ai-config', async (c) => {
   const user = c.get('user');
   const masked = await getOrgAIConfigMasked(user.org_id);
   const has_provider = await hasAnyAIProvider(user.org_id);
+  const reason_provider = await getReasonProviderReadiness(user.org_id);
   const embed = await getEmbedConfigMasked(user.org_id);
   const transcription = await readTranscriptionConfig(user.org_id);
-  return c.json({ ...masked, has_provider, embed, transcription });
+  return c.json({
+    ...masked,
+    has_provider,
+    has_reason_provider: reason_provider.ready,
+    reason_provider,
+    embed,
+    transcription,
+  });
 });
 
 const PROVIDERS: readonly LLMProvider[] = ['anthropic', 'openai', 'openrouter', 'ollama'];
@@ -174,7 +183,15 @@ orgRoutes.put('/ai-config', async (c) => {
 
   const masked = await getOrgAIConfigMasked(user.org_id);
   const has_provider = await hasAnyAIProvider(user.org_id);
+  const reason_provider = await getReasonProviderReadiness(user.org_id);
   const embed = await getEmbedConfigMasked(user.org_id);
   const transcription = await readTranscriptionConfig(user.org_id);
-  return c.json({ ...masked, has_provider, embed, transcription });
+  return c.json({
+    ...masked,
+    has_provider,
+    has_reason_provider: reason_provider.ready,
+    reason_provider,
+    embed,
+    transcription,
+  });
 });

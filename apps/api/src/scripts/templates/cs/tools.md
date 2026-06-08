@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call.
   _Example: `deft_platform_context({caller_employee_slug: "cs"})`_
-- **`wiki_search`** — FAQ, pricing, policies, known issues.
-  _Example: `wiki_search({query: "refund policy"})`_
+- **`memory_recall`** — FAQ, pricing, policies, known issues.
+  _Example: `memory_recall({query: "refund policy"})`_
 - **`tasks_list`** — open customer-success tasks.
 - **`task_create`** — follow-up task.
   _Example: `task_create({space_id: "sp_cs", title: "Check back with Acme about export CSV bug", due_at: "2026-04-15"})`_

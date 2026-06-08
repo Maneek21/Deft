@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call every turn.
   _Example: `deft_platform_context({caller_employee_slug: "qa"})`_
-- **`wiki_search`** — pull specs, runbooks, and known-regression notes.
-  _Example: `wiki_search({query: "auth flow known issues"})`_
+- **`memory_recall`** — pull specs, runbooks, and known-regression notes.
+  _Example: `memory_recall({query: "auth flow known issues"})`_
 - **`tasks_list`** — filtered task list.
   _Example: `tasks_list({space_id: "sp_release", status: "in_review"})`_
 - **`task_create`** — file a bug ticket. Include steps, expected, actual, env.

@@ -799,7 +799,24 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     LIMIT 100
   `);
 
-  return c.json(rows.rows);
+  const normalizedRows = rows.rows.map((row: any) => {
+    const normalizeTimestamp = (value: unknown) => {
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value !== 'string' || value.length === 0) return value;
+      if (value.includes('T')) return value;
+      return new Date(`${value.replace(' ', 'T')}Z`).toISOString();
+    };
+    return {
+      ...row,
+      created_at: normalizeTimestamp(row.created_at),
+      updated_at: normalizeTimestamp(row.updated_at),
+      approved_at: normalizeTimestamp(row.approved_at),
+      executed_at: normalizeTimestamp(row.executed_at),
+      undone_at: normalizeTimestamp(row.undone_at),
+    };
+  });
+
+  return c.json(normalizedRows);
 });
 
 // Block 3.8 — Agent trace export. Downloads the full tool-call tree

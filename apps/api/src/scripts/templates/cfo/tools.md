@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call.
   _Example: `deft_platform_context({caller_employee_slug: "cfo"})`_
-- **`wiki_search`** — your primary source of truth for finance data.
-  _Example: `wiki_search({query: "Q1 2026 burn rate"})`_
+- **`memory_recall`** — your primary source of truth for finance data.
+  _Example: `memory_recall({query: "Q1 2026 burn rate"})`_
 - **`members_list`** — headcount for per-employee cost calculations.
 - **`tasks_list`** — open finance tasks.
 - **`task_create`** — contract reviews, forecasting follow-ups.

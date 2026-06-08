@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — pull brand voice guides, FAQ answers, messaging on sensitive topics.
+- `memory_recall({query})` — pull brand voice guides, FAQ answers, messaging on sensitive topics.
 - `tasks_list({space_id, status})` — see what the team is currently shipping so you can talk about it accurately.
 - `messages_recent({space_id, limit})` — catch up on internal threads about community issues.
 

@@ -60,6 +60,10 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   fetch_unread: fetchUnread as ToolHandler,
 };
 
+export const TOOL_ALIASES: Record<string, string> = {
+  wiki_search: 'memory_recall',
+};
+
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
   memory_write: memoryWrite as ToolHandler,
   memory_update: memoryUpdate as ToolHandler,
@@ -129,6 +133,25 @@ export const toolSchemas: ToolSchema[] = [
     name: 'memory_recall',
     description:
       'Search the org wiki for knowledge pages. Returns title, summary, and content (truncated to 2000 chars, with a `truncated` flag for longer pages). Use for answering questions about previously saved knowledge.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        query: { type: 'string', description: 'Natural language query text' },
+        limit: { type: 'integer', minimum: 1, maximum: 25 },
+        scope: {
+          type: 'string',
+          enum: ['own', 'org', 'all'],
+          description: 'Scope filter. Default is `all` (own + org).',
+        },
+      },
+      required: ['caller_employee_slug', 'query'],
+    },
+  },
+  {
+    name: 'wiki_search',
+    description:
+      'Compatibility alias for memory_recall. BYOA agents should prefer memory_recall; wiki_search is accepted for older prompts and native-agent wording.',
     inputSchema: {
       type: 'object',
       properties: {

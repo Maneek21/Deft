@@ -5,11 +5,12 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
-import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
+import { connectedAccounts, orgs, agentMemory } from '@deft/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
 import { createAgentMessage } from './agent-llm.js';
 import { llm } from './llm.js';
+import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
@@ -223,56 +224,28 @@ export async function runAgentQuery(params: {
     }
   }
 
-  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
+  // Auto-load relevant wiki context through the shared retrieval gateway.
   try {
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
-      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
-
-      // Tier 1: Employee-tagged pages (if agent employee)
-      if (agentEmployeeId) {
-        const employeePages = await db.select({
-          title: wikiPages.title,
-          slug: wikiPages.slug,
-          summary: wikiPages.summary,
-          type: wikiPages.type,
-          confidence: wikiPages.confidence,
-        })
-          .from(wikiPages)
-          .where(and(
-            eq(wikiPages.org_id, orgId),
-            eq(wikiPages.is_deleted, false),
-            eq(wikiPages.agent_employee_id, agentEmployeeId),
-            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-          ))
-          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-          .limit(2);
-        allRelevantPages.push(...employeePages);
-      }
-
-      // Tier 2: Org-wide pages (no employee tag)
-      const orgWidePages = await db.select({
-        title: wikiPages.title,
-        slug: wikiPages.slug,
-        summary: wikiPages.summary,
-        type: wikiPages.type,
-        confidence: wikiPages.confidence,
-      })
-        .from(wikiPages)
-        .where(and(
-          eq(wikiPages.org_id, orgId),
-          eq(wikiPages.is_deleted, false),
-          sql`${wikiPages.agent_employee_id} IS NULL`,
-          sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-        ))
-        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-        .limit(3);
-      allRelevantPages.push(...orgWidePages);
+      const allRelevantPages = await retrieveContext({
+        query: searchQuery,
+        org_id: orgId,
+        user_id: userId,
+        agent_employee_id: agentEmployeeId,
+        types: ['wiki'],
+        limit: 5,
+      });
 
       if (allRelevantPages.length > 0) {
-        const wikiContext = allRelevantPages.map(p =>
-          `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
-        ).join('\n');
+        const wikiContext = allRelevantPages.map((p) => {
+          const type = typeof p.metadata?.type === 'string' ? p.metadata.type : 'wiki';
+          const slug = typeof p.metadata?.slug === 'string' ? p.metadata.slug : p.source_id;
+          const summary = typeof p.metadata?.summary === 'string' && p.metadata.summary.trim().length > 0
+            ? p.metadata.summary.trim()
+            : p.content.replace(/\s+/g, ' ').slice(0, 600);
+          return `- **${p.title}** (${type}, slug: ${slug}, confidence: ${p.confidence ?? 'unknown'}): ${summary}`;
+        }).join('\n');
         systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
       }
     }

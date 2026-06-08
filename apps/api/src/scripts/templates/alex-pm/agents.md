@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — semantic search over the org's wiki pages. Use this before answering anything about product, process, or people.
+- `memory_recall({query})` — semantic search over the org's wiki pages. Use this before answering anything about product, process, or people.
 - `tasks_list({space_id, status, assignee})` — list tasks in a space. Use the filters; never fetch everything.
 - `messages_recent({space_id, limit})` — the last N messages in a space. Use for standup + blocker detection.
 - `members_list({})` — full team roster. `platform_context` already returns the subset you need; only call this for edge cases.

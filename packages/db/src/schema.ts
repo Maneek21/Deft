@@ -1384,6 +1384,16 @@ export const agentEmployees = pgTable('agent_employees', {
   is_byoa: boolean('is_byoa').default(false).notNull(),
   byoa_model_info: text('byoa_model_info'),
   mcp_token_hash: text('mcp_token_hash'),
+  // BYOA runtime/control-plane metadata. Deft registers an already-running
+  // agent as a workplace employee; it does not own the runtime's identity.
+  runtime_kind: text('runtime_kind').default('custom_mcp').notNull(),
+  job_title: text('job_title'),
+  wake_mode: text('wake_mode').default('manual').notNull(),
+  certification_status: text('certification_status').default('token_issued').notNull(),
+  last_verified_at: timestamp('last_verified_at'),
+  last_mcp_call_at: timestamp('last_mcp_call_at'),
+  last_work_outcome_at: timestamp('last_work_outcome_at'),
+  connection_notes: text('connection_notes'),
   // trigger_subscriptions is the routing key for the trigger system (e.g.
   // member.joined, cron:standup) — kept as part of Phase 9.
   trigger_subscriptions: text('trigger_subscriptions').array(),
@@ -1399,6 +1409,40 @@ export const agentEmployees = pgTable('agent_employees', {
 
 // agent_employee_skills: "installed" skills grant the employee tools,
 // capability packs, triggers, and prompt additions (per skills.agent_config).
+// Agent certification challenges prove an external BYOA runtime can actually
+// call Deft tools. They prevent "the agent said it is connected" from becoming
+// an operational status without DB evidence.
+export const agentCertificationChallenges = pgTable('agent_certification_challenges', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  nonce: text('nonce').notNull(),
+  required_tools: text('required_tools').array().notNull(),
+  status: text('status').default('pending').notNull(),
+  failure_reason: text('failure_reason'),
+  started_at: timestamp('started_at').defaultNow().notNull(),
+  completed_at: timestamp('completed_at'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_cert_employee_idx').on(t.employee_id, t.created_at),
+  index('agent_cert_org_status_idx').on(t.org_id, t.status, t.created_at),
+]);
+
+// Append-only audit of MCP tool calls made by BYOA employees.
+export const agentMcpCallAudit = pgTable('agent_mcp_call_audit', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  tool_name: text('tool_name').notNull(),
+  success: boolean('success').default(false).notNull(),
+  error: text('error'),
+  metadata: jsonb('metadata'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_mcp_audit_employee_idx').on(t.employee_id, t.created_at),
+  index('agent_mcp_audit_org_tool_idx').on(t.org_id, t.tool_name, t.created_at),
+]);
+
 export const agentEmployeeSkills = pgTable('agent_employee_skills', {
   agent_employee_id: text('agent_employee_id').notNull()
     .references(() => agentEmployees.id, { onDelete: 'cascade' }),

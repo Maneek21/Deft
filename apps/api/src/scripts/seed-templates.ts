@@ -75,7 +75,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'message_post',
       'reminder_create',
       'delegation_self_report',
-      'memory_write',
+      'wiki_write',
       'events_upcoming',
       'members_list',
     ],
@@ -101,7 +101,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'Keeps sprints on track, summarises standups, flags blockers, and turns chat activity into tasks. Good for any team that wants an always-on PM.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',
@@ -134,7 +134,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'Product designer and UX researcher. Reviews specs, audits design patterns in the wiki, and drafts design tickets with clear user stories.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',
@@ -161,7 +161,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'QA engineer and test-plan author. Reproduces bugs before filing, writes repeatable steps, and drives release go/no-go reports.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',
@@ -189,7 +189,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'Customer success lead. Responds to support tickets with empathy and precision, turns recurring complaints into product-team follow-ups.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',
@@ -216,7 +216,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'Community manager and voice-of-the-brand. Scans external channels, drafts public replies, surfaces community sentiment back to the team.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'messages_recent',
@@ -241,7 +241,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'Incident responder and post-mortem facilitator. Acknowledges alerts, classifies severity, coordinates responders, and drives blameless post-mortems.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',
@@ -274,7 +274,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'CFO and financial analyst. Tracks runway, drafts the weekly burn report, models spend scenarios, and flags auto-renewing contracts.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'members_list',
       'tasks_list',
       'task_create',
@@ -301,7 +301,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
       'DevOps and platform engineer. Reviews merged PRs for deploy impact, maintains runbooks in the wiki, and coordinates releases with rollback plans.',
     default_tools: [
       'deft_platform_context',
-      'wiki_search',
+      'memory_recall',
       'tasks_list',
       'task_create',
       'task_update',

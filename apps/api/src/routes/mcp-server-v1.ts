@@ -21,6 +21,8 @@
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { sql } from 'drizzle-orm';
+import { db } from '../lib/db.js';
 import {
   extractBearer,
   resolveGatewayToken,
@@ -29,10 +31,12 @@ import {
   type ResolvedGateway,
   type GatewayEmployee,
 } from '../lib/mcp-token.js';
+import { agentMcpCallAudit } from '@deft/db/schema';
 import {
   ALL_TOOLS,
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
+  TOOL_ALIASES,
   toolSchemas,
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
@@ -69,6 +73,114 @@ async function requireGateway(
 // c.json returns a Response so we short-circuit with it.
 function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 500, code: string, message: string) {
   return c.json({ error: { code, message } }, status);
+}
+
+async function auditMcpCall(params: {
+  ctx: ToolContext;
+  toolName: string;
+  success: boolean;
+  error?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    await db.insert(agentMcpCallAudit).values({
+      org_id: params.ctx.org_id,
+      employee_id: params.ctx.employee_id,
+      tool_name: params.toolName,
+      success: params.success,
+      error: params.error ?? null,
+      metadata: params.metadata ?? null,
+    });
+
+    await db.execute(sql`
+      UPDATE agent_employees
+      SET
+        last_mcp_call_at = now(),
+        last_work_outcome_at = CASE
+          WHEN ${params.success} AND ${params.toolName} = 'record_outcome' THEN now()
+          ELSE last_work_outcome_at
+        END,
+        certification_status = CASE
+          WHEN certification_status IN ('draft', 'token_issued') THEN 'mcp_reachable'
+          ELSE certification_status
+        END,
+        updated_at = now()
+      WHERE id = ${params.ctx.employee_id}
+        AND org_id = ${params.ctx.org_id}
+    `);
+  } catch (err) {
+    console.warn('[mcp-v1] auditMcpCall failed:', err);
+  }
+}
+
+async function auditMcpDiscovery(params: {
+  resolved: ResolvedGateway;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    for (const employee of params.resolved.gateway_employees) {
+      await db.insert(agentMcpCallAudit).values({
+        org_id: params.resolved.org_id,
+        employee_id: employee.employee_id,
+        tool_name: 'tools/list',
+        success: true,
+        error: null,
+        metadata: params.metadata ?? null,
+      });
+
+      await db.execute(sql`
+        UPDATE agent_employees
+        SET
+          last_mcp_call_at = now(),
+          certification_status = CASE
+            WHEN certification_status IN ('draft', 'token_issued') THEN 'mcp_reachable'
+            ELSE certification_status
+          END,
+          updated_at = now()
+        WHERE id = ${employee.employee_id}
+          AND org_id = ${params.resolved.org_id}
+      `);
+    }
+  } catch (err) {
+    console.warn('[mcp-v1] auditMcpDiscovery failed:', err);
+  }
+}
+
+async function dispatchTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  metadata: Record<string, unknown>,
+): Promise<ToolResult> {
+  const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+  const handler: ToolHandler | undefined = ALL_TOOLS[canonicalToolName];
+  const auditMetadata =
+    canonicalToolName === toolName
+      ? metadata
+      : { ...metadata, requested_tool_name: toolName, canonical_tool_name: canonicalToolName };
+
+  if (!handler) {
+    const result = { isError: true, content: [{ type: 'text', text: `Unknown tool: ${toolName}` }] } satisfies ToolResult;
+    await auditMcpCall({ ctx, toolName, success: false, error: `Unknown tool: ${toolName}`, metadata: auditMetadata });
+    return result;
+  }
+
+  try {
+    const result = await handler(args, ctx);
+    const success = !result.isError;
+    await auditMcpCall({
+      ctx,
+      toolName,
+      success,
+      error: success ? null : result.content?.map((c) => c.text).join('\n') || 'Tool returned an MCP error',
+      metadata: auditMetadata,
+    });
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await auditMcpCall({ ctx, toolName, success: false, error: msg, metadata: auditMetadata });
+    return { isError: true, content: [{ type: 'text', text: `Tool "${toolName}" threw: ${msg}` }] } satisfies ToolResult;
+  }
 }
 
 // ─── MCP streamable-http single-endpoint dispatcher ──────────────────────
@@ -144,6 +256,10 @@ mcpServerV1Routes.post('/', async (c) => {
       const allConservative = resolved.gateway_employees.every((e) => e.trust_level === 'conservative');
       const writeNames = new Set(Object.keys(WRITE_TOOLS));
       const catalog = toolSchemas.filter((t) => (allConservative ? !writeNames.has(t.name) : true));
+      await auditMcpDiscovery({
+        resolved,
+        metadata: { surface: 'jsonrpc', request_id: id, method: 'tools/list' },
+      });
       return { tools: catalog };
     });
   }
@@ -160,22 +276,17 @@ mcpServerV1Routes.post('/', async (c) => {
         throw new McpAuthError(400, 'bad_request', 'Missing params.name');
       }
       const employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
-      const handler: ToolHandler | undefined = ALL_TOOLS[toolName];
-      if (!handler) {
-        return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${toolName}` }] } satisfies ToolResult;
-      }
       const ctx: ToolContext = {
         org_id: resolved.org_id,
         employee_id: employee.employee_id,
         employee_slug: employee.slug,
         trust_level: employee.trust_level,
       };
-      try {
-        return await handler(args, ctx);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { isError: true, content: [{ type: 'text', text: `Tool "${toolName}" threw: ${msg}` }] } satisfies ToolResult;
-      }
+      return await dispatchTool(toolName, args, ctx, {
+        surface: 'jsonrpc',
+        caller_employee_slug: employee.slug,
+        request_id: id,
+      });
     });
   }
 
@@ -252,6 +363,11 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
     allConservative ? !writeNames.has(t.name) : true,
   );
 
+  await auditMcpDiscovery({
+    resolved,
+    metadata: { surface: 'legacy', method: 'tools/list' },
+  });
+
   return c.json({ tools: catalog });
 });
 
@@ -295,17 +411,6 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   }
 
   // 4. Tool dispatch — unknown tool => MCP-level error content (isError)
-  const handler: ToolHandler | undefined = ALL_TOOLS[toolName];
-  if (!handler) {
-    const res: ToolResult = {
-      isError: true,
-      content: [
-        { type: 'text', text: `Unknown tool: ${toolName}` },
-      ],
-    };
-    return c.json(res);
-  }
-
   const ctx: ToolContext = {
     org_id: resolved.org_id,
     employee_id: employee.employee_id,
@@ -313,17 +418,10 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     trust_level: employee.trust_level,
   };
 
-  try {
-    const result = await handler(args, ctx);
-    return c.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const failResult: ToolResult = {
-      isError: true,
-      content: [{ type: 'text', text: `Tool "${toolName}" threw: ${msg}` }],
-    };
-    return c.json(failResult);
-  }
+  return c.json(await dispatchTool(toolName, args, ctx, {
+    surface: 'legacy',
+    caller_employee_slug: employee.slug,
+  }));
 });
 
 // ─── exports used only for test composition ──────────────────────────────

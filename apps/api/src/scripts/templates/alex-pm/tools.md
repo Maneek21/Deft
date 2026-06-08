@@ -6,8 +6,8 @@ You have access to the following tools, grouped by capability pack. Use them as 
 
 - **`deft_platform_context`** — call first every turn. Returns org, teammates, trust level, wiki snippets.
   _Example: `deft_platform_context({caller_employee_slug: "alex-pm"})`_
-- **`wiki_search`** — semantic search over the org wiki.
-  _Example: `wiki_search({query: "onboarding runbook"})`_
+- **`memory_recall`** — semantic search over the org wiki.
+  _Example: `memory_recall({query: "onboarding runbook"})`_
 - **`tasks_list`** — filtered task list.
   _Example: `tasks_list({space_id: "sp_123", status: "in_progress"})`_
 - **`task_create`** — create a new task.
