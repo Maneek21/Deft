@@ -16,8 +16,7 @@ From the repo root, with the dev stack running (`docker compose up -d` or
 # Without AI — workspace boots, agent stays disabled until a key is configured
 pnpm db:seed:demo
 
-# With OpenAI (recommended — the agent demo arc needs an LLM)
-SEED_OPENAI_KEY=sk-...your-key... pnpm db:seed:demo
+pnpm db:seed:demo
 ```
 
 The `db:seed:demo` proxy chains two scripts: this seed (wipes and re-creates
@@ -106,7 +105,7 @@ Open the task. You'll see:
 > became a task without anyone copy-pasting. Six months from now, you'll
 > still know why this task exists.
 
-### 3. Ask the agent something hard *(needs SEED_OPENAI_KEY or BYOK)*
+### 3. Ask the agent something hard *(needs a configured AI provider)*
 
 Anywhere in chat, type `@deft` followed by:
 
@@ -170,7 +169,7 @@ choices we made to keep the seed self-contained:
 - **No integrations connected.** Calendar feeds and MCP connections are available in Settings, but nothing is linked. Add an ICS feed to see external calendar events pull live data.
 - **Email/password auth only.** Self-hosted Deft uses the first signup plus invite flow; managed OAuth sign-in is not part of this build.
 - **No file uploads or images in chat.** Same reason — would have needed real binary fixtures.
-- **AI is opt-in.** Without `SEED_OPENAI_KEY` (or BYOK in Settings → AI), the agent is dormant. The workspace works fully without it — chat + tasks + notes + wiki + reactions + threads all functional.
+- **AI is opt-in.** Without a configured provider key or local Ollama route, the agent is dormant. The workspace works fully without it: chat + tasks + notes + wiki + reactions + threads all functional.
 
 ---
 

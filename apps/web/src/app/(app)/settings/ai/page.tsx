@@ -35,8 +35,8 @@ type AIConfig = {
 };
 
 const PROVIDERS: { id: Provider; label: string; placeholder: string; hint: string }[] = [
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-…', hint: 'Claude models — recommended for reasoning and reliable agent flows.' },
-  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', hint: 'GPT-4o, GPT-4.1, and other OpenAI models.' },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-…', hint: 'Optional managed provider for Claude models.' },
+  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', hint: 'Optional managed provider for GPT models and compatible APIs.' },
   { id: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-…', hint: 'Proxy to dozens of models through a single key.' },
   { id: 'ollama', label: 'Ollama', placeholder: 'http://localhost:11434', hint: 'Self-hosted local models. Provide the server URL instead of a key.' },
 ];
@@ -123,9 +123,18 @@ export default function AISettingsPage() {
             AI providers for {org?.name ?? 'your workspace'}
           </h2>
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
-            Bring your own provider keys. Keys are encrypted at rest and only used for this workspace.
-            One key is enough to unlock the agent and AI-powered features.
+            Bring your own provider. Deft can use managed keys or local Ollama, and the core workspace keeps
+            working when no AI provider is configured. Keys are encrypted at rest and only used for this workspace.
           </p>
+          {!cfg.has_provider && (
+            <div
+              className="mt-3 p-3 rounded-lg text-[12px] leading-relaxed"
+              style={{ background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.25)', color: 'var(--foreground-secondary)' }}
+            >
+              AI is currently off. Chat, tasks, wiki, calendar, and approvals still work; Defty and AI-assisted
+              features wake up after you configure any supported provider.
+            </div>
+          )}
         </div>
 
         <section className="mb-8">
@@ -292,7 +301,7 @@ function ProviderCard({
                 className="text-[10px] px-1.5 py-0.5 rounded"
                 style={{ background: 'var(--surface)', color: 'var(--muted)' }}
               >
-                env fallback active
+                env provider available
               </span>
             ) : (
               <span
@@ -468,7 +477,7 @@ function ModelRouteCard({
             {description}
           </p>
           <p className="text-[11px] mt-1 font-mono" style={{ color: current ? 'var(--foreground-secondary)' : 'var(--muted)' }}>
-            {current ? `${current.provider} · ${current.model}` : 'Default — uses provider+model from llm.ts'}
+            {current ? `${current.provider} · ${current.model}` : 'Default — uses the first configured provider'}
           </p>
         </div>
         {!editing && (

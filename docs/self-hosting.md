@@ -4,7 +4,7 @@ This guide covers everything you need to run Deft on your own infrastructure —
 
 ## Overview
 
-Self-hosted Deft is a single-workspace deployment of the Deft platform. You run the database, Redis, and application stack yourself. Your data never leaves your server, and you bring your own AI API key.
+Self-hosted Deft is a single-workspace deployment of the Deft platform. You run the database, Redis, and application stack yourself. Your data never leaves your server, and AI is bring-your-own-provider: Anthropic, OpenAI, OpenRouter, or local Ollama.
 
 Each deployment supports **one organisation**. This is by design: self-hosted Deft is meant for a single team, not a multi-tenant SaaS offering. The first user to sign up becomes the org owner and admin; subsequent users join via invite link only. Attempting to host Deft as a managed service for other organisations is outside what the Business Source License 1.1 permits — see [Licence & what's not in v1](#licence--whats-not-in-v1) for details.
 
@@ -16,9 +16,9 @@ Defty, the built-in native agent, is seeded automatically on first run. Think of
 |---|---|
 | Docker Desktop 4.x+ | Includes Docker Compose v2. [Download](https://www.docker.com/products/docker-desktop/) |
 | `openssl` (any version) | For generating secrets. Ships with macOS, Linux, Git for Windows. |
-| Anthropic API key *(optional)* | Free tier at [console.anthropic.com](https://console.anthropic.com). Only needed for AI features — chat and tasks work without one. |
+| AI provider (optional) | Configure Anthropic, OpenAI, OpenRouter, or Ollama via env or Settings -> AI. Chat and tasks work without one. |
 
-**Alternative AI provider:** If you prefer not to use Anthropic, [Ollama](https://ollama.com) can serve a local model. You will need to update `ANTHROPIC_API_KEY` and the model references in Settings → Agent after first boot. Ollama support is community-maintained.
+**Provider-neutral AI:** Deft does not require Anthropic or OpenAI. Ollama/local models are supported for self-hosted pilots, and core workspace features keep working when AI is not configured.
 
 **Hardware:** The stack runs comfortably on 2 vCPU / 4 GB RAM. Postgres and Redis together use under 100 MB at idle.
 
@@ -46,7 +46,7 @@ openssl rand -hex 32   # paste result into JWT_REFRESH_SECRET
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` | **Yes** |
 | `JWT_SECRET` | `openssl rand -hex 32` | **Yes** |
 | `JWT_REFRESH_SECRET` | `openssl rand -hex 32` | **Yes** |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com | Optional — only for AI features; can also be set per-org in Settings → AI |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional; configure later in Settings -> AI |
 
 Everything else in `.env` is optional for a first boot. Leave the database and Redis URLs as-is — Docker Compose overrides them automatically.
 
@@ -133,7 +133,7 @@ Deft agents are configured from **Settings → Agent**. The Connect Agent wizard
 
 ### Native (Defty)
 
-Defty is the built-in native agent seeded by `pnpm db:seed`. It runs inside the Deft process using the Anthropic API key you configured. No additional setup required — Defty is already active after seeding.
+Defty is the built-in native agent seeded by `pnpm db:seed`. It runs inside the Deft process when a supported AI provider is configured. No provider is required for first boot; without one, Defty and AI features remain dormant while the core workspace continues to work.
 
 Defty's behaviour is defined by the `defty` template. You can inspect and customise it from Settings → Agent → Defty.
 
@@ -186,7 +186,10 @@ Defty is powered by the `defty` agent template. The template slug is `defty`. Yo
 | `POSTGRES_PASSWORD` | **Yes** | Database password (Docker Compose auth) | none |
 | `JWT_SECRET` | **Yes** | Signs access tokens | none |
 | `JWT_REFRESH_SECRET` | **Yes** | Signs refresh tokens | none |
-| `ANTHROPIC_API_KEY` | Optional | Anthropic Claude API key — app boots without it; AI features disabled until set (env or per-org) | none |
+| `ANTHROPIC_API_KEY` | Optional | Anthropic provider key. App boots without it; AI features stay disabled until a provider is set by env or per-org Settings -> AI | none |
+| `OPENAI_API_KEY` | Optional | OpenAI provider key for model routing, OpenAI-compatible embeddings, or OpenAI Whisper if selected | none |
+| `OPENROUTER_API_KEY` | Optional | OpenRouter provider key for model routing | none |
+| `OLLAMA_URL` | Optional | Local/self-hosted Ollama endpoint | `http://localhost:11434` |
 | `NEXT_PUBLIC_API_URL` | No | API base URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_WS_URL` | No | WebSocket URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_APP_URL` | No | App base URL (used in invite links) | `http://localhost:3000` |
