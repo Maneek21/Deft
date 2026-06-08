@@ -99,6 +99,16 @@ async function main() {
                     ae.slug like 'auditagent-%'
                     or ae.slug like 'wizard-smoke-%'
                     or ae.slug like 'test-openclaw-pm-%'
+                    or ae.slug like 'codex-qa-battery-%'
+                    or ae.slug like 'codex-work-runner-%'
+                    or ae.slug like 'codex-byoa-full-battery-%'
+                    or ae.slug like 'codex-byoa-agent-%'
+                    or ae.slug like 'audit-byoa-agent-%'
+                    or ae.slug like 'hermes-comms-%'
+                    or ae.slug like 'openclaw-ops-%'
+                    or ae.slug like 'codex-pilot-engineer-%'
+                    or ae.slug like 'codex-qa%'
+                    or ae.slug like 'b31-source-%'
                   )
               )
             )
@@ -119,6 +129,16 @@ async function main() {
                     ae.slug like 'auditagent-%'
                     or ae.slug like 'wizard-smoke-%'
                     or ae.slug like 'test-openclaw-pm-%'
+                    or ae.slug like 'codex-qa-battery-%'
+                    or ae.slug like 'codex-work-runner-%'
+                    or ae.slug like 'codex-byoa-full-battery-%'
+                    or ae.slug like 'codex-byoa-agent-%'
+                    or ae.slug like 'audit-byoa-agent-%'
+                    or ae.slug like 'hermes-comms-%'
+                    or ae.slug like 'openclaw-ops-%'
+                    or ae.slug like 'codex-pilot-engineer-%'
+                    or ae.slug like 'codex-qa%'
+                    or ae.slug like 'b31-source-%'
                   )
               )
             )
@@ -137,8 +157,19 @@ async function main() {
               ae.slug like 'auditagent-%'
               or ae.slug like 'wizard-smoke-%'
               or ae.slug like 'test-openclaw-pm-%'
+              or ae.slug like 'codex-qa-battery-%'
+              or ae.slug like 'codex-work-runner-%'
+              or ae.slug like 'codex-byoa-full-battery-%'
+              or ae.slug like 'codex-byoa-agent-%'
+              or ae.slug like 'audit-byoa-agent-%'
+              or ae.slug like 'hermes-comms-%'
+              or ae.slug like 'openclaw-ops-%'
+              or ae.slug like 'codex-pilot-engineer-%'
+              or ae.slug like 'codex-qa%'
+              or ae.slug like 'b31-source-%'
               or ae.name in ('Test OpenClaw PM', 'Test UI Employee PM', 'Test UI Employee Eng')
             )
+            and ae.slug not in ('tom', 'maya')
             ${scopedEmployee.clause}
         `,
         applySql: `
@@ -151,8 +182,19 @@ async function main() {
               ae.slug like 'auditagent-%'
               or ae.slug like 'wizard-smoke-%'
               or ae.slug like 'test-openclaw-pm-%'
+              or ae.slug like 'codex-qa-battery-%'
+              or ae.slug like 'codex-work-runner-%'
+              or ae.slug like 'codex-byoa-full-battery-%'
+              or ae.slug like 'codex-byoa-agent-%'
+              or ae.slug like 'audit-byoa-agent-%'
+              or ae.slug like 'hermes-comms-%'
+              or ae.slug like 'openclaw-ops-%'
+              or ae.slug like 'codex-pilot-engineer-%'
+              or ae.slug like 'codex-qa%'
+              or ae.slug like 'b31-source-%'
               or ae.name in ('Test OpenClaw PM', 'Test UI Employee PM', 'Test UI Employee Eng')
             )
+            and ae.slug not in ('tom', 'maya')
             ${scopedEmployee.clause}
         `,
         params: scopedEmployee.params,
@@ -171,7 +213,13 @@ async function main() {
               or s.name like 'byoa-%'
               or s.name like 'scratch-%'
               or s.name like 'test-%'
+              or s.name like 'agent-coworker-lab-%'
+              or s.name like 'defty-reliability-lab-%'
+              or s.name like 'codex-byoa-lab-%'
+              or s.name like 'three-agent-dogfood-%'
+              or s.name like 'codex-byoa-dogfood-%'
             )
+            and s.name not like 'tom-marketing-dogfood-%'
             ${scopedSpace.clause}
         `,
         applySql: `
@@ -186,7 +234,13 @@ async function main() {
               or s.name like 'byoa-%'
               or s.name like 'scratch-%'
               or s.name like 'test-%'
+              or s.name like 'agent-coworker-lab-%'
+              or s.name like 'defty-reliability-lab-%'
+              or s.name like 'codex-byoa-lab-%'
+              or s.name like 'three-agent-dogfood-%'
+              or s.name like 'codex-byoa-dogfood-%'
             )
+            and s.name not like 'tom-marketing-dogfood-%'
             ${scopedSpace.clause}
         `,
         params: scopedSpace.params,
@@ -204,7 +258,17 @@ async function main() {
               or p.name ilike 'byoa %'
               or p.name ilike 'scratch %'
               or p.name ilike 'smoke %'
+              or p.name ilike 'three runtime byoa battery%'
+              or p.name ilike 'defty ui reliability%'
+              or p.name ilike 'codex byoa behavior%'
+              or p.name ilike 'three agent dogfood%'
+              or p.name ilike 'codex byoa dogfood%'
+              or p.prefix like 'RT%'
+              or p.prefix like 'DF%'
+              or p.prefix like 'CX%'
+              or p.prefix like 'TG%'
             )
+            and p.name not ilike 'tom marketing dogfood%'
             ${scopedProject.clause}
         `,
         applySql: `
@@ -220,7 +284,17 @@ async function main() {
               or p.name ilike 'byoa %'
               or p.name ilike 'scratch %'
               or p.name ilike 'smoke %'
+              or p.name ilike 'three runtime byoa battery%'
+              or p.name ilike 'defty ui reliability%'
+              or p.name ilike 'codex byoa behavior%'
+              or p.name ilike 'three agent dogfood%'
+              or p.name ilike 'codex byoa dogfood%'
+              or p.prefix like 'RT%'
+              or p.prefix like 'DF%'
+              or p.prefix like 'CX%'
+              or p.prefix like 'TG%'
             )
+            and p.name not ilike 'tom marketing dogfood%'
             ${scopedProject.clause}
         `,
         params: scopedProject.params,
