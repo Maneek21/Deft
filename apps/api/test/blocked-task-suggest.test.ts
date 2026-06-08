@@ -124,9 +124,37 @@ test('proposal payload description keeps the full message', async () => {
     .from(agentActions)
     .where(and(
       eq(agentActions.org_id, testOrgId),
+      eq(agentActions.user_id, testUserId),
       eq(agentActions.source, 'blocked_classifier'),
     ))
     .limit(1);
   const params = row!.params as any;
   assert.equal(params.description, 'I am completely stuck on the database migration');
+});
+
+test('blocked-alert strips rich text from task proposal fields', async () => {
+  await handleBlockedAlert({
+    id: 'job',
+    name: 'blocked-alert',
+    data: {
+      messageId: msgId,
+      spaceId,
+      content: '<p><strong>I am blocked</strong> on the &amp; vendor export.</p>',
+      orgId: testOrgId,
+      userId: testUserId,
+    },
+  } as any);
+
+  const [row] = await db
+    .select()
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, testOrgId),
+      eq(agentActions.user_id, testUserId),
+      eq(agentActions.source, 'blocked_classifier'),
+    ))
+    .limit(1);
+  const params = row!.params as any;
+  assert.equal(params.title, 'Blocker: I am blocked on the & vendor export.');
+  assert.equal(params.description, 'I am blocked on the & vendor export.');
 });

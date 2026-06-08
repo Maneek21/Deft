@@ -69,6 +69,97 @@ function runtimeLabel(value: string | null | undefined): string {
   return value ? value.replace(/_/g, ' ') : 'custom MCP';
 }
 
+function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const elapsedMs = Date.now() - new Date(iso).getTime();
+  const elapsedMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
+  if (elapsedMinutes < 1) return 'just now';
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.floor(elapsedHours / 24)}d ago`;
+}
+
+function lifecycleStatus(emp: AgentEmployee): {
+  label: string;
+  detail: string;
+  color: string;
+  background: string;
+  border: string;
+} {
+  if (emp.unhealthy) {
+    return {
+      label: 'Needs attention',
+      detail: emp.unhealthy_reason || 'health check failed',
+      color: '#ef4444',
+      background: 'rgba(239,68,68,0.10)',
+      border: 'rgba(239,68,68,0.22)',
+    };
+  }
+  if (!emp.is_active) {
+    return {
+      label: 'Paused',
+      detail: 'will not pick up new work',
+      color: '#9ca3af',
+      background: 'rgba(156,163,175,0.10)',
+      border: 'rgba(156,163,175,0.22)',
+    };
+  }
+  if (emp.pending_action_count && emp.pending_action_count > 0) {
+    return {
+      label: 'Needs approval',
+      detail: `${emp.pending_action_count} pending`,
+      color: '#f59e0b',
+      background: 'rgba(245,158,11,0.12)',
+      border: 'rgba(245,158,11,0.28)',
+    };
+  }
+  if (emp.certification_status === 'verified') {
+    const recentWork = emp.last_work_outcome_at ?? emp.last_turn_at ?? emp.last_mcp_call_at;
+    return {
+      label: 'Working',
+      detail: `last activity ${formatRelative(recentWork)}`,
+      color: '#10b981',
+      background: 'rgba(16,185,129,0.12)',
+      border: 'rgba(16,185,129,0.26)',
+    };
+  }
+  if (emp.last_mcp_call_at || emp.certification_status === 'mcp_reachable') {
+    return {
+      label: 'Connected',
+      detail: 'ready for certification',
+      color: '#3b82f6',
+      background: 'rgba(59,130,246,0.11)',
+      border: 'rgba(59,130,246,0.24)',
+    };
+  }
+  if (emp.certification_status === 'challenge_issued') {
+    return {
+      label: 'Certifying',
+      detail: 'waiting for challenge response',
+      color: '#f59e0b',
+      background: 'rgba(245,158,11,0.12)',
+      border: 'rgba(245,158,11,0.28)',
+    };
+  }
+  if (emp.certification_status === 'token_issued') {
+    return {
+      label: 'Token issued',
+      detail: 'waiting for first MCP call',
+      color: '#8b5cf6',
+      background: 'rgba(139,92,246,0.11)',
+      border: 'rgba(139,92,246,0.24)',
+    };
+  }
+  return {
+    label: 'Draft',
+    detail: 'finish setup',
+    color: '#9ca3af',
+    background: 'rgba(156,163,175,0.10)',
+    border: 'rgba(156,163,175,0.22)',
+  };
+}
+
 export default function AgentEmployeesPage() {
   const [employees, setEmployees] = useState<AgentEmployee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,6 +265,7 @@ export default function AgentEmployeesPage() {
         <div className="space-y-2">
           {employees.map((emp) => {
             const conn = connectionStatus(emp.last_mcp_call_at ?? emp.last_heartbeat_at);
+            const lifecycle = lifecycleStatus(emp);
             return (
             <div
               key={emp.id}
@@ -201,6 +293,22 @@ export default function AgentEmployeesPage() {
                   >
                     {emp.name}
                   </p>
+                  <div className="flex flex-wrap items-center gap-2 mt-1">
+                    <span
+                      className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded"
+                      style={{
+                        color: lifecycle.color,
+                        background: lifecycle.background,
+                        border: `1px solid ${lifecycle.border}`,
+                      }}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: lifecycle.color }} />
+                      {lifecycle.label}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {lifecycle.detail}
+                    </span>
+                  </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
                     <span
                       className="text-[11px] px-1.5 py-0.5 rounded"
@@ -224,20 +332,10 @@ export default function AgentEmployeesPage() {
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                       {emp.pending_action_count ?? 0} pending
                     </span>
-                    <span
-                      className="text-[11px]"
-                      style={{ color: emp.certification_status === 'verified' ? '#10b981' : 'var(--muted)' }}
-                    >
-                      {emp.certification_status}
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      cert {emp.certification_status}
                     </span>
                     <div className="flex items-center gap-1">
-                      <div
-                        className="w-2 h-2 rounded-full"
-                        style={{ background: emp.is_active ? '#10b981' : '#9ca3af' }}
-                      />
-                      <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                        {emp.is_active ? 'Active' : 'Paused'}
-                      </span>
                       {emp.heartbeat_enabled && (
                         <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '4px' }}>
                           &#9829; every {emp.heartbeat_interval_min}m

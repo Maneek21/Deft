@@ -1,6 +1,7 @@
 'use client';
 
 import { humanizeToolName } from '@/lib/tool-display';
+import { stripHtml } from '@/lib/strip-html';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,7 +29,7 @@ function GenericParams({ params }: { params: Record<string, any> }) {
       {entries.map(([k, v]) => {
         const isUrl = typeof v === 'string' && /^https?:\/\//.test(v);
         const display =
-          typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : String(v).slice(0, 120);
+          typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : stripHtml(String(v)).slice(0, 120);
         return (
           <p key={k}>
             <span style={{ color: 'var(--muted)' }}>{k}:</span>{' '}
@@ -65,6 +66,8 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
 }) {
   const humanized = humanizeToolName(action.action);
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
+  const title = stripHtml(action.params.title);
+  const content = stripHtml(action.params.content);
 
   if (action.status === 'executing') {
     return (
@@ -126,12 +129,12 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
       <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
         {action.action in ACTION_LABELS ? (
           <>
-            {action.params.title && <p>"{action.params.title}"</p>}
+            {title && <p>"{title}"</p>}
             {action.params.project_name && <p>{action.params.project_name}</p>}
             {(action.params.priority || action.params.assignee_name) && (
               <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' · ')}</p>
             )}
-            {action.params.content && <p>"{action.params.content.slice(0, 80)}..."</p>}
+            {content && <p>"{content.slice(0, 80)}{content.length > 80 ? '...' : ''}"</p>}
             {action.params.space_name && <p>in #{action.params.space_name}</p>}
           </>
         ) : (
