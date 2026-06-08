@@ -10,7 +10,7 @@ const DISMISS_KEY = 'deft-ai-banner-dismissed';
 
 export function AIProviderBanner() {
   const { user } = useAuth();
-  const [show, setShow] = useState(false);
+  const [banner, setBanner] = useState<{ title: string; body: string } | null>(null);
 
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
 
@@ -22,16 +22,26 @@ export function AIProviderBanner() {
       if (cancelled) return;
       if (!r.ok) return;
       const data = await r.json();
-      if (!data?.has_provider) setShow(true);
+      if (!data?.has_provider) {
+        setBanner({
+          title: 'AI features are off',
+          body: 'Add a provider key to unlock Defty, summaries, classification, and more.',
+        });
+      } else if (!data?.has_reason_provider) {
+        setBanner({
+          title: 'Defty needs a reasoning model',
+          body: data?.reason_provider?.reason || 'Configure a usable reasoning provider so Defty can answer and plan work.',
+        });
+      }
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [isAdmin]);
 
-  if (!show) return null;
+  if (!banner) return null;
 
   const dismiss = () => {
     if (typeof window !== 'undefined') sessionStorage.setItem(DISMISS_KEY, '1');
-    setShow(false);
+    setBanner(null);
   };
 
   return (
@@ -50,10 +60,10 @@ export function AIProviderBanner() {
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium" style={{ color: 'var(--on-surface)' }}>
-          AI features are off
+          {banner.title}
         </p>
         <p className="text-[12px] leading-snug" style={{ color: 'var(--on-surface-variant)' }}>
-          Add a provider key to unlock Defty, summaries, classification, and more.
+          {banner.body}
         </p>
       </div>
       <Link

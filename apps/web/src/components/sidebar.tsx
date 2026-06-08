@@ -50,6 +50,10 @@ type AgentEmployee = {
   role: string;
   avatar_url: string | null;
   is_active: boolean;
+  unhealthy?: boolean;
+  last_heartbeat_at?: string | null;
+  last_mcp_call_at?: string | null;
+  pending_action_count?: number;
 };
 
 type Space = {
@@ -103,13 +107,20 @@ function ChatSidebarContent({
   const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
 
   useEffect(() => {
-    api.get('/api/agent-employees').then(async (res) => {
+    api.get('/api/agent-employees?expand=stats').then(async (res) => {
       if (res.ok) {
-        const data = await res.json();
-        setAgentEmployees(data.filter((e: AgentEmployee) => e.is_active));
+        setAgentEmployees(await res.json());
       }
     });
   }, []);
+
+  const agentStatusColor = (employee: AgentEmployee) => {
+    if (!employee.is_active || employee.unhealthy) return 'var(--outline)';
+    const lastContact = employee.last_mcp_call_at ?? employee.last_heartbeat_at;
+    if (!lastContact) return 'var(--status-amber)';
+    const elapsedMinutes = Math.floor((Date.now() - new Date(lastContact).getTime()) / 60000);
+    return elapsedMinutes < 15 ? 'var(--status-green)' : 'var(--status-amber)';
+  };
 
   const publicSpaces = spaces.filter((s) => s.type === 'public' || s.type === 'private');
   const dmSpaces = spaces.filter((s) => s.type === 'dm' || s.type === 'group_dm');
@@ -374,12 +385,20 @@ function ChatSidebarContent({
                   <div
                     className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
                     style={{
-                      background: 'var(--status-green)',
+                      background: agentStatusColor(employee),
                       border: '2px solid var(--surface-container-low)',
                     }}
                   />
                 </div>
                 <span className="truncate flex-1">{employee.name}</span>
+                {(employee.pending_action_count ?? 0) > 0 && (
+                  <span
+                    className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0"
+                    style={{ background: 'var(--surface-variant)', color: 'var(--on-surface-variant)' }}
+                  >
+                    {employee.pending_action_count}
+                  </span>
+                )}
                 <span
                   className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded flex-shrink-0"
                   style={{
