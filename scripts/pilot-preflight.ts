@@ -21,6 +21,7 @@ const WEB_URL = (process.env.DEFT_WEB_URL || process.env.NEXT_PUBLIC_APP_URL || 
 const SEED_EMAIL = process.env.DEFT_TEST_EMAIL || 'diego@testers-tomatoes.com';
 const SEED_PASSWORD = process.env.DEFT_TEST_PASSWORD || 'tomato123';
 const LIKELY_API_PORTS = [3001, 3301];
+const LIKELY_WEB_PORTS = [3000, 3300];
 
 function mark(check: Check) {
   const icon = check.ok ? (check.warn ? 'WARN' : 'OK') : 'FAIL';
@@ -45,6 +46,16 @@ function localhostPort(rawUrl: string): number | null {
   } catch {
     return null;
   }
+}
+
+function localhostUrlWithPort(rawUrl: string, port: number, path = ''): string {
+  const url = new URL(rawUrl);
+  url.hostname = 'localhost';
+  url.port = String(port);
+  url.pathname = path || '/';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
 }
 
 async function pidsForPort(port: number): Promise<string[]> {
@@ -184,7 +195,7 @@ async function checkSeedLogin(): Promise<Check> {
   }
 }
 
-async function checkLikelyPorts(): Promise<Check[]> {
+async function checkLikelyApiPorts(): Promise<Check[]> {
   const intendedApiPort = localhostPort(API_URL);
   const checks: Check[] = [];
 
@@ -195,7 +206,7 @@ async function checkLikelyPorts(): Promise<Check[]> {
       checks.push({
         name: `Intended API port ${intendedApiPort}`,
         ok: false,
-        detail: `port is occupied by PID(s) ${pids.join(', ')} but ${API_URL}/health is not healthy`,
+        detail: `port is occupied by PID(s) ${pids.join(', ')} but ${API_URL}/health is not healthy. Stop that process or set DEFT_API_URL to the live API URL.`,
       });
     }
   }
@@ -209,7 +220,41 @@ async function checkLikelyPorts(): Promise<Check[]> {
         name: `Possible stale API on ${port}`,
         ok: true,
         warn: true,
-        detail: `http://localhost:${port}/health is alive${pids.length ? ` (PID ${pids.join(', ')})` : ''}; intended API is ${API_URL}`,
+        detail: `http://localhost:${port}/health is alive${pids.length ? ` (PID ${pids.join(', ')})` : ''}; intended API is ${API_URL}. If this is the right API, set DEFT_API_URL=http://localhost:${port}.`,
+      });
+    }
+  }
+
+  return checks;
+}
+
+async function checkLikelyWebPorts(): Promise<Check[]> {
+  const intendedWebPort = localhostPort(WEB_URL);
+  const checks: Check[] = [];
+
+  if (intendedWebPort) {
+    const intended = await fetchStatus(WEB_URL);
+    const pids = await pidsForPort(intendedWebPort);
+    if (pids.length > 0 && !(intended.status >= 200 && intended.status < 500)) {
+      checks.push({
+        name: `Intended web port ${intendedWebPort}`,
+        ok: false,
+        detail: `port is occupied by PID(s) ${pids.join(', ')} but ${WEB_URL} is not serving a web root. Stop that process or set DEFT_WEB_URL to the live web URL.`,
+      });
+    }
+  }
+
+  for (const port of LIKELY_WEB_PORTS) {
+    if (port === intendedWebPort) continue;
+    const candidateUrl = localhostUrlWithPort(WEB_URL, port);
+    const res = await fetchStatus(candidateUrl);
+    if (res.status >= 200 && res.status < 500) {
+      const pids = await pidsForPort(port);
+      checks.push({
+        name: `Possible web app on ${port}`,
+        ok: true,
+        warn: true,
+        detail: `${candidateUrl} returned ${res.status}${pids.length ? ` (PID ${pids.join(', ')})` : ''}; intended web is ${WEB_URL}. If this is the right app, set DEFT_WEB_URL=${candidateUrl}.`,
       });
     }
   }
@@ -226,7 +271,8 @@ async function runChecks(): Promise<{ ok: boolean; blockingFailure: boolean }> {
   console.log('');
 
   const checks = [
-    ...(await checkLikelyPorts()),
+    ...(await checkLikelyApiPorts()),
+    ...(await checkLikelyWebPorts()),
     await checkApi(),
     await checkWeb(),
     await checkDb(),
@@ -237,7 +283,7 @@ async function runChecks(): Promise<{ ok: boolean; blockingFailure: boolean }> {
   for (const check of checks) mark(check);
   return {
     ok: checks.every((check) => check.ok),
-    blockingFailure: checks.some((check) => !check.ok && check.name.startsWith('Intended API port')),
+    blockingFailure: checks.some((check) => !check.ok && (check.name.startsWith('Intended API port') || check.name.startsWith('Intended web port'))),
   };
 }
 
