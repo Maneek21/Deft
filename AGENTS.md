@@ -29,10 +29,10 @@ deft/
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
 - Real-time: Socket.io with Redis adapter
-- Auth: better-auth (JWT + refresh tokens + Google OAuth)
+- Auth: better-auth (JWT + refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
 - Background jobs: BullMQ with Redis
 - File storage: Cloudflare R2 or local (presigned uploads)
-- AI: Anthropic Codex API (Sonnet for reasoning, Haiku for classification)
+- AI: provider-neutral LLM routing. Anthropic, OpenAI/OpenAI-compatible, OpenRouter, and local Ollama-style providers are optional; core workspace flows must run without any provider key.
 - Email: Resend (transactional)
 - Monorepo: pnpm workspaces
 
@@ -72,22 +72,22 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 
 **Proactive comments:** The nudge-check worker drops agent-authored comments on stalled/overdue tasks and on auto-accepted task extractions (Task 3.11), deduped 7d per task. Inline agent task-suggestion cards appear in chat for classified actionable messages (Task 3.12).
 
-**Tool registry:** All agent actions registered with name, params, approval tier, provider. Agent only sees tools for services the user has connected.
+**Tool registry:** All agent actions registered with name, params, approval tier, provider. Current self-hosted v1 pilots emphasize native Deft tools, ICS calendars, and BYOA/MCP tools supplied by the customer's already-running agents. Native Slack/Gmail/GitHub/Google OAuth are not buyer-facing promises for this cut.
 
 **Three-tier approval:**
-- Auto-execute: task status from PR merge, meeting prep, reminders
+- Auto-execute: low-risk native updates, meeting prep from connected calendar context, reminders
 - Quick-approve: create task, schedule meeting (one-click card)
 - Full-review: multi-step plans and external writes (preview + edit)
 
 **Trust levels (per org):** Conservative → Standard → Autonomous
 
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
-**Connected actions (API):** Create calendar events and read connected work events
+**Connected actions:** Read/write native calendar events, ingest ICS calendar subscriptions, and call BYOA/MCP tools that the agent runtime brings with it.
 
 **Event-driven triggers (BullMQ crons):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
-- PR merged → parse `PREFIX-N` refs in title/body, move each matched task (in `todo`, `in_progress`, or `in_review`) to `done` and leave an attribution comment linking the PR. Wired into the GitHub sync path (`apps/api/src/workers/github-sync.ts` → `closeTasksForMergedPR`); runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire. Tasks already `done` or `cancelled` are never touched.
+- BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under org trust and approval rules.
 - Meeting in 15min → generate prep briefing
 - 9am daily → auto-generate standup from activity
 
@@ -101,7 +101,7 @@ Tasks are the agent's primary output surface and the product's action surface. P
 - **Task reactions** (Task 6.3) — emoji reactions on task cards/detail (`task_reactions` table, upsert/delete endpoints).
 - **@mentions in description + comments** (Task 6.4) — autocomplete + notification dispatch mirrors chat mentions.
 - **Activity diff view** (Task 6.2) — inline old→new rendering in the task activity log, replacing flat "changed status" strings.
-- **GitHub PR→Done** (Task 5.6) — polling sync worker parses `PREFIX-N` in PR title/body on the `pr_opened|pr_closed → pr_merged` transition and closes each referenced task with an attribution comment. Polling only, no webhook yet.
+- **Legacy GitHub PR→Done code path** (Task 5.6) — retained as implementation history, but not part of the current self-hosted v1 pilot promise. Customers that need GitHub should connect it inside their BYOA employee or MCP runtime.
 - **Project archive + soft-delete** (Task 5.8) — settings modal with 7-day recovery window. Soft-deleted projects hide from views but preserve tasks for audit.
 - **Task 0.1 security fix (resolved)** — watchers + assignees routes enforce `org_id` + auth.
 - **Task 0.4 dashboard fix (resolved)** — "My Work" filter on the bento dashboard now scopes to the current user.

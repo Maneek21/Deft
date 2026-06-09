@@ -1,5 +1,7 @@
 # How Agents Work in Deft
 
+> Status note, 2026-06-09: This document describes the agent vision. For current self-hosted v1 pilot promises, external tools should be framed as BYOA/MCP-provided capabilities, not native Slack/Gmail/GitHub/Google OAuth integrations owned by Deft.
+
 ## The Core Idea
 
 Deft agents are AI teammates, not chatbots. They have user accounts, appear in member lists, get assigned tasks, post in channels, and learn from every interaction. They share one brain (the wiki), operate under org-defined trust levels, and proactively monitor their domain through heartbeats.

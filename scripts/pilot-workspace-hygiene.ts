@@ -6,6 +6,7 @@ const args = new Set(process.argv.slice(2));
 const shouldApply = args.has('--apply');
 const orgSlugArg = process.argv.find((arg) => arg.startsWith('--org-slug='));
 const orgSlug = orgSlugArg?.split('=')[1]?.trim();
+const DEFTY_EMAIL = 'deft-agent@system.local';
 
 function dockerDatabaseUrl(): string | null {
   try {
@@ -77,6 +78,7 @@ async function main() {
     const scoped = orgFilter();
     const scopedAgent = orgFilter('a');
     const scopedEmployee = orgFilter('ae');
+    const scopedOrgMember = orgFilter('om');
     const scopedSpace = orgFilter('s');
     const scopedProject = orgFilter('p');
     const scopedNotification = orgFilter('n');
@@ -200,6 +202,80 @@ async function main() {
         params: scopedEmployee.params,
       },
       {
+        key: 'stale-agent-members',
+        label: 'Deactivate deleted agent shadow org memberships',
+        selectSql: `
+          select count(*)::int as count
+          from org_members om
+          join users u on u.id = om.user_id
+          where om.is_active = true
+            and u.kind = 'agent'
+            and coalesce(u.email, '') <> $${scopedOrgMember.params.length + 1}
+            and not exists (
+              select 1
+              from agent_employees ae
+              where ae.org_id = om.org_id
+                and ae.user_id = om.user_id
+                and ae.is_active = true
+                and ae.is_deleted = false
+            )
+            ${scopedOrgMember.clause}
+        `,
+        applySql: `
+          update org_members om
+          set is_active = false,
+              updated_at = now()
+          from users u
+          where u.id = om.user_id
+            and om.is_active = true
+            and u.kind = 'agent'
+            and coalesce(u.email, '') <> $${scopedOrgMember.params.length + 1}
+            and not exists (
+              select 1
+              from agent_employees ae
+              where ae.org_id = om.org_id
+                and ae.user_id = om.user_id
+                and ae.is_active = true
+                and ae.is_deleted = false
+            )
+            ${scopedOrgMember.clause}
+        `,
+        params: [...scopedOrgMember.params, DEFTY_EMAIL],
+      },
+      {
+        key: 'stale-human-test-members',
+        label: 'Deactivate obvious human test-fixture org memberships',
+        selectSql: `
+          select count(*)::int as count
+          from org_members om
+          join users u on u.id = om.user_id
+          where om.is_active = true
+            and u.kind = 'human'
+            and (
+              u.email ilike '%@test.local'
+              or u.name ilike 'MCP Phase 4 Test User%'
+              or u.name ilike 'API Role Smoke%'
+            )
+            ${scopedOrgMember.clause}
+        `,
+        applySql: `
+          update org_members om
+          set is_active = false,
+              updated_at = now()
+          from users u
+          where u.id = om.user_id
+            and om.is_active = true
+            and u.kind = 'human'
+            and (
+              u.email ilike '%@test.local'
+              or u.name ilike 'MCP Phase 4 Test User%'
+              or u.name ilike 'API Role Smoke%'
+            )
+            ${scopedOrgMember.clause}
+        `,
+        params: scopedOrgMember.params,
+      },
+      {
         key: 'audit-spaces',
         label: 'Archive obvious audit/scratch spaces',
         selectSql: `
@@ -257,6 +333,7 @@ async function main() {
               or p.name ilike 'audit %'
               or p.name ilike 'byoa %'
               or p.name ilike 'scratch %'
+              or p.name ilike 'harness-%'
               or p.name ilike 'smoke %'
               or p.name ilike 'three runtime byoa battery%'
               or p.name ilike 'defty ui reliability%'
@@ -283,6 +360,63 @@ async function main() {
               or p.name ilike 'audit %'
               or p.name ilike 'byoa %'
               or p.name ilike 'scratch %'
+              or p.name ilike 'harness-%'
+              or p.name ilike 'smoke %'
+              or p.name ilike 'three runtime byoa battery%'
+              or p.name ilike 'defty ui reliability%'
+              or p.name ilike 'codex byoa behavior%'
+              or p.name ilike 'three agent dogfood%'
+              or p.name ilike 'codex byoa dogfood%'
+              or p.prefix like 'RT%'
+              or p.prefix like 'DF%'
+              or p.prefix like 'CX%'
+              or p.prefix like 'TG%'
+            )
+            and p.name not ilike 'tom marketing dogfood%'
+            ${scopedProject.clause}
+        `,
+        params: scopedProject.params,
+      },
+      {
+        key: 'deleted-audit-projects-unarchived',
+        label: 'Archive already-deleted audit/harness projects',
+        selectSql: `
+          select count(*)::int as count
+          from projects p
+          where p.is_deleted = true
+            and p.is_archived = false
+            and (
+              p.prefix in ('AUD', 'TST', 'BYOA', 'SMK')
+              or p.name ilike 'audit %'
+              or p.name ilike 'byoa %'
+              or p.name ilike 'scratch %'
+              or p.name ilike 'harness-%'
+              or p.name ilike 'smoke %'
+              or p.name ilike 'three runtime byoa battery%'
+              or p.name ilike 'defty ui reliability%'
+              or p.name ilike 'codex byoa behavior%'
+              or p.name ilike 'three agent dogfood%'
+              or p.name ilike 'codex byoa dogfood%'
+              or p.prefix like 'RT%'
+              or p.prefix like 'DF%'
+              or p.prefix like 'CX%'
+              or p.prefix like 'TG%'
+            )
+            and p.name not ilike 'tom marketing dogfood%'
+            ${scopedProject.clause}
+        `,
+        applySql: `
+          update projects p
+          set is_archived = true,
+              updated_at = now()
+          where p.is_deleted = true
+            and p.is_archived = false
+            and (
+              p.prefix in ('AUD', 'TST', 'BYOA', 'SMK')
+              or p.name ilike 'audit %'
+              or p.name ilike 'byoa %'
+              or p.name ilike 'scratch %'
+              or p.name ilike 'harness-%'
               or p.name ilike 'smoke %'
               or p.name ilike 'three runtime byoa battery%'
               or p.name ilike 'defty ui reliability%'

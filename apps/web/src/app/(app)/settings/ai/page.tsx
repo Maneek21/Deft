@@ -621,7 +621,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
                 style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success, #22c55e)' }}
               >
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--success, #22c55e)' }} />
-                OpenAI key available
+                Embedding provider available
               </span>
             ) : (
               <span
@@ -629,7 +629,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
                 style={{ background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' }}
               >
                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--warning, #f59e0b)' }} />
-                No OpenAI key — set one above
+                No embedding provider configured
               </span>
             )}
           </div>
@@ -668,7 +668,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
                     boxShadow: active ? '0 1px 2px rgba(0,0,0,0.2)' : 'none',
                   }}
                 >
-                  {opt === 'openai' ? 'OpenAI' : 'Off'}
+                  {opt === 'openai' ? 'OpenAI-compatible' : 'Off'}
                 </button>
               );
             })}
@@ -710,7 +710,7 @@ function EmbedSection({ cfg, onSaved }: { cfg: AIConfig; onSaved: () => Promise<
 
         {off && (
           <p className="text-[11px] leading-snug" style={{ color: 'var(--muted)' }}>
-            Vector search disabled — using keyword fallback for wiki, tasks, and decisions.
+            Vector search disabled - using keyword fallback for wiki, tasks, and decisions.
           </p>
         )}
 

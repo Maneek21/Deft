@@ -11,16 +11,16 @@ import { useAuth } from '@/lib/auth-context';
 type Provider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
 
 const TABS: { id: Provider; label: string; placeholder: string; blurb: string; isUrl?: boolean }[] = [
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-…', blurb: 'Claude — recommended. Get a key at console.anthropic.com.' },
-  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', blurb: 'GPT-4 family. Get a key at platform.openai.com.' },
-  { id: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-…', blurb: 'One key, many models. Get a key at openrouter.ai.' },
   { id: 'ollama', label: 'Ollama', placeholder: 'http://localhost:11434', blurb: 'Run open-source models on your own machine.', isUrl: true },
+  { id: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-...', blurb: 'Use a managed router when you want access to several hosted model families.' },
+  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-...', blurb: 'Use Claude models with a workspace-owned Anthropic key.' },
+  { id: 'openai', label: 'OpenAI', placeholder: 'sk-...', blurb: 'Use OpenAI models with a workspace-owned OpenAI key.' },
 ];
 
 export default function SetupAIPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const [tab, setTab] = useState<Provider>('anthropic');
+  const [tab, setTab] = useState<Provider>('ollama');
   const [value, setValue] = useState('');
   const [reveal, setReveal] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,15 +86,6 @@ export default function SetupAIPage() {
       className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
       style={{ background: 'var(--surface-lowest)' }}
     >
-      <div
-        className="fixed top-0 left-1/4 w-[500px] h-[500px] rounded-full pointer-events-none -z-10"
-        style={{ background: 'var(--accent-muted)', filter: 'blur(120px)', opacity: 0.3 }}
-      />
-      <div
-        className="fixed bottom-0 right-1/4 w-[600px] h-[600px] rounded-full pointer-events-none -z-10"
-        style={{ background: 'var(--accent-muted)', filter: 'blur(140px)', opacity: 0.2 }}
-      />
-
       <main className="w-full max-w-[520px] flex flex-col items-center gap-6">
         <Logo variant="wordmark" className="h-10 w-auto" priority />
 
@@ -116,12 +107,12 @@ export default function SetupAIPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <h1 className="text-[1.25rem] font-semibold leading-tight" style={{ color: 'var(--on-surface)' }}>
-                {hasEnvFallback ? 'AI is already on' : 'Bring your own AI key'}
+                {hasEnvFallback ? 'AI is already on' : 'Choose your AI provider'}
               </h1>
               <p className="text-[0.875rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
                 {hasEnvFallback
                   ? 'This Deft instance has a shared AI key configured at the server level, so the agent and AI features will work out of the box. You can still add a per-workspace key from Settings to override it.'
-                  : 'Deft uses your own provider key — that means full control over your data, your bills, and which model handles what. Drop in one key now and the agent comes online immediately.'}
+                  : 'Deft can run with a local Ollama server or a workspace-owned managed provider key. Choose the model route that fits your self-hosting, data, and billing needs.'}
               </p>
             </div>
           </div>
@@ -210,7 +201,7 @@ export default function SetupAIPage() {
                   )}
                 </div>
                 <p className="text-[0.75rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-                  Stored encrypted in this workspace only. We never log keys, never send them anywhere except the chosen provider.
+                  Stored encrypted in this workspace only. We never log keys, and only send model requests to the provider you configure.
                 </p>
               </div>
 
@@ -233,7 +224,7 @@ export default function SetupAIPage() {
               </div>
 
               <p className="text-[0.75rem] leading-relaxed" style={{ color: 'var(--on-surface-variant)' }}>
-                You can add or change this later from Settings → AI.
+                You can add or change this later from Settings / AI.
               </p>
             </form>
           )}

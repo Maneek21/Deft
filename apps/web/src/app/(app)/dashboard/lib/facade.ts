@@ -77,6 +77,35 @@ export type AgentActivity = {
 
 export type AgentEmployeeBrief = { id: string; name: string };
 
+export type DashboardAttention = {
+  kind: 'overdue_task' | 'pending_agent_action' | 'failed_agent_action' | 'recent_decision' | string;
+  severity: 'critical' | 'warning' | 'info' | string;
+  title: string;
+  href: string;
+  at: string | null;
+};
+
+export type DashboardAgentActivity = {
+  id: string;
+  action: string;
+  source: string | null;
+  approval_tier: string;
+  approval_status: string;
+  created_at: string;
+  executed_at: string | null;
+  error: string | null;
+  employee_name: string | null;
+  employee_slug: string | null;
+};
+
+export type DashboardDecision = {
+  id: string;
+  title: string;
+  slug: string;
+  summary: string | null;
+  updated_at: string;
+};
+
 export type DashboardCore = {
   greeting: string;
   standup: Standup;
@@ -85,6 +114,11 @@ export type DashboardCore = {
   unread_spaces: UnreadSpace[];
   recent_activity: Activity[];
   projects: Project[];
+  attention?: DashboardAttention[];
+  agent_activity?: DashboardAgentActivity[];
+  recent_decisions?: DashboardDecision[];
+  calendar_events?: unknown[];
+  github_activity?: unknown[];
 };
 
 export type CalendarPayload = {

@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import { db } from '../lib/db.js';
-import { users, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
+import { users, orgMembers, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
 import { env } from '../lib/env.js';
+import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -18,6 +19,23 @@ function buildRecoveryUrl(token: string): string {
 }
 
 export const memberRoutes = new Hono();
+
+function visibleLiveMemberForOrg(orgIdRef: unknown) {
+  return sql`
+    (
+      ${users.kind} <> 'agent'
+      OR ${users.email} = ${DEFTY_EMAIL}
+      OR EXISTS (
+        SELECT 1
+        FROM ${agentEmployees}
+        WHERE ${agentEmployees.user_id} = ${users.id}
+          AND ${agentEmployees.org_id} = ${orgIdRef}
+          AND ${agentEmployees.is_active} = true
+          AND ${agentEmployees.is_deleted} = false
+      )
+    )
+  `;
+}
 
 // GET /api/members — list all members of current org
 memberRoutes.get('/', async (c) => {
@@ -41,6 +59,7 @@ memberRoutes.get('/', async (c) => {
         and(
           eq(orgMembers.org_id, user.org_id),
           eq(orgMembers.is_active, true),
+          visibleLiveMemberForOrg(orgMembers.org_id),
         )
       );
 
@@ -84,7 +103,12 @@ memberRoutes.get('/:id', async (c) => {
     })
       .from(orgMembers)
       .innerJoin(users, eq(orgMembers.user_id, users.id))
-      .where(and(eq(orgMembers.org_id, user.org_id), eq(users.id, memberId)))
+      .where(and(
+        eq(orgMembers.org_id, user.org_id),
+        eq(orgMembers.is_active, true),
+        eq(users.id, memberId),
+        visibleLiveMemberForOrg(orgMembers.org_id),
+      ))
       .limit(1);
 
     if (!member) {

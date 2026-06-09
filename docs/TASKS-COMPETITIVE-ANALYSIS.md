@@ -1,5 +1,7 @@
 # Tasks — Competitive Analysis
 
+> Status note, 2026-06-09: This is a historical competitive analysis. Current self-hosted v1 positioning should avoid native Slack/Gmail/GitHub promises and point external-tool work through BYOA/MCP employees instead.
+
 ## Current State
 
 Deft's task management is feature-rich — Kanban board with drag-and-drop, list view, subtasks, dependencies (blocks/blocked_by/relates_to), labels, comments, activity log, bulk operations, saved views, keyboard shortcuts, agent integration, and project organization. This is comparable to Linear's core feature set.

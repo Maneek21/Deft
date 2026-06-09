@@ -28,15 +28,19 @@
  *                      All four LLM-task slots (classify/summarize/reason/extract)
  *                      are routed to OpenAI when set.
  */
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import * as schema from './src/schema.js';
 
 const { Pool } = pg;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: path.resolve(__dirname, '../../.env') });
 
 const OPENAI_KEY = process.env.SEED_OPENAI_KEY || '';
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '';
@@ -62,69 +66,24 @@ const db = drizzle(pool, { schema });
 async function seed() {
   console.log('Seeding Testers Tomatoes demo workspace…');
 
-  // ── Wipe existing data in reverse dependency order ──
-  // The list mirrors the table relationships in schema.ts. Adding wipe entries
-  // here is required whenever a new seeded table is added below, otherwise a
-  // re-run hits a unique-constraint violation on the second pass.
-  await db.delete(schema.burnoutAlerts);
-  await db.delete(schema.oneonePreps);
-  await db.delete(schema.teamHealthSnapshots);
-  await db.delete(schema.peopleRelationships);
-  await db.delete(schema.peoplePatterns);
-  await db.delete(schema.peopleInfluence);
-  await db.delete(schema.peopleExpertise);
-  await db.delete(schema.peopleInteractions);
-  await db.delete(schema.managerSettings);
-  await db.delete(schema.meetingBriefs);
-  await db.delete(schema.agentNudges);
-  await db.delete(schema.auditLog);
-  await db.delete(schema.crossReferences);
-  await db.delete(schema.agentMemory);
-  await db.delete(schema.standups);
-  await db.delete(schema.jobQueue);
-  await db.delete(schema.workflowRuns);
-  await db.delete(schema.workflowRules);
-  await db.delete(schema.customEmoji);
-  await db.delete(schema.userGroupMembers);
-  await db.delete(schema.userGroups);
-  await db.delete(schema.messageBookmarks);
-  await db.delete(schema.canvases);
-  await db.delete(schema.wikiLinks);
-  await db.delete(schema.wikiPages);
-  await db.delete(schema.entityTags);
-  await db.delete(schema.tags);
-  await db.delete(schema.notes);
-  await db.delete(schema.taskWatchers);
-  await db.delete(schema.taskActivity);
-  await db.delete(schema.taskComments);
-  await db.delete(schema.taskLabels);
-  await db.delete(schema.taskRelationships);
-  await db.delete(schema.tasks);
-  await db.delete(schema.projectSpaces);
-  await db.delete(schema.projects);
-  await db.delete(schema.reactions);
-  await db.delete(schema.pinnedMessages);
-  await db.delete(schema.scheduledMessages);
-  await db.delete(schema.files);
-  await db.delete(schema.reminders);
-  await db.delete(schema.messages);
-  await db.delete(schema.spaceMembers);
-  await db.delete(schema.spaces);
-  await db.delete(schema.orgMembers);
-  await db.delete(schema.onboardingState);
-  await db.delete(schema.notifications);
-  await db.delete(schema.favorites);
-  await db.delete(schema.savedViews);
-  await db.delete(schema.invites);
-  await db.delete(schema.agentActions);
-  await db.delete(schema.triggers);
-  await db.delete(schema.skills);
-  await db.delete(schema.tools);
-  await db.delete(schema.labels);
-  await db.delete(schema.events);
-  await db.delete(schema.connectedAccounts);
-  await db.delete(schema.orgs);
-  await db.delete(schema.users);
+  // This is a destructive local/demo seed. Use the database FK graph instead of
+  // a hand-maintained delete order so fresh installs and older local databases
+  // do not drift as product tables are added.
+  await db.execute(sql`
+    DO $$
+    DECLARE
+      table_list text;
+    BEGIN
+      SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+      INTO table_list
+      FROM pg_tables
+      WHERE schemaname = 'public';
+
+      IF table_list IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || table_list || ' RESTART IDENTITY CASCADE';
+      END IF;
+    END $$;
+  `);
 
   console.log('Wiped existing data');
 
@@ -223,7 +182,7 @@ async function seed() {
     { user_id: marigold!.id, profile_set: true, first_message_sent: true, completed: true },
     { user_id: cesar!.id, profile_set: true, first_message_sent: true, completed: true },
     { user_id: lina!.id, profile_set: true, first_message_sent: true, completed: true },
-    { user_id: tomas!.id, profile_set: true, first_message_sent: true, completed: false },
+    { user_id: tomas!.id, profile_set: true, first_message_sent: true, completed: true },
     { user_id: sage!.id, profile_set: true, first_message_sent: true, completed: true },
   ]);
 

@@ -5,8 +5,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { orgs, agentMemory } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { orgs, agentMemory, wikiPages } from '@deft/db/schema';
+import { eq, and, or, desc, sql } from 'drizzle-orm';
 import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
 import { createAgentMessage } from './agent-llm.js';
 import { llm } from './llm.js';
@@ -205,6 +205,41 @@ export async function runAgentQuery(params: {
   try {
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
+      const terms = searchQuery
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((term) => term.length >= 3)
+        .filter((term) => !new Set([
+          'summarize', 'summary', 'what', 'when', 'where', 'next', 'check',
+          'please', 'about', 'with', 'that', 'this', 'decision',
+        ]).has(term))
+        .slice(0, 8);
+      const exactWikiRows = terms.length > 0
+        ? await db
+            .select({
+              title: wikiPages.title,
+              slug: wikiPages.slug,
+              type: wikiPages.type,
+              summary: wikiPages.summary,
+              content: wikiPages.content,
+              updated_at: wikiPages.updated_at,
+            })
+            .from(wikiPages)
+            .where(and(
+              eq(wikiPages.org_id, orgId),
+              eq(wikiPages.is_deleted, false),
+              or(...terms.map((term) => {
+                const pattern = `%${term}%`;
+                return sql`(
+                  lower(${wikiPages.title}) like ${pattern}
+                  or lower(${wikiPages.summary}) like ${pattern}
+                  or lower(${wikiPages.content}) like ${pattern}
+                )`;
+              })),
+            ))
+            .orderBy(desc(wikiPages.updated_at))
+            .limit(3)
+        : [];
       const allRelevantPages = await retrieveContext({
         query: searchQuery,
         org_id: orgId,
@@ -213,6 +248,15 @@ export async function runAgentQuery(params: {
         types: ['wiki'],
         limit: 5,
       });
+
+      if (exactWikiRows.length > 0) {
+        const exactWikiContext = exactWikiRows.map((p) => {
+          const summary = p.summary?.trim()
+            || p.content.replace(/\s+/g, ' ').slice(0, 900);
+          return `- **${p.title}** (${p.type ?? 'wiki'}, slug: ${p.slug}, fresh exact match): ${summary}`;
+        }).join('\n');
+        systemPrompt += `\n\nFresh exact matches from the team wiki:\n${exactWikiContext}`;
+      }
 
       if (allRelevantPages.length > 0) {
         const wikiContext = allRelevantPages.map((p) => {

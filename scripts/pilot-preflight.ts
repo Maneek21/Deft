@@ -12,12 +12,15 @@ type Check = {
   ok: boolean;
   detail: string;
   warn?: boolean;
+  stale?: boolean;
 };
 
 const args = new Set(process.argv.slice(2));
 const shouldStart = args.has('--start');
+const strict = args.has('--strict') || process.env.DEFT_PREFLIGHT_STRICT === '1';
 const API_URL = (process.env.DEFT_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
-const WEB_URL = (process.env.DEFT_WEB_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+const WEB_URL = (process.env.DEFT_WEB_URL || 'http://localhost:3000').replace(/\/$/, '');
+const CONFIGURED_APP_URL = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '');
 const SEED_EMAIL = process.env.DEFT_TEST_EMAIL || 'diego@testers-tomatoes.com';
 const SEED_PASSWORD = process.env.DEFT_TEST_PASSWORD || 'tomato123';
 const LIKELY_API_PORTS = [3001, 3301];
@@ -29,13 +32,17 @@ function mark(check: Check) {
 }
 
 async function fetchStatus(url: string): Promise<{ status: number; text: string }> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
-    return { status: res.status, text: await res.text().catch(() => '') };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { status: 0, text: message };
+  let lastMessage = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      return { status: res.status, text: await res.text().catch(() => '') };
+    } catch (err) {
+      lastMessage = err instanceof Error ? err.message : String(err);
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
   }
+  return { status: 0, text: lastMessage };
 }
 
 function localhostPort(rawUrl: string): number | null {
@@ -218,8 +225,9 @@ async function checkLikelyApiPorts(): Promise<Check[]> {
       const pids = await pidsForPort(port);
       checks.push({
         name: `Possible stale API on ${port}`,
-        ok: true,
+        ok: !strict || process.env.DEFT_ALLOW_STALE_API === '1',
         warn: true,
+        stale: true,
         detail: `http://localhost:${port}/health is alive${pids.length ? ` (PID ${pids.join(', ')})` : ''}; intended API is ${API_URL}. If this is the right API, set DEFT_API_URL=http://localhost:${port}.`,
       });
     }
@@ -252,8 +260,9 @@ async function checkLikelyWebPorts(): Promise<Check[]> {
       const pids = await pidsForPort(port);
       checks.push({
         name: `Possible web app on ${port}`,
-        ok: true,
+        ok: !strict || process.env.DEFT_ALLOW_STALE_API === '1',
         warn: true,
+        stale: true,
         detail: `${candidateUrl} returned ${res.status}${pids.length ? ` (PID ${pids.join(', ')})` : ''}; intended web is ${WEB_URL}. If this is the right app, set DEFT_WEB_URL=${candidateUrl}.`,
       });
     }
@@ -262,17 +271,36 @@ async function checkLikelyWebPorts(): Promise<Check[]> {
   return checks;
 }
 
+async function checkConfiguredAppUrl(): Promise<Check[]> {
+  if (!CONFIGURED_APP_URL || CONFIGURED_APP_URL === WEB_URL) return [];
+
+  const res = await fetchStatus(CONFIGURED_APP_URL);
+  const detail = res.status
+    ? `NEXT_PUBLIC_APP_URL is ${CONFIGURED_APP_URL} and returned ${res.status}; pilot web target is ${WEB_URL}. Keep this only if generated links should use that URL.`
+    : `NEXT_PUBLIC_APP_URL is ${CONFIGURED_APP_URL} but it is unreachable; pilot web target is ${WEB_URL}. Update NEXT_PUBLIC_APP_URL or set DEFT_WEB_URL when testing that URL intentionally.`;
+
+  return [{
+    name: 'Configured app URL drift',
+    ok: true,
+    warn: true,
+    detail,
+  }];
+}
+
 async function runChecks(): Promise<{ ok: boolean; blockingFailure: boolean }> {
   console.log(`Deft pilot preflight`);
   console.log(`  web: ${WEB_URL}`);
   console.log(`  api: ${API_URL}`);
+  console.log(`  NEXT_PUBLIC_APP_URL: ${process.env.NEXT_PUBLIC_APP_URL || '(unset)'}`);
   console.log(`  NEXT_PUBLIC_API_URL: ${process.env.NEXT_PUBLIC_API_URL || '(unset)'}`);
   console.log(`  NEXT_PUBLIC_WS_URL: ${process.env.NEXT_PUBLIC_WS_URL || '(unset)'}`);
+  console.log(`  strict stale-port gate: ${strict ? 'on' : 'off'}`);
   console.log('');
 
   const checks = [
     ...(await checkLikelyApiPorts()),
     ...(await checkLikelyWebPorts()),
+    ...(await checkConfiguredAppUrl()),
     await checkApi(),
     await checkWeb(),
     await checkDb(),
@@ -281,6 +309,10 @@ async function runChecks(): Promise<{ ok: boolean; blockingFailure: boolean }> {
   ];
 
   for (const check of checks) mark(check);
+  if (strict && checks.some((check) => check.stale && !check.ok)) {
+    console.log('');
+    console.log('[INFO] Strict mode treats likely stale local web/API services as failures. Stop the extra process, point DEFT_API_URL/DEFT_WEB_URL at it, or set DEFT_ALLOW_STALE_API=1 for exploratory local work only.');
+  }
   return {
     ok: checks.every((check) => check.ok),
     blockingFailure: checks.some((check) => !check.ok && (check.name.startsWith('Intended API port') || check.name.startsWith('Intended web port'))),

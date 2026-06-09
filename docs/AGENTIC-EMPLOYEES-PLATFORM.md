@@ -1,5 +1,7 @@
 # Agentic Employees Platform — Master Plan
 
+> Status note, 2026-06-09: This is a historical master plan, not the current self-hosted v1 product contract. Use `docs/self-hosted-v1-contract.md` for buyer-facing promises: native workspace, ICS calendar subscriptions, BYOA/MCP employees, provider-neutral AI, and no native Slack/Gmail/GitHub/Google OAuth promise.
+
 ## Vision
 
 Transform Deft from an AI-native workspace into an **agentic employee platform** — where AI teammates share the same spaces, tasks, and communication channels as humans. Not personal assistants that help one user at a time, but persistent, role-based agents that operate as first-class team members.

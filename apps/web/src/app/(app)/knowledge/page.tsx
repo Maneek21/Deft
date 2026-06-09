@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
@@ -260,6 +260,8 @@ export default function KnowledgePage() {
   const [detail, setDetail] = useState<WikiPageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [pagesError, setPagesError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; content: string; summary: string; type: string; confidence: number; tags: string }>({
@@ -282,23 +284,62 @@ export default function KnowledgePage() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [reversingId, setReversingId] = useState<string | null>(null);
   const [reverseError, setReverseError] = useState<string | null>(null);
+  const pagesAbortRef = useRef<AbortController | null>(null);
+  const pagesRequestIdRef = useRef(0);
   const limit = 50;
+  const isSearchSettling = searchQuery.trim() !== debouncedSearchQuery;
 
-  const fetchPages = () => {
+  const fetchPages = useCallback(async () => {
+    const requestId = pagesRequestIdRef.current + 1;
+    pagesRequestIdRef.current = requestId;
+    pagesAbortRef.current?.abort();
+    const controller = new AbortController();
+    pagesAbortRef.current = controller;
+
     setLoading(true);
+    setPagesError(null);
     const params = new URLSearchParams({ page: String(page), limit: String(limit) });
     if (filter !== 'all') params.set('type', filter);
     if (scopeFilter !== 'all') params.set('scope', scopeFilter);
-    if (searchQuery.trim()) params.set('q', searchQuery.trim());
+    if (debouncedSearchQuery) params.set('q', debouncedSearchQuery);
 
-    api.get(`/api/wiki?${params.toString()}`).then(async res => {
-      if (res.ok) {
-        const data = await res.json();
-        setPages(data.pages || []);
-        setTotal(data.total || 0);
+    try {
+      const res = await api.fetch(`/api/wiki?${params.toString()}`, { signal: controller.signal });
+      if (requestId !== pagesRequestIdRef.current) return;
+
+      if (!res.ok) {
+        let message = 'Could not load wiki pages.';
+        try {
+          const data = await res.json();
+          message = data.error || message;
+        } catch {
+          // Keep the generic message.
+        }
+        if (res.status === 429) {
+          message = 'Knowledge search is being rate limited. Pause briefly and try again.';
+        }
+        setPagesError(message);
+        return;
       }
-    }).catch(() => {}).finally(() => setLoading(false));
-  };
+
+      const data = await res.json();
+      if (requestId !== pagesRequestIdRef.current) return;
+      setPages(data.pages || []);
+      setTotal(data.total || 0);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      if (requestId === pagesRequestIdRef.current) {
+        setPagesError(err instanceof Error ? err.message : 'Could not load wiki pages.');
+      }
+    } finally {
+      if (requestId === pagesRequestIdRef.current) {
+        setLoading(false);
+        if (pagesAbortRef.current === controller) {
+          pagesAbortRef.current = null;
+        }
+      }
+    }
+  }, [page, filter, scopeFilter, debouncedSearchQuery]);
 
   // Sync filter from URL ?type= param, open detail from ?slug= param
   useEffect(() => {
@@ -313,10 +354,20 @@ export default function KnowledgePage() {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 300);
+    return () => window.clearTimeout(handle);
+  }, [searchQuery]);
+
   // Fetch wiki pages list
   useEffect(() => {
     fetchPages();
-  }, [filter, scopeFilter, page, searchQuery]);
+    return () => {
+      pagesAbortRef.current?.abort();
+    };
+  }, [fetchPages]);
 
   // Fetch page detail when selected
   useEffect(() => {
@@ -1174,22 +1225,44 @@ export default function KnowledgePage() {
             </button>
           </div>
         )}
-        {loading ? (
+        {pagesError && (
+          <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg mb-1"
+            style={{ background: '#EF444415', border: '1px solid #EF444440' }}>
+            <span className="text-[12px]" style={{ color: '#EF4444' }}>{pagesError}</span>
+            <button onClick={fetchPages} className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium hover:opacity-80"
+              style={{ background: '#EF444420', color: '#EF4444' }}>
+              <RefreshCw size={12} /> Retry
+            </button>
+          </div>
+        )}
+        {(loading || isSearchSettling) && pages.length > 0 && (
+          <div className="flex items-center gap-2 px-2 py-1 mb-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+            <Loader2 size={12} className="animate-spin" />
+            Searching knowledge...
+          </div>
+        )}
+        {loading && pages.length === 0 ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
           </div>
-        ) : pages.length === 0 ? (
+        ) : pages.length === 0 && !pagesError ? (
           <div className="text-center py-12">
             <BookOpen size={24} style={{ color: 'var(--text-tertiary)', margin: '0 auto 8px' }} />
-            <p className="text-[13px]" style={{ color: 'var(--text-tertiary)' }}>No wiki pages yet</p>
-            <p className="text-[11px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
-              Knowledge is automatically captured from conversations and agent interactions
+            <p className="text-[13px]" style={{ color: 'var(--text-tertiary)' }}>
+              {debouncedSearchQuery ? `No wiki pages match "${debouncedSearchQuery}"` : 'No wiki pages yet'}
             </p>
-            <button onClick={() => setShowCreate(true)}
-              className="mt-3 px-4 py-2 rounded-lg text-[12px] font-medium"
-              style={{ background: 'var(--accent)', color: 'white' }}>
-              Create First Page
-            </button>
+            <p className="text-[11px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
+              {debouncedSearchQuery
+                ? 'Try a broader term or clear the search.'
+                : 'Knowledge is automatically captured from conversations and agent interactions'}
+            </p>
+            {!debouncedSearchQuery && (
+              <button onClick={() => setShowCreate(true)}
+                className="mt-3 px-4 py-2 rounded-lg text-[12px] font-medium"
+                style={{ background: 'var(--accent)', color: 'white' }}>
+                Create First Page
+              </button>
+            )}
           </div>
         ) : (
           pages.map((entry) => {
