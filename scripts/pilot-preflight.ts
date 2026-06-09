@@ -76,23 +76,6 @@ async function pidsForPort(port: number): Promise<string[]> {
   return stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
-async function dockerDatabaseUrl(): Promise<string | null> {
-  try {
-    const [{ stdout: portOut }, { stdout: passwordOut }, { stdout: dbOut }] = await Promise.all([
-      execFileAsync('docker', ['port', 'deft-codex-pg', '5432/tcp']),
-      execFileAsync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_PASSWORD']),
-      execFileAsync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_DB']),
-    ]);
-    const port = portOut.match(/(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)/)?.[1];
-    if (!port) return null;
-    const password = passwordOut.trim() || 'postgres';
-    const dbName = dbOut.trim() || 'deft';
-    return `postgres://postgres:${encodeURIComponent(password)}@localhost:${port}/${dbName}`;
-  } catch {
-    return null;
-  }
-}
-
 function databaseUrlCandidates(): string[] {
   if (process.env.DATABASE_URL) return [process.env.DATABASE_URL];
   const password = process.env.POSTGRES_PASSWORD || 'postgres';
@@ -124,8 +107,6 @@ async function checkWeb(): Promise<Check> {
 
 async function checkDb(): Promise<Check> {
   const candidates = databaseUrlCandidates();
-  const dockerUrl = await dockerDatabaseUrl();
-  if (dockerUrl && !candidates.includes(dockerUrl)) candidates.unshift(dockerUrl);
   const errors: string[] = [];
   let lastUrl = '';
 
@@ -330,6 +311,37 @@ async function waitForHealthy(timeoutMs: number): Promise<boolean> {
   return false;
 }
 
+function startDevStack(): ReturnType<typeof spawn>[] {
+  const apiPort = localhostPort(API_URL) || 3001;
+  const webPort = localhostPort(WEB_URL) || 3000;
+  const baseEnv = {
+    ...process.env,
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || API_URL,
+    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL || API_URL,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || WEB_URL,
+  };
+  const spawnPnpm = (args: string[], env: NodeJS.ProcessEnv) => {
+    const childOptions = { stdio: ['ignore', 'pipe', 'pipe'] as const, env };
+    if (process.platform !== 'win32') return spawn('pnpm', args, childOptions);
+    const command = ['pnpm.cmd', ...args].map((arg) => (arg.includes(' ') ? `"${arg.replace(/"/g, '\\"')}"` : arg)).join(' ');
+    return spawn('cmd.exe', ['/d', '/s', '/c', command], childOptions);
+  };
+  const api = spawnPnpm(['--filter', '@deft/api', 'dev'], {
+    ...baseEnv,
+    API_PORT: String(apiPort),
+    PORT: String(apiPort),
+  });
+  const web = spawnPnpm(['--filter', '@deft/web', 'exec', 'next', 'dev', '--port', String(webPort)], {
+    ...baseEnv,
+    PORT: String(webPort),
+  });
+  for (const child of [api, web]) {
+    child.stdout?.on('data', (chunk) => process.stdout.write(chunk));
+    child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+  }
+  return [api, web];
+}
+
 async function main() {
   const result = await runChecks();
   if (result.ok || !shouldStart || result.blockingFailure) {
@@ -337,21 +349,28 @@ async function main() {
   }
 
   console.log('');
-  console.log('[INFO] Starting local dev stack with pnpm dev. Press Ctrl+C to stop.');
-  const child = spawn(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', ['dev'], {
-    stdio: 'inherit',
-    env: process.env,
-  });
+  console.log('[INFO] Starting local dev stack. Press Ctrl+C to stop.');
+  const children = startDevStack();
+  let shuttingDown = false;
+  const stopChildren = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    for (const child of children) child.kill();
+  };
+  process.on('SIGINT', stopChildren);
+  process.on('SIGTERM', stopChildren);
 
   const healthy = await waitForHealthy(90_000);
   if (!healthy) {
     console.error('[FAIL] Dev stack did not become healthy within 90s. Check the output above.');
-    child.kill();
+    stopChildren();
     process.exit(1);
   }
 
   console.log('[OK] Local pilot stack is healthy.');
-  child.on('exit', (code) => process.exit(code ?? 0));
+  for (const child of children) child.on('exit', (code) => {
+    if (!shuttingDown) process.exit(code ?? 0);
+  });
 }
 
 main().catch((err) => {

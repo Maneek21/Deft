@@ -1,26 +1,30 @@
 # Self-Hosting Deft
 
-This guide covers everything you need to run Deft on your own infrastructure — from first boot through production hardening.
+This guide covers first boot, production hardening, upgrades, and the main
+operator tasks for a self-hosted Deft workspace.
 
 ## Overview
 
-Self-hosted Deft is a single-workspace deployment of the Deft platform. You run the database, Redis, and application stack yourself. Your data never leaves your server, and AI is bring-your-own-provider: Anthropic, OpenAI, OpenRouter, or local Ollama.
+Self-hosted Deft is a single-workspace deployment. You run the database, Redis,
+and application stack yourself. Your data stays on your infrastructure.
 
-Each deployment supports **one organisation**. This is by design: self-hosted Deft is meant for a single team, not a multi-tenant SaaS offering. The first user to sign up becomes the org owner and admin; subsequent users join via invite link only. Attempting to host Deft as a managed service for other organisations is outside what the Business Source License 1.1 permits — see [Licence & what's not in v1](#licence--whats-not-in-v1) for details.
+Each deployment supports one organisation. The first user to sign up becomes
+the workspace owner; everyone else joins through invite links generated from
+Settings -> Members. Hosting Deft as a managed service for other organisations
+is outside the Business Source License 1.1 terms.
 
-Defty, the built-in native agent, is seeded automatically on first run. Think of Defty as your workspace's default AI crew member — already hired, already configured, ready to take on tasks. You can also connect your own agents via the MCP protocol (see [Hiring your first crew member](#hiring-your-first-crew-member)).
+AI is bring-your-own-provider. Deft can use Anthropic, OpenAI, OpenRouter, or a
+local Ollama server, but the core workspace works without any AI provider.
 
 ## Prerequisites
 
 | Requirement | Notes |
 |---|---|
-| Docker Desktop 4.x+ | Includes Docker Compose v2. [Download](https://www.docker.com/products/docker-desktop/) |
-| `openssl` (any version) | For generating secrets. Ships with macOS, Linux, Git for Windows. |
-| AI provider (optional) | Configure Anthropic, OpenAI, OpenRouter, or Ollama via env or Settings -> AI. Chat and tasks work without one. |
+| Docker Desktop 4.x+ | Includes Docker Compose v2 |
+| openssl | Used to generate secrets; ships with macOS, Linux, Git for Windows |
+| AI provider | Optional; configure later from Settings -> AI |
 
-**Provider-neutral AI:** Deft does not require Anthropic or OpenAI. Ollama/local models are supported for self-hosted pilots, and core workspace features keep working when AI is not configured.
-
-**Hardware:** The stack runs comfortably on 2 vCPU / 4 GB RAM. Postgres and Redis together use under 100 MB at idle.
+The stack runs comfortably on 2 vCPU / 4 GB RAM for small pilots.
 
 ## First Boot
 
@@ -32,225 +36,188 @@ cd Deft
 cp .env.example .env
 ```
 
-Open `.env` in your editor. You must set these three variables before starting:
+Open `.env` and set these required values:
 
 ```bash
-# Generate secrets — run each command separately
-openssl rand -hex 32   # paste result into POSTGRES_PASSWORD
-openssl rand -hex 32   # paste result into JWT_SECRET
-openssl rand -hex 32   # paste result into JWT_REFRESH_SECRET
+openssl rand -hex 32   # paste into POSTGRES_PASSWORD
+openssl rand -hex 32   # paste into JWT_SECRET
+openssl rand -hex 32   # paste into JWT_REFRESH_SECRET
 ```
 
-| Variable | Where to get it | Required |
-|---|---|---|
-| `POSTGRES_PASSWORD` | `openssl rand -hex 32` | **Yes** |
-| `JWT_SECRET` | `openssl rand -hex 32` | **Yes** |
-| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` | **Yes** |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional; configure later in Settings -> AI |
+Replace `ENCRYPTION_KEY` before production. It must be exactly 32 characters.
 
-Everything else in `.env` is optional for a first boot. Leave the database and Redis URLs as-is — Docker Compose overrides them automatically.
+Leave `OLLAMA_URL` commented unless an Ollama server is actually running.
+Otherwise Deft will correctly show AI features as off until a provider is
+configured.
 
-> **⚠️ Deploying to a remote server (VPS, droplet, cloud)?** Set the three `NEXT_PUBLIC_*` URLs **before** running `docker compose up`. They're baked into the browser JavaScript bundle at build time, so editing them later requires a full rebuild.
->
-> ```bash
-> NEXT_PUBLIC_APP_URL=http://<your-public-ip-or-domain>:3000
-> NEXT_PUBLIC_API_URL=http://<your-public-ip-or-domain>:3001
-> NEXT_PUBLIC_WS_URL=http://<your-public-ip-or-domain>:3001
-> ```
->
-> If your browser shows **"Failed to fetch"** on signup, it's because these were left at the `localhost:*` defaults — your browser is hitting *its own* localhost, not the server. Fix the values in `.env` and run `docker compose up -d --build` to rebake them into the client bundle.
->
-> Leave the defaults alone if you'll only ever access Deft from the same machine that runs it (e.g., local development).
+If you are deploying to a remote server, set the public URLs before the first
+build because Next.js bakes them into the browser bundle:
+
+```bash
+NEXT_PUBLIC_APP_URL=http://your-domain-or-ip:3000
+NEXT_PUBLIC_API_URL=http://your-domain-or-ip:3001
+NEXT_PUBLIC_WS_URL=http://your-domain-or-ip:3001
+```
+
+If signup or login shows "Failed to fetch", the browser is probably trying to
+call the wrong API URL. Fix the `NEXT_PUBLIC_*` values and rebuild.
 
 ### 2. Start the stack
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-Docker pulls `pgvector/pgvector:pg16` and `redis:7-alpine`, builds the Deft image, and starts all three services. The first build takes 2–4 minutes depending on your connection. Subsequent starts are instant. Deft ships with `pgvector` because the wiki and task-search embeddings are stored as `vector(1536)` columns — a plain `postgres:16` image won't accept the schema.
-
-Wait for Postgres to be healthy before continuing (the compose file already enforces this via `depends_on`). You can check with:
-
-```bash
-docker compose ps
-```
-
-All three services should show `healthy` or `running`.
+This builds Deft and starts Postgres with pgvector plus Redis. The first build
+can take a few minutes.
 
 ### 3. Initialise the database
 
-The container does not auto-migrate on startup. Run these from the repo root **once**, after the stack is up:
+Run the one-shot init service once:
 
 ```bash
-# Apply the schema + full-text-search extras
-pnpm db:push-full
-
-# Seed Defty and starter data
-pnpm db:seed
+docker compose run --rm init
 ```
 
-`pnpm db:push-full` syncs the schema to Postgres at `localhost:5432` (exposed by Docker Compose) and applies two extra SQL files that create the wiki/task full-text-search columns and indexes Drizzle's pushed schema can't express — plain `pnpm db:push` skips them and leaves search broken. `pnpm db:seed` seeds the Defty agent template, default skills, and starter prompts. Both commands are idempotent — safe to run again if something goes wrong.
+The init service runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
+No host Node.js or pnpm install is required for the Docker self-host path.
 
-> **No pnpm locally?** Install it with `npm install -g pnpm`, then run the commands above. Node.js 20+ is required.
+`db:push-full` enables the `vector` extension, syncs the schema, and applies the
+full-text-search extras Drizzle cannot express. `db:seed` seeds Defty, bundled
+skills, task templates, and first-party employee templates. It is idempotent and
+does not insert demo users.
 
-### 4. Open the app
+### 4. Verify
 
-Navigate to **http://localhost:3000**. You should see the Deft sign-up screen.
-
-## Creating Your First Account
-
-The very first user to complete sign-up becomes the **organisation owner** — the account with full admin rights over the workspace. Choose this account carefully; it will be the admin seat going forward.
-
-After the first account is created, direct sign-up is blocked for all subsequent users. To add a teammate, the owner or any admin opens **Settings → Members → Invite**, enters the new person's email and role, and clicks **Generate link**. Deft returns a one-time invite URL — copy it and share it however you like (chat, email, in person). Invite links expire in 7 days and work once.
-
-When the new teammate opens the link, they land on a sign-up page that already knows who invited them. They pick a name, set a password, and Deft drops them into a brief onboarding wizard at `/welcome` that introduces the workspace and Defty.
-
-**No outbound email is required or supported.** Self-hosted Deft does not send invite or password-reset emails. This is intentional: every install can run fully offline behind a firewall.
-
-### Lost password
-
-Self-service "Forgot password" is disabled. To recover an account, an owner or admin opens **Settings → Members**, hovers the locked-out user, clicks the key icon next to their name, and shares the recovery URL that Deft generates. The user opens the link, sets a new password, and signs in. Recovery URLs expire in 24 hours and work once.
-
-### If the owner is locked out
-
-The owner has no admin above them, so a database-side reset is the only escape hatch:
-
-```sql
--- Connect to the Postgres container
-docker compose exec postgres psql -U postgres deft
-
--- Set password_hash to NULL so the owner can use any admin-issued
--- recovery link, or paste a freshly bcrypted hash directly:
-UPDATE users SET password_hash = NULL WHERE email = 'owner@example.com';
+```bash
+docker compose run --rm doctor
 ```
 
-After clearing the hash, generate a recovery URL via SQL by signing a password-reset JWT with the same `JWT_SECRET` from your `.env`, or simply set a known bcrypt hash directly.
+The doctor checks API health, web reachability, browser/API origin agreement,
+Postgres schema, Redis, and the platform seed.
 
-## Hiring Your First Crew Member
+### 5. Open the app
 
-Deft agents are configured from **Settings → Agent**. The Connect Agent wizard has three tabs:
+Open `http://localhost:3000`, create the first account, and keep that account as
+the owner/admin seat.
 
-### Native (Defty)
+## Production Overlay
 
-Defty is the built-in native agent seeded by `pnpm db:seed`. It runs inside the Deft process when a supported AI provider is configured. No provider is required for first boot; without one, Defty and AI features remain dormant while the core workspace continues to work.
+For production, use the overlay that does not publish Postgres or Redis to host
+ports:
 
-Defty's behaviour is defined by the `defty` template. You can inspect and customise it from Settings → Agent → Defty.
-
-### BYOA via MCP
-
-Bring Your Own Agent lets you connect any MCP-compatible agent runtime to your workspace. The MCP endpoint is:
-
+```bash
+docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
+docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
 ```
+
+If default local ports are already occupied, change these values in `.env`
+before building:
+
+```bash
+DEFT_WEB_PORT=3000
+DEFT_API_PORT=3001
+DEFT_BIND_HOST=127.0.0.1
+DEFT_POSTGRES_PORT=5432
+DEFT_REDIS_PORT=6379
+```
+
+The app still listens on ports 3000 and 3001 inside the container. These values
+only control host-side published ports.
+
+## Invites And Password Recovery
+
+After the first account is created, direct signup is blocked. Add teammates from
+Settings -> Members. Deft generates one-time invite URLs; share them out of band.
+
+Self-hosted Deft does not send email. Password recovery is admin-generated:
+owners/admins create recovery URLs from Settings -> Members and share them
+manually.
+
+## Agents
+
+Defty is seeded by `docker compose run --rm init`. It becomes active once a
+usable AI provider is configured. Without a provider, Defty and AI features stay
+off while chat, tasks, notes, calendar, wiki, and the dashboard continue to work.
+
+Bring-your-own-agent employees connect through MCP:
+
+```text
 POST https://your-domain.com/api/mcp/v1
 ```
 
-Authentication uses a bearer token issued from **Settings → Agent → Connect → BYOA**. Copy the token and configure it in your agent client.
+Create an agent employee from Settings -> Agent Employees, copy the bearer token,
+and paste the generated MCP config into your runtime.
 
-**Supported clients:**
-- [Claude Desktop](https://claude.ai/download) — add the MCP server in `claude_desktop_config.json`
-- [Claude Code](https://claude.ai/claude-code) — configure via `/mcp` command
-- Any client that speaks the MCP over HTTP+SSE transport
-
-**Claude Desktop example config** (`~/.config/claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "deft": {
-      "url": "http://localhost:3001/api/mcp/v1",
-      "headers": {
-        "Authorization": "Bearer <your-token>"
-      }
-    }
-  }
-}
-```
-
-### Custom MCP
-
-For custom OpenClaw runtimes or self-built MCP servers, the Custom tab lets you register a named endpoint with a pre-shared bearer token. The agent connects outbound to Deft over the same `/api/mcp/v1` interface.
-
-## Meeting Defty
-
-Defty is the default agent seeded into every fresh Deft deployment. Defty can read and write tasks and messages, run multi-step plans, summarise threads, and proactively nudge overdue work — all subject to the approval flow you configure in Settings → Agent → Trust.
-
-Defty is powered by the `defty` agent template. The template slug is `defty`. You can view the full system prompt from Settings → Agent → Defty → Edit template.
-
-## Environment Variables Reference
+## Environment Variables
 
 | Variable | Required | Purpose | Default |
 |---|---|---|---|
-| `DATABASE_URL` | Yes (auto-set by Docker) | Postgres connection string | `postgres://postgres:postgres@localhost:5432/deft` |
-| `REDIS_URL` | Yes (auto-set by Docker) | Redis connection string | `redis://localhost:6379` |
-| `POSTGRES_PASSWORD` | **Yes** | Database password (Docker Compose auth) | none |
-| `JWT_SECRET` | **Yes** | Signs access tokens | none |
-| `JWT_REFRESH_SECRET` | **Yes** | Signs refresh tokens | none |
-| `ANTHROPIC_API_KEY` | Optional | Anthropic provider key. App boots without it; AI features stay disabled until a provider is set by env or per-org Settings -> AI | none |
-| `OPENAI_API_KEY` | Optional | OpenAI provider key for model routing, OpenAI-compatible embeddings, or OpenAI Whisper if selected | none |
-| `OPENROUTER_API_KEY` | Optional | OpenRouter provider key for model routing | none |
-| `OLLAMA_URL` | Optional | Local/self-hosted Ollama endpoint | `http://localhost:11434` |
-| `NEXT_PUBLIC_API_URL` | No | API base URL seen by browser | `http://localhost:3001` |
-| `NEXT_PUBLIC_WS_URL` | No | WebSocket URL seen by browser | `http://localhost:3001` |
-| `NEXT_PUBLIC_APP_URL` | No | App base URL (used in invite links) | `http://localhost:3000` |
-| `API_PORT` | No | Port the API listens on | `3001` |
-| `R2_ENDPOINT` | No | Cloudflare R2 endpoint for file storage | none (uses local disk) |
-| `R2_ACCESS_KEY` | No | R2 access key | none |
-| `R2_SECRET_KEY` | No | R2 secret key | none |
-| `R2_BUCKET` | No | R2 bucket name | none |
-| `METRICS_SCRAPE_TOKEN` | No | Bearer token for `GET /api/metrics`. Unset = endpoint disabled (503) | none |
-
-When `DATABASE_URL` or `REDIS_URL` are set in `.env`, the `docker-compose.yml` `environment:` block takes precedence for those two — the container always connects to the Compose-managed Postgres and Redis regardless of what is in `.env`.
+| `POSTGRES_PASSWORD` | Yes | Database password for Compose Postgres | none |
+| `JWT_SECRET` | Yes | Signs access tokens | none |
+| `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
+| `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; exactly 32 chars | dev value |
+| `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
+| `REDIS_URL` | No for Compose | External Redis URL for non-Compose installs | derived |
+| `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
+| `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
+| `NEXT_PUBLIC_WS_URL` | Recommended | Public WebSocket/API URL seen by browser | `http://localhost:3001` |
+| `API_PORT` | No | API port inside the app container | `3001` |
+| `DEFT_WEB_PORT` | No | Host port for web | `3000` |
+| `DEFT_API_PORT` | No | Host port for API | `3001` |
+| `DEFT_BIND_HOST` | No | Host address for local DB/Redis publishing | `127.0.0.1` |
+| `DEFT_POSTGRES_PORT` | No | Host Postgres port in local compose | `5432` |
+| `DEFT_REDIS_PORT` | No | Host Redis port in local compose | `6379` |
+| `ANTHROPIC_API_KEY` | No | Optional AI provider fallback | none |
+| `OPENAI_API_KEY` | No | Optional AI provider/embedding/transcription fallback | none |
+| `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
+| `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
+| `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
+| `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics`; unset disables metrics | none |
 
 ## Backups
 
-All persistent data lives in two Docker named volumes:
+Persistent data lives in Docker volumes:
 
 | Volume | Contents |
 |---|---|
-| `pgdata` | PostgreSQL data directory |
-| `redisdata` | Redis RDB snapshot |
+| `pgdata` | PostgreSQL data |
+| `redisdata` | Redis data |
 | `uploads` | User-uploaded files |
 
-**Postgres backup (recommended):**
+Postgres backup:
 
 ```bash
 docker compose exec postgres pg_dump -U postgres deft > deft-backup-$(date +%Y%m%d).sql
 ```
 
-**Restore:**
+Restore:
 
 ```bash
 docker compose exec -T postgres psql -U postgres deft < deft-backup-20260101.sql
 ```
 
-Schedule this with cron or any job scheduler. For production, consider streaming WAL replication to a replica or using a managed Postgres service that handles backups for you.
-
 ## Upgrading
 
-Deft is in alpha and does not publish tagged releases yet — roll forward by pulling the latest image and re-applying the schema (below). Semantic-versioning guarantees and release notes will apply once tagged releases begin; until then, expect occasional breaking schema changes between commits on `master`.
+Deft is alpha and does not yet publish stable tagged releases. To roll forward:
 
 ```bash
-# Pull the latest image and restart
-docker compose pull
-docker compose up -d
-
-# Apply any new schema changes (+ full-text-search extras)
-pnpm db:push-full
+git pull
+docker compose up -d --build
+docker compose run --rm init
+docker compose run --rm doctor
 ```
 
-`pnpm db:push-full` diffs the live schema against `packages/db/src/schema.ts`, applies the full-text-search extras, and is idempotent — it is the supported path for both fresh installs and schema updates during the current alpha. Versioned `pnpm db:migrate` upgrade paths are **not yet supported** and will arrive post-alpha once the migration journal is wired for sequential upgrades. Do **not** use `pnpm db:migrate` — it is not a supported command at this stage.
+`docker compose run --rm init` is the supported schema/update path during the
+alpha. Versioned `pnpm db:migrate` is not supported yet.
 
-**Rollback:** Docker Compose does not keep the old image by default. Before upgrading, tag the current image or snapshot the `pgdata` volume so you have a restore point.
+Before upgrading production, snapshot the Postgres volume or take a SQL backup.
 
-## Licence & What's Not in v1
-
-Deft is licensed under the **Business Source License 1.1**. You may use, modify, and distribute Deft freely for any internal purpose. You may **not** offer Deft as a hosted or managed service to third parties. The licence converts to Apache 2.0 four years after each release. See [LICENSE](../LICENSE) for the full text.
-
-**Not included in self-hosted v1:**
+## What's Not In Self-Hosted v1
 
 - Managed hosting or one-click cloud deployments
-- A skills/agent marketplace or plugin registry
-- Gateway push (outbound webhooks from Deft to external services)
-- Per-org spend caps or usage billing
 - Multi-org / multi-tenant mode
+- Email delivery for invites or password resets
+- Native Slack/Gmail/GitHub OAuth promises
+- Managed agent runtime provisioning

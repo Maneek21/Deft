@@ -65,7 +65,9 @@ export const env = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
-  OLLAMA_URL: process.env.OLLAMA_URL || 'http://localhost:11434',
+  // Empty by default so a copied .env.example does not make fresh installs
+  // look AI-ready when no local Ollama server is actually running.
+  OLLAMA_URL: process.env.OLLAMA_URL || '',
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || 'deft-dev-encryption-key-32ch',
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || '',
   GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET || '',
