@@ -50,7 +50,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-grid-layout": "^1.5.3",
-    "react-markdown": "^9.1.0",
+    "react-markdown": "^10.1.0",
     "react-resizable": "^4.0.1",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
