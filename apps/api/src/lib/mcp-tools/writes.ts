@@ -752,7 +752,10 @@ export type SendMessageTarget =
 
 export type SendMessageArgs = {
   caller_employee_slug: string;
-  target: SendMessageTarget;
+  target?: SendMessageTarget;
+  space_id?: string;
+  thread_id?: string;
+  user_id?: string;
   content: string;
 };
 
@@ -771,7 +774,14 @@ export async function sendMessage(
 ): Promise<ToolResult> {
   if (!args.content?.trim()) return errorResult('send_message requires content');
 
-  const { target, content } = args;
+  const { content } = args;
+  const target = args.target
+    ?? (args.space_id ? { space_id: args.space_id } : null)
+    ?? (args.thread_id ? { thread_id: args.thread_id } : null)
+    ?? (args.user_id ? { user_id: args.user_id } : null);
+  if (!target) {
+    return errorResult('send_message: target must include space_id, thread_id, or user_id');
+  }
 
   // Resolve target → { spaceId, parentId? } so the rest is uniform.
   let spaceId: string;

@@ -13,6 +13,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
+import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId } = job.data;
@@ -84,7 +85,8 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
     // inbox. Independent of the lead-notification path below so it
     // still fires for users with no in-progress tasks.
     try {
-      const draftSnippet = content.length > 80 ? content.slice(0, 80) + '…' : content;
+      const plainContent = toPlainText(content);
+      const draftSnippet = truncatePlainText(plainContent, 80);
       await db.insert(agentActions).values({
         org_id: orgId,
         user_id: userId,
@@ -92,7 +94,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         message_id: messageId,
         params: {
           title: `Blocker: ${draftSnippet}`,
-          description: content,
+          description: plainContent,
           source_message_id: messageId,
           source_space_id: spaceId,
         } as any,
@@ -111,8 +113,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
     }
 
     // Truncate content for notification body
-    const contentSnippet =
-      content.length > 120 ? content.slice(0, 120) + '...' : content;
+    const contentSnippet = truncatePlainText(toPlainText(content), 120);
 
     for (const task of userTasks) {
       const taskIdentifier = `${task.project_prefix}-${task.number}`;

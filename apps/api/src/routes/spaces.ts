@@ -2,13 +2,31 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { spaces, spaceMembers, users, messages } from '@deft/db/schema';
+import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
 import { getIO } from '../socket.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
+import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 export const spaceRoutes = new Hono();
 
 const VALID_SPACE_TYPES = ['public', 'private', 'dm', 'group_dm'] as const;
+
+function visibleLiveSpaceMemberForOrg(orgId: string) {
+  return sql`
+    (
+      ${users.kind} <> 'agent'
+      OR ${users.email} = ${DEFTY_EMAIL}
+      OR EXISTS (
+        SELECT 1
+        FROM ${agentEmployees}
+        WHERE ${agentEmployees.user_id} = ${users.id}
+          AND ${agentEmployees.org_id} = ${orgId}
+          AND ${agentEmployees.is_active} = true
+          AND ${agentEmployees.is_deleted} = false
+      )
+    )
+  `;
+}
 
 const createSpaceSchema = z.object({
   name: z.string().min(1),
@@ -43,6 +61,19 @@ spaceRoutes.post('/', async (c) => {
     // Group DM semantics: same set of people = same conversation.
     if ((type === 'dm' || type === 'group_dm') && user_ids && user_ids.length > 0) {
       const targetSet = new Set<string>([user.id, ...user_ids.filter((id) => id !== user.id)]);
+      const visibleTargets = await db.select({ id: users.id })
+        .from(orgMembers)
+        .innerJoin(users, eq(orgMembers.user_id, users.id))
+        .where(and(
+          eq(orgMembers.org_id, user.org_id),
+          eq(orgMembers.is_active, true),
+          inArray(users.id, [...targetSet]),
+          visibleLiveSpaceMemberForOrg(user.org_id),
+        ));
+      if (visibleTargets.length !== targetSet.size) {
+        return c.json({ error: 'All DM members must be active members of this org', code: 'INVALID_MEMBER' }, 400);
+      }
+
       // 1:1 dm requires exactly the caller + one other; group_dm requires >= 3 members.
       const expectedSize = targetSet.size;
       const candidateSpaces = await db.select({ space_id: spaceMembers.space_id })
@@ -149,7 +180,16 @@ spaceRoutes.get('/', async (c) => {
         user_id: spaceMembers.user_id,
       })
         .from(spaceMembers)
-        .where(inArray(spaceMembers.space_id, dmSpaceIds));
+        .innerJoin(users, eq(spaceMembers.user_id, users.id))
+        .innerJoin(orgMembers, and(
+          eq(orgMembers.user_id, users.id),
+          eq(orgMembers.org_id, user.org_id),
+        ))
+        .where(and(
+          inArray(spaceMembers.space_id, dmSpaceIds),
+          eq(orgMembers.is_active, true),
+          visibleLiveSpaceMemberForOrg(user.org_id),
+        ));
       for (const row of memberRows) {
         const existing = memberIdsBySpace.get(row.space_id) ?? [];
         existing.push(row.user_id);
@@ -320,7 +360,10 @@ spaceRoutes.get('/:id/members', async (c) => {
     })
       .from(spaceMembers)
       .innerJoin(users, eq(spaceMembers.user_id, users.id))
-      .where(eq(spaceMembers.space_id, spaceId));
+      .where(and(
+        eq(spaceMembers.space_id, spaceId),
+        visibleLiveSpaceMemberForOrg(user.org_id),
+      ));
 
     return c.json(members);
   } catch (err) {
@@ -353,6 +396,20 @@ spaceRoutes.post('/:id/members', async (c) => {
 
     const isMember = await requireSpaceMembership(spaceId, user.id);
     if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
+    const [targetMember] = await db.select({ id: users.id })
+      .from(orgMembers)
+      .innerJoin(users, eq(orgMembers.user_id, users.id))
+      .where(and(
+        eq(orgMembers.org_id, user.org_id),
+        eq(orgMembers.is_active, true),
+        eq(orgMembers.user_id, user_id),
+        visibleLiveSpaceMemberForOrg(user.org_id),
+      ))
+      .limit(1);
+    if (!targetMember) {
+      return c.json({ error: 'Member not found or inactive', code: 'MEMBER_NOT_FOUND' }, 404);
+    }
 
     // Check if already a member
     const [existing] = await db.select()

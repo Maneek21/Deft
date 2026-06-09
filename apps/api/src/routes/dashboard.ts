@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, desc, sql, lt, gte, inArray, count } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions } from '@deft/db/schema';
+import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
 import { getIO } from '../socket.js';
 import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
 
@@ -28,6 +28,8 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.assignee_id, user.id),
         eq(tasks.is_deleted, false),
         eq(tasks.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
         gte(tasks.due_date, todayStart),
         lt(tasks.due_date, todayEnd),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
@@ -46,6 +48,8 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.assignee_id, user.id),
         eq(tasks.is_deleted, false),
         eq(tasks.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
         gte(tasks.due_date, todayEnd),
         lt(tasks.due_date, weekEnd),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
@@ -64,6 +68,8 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.assignee_id, user.id),
         eq(tasks.is_deleted, false),
         eq(tasks.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
         lt(tasks.due_date, todayStart),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
       ))
@@ -83,6 +89,8 @@ dashboardRoutes.get('/', async (c) => {
         eq(tasks.status, 'in_progress'),
         eq(tasks.is_deleted, false),
         eq(tasks.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
       ))
       .orderBy(tasks.priority);
 
@@ -100,6 +108,8 @@ dashboardRoutes.get('/', async (c) => {
       .where(and(
         eq(tasks.org_id, user.org_id),
         eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
         sql`${tasks.status} NOT IN ('done', 'cancelled')`,
         sql`(${tasks.assignee_id} = ${user.id} OR ${tasks.id} IN (SELECT ${taskAssignees.task_id} FROM ${taskAssignees} WHERE ${taskAssignees.user_id} = ${user.id}))`,
       ))
@@ -179,9 +189,12 @@ dashboardRoutes.get('/', async (c) => {
       .from(taskActivity)
       .leftJoin(users, eq(taskActivity.user_id, users.id))
       .innerJoin(tasks, eq(taskActivity.task_id, tasks.id))
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
       .where(and(
         eq(tasks.org_id, user.org_id),
         eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+        eq(projects.is_archived, false),
       ))
       .orderBy(desc(taskActivity.created_at))
       .limit(15);
@@ -195,7 +208,11 @@ dashboardRoutes.get('/', async (c) => {
         })
           .from(tasks)
           .innerJoin(projects, eq(tasks.project_id, projects.id))
-          .where(inArray(tasks.id, actTaskIds))
+          .where(and(
+            inArray(tasks.id, actTaskIds),
+            eq(projects.is_deleted, false),
+            eq(projects.is_archived, false),
+          ))
       : [];
     const taskMap = new Map(actTasks.map(t => [t.id, t]));
 
@@ -219,6 +236,7 @@ dashboardRoutes.get('/', async (c) => {
       .where(and(
         eq(projects.org_id, user.org_id),
         eq(projects.is_archived, false),
+        eq(projects.is_deleted, false),
       ));
 
     const projectStats = [];
@@ -242,6 +260,42 @@ dashboardRoutes.get('/', async (c) => {
     const [notifCount] = await db.select({ count: sql<number>`count(*)::int` })
       .from(notifications)
       .where(and(eq(notifications.user_id, user.id), eq(notifications.is_read, false)));
+
+    // 8b. Recent/pending agent activity for the cockpit surface. This keeps
+    // the dashboard useful even when the frontend only renders a subset.
+    const recentAgentActivity = await db.select({
+      id: agentActions.id,
+      action: agentActions.action,
+      source: agentActions.source,
+      approval_tier: agentActions.approval_tier,
+      approval_status: agentActions.approval_status,
+      created_at: agentActions.created_at,
+      executed_at: agentActions.executed_at,
+      error: agentActions.error,
+      employee_name: agentEmployees.name,
+      employee_slug: agentEmployees.slug,
+    })
+      .from(agentActions)
+      .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
+      .where(eq(agentActions.org_id, user.org_id))
+      .orderBy(desc(agentActions.created_at))
+      .limit(12);
+
+    const recentDecisions = await db.select({
+      id: wikiPages.id,
+      title: wikiPages.title,
+      slug: wikiPages.slug,
+      summary: wikiPages.summary,
+      updated_at: wikiPages.updated_at,
+    })
+      .from(wikiPages)
+      .where(and(
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.is_deleted, false),
+        eq(wikiPages.type, 'decision'),
+      ))
+      .orderBy(desc(wikiPages.updated_at))
+      .limit(5);
 
     // 9. Today's standup
     let standup: { summary: string; date: string } | null = null;
@@ -287,6 +341,43 @@ dashboardRoutes.get('/', async (c) => {
         .limit(10);
     } catch {}
 
+    const pendingAgentActions = recentAgentActivity.filter((a) => a.approval_status === 'pending');
+    const failedAgentActions = recentAgentActivity.filter((a) => a.error);
+    const attention = [
+      ...overdue.slice(0, 5).map((task) => ({
+        kind: 'overdue_task',
+        severity: task.priority === 'p0' || task.priority === 'p1' ? 'high' : 'medium',
+        title: task.title,
+        task_id: task.id,
+        project_name: task.project_name,
+        due_date: task.due_date,
+      })),
+      ...pendingAgentActions.slice(0, 5).map((action) => ({
+        kind: 'agent_approval',
+        severity: action.approval_tier === 'full' ? 'high' : 'medium',
+        title: `${action.employee_name || 'Agent'} needs approval: ${action.action}`,
+        action_id: action.id,
+        employee_slug: action.employee_slug,
+        created_at: action.created_at,
+      })),
+      ...failedAgentActions.slice(0, 3).map((action) => ({
+        kind: 'agent_error',
+        severity: 'high',
+        title: `${action.employee_name || 'Agent'} action failed: ${action.action}`,
+        action_id: action.id,
+        employee_slug: action.employee_slug,
+        error: action.error,
+      })),
+      ...recentDecisions.slice(0, 3).map((decision) => ({
+        kind: 'recent_decision',
+        severity: 'info',
+        title: decision.title,
+        wiki_page_id: decision.id,
+        slug: decision.slug,
+        updated_at: decision.updated_at,
+      })),
+    ];
+
     return c.json({
       greeting: getGreeting(),
       date: now.toISOString(),
@@ -301,6 +392,9 @@ dashboardRoutes.get('/', async (c) => {
       projects: projectStats,
       unread_notifications: notifCount?.count || 0,
       calendar_events: calendarEvents,
+      agent_activity: recentAgentActivity,
+      recent_decisions: recentDecisions,
+      attention,
       github_activity: [],
     });
   } catch (err) {

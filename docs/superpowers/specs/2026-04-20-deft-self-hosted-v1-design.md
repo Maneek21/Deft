@@ -1,5 +1,7 @@
 # Deft self-hosted v1 — design
 
+> Status note, 2026-06-08: This historical design spec is superseded for product promises by `docs/self-hosted-v1-contract.md`. Keep this file as implementation history, but use the contract for current self-hosted v1 copy: provider-neutral AI, ICS calendars, MCP/BYOA external tools, and no native Slack/Gmail/GitHub/Google OAuth promise.
+
 **Reframe:** Deft is a self-hostable workplace that any MCP-speaking agent can work in. One native agent (Defty, the superintendent) lives inside Deft. Agent employees are BYOA — users run their own OpenClaw (or Claude Code, or Codex, or anything else speaking MCP) and point it at Deft's MCP server.
 
 **Goal of v1:** `docker compose up` and have a working installation in 5 minutes. Connect an agent in the next 5. Everything else is polish.
@@ -13,7 +15,7 @@
 ```bash
 git clone github.com/deft/deft
 cd deft
-cp .env.example .env        # paste ANTHROPIC_API_KEY + optional OAuth + SMTP
+cp .env.example .env        # set required secrets; AI provider is optional
 docker compose up -d
 open http://localhost:3000
 ```
@@ -23,13 +25,13 @@ That's the whole first-run. Three services in compose: `web`, `api`, `postgres` 
 First-run UI walks: admin user → "my company" single-org install → Defty provisioned as the native agent employee → **Connect your agent** card on the dashboard as the last onboarding step.
 
 ### `.env.example` must include and document
-- `ANTHROPIC_API_KEY` — for Defty + native classifier
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `OLLAMA_URL` - optional AI provider configuration
 - `DATABASE_URL` — defaults to the bundled Postgres
-- `NEXT_PUBLIC_APP_URL` — for OAuth redirect + CORS
+- `NEXT_PUBLIC_APP_URL` - for invite links and CORS
 - `BETTER_AUTH_SECRET` — rotate-per-install
 - `ENCRYPTION_KEY` — for `connected_accounts` token storage
 - `RESEND_API_KEY` — optional; without it, invites show the temp password in the UI
-- Optional OAuth: `GOOGLE_CLIENT_ID`/SECRET, `GITHUB_APP_*`, Slack, etc. Each optional — missing = feature disabled gracefully.
+- External tools are not managed through native OAuth in self-hosted v1; use ICS for calendars and MCP/BYOA for SaaS tools.
 
 ### Upgrades
 ```

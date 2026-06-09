@@ -48,59 +48,75 @@ function slugify(title: string): string {
 wikiRoutes.get('/', async (c) => {
   try {
     const user = c.get('user');
-    const query = c.req.query('q');
+    const query = c.req.query('q')?.trim();
     const typeFilter = c.req.query('type');
     const scopeFilter = c.req.query('scope');
     const page = Math.max(1, parseInt(c.req.query('page') || '1'));
     const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
     const offset = (page - 1) * limit;
 
-    const conditions: any[] = [
+    const baseConditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
       visibleWikiPageCondition(user.id),
     ];
 
     if (typeFilter && ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(typeFilter)) {
-      conditions.push(eq(wikiPages.type, typeFilter as any));
+      baseConditions.push(eq(wikiPages.type, typeFilter as any));
     }
 
     if (scopeFilter && ['org', 'space', 'user'].includes(scopeFilter)) {
-      conditions.push(eq(wikiPages.scope, scopeFilter as any));
+      baseConditions.push(eq(wikiPages.scope, scopeFilter as any));
     }
 
-    // Full-text search with ts_rank, fallback to ilike
-    const useFullText = !!query;
-    if (query) {
-      conditions.push(
-        sql`search_vector @@ plainto_tsquery('english', ${query})`,
-      );
-    }
+    const ftsCondition = query
+      ? sql`search_vector @@ websearch_to_tsquery('english', ${query})`
+      : null;
+    const fallbackPattern = query ? `%${query}%` : null;
+    const fallbackSlugPattern = query ? `%${query.toLowerCase().replace(/\s+/g, '-')}%` : null;
+    const fallbackCondition = query && fallbackPattern && fallbackSlugPattern
+      ? or(
+          ilike(wikiPages.title, fallbackPattern),
+          ilike(wikiPages.summary, fallbackPattern),
+          ilike(wikiPages.content, fallbackPattern),
+          ilike(wikiPages.slug, fallbackSlugPattern),
+        )
+      : null;
 
-    const pages = await db.select({
-      id: wikiPages.id,
-      type: wikiPages.type,
-      scope: wikiPages.scope,
-      title: wikiPages.title,
-      slug: wikiPages.slug,
-      summary: wikiPages.summary,
-      metadata: wikiPages.metadata,
-      confidence: wikiPages.confidence,
-      version: wikiPages.version,
-      space_id: wikiPages.space_id,
-      created_at: wikiPages.created_at,
-      updated_at: wikiPages.updated_at,
-      ...(useFullText ? { rank: sql<number>`ts_rank(search_vector, plainto_tsquery('english', ${query}))` } : {}),
-    })
-      .from(wikiPages)
-      .where(and(...conditions))
-      .orderBy(
-        ...(useFullText
-          ? [sql`ts_rank(search_vector, plainto_tsquery('english', ${query})) DESC`, desc(wikiPages.confidence)]
-          : [desc(wikiPages.confidence), desc(wikiPages.updated_at)])
-      )
-      .limit(limit)
-      .offset(offset);
+    const fetchPageBatch = async (conditions: any[], useFullText: boolean) => db.select({
+        id: wikiPages.id,
+        type: wikiPages.type,
+        scope: wikiPages.scope,
+        title: wikiPages.title,
+        slug: wikiPages.slug,
+        summary: wikiPages.summary,
+        metadata: wikiPages.metadata,
+        confidence: wikiPages.confidence,
+        version: wikiPages.version,
+        space_id: wikiPages.space_id,
+        created_at: wikiPages.created_at,
+        updated_at: wikiPages.updated_at,
+        ...(useFullText && query ? { rank: sql<number>`ts_rank(search_vector, websearch_to_tsquery('english', ${query}))` } : {}),
+      })
+        .from(wikiPages)
+        .where(and(...conditions))
+        .orderBy(
+          ...(useFullText && query
+            ? [sql`ts_rank(search_vector, websearch_to_tsquery('english', ${query})) DESC`, desc(wikiPages.confidence)]
+            : [desc(wikiPages.confidence), desc(wikiPages.updated_at)])
+        )
+        .limit(limit)
+        .offset(offset);
+
+    let conditions = ftsCondition ? [...baseConditions, ftsCondition] : baseConditions;
+    let pages = await fetchPageBatch(conditions, !!ftsCondition);
+    let searchMode = ftsCondition ? 'full_text' : 'list';
+
+    if (query && pages.length === 0 && fallbackCondition) {
+      conditions = [...baseConditions, fallbackCondition];
+      pages = await fetchPageBatch(conditions, false);
+      searchMode = 'fallback';
+    }
 
     // Get link counts for each page
     const pageIds = pages.map(p => p.id);
@@ -140,6 +156,7 @@ wikiRoutes.get('/', async (c) => {
       total: Number(countResult?.count || 0),
       page,
       limit,
+      search_mode: searchMode,
     });
   } catch (err) {
     console.error('Failed to fetch wiki pages:', err);

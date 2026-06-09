@@ -1,15 +1,88 @@
 // Routes: Manager tools — 1:1 prep, team health, manager settings
 import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   oneonePreps,
   managerSettings,
   teamHealthSnapshots,
+  users,
+  orgMembers,
+  agentEmployees,
 } from '@deft/db/schema';
 import { generateOneOnePrep } from '../services/oneone-prep.js';
+import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
 export const managerRoutes = new Hono();
+
+function visibleManagerMemberForOrg(orgId: string) {
+  return sql`
+    (
+      ${users.kind} <> 'agent'
+      OR ${users.email} = ${DEFTY_EMAIL}
+      OR EXISTS (
+        SELECT 1
+        FROM ${agentEmployees}
+        WHERE ${agentEmployees.user_id} = ${users.id}
+          AND ${agentEmployees.org_id} = ${orgId}
+          AND ${agentEmployees.is_active} = true
+          AND ${agentEmployees.is_deleted} = false
+      )
+    )
+  `;
+}
+
+async function sanitizeTeamHealthSnapshot(snapshot: typeof teamHealthSnapshots.$inferSelect, orgId: string) {
+  const teamData = (snapshot.team_data ?? {}) as any;
+  const cards = Array.isArray(teamData.healthCards) ? teamData.healthCards : [];
+  if (cards.length === 0) return snapshot;
+
+  const visibleRows = await db
+    .select({ id: users.id, name: users.name })
+    .from(orgMembers)
+    .innerJoin(users, eq(orgMembers.user_id, users.id))
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.is_active, true),
+      visibleManagerMemberForOrg(orgId),
+    ));
+  const visibleIds = new Set(visibleRows.map((row) => row.id));
+  const visibleNames = new Set(visibleRows.map((row) => row.name).filter(Boolean));
+
+  const filteredCards = cards.filter((card: any) => visibleIds.has(card.userId));
+  const hiddenNames = new Set(
+    cards
+      .filter((card: any) => !visibleIds.has(card.userId) && typeof card.name === 'string')
+      .map((card: any) => card.name),
+  );
+
+  const wins = Array.isArray(teamData.wins)
+    ? teamData.wins.filter((win: unknown) => {
+        if (typeof win !== 'string') return false;
+        for (const name of hiddenNames) {
+          if (win.startsWith(`${name} `)) return false;
+        }
+        return [...visibleNames].some((name) => win.startsWith(`${name} `));
+      })
+    : [];
+  const actionItems = Array.isArray(teamData.actionItems)
+    ? teamData.actionItems.filter((item: any) => visibleIds.has(item.userId))
+    : [];
+  const green = filteredCards.filter((card: any) => card.status === 'green').length;
+  const yellow = filteredCards.filter((card: any) => card.status === 'yellow').length;
+  const red = filteredCards.filter((card: any) => card.status === 'red').length;
+
+  return {
+    ...snapshot,
+    team_data: {
+      ...teamData,
+      healthCards: filteredCards,
+      wins,
+      actionItems,
+      summary: `Filtered to ${filteredCards.length} active team member(s): ${green} green, ${yellow} yellow, ${red} red. Hidden deleted or inactive agent test employees are excluded from this live view.`,
+    },
+  };
+}
 
 // POST /api/manager/oneone-prep — generate a 1:1 prep for a report
 managerRoutes.post('/oneone-prep', async (c) => {
@@ -225,7 +298,7 @@ managerRoutes.get('/team-health', async (c) => {
       return c.json({ snapshot: null });
     }
 
-    return c.json({ snapshot });
+    return c.json({ snapshot: await sanitizeTeamHealthSnapshot(snapshot, user.org_id) });
   } catch (err) {
     console.error('Failed to get team health:', err);
     return c.json({ error: 'Failed to get team health', code: 'INTERNAL_ERROR' }, 500);

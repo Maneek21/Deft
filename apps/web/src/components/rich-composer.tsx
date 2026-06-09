@@ -166,6 +166,7 @@ export function RichComposer({
   const [showTaskAutocomplete, setShowTaskAutocomplete] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [showMentions, setShowMentions] = useState(false);
+  const [, setContentVersion] = useState(0);
   // Anchor (start of @) + end (current cursor) at the moment the mention
   // autocomplete opened. Captured in onUpdate so handleMentionSelect can
   // delete the correct range even if the editor has lost focus (clicking
@@ -250,6 +251,7 @@ export function RichComposer({
     onFocus: () => setFocused(true),
     onBlur: () => setFocused(false),
     onUpdate: ({ editor }) => {
+      setContentVersion((v) => v + 1);
       const { from } = editor.state.selection;
       const textBefore = editor.state.doc.textBetween(Math.max(0, from - 20), from);
 

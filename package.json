@@ -25,6 +25,7 @@
     "db:push-full": "pnpm --filter @deft/db push-full",
     "db:seed": "pnpm --filter @deft/db seed && pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts",
     "db:seed:demo": "pnpm --filter @deft/db seed:demo && pnpm --filter @deft/api exec tsx src/scripts/seed-platform-bundles.ts",
+    "db:seed:pilot": "pnpm db:seed:demo && pnpm --filter @deft/api exec tsx src/scripts/seed-pilot-workspace.ts",
     "db:studio": "pnpm --filter @deft/db studio",
     "dev": "pnpm -r --parallel dev",
     "dev:api": "pnpm --filter @deft/api dev",
@@ -32,7 +33,12 @@
     "lint": "pnpm -r lint",
     "pilot:dev": "tsx scripts/pilot-preflight.ts --start",
     "pilot:clean-agent-queue": "tsx scripts/agent-demo-queue-cleanup.ts",
+    "pilot:cracks:battery": "node scripts/pilot-cracks-clearance-battery.mjs",
+    "pilot:hygiene": "tsx scripts/pilot-workspace-hygiene.ts",
     "pilot:preflight": "tsx scripts/pilot-preflight.ts",
+    "pilot:preflight:strict": "tsx scripts/pilot-preflight.ts --strict",
+    "pilot:reset": "pnpm db:push-full && pnpm db:seed:pilot && pnpm pilot:preflight",
+    "pilot:swarm": "node scripts/pilot-multi-user-swarm.mjs",
     "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {

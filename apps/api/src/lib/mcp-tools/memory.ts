@@ -46,6 +46,43 @@ export async function memoryRecall(
   const scope = args.scope ?? 'all';
 
   try {
+    const terms = query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length >= 3)
+      .slice(0, 8);
+    const exactTermMatches = terms.length > 0
+      ? await db
+          .select({
+            slug: wikiPages.slug,
+            title: wikiPages.title,
+            summary: wikiPages.summary,
+            content: wikiPages.content,
+            type: wikiPages.type,
+            agent_employee_id: wikiPages.agent_employee_id,
+            updated_at: wikiPages.updated_at,
+          })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, ctx.org_id),
+            eq(wikiPages.is_deleted, false),
+            scope === 'own'
+              ? eq(wikiPages.agent_employee_id, ctx.employee_id)
+              : scope === 'org'
+                ? isNull(wikiPages.agent_employee_id)
+                : or(isNull(wikiPages.agent_employee_id), eq(wikiPages.agent_employee_id, ctx.employee_id)),
+            ...terms.map((term) => {
+              const pattern = `%${term}%`;
+              return sql`(
+                lower(${wikiPages.title}) like ${pattern}
+                or lower(${wikiPages.summary}) like ${pattern}
+                or lower(${wikiPages.content}) like ${pattern}
+              )`;
+            }),
+          ))
+          .orderBy(desc(wikiPages.updated_at))
+          .limit(limit)
+      : [];
     // Fetch from the unified gateway — always pass agent_employee_id so
     // the two-tier employee+org split is applied inside fetchWiki.
     const contextResults = await retrieveContext({
@@ -74,7 +111,27 @@ export async function memoryRecall(
     // quote body text instead of only the summary. Flag pages whose content
     // exceeded the cap with `truncated: true`.
     const CONTENT_CAP = 2000;
-    const result = filtered.map((r) => {
+    const seenSlugs = new Set<string>();
+    const exactResults = exactTermMatches.map((row) => {
+      seenSlugs.add(row.slug);
+      const fullContent = row.content ?? '';
+      const truncated = fullContent.length > CONTENT_CAP;
+      return {
+        slug: row.slug,
+        title: row.title,
+        summary: row.summary ?? null,
+        content: truncated ? fullContent.slice(0, CONTENT_CAP) : fullContent,
+        truncated,
+        type: row.type ?? '',
+        confidence: 1.0,
+      };
+    });
+    const result = [...exactResults, ...filtered.filter((r) => {
+      const slug = (r.metadata?.slug as string) ?? '';
+      if (!slug || seenSlugs.has(slug)) return false;
+      seenSlugs.add(slug);
+      return true;
+    }).map((r) => {
       const fullContent = r.content ?? '';
       const truncated = fullContent.length > CONTENT_CAP;
       return {
@@ -86,7 +143,7 @@ export async function memoryRecall(
         type: (r.metadata?.type as string) ?? '',
         confidence: r.confidence ?? 1.0,
       };
-    });
+    })].slice(0, limit);
 
     return textResult(result);
   } catch (err) {

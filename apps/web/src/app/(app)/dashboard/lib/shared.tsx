@@ -8,6 +8,7 @@
 import type { Activity, AgentActivity } from './facade';
 import { CheckCircle2, MessageSquare, FileText, CalendarDays, Zap } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
+import { stripHtml } from '@/lib/strip-html';
 
 export const PRI_COLOR: Record<string, string> = {
   p0: 'var(--status-red)',
@@ -39,7 +40,7 @@ export function fmtActivityParts(a: Activity): { who: string; verb: string; task
 export function fmtAgentAction(a: AgentActivity): string {
   const p = (a.params as Record<string, any>) || {};
   switch (a.action) {
-    case 'create_task': return `Created task \u201c${p.title}\u201d in ${p.project_name}`;
+    case 'create_task': return `Created task \u201c${stripHtml(p.title)}\u201d in ${p.project_name}`;
     case 'update_task_status': return `Moved ${p.task_identifier} to ${(p.new_status || '').replace(/_/g, ' ')}`;
     case 'assign_task': return `Assigned ${p.task_identifier} to ${p.assignee_name}`;
     case 'post_message': return `Posted in #${p.space_name}`;

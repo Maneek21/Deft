@@ -24,7 +24,7 @@ Get to first login in under 5 minutes.
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
-- (Optional) An [Anthropic API key](https://console.anthropic.com) for AI features — chat and tasks work without one
+- (Optional) Any supported AI provider key, or a local Ollama server, for AI features. Chat and tasks work without one
 
 ### Steps
 
@@ -36,14 +36,14 @@ cd deft
 cp .env.example .env
 ```
 
-Open `.env` and set the three required values (plus the optional AI key if you want AI features):
+Open `.env` and set the three required values. AI keys are optional and can be added later in Settings -> AI.
 
 | Variable | Required? | How to get it |
 |---|---|---|
 | `POSTGRES_PASSWORD` | **Required** | Any strong string — `openssl rand -hex 32` |
 | `JWT_SECRET` | **Required** | `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | **Required** | `openssl rand -hex 32` (run it again) |
-| `ANTHROPIC_API_KEY` | Optional | [console.anthropic.com](https://console.anthropic.com) — only for AI features; can also be set per-org in Settings → AI |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional | Configure one provider for AI features; can also be set per-org in Settings -> AI |
 
 ```bash
 # 2. Start the stack (Postgres + Redis + Deft)
@@ -109,7 +109,7 @@ deft/
 | Database | PostgreSQL 16 + Drizzle ORM |
 | Real-time | Socket.io + Redis adapter |
 | Background Jobs | BullMQ + Redis |
-| AI | Anthropic Claude API (Sonnet for reasoning, Haiku for classification) |
+| AI | Provider-neutral BYOK: Anthropic, OpenAI, OpenRouter, or Ollama |
 | Auth | JWT + refresh tokens |
 | File Storage | Local disk (R2-ready) |
 | Monorepo | pnpm workspaces |
@@ -128,7 +128,7 @@ The agent has **direct SQL access** to your data — no API middleman. It can:
 
 Every write action goes through an approval flow. The user sees what the agent wants to do, approves or rejects, and can undo after execution.
 
-**Bring your own API key.** Self-hosted, your data stays with you.
+**Bring your own provider.** Self-hosted Deft can run with Anthropic, OpenAI, OpenRouter, or local Ollama. Without a provider, AI features are disabled but the core workspace still works.
 
 ## Features
 
@@ -143,8 +143,8 @@ Every write action goes through an approval flow. The user sees what the agent w
 - Unread badges and mark-as-read
 
 ### Tasks
-- Kanban, List, Calendar, and Pipeline views — view mode driven by the project's attached skill
-- Skill-driven project config: statuses, priority vocab, custom fields, task templates
+- Kanban, List, Calendar, and Pipeline views
+- Fixed engineering workflow defaults: backlog, todo, in progress, in review, done, cancelled
 - Drag-and-drop across columns
 - Task detail panel with full editing
 - Emoji reactions on tasks
@@ -154,7 +154,6 @@ Every write action goes through an approval flow. The user sees what the agent w
 - Labels, due dates, assignments, recurrence (daily/weekly/biweekly/monthly)
 - Quick-create (press C)
 - Project archive + soft-delete with 7-day recovery
-- GitHub PR → Done on merge (parses `PREFIX-N` in PR title/body)
 
 ### Dashboard
 - Personalized greeting with morning pulse
@@ -178,7 +177,7 @@ See `.env.example` for all configuration options with inline documentation. Thre
 - `JWT_SECRET` — Secret for JWT signing (`openssl rand -hex 32`)
 - `JWT_REFRESH_SECRET` — Secret for refresh tokens (`openssl rand -hex 32`)
 
-`ANTHROPIC_API_KEY` is optional — the app boots without it and AI features stay disabled until a key is configured (via env or per-org in Settings → AI).
+AI provider keys are optional. The app boots without Anthropic, OpenAI, OpenRouter, or Ollama; AI features stay disabled until a provider is configured via env or per-org in Settings -> AI.
 
 Full reference: [docs/self-hosting.md#environment-variables-reference](docs/self-hosting.md#environment-variables-reference)
 

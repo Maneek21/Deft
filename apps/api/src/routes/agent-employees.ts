@@ -1449,6 +1449,10 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       .set({ is_active: false, is_deleted: true, deleted_at: new Date() })
       .where(eq(agentEmployees.id, id));
     await db.update(users).set({ is_agent: false }).where(eq(users.id, existing.user_id));
+    await db
+      .update(orgMembers)
+      .set({ is_active: false, updated_at: new Date() })
+      .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
 
     // Expire pending agent actions
     await db

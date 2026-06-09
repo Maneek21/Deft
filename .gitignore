@@ -93,3 +93,13 @@ screenshots/
 Logos/
 stitch-reference/
 .demo-private-keep/
+
+# Generated local pilot/audit reports.
+# Keep reusable runners in scripts/ and leave HTML/JSON/screenshots local.
+reports/*.html
+reports/*.json
+reports/*.md
+reports/*.mjs
+reports/*.png
+reports/screenshots/
+reports/*/

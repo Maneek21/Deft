@@ -1,5 +1,7 @@
 # Chat — Competitive Analysis
 
+> Status note, 2026-06-09: This is a historical comparison against Slack-style team chat. It should not be used as current buyer-facing copy or as a promise to ship native Slack/Gmail/GitHub integrations. Current self-hosted v1 positioning is native Deft workspace + ICS calendars + BYOA/MCP employees.
+
 ## Current State
 
 Deft's chat is surprisingly feature-rich. It has most of what Slack offers — threads, reactions, mentions, pins, bookmarks, scheduled messages, audio clips, huddles, DMs, file uploads, link previews, typing indicators, presence, rich text formatting, slash commands, and an integrated AI agent. This is not a prototype — it's a functional team communication tool.

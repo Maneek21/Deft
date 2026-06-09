@@ -86,6 +86,7 @@ function Hero({
   const inProgressN = core?.in_progress.length ?? 0;
   const doneThisWeek = (core?.due_this_week.filter(t => t.status === 'done').length ?? 0)
     + (core?.due_today.filter(t => t.status === 'done').length ?? 0);
+  const attention = core?.attention?.slice(0, 3) ?? [];
 
   const Stat = ({ n, color }: { n: number; color: string }) => (
     <span style={{
@@ -167,6 +168,54 @@ function Hero({
               </>
             )}
           </p>
+          {attention.length > 0 && (
+            <div
+              aria-label="Workspace attention"
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginTop: 16,
+                maxWidth: 760,
+              }}
+            >
+              {attention.map((item) => (
+                <Link
+                  key={`${item.kind}:${item.href}:${item.title}`}
+                  href={item.href}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    minHeight: 34,
+                    maxWidth: '100%',
+                    borderRadius: 8,
+                    padding: '7px 10px',
+                    border: '1px solid var(--border-default)',
+                    background: item.severity === 'critical'
+                      ? 'rgba(239, 68, 68, 0.08)'
+                      : item.severity === 'warning'
+                        ? 'rgba(245, 158, 11, 0.08)'
+                        : 'color-mix(in srgb, var(--bg-surface) 90%, white 3%)',
+                    color: 'var(--text-secondary)',
+                    fontSize: 12,
+                    lineHeight: 1.25,
+                    textDecoration: 'none',
+                  }}
+                  title={item.title}
+                >
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {item.title}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         <div

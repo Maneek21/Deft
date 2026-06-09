@@ -81,7 +81,7 @@ DND mode toggle. Suppresses notifications when active.
 Per-space collaborative canvas using TipTap JSON document storage. Real-time updates via Socket.io (`canvas:updated` event). Track last editor + edit timestamp. Auto-create canvas when first opened in a space.
 
 ### Space Recaps
-AI-summarized recap of unread or recent messages in a space. Uses Claude API for intelligent summarization. Summarizes last 50 messages or unread messages on demand.
+AI-summarized recap of unread or recent messages in a space. Uses the configured workspace AI provider when available; falls back to a simple non-AI summary when no provider is configured.
 
 ### Space Management
 Create spaces: public, private, DM, group DM. Space member panel (list, add, remove). Mute spaces. Archive/unarchive. Default space (#general) created on org signup. Private spaces with invite-only access.
@@ -159,51 +159,24 @@ The nudge-check worker posts agent-authored comments on stalled or overdue tasks
 ### Project Archive + Soft-Delete
 Per-project settings modal exposes Archive (hide from lists, keep tasks active) and Delete (soft-delete with a 7-day recovery window). Deleted projects are restorable from Settings → Recently deleted until the window closes (Task 5.8).
 
-### GitHub PR → Done
-When GitHub sync (polling, not webhook) sees a PR transition to `merged`, it parses `PREFIX-N` task refs in the PR title + body and moves each referenced task (in `todo`, `in_progress`, or `in_review`) to `done`, leaving an attribution comment linking the PR. Tasks already `done` or `cancelled` are never touched. Runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire (Task 5.6).
+### External tool automation
+Self-hosted v1 does not promise native GitHub, Slack, Gmail, or Google Calendar OAuth. Teams that need external tool automation should connect those tools through their own MCP servers or BYOA agent runtimes, then onboard the agent as a Deft employee. Legacy GitHub event/source code may remain for compatibility but is not a buyer-facing self-hosted v1 feature.
 
 ---
 
-## 3. Skills Primitive (unified agent + project capabilities)
+## 3. Skills Primitive
 
-Deft ships a single `skills` table that unifies two previously separate primitives (agent capability packs + project workflow templates) into one resource. A skill carries both an `agent_config` JSONB (capability packs, triggers, tools, prompt additions) and a `project_config` JSONB (statuses, priority vocab, default view, custom fields, task templates, allowed transitions). Either half can be empty — a skill can be agent-only, project-only, or both.
+Deft ships a `skills` table for agent capabilities and first-party bundles. Project-level customization through `project_skills` / `project_config` was retired; projects now use fixed engineering defaults. Agent employees can install bundled, marketplace, or org-authored skills for prompt additions, tool access, triggers, and heartbeat guidance.
 
-### Three Source Tiers
-- **`bundled`** — first-party skills shipped with Deft. `org_id IS NULL`. Upserted idempotently by `seed-bundled-skills.ts` against a partial unique index on `(source, COALESCE(org_id,''), slug)`.
-- **`marketplace`** — installable catalog rows (future: remote registry). Discoverable via the Skills Marketplace browser. Include OpenClaw markdown import for installing a skill from a `.md` manifest.
-- **`org`** — tenant-authored skills. Scoped to a single `org_id`. Authored in the Skills library page.
+### Source Tiers
+- **`bundled`** - first-party skills shipped with Deft.
+- **`marketplace`** - installable catalog rows for future ecosystem use.
+- **`org`** - tenant-authored skills scoped to one workspace.
 
-### 9 Day-One Bundled Skills
-**Capability-pack skills** (agent-only, one per available capability pack from `CAPABILITY_PACKS`): `deft-workspace`, `tasks-core`, `google-calendar` (calendar feeds compatibility slug), and `knowledge-wiki`. Each grants its matching pack slug and leaves `project_config` empty.
-
-**3 project-workflow skills** (project-only):
-- `engineering` — statuses `backlog/todo/in_progress/in_review/done/cancelled`, numbered priorities `p0/p1/p2/p3`, kanban default view, the 9 Phase-3 task tools (`comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`) pre-wired.
-- `marketing-campaign` — named priorities `High/Medium/Low`, calendar view default, campaign-oriented custom fields (channel, budget, launch_date, etc.).
-- `sales-pipeline` — temperature priorities `Hot/Warm/Cold`, pipeline view default, deal-oriented custom fields (stage, ACV, probability, etc.).
-
-### Junction Tables
-- `agent_employee_skills` — which skills an employee has installed. JIT-install on agent invocation re-provisions OpenClaw instances with the updated skill manifest.
-- `project_skills` — which skills a project has attached, with ordering.
-
-### Multi-Skill Per Project (first-attached-wins)
-A project can attach multiple skills. The UI resolver walks the ordered `project_skills` list and returns the first non-null value for each field — so attaching `engineering` + a lightweight company-specific skill lets a team override individual fields without cloning the whole template.
-
-### Skill Source Drives UX
-- **Bundled skills** cannot be edited or deleted by orgs. They update only via server redeploy.
-- **Marketplace skills** can be installed, updated (opt-in adoption when a new version ships — in-app notification prompts the user), and uninstalled.
-- **Org skills** are fully editable in the Skills library page.
-
-### Trigger Conflict Resolution
-Skills can declare triggers (e.g. `cron:standup`). Triggers are unique per-org across employees. On install, if a conflict is detected the UI prompts the user to reassign — the skill can still install, but the existing owner has to release the trigger first.
-
-### Version Update Notifications
-When a new version of an installed skill lands (bundled redeploy or marketplace update), affected orgs get an in-app notification with opt-in adoption. Prevents silent behaviour drift.
-
-### Skills Library + Marketplace Browser
-`/skills` page: library of installed skills, marketplace browser, OpenClaw markdown import, retry-provision button for stuck installs.
-
-### Unified Agent Deploy Wizard
-Agent deploy flow uses the skill picker for capability packs — the `capability_packs[]` array is gone (migration 0038) and `TEMPLATE_DEFAULT_PACKS` constant was removed. Everything flows through skills.
+### Current self-hosted v1 stance
+- Deft Workspace, task tools, knowledge/wiki, calendar feed read context, and MCP/BYOA access are the supported path.
+- External SaaS tools such as GitHub, Slack, Gmail, Linear, and Notion should be connected inside the user's own agent runtime or MCP server.
+- Legacy slugs or enum values may remain for old data, but they should not be shown as native self-hosted v1 promises.
 
 ---
 
@@ -269,8 +242,6 @@ Organized in 5 categories:
 **Calendar tools (auto-execute):**
 - `check_calendar` — view native Deft calendar events and imported ICS feed events
 
-**GitHub tools (auto-execute):**
-- `check_github_prs` — view pull requests by state
 
 **Write tools (require approval):**
 - `create_task` — new tasks in projects
@@ -291,7 +262,7 @@ Organized in 5 categories:
 - `get_burnout_risks` — members showing strain signals (manager-only, privacy-conscious)
 
 ### Three-Tier Approval System
-- **Auto-execute**: read-only tools, memory operations, calendar/GitHub reads
+- **Auto-execute**: read-only tools, memory operations, native/calendar-feed reads
 - **Quick-approve**: task creation, status updates, assignments (one-click approval card)
 - **Full-review**: multi-step plans, message posting, external writes (preview + edit)
 
@@ -324,7 +295,7 @@ Every chat message classified by Haiku for: intent (task_create, question, discu
 Responsive card-based dashboard (1 col mobile, 2 col tablet, 3 col desktop). Cards: Today (tasks due, span 2), Quick Stats (4-stat grid: overdue/due today/in progress/completed), Unread (space notifications), Projects (progress rings), Activity (recent feed), Calendar (mini widget with day bucketing), My Work (kanban-lite: todo/in_progress/in_review columns), Team (manager-only health cards), My Insights (personal metrics).
 
 ### AI Standup Generation
-Daily AI-generated standup using Claude. Gathers: status changes, new tasks, messages by space, active users, completed count, overdue count. Falls back to template-based summary if no API key. Auto-posts to default space as system message.
+Daily AI-generated standup using the configured AI provider. Gathers: status changes, new tasks, messages by space, active users, completed count, overdue count. Falls back to template-based summary if no API key. Auto-posts to default space as system message.
 
 ### Personal Insights
 Activity metrics: messages sent, tasks completed, active spaces. Expertise areas with scores. Top collaborators with interaction counts. Work patterns (behavioral analysis). Weekly pace/velocity (4-week trend).
@@ -363,7 +334,7 @@ Identifies stuck reviews, stalled tasks, review bottlenecks. Surfaces blockers i
 Maps expertise coverage across team. Identifies single points of failure (only one person knows X). Highlights well-covered vs. gap areas.
 
 ### Space Recap
-AI-summarized recap of unread or recent messages per space. On-demand generation via API. Uses Claude for intelligent summarization.
+AI-summarized recap of unread or recent messages per space. On-demand generation via API. Uses the configured AI provider for intelligent summarization.
 
 ### Weekly Digest
 Weekly org-wide summary for managers. Aggregates: velocity, task completion, decisions made, risks, wins. Delivered via background worker.
@@ -500,7 +471,7 @@ Complete audit trail of all user and agent actions. Tracks: actor (user or agent
 AES-256-GCM for sensitive OAuth tokens. Key derived via scrypt from env variable. IV + tag + ciphertext format.
 
 ### Multi-LLM Support
-Unified LLM router supporting 4 providers: Anthropic (Haiku for classify/summarize/extract, Sonnet for reasoning), OpenAI (GPT models with function calling), OpenRouter (compatible with OpenAI format), Ollama (local models for self-hosted). Per-org API key overrides. Token usage tracking.
+Unified LLM router supporting 4 providers: Anthropic, OpenAI, OpenRouter, and Ollama. Per-org API key overrides. Token usage tracking.
 
 ### Real-Time (Socket.io)
 Room-based broadcasting: org rooms, space rooms, user rooms, huddle rooms. JWT-authenticated WebSocket connections. 15+ event types for messages, typing, presence, notifications, reactions, threads, tasks, spaces, huddles, knowledge, canvas.
