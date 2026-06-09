@@ -82,7 +82,6 @@ app.use('*', secureHeaders({
 // Public routes
 app.use('/api/auth/*', authLimiter);
 app.route('/api/auth', authRoutes);
-app.route('/api/files', fileServingRoutes);
 
 // MCP server — own API key auth, mounted before auth middleware
 app.route('/mcp', mcpServerRoutes);
@@ -129,6 +128,7 @@ app.route('/api/inbox', inboxRoutes);
 app.route('/api/org', orgRoutes);
 app.route('/api/ics', icsRoutes);
 app.route('/api/upload', uploadRoutes);
+app.route('/api/files', fileServingRoutes);
 app.route('/api/members', memberRoutes);
 app.route('/api/projects', projectRoutes);
 app.route('/api/tasks', taskRoutes);

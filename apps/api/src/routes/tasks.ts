@@ -6,6 +6,8 @@ import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users,
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
@@ -101,14 +103,39 @@ async function getLabelsForTasks(taskIds: string[]) {
   return result;
 }
 
-// Helper: verify task exists and belongs to user's org, returns task or null
-async function getTaskForOrg(taskId: string, orgId: string) {
-  const [task] = await db.select()
+async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: string) {
+  const [task] = await db.select({
+    id: tasks.id,
+    org_id: tasks.org_id,
+    project_id: tasks.project_id,
+    number: tasks.number,
+    title: tasks.title,
+    description: tasks.description,
+    status: tasks.status,
+    priority: tasks.priority,
+    assignee_id: tasks.assignee_id,
+    created_by: tasks.created_by,
+    due_date: tasks.due_date,
+    start_date: tasks.start_date,
+    estimation: tasks.estimation,
+    is_template: tasks.is_template,
+    recurrence: tasks.recurrence,
+    recurrence_source_id: tasks.recurrence_source_id,
+    sort_order: tasks.sort_order,
+    source_message_id: tasks.source_message_id,
+    parent_task_id: tasks.parent_task_id,
+    is_deleted: tasks.is_deleted,
+    metadata: tasks.metadata,
+    created_at: tasks.created_at,
+    updated_at: tasks.updated_at,
+  })
     .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
     .where(
       and(
         eq(tasks.id, taskId),
         eq(tasks.org_id, orgId),
+        visibleTaskCondition(userId),
       )
     )
     .limit(1);
@@ -348,6 +375,7 @@ taskRoutes.get('/search', async (c) => {
             eq(tasks.is_deleted, false),
             eq(projects.prefix, prefix),
             eq(tasks.number, num),
+            visibleTaskCondition(user.id),
           )
         )
         .limit(20);
@@ -367,6 +395,7 @@ taskRoutes.get('/search', async (c) => {
             eq(tasks.org_id, user.org_id),
             eq(tasks.is_deleted, false),
             ilike(tasks.title, `%${q}%`),
+            visibleTaskCondition(user.id),
           )
         )
         .limit(20);
@@ -642,11 +671,8 @@ taskRoutes.get('/:id/watchers', async (c) => {
     const user = c.get('user');
     if (!user) return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
     const taskId = c.req.param('id');
-    const taskRow = await db.select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
-      .limit(1);
-    if (!taskRow[0]) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const taskRow = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!taskRow) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     const watchers = await db.select({
       id: taskWatchers.id,
       user_id: taskWatchers.user_id,
@@ -752,11 +778,8 @@ taskRoutes.get('/:id/assignees', async (c) => {
     const user = c.get('user');
     if (!user) return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
     const taskId = c.req.param('id');
-    const taskRow = await db.select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
-      .limit(1);
-    if (!taskRow[0]) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+    const taskRow = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!taskRow) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
     const assignees = await db.select({
       id: taskAssignees.id,
       user_id: taskAssignees.user_id,
@@ -811,6 +834,7 @@ taskRoutes.get('/:id', async (c) => {
           eq(tasks.id, taskId),
           eq(tasks.org_id, user.org_id),
           eq(tasks.is_deleted, false),
+          visibleTaskCondition(user.id),
         )
       )
       .limit(1);
@@ -917,7 +941,7 @@ taskRoutes.get('/:id/comments', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -962,7 +986,7 @@ taskRoutes.post('/:id/comments', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1047,7 +1071,7 @@ taskRoutes.get('/:id/activity', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1088,7 +1112,7 @@ taskRoutes.post('/:id/labels', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1130,7 +1154,7 @@ taskRoutes.delete('/:id/labels/:labelId', async (c) => {
     const taskId = c.req.param('id');
     const labelId = c.req.param('labelId');
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1504,7 +1528,7 @@ taskRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const existingTask = await getTaskForOrg(taskId, user.org_id);
+    const existingTask = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!existingTask) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1893,7 +1917,7 @@ taskRoutes.delete('/:id', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
-    const existingTask = await getTaskForOrg(taskId, user.org_id);
+    const existingTask = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!existingTask) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1937,7 +1961,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
-    const original = await getTaskForOrg(taskId, user.org_id);
+    const original = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!original) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -1992,7 +2016,7 @@ taskRoutes.get('/:id/dependencies', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -2105,12 +2129,12 @@ taskRoutes.post('/:id/dependencies', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const targetTask = await getTaskForOrg(parsed.data.target_task_id, user.org_id);
+    const targetTask = await getVisibleTaskForOrg(parsed.data.target_task_id, user.org_id, user.id);
     if (!targetTask) {
       return c.json({ error: 'Target task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -2166,7 +2190,7 @@ taskRoutes.delete('/:id/dependencies/:relationId', async (c) => {
     const taskId = c.req.param('id');
     const relationId = c.req.param('relationId');
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -2200,6 +2224,9 @@ taskRoutes.get('/:id/attachments', async (c) => {
     const user = c.get('user');
     const taskId = c.req.param('id');
 
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const results = await db.select({
       id: files.id,
       filename: files.filename,
@@ -2221,7 +2248,12 @@ taskRoutes.get('/:id/attachments', async (c) => {
 // GET /api/tasks/:id/wiki-links — get wiki pages linked to this task
 taskRoutes.get('/:id/wiki-links', async (c) => {
   try {
+    const user = c.get('user');
     const taskId = c.req.param('id');
+
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const links = await db.select({
       citation_id: wikiCitations.id,
       page_id: wikiPages.id,
@@ -2235,7 +2267,9 @@ taskRoutes.get('/:id/wiki-links', async (c) => {
       .where(and(
         eq(wikiCitations.source_type, 'task'),
         eq(wikiCitations.source_id, taskId),
+        eq(wikiPages.org_id, user.org_id),
         eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
       ));
     return c.json({ wiki_links: links });
   } catch (err) {
@@ -2252,9 +2286,17 @@ taskRoutes.post('/:id/wiki-links', async (c) => {
     const { slug } = await c.req.json();
     if (!slug) return c.json({ error: 'slug required', code: 'VALIDATION_ERROR' }, 400);
 
-    // Find the wiki page
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
+    // Find a wiki page visible to this caller.
     const [page] = await db.select({ id: wikiPages.id }).from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.slug, slug), eq(wikiPages.is_deleted, false)))
+      .where(and(
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.slug, slug),
+        eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
+      ))
       .limit(1);
     if (!page) return c.json({ error: 'Wiki page not found', code: 'NOT_FOUND' }, 404);
 
@@ -2279,11 +2321,7 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
     const taskId = c.req.param('id');
     const citationId = c.req.param('citationId');
 
-    const [task] = await db.select({ id: tasks.id })
-      .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, user.org_id)))
-      .limit(1);
-
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
@@ -2301,7 +2339,12 @@ taskRoutes.delete('/:id/wiki-links/:citationId', async (c) => {
 // GET /api/tasks/:id/subtree — recursive subtask tree
 taskRoutes.get('/:id/subtree', async (c) => {
   try {
+    const user = c.get('user');
     const taskId = c.req.param('id');
+
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const result = await db.execute(sql`
       WITH RECURSIVE subtree AS (
         SELECT id, title, status, priority, parent_task_id, 0 as depth
@@ -2335,7 +2378,7 @@ taskRoutes.get('/:id/reactions', async (c) => {
   try {
     const user = c.get('user');
     const taskId = c.req.param('id');
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
 
     const rows = await db.select({
@@ -2375,7 +2418,7 @@ taskRoutes.post('/:id/reactions', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
 
     await db.execute(sql`
@@ -2402,7 +2445,7 @@ taskRoutes.delete('/:id/reactions/:emoji', async (c) => {
     const taskId = c.req.param('id');
     const emoji = decodeURIComponent(c.req.param('emoji'));
 
-    const task = await getTaskForOrg(taskId, user.org_id);
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
 
     await db.delete(taskReactions).where(and(

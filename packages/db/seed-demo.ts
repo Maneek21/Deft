@@ -499,7 +499,7 @@ async function seed() {
   console.log('Created 3 projects');
 
   // ── Tasks ──
-  type TaskDef = { num: number; title: string; desc: string; status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled'; priority: 'p0' | 'p1' | 'p2' | 'p3'; assignee: string | null; creator: string; due?: 'overdue' | 'tomorrow' | 'this_week' | 'next_week' | 'done' };
+  type TaskDef = { num: number; title: string; desc: string; status: 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled'; priority: 'p0' | 'p1' | 'p2' | 'p3'; assignee: string | null; creator: string; due?: 'overdue' | 'tomorrow' | 'this_week' | 'next_week' | 'done'; metadata?: Record<string, unknown> };
 
   const harvTasks: TaskDef[] = [
     { num: 1, title: 'Install hail netting on south field (Romas)', desc: 'Eastern Ag — 1.8 acres, $4,800/acre installed, lease for the season. Install Monday before NOAA hail window opens Tuesday.', status: 'in_progress', priority: 'p0', assignee: C, creator: D, due: 'tomorrow' },
@@ -520,7 +520,16 @@ async function seed() {
     { num: 1, title: 'Sunbelt 6-week contract — sign and return', desc: 'Beefsteak slicers, 1,200 lbs/wk, $1.85/lb FOB, starts May 26. Confirm with Marigold on supply ramp. Decision needed by Friday.', status: 'in_review', priority: 'p0', assignee: L, creator: D, due: 'this_week' },
     { num: 2, title: 'Field Co-op walk-through — Asha Mehta Friday 10am', desc: 'Tour: GH-2 Sun Gold, GH-2 Cherokee Purple, south field Roma block, harvest room. Sample box of heritage varieties + slicers. Pricing sheet for wholesale (heritage premium tier).', status: 'in_progress', priority: 'p1', assignee: L, creator: L, due: 'this_week' },
     { num: 3, title: 'Update 2027 pricing anchor — $2.00/lb slicers', desc: 'Sunbelt accepted $1.85 with little pushback. Hold $2.00 as the anchor next year. Update wholesale pricing sheet wiki. Note in cell: "validated 2026 with Sunbelt at $1.85".', status: 'todo', priority: 'p2', assignee: L, creator: D, due: 'next_week' },
-    { num: 4, title: 'Whole Foods PNW — feasibility cost model (confidential)', desc: 'Year-round program, 800-1000 lbs/wk across 4 SKUs. Revisit in October once GH-3 status is clear and we have a clean 6-month run with regional buyers.', status: 'backlog', priority: 'p1', assignee: L, creator: D },
+    {
+      num: 4,
+      title: 'Whole Foods PNW — feasibility cost model (confidential)',
+      desc: 'Year-round program, 800-1000 lbs/wk across 4 SKUs. Revisit in October once GH-3 status is clear and we have a clean 6-month run with regional buyers.',
+      status: 'backlog',
+      priority: 'p1',
+      assignee: L,
+      creator: D,
+      metadata: { visibility: 'restricted', visible_user_ids: [D, L] },
+    },
     { num: 5, title: 'Set up Sunbelt cold-chain spec — formal handoff doc', desc: 'Document our pulp-temp logging procedure, refrigeration spec (50-55°F), and dock receiving protocol. Share with Sunbelt receiving team.', status: 'in_progress', priority: 'p2', assignee: T, creator: L, due: 'this_week' },
     { num: 6, title: 'New buyer outreach — North Bay restaurant group', desc: 'A chef collective in Sonoma is looking for heritage tomatoes for a tasting menu. Lina to reach out, target 200 lbs/wk Cherokee Purples + Brandywines.', status: 'backlog', priority: 'p3', assignee: L, creator: L },
     { num: 7, title: 'Farmers market — heritage education signage', desc: 'Customers are asking about the varieties. Print A4 cards with variety name, flavor notes, best-use suggestions. Display next to each crate.', status: 'todo', priority: 'p3', assignee: L, creator: L, due: 'next_week' },
@@ -555,7 +564,7 @@ async function seed() {
       const [task] = await db.insert(schema.tasks).values({
         org_id: org!.id, project_id: project!.id, number: t.num, title: t.title, description: t.desc,
         status: t.status, priority: t.priority, assignee_id: t.assignee, created_by: t.creator,
-        sort_order: t.num, due_date: t.due ? dueMap[t.due] : undefined,
+        sort_order: t.num, due_date: t.due ? dueMap[t.due] : undefined, metadata: t.metadata,
       }).returning();
       taskIds[`${keyPrefix}${t.num}`] = task!.id;
     }
@@ -740,8 +749,7 @@ async function seed() {
 <h2>Prospective</h2>
 <h3>Field Co-op (Bay Area regional)</h3>
 <p>Contact: Asha Mehta, Sourcing Manager. (510) 555-0177. Farm visit scheduled Friday May 24, 10am. Heritage-mix interest. No contract yet.</p>
-<h3>Whole Foods Pacific Northwest (confidential — exploratory only)</h3>
-<p>Year-round program discussion. Off the table until GH-3 is operational and we have a clean 6-month run with regional buyers. Revisit October 2026.</p>`,
+`,
       tags: ['buyers', 'contacts'],
     },
     {

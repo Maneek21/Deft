@@ -230,6 +230,9 @@ spaceRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+
     return c.json(space);
   } catch (err) {
     console.error('Failed to fetch space:', err);
@@ -385,9 +388,14 @@ spaceRoutes.patch('/:id/mute', async (c) => {
     const spaceId = c.req.param('id');
     const { muted } = await c.req.json();
 
-    await db.update(spaceMembers)
+    const updated = await db.update(spaceMembers)
       .set({ is_muted: !!muted })
-      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)));
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
+      .returning({ id: spaceMembers.id });
+
+    if (updated.length === 0) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
 
     return c.json({ success: true, muted: !!muted });
   } catch (err) {
@@ -401,6 +409,9 @@ spaceRoutes.post('/:id/read', async (c) => {
   try {
     const user = c.get('user');
     const spaceId = c.req.param('id');
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     // Get the latest message in this space
     const [latestMessage] = await db.select({ id: messages.id })
@@ -561,7 +572,7 @@ spaceRoutes.post('/:id/mark-unread', async (c) => {
     // Get the message's created_at, then set read position to 1ms before it
     const [msg] = await db.select({ created_at: messages.created_at })
       .from(messages)
-      .where(eq(messages.id, message_id))
+      .where(and(eq(messages.id, message_id), eq(messages.space_id, spaceId), eq(messages.org_id, user.org_id)))
       .limit(1);
 
     if (!msg) {
@@ -569,9 +580,14 @@ spaceRoutes.post('/:id/mark-unread', async (c) => {
     }
 
     const unreadAt = new Date(msg.created_at!.getTime() - 1);
-    await db.update(spaceMembers)
+    const updated = await db.update(spaceMembers)
       .set({ last_read_at: unreadAt, last_read_message_id: null })
-      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)));
+      .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
+      .returning({ id: spaceMembers.id });
+
+    if (updated.length === 0) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
 
     return c.json({ success: true });
   } catch (err) {
@@ -590,6 +606,9 @@ spaceRoutes.patch('/:id/notification-level', async (c) => {
     if (!['all', 'mentions', 'nothing'].includes(level)) {
       return c.json({ error: 'level must be all, mentions, or nothing', code: 'VALIDATION_ERROR' }, 400);
     }
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
 
     await db.update(spaceMembers)
       .set({

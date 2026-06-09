@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { notes, noteFolders, noteVersions, noteShares, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
+import { requireSpaceMembership } from '../lib/space-membership.js';
+import { visibleNoteCondition } from '../lib/note-visibility.js';
 
 const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
@@ -40,6 +42,7 @@ const createNoteSchema = z.object({
   folder_id: z.string().nullable().optional(),
   is_template: z.boolean().optional(),
   visibility: visibilityEnum,
+  visibility_space_id: z.string().nullable().optional(),
 });
 
 const updateNoteSchema = z.object({
@@ -49,6 +52,7 @@ const updateNoteSchema = z.object({
   is_pinned: z.boolean().optional(),
   folder_id: z.string().nullable().optional(),
   visibility: z.enum(['private', 'org', 'space']).optional(),
+  visibility_space_id: z.string().nullable().optional(),
 });
 
 // ── Folder endpoints ──
@@ -133,6 +137,7 @@ dailyNoteRoutes.get('/templates', async (c) => {
       eq(notes.org_id, user.org_id),
       eq(notes.is_template, true),
       eq(notes.is_deleted, false),
+      visibleNoteCondition(user.id),
     ))
     .orderBy(notes.title);
   return c.json({ templates: rows });
@@ -156,12 +161,6 @@ dailyNoteRoutes.get('/', async (c) => {
   if (q) baseConditions.push(ilike(notes.title, `%${q}%`));
   if (folderId) baseConditions.push(eq(notes.folder_id, folderId));
 
-  // Visibility: own notes OR org-visible notes
-  const visibilityCondition = or(
-    eq(notes.user_id, user.id),
-    eq(notes.visibility, 'org'),
-  );
-
   const rows = await db.select({
     id: notes.id,
     title: notes.title,
@@ -170,11 +169,12 @@ dailyNoteRoutes.get('/', async (c) => {
     is_pinned: notes.is_pinned,
     folder_id: notes.folder_id,
     visibility: notes.visibility,
+    visibility_space_id: notes.visibility_space_id,
     user_id: notes.user_id,
     created_at: notes.created_at,
     updated_at: notes.updated_at,
   }).from(notes)
-    .where(and(...baseConditions, visibilityCondition))
+    .where(and(...baseConditions, visibleNoteCondition(user.id)))
     .orderBy(desc(notes.is_pinned), desc(notes.updated_at))
     .limit(100);
 
@@ -186,6 +186,18 @@ dailyNoteRoutes.post('/', async (c) => {
   const user = c.get('user');
   const body = await c.req.json().catch(() => ({}));
   const parsed = createNoteSchema.safeParse(body);
+  const visibility = parsed.success && parsed.data.visibility ? parsed.data.visibility : 'private';
+  const visibilitySpaceId = parsed.success && parsed.data.visibility_space_id ? parsed.data.visibility_space_id : null;
+
+  if (visibility === 'space') {
+    if (!visibilitySpaceId) {
+      return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const isMember = await requireSpaceMembership(visibilitySpaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+  }
 
   const [note] = await db.insert(notes).values({
     org_id: user.org_id,
@@ -195,7 +207,8 @@ dailyNoteRoutes.post('/', async (c) => {
     icon: parsed.success && parsed.data.icon ? parsed.data.icon : null,
     folder_id: parsed.success && parsed.data.folder_id ? parsed.data.folder_id : null,
     is_template: parsed.success && parsed.data.is_template ? parsed.data.is_template : false,
-    visibility: parsed.success && parsed.data.visibility ? parsed.data.visibility : 'private',
+    visibility,
+    visibility_space_id: visibility === 'space' ? visibilitySpaceId : null,
   }).returning();
 
   // Task 5.1 — scan note content for PREFIX-N task refs on create
@@ -216,7 +229,7 @@ dailyNoteRoutes.get('/:id', async (c) => {
       eq(notes.id, noteId),
       eq(notes.org_id, user.org_id),
       eq(notes.is_deleted, false),
-      or(eq(notes.user_id, user.id), eq(notes.visibility, 'org')),
+      visibleNoteCondition(user.id),
     ))
     .limit(1);
 
@@ -244,7 +257,7 @@ dailyNoteRoutes.patch('/:id', async (c) => {
       eq(notes.id, noteId),
       eq(notes.org_id, user.org_id),
       eq(notes.is_deleted, false),
-      or(eq(notes.user_id, user.id), eq(notes.visibility, 'org')),
+      visibleNoteCondition(user.id),
     ))
     .limit(1);
 
@@ -263,7 +276,23 @@ dailyNoteRoutes.patch('/:id', async (c) => {
   if (parsed.data.icon !== undefined) updates.icon = parsed.data.icon;
   if (parsed.data.is_pinned !== undefined) updates.is_pinned = parsed.data.is_pinned;
   if (parsed.data.folder_id !== undefined) updates.folder_id = parsed.data.folder_id;
+  const nextVisibility = parsed.data.visibility ?? full.visibility;
+  const nextVisibilitySpaceId = parsed.data.visibility_space_id !== undefined
+    ? parsed.data.visibility_space_id
+    : full.visibility_space_id;
+  if (nextVisibility === 'space') {
+    if (!nextVisibilitySpaceId) {
+      return c.json({ error: 'visibility_space_id required for space-visible notes', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const isMember = await requireSpaceMembership(nextVisibilitySpaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+  }
   if (parsed.data.visibility !== undefined) updates.visibility = parsed.data.visibility;
+  if (parsed.data.visibility_space_id !== undefined || parsed.data.visibility !== undefined) {
+    updates.visibility_space_id = nextVisibility === 'space' ? nextVisibilitySpaceId : null;
+  }
 
   if (Object.keys(updates).length === 0) {
     return c.json(full);

@@ -38,6 +38,7 @@ import { velocityCalculator, workloadAnalyzer, skillsGapAnalyzer } from '../serv
 import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssignee } from './resolve-assignee.js';
+import { visibleTaskCondition } from './task-visibility.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -180,7 +181,11 @@ export async function executeToolCall(
         }
       }
 
-      const conditions: any[] = [eq(tasks.org_id, orgId), eq(tasks.is_deleted, false)];
+      const conditions: any[] = [
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        visibleTaskCondition(_userId),
+      ];
 
       if (params.query) {
         // Union: literal-title ILIKE OR semantic id match. When semantic had no
@@ -339,7 +344,7 @@ export async function executeToolCall(
         .from(tasks)
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .leftJoin(users, eq(tasks.assignee_id, users.id))
-        .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
+        .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId), visibleTaskCondition(_userId)))
         .limit(1);
 
       if (!task) return { result: { error: 'Task not found' }, citations: [] };
