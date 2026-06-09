@@ -40,7 +40,7 @@ spaceRoutes.post('/', async (c) => {
       : 'public';
 
     // Dedup DMs and group_dms by exact member set (caller + user_ids).
-    // Slack semantics: same set of people = same conversation.
+    // Group DM semantics: same set of people = same conversation.
     if ((type === 'dm' || type === 'group_dm') && user_ids && user_ids.length > 0) {
       const targetSet = new Set<string>([user.id, ...user_ids.filter((id) => id !== user.id)]);
       // 1:1 dm requires exactly the caller + one other; group_dm requires >= 3 members.

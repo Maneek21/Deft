@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 // Resolve .env from the repo root via the source file's location, NOT
 // process.cwd() — when this module loads under tsx / pnpm --filter / docker /
@@ -17,8 +18,40 @@ dotenv.config();
 function resolveDatabaseUrl(): string {
   const explicit = process.env.DATABASE_URL;
   if (explicit && !explicit.includes('CHANGE_ME')) return explicit;
+
+  if (process.env.NODE_ENV !== 'production') {
+    const dockerUrl = resolveDockerDatabaseUrl();
+    if (dockerUrl) return dockerUrl;
+  }
+
   const pw = process.env.POSTGRES_PASSWORD || 'postgres';
-  return `postgres://postgres:${pw}@localhost:5432/deft`;
+  const port = process.env.POSTGRES_PORT || '5432';
+  return `postgres://postgres:${pw}@localhost:${port}/deft`;
+}
+
+function resolveDockerDatabaseUrl(): string | null {
+  try {
+    const portOutput = execFileSync('docker', ['port', 'deft-codex-pg', '5432/tcp'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const portMatch = portOutput.match(/(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)/);
+    const hostPort = portMatch?.[1];
+    if (!hostPort) return null;
+
+    const password = execFileSync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_PASSWORD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || 'postgres';
+    const dbName = execFileSync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_DB'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || 'deft';
+
+    return `postgres://postgres:${encodeURIComponent(password)}@localhost:${hostPort}/${dbName}`;
+  } catch {
+    return null;
+  }
 }
 
 export const env = {
@@ -34,8 +67,6 @@ export const env = {
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
   OLLAMA_URL: process.env.OLLAMA_URL || 'http://localhost:11434',
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || 'deft-dev-encryption-key-32ch',
-  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
-  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || '',
   GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET || '',
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',

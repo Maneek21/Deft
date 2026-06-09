@@ -135,6 +135,13 @@ const HARDCODED_DEFAULTS: Record<LLMTask, string> = {
   extract: 'claude-haiku-4-5-20251001',
 };
 
+const FALLBACK_REASON_MODELS: Record<LLMProvider, string> = {
+  anthropic: HARDCODED_DEFAULTS.reason,
+  openai: 'gpt-4o',
+  openrouter: 'anthropic/claude-sonnet-4',
+  ollama: 'llama3.1',
+};
+
 export async function resolveAnthropicModel(orgId: string | null | undefined, task: LLMTask): Promise<string> {
   if (orgId) {
     const cfg = await getOrgAIConfig(orgId).catch(() => null);
@@ -158,6 +165,93 @@ export type ResolvedReasonProvider = {
   reasoningEffort?: string;
 };
 
+export type ReasonProviderReadiness = {
+  ready: boolean;
+  provider: LLMProvider;
+  model: string;
+  source: 'org_route' | 'env_fallback' | 'org_key_fallback' | 'org_ollama_fallback' | 'none';
+  reason?: string;
+};
+
+type ReasonProviderSelectionInput = {
+  route?: ModelRoute;
+  orgApiKeys?: Partial<Record<LLMProvider, string>>;
+  envApiKeys?: Partial<Record<Exclude<LLMProvider, 'ollama'>, string>>;
+  orgOllamaUrl?: string | null;
+  envOllamaUrl?: string | null;
+};
+
+function hasOllamaConfigured(orgOllamaUrl?: string | null, envOllamaUrl?: string | null): boolean {
+  return Boolean(orgOllamaUrl?.trim() || envOllamaUrl?.trim());
+}
+
+export function selectReasonProvider(input: ReasonProviderSelectionInput): ReasonProviderReadiness {
+  const route = input.route;
+  const orgApiKeys = input.orgApiKeys ?? {};
+  const envApiKeys = input.envApiKeys ?? {};
+
+  if (route) {
+    if (route.provider === 'ollama') {
+      const ready = hasOllamaConfigured(input.orgOllamaUrl, route.baseUrl ?? input.envOllamaUrl);
+      return {
+        ready,
+        provider: 'ollama',
+        model: route.model,
+        source: 'org_route',
+        reason: ready ? undefined : 'Ollama reason route is configured, but no Ollama URL is configured.',
+      };
+    }
+
+    const hasKey = Boolean(orgApiKeys[route.provider] || envApiKeys[route.provider]);
+    return {
+      ready: hasKey,
+      provider: route.provider,
+      model: route.model,
+      source: 'org_route',
+      reason: hasKey ? undefined : `${route.provider} reason route is configured, but no API key is available.`,
+    };
+  }
+
+  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+    if (orgApiKeys[provider]) {
+      return {
+        ready: true,
+        provider,
+        model: FALLBACK_REASON_MODELS[provider],
+        source: 'org_key_fallback',
+      };
+    }
+  }
+
+  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+    if (envApiKeys[provider]) {
+      return {
+        ready: true,
+        provider,
+        model: FALLBACK_REASON_MODELS[provider],
+        source: 'env_fallback',
+      };
+    }
+  }
+
+  if (hasOllamaConfigured(input.orgOllamaUrl, input.envOllamaUrl)) {
+    return {
+      ready: true,
+      provider: 'ollama',
+      model: FALLBACK_REASON_MODELS.ollama,
+      source: input.orgOllamaUrl ? 'org_ollama_fallback' : 'env_fallback',
+    };
+  }
+
+  return {
+    ready: false,
+    provider: 'anthropic',
+    model: HARDCODED_DEFAULTS.reason,
+    source: 'none',
+    reason: 'No usable reasoning provider is configured.',
+  };
+}
+
 /**
  * Resolves the full provider context for the agent's reasoning loop (the
  * `reason` task). Unlike resolveAnthropicModel/resolveAnthropicApiKey — which
@@ -177,8 +271,19 @@ export async function resolveReasonProvider(orgId: string | null | undefined): P
     ollamaUrl = cfg?.ollama_url;
   }
 
-  const provider: LLMProvider = route?.provider ?? 'anthropic';
-  const model = route?.model || HARDCODED_DEFAULTS.reason;
+  const selected = selectReasonProvider({
+    route,
+    orgApiKeys: apiKeys,
+    envApiKeys: {
+      anthropic: env.ANTHROPIC_API_KEY,
+      openai: env.OPENAI_API_KEY,
+      openrouter: env.OPENROUTER_API_KEY,
+    },
+    orgOllamaUrl: ollamaUrl,
+    envOllamaUrl: process.env.OLLAMA_URL || null,
+  });
+  const provider = selected.provider;
+  const model = selected.model;
 
   let apiKey = apiKeys[provider] ?? '';
   if (!apiKey) {
@@ -204,6 +309,47 @@ export async function resolveReasonProvider(orgId: string | null | undefined): P
   if (provider === 'ollama' && !baseUrl) baseUrl = ollamaUrl || env.OLLAMA_URL;
 
   return { provider, model, apiKey, baseUrl, reasoningEffort: route?.reasoning_effort };
+}
+
+export async function resolveUsableReasonProvider(orgId: string | null | undefined): Promise<ResolvedReasonProvider & ReasonProviderReadiness> {
+  const [resolved, readiness] = await Promise.all([
+    resolveReasonProvider(orgId),
+    getReasonProviderReadiness(orgId),
+  ]);
+  return {
+    ...resolved,
+    ...readiness,
+  };
+}
+
+export async function hasUsableReasonProvider(orgId: string | null | undefined): Promise<boolean> {
+  const readiness = await getReasonProviderReadiness(orgId);
+  return readiness.ready;
+}
+
+export async function getReasonProviderReadiness(orgId: string | null | undefined): Promise<ReasonProviderReadiness> {
+  let route: ModelRoute | undefined;
+  let apiKeys: Partial<Record<LLMProvider, string>> = {};
+  let ollamaUrl: string | undefined;
+
+  if (orgId) {
+    const cfg = await getOrgAIConfig(orgId).catch(() => null);
+    route = cfg?.ai_models?.reason;
+    apiKeys = cfg?.api_keys ?? {};
+    ollamaUrl = cfg?.ollama_url;
+  }
+
+  return selectReasonProvider({
+    route,
+    orgApiKeys: apiKeys,
+    envApiKeys: {
+      anthropic: env.ANTHROPIC_API_KEY,
+      openai: env.OPENAI_API_KEY,
+      openrouter: env.OPENROUTER_API_KEY,
+    },
+    orgOllamaUrl: ollamaUrl,
+    envOllamaUrl: process.env.OLLAMA_URL || null,
+  });
 }
 
 /**
@@ -236,7 +382,7 @@ export async function getOrgAIConfigMasked(orgId: string): Promise<OrgAIConfigMa
       anthropic: Boolean(env.ANTHROPIC_API_KEY),
       openai: Boolean(env.OPENAI_API_KEY),
       openrouter: Boolean(env.OPENROUTER_API_KEY),
-      ollama: Boolean(env.OLLAMA_URL && env.OLLAMA_URL !== 'http://localhost:11434') || true, // always reachable via default
+      ollama: Boolean(stored.ollama_url || process.env.OLLAMA_URL),
     },
   };
 }
@@ -291,6 +437,7 @@ export async function hasAnyAIProvider(orgId: string | null | undefined): Promis
   if (orgId) {
     const cfg = await getOrgAIConfig(orgId).catch(() => null);
     if (cfg?.api_keys && Object.values(cfg.api_keys).some(Boolean)) return true;
+    if (cfg?.ollama_url) return true;
   }
-  return Boolean(env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY || env.OPENROUTER_API_KEY);
+  return Boolean(env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY || env.OPENROUTER_API_KEY || process.env.OLLAMA_URL);
 }

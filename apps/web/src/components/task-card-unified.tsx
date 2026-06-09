@@ -865,7 +865,7 @@ function NotificationVariant({ task, onClick, onView }: NotificationProps) {
 
 // ── Task 6.3 — Task reactions bar ───────────────────────────────────────────
 //
-// Slack-style emoji reactions. Predefined quick reacts + a `+` picker from a
+// Emoji reactions. Predefined quick reacts + a `+` picker from a
 // small curated set. Renders grouped counts (one chip per emoji) with a
 // caller-selected highlight. Fetches its own state from /api/tasks/:id/reactions
 // on mount; optimistic toggles on click with rollback on failure.

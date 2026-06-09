@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { CalEvent, DayBucket, buildWeekDates, toDateKey, HOURS, ITEM_COLORS, formatHourLabel } from '@/lib/calendar';
+import { CalEvent, DayBucket, buildWeekDates, toDateKey, HOURS, ITEM_COLORS, formatHourLabel, getEventSourceColor } from '@/lib/calendar';
 
 const ROW_HEIGHT = 60;
 const ALL_DAY_MIN = 32;
@@ -37,16 +37,17 @@ export function WeekView({
 
     if (bucket) {
       for (const e of bucket.events) {
+        const eventColor = getEventSourceColor(e.source);
         if (e.metadata?.allDay) {
-          allDay.push({ id: e.id, title: e.title, type: 'event', color: ITEM_COLORS.event });
+          allDay.push({ id: e.id, title: e.title, type: 'event', color: eventColor });
         } else if (e.metadata?.start) {
           const start = new Date(e.metadata.start);
           const end = e.metadata.end ? new Date(e.metadata.end) : new Date(start.getTime() + 3600000);
           const startMin = start.getHours() * 60 + start.getMinutes();
           const durationMin = Math.max(30, (end.getTime() - start.getTime()) / 60000);
-          timed.push({ id: e.id, title: e.title, startMin, durationMin, color: ITEM_COLORS.event, event: e });
+          timed.push({ id: e.id, title: e.title, startMin, durationMin, color: eventColor, event: e });
         } else {
-          allDay.push({ id: e.id, title: e.title, type: 'event', color: ITEM_COLORS.event });
+          allDay.push({ id: e.id, title: e.title, type: 'event', color: eventColor });
         }
       }
       for (const t of bucket.tasks) {

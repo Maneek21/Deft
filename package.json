@@ -30,6 +30,9 @@
     "dev:api": "pnpm --filter @deft/api dev",
     "dev:web": "pnpm --filter @deft/web dev",
     "lint": "pnpm -r lint",
+    "pilot:dev": "tsx scripts/pilot-preflight.ts --start",
+    "pilot:clean-agent-queue": "tsx scripts/agent-demo-queue-cleanup.ts",
+    "pilot:preflight": "tsx scripts/pilot-preflight.ts",
     "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {

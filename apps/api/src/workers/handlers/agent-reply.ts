@@ -8,6 +8,34 @@ import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
 
+function extractExplicitCreateTaskAction(content: string, sourceMessageId: string) {
+  const title = content.match(/\b(?:task|todo|ticket)\s+(?:titled|called|named)\s+"([^"]+)"/i)?.[1]
+    ?? content.match(/\b(?:task|todo|ticket)\s+(?:titled|called|named)\s+'([^']+)'/i)?.[1];
+  const projectName = content.match(/\bproject\s+"([^"]+)"/i)?.[1]
+    ?? content.match(/\bproject\s+'([^']+)'/i)?.[1];
+
+  if (!title || !projectName || !/\b(create|add|make|open|track)\b/i.test(content)) {
+    return null;
+  }
+
+  const assigneeName = content.match(/\bassigned to\s+([^.;\n]+?)(?:\s+(?:and|with|for|due)\b|[.;\n]|$)/i)?.[1]?.trim();
+  const description = content.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+
+  return {
+    action: 'create_task',
+    params: {
+      title,
+      project_name: projectName,
+      ...(assigneeName ? { assignee_name: assigneeName } : {}),
+      description,
+      source_message_id: sourceMessageId,
+    },
+    approval_tier: getApprovalTier('create_task'),
+    tool_use_id: null,
+    source: 'deterministic_create_task_fallback',
+  };
+}
+
 export async function handleAgentReply(job: JobData): Promise<void> {
   const {
     orgId,
@@ -173,6 +201,17 @@ export async function handleAgentReply(job: JobData): Promise<void> {
       return;
     }
 
+    const fallbackCreateTask = result.pendingActions.length === 0
+      ? extractExplicitCreateTaskAction(promptContent, messageId)
+      : null;
+    const pendingActions = fallbackCreateTask ? [fallbackCreateTask] : result.pendingActions;
+    if (fallbackCreateTask) {
+      console.warn('[agent-reply] Added deterministic create_task fallback for explicit task-create prompt', {
+        messageId,
+        title: fallbackCreateTask.params.title,
+      });
+    }
+
     // Insert the agent's reply as a message in the space.
     // Phase 2 — populate agent_blocks / model / tokens so <AgentMessageBlocks/>
     // can render tool chips, citations footer, and the model+tokens detail
@@ -190,7 +229,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         tokens_in: result.tokensIn,
         tokens_out: result.tokensOut,
         citations: result.citations.length > 0 ? result.citations : undefined,
-        pending_actions: result.pendingActions.length > 0 ? result.pendingActions : undefined,
+        pending_actions: pendingActions.length > 0 ? pendingActions : undefined,
       } as never,
     }).returning();
 
@@ -199,10 +238,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     // can render them. Without this, write-intent chat mentions were
     // ghost-queued — stored in metadata.pending_actions but invisible to
     // the approval UI (parity with agent-stream-loop.ts:208).
-    if (result.pendingActions.length > 0) {
+    if (pendingActions.length > 0) {
       try {
         await db.insert(agentActions).values(
-          result.pendingActions.map((p: any) => ({
+          pendingActions.map((p: any) => ({
             org_id: orgId,
             user_id: userId,
             conversation_id: spaceId,
@@ -211,7 +250,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
             params: p.params,
             approval_tier: (p.approval_tier ?? getApprovalTier(p.action)) as 'auto' | 'quick' | 'full',
             approval_status: 'pending' as const,
-            source: 'mention',
+            source: p.source ?? 'mention',
             tool_use_id: p.tool_use_id ?? null,
           })),
         );

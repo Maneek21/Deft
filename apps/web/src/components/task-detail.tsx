@@ -140,11 +140,29 @@ type Comment = {
 
 type ActivityItem = {
   id: string;
+  action?: string;
   field: string;
   old_value: string | null;
   new_value: string | null;
   user_name: string;
   created_at: string;
+};
+
+type AgentEmployee = {
+  id: string;
+  user_id: string;
+  name: string;
+  role?: string;
+  runtime_kind?: string | null;
+  wake_mode?: string | null;
+  certification_status?: string | null;
+  is_active: boolean;
+  unhealthy?: boolean;
+  unhealthy_reason?: string | null;
+  heartbeat_interval_min?: number | null;
+  last_heartbeat_at?: string | null;
+  last_mcp_call_at?: string | null;
+  pending_action_count?: number;
 };
 
 type Props = {
@@ -181,6 +199,21 @@ const STATUS_COLORS: Record<string, string> = {
   done: 'var(--success)',
   cancelled: 'var(--danger)',
 };
+
+function formatAgentRuntimeKind(kind?: string | null): string {
+  if (!kind) return 'custom MCP';
+  return kind.replace(/_/g, ' ');
+}
+
+function formatRuntimeContact(value?: string | null): string {
+  if (!value) return 'No MCP contact yet';
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+  if (elapsedMinutes < 1) return 'Just now';
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h ago`;
+  return `${Math.floor(elapsedHours / 24)}d ago`;
+}
 
 function formatStatusLabel(status: string): string {
   return statusLabel(status);
@@ -591,7 +624,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   });
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [members, setMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
-  const [agentEmployees, setAgentEmployees] = useState<any[]>([]);
+  const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
+  const [agentHandoffBusy, setAgentHandoffBusy] = useState(false);
+  const [agentHandoffMessage, setAgentHandoffMessage] = useState<string | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [metadataExpanded, setMetadataExpanded] = useState(false);
@@ -607,7 +642,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     agent_employee_id: string | null;
     step_index: number;
     step_description: string;
-    status: 'started' | 'completed' | 'failed';
+    status: 'queued' | 'started' | 'completed' | 'failed';
     total_steps: number;
     error?: string;
   } | null>(null);
@@ -703,7 +738,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       agent_employee_id: string | null;
       step_index: number;
       step_description: string;
-      status: 'started' | 'completed' | 'failed';
+      status: 'queued' | 'started' | 'completed' | 'failed';
       total_steps: number;
       error?: string;
     }) => {
@@ -883,10 +918,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
   // Load agent employees
   useEffect(() => {
-    api.get('/api/agent-employees').then(async (res) => {
+    api.get('/api/agent-employees?expand=stats').then(async (res) => {
       if (res.ok) {
         const data = await res.json();
-        setAgentEmployees(data.filter((e: any) => e.is_active));
+        setAgentEmployees(data.filter((e: AgentEmployee) => e.is_active));
       }
     });
   }, []);
@@ -930,6 +965,38 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       }
       setTask(merged);
       onUpdated(merged);
+    }
+  };
+
+  const handleAgentHandoff = async () => {
+    if (!task || agentHandoffBusy) return;
+    setAgentHandoffBusy(true);
+    setAgentHandoffMessage(null);
+    try {
+      const res = await api.post(`/api/tasks/${taskId}/agent-handoff`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAgentHandoffMessage(data.error || 'Could not queue this task for the agent employee.');
+        return;
+      }
+      setAgentHandoffMessage('Queued for the assigned agent employee.');
+      if (data.employee?.id) {
+        setAgentEmployees((prev) =>
+          prev.map((employee) => employee.id === data.employee.id
+            ? { ...employee, ...data.employee }
+            : employee
+          )
+        );
+      }
+      setAgentProgress({
+        agent_employee_id: data.employee?.id ?? null,
+        step_index: 0,
+        step_description: `Task queued for ${data.employee?.name ?? 'agent employee'}`,
+        status: 'queued',
+        total_steps: 1,
+      });
+    } finally {
+      setAgentHandoffBusy(false);
     }
   };
 
@@ -1052,6 +1119,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           .map((s) => ({ value: s.id, label: s.label, color: s.color }))
       : STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label, color: STATUS_COLORS[s.value] ?? 'var(--muted)' }));
   const currentStatusOption = resolvedStatusOptions.find((s) => s.value === task.status);
+  const assignedAgent = task.assignee_id
+    ? agentEmployees.find((employee) => employee.user_id === task.assignee_id)
+    : null;
 
   return (
     <>
@@ -1591,6 +1661,58 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             )}
           </div>
 
+          {assignedAgent && (
+            <div
+              className="mx-5 mb-3 rounded-md p-3"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                fontFamily: 'var(--font-body)',
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+                    Agent handoff
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px]" style={{ color: 'var(--muted)' }}>
+                    <span>{formatAgentRuntimeKind(assignedAgent.runtime_kind)}</span>
+                    <span>/</span>
+                    <span>{assignedAgent.wake_mode || 'manual'}</span>
+                    <span>/</span>
+                    <span>{assignedAgent.certification_status || 'uncertified'}</span>
+                    <span>/</span>
+                    <span>{assignedAgent.pending_action_count ?? 0} pending</span>
+                  </div>
+                  <div className="mt-1 text-[11px]" style={{ color: assignedAgent.unhealthy ? 'var(--danger)' : 'var(--muted)' }}>
+                    {assignedAgent.unhealthy
+                      ? `Unhealthy: ${assignedAgent.unhealthy_reason || 'runtime needs attention'}`
+                      : `Last MCP contact: ${formatRuntimeContact(assignedAgent.last_mcp_call_at || assignedAgent.last_heartbeat_at)}`}
+                  </div>
+                  {agentHandoffMessage && (
+                    <div className="mt-2 text-[11px]" style={{ color: agentHandoffMessage.startsWith('Queued') ? 'var(--success)' : 'var(--danger)' }}>
+                      {agentHandoffMessage}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAgentHandoff}
+                  disabled={agentHandoffBusy || assignedAgent.unhealthy}
+                  className="px-2.5 py-1.5 rounded-md text-[11px] font-medium flex items-center gap-1.5 flex-shrink-0 disabled:opacity-60"
+                  style={{
+                    background: 'var(--accent)',
+                    color: 'white',
+                    fontFamily: 'var(--font-heading)',
+                  }}
+                >
+                  {agentHandoffBusy && <Loader2 size={11} className="animate-spin" />}
+                  Check now
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Mobile expand/collapse toggle */}
           {isMobile && (
             <button
@@ -1615,7 +1737,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             const total = agentProgress.total_steps;
             const isFailed = agentProgress.status === 'failed';
             const isDone = agentProgress.status === 'completed';
-            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : 'var(--muted-bg, #f3f4f6)';
+            const isQueued = agentProgress.status === 'queued';
+            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : isQueued ? 'var(--surface)' : 'var(--muted-bg, #f3f4f6)';
             const fg = isFailed ? '#991b1b' : isDone ? '#166534' : 'var(--foreground)';
             const border = isFailed ? '#fecaca' : isDone ? '#bbf7d0' : 'var(--border)';
             return (
@@ -1640,6 +1763,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   ) : isDone ? (
                     <>
                       <strong>{agentLabel}</strong> finished: {agentProgress.step_description}
+                    </>
+                  ) : isQueued ? (
+                    <>
+                      <strong>{agentLabel}</strong> has this queued: {agentProgress.step_description}
                     </>
                   ) : (
                     <>
@@ -2481,6 +2608,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   // line-level diff rendered below the one-liner summary.
                   const oldLabel = formatActivityValue(a.field, a.old_value, members);
                   const newLabel = formatActivityValue(a.field, a.new_value, members);
+                  const isAgentHandoff = a.action === 'agent_handoff_queued';
                   return (
                   <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
                     <div
@@ -2492,8 +2620,17 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         {a.user_name}
                       </span>{' '}
                       <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
-                        changed {formatFieldName(a.field)}
-                        {!isDescription && (
+                        {isAgentHandoff ? (
+                          <>
+                            queued work for{' '}
+                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>
+                              {newLabel}
+                            </span>
+                          </>
+                        ) : (
+                          <>changed {formatFieldName(a.field)}</>
+                        )}
+                        {!isDescription && !isAgentHandoff && (
                           <>
                             {': '}
                             <span style={{ color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'var(--muted)' }}>

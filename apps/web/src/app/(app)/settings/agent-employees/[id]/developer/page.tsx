@@ -1,22 +1,89 @@
 /**
  * Developer tab — BYOA credentials.
  *
- * Surfaces the MCP endpoint URL + bearer token for a single agent-employee
+ * Surfaces the MCP endpoint URL + bearer token state for a single agent-employee
  * so the user can wire up Claude Desktop, Claude Code, or a custom MCP
- * client. Token reveal is admin-only (enforced server-side by
- * /api/agent-employees/:id/developer).
+ * client. Raw tokens are shown once at creation or regeneration.
  */
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { Copy, Eye, EyeOff, Loader2, Terminal } from 'lucide-react';
+import { Check, Copy, Loader2, Play, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
 
 type DeveloperPayload = {
-  employee: { id: string; slug: string };
+  employee: {
+    id: string;
+    slug: string;
+    name?: string;
+    runtime_kind?: string | null;
+    job_title?: string | null;
+    wake_mode?: string | null;
+    certification_status?: string | null;
+    last_verified_at?: string | null;
+    last_mcp_call_at?: string | null;
+    last_work_outcome_at?: string | null;
+    connection_notes?: string | null;
+    last_heartbeat_at?: string | null;
+    is_byoa?: boolean;
+    byoa_model_info?: string | null;
+  };
+  certification: {
+    id: string;
+    status: string;
+    nonce: string;
+    required_tools: string[];
+    failure_reason?: string | null;
+    started_at: string;
+    completed_at?: string | null;
+    instructions: string;
+    stages?: Array<{
+      key: string;
+      label: string;
+      status: 'pass' | 'pending';
+      detail: string;
+    }>;
+  } | null;
+  runtime_setup: {
+    runtime_kind: string;
+    tool_server_name: string | null;
+    tool_name_style: 'bare' | 'server_prefixed';
+    tool_call_names: string[];
+    setup_steps: string[];
+    commands: Array<{
+      label: string;
+      command: string;
+      description: string;
+    }>;
+    config_snippet: string | null;
+    bridge_script: string | null;
+    certification_prompt: string;
+    troubleshooting: string[];
+  };
+  diagnostics: {
+    recent_mcp_calls: Array<{
+      id: string;
+      tool_name: string;
+      success: boolean;
+      error?: string | null;
+      created_at: string;
+    }>;
+    recent_cooperative_log: Array<{
+      id: string;
+      kind: string;
+      summary: string;
+      created_at: string;
+    }>;
+  };
   mcp_endpoint_url: string;
   mcp_token_masked: string | null;
   mcp_token: string | null;
+};
+
+type RegeneratePayload = {
+  api_key: string;
+  mcp_endpoint_url: string;
+  employee: { id: string; slug: string; name?: string };
 };
 
 export default function DeveloperPage() {
@@ -26,17 +93,20 @@ export default function DeveloperPage() {
   const [data, setData] = useState<DeveloperPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [revealed, setRevealed] = useState(false);
+  const [newToken, setNewToken] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   const [copyHint, setCopyHint] = useState<string | null>(null);
+  const [certBusy, setCertBusy] = useState(false);
+  const [certResult, setCertResult] = useState<string | null>(null);
 
-  const load = useCallback(async (reveal: boolean) => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.fetch(`/api/agent-employees/${employeeId}/developer${reveal ? '?reveal=1' : ''}`);
+      const res = await api.fetch(`/api/agent-employees/${employeeId}/developer`);
       if (!res.ok) {
         if (res.status === 403) {
-          setError('Only org admins can reveal the bearer token.');
+          setError('Only org admins can view developer credentials.');
           return;
         }
         throw new Error(`HTTP ${res.status}`);
@@ -49,12 +119,57 @@ export default function DeveloperPage() {
     }
   }, [employeeId]);
 
-  useEffect(() => { load(false); }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  const toggleReveal = async () => {
-    const next = !revealed;
-    await load(next);
-    setRevealed(next);
+  const regenerateToken = async () => {
+    setRegenerating(true);
+    setError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employeeId}/regenerate-token`);
+      if (!res.ok) {
+        if (res.status === 403) {
+          setError('Only org owners or admins can regenerate this token.');
+          return;
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const payload = (await res.json()) as RegeneratePayload;
+      setNewToken(payload.api_key);
+      setData((current) => current
+        ? { ...current, mcp_endpoint_url: payload.mcp_endpoint_url, mcp_token_masked: '********' }
+        : current);
+      setCopyHint('New token generated. Copy it now.');
+      setTimeout(() => setCopyHint(null), 2500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const certificationAction = async (action: 'start' | 'check' | 'reset') => {
+    setCertBusy(true);
+    setCertResult(null);
+    setError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employeeId}/certification/${action}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      if (action === 'check') {
+        const missing = payload.missing_tools?.length ? ` Missing: ${payload.missing_tools.join(', ')}.` : '';
+        const reason = payload.failure_reason ? ` ${payload.failure_reason}` : '';
+        setCertResult(payload.completed ? 'Certification complete.' : `Still pending.${missing}${reason}`);
+      } else if (action === 'start') {
+        setCertResult('Certification challenge started.');
+      } else {
+        setCertResult('Certification reset.');
+      }
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCertBusy(false);
+    }
   };
 
   const copy = async (label: string, value: string | null | undefined) => {
@@ -82,13 +197,18 @@ export default function DeveloperPage() {
   }
   if (!data) return null;
 
+  const tokenForConfig = newToken ?? '<bearer-token>';
+  const connectionLabel = data.employee.last_heartbeat_at
+    ? `Last ping ${new Date(data.employee.last_heartbeat_at).toLocaleString()}`
+    : 'Never connected';
+
   const claudeDesktopConfig = JSON.stringify(
     {
       mcpServers: {
         deft: {
           url: data.mcp_endpoint_url,
           headers: {
-            Authorization: `Bearer ${revealed && data.mcp_token ? data.mcp_token : '<bearer-token>'}`,
+            Authorization: `Bearer ${tokenForConfig}`,
           },
         },
       },
@@ -120,6 +240,9 @@ export default function DeveloperPage() {
       {copyHint && (
         <div className="mb-3 rounded bg-accent/60 px-3 py-1.5 text-xs">{copyHint}</div>
       )}
+      {certResult && (
+        <div className="mb-3 rounded bg-accent/60 px-3 py-1.5 text-xs">{certResult}</div>
+      )}
       {error && <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">{error}</div>}
 
       <section className="space-y-3">
@@ -129,6 +252,22 @@ export default function DeveloperPage() {
           onCopy={() => copy('slug', data.employee.slug)}
         />
         <Field
+          label="Connection"
+          value={connectionLabel}
+        />
+        <Field
+          label="Runtime"
+          value={`${data.employee.runtime_kind ?? 'custom_mcp'} / ${data.employee.wake_mode ?? 'manual'}`}
+        />
+        <Field
+          label="Job title"
+          value={data.employee.job_title ?? '(not set)'}
+        />
+        <Field
+          label="Certification"
+          value={`${data.employee.certification_status ?? 'token_issued'}${data.employee.last_verified_at ? ` at ${new Date(data.employee.last_verified_at).toLocaleString()}` : ''}`}
+        />
+        <Field
           label="MCP endpoint URL"
           value={data.mcp_endpoint_url}
           onCopy={() => copy('URL', data.mcp_endpoint_url)}
@@ -136,22 +275,23 @@ export default function DeveloperPage() {
         />
         <Field
           label="Bearer token"
-          value={revealed && data.mcp_token ? data.mcp_token : (data.mcp_token_masked ?? '(no token yet)')}
+          value={newToken ?? (data.mcp_token_masked ?? '(no token yet)')}
           mono
           trailing={(
             <div className="flex gap-1.5">
               <button
                 type="button"
-                onClick={toggleReveal}
+                onClick={regenerateToken}
+                disabled={regenerating}
                 className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
               >
-                {revealed ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-                {revealed ? 'Hide' : 'Reveal'}
+                {regenerating ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                Regenerate
               </button>
-              {revealed && data.mcp_token && (
+              {newToken && (
                 <button
                   type="button"
-                  onClick={() => copy('token', data.mcp_token)}
+                  onClick={() => copy('token', newToken)}
                   className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
                 >
                   <Copy className="size-3" /> Copy
@@ -160,6 +300,113 @@ export default function DeveloperPage() {
             </div>
           )}
         />
+      </section>
+
+      <section className="mt-6">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Certification
+          </div>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => certificationAction('start')}
+              disabled={certBusy}
+              className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+            >
+              {certBusy ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
+              Start
+            </button>
+            <button
+              type="button"
+              onClick={() => certificationAction('check')}
+              disabled={certBusy}
+              className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+            >
+              <Check className="size-3" />
+              Check
+            </button>
+            <button
+              type="button"
+              onClick={() => certificationAction('reset')}
+              disabled={certBusy}
+              className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+            >
+              <RotateCcw className="size-3" />
+              Reset
+            </button>
+          </div>
+        </div>
+        {data.certification ? (
+          <>
+            <Field label="Challenge status" value={data.certification.status} />
+            {data.certification.failure_reason && (
+              <Field label="Current blocker" value={data.certification.failure_reason} />
+            )}
+            <Field label="Nonce" value={data.certification.nonce} onCopy={() => copy('nonce', data.certification?.nonce)} mono />
+            {data.certification.stages && data.certification.stages.length > 0 && (
+              <StageList stages={data.certification.stages} />
+            )}
+            <CodeBlock value={data.certification.instructions} onCopy={() => copy('instructions', data.certification?.instructions)} />
+          </>
+        ) : (
+          <div className="rounded border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            No challenge started yet.
+          </div>
+        )}
+      </section>
+
+      <section className="mt-6">
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Runtime setup
+        </div>
+        <div className="rounded border border-border bg-background px-3 py-2">
+          <div className="text-xs font-medium">
+            {data.runtime_setup.runtime_kind}
+            {data.runtime_setup.tool_server_name ? ` / ${data.runtime_setup.tool_server_name}` : ''}
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Tool names: {data.runtime_setup.tool_call_names.join(', ')}
+          </div>
+          <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs">
+            {data.runtime_setup.setup_steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        </div>
+        {data.runtime_setup.config_snippet && (
+          <div className="mt-3">
+            <div className="mb-1 text-xs text-muted-foreground">Runtime config snippet</div>
+            <CodeBlock value={data.runtime_setup.config_snippet} onCopy={() => copy('runtime config', data.runtime_setup.config_snippet)} />
+          </div>
+        )}
+        {data.runtime_setup.commands.length > 0 && (
+          <div className="mt-3 space-y-3">
+            {data.runtime_setup.commands.map((cmd) => (
+              <div key={cmd.label}>
+                <div className="mb-1 text-xs font-medium">{cmd.label}</div>
+                <div className="mb-1 text-[11px] text-muted-foreground">{cmd.description}</div>
+                <CodeBlock value={cmd.command} onCopy={() => copy(cmd.label, cmd.command)} />
+              </div>
+            ))}
+          </div>
+        )}
+        {data.runtime_setup.bridge_script && (
+          <div className="mt-3">
+            <div className="mb-1 text-xs text-muted-foreground">Hermes stdio bridge script</div>
+            <CodeBlock value={data.runtime_setup.bridge_script} onCopy={() => copy('Hermes bridge', data.runtime_setup.bridge_script)} />
+          </div>
+        )}
+        {data.runtime_setup.troubleshooting.length > 0 && (
+          <div className="mt-3 rounded border border-border bg-background px-3 py-2">
+            <div className="mb-1 text-xs font-medium">Troubleshooting</div>
+            <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+              {data.runtime_setup.troubleshooting.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       <section className="mt-6">
@@ -172,6 +419,47 @@ export default function DeveloperPage() {
           See the Deft docs for runtime-specific setup.
         </p>
       </section>
+
+      <section className="mt-6 grid gap-4 md:grid-cols-2">
+        <LogPanel
+          title="Recent MCP calls"
+          empty="No MCP calls recorded yet."
+          rows={data.diagnostics.recent_mcp_calls.map((call) => ({
+            id: call.id,
+            main: `${call.success ? 'OK' : 'ERR'} ${call.tool_name}`,
+            sub: `${new Date(call.created_at).toLocaleString()}${call.error ? ` - ${call.error}` : ''}`,
+          }))}
+        />
+        <LogPanel
+          title="Cooperative log"
+          empty="No cooperative records yet."
+          rows={data.diagnostics.recent_cooperative_log.map((row) => ({
+            id: row.id,
+            main: row.kind,
+            sub: `${new Date(row.created_at).toLocaleString()} - ${row.summary}`,
+          }))}
+        />
+      </section>
+    </div>
+  );
+}
+
+function StageList({
+  stages,
+}: {
+  stages: Array<{ key: string; label: string; status: 'pass' | 'pending'; detail: string }>;
+}) {
+  return (
+    <div className="my-3 rounded border border-border bg-background">
+      {stages.map((stage) => (
+        <div key={stage.key} className="grid grid-cols-12 gap-2 border-b border-border px-3 py-2 text-xs last:border-b-0">
+          <div className="col-span-3 font-medium">{stage.label}</div>
+          <div className={`col-span-2 ${stage.status === 'pass' ? 'text-emerald-600' : 'text-amber-600'}`}>
+            {stage.status === 'pass' ? 'Pass' : 'Pending'}
+          </div>
+          <div className="col-span-7 text-muted-foreground">{stage.detail}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -189,16 +477,17 @@ function Field({
   mono?: boolean;
   trailing?: React.ReactNode;
 }) {
+  const valueClass = trailing ? 'col-span-6' : onCopy ? 'col-span-8' : 'col-span-9';
   return (
     <div className="grid grid-cols-12 gap-2 items-center">
       <div className="col-span-3 text-xs text-muted-foreground">{label}</div>
-      <div className={`col-span-${trailing ? 6 : 9} rounded border border-border bg-background px-2 py-1.5 text-xs ${mono ? 'font-mono' : ''} truncate`}>
+      <div className={`${valueClass} rounded border border-border bg-background px-2 py-1.5 text-xs ${mono ? 'font-mono' : ''} truncate`}>
         {value}
       </div>
       {trailing
         ? <div className="col-span-3">{trailing}</div>
         : onCopy ? (
-          <div className="col-span-0">
+          <div className="col-span-1">
             <button
               type="button"
               onClick={onCopy}
@@ -208,6 +497,32 @@ function Field({
             </button>
           </div>
         ) : null}
+    </div>
+  );
+}
+
+function LogPanel({
+  title,
+  empty,
+  rows,
+}: {
+  title: string;
+  empty: string;
+  rows: Array<{ id: string; main: string; sub: string }>;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="rounded border border-border bg-background">
+        {rows.length === 0 ? (
+          <div className="px-3 py-2 text-xs text-muted-foreground">{empty}</div>
+        ) : rows.map((row) => (
+          <div key={row.id} className="border-b border-border px-3 py-2 last:border-b-0">
+            <div className="text-xs font-medium">{row.main}</div>
+            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{row.sub}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

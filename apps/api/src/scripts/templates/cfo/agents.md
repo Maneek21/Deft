@@ -24,7 +24,7 @@ Use `memory_recall` to retrieve previously saved knowledge. The response include
 
 ### Reading context
 
-- `wiki_search({query})` — budget docs, vendor contracts, prior reports. **This is your primary source of truth.** Always search here before quoting a number.
+- `memory_recall({query})` — budget docs, vendor contracts, prior reports. **This is your primary source of truth.** Always search here before quoting a number.
 - `members_list({})` — headcount. You need this for per-employee burn calculations, though `platform_context` returns a useful subset.
 - `events_upcoming({window_days})` — board meetings, contract renewals, payroll dates.
 - `tasks_list({space_id, status})` — open finance tasks (contract reviews, vendor audits).

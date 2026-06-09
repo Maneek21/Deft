@@ -40,6 +40,7 @@ function toKnowledgeEntry(row: any) {
     content: row.content,
     metadata: row.metadata ?? null,
     source_message_id: row.source_message_id ?? null,
+    source_space_id: row.source_space_id ?? null,
     space_id: row.space_id,
     created_by: row.user_id,
     created_at: row.created_at,
@@ -48,6 +49,61 @@ function toKnowledgeEntry(row: any) {
     author_avatar: row.author_avatar || null,
     slug: row.slug,
     scope: row.scope,
+  };
+}
+
+function sourceMessageIdSql() {
+  return sql<string | null>`(
+    SELECT wc.source_id
+    FROM wiki_citations wc
+    WHERE wc.page_id = ${wikiPages.id}
+      AND wc.source_type = 'message'
+    ORDER BY wc.created_at DESC
+    LIMIT 1
+  )`;
+}
+
+function sourceSpaceIdSql() {
+  return sql<string | null>`(
+    SELECT m.space_id
+    FROM wiki_citations wc
+    JOIN messages m ON m.id = wc.source_id
+    WHERE wc.page_id = ${wikiPages.id}
+      AND wc.source_type = 'message'
+    ORDER BY wc.created_at DESC
+    LIMIT 1
+  )`;
+}
+
+function cleanMetadata(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function latestMessageCitation(pageId: string): Promise<{ source_message_id: string | null; source_space_id: string | null }> {
+  const [row] = await db.select({
+    source_message_id: wikiCitations.source_id,
+    source_space_id: messages.space_id,
+  })
+    .from(wikiCitations)
+    .innerJoin(messages, and(
+      eq(wikiCitations.source_id, messages.id),
+      eq(wikiCitations.source_type, 'message'),
+    ))
+    .where(eq(wikiCitations.page_id, pageId))
+    .orderBy(desc(wikiCitations.created_at))
+    .limit(1);
+
+  return {
+    source_message_id: row?.source_message_id ?? null,
+    source_space_id: row?.source_space_id ?? null,
   };
 }
 
@@ -83,8 +139,9 @@ knowledgeAggRoutes.get('/', async (c) => {
       user_id: wikiPages.user_id,
       slug: wikiPages.slug,
       scope: wikiPages.scope,
-      metadata: sql<any>`NULL`,
-      source_message_id: sql<string | null>`NULL`,
+      metadata: wikiPages.metadata,
+      source_message_id: sourceMessageIdSql(),
+      source_space_id: sourceSpaceIdSql(),
       created_at: wikiPages.created_at,
       updated_at: wikiPages.updated_at,
       space_name: spaces.name,
@@ -174,8 +231,9 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
         user_id: wikiPages.user_id,
         slug: wikiPages.slug,
         scope: wikiPages.scope,
-        metadata: sql<any>`NULL`,
-        source_message_id: sql<string | null>`NULL`,
+        metadata: wikiPages.metadata,
+        source_message_id: sourceMessageIdSql(),
+        source_space_id: sourceSpaceIdSql(),
         created_at: wikiPages.created_at,
         updated_at: wikiPages.updated_at,
         author_name: users.name,
@@ -200,7 +258,8 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
     const body = await c.req.json();
-    const { type, title, content } = body;
+    const { type, title, content, source_message_id } = body;
+    const metadata = cleanMetadata(body.metadata);
 
     const isMember = await requireSpaceMembership(spaceId, user.id);
     if (!isMember) {
@@ -218,6 +277,33 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
 
     if (!wikiType) {
       return c.json({ error: `Invalid type. Valid types: ${WIKI_TYPES.join(', ')} (also accepts: decision, resource, action_item, note)`, code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    let sourceMessageId: string | null = null;
+    let sourceSpaceId: string | null = null;
+    let sourceMessageExcerpt: string | null = null;
+    if (typeof source_message_id === 'string' && source_message_id.trim()) {
+      const [sourceMessage] = await db.select({
+        id: messages.id,
+        space_id: messages.space_id,
+        content: messages.content,
+      })
+        .from(messages)
+        .where(and(
+          eq(messages.id, source_message_id.trim()),
+          eq(messages.org_id, user.org_id),
+          eq(messages.space_id, spaceId),
+          eq(messages.is_deleted, false),
+        ))
+        .limit(1);
+
+      if (!sourceMessage) {
+        return c.json({ error: 'source_message_id must reference a visible message in this space', code: 'VALIDATION_ERROR' }, 400);
+      }
+
+      sourceMessageId = sourceMessage.id;
+      sourceSpaceId = sourceMessage.space_id;
+      sourceMessageExcerpt = stripHtml(sourceMessage.content).slice(0, 200);
     }
 
     let slug = slugify(title);
@@ -240,11 +326,21 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
       title,
       slug,
       content: content || '',
+      metadata,
       confidence: 0.9,
     }).returning();
 
     if (!entry) {
       return c.json({ error: 'Failed to create entry', code: 'INTERNAL_ERROR' }, 500);
+    }
+
+    if (sourceMessageId) {
+      await db.insert(wikiCitations).values({
+        page_id: entry.id,
+        source_type: 'message',
+        source_id: sourceMessageId,
+        excerpt: sourceMessageExcerpt,
+      });
     }
 
     // Enqueue embed-content for the new page
@@ -258,8 +354,9 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
       ...entry,
       author_name: null,
       author_avatar: null,
-      metadata: null,
-      source_message_id: null,
+      metadata,
+      source_message_id: sourceMessageId,
+      source_space_id: sourceSpaceId,
     });
 
     const io = getIO();
@@ -290,6 +387,7 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
     const updates: Record<string, unknown> = {};
     if (body.title !== undefined) updates.title = body.title;
     if (body.content !== undefined) updates.content = body.content;
+    if (body.metadata !== undefined) updates.metadata = cleanMetadata(body.metadata);
     if (body.type !== undefined) {
       const wikiType = LEGACY_TO_WIKI[body.type] || (WIKI_TYPES.includes(body.type as WikiType) ? body.type : null);
       if (wikiType) updates.type = wikiType;
@@ -320,12 +418,13 @@ knowledgeRoutes.patch('/:spaceId/knowledge/:id', async (c) => {
       }
     }
 
+    const citation = await latestMessageCitation(updated.id);
     const result = toKnowledgeEntry({
       ...updated,
       author_name: null,
       author_avatar: null,
-      metadata: null,
-      source_message_id: null,
+      metadata: updated.metadata ?? null,
+      ...citation,
     });
 
     const io = getIO();
@@ -413,8 +512,9 @@ knowledgeRoutes.get('/knowledge/search', async (c) => {
         user_id: wikiPages.user_id,
         slug: wikiPages.slug,
         scope: wikiPages.scope,
-        metadata: sql<any>`NULL`,
-        source_message_id: sql<string | null>`NULL`,
+        metadata: wikiPages.metadata,
+        source_message_id: sourceMessageIdSql(),
+        source_space_id: sourceSpaceIdSql(),
         created_at: wikiPages.created_at,
         updated_at: wikiPages.updated_at,
         author_name: users.name,

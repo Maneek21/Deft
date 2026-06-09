@@ -44,7 +44,7 @@ Transform Deft from an AI-native workspace into an **agentic employee platform**
 | Cron job scheduler | `apps/api/src/lib/job-scheduler.ts` | Shipping |
 | 12+ background workers | `apps/api/src/workers/handlers/` | Shipping |
 | OAuth connection framework | `apps/api/src/routes/connections.ts` | Shipping (Google, GitHub) |
-| Unified events table | `events` table (source: google_calendar, github, slack, gmail, linear) | Schema ready |
+| Unified events table | `events` table (source: google_calendar, ics, github, linear) | Schema ready |
 | Wiki with full-text search | `wikiPages`, `wikiLinks`, `wikiCitations` | Shipping |
 | Encrypted token storage | `connectedAccounts` table | Shipping |
 | Audit trail | `apps/api/src/lib/audit.ts` | Shipping |
@@ -57,8 +57,6 @@ Transform Deft from an AI-native workspace into an **agentic employee platform**
 | Approval tier routing | `agentActions.approval_tier` field (auto/quick/full) | All actions follow same flow regardless of tier. |
 | Tool registry tables | `tools` and `skills` tables in schema | Not connected to agent engine. Tools are hardcoded in `agent-tools.ts`. |
 | Trigger system | `triggers` table (event_type, condition, actions, schedule) | Table exists, no execution engine reads it. |
-| Slack integration | `slack` in events source enum | No OAuth flow, no sync handler. |
-| Gmail integration | `gmail` in events source enum | No OAuth flow, no sync handler. |
 | Linear integration | `linear` in events source enum | No OAuth flow, no sync handler. |
 | GitHub write | `create_github_issue` mentioned | Not implemented. |
 | Org model overrides | `orgConfig.ai_models` in LLM router | Not wired to settings UI. |
@@ -175,7 +173,7 @@ Add an MCP client to the agent engine. This is the universal adapter.
 Agent Engine
   └── MCP Client
         ├── Zapier MCP → 8,000 apps, 30,000 actions (instant breadth)
-        ├── Official MCP servers (Slack, GitHub, Google Workspace, etc.)
+        ├── Official MCP servers (GitHub, Google Workspace, etc.)
         └── Custom/org-specific MCP servers
 ```
 
@@ -191,7 +189,7 @@ Agent Engine
 interface MCPConnection {
   id: string;
   org_id: string;
-  name: string;             // "Zapier MCP", "Slack MCP", "Custom: Ahrefs"
+  name: string;             // "Zapier MCP", "GitHub MCP", "Custom: Ahrefs"
   server_url: string;       // MCP server endpoint
   auth: MCPAuth;            // API key, OAuth token, etc.
   enabled_tools: string[];  // Which tools from this server are active
@@ -223,8 +221,6 @@ For tools where we need deeper integration than MCP provides (real-time sync, we
 
 | Integration | Read | Write | Sync |
 |---|---|---|---|
-| Slack | Messages, channels, users | Post messages, create channels | Webhook: new messages → events table |
-| Gmail | Emails, threads, labels | Draft/send emails (with approval) | Periodic sync → events table |
 | GitHub | Issues, PRs, actions, releases | Create issues, comment on PRs | Webhook: PR events → events table |
 | Linear | Issues, projects, cycles | Create/update issues | Webhook: issue changes → events table |
 | Google Calendar | Already built | Already built | Already built |
@@ -420,7 +416,7 @@ An agent employee is a special type of org member. It has a `user_id` in the `us
 | **Marketing Manager** | Campaign tracking, content calendar, SEO monitoring | Native + Zapier (Ahrefs, Mailchimp, Buffer) | Weekly SEO report, campaign metrics, content due dates |
 | **Bookkeeper** | Invoice management, expense tracking, financial reporting | Native + Zapier (QuickBooks/Xero, Stripe) | Invoice overdue, month-end report, payment received |
 | **HR Manager** | Onboarding, team health, performance reviews | Native + Zapier (Keka/BambooHR) + Google Calendar | New hire onboard, leave request, burnout signal, quarterly review |
-| **Executive Assistant** | Calendar management, email triage, briefings | Native + Google Calendar + Gmail MCP | Morning briefing, meeting prep, email summary |
+| **Executive Assistant** | Calendar management, email triage, briefings | Native + Google Calendar | Morning briefing, meeting prep, email summary |
 
 ### Layer 4: Deft MCP Server (Open Platform)
 
@@ -468,7 +464,7 @@ HR Agent (lead):
   Step 2: Add to #engineering and #general spaces → [native: add member]
   Step 3: Create onboarding task list → [native: create tasks]
   Step 4: Schedule 1:1 with manager → [delegate to Executive Assistant agent]
-  Step 5: Send welcome email → [Gmail MCP]
+  Step 5: Create a welcome task in Deft
   Step 6: Set up GitHub access → [delegate to Engineering Lead agent]
   Step 7: Post welcome in #general → [native: post message]
 ```
@@ -625,10 +621,9 @@ Three ways users connect MCP tools to Deft:
 
 #### 2. Official MCP Servers (Deep Integration)
 
-**Setup:** Admin adds MCP server URL in Settings > MCP Connections. Some servers need OAuth (GitHub, Slack, Google), others need API keys.
+**Setup:** Admin adds MCP server URL in Settings > MCP Connections. Some servers need OAuth (GitHub, Google), others need API keys.
 
 **Available servers (from Anthropic's official list):**
-- Slack MCP — channels, messages, users, post messages
 - GitHub MCP — repos, issues, PRs, actions, create issues, comment
 - Google Drive MCP — files, folders, search, read
 - Google Maps MCP — geocoding, directions, places
@@ -761,7 +756,7 @@ Enterprise Infrastructure
 5. Route MCP tool execution through existing approval pipeline
 6. Build Settings > MCP Connections UI
 7. Zapier MCP guided setup flow
-8. Test with 3-5 MCP servers (Zapier, Slack, GitHub, Sentry)
+8. Test with 3-5 MCP servers (Zapier, GitHub, Sentry)
 
 ### Phase 3: Agent Employees (Weeks 9-14)
 

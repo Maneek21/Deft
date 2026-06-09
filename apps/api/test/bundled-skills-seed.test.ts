@@ -19,10 +19,9 @@ const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
 const EXPECTED_SLUGS = [
-  // 4 available capability-pack skills (one per non-coming-soon pack)
+  // Available capability-pack skills (one per non-coming-soon pack)
   'deft-workspace',
   'tavily',
-  'github',
   'google-calendar',
   // BYOA on-ramp
   'deft-mcp-client',

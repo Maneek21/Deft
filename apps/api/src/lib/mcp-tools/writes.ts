@@ -28,6 +28,8 @@ import {
   projects,
   spaces,
   spaceMembers,
+  taskActivity,
+  workflowRules,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -39,6 +41,9 @@ import {
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
+import { getProjectResolvedConfig } from '../project-resolved-config.js';
+import { isValidTransition } from '../task-status-machine.js';
+import { enqueue, QUEUE_NAMES } from '../queues.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -271,6 +276,43 @@ export async function executeTaskCreate(
       })
       .returning();
 
+    await db.insert(taskActivity).values({
+      org_id: ctx.org_id,
+      task_id: task!.id,
+      user_id: shadowUserId,
+      action: 'created',
+    });
+
+    try {
+      const [project] = await db
+        .select({ prefix: projects.prefix, name: projects.name })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .limit(1);
+      const { getIO } = await import('../../socket.js');
+      const io = getIO();
+      if (io) {
+        io.to(`org:${ctx.org_id}`).emit('task:created', {
+          ...task,
+          project_prefix: project?.prefix,
+          project_name: project?.name,
+        });
+      }
+    } catch {
+      // Socket broadcast is best-effort in tests and headless workers.
+    }
+
+    try {
+      await enqueue(QUEUE_NAMES.AGENT_JOBS, 'duplicate-detect', {
+        taskId: task!.id,
+        title: task!.title,
+        projectId,
+        orgId: ctx.org_id,
+      });
+    } catch (err) {
+      console.error('[mcp task_create] Failed to enqueue duplicate-detect:', err);
+    }
+
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
     const resultPayload = {
@@ -367,11 +409,89 @@ export async function executeTaskUpdate(
   try {
     const patch = args.patch;
     const update: Record<string, unknown> = {};
+    const activityEntries: {
+      action: string;
+      field: string;
+      old_value: string | null;
+      new_value: string | null;
+    }[] = [];
+
+    const shadowUserId = await getShadowUserId(ctx.employee_id);
+    if (!shadowUserId) {
+      return errorResult(
+        `task_update: no shadow user for employee ${ctx.employee_id}`,
+      );
+    }
+
+    const [existingTask] = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
+      .limit(1);
+
+    if (!existingTask) {
+      return errorResult(`task_update: task ${args.task_id} not found`);
+    }
+
     if (typeof patch.title === 'string') update.title = patch.title;
     if (typeof patch.description === 'string') update.description = patch.description;
-    if (patch.status && VALID_STATUS.has(patch.status)) update.status = patch.status;
-    if (patch.priority && VALID_PRIORITY.has(patch.priority)) update.priority = patch.priority;
-    if (patch.assignee_id !== undefined) update.assignee_id = patch.assignee_id;
+    if (patch.status && VALID_STATUS.has(patch.status)) {
+      if (patch.status !== existingTask.status) {
+        const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
+        if (!isValidTransition(existingTask.status, patch.status, resolvedConfig)) {
+          return errorResult('task_update: invalid status transition');
+        }
+        update.status = patch.status;
+        activityEntries.push({
+          action: 'status_changed',
+          field: 'status',
+          old_value: existingTask.status,
+          new_value: patch.status,
+        });
+      }
+    }
+    if (patch.priority && VALID_PRIORITY.has(patch.priority)) {
+      if (patch.priority !== existingTask.priority) {
+        update.priority = patch.priority;
+        activityEntries.push({
+          action: 'priority_changed',
+          field: 'priority',
+          old_value: existingTask.priority,
+          new_value: patch.priority,
+        });
+      }
+    }
+    if (patch.assignee_id !== undefined) {
+      const assigneeId = patch.assignee_id || null;
+      if (assigneeId !== existingTask.assignee_id) {
+        update.assignee_id = assigneeId;
+        activityEntries.push({
+          action: 'assigned',
+          field: 'assignee_id',
+          old_value: existingTask.assignee_id ?? null,
+          new_value: assigneeId,
+        });
+      }
+    }
+    if (typeof patch.title === 'string' && patch.title !== existingTask.title) {
+      activityEntries.push({
+        action: 'title_changed',
+        field: 'title',
+        old_value: existingTask.title,
+        new_value: patch.title,
+      });
+    }
+    if (
+      typeof patch.description === 'string' &&
+      patch.description !== (existingTask.description ?? '')
+    ) {
+      activityEntries.push({
+        action: 'description_changed',
+        field: 'description',
+        old_value: existingTask.description ?? null,
+        new_value: patch.description,
+      });
+    }
 
     if (Object.keys(update).length === 0) {
       return errorResult('task_update: no valid fields in patch');
@@ -384,6 +504,65 @@ export async function executeTaskUpdate(
       .returning();
 
     if (!row) return errorResult(`task_update: task ${args.task_id} not found`);
+
+    if (activityEntries.length > 0) {
+      await db.insert(taskActivity).values(
+        activityEntries.map((entry) => ({
+          org_id: ctx.org_id,
+          task_id: args.task_id,
+          user_id: shadowUserId,
+          action: entry.action,
+          field: entry.field,
+          old_value: entry.old_value,
+          new_value: entry.new_value,
+        })),
+      );
+    }
+
+    if (update.status && update.status !== existingTask.status) {
+      try {
+        const matchingRules = await db
+          .select({ id: workflowRules.id, trigger_config: workflowRules.trigger_config })
+          .from(workflowRules)
+          .where(and(
+            eq(workflowRules.org_id, ctx.org_id),
+            eq(workflowRules.trigger_type, 'task.status_changed'),
+            eq(workflowRules.is_active, true),
+          ));
+
+        for (const rule of matchingRules) {
+          const cfg = (rule.trigger_config ?? {}) as Record<string, unknown>;
+          const toStatus = (cfg as any).to_status;
+          if (toStatus && toStatus !== update.status) continue;
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'workflow-execute', {
+            workflow_id: rule.id,
+            task_id: args.task_id,
+            actor_user_id: shadowUserId,
+          });
+        }
+      } catch (err) {
+        console.error('[mcp task_update] Failed to enqueue workflow-execute:', (err as Error).message);
+      }
+
+      try {
+        const { getIO } = await import('../../socket.js');
+        const [project] = await db
+          .select({ prefix: projects.prefix, name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, row.project_id))
+          .limit(1);
+        const io = getIO();
+        if (io) {
+          io.to(`org:${ctx.org_id}`).emit('task:updated', {
+            ...row,
+            project_prefix: project?.prefix,
+            project_name: project?.name,
+          });
+        }
+      } catch {
+        // Socket broadcast is best-effort in tests and headless workers.
+      }
+    }
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
@@ -648,13 +827,13 @@ export async function sendMessage(
   return executeSendMessage({ orgId: ctx.org_id, spaceId, content, parentId, ctx });
 }
 
-async function executeSendMessage(opts: {
+export async function executeSendMessage(opts: {
   orgId: string;
   spaceId: string;
   content: string;
   parentId: string | null;
   ctx: ToolContext;
-}): Promise<ToolResult> {
+}, execOpts?: { skipReceipt?: boolean }): Promise<ToolResult> {
   const { orgId, spaceId, content, parentId, ctx } = opts;
   try {
     const shadowUserId = await getShadowUserId(ctx.employee_id);
@@ -695,24 +874,26 @@ async function executeSendMessage(opts: {
       created_at: row!.created_at,
     };
 
-    const actionId = await insertAutoExecActionRow(
-      'send_message',
-      { space_id: spaceId, content, parent_id: parentId } as Record<string, unknown>,
-      ctx,
-    );
-    await patchActionResult(actionId, resultPayload);
-    if (actionId) {
-      await generateReceipt({
-        actionId,
-        orgId,
-        employeeId: ctx.employee_id,
-        proposer: 'employee',
-        proposerId: ctx.employee_id,
-        decision: 'auto_executed',
-        actionName: 'send_message',
-        actionParams: { space_id: spaceId, content, parent_id: parentId },
-        resultJson: resultPayload,
-      });
+    if (!execOpts?.skipReceipt) {
+      const actionId = await insertAutoExecActionRow(
+        'send_message',
+        { space_id: spaceId, content, parent_id: parentId } as Record<string, unknown>,
+        ctx,
+      );
+      await patchActionResult(actionId, resultPayload);
+      if (actionId) {
+        await generateReceipt({
+          actionId,
+          orgId,
+          employeeId: ctx.employee_id,
+          proposer: 'employee',
+          proposerId: ctx.employee_id,
+          decision: 'auto_executed',
+          actionName: 'send_message',
+          actionParams: { space_id: spaceId, content, parent_id: parentId },
+          resultJson: resultPayload,
+        });
+      }
     }
 
     return textResult(resultPayload);

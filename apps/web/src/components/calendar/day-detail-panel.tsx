@@ -1,6 +1,6 @@
 'use client';
 
-import { CalEvent, DayBucket, ITEM_COLORS } from '@/lib/calendar';
+import { CalEvent, DayBucket, ITEM_COLORS, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
 import { formatFullDateLong, formatEventTime } from '@/lib/time';
 import { X, ExternalLink, MapPin, Users, CheckCircle2, Circle, FileText } from 'lucide-react';
 import Link from 'next/link';
@@ -61,6 +61,7 @@ export function DayDetailPanel({
               const startTime = formatEventTime(e.metadata?.start || e.timestamp);
               const endTime = e.metadata?.end ? formatEventTime(e.metadata.end) : null;
               const briefText = briefs?.get(e.id);
+              const eventColor = getEventSourceColor(e.source);
               return (
                 <div key={e.id}
                   className="space-y-1 py-2 border-b last:border-b-0 cursor-pointer hover:opacity-80"
@@ -68,7 +69,7 @@ export function DayDetailPanel({
                   onClick={() => onEventClick?.(e)}>
                   <div className="flex items-start gap-2">
                     <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                      style={{ background: ITEM_COLORS.event }} />
+                      style={{ background: eventColor }} />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
                         {e.title}
@@ -76,6 +77,9 @@ export function DayDetailPanel({
                       <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                         {startTime}{endTime ? ` – ${endTime}` : ''}
                         {e.metadata?.allDay ? ' (All day)' : ''}
+                      </p>
+                      <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                        {getEventSourceLabel(e)}
                       </p>
                     </div>
                     {briefText && (

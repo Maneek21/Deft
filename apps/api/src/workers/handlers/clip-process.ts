@@ -20,7 +20,7 @@ export async function handleClipProcess(job: JobData): Promise<void> {
   // Transcription is a NICE-TO-HAVE, not a gate. If no provider is configured
   // (OPENAI_API_KEY/DEEPGRAM_API_KEY/WHISPER_URL absent or rejecting), the audio
   // clip itself is still the primary artifact — users should be able to record
-  // and play back voice messages without needing an AI provider. Slack/Discord
+  // and play back voice messages without needing an AI provider. Chat apps
   // ship voice clips with no transcription by default. Only if transcription
   // SUCCEEDS do we run summarization and emit transcript/segments.
   let transcription: { text: string; segments: any[]; duration_s: number; model: string } | null = null;

@@ -320,7 +320,7 @@ export const taskComments = pgTable('task_comments', {
 ]);
 
 // ═══ TASK REACTIONS ═══
-// Task 6.3 — Slack-style emoji reactions on tasks. A (task, user, emoji)
+// Task 6.3 — emoji reactions on tasks. A (task, user, emoji)
 // tuple is unique; duplicate POST toggles off, DELETE removes explicitly.
 export const taskReactions = pgTable('task_reactions', {
   ...id(),
@@ -566,7 +566,7 @@ export const tools = pgTable('tools', {
   ...id(),
   name: text('name').notNull().unique(),
   description: text('description').notNull(),
-  category: text('category').notNull(), // 'native', 'google_calendar', 'github', 'slack', 'gmail'
+  category: text('category').notNull(), // 'native', 'google_calendar', 'github'
   params_schema: jsonb('params_schema').notNull(),
   approval_tier: approvalTierEnum('approval_tier').default('quick').notNull(),
   is_active: boolean('is_active').default(true).notNull(),
@@ -595,13 +595,13 @@ export const connectedAccounts = pgTable('connected_accounts', {
   ...id(),
   ...orgId(),
   user_id: text('user_id').notNull().references(() => users.id),
-  provider: text('provider').notNull(), // 'google_calendar', 'github', 'slack', 'gmail'
+  provider: text('provider').notNull(), // 'google_calendar', 'github'
   provider_account_id: text('provider_account_id'),
   access_token_encrypted: text('access_token_encrypted').notNull(),
   refresh_token_encrypted: text('refresh_token_encrypted'),
   token_expires_at: timestamp('token_expires_at'),
   scopes: text('scopes'),
-  metadata: jsonb('metadata'), // provider-specific data (slack workspace, github org, etc.)
+  metadata: jsonb('metadata'), // provider-specific data (github org, calendar metadata, etc.)
   last_sync_at: timestamp('last_sync_at'),
   sync_error: text('sync_error'),
   ...timestamps(),
@@ -614,7 +614,7 @@ export const events = pgTable('events', {
   ...id(),
   ...orgId(),
   source: eventSourceEnum('source').notNull(),
-  event_type: text('event_type').notNull(), // 'calendar_event', 'pr_opened', 'pr_merged', 'slack_message', 'email_received'
+  event_type: text('event_type').notNull(), // 'calendar_event', 'pr_opened', 'pr_merged'
   external_id: text('external_id'), // ID in the source system
   title: text('title'),
   body: text('body'),
@@ -1219,6 +1219,7 @@ export const wikiPages = pgTable('wiki_pages', {
   slug: text('slug').notNull(),
   summary: text('summary'),
   content: text('content').notNull(),
+  metadata: jsonb('metadata'),
   confidence: real('confidence').default(1.0).notNull(),
   version: integer('version').default(1).notNull(),
   previous_content: text('previous_content'),
@@ -1384,6 +1385,16 @@ export const agentEmployees = pgTable('agent_employees', {
   is_byoa: boolean('is_byoa').default(false).notNull(),
   byoa_model_info: text('byoa_model_info'),
   mcp_token_hash: text('mcp_token_hash'),
+  // BYOA runtime/control-plane metadata. Deft registers an already-running
+  // agent as a workplace employee; it does not own the runtime's identity.
+  runtime_kind: text('runtime_kind').default('custom_mcp').notNull(),
+  job_title: text('job_title'),
+  wake_mode: text('wake_mode').default('manual').notNull(),
+  certification_status: text('certification_status').default('token_issued').notNull(),
+  last_verified_at: timestamp('last_verified_at'),
+  last_mcp_call_at: timestamp('last_mcp_call_at'),
+  last_work_outcome_at: timestamp('last_work_outcome_at'),
+  connection_notes: text('connection_notes'),
   // trigger_subscriptions is the routing key for the trigger system (e.g.
   // member.joined, cron:standup) — kept as part of Phase 9.
   trigger_subscriptions: text('trigger_subscriptions').array(),
@@ -1399,6 +1410,40 @@ export const agentEmployees = pgTable('agent_employees', {
 
 // agent_employee_skills: "installed" skills grant the employee tools,
 // capability packs, triggers, and prompt additions (per skills.agent_config).
+// Agent certification challenges prove an external BYOA runtime can actually
+// call Deft tools. They prevent "the agent said it is connected" from becoming
+// an operational status without DB evidence.
+export const agentCertificationChallenges = pgTable('agent_certification_challenges', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  nonce: text('nonce').notNull(),
+  required_tools: text('required_tools').array().notNull(),
+  status: text('status').default('pending').notNull(),
+  failure_reason: text('failure_reason'),
+  started_at: timestamp('started_at').defaultNow().notNull(),
+  completed_at: timestamp('completed_at'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_cert_employee_idx').on(t.employee_id, t.created_at),
+  index('agent_cert_org_status_idx').on(t.org_id, t.status, t.created_at),
+]);
+
+// Append-only audit of MCP tool calls made by BYOA employees.
+export const agentMcpCallAudit = pgTable('agent_mcp_call_audit', {
+  ...id(),
+  ...orgId(),
+  employee_id: text('employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  tool_name: text('tool_name').notNull(),
+  success: boolean('success').default(false).notNull(),
+  error: text('error'),
+  metadata: jsonb('metadata'),
+  ...timestamps(),
+}, (t) => [
+  index('agent_mcp_audit_employee_idx').on(t.employee_id, t.created_at),
+  index('agent_mcp_audit_org_tool_idx').on(t.org_id, t.tool_name, t.created_at),
+]);
+
 export const agentEmployeeSkills = pgTable('agent_employee_skills', {
   agent_employee_id: text('agent_employee_id').notNull()
     .references(() => agentEmployees.id, { onDelete: 'cascade' }),

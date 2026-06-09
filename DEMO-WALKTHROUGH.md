@@ -2,8 +2,8 @@
 
 When you run `pnpm db:seed:demo`, you get a fully lived-in workspace for a
 fictional family tomato farm. Six people, a busy week, real conflicts. Spend
-ten minutes inside and you'll see what makes Deft different from "Slack +
-Linear + Notion."
+ten minutes inside and you'll see what makes Deft different from a pile of
+separate chat, task, and wiki tools.
 
 ---
 
@@ -59,8 +59,7 @@ harvest. Five things are on Diego's mind:
 5. **The food safety audit is in 4 weeks.** Sage just told Diego (in DM) that handwashing compliance is at 60%. That's audit-failing.
 
 Everything you'll see in chat, tasks, notes, and the wiki traces back to one
-of those five threads. In Slack the conversation floats away. In Linear the
-tasks have no context. In Notion the notes live in a different universe. In
+of those five threads. In a standalone chat app the conversation floats away. In a standalone task tool the tasks have no context. In a standalone wiki the notes live in a different universe. In
 Deft, they're one substrate.
 
 ---
@@ -122,7 +121,7 @@ Diego can see). It synthesizes — with citations.
 
 > **What to notice:** the agent isn't just searching. It's reading the
 > *structured* state of the workspace and forming an answer. This is the
-> direct-SQL-access advantage. ChatGPT plugged into a Slack export cannot
+> direct-SQL-access advantage. A chatbot plugged into a chat export cannot
 > do this.
 
 ### 4. See how the same workspace looks to different people
@@ -159,7 +158,7 @@ chat thread that produced them.
 
 > **What to notice:** notes are personal. Wiki pages are institutional. The
 > agent reads both. The team gets smarter over time because nothing falls
-> into a Slack scrollback.
+> into a chat scrollback.
 
 ---
 
@@ -168,8 +167,8 @@ chat thread that produced them.
 A few things you'll notice are bare. None of them are bugs — they're the
 choices we made to keep the seed self-contained:
 
-- **No integrations connected.** GitHub, Slack, Google Calendar, Gmail — the connector UI is wired and shows in Settings, but nothing is linked. Connect your own to see the events / calendar / PR features pull live data.
-- **No OAuth providers.** Email + password only. Google / GitHub sign-in won't work unless you set `GOOGLE_CLIENT_ID` / `GITHUB_CLIENT_ID` in `.env`.
+- **No integrations connected.** Calendar feeds and MCP connections are available in Settings, but nothing is linked. Add an ICS feed to see external calendar events pull live data.
+- **Email/password auth only.** Self-hosted Deft uses the first signup plus invite flow; managed OAuth sign-in is not part of this build.
 - **No file uploads or images in chat.** Same reason — would have needed real binary fixtures.
 - **AI is opt-in.** Without `SEED_OPENAI_KEY` (or BYOK in Settings → AI), the agent is dormant. The workspace works fully without it — chat + tasks + notes + wiki + reactions + threads all functional.
 

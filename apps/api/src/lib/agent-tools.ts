@@ -735,11 +735,12 @@ export const ACTION_TOOLS = new Set([
   'mark_decision_implemented',
 ]);
 
-// Calendar tools (only added when calendar is connected)
-export const CALENDAR_TOOLS: Anthropic.Tool[] = [
+// Calendar read tools are always available because native + ICS events are
+// stored in Deft without a provider OAuth connection.
+export const CALENDAR_READ_TOOLS: Anthropic.Tool[] = [
   {
     name: 'check_calendar',
-    description: 'Check the user\'s Google Calendar for events and meetings.',
+    description: 'Check the user\'s Deft calendar for events and meetings, including native events and imported ICS feeds.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -747,22 +748,6 @@ export const CALENDAR_TOOLS: Anthropic.Tool[] = [
         query: { type: 'string', description: 'Search for events by title or attendee' },
       },
       required: [],
-    },
-  },
-  {
-    name: 'create_calendar_event',
-    description: 'Create a new event on Google Calendar. REQUIRES USER APPROVAL.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        title: { type: 'string' },
-        start: { type: 'string', description: 'Start time ISO 8601' },
-        end: { type: 'string', description: 'End time ISO 8601' },
-        description: { type: 'string' },
-        attendees: { type: 'array', items: { type: 'string' }, description: 'List of email addresses' },
-        location: { type: 'string' },
-      },
-      required: ['title', 'start', 'end'],
     },
   },
 ];
@@ -782,8 +767,7 @@ export const GITHUB_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-// Action tools for calendar/github that require approval
-export const CALENDAR_ACTION_TOOLS = ['create_calendar_event'];
+// Action tools for github that require approval
 export const GITHUB_ACTION_TOOLS = ['create_github_issue'];
 
 // ─── Manager / Team Tools ───

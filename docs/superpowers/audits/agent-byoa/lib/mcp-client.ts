@@ -15,6 +15,7 @@ interface JsonRpcResponse<T> {
 export function createMcpClient(opts: { apiUrl: string; bearer: string }): McpClient {
   const url = `${opts.apiUrl.replace(/\/$/, '')}/api/mcp/v1`;
   let nextId = 1;
+  const auditToken = process.env.DEFT_AUDIT_BYPASS_TOKEN;
 
   async function rpc<T>(method: string, params?: unknown): Promise<T> {
     const id = nextId++;
@@ -23,6 +24,7 @@ export function createMcpClient(opts: { apiUrl: string; bearer: string }): McpCl
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${opts.bearer}`,
+        ...(auditToken ? { 'x-deft-audit-token': auditToken } : {}),
       },
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
     });

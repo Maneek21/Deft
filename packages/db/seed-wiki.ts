@@ -49,8 +49,8 @@ const pages: Page[] = [
     summary: 'Rich text editor used in chat and notes',
     content: 'TipTap provides the rich text editing experience in chat messages and notes.\n\nExtensions loaded:\n- StarterKit (bold, italic, lists, headings)\n- Link (with auto-detection)\n- Mention (@user references)\n- Code block (with syntax highlighting)\n- Placeholder\n\nImportant: Only import needed extensions to keep bundle size small.' },
   { slug: 'better-auth', title: 'better-auth Library', type: 'entity', confidence: 1.0, scope: 'org',
-    summary: 'Authentication library handling JWT + refresh tokens + Google OAuth',
-    content: 'better-auth handles all authentication:\n- Email/password login with bcrypt hashing\n- JWT access tokens (15 min expiry)\n- Refresh tokens (7 day expiry)\n- Google OAuth integration\n- Email verification via Resend\n\nThe auth middleware validates tokens and sets user context on every request.' },
+    summary: 'Authentication handling for email/password login with JWT + refresh tokens',
+    content: 'Deft handles authentication with:\n- Email/password login with bcrypt hashing\n- JWT access tokens (15 min expiry)\n- Refresh tokens (7 day expiry)\n- First-user workspace bootstrap\n- Invite-based onboarding for later users\n\nThe auth middleware validates tokens and sets user context on every request.' },
 
   // ── DECISIONS ──
   { slug: 'decision-no-supabase', title: 'No Supabase', type: 'decision', confidence: 1.0, scope: 'org',

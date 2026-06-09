@@ -139,7 +139,6 @@ Most relevant MCP servers for Deft agent employees:
 | **Zapier** | 7,000+ app actions (email, CRM, finance, marketing) | High — already planned |
 | **GitHub** | Full API — repos, issues, PRs, code search, workflows | High — partially built |
 | **Browserbase / Playwright** | Web browsing, research, form filling | High — unlocks research tasks |
-| **Slack** | Read/send messages, channels, users | Medium — scaffolded |
 | **Google Drive** | Read/create documents, sheets, presentations | Medium — unlocks doc generation |
 | **Supabase / PostgreSQL** | Query external databases | Medium — extend SQL advantage |
 | **Sentry** | Error monitoring, issue tracking | Medium — engineering agent use case |
@@ -152,9 +151,9 @@ Most relevant MCP servers for Deft agent employees:
 
 ### How Top Agents Initiate Work
 
-**Cursor Automations:** Agents triggered by code changes, Slack messages, timers, or PagerDuty incidents. The agent runs autonomously in the cloud without human initiation.
+**Cursor Automations:** Agents triggered by code changes, code changes, timers, or PagerDuty incidents. The agent runs autonomously in the cloud without human initiation.
 
-**Devin:** User describes task in Slack or Teams. Devin works in a cloud sandbox, opening PRs and responding to code review comments autonomously.
+**Devin:** User describes task in a team chat tool. Devin works in a cloud sandbox, opening PRs and responding to code review comments autonomously.
 
 **Manus:** User describes a task, then Manus works for hours/days with full browser, code, and shell access. Returns completed deliverables.
 
@@ -275,13 +274,13 @@ The heartbeat is a scheduled trigger (default: every 30 minutes). On each beat:
 # Heartbeat Tasks
 
 ### Every 30 minutes:
-- Check Gmail via `gog` tool for emails marked "Urgent"
+- Check connected customer-support data for urgent items
 - If found, send summary to Telegram
 - If nothing is urgent, reply with HEARTBEAT_OK
 
 ### Every morning at 9am:
 - Generate daily standup from yesterday's activity
-- Post in #engineering Slack channel
+- Post in the engineering space
 
 ### Every Friday at 5pm:
 - Generate weekly project summary

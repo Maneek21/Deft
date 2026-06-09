@@ -130,7 +130,7 @@ export default function WelcomePage() {
                   Deft is the team workspace where chat, tasks, and your AI agent live in one place. We'll walk you through it in under a minute.
                 </p>
               </div>
-              <FeatureRow icon={<MessageSquare size={16} />} title="Talk in spaces" body="Slack-style channels and DMs. Your team is here." />
+              <FeatureRow icon={<MessageSquare size={16} />} title="Talk in spaces" body="Team channels and DMs. Your team is here." />
               <FeatureRow icon={<ListChecks size={16} />} title="Track tasks" body="Kanban, list, calendar — pick the view, the data follows." />
               <FeatureRow icon={<Sparkles size={16} />} title="Defty, your built-in agent" body="@deft anywhere to ask questions or kick off work." />
               <button onClick={advance} className="self-end mt-2 h-10 px-5 flex items-center gap-2 text-[0.875rem] font-semibold"

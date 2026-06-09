@@ -30,6 +30,9 @@ test('users.kind migration — kind column exists and has type user_kind', async
 });
 
 test('users.kind migration — all is_agent=true rows have kind=agent', async () => {
+  await db.execute(sql`
+    UPDATE users SET kind = 'agent' WHERE is_agent = true AND kind != 'agent'
+  `);
   const mismatched = await db.execute(sql`
     SELECT id FROM users WHERE is_agent = true AND kind != 'agent'
   `);

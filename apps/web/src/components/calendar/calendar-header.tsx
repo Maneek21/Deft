@@ -1,7 +1,7 @@
 'use client';
 
 import { CalendarView } from '@/lib/calendar';
-import { ChevronLeft, ChevronRight, Link as LinkIcon, RefreshCw, Plus } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Link as LinkIcon, Plus } from 'lucide-react';
 import Link from 'next/link';
 
 const VIEW_LABELS: { value: CalendarView; label: string }[] = [
@@ -11,8 +11,7 @@ const VIEW_LABELS: { value: CalendarView; label: string }[] = [
 ];
 
 export function CalendarHeader({
-  view, anchor, onPrev, onNext, onToday, onViewChange, isConnected,
-  onSync, syncing, onNewEvent,
+  view, anchor, onPrev, onNext, onToday, onViewChange, onNewEvent,
 }: {
   view: CalendarView;
   anchor: Date;
@@ -20,9 +19,6 @@ export function CalendarHeader({
   onNext: () => void;
   onToday: () => void;
   onViewChange: (v: CalendarView) => void;
-  isConnected: boolean | null;
-  onSync?: () => void;
-  syncing?: boolean;
   onNewEvent?: () => void;
 }) {
   const title = getTitle(view, anchor);
@@ -61,31 +57,11 @@ export function CalendarHeader({
           </button>
         )}
 
-        {/* Connection status + sync */}
-        {isConnected !== null && (
-          <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-            {isConnected ? (
-              <>
-                <div className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e' }} />
-                <span>Google Calendar</span>
-                {onSync && (
-                  <button onClick={onSync} disabled={syncing}
-                    className="p-1 rounded hover:opacity-70 transition-colors ml-0.5"
-                    style={{ color: 'var(--text-tertiary)' }}
-                    title="Sync now">
-                    <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
-                  </button>
-                )}
-              </>
-            ) : (
-              <Link href="/settings/integrations" className="hidden md:flex items-center gap-1 hover:underline"
-                style={{ color: 'var(--accent)' }}>
-                <LinkIcon size={11} />
-                Connect Calendar
-              </Link>
-            )}
-          </div>
-        )}
+        <Link href="/settings/calendar" className="hidden md:flex items-center gap-1 text-[11px] hover:underline"
+          style={{ color: 'var(--accent)' }}>
+          <LinkIcon size={11} />
+          Calendar feeds
+        </Link>
 
         <div className="flex rounded-lg overflow-hidden"
           style={{ border: '1px solid var(--border-default)' }}>

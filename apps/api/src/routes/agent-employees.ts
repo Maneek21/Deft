@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, or, isNull, asc } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc, gte } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -17,6 +17,9 @@ import {
   agentActions,
   apiKeys,
   agentEmployeeTemplates,
+  agentCertificationChallenges,
+  agentMcpCallAudit,
+  agentCooperativeLog,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 
@@ -405,11 +408,27 @@ agentEmployeeRoutes.get('/:id', async (c) => {
 
 // ═══ CREATE ═══
 
+const AGENT_EMPLOYEE_ROLES = [
+  'project_manager',
+  'engineering_lead',
+  'executive_assistant',
+  'product_designer',
+  'qa_engineer',
+  'customer_success',
+  'community_manager',
+  'cfo',
+  'custom',
+] as const;
+
 const createSchema = z.object({
   name: z.string().min(1).max(100),
-  role: z.enum(['project_manager', 'engineering_lead', 'executive_assistant', 'custom']),
+  role: z.enum(AGENT_EMPLOYEE_ROLES),
+  runtime_kind: z.string().min(1).max(64).optional(),
+  job_title: z.string().min(1).max(120).optional(),
+  wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).default('manual'),
   system_prompt: z.string().min(1),
   expertise_description: z.string().optional(),
+  connection_notes: z.string().max(2000).optional(),
   avatar_url: z.string().url().optional(),
   // native_tools dropped in Task 4.12 (skills primitive now owns per-employee
   // tool selection).
@@ -432,6 +451,424 @@ function roleToTitle(role: string): string {
     .join(' ');
 }
 
+function baseSlugForName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'agent';
+}
+
+async function uniqueEmployeeSlug(orgId: string, name: string): Promise<string> {
+  const base = baseSlugForName(name);
+  let candidate = base;
+  let attempt = 1;
+
+  while (attempt < 100) {
+    const [exists] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.org_id, orgId), eq(agentEmployees.slug, candidate)))
+      .limit(1);
+    if (!exists) return candidate;
+    attempt += 1;
+    candidate = `${base}-${attempt}`;
+  }
+
+  return `${base}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+}
+
+function mcpEndpointUrl(): string {
+  const apiBase =
+    process.env.PUBLIC_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.API_BASE_URL ??
+    'http://localhost:3001';
+  return `${apiBase.replace(/\/$/, '')}/api/mcp/v1`;
+}
+
+const CERTIFICATION_REQUIRED_TOOLS = [
+  'platform_context',
+  'task_query',
+  'ping_alive',
+  'record_conversation_turn',
+  'record_decision',
+] as const;
+
+type RuntimeSetupCommand = {
+  label: string;
+  command: string;
+  description: string;
+};
+
+type RuntimeSetup = {
+  runtime_kind: string;
+  tool_server_name: string | null;
+  tool_name_style: 'bare' | 'server_prefixed';
+  tool_call_names: string[];
+  setup_steps: string[];
+  commands: RuntimeSetupCommand[];
+  config_snippet: string | null;
+  bridge_script: string | null;
+  certification_prompt: string;
+  troubleshooting: string[];
+};
+
+type CertificationStage = {
+  key: string;
+  label: string;
+  status: 'pass' | 'pending';
+  detail: string;
+};
+
+function runtimeKindOf(employee: { runtime_kind?: string | null }): string {
+  return employee.runtime_kind || 'custom_mcp';
+}
+
+function runtimeToolName(runtimeKind: string, tool: string): string {
+  return runtimeKind === 'hermes' ? `mcp_deft_${tool}` : tool;
+}
+
+function hermesBridgeScript(): string {
+  return `#!/usr/bin/env node
+import { stdin, stdout } from 'node:process';
+
+const endpoint = process.env.DEFT_MCP_URL;
+const token = process.env.DEFT_MCP_TOKEN;
+
+if (!endpoint || !token) {
+  console.error('DEFT_MCP_URL and DEFT_MCP_TOKEN are required.');
+  process.exit(1);
+}
+
+let buffer = Buffer.alloc(0);
+let replyMode = 'content-length';
+
+stdin.on('data', (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  drain();
+});
+
+function drain() {
+  while (buffer.length > 0) {
+    const text = buffer.toString('utf8');
+    const headerEnd = text.indexOf('\\r\\n\\r\\n');
+    if (headerEnd !== -1) {
+      const header = text.slice(0, headerEnd);
+      const match = header.match(/Content-Length:\\s*(\\d+)/i);
+      if (!match) {
+        buffer = buffer.subarray(headerEnd + 4);
+        continue;
+      }
+      const length = Number(match[1]);
+      const start = Buffer.byteLength(text.slice(0, headerEnd + 4));
+      if (buffer.length < start + length) return;
+      replyMode = 'content-length';
+      handleEnvelope(buffer.subarray(start, start + length).toString('utf8'));
+      buffer = buffer.subarray(start + length);
+      continue;
+    }
+
+    const newline = text.indexOf('\\n');
+    if (newline === -1) return;
+    const line = text.slice(0, newline).trim();
+    buffer = buffer.subarray(Buffer.byteLength(text.slice(0, newline + 1)));
+    if (line) {
+      replyMode = 'line';
+      handleEnvelope(line);
+    }
+  }
+}
+
+async function handleEnvelope(raw) {
+  let envelope;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  let response;
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: \`Bearer \${token}\`,
+      },
+      body: JSON.stringify(envelope),
+    });
+    response = await res.json();
+  } catch (err) {
+    response = {
+      jsonrpc: '2.0',
+      id: envelope.id ?? null,
+      error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+    };
+  }
+  writeEnvelope(response);
+}
+
+function writeEnvelope(payload) {
+  const body = JSON.stringify(payload);
+  if (replyMode === 'line') {
+    stdout.write(\`\${body}\\n\`);
+    return;
+  }
+  stdout.write(\`Content-Length: \${Buffer.byteLength(body, 'utf8')}\\r\\n\\r\\n\${body}\`);
+}
+`;
+}
+
+function buildCertificationPrompt(
+  employee: { name: string; slug: string; runtime_kind?: string | null },
+  nonce: string,
+): string {
+  const runtimeKind = runtimeKindOf(employee);
+  const toolNames = CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool));
+  const taskCreate = runtimeToolName(runtimeKind, 'task_create');
+  const prefixNote = runtimeKind === 'hermes'
+    ? 'Hermes exposes Deft MCP tools to the model as mcp_deft_<tool>, so use the exact names below.'
+    : 'Use the Deft MCP tools below.';
+
+  return [
+    `You are ${employee.name}, a BYOA employee in Deft.`,
+    prefixNote,
+    `Use caller_employee_slug exactly as "${employee.slug}" on every Deft MCP tool call.`,
+    `Call these tools now: ${toolNames.join(', ')}.`,
+    `Include this exact certification nonce in record_conversation_turn and record_decision: ${nonce}.`,
+    `If ${taskCreate} is available, create one small useful task for the organization after certification.`,
+    'Finish with a short natural-language summary. Do not prefix every future message with your own name.',
+  ].join('\n');
+}
+
+function buildRuntimeSetup(
+  employee: { name: string; slug: string; runtime_kind?: string | null },
+  nonce: string | null,
+): RuntimeSetup {
+  const runtimeKind = runtimeKindOf(employee);
+  const endpoint = mcpEndpointUrl();
+  const certificationPrompt = buildCertificationPrompt(employee, nonce ?? '<challenge-nonce>');
+
+  if (runtimeKind === 'hermes') {
+    return {
+      runtime_kind: runtimeKind,
+      tool_server_name: 'deft',
+      tool_name_style: 'server_prefixed',
+      tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
+      setup_steps: [
+        'Save the Deft stdio bridge as deft-mcp-stdio.mjs on the machine where Hermes runs.',
+        'Add the mcp_servers.deft block to the active Hermes config.yaml.',
+        'Restart or reload Hermes so the MCP server is discovered.',
+        'Run hermes mcp test deft and verify Deft reports the Deft MCP tool list.',
+        'Run a Hermes chat prompt that uses the model-visible mcp_deft_<tool> names.',
+        'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
+      ],
+      commands: [
+        {
+          label: 'List configured MCP servers',
+          command: 'hermes mcp list',
+          description: 'Confirms the deft server is configured and enabled.',
+        },
+        {
+          label: 'Test Deft MCP discovery',
+          command: 'hermes mcp test deft',
+          description: 'Confirms Hermes can initialize the bridge and discover Deft tools.',
+        },
+        {
+          label: 'Verify enabled tools',
+          command: 'hermes tools list',
+          description: 'Confirms the deft MCP tools are enabled for the CLI platform.',
+        },
+        {
+          label: 'Run certification prompt',
+          command: `hermes chat -q "${certificationPrompt.replace(/"/g, '\\"')}" --cli --max-turns 20`,
+          description: 'Confirms the Hermes model loop can call Deft tools, not just discover them.',
+        },
+      ],
+      config_snippet: [
+        'mcp_servers:',
+        '  deft:',
+        '    command: node',
+        '    args:',
+        '      - /absolute/path/to/deft-mcp-stdio.mjs',
+        '    env:',
+        `      DEFT_MCP_URL: ${endpoint}`,
+        '      DEFT_MCP_TOKEN: <bearer-token>',
+        '    connect_timeout: 60',
+        '    timeout: 120',
+      ].join('\n'),
+      bridge_script: hermesBridgeScript(),
+      certification_prompt: certificationPrompt,
+      troubleshooting: [
+        'If hermes mcp test deft passes but certification is pending, the model loop has not called Deft tools yet.',
+        'Hermes tools/list may describe tools as deft:<tool>, but the model-visible tools are named mcp_deft_<tool>.',
+        'Use names such as mcp_deft_ping_alive in the prompt; bare names may be ignored by Hermes.',
+        'Use mcp_deft_memory_recall for wiki context; mcp_deft_wiki_search exists only for compatibility with older/native wording.',
+        'If Hermes exits before tool calls with a provider/auth error, fix Hermes model credentials first.',
+        'Avoid passing a toolset override that disables MCP tools for the run.',
+      ],
+    };
+  }
+
+  return {
+    runtime_kind: runtimeKind,
+    tool_server_name: null,
+    tool_name_style: 'bare',
+    tool_call_names: [...CERTIFICATION_REQUIRED_TOOLS],
+    setup_steps: [
+      'Connect the runtime to the Deft MCP endpoint with its bearer token.',
+      'Pass caller_employee_slug on every Deft MCP tool call.',
+      'Use memory_recall for Deft wiki context; wiki_search is accepted as a compatibility alias.',
+      'Run certification before assigning real work.',
+    ],
+    commands: [],
+    config_snippet: null,
+    bridge_script: null,
+    certification_prompt: certificationPrompt,
+    troubleshooting: [
+      'If the MCP endpoint is reachable but certification is pending, check whether the runtime actually called the required tools.',
+      'If every call fails with caller slug errors, verify caller_employee_slug matches the employee slug exactly.',
+      'Use memory_recall for wiki context; wiki_search exists only for compatibility with older/native wording.',
+    ],
+  };
+}
+
+function certificationInstructions(
+  employee: { name: string; slug: string; runtime_kind?: string | null },
+  nonce: string,
+): string {
+  const setup = buildRuntimeSetup(employee, nonce);
+  const required = setup.tool_call_names.join(', ');
+  return [
+    `Connect the runtime to ${mcpEndpointUrl()} with its bearer token.`,
+    `Use caller_employee_slug exactly as "${employee.slug}" on every tool call.`,
+    `Run these Deft MCP tools: ${required}.`,
+    `Include this exact challenge nonce in record_conversation_turn and record_decision: ${nonce}.`,
+    'For task_query, search for any active task or request a small list. Do not mutate task state during certification.',
+    `For ping_alive, identify yourself naturally as ${employee.name}; do not prefix every future chat message with your name.`,
+    ...setup.troubleshooting.map((line) => `Troubleshooting: ${line}`),
+  ].join('\n');
+}
+
+function buildCertificationStages(params: {
+  employee: { certification_status?: string | null; last_mcp_call_at?: Date | string | null; runtime_kind?: string | null };
+  missingTools: string[];
+  nonceSeen: boolean;
+  auditCount: number;
+  completed: boolean;
+}): CertificationStage[] {
+  const runtimeKind = runtimeKindOf(params.employee);
+  const hasToken = Boolean(params.employee.certification_status);
+  const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
+  const toolsCalled = params.missingTools.length === 0;
+  return [
+    {
+      key: 'token_issued',
+      label: 'Token issued',
+      status: hasToken ? 'pass' : 'pending',
+      detail: hasToken ? 'Deft has issued an employee bearer token.' : 'Generate a token for this employee.',
+    },
+    {
+      key: 'mcp_reachable',
+      label: 'MCP reachable',
+      status: mcpReachable ? 'pass' : 'pending',
+      detail: mcpReachable
+        ? 'Deft has seen this employee reach the MCP server.'
+        : runtimeKind === 'hermes'
+          ? 'Run hermes mcp test deft after adding the Deft bridge.'
+          : 'Connect the runtime to the Deft MCP endpoint.',
+    },
+    {
+      key: 'required_tools_called',
+      label: 'Required tools called',
+      status: toolsCalled ? 'pass' : 'pending',
+      detail: toolsCalled
+        ? 'All required Deft certification tools have been called.'
+        : `Missing: ${params.missingTools.join(', ')}`,
+    },
+    {
+      key: 'cooperative_nonce_seen',
+      label: 'Nonce recorded',
+      status: params.nonceSeen ? 'pass' : 'pending',
+      detail: params.nonceSeen
+        ? 'The challenge nonce was recorded in the cooperative log.'
+        : 'Call record_conversation_turn or record_decision with the challenge nonce.',
+    },
+    {
+      key: 'verified',
+      label: 'Verified employee',
+      status: params.completed ? 'pass' : 'pending',
+      detail: params.completed
+        ? 'This employee passed certification.'
+        : runtimeKind === 'hermes'
+          ? 'Hermes must call mcp_deft_* tools from the model loop before this turns green.'
+          : 'Complete the missing stages to verify this employee.',
+    },
+  ];
+}
+
+function certificationFailureReason(params: {
+  employee: { runtime_kind?: string | null; last_mcp_call_at?: Date | string | null };
+  missingTools: string[];
+  nonceSeen: boolean;
+  auditCount: number;
+}): string | null {
+  if (params.missingTools.length === 0 && params.nonceSeen) return null;
+  const runtimeKind = runtimeKindOf(params.employee);
+  const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
+  if (!mcpReachable) {
+    return runtimeKind === 'hermes'
+      ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the bridge config.'
+      : 'The runtime has not reached Deft MCP yet.';
+  }
+  if (params.missingTools.length > 0) {
+    return runtimeKind === 'hermes'
+      ? `Hermes can reach Deft MCP, but its model loop has not called: ${params.missingTools.map((tool) => runtimeToolName('hermes', tool)).join(', ')}. Check model auth and use the mcp_deft_* tool names.`
+      : `The runtime has not called: ${params.missingTools.join(', ')}.`;
+  }
+  return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
+}
+
+async function issueMcpToken({
+  orgId,
+  employeeId,
+  employeeName,
+  createdBy,
+  deactivateExisting = false,
+}: {
+  orgId: string;
+  employeeId: string;
+  employeeName: string;
+  createdBy: string;
+  deactivateExisting?: boolean;
+}): Promise<string> {
+  const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  const rawApiKey = `deft_${keyId}`;
+  const keyHash = await bcrypt.hash(rawApiKey, 12);
+  const keyPrefix = rawApiKey.slice(0, 12);
+
+  if (deactivateExisting) {
+    await db
+      .update(apiKeys)
+      .set({ is_active: false })
+      .where(and(eq(apiKeys.org_id, orgId), eq(apiKeys.agent_employee_id, employeeId)));
+  }
+
+  await db.insert(apiKeys).values({
+    org_id: orgId,
+    agent_employee_id: employeeId,
+    name: `${employeeName} API Key`,
+    key_hash: keyHash,
+    key_prefix: keyPrefix,
+    permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
+    created_by: createdBy,
+  });
+
+  await db
+    .update(agentEmployees)
+    .set({ mcp_token_hash: keyHash })
+    .where(eq(agentEmployees.id, employeeId));
+
+  return rawApiKey;
+}
+
 agentEmployeeRoutes.post('/', async (c) => {
   try {
     const currentUser = c.get('user');
@@ -445,7 +882,7 @@ agentEmployeeRoutes.post('/', async (c) => {
     const data = parsed.data;
 
     // 1. Create user record with is_agent: true
-    const title = roleToTitle(data.role);
+    const title = data.job_title?.trim() || roleToTitle(data.role);
     const [agentUser] = await db
       .insert(users)
       .values({
@@ -484,7 +921,7 @@ agentEmployeeRoutes.post('/', async (c) => {
     }
 
     // 4. Create agent_employees record
-    const slug = data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const slug = await uniqueEmployeeSlug(currentUser.org_id, data.name);
 
     const [employee] = await db
       .insert(agentEmployees)
@@ -494,9 +931,13 @@ agentEmployeeRoutes.post('/', async (c) => {
         name: data.name,
         slug,
         role: data.role,
+        runtime_kind: data.runtime_kind || 'custom_mcp',
+        job_title: data.job_title?.trim() || null,
+        wake_mode: data.wake_mode,
         avatar_url: data.avatar_url || null,
         system_prompt: data.system_prompt,
         expertise_description: data.expertise_description || null,
+        connection_notes: data.connection_notes?.trim() || null,
         mcp_connection_ids: data.mcp_connection_ids ?? null,
         disabled_tools: data.disabled_tools ?? null,
         space_ids: spaceIdsToJoin.length > 0 ? spaceIdsToJoin : null,
@@ -525,29 +966,12 @@ agentEmployeeRoutes.post('/', async (c) => {
     // surface (auth via api_keys). /api/mcp/v1 is the modern path; /mcp
     // is kept during the deprecation window so existing integrations
     // don't break.
-    const keyId = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
-    const rawApiKey = `deft_${keyId}`;
-    const keyHash = await bcrypt.hash(rawApiKey, 12);
-    const keyPrefix = rawApiKey.slice(0, 12);
-
-    // Legacy /mcp (REST) — api_keys table, namespaced permissions.
-    await db.insert(apiKeys).values({
-      org_id: currentUser.org_id,
-      agent_employee_id: employee!.id,
-      name: `${data.name} API Key`,
-      key_hash: keyHash,
-      key_prefix: keyPrefix,
-      permissions: ['read:spaces', 'read:tasks', 'read:messages', 'read:members'],
-      created_by: currentUser.id,
+    const rawApiKey = await issueMcpToken({
+      orgId: currentUser.org_id,
+      employeeId: employee!.id,
+      employeeName: data.name,
+      createdBy: currentUser.id,
     });
-
-    // Modern /api/mcp/v1 (standard MCP streamable-http) —
-    // agent_employees.mcp_token_hash. resolveGatewayToken() in
-    // lib/mcp-token.ts bcrypt-compares against this column.
-    await db
-      .update(agentEmployees)
-      .set({ mcp_token_hash: keyHash })
-      .where(eq(agentEmployees.id, employee!.id));
 
     return c.json(
       {
@@ -567,8 +991,12 @@ agentEmployeeRoutes.post('/', async (c) => {
 
 const updateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  runtime_kind: z.string().min(1).max(64).optional(),
+  job_title: z.string().min(1).max(120).nullable().optional(),
+  wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).optional(),
   system_prompt: z.string().min(1).optional(),
   expertise_description: z.string().optional(),
+  connection_notes: z.string().max(2000).nullable().optional(),
   avatar_url: z.string().url().nullable().optional(),
   // native_tools dropped in Task 4.12 (see createSchema note).
   mcp_connection_ids: z.array(z.string()).nullable().optional(),
@@ -610,8 +1038,12 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     const updates: Record<string, any> = {};
 
     if (data.name !== undefined) updates.name = data.name;
+    if (data.runtime_kind !== undefined) updates.runtime_kind = data.runtime_kind;
+    if (data.job_title !== undefined) updates.job_title = data.job_title;
+    if (data.wake_mode !== undefined) updates.wake_mode = data.wake_mode;
     if (data.system_prompt !== undefined) updates.system_prompt = data.system_prompt;
     if (data.expertise_description !== undefined) updates.expertise_description = data.expertise_description;
+    if (data.connection_notes !== undefined) updates.connection_notes = data.connection_notes;
     if (data.avatar_url !== undefined) updates.avatar_url = data.avatar_url;
     if (data.mcp_connection_ids !== undefined) updates.mcp_connection_ids = data.mcp_connection_ids;
     if (data.disabled_tools !== undefined) updates.disabled_tools = data.disabled_tools;
@@ -638,6 +1070,9 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     // Also update the user name if changed
     if (data.name) {
       await db.update(users).set({ name: data.name }).where(eq(users.id, existing.user_id));
+    }
+    if (data.job_title !== undefined) {
+      await db.update(users).set({ title: data.job_title ?? roleToTitle(existing.role) }).where(eq(users.id, existing.user_id));
     }
 
     return c.json(updated);
@@ -1148,15 +1583,100 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    const apiBase = process.env.PUBLIC_API_BASE_URL ?? 'http://localhost:4000';
+    const [latestChallenge] = await db
+      .select()
+      .from(agentCertificationChallenges)
+      .where(and(eq(agentCertificationChallenges.employee_id, id), eq(agentCertificationChallenges.org_id, user.org_id)))
+      .orderBy(desc(agentCertificationChallenges.created_at))
+      .limit(1);
+
+    const recentMcpCalls = await db
+      .select({
+        id: agentMcpCallAudit.id,
+        tool_name: agentMcpCallAudit.tool_name,
+        success: agentMcpCallAudit.success,
+        error: agentMcpCallAudit.error,
+        metadata: agentMcpCallAudit.metadata,
+        created_at: agentMcpCallAudit.created_at,
+      })
+      .from(agentMcpCallAudit)
+      .where(and(eq(agentMcpCallAudit.employee_id, id), eq(agentMcpCallAudit.org_id, user.org_id)))
+      .orderBy(desc(agentMcpCallAudit.created_at))
+      .limit(25);
+
+    const recentCooperativeLog = await db
+      .select({
+        id: agentCooperativeLog.id,
+        kind: agentCooperativeLog.kind,
+        summary: agentCooperativeLog.summary,
+        metadata: agentCooperativeLog.metadata,
+        created_at: agentCooperativeLog.created_at,
+      })
+      .from(agentCooperativeLog)
+      .where(and(eq(agentCooperativeLog.employee_id, id), eq(agentCooperativeLog.org_id, user.org_id)))
+      .orderBy(desc(agentCooperativeLog.created_at))
+      .limit(10);
+
+    const challengeStartedAt = latestChallenge?.started_at ? new Date(latestChallenge.started_at) : null;
+    const challengeCalls = challengeStartedAt
+      ? recentMcpCalls.filter((call) => call.success && new Date(call.created_at) >= challengeStartedAt)
+      : [];
+    const seenTools = new Set(challengeCalls.map((call) => call.tool_name));
+    const missingTools = latestChallenge
+      ? latestChallenge.required_tools.filter((tool) => !seenTools.has(tool))
+      : [];
+    const nonceSeen = latestChallenge
+      ? recentCooperativeLog.some((row) => {
+          if (challengeStartedAt && new Date(row.created_at) < challengeStartedAt) return false;
+          return row.summary.includes(latestChallenge.nonce)
+            || JSON.stringify(row.metadata ?? {}).includes(latestChallenge.nonce);
+        })
+      : false;
+    const completed = latestChallenge?.status === 'completed' || (latestChallenge ? missingTools.length === 0 && nonceSeen : false);
 
     return c.json({
       employee: {
         id: employee.id,
         slug: employee.slug,
+        name: employee.name,
+        runtime_kind: employee.runtime_kind,
+        job_title: employee.job_title,
+        wake_mode: employee.wake_mode,
+        certification_status: employee.certification_status,
+        last_verified_at: employee.last_verified_at,
+        last_mcp_call_at: employee.last_mcp_call_at,
+        last_work_outcome_at: employee.last_work_outcome_at,
+        connection_notes: employee.connection_notes,
+        last_heartbeat_at: employee.last_heartbeat_at,
+        is_byoa: employee.is_byoa,
+        byoa_model_info: employee.byoa_model_info,
       },
-      mcp_endpoint_url: `${apiBase}/api/mcp/v1`,
-      mcp_token_masked: employee.mcp_token_hash ? '••••••••' : null,
+      certification: latestChallenge
+        ? {
+            id: latestChallenge.id,
+            status: latestChallenge.status,
+            nonce: latestChallenge.nonce,
+            required_tools: latestChallenge.required_tools,
+            failure_reason: latestChallenge.failure_reason,
+            started_at: latestChallenge.started_at,
+            completed_at: latestChallenge.completed_at,
+            instructions: certificationInstructions(employee, latestChallenge.nonce),
+            stages: buildCertificationStages({
+              employee,
+              missingTools,
+              nonceSeen,
+              auditCount: challengeCalls.length,
+              completed,
+            }),
+          }
+        : null,
+      runtime_setup: buildRuntimeSetup(employee, latestChallenge?.nonce ?? null),
+      diagnostics: {
+        recent_mcp_calls: recentMcpCalls,
+        recent_cooperative_log: recentCooperativeLog,
+      },
+      mcp_endpoint_url: mcpEndpointUrl(),
+      mcp_token_masked: employee.mcp_token_hash ? '********' : null,
       mcp_token: null,
     });
   } catch (err) {
@@ -1166,6 +1686,275 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
 });
 
 // ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
+agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const nonce = `deft-cert-${employee.slug}-${crypto.randomBytes(6).toString('hex')}`;
+    const [challenge] = await db
+      .insert(agentCertificationChallenges)
+      .values({
+        org_id: user.org_id,
+        employee_id: employee.id,
+        nonce,
+        required_tools: [...CERTIFICATION_REQUIRED_TOOLS],
+        status: 'pending',
+      })
+      .returning();
+
+    await db
+      .update(agentEmployees)
+      .set({ certification_status: 'challenge_issued' })
+      .where(and(eq(agentEmployees.id, employee.id), eq(agentEmployees.org_id, user.org_id)));
+
+    return c.json({
+      challenge,
+      instructions: certificationInstructions(employee, nonce),
+      runtime_setup: buildRuntimeSetup(employee, nonce),
+      mcp_endpoint_url: mcpEndpointUrl(),
+    }, 201);
+  } catch (err) {
+    console.error('Failed to start agent certification:', err);
+    return c.json({ error: 'Failed to start certification', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.get('/:id/certification', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const [challenge] = await db
+      .select()
+      .from(agentCertificationChallenges)
+      .where(and(eq(agentCertificationChallenges.employee_id, id), eq(agentCertificationChallenges.org_id, user.org_id)))
+      .orderBy(desc(agentCertificationChallenges.created_at))
+      .limit(1);
+
+    return c.json({
+      employee: {
+        id: employee.id,
+        slug: employee.slug,
+        runtime_kind: employee.runtime_kind,
+        certification_status: employee.certification_status,
+        last_verified_at: employee.last_verified_at,
+        last_mcp_call_at: employee.last_mcp_call_at,
+      },
+      challenge: challenge
+        ? {
+            ...challenge,
+            instructions: certificationInstructions(employee, challenge.nonce),
+            stages: buildCertificationStages({
+              employee,
+              missingTools: challenge.required_tools,
+              nonceSeen: false,
+              auditCount: employee.last_mcp_call_at ? 1 : 0,
+              completed: challenge.status === 'completed',
+            }),
+          }
+        : null,
+      runtime_setup: buildRuntimeSetup(employee, challenge?.nonce ?? null),
+    });
+  } catch (err) {
+    console.error('Failed to fetch agent certification:', err);
+    return c.json({ error: 'Failed to fetch certification', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const [challenge] = await db
+      .select()
+      .from(agentCertificationChallenges)
+      .where(and(eq(agentCertificationChallenges.employee_id, id), eq(agentCertificationChallenges.org_id, user.org_id)))
+      .orderBy(desc(agentCertificationChallenges.created_at))
+      .limit(1);
+    if (!challenge) {
+      return c.json({ error: 'No certification challenge has been started', code: 'NO_CHALLENGE' }, 404);
+    }
+
+    const auditRows = await db
+      .select({
+        tool_name: agentMcpCallAudit.tool_name,
+        created_at: agentMcpCallAudit.created_at,
+      })
+      .from(agentMcpCallAudit)
+      .where(and(
+        eq(agentMcpCallAudit.org_id, user.org_id),
+        eq(agentMcpCallAudit.employee_id, id),
+        eq(agentMcpCallAudit.success, true),
+        gte(agentMcpCallAudit.created_at, challenge.started_at),
+      ));
+    const seenTools = new Set(auditRows.map((row) => row.tool_name));
+    const missingTools = challenge.required_tools.filter((tool) => !seenTools.has(tool));
+
+    const nonceRows = await db
+      .select({ id: agentCooperativeLog.id })
+      .from(agentCooperativeLog)
+      .where(and(
+        eq(agentCooperativeLog.org_id, user.org_id),
+        eq(agentCooperativeLog.employee_id, id),
+        gte(agentCooperativeLog.created_at, challenge.started_at),
+        or(
+          sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
+          sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
+        ),
+      ))
+      .limit(1);
+    const nonce_seen = nonceRows.length > 0;
+    const completed = missingTools.length === 0 && nonce_seen;
+    const stages = buildCertificationStages({
+      employee,
+      missingTools,
+      nonceSeen: nonce_seen,
+      auditCount: auditRows.length,
+      completed,
+    });
+    const failureReason = certificationFailureReason({
+      employee,
+      missingTools,
+      nonceSeen: nonce_seen,
+      auditCount: auditRows.length,
+    });
+
+    if (completed) {
+      const now = new Date();
+      await db
+        .update(agentCertificationChallenges)
+        .set({ status: 'completed', completed_at: now, failure_reason: null })
+        .where(eq(agentCertificationChallenges.id, challenge.id));
+      await db
+        .update(agentEmployees)
+        .set({ certification_status: 'verified', last_verified_at: now })
+        .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+    } else {
+      await db
+        .update(agentCertificationChallenges)
+        .set({ failure_reason: failureReason, updated_at: new Date() })
+        .where(eq(agentCertificationChallenges.id, challenge.id));
+    }
+
+    return c.json({
+      status: completed ? 'completed' : 'pending',
+      completed,
+      missing_tools: missingTools,
+      nonce_seen,
+      seen_tools: Array.from(seenTools),
+      required_tools: challenge.required_tools,
+      instructions: certificationInstructions(employee, challenge.nonce),
+      stages,
+      failure_reason: failureReason,
+      runtime_setup: buildRuntimeSetup(employee, challenge.nonce),
+    });
+  } catch (err) {
+    console.error('Failed to check agent certification:', err);
+    return c.json({ error: 'Failed to check certification', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    await db.execute(sql`
+      UPDATE agent_certification_challenges
+      SET status = 'reset',
+          failure_reason = 'Reset by operator',
+          completed_at = now(),
+          updated_at = now()
+      WHERE org_id = ${user.org_id}
+        AND employee_id = ${id}
+        AND status = 'pending'
+    `);
+    await db
+      .update(agentEmployees)
+      .set({ certification_status: employee.last_mcp_call_at ? 'mcp_reachable' : 'token_issued' })
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to reset agent certification:', err);
+    return c.json({ error: 'Failed to reset certification', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const role = await getOrgRole(user.id, user.org_id);
+    const isCreator = employee.created_by === user.id;
+    if (role !== 'owner' && role !== 'admin' && !isCreator) {
+      return c.json(
+        { error: 'Only owners, admins, or the employee creator can regenerate an employee token', code: 'FORBIDDEN' },
+        403,
+      );
+    }
+
+    const rawApiKey = await issueMcpToken({
+      orgId: user.org_id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      createdBy: user.id,
+      deactivateExisting: true,
+    });
+
+    return c.json({
+      employee: {
+        id: employee.id,
+        slug: employee.slug,
+        name: employee.name,
+      },
+      mcp_endpoint_url: mcpEndpointUrl(),
+      api_key: rawApiKey,
+    });
+  } catch (err) {
+    console.error('Failed to regenerate agent employee token:', err);
+    return c.json({ error: 'Failed to regenerate token', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 agentEmployeeRoutes.post('/:id/clone', async (c) => {
   try {
     const user = c.get('user');
@@ -1212,9 +2001,13 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
         name: newName,
         slug: candidate,
         role: source.role,
+        runtime_kind: source.runtime_kind,
+        job_title: source.job_title,
+        wake_mode: source.wake_mode,
         avatar_url: source.avatar_url,
         system_prompt: source.system_prompt,
         expertise_description: source.expertise_description,
+        connection_notes: source.connection_notes,
         starter_prompts: source.starter_prompts,
         trust_level: source.trust_level,
         max_daily_actions: source.max_daily_actions,

@@ -99,6 +99,7 @@ test('blocked-alert queues a task_create proposal for the blocked user', async (
   assert.equal(row.action, 'create_task');
   assert.equal(row.approval_tier, 'quick');
   assert.equal(row.approval_status, 'pending');
+  assert.equal(row.message_id, msgId);
   const params = row.params as any;
   assert.ok(typeof params.title === 'string' && params.title.startsWith('Blocker:'));
   assert.equal(params.source_message_id, msgId);

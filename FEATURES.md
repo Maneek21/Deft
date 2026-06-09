@@ -13,7 +13,7 @@ API:       Hono on Node.js (TypeScript)
 Database:  PostgreSQL + pgvector (66 tables, Drizzle ORM)
 Real-time: Socket.io with room-based presence
 AI:        Multi-LLM (Anthropic Claude, OpenAI, OpenRouter, Ollama)
-Auth:      better-auth (JWT + refresh tokens + Google OAuth)
+Auth:      email/password (JWT + refresh tokens)
 Jobs:      Postgres-based job queue (17 background workers)
 Storage:   Local filesystem (./uploads), Cloudflare R2-ready
 Monorepo:  pnpm workspaces
@@ -174,7 +174,7 @@ Deft ships a single `skills` table that unifies two previously separate primitiv
 - **`org`** — tenant-authored skills. Scoped to a single `org_id`. Authored in the Skills library page.
 
 ### 9 Day-One Bundled Skills
-**6 capability-pack skills** (agent-only, one per available capability pack from `CAPABILITY_PACKS`): `deft-workspace`, `tasks-core`, `google-calendar`, `github`, `slack-outbound`, `knowledge-wiki`. Each grants its matching pack slug and leaves `project_config` empty.
+**Capability-pack skills** (agent-only, one per available capability pack from `CAPABILITY_PACKS`): `deft-workspace`, `tasks-core`, `google-calendar` (calendar feeds compatibility slug), and `knowledge-wiki`. Each grants its matching pack slug and leaves `project_config` empty.
 
 **3 project-workflow skills** (project-only):
 - `engineering` — statuses `backlog/todo/in_progress/in_review/done/cancelled`, numbered priorities `p0/p1/p2/p3`, kanban default view, the 9 Phase-3 task tools (`comment_on_task`, `set_priority`, `set_due_date`, `add_label`, `close_task`, `reopen_task`, `add_dependency`, `remove_dependency`, `list_my_tasks`) pre-wired.
@@ -267,7 +267,7 @@ Organized in 5 categories:
 - `recall` — retrieve stored memories
 
 **Calendar tools (auto-execute):**
-- `check_calendar` — view Google Calendar events
+- `check_calendar` — view native Deft calendar events and imported ICS feed events
 
 **GitHub tools (auto-execute):**
 - `check_github_prs` — view pull requests by state
@@ -278,7 +278,6 @@ Organized in 5 categories:
 - `assign_task` — assign to team members
 - `post_message` — post in spaces
 - `add_knowledge` — add knowledge entries
-- `create_calendar_event` — create Google Calendar events
 - `wiki_write` — create/update wiki pages
 
 **Manager tools (require manager role):**
@@ -379,8 +378,8 @@ Three views: month (day buckets with event dots), week (7-day horizontal), day (
 ### Native Calendar Events
 Create, update, delete events within Deft. Stored in unified events table.
 
-### Google Calendar Sync
-OAuth 2.0 integration with token refresh. Polling-based sync worker. Bidirectional: read events + create events via agent. Connection status + error display in settings. Last sync timestamp.
+### ICS Calendar Sync
+Self-hostable ICS subscriptions. Users can export Deft tasks/events as a personal feed and import external calendar feeds into Deft. Read-only external calendar context is available to the agent through `check_calendar`; external writes are expected to come from BYOA/MCP tools rather than managed provider OAuth.
 
 ### Meeting Briefs
 AI-generated pre-meeting summaries. Links to calendar event. Prep content stored as JSON. Background worker checks every 15 minutes for upcoming meetings.
@@ -459,20 +458,12 @@ Type `>` in search bar for actions: Create task, New space, Toggle dark mode, Op
 
 ## 10. Integrations
 
-### Google Calendar — Working
-OAuth 2.0 flow with token refresh. Polling sync worker syncs events to local events table. Agent can read events (`check_calendar`) and create events (`create_calendar_event`). Connection status, errors, and last sync time shown in settings.
+### Calendar Feeds — Working
+ICS feed export/import. Polling sync worker syncs subscribed feeds to the local events table. Agent can read native and ICS events with `check_calendar`. Connection status, errors, and last sync time are shown in settings.
 
-### GitHub — Working
-OAuth integration with PR/issue event syncing. Sync worker polls for activity. Agent can read PRs (`check_github_prs`). PR merge can auto-complete linked tasks. GitHub activity shown on dashboard.
-
-### Slack — Scaffolded
-Event schema defined in unified events table (source: slack, type: slack_message). OAuth config scaffolded. Agent outbound messaging via `post_message` tool. No inbound sync worker yet.
-
-### Gmail — Scaffolded
-Event schema defined (source: gmail, type: email_received). OAuth config scaffolded. No sync worker yet.
 
 ### Unified Events Table
-All external data normalized into single `events` table. Sources: native, google_calendar, github, slack, gmail, linear. Event types: calendar_event, pr_opened, pr_merged, slack_message, email_received. External ID deduplication. User mapping. Agent queries across native + events data together.
+External data normalized into single `events` table. Current self-hostable sources: native and ics. Legacy sources such as google_calendar, github, and linear remain in the enum for old rows and compatibility. Event types include calendar_event and legacy activity events. External ID deduplication. User mapping. Agent queries across native + events data together.
 
 ---
 
@@ -488,7 +479,7 @@ Docker Compose deployment with health checks. Multi-stage Dockerfile (deps → b
 Business Source License 1.1 — use for any purpose except hosting as a service for third parties. Converts to Apache 2.0 after 4 years. Mandatory attribution in forks.
 
 ### Authentication
-better-auth with JWT access tokens (15min) + refresh tokens (30d, HttpOnly). Google OAuth support. Automatic token refresh on 401. bcrypt password hashing (12 rounds).
+Email/password auth with JWT access tokens (15min) + refresh tokens (30d, HttpOnly). Automatic token refresh on 401. bcrypt password hashing (12 rounds). First signup bootstraps the self-hosted workspace; later users join by invite.
 
 ### Roles & Permissions
 4 roles: owner, admin, member, guest. Role-based UI (admin-only member management, manager-only analytics). Org membership tracking.

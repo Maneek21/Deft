@@ -29,6 +29,7 @@ type KnowledgeEntry = {
   content: string | null;
   metadata: any;
   source_message_id: string | null;
+  source_space_id: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -312,6 +313,9 @@ function EntryCard({
 }) {
   const cfg = TYPE_CONFIG[entry.type];
   const Icon = cfg.icon;
+  const sourceHref = entry.source_message_id
+    ? `/chat?space=${entry.source_space_id || entry.space_id || spaceId}&message=${entry.source_message_id}`
+    : null;
 
   return (
     <div className="px-3 py-2 transition-colors hover:bg-[var(--surface-container)]"
@@ -362,10 +366,12 @@ function EntryCard({
               <ExternalLink size={10} /> {entry.metadata.url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 40)}
             </a>
           )}
-          {entry.source_message_id && (
-            <div className="text-[10px] mb-2" style={{ color: 'var(--muted)' }}>
-              From conversation
-            </div>
+          {sourceHref && (
+            <a href={sourceHref}
+              className="inline-flex items-center gap-1 text-[10px] mb-2 hover:underline"
+              style={{ color: 'var(--muted)' }}>
+              <ExternalLink size={9} /> From conversation
+            </a>
           )}
           <div className="flex items-center gap-2 mt-1">
             <button onClick={onEdit} className="text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1"

@@ -16,6 +16,7 @@ import { writeFileSync } from 'node:fs';
 const API_URL = process.env.DEFT_API_URL || 'http://localhost:3001';
 const WEB_URL = process.env.DEFT_WEB_URL || 'http://localhost:3000';
 const STATE_PATH = process.env.DEFT_AUTH_STATE_PATH || 'playwright-auth.json';
+const AUDIT_TOKEN = process.env.DEFT_AUDIT_BYPASS_TOKEN;
 
 export async function loginAndSaveState(): Promise<void> {
   const email = process.env.DEFT_TEST_EMAIL;
@@ -29,7 +30,10 @@ export async function loginAndSaveState(): Promise<void> {
   // 1. Login via API to get tokens.
   const res = await fetch(`${API_URL}/api/auth/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(AUDIT_TOKEN ? { 'x-deft-audit-token': AUDIT_TOKEN } : {}),
+    },
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
@@ -47,7 +51,9 @@ export async function loginAndSaveState(): Promise<void> {
   // 2. Spin up a browser, inject the token into localStorage, navigate
   //    to /dashboard so the session is fully established, save state.
   const browser = await chromium.launch({ headless: true });
-  const ctx = await browser.newContext();
+  const ctx = await browser.newContext({
+    extraHTTPHeaders: AUDIT_TOKEN ? { 'x-deft-audit-token': AUDIT_TOKEN } : undefined,
+  });
   const page = await ctx.newPage();
 
   // Inject the token BEFORE navigation so Deft's auth context picks it

@@ -1,14 +1,14 @@
 /**
  * events_query — Phase 6 read-only event search.
  *
- * Queries the `events` table (the unified schema where connected-tool events
- * like GitHub webhooks and calendar reminders land). Lets an agent read the
- * event stream for its org without needing every user to connect a separate
- * MCP server per provider (GitHub MCP, calendar MCP, etc.).
+ * Queries the `events` table (the unified schema where native events,
+ * calendar reminders, imported ICS feeds, and connected-tool events land).
+ * Lets an agent read the event stream for its org without needing every user
+ * to connect a separate MCP server per provider.
  *
  * Filtering:
- *   - `type` / `types` — narrows by event_type (e.g. 'pr_merged', 'calendar_event')
- *   - `source`         — narrows by source enum (e.g. 'github', 'google_calendar')
+ *   - `type` / `types` narrows by event_type (e.g. 'calendar_event')
+ *   - `source` narrows by source enum (e.g. 'ics', 'google_calendar')
  *   - `since` / `until`— ISO8601 window on the event.timestamp field
  *
  * Scoping is strict: every query is filtered by `ctx.org_id`. There is no
@@ -25,9 +25,8 @@ import { errorResult, textResult } from './types.js';
 const VALID_SOURCES = new Set([
   'native',
   'google_calendar',
+  'ics',
   'github',
-  'slack',
-  'gmail',
   'linear',
 ]);
 

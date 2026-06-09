@@ -58,6 +58,7 @@ type WikiPage = {
   title: string;
   slug: string;
   summary: string | null;
+  metadata?: Record<string, unknown> | null;
   confidence: number;
   tags?: string[] | null;
   version: number;
@@ -72,11 +73,16 @@ function isDecisionReversed(entry: Pick<WikiPage, 'confidence' | 'tags'>): boole
   return entry.confidence < 0.5 || (entry.tags ?? []).includes('reversed');
 }
 
+function getMetadataString(metadata: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 type WikiPageDetail = WikiPage & {
   content: string;
   linked_pages: { slug: string; title: string; type: string; summary: string | null; confidence?: number; context?: string }[];
   backlinks: { slug: string; title: string; type: string; summary?: string | null; context?: string }[];
-  citations: { id: string; source_type: string; source_id: string; excerpt: string | null; created_at: string }[];
+  citations: { id: string; source_type: string; source_id: string; excerpt: string | null; created_at: string; source_space_id?: string | null }[];
 };
 
 function ConfidenceBar({ value }: { value: number }) {
@@ -490,6 +496,8 @@ export default function KnowledgePage() {
     { value: 'user', label: 'Personal' },
   ];
 
+  const detailResourceUrl = getMetadataString(detail?.metadata, 'url');
+
   // Detail view
   if (selectedSlug) {
     return (
@@ -635,6 +643,15 @@ export default function KnowledgePage() {
                   {detail.summary && (
                     <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>{detail.summary}</p>
                   )}
+                  {detailResourceUrl && (
+                    <a href={detailResourceUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 mt-2 text-[12px] hover:underline"
+                      style={{ color: 'var(--accent)' }}>
+                      <LinkIcon size={12} />
+                      {detailResourceUrl.replace(/^https?:\/\/(www\.)?/, '').slice(0, 80)}
+                      <ArrowUpRight size={11} />
+                    </a>
+                  )}
                   {detail.tags && detail.tags.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
                       {detail.tags.map(tag => (
@@ -744,9 +761,17 @@ export default function KnowledgePage() {
                   {detail.citations.map(cit => (
                     <div key={cit.id} className="p-2 rounded-lg text-[11px]"
                       style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
-                        {cit.source_type === 'message' ? 'Chat message' : cit.source_type}
-                      </span>
+                      {cit.source_type === 'message' && cit.source_space_id ? (
+                        <a href={`/chat?space=${cit.source_space_id}&message=${cit.source_id}`}
+                          className="inline-flex items-center gap-1 font-medium hover:underline"
+                          style={{ color: 'var(--accent)' }}>
+                          Chat message <ArrowUpRight size={10} />
+                        </a>
+                      ) : (
+                        <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>
+                          {cit.source_type === 'message' ? 'Chat message' : cit.source_type}
+                        </span>
+                      )}
                       {cit.excerpt && (
                         <p className="mt-0.5 line-clamp-2" style={{ color: 'var(--text-tertiary)' }}>
                           &ldquo;{cit.excerpt}&rdquo;

@@ -267,7 +267,8 @@ dashboardRoutes.get('/', async (c) => {
       }
     } catch {}
 
-    // 10. Calendar events for today (if connected)
+    // 10. Calendar events for today. Includes native events, imported ICS
+    // feeds, and legacy Google calendar rows.
     let calendarEvents: any[] = [];
     try {
       calendarEvents = await db.select({
@@ -277,31 +278,12 @@ dashboardRoutes.get('/', async (c) => {
         .from(events)
         .where(and(
           eq(events.user_id, user.id),
-          eq(events.source, 'google_calendar'),
+          inArray(events.source, ['native', 'ics', 'google_calendar']),
           eq(events.event_type, 'calendar_event'),
           gte(events.timestamp, todayStart),
           lt(events.timestamp, todayEnd),
         ))
         .orderBy(events.timestamp)
-        .limit(10);
-    } catch {}
-
-    // 11. GitHub activity (last 24h)
-    let githubActivity: any[] = [];
-    try {
-      const yesterday = new Date(now.getTime() - 86400000);
-      githubActivity = await db.select({
-        id: events.id, title: events.title, event_type: events.event_type,
-        url: events.url, actor: events.actor, timestamp: events.timestamp,
-        metadata: events.metadata,
-      })
-        .from(events)
-        .where(and(
-          eq(events.org_id, user.org_id),
-          eq(events.source, 'github'),
-          gte(events.timestamp, yesterday),
-        ))
-        .orderBy(desc(events.timestamp))
         .limit(10);
     } catch {}
 
@@ -319,7 +301,7 @@ dashboardRoutes.get('/', async (c) => {
       projects: projectStats,
       unread_notifications: notifCount?.count || 0,
       calendar_events: calendarEvents,
-      github_activity: githubActivity,
+      github_activity: [],
     });
   } catch (err) {
     console.error('Dashboard error:', err);

@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call.
   _Example: `deft_platform_context({caller_employee_slug: "cfo"})`_
-- **`wiki_search`** — your primary source of truth for finance data.
-  _Example: `wiki_search({query: "Q1 2026 burn rate"})`_
+- **`memory_recall`** — your primary source of truth for finance data.
+  _Example: `memory_recall({query: "Q1 2026 burn rate"})`_
 - **`members_list`** — headcount for per-employee cost calculations.
 - **`tasks_list`** — open finance tasks.
 - **`task_create`** — contract reviews, forecasting follow-ups.
@@ -18,9 +18,9 @@
 - **`delegation_self_report`** — hand scheduling to alex-pm, vendor negotiations to the founder.
 - **`events_upcoming`** — board meetings, renewal dates, payroll dates.
 
-## Google Calendar
+## Calendar feeds
 
-- **`calendar_list_events`** — see upcoming board meetings and vendor calls. Read-only in v1.
+- **`calendar_list_events`** — see upcoming board meetings and vendor calls from Deft native calendar events and imported ICS feeds. Read-only in v1.
   _Example: `calendar_list_events({window_days: 14})`_
 
 ## Not available in v1 (do not call)

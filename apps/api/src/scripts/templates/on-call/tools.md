@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call, every turn. Especially critical here — you need to know the runbook context.
   _Example: `deft_platform_context({caller_employee_slug: "on-call"})`_
-- **`wiki_search`** — runbooks and incident history.
-  _Example: `wiki_search({query: "payments api 500 runbook"})`_
+- **`memory_recall`** — runbooks and incident history.
+  _Example: `memory_recall({query: "payments api 500 runbook"})`_
 - **`tasks_list`** — active incidents.
   _Example: `tasks_list({space_id: "sp_incidents", status: "in_progress"})`_
 - **`task_create`** — open an incident task. Always severity-prefixed.
@@ -22,16 +22,13 @@
 
 > **Not yet available as a capability pack.** These tools require manual MCP server configuration.
 
-- **`browser_navigate`** / **`browser_snapshot`** — check public status pages (Stripe, AWS, GitHub, Cloudflare) to see if a dependency is in outage.
+- **`browser_navigate`** / **`browser_snapshot`** — check public status pages (Stripe, AWS, Cloudflare) to see if a dependency is in outage.
 - **`tavily_search`** — search for recent reports of the same issue, upstream outages, or vendor status.
   _Example: `tavily_search({query: "stripe api outage site:status.stripe.com"})`_
 
-## GitHub
+## External repo tools
 
-- **`github_list_pulls`** — "what just shipped?" The single most important question in the first 60 seconds of an incident.
-  _Example: `github_list_pulls({repo: "acme/api", state: "closed", merged_since: "2h"})`_
-- **`github_get_pr`** — read the PR description and diff for a suspected bad deploy.
-- **`github_create_issue`** — file an upstream issue (write; gated by approval).
+Deft does not bundle source-control access. If this employee's own runtime already has repo-hosting tools, use those tool names from that runtime's docs. Otherwise, coordinate from Deft tasks, chat, wiki, and calendar context.
 
 ## Shell commands
 

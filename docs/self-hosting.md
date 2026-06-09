@@ -102,7 +102,7 @@ Navigate to **http://localhost:3000**. You should see the Deft sign-up screen.
 
 The very first user to complete sign-up becomes the **organisation owner** — the account with full admin rights over the workspace. Choose this account carefully; it will be the admin seat going forward.
 
-After the first account is created, direct sign-up is blocked for all subsequent users. To add a teammate, the owner or any admin opens **Settings → Members → Invite**, enters the new person's email and role, and clicks **Generate link**. Deft returns a one-time invite URL — copy it and share it however you like (Slack, email, in person). Invite links expire in 7 days and work once.
+After the first account is created, direct sign-up is blocked for all subsequent users. To add a teammate, the owner or any admin opens **Settings → Members → Invite**, enters the new person's email and role, and clicks **Generate link**. Deft returns a one-time invite URL — copy it and share it however you like (chat, email, in person). Invite links expire in 7 days and work once.
 
 When the new teammate opens the link, they land on a sign-up page that already knows who invited them. They pick a name, set a password, and Deft drops them into a brief onboarding wizard at `/welcome` that introduces the workspace and Defty.
 
@@ -191,8 +191,6 @@ Defty is powered by the `defty` agent template. The template slug is `defty`. Yo
 | `NEXT_PUBLIC_WS_URL` | No | WebSocket URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_APP_URL` | No | App base URL (used in invite links) | `http://localhost:3000` |
 | `API_PORT` | No | Port the API listens on | `3001` |
-| `GOOGLE_CLIENT_ID` | No | Enables Google OAuth login | none |
-| `GOOGLE_CLIENT_SECRET` | No | Enables Google OAuth login | none |
 | `R2_ENDPOINT` | No | Cloudflare R2 endpoint for file storage | none (uses local disk) |
 | `R2_ACCESS_KEY` | No | R2 access key | none |
 | `R2_SECRET_KEY` | No | R2 secret key | none |

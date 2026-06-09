@@ -7,7 +7,7 @@ import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
-import { resolveReasonProvider, hasAnyAIProvider } from '../lib/org-ai-config.js';
+import { resolveReasonProvider } from '../lib/org-ai-config.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
@@ -580,9 +580,10 @@ messageRoutes.post('/:spaceId', async (c) => {
     // not env. Gating on Anthropic here silently dropped Defty whenever the
     // org ran on OpenAI/etc. with no Anthropic key.
     let deftyProviderReady = false;
+    let deftyProviderReason: Awaited<ReturnType<typeof resolveReasonProvider>> | null = null;
     if (agentMentioned) {
-      const reason = await resolveReasonProvider(user.org_id);
-      deftyProviderReady = Boolean(reason.apiKey) || reason.provider === 'ollama';
+      deftyProviderReason = await resolveReasonProvider(user.org_id);
+      deftyProviderReady = Boolean(deftyProviderReason.apiKey) || deftyProviderReason.provider === 'ollama';
     }
     if (agentMentioned && deftyProviderReady) {
       try {
@@ -604,48 +605,84 @@ messageRoutes.post('/:spaceId', async (c) => {
         // Don't block message sending if Redis/queue is down
         console.error('Failed to enqueue agent reply:', err);
       }
+    } else if (agentMentioned && deftyProviderReason) {
+      try {
+        const [spaceRow] = await db.select({ type: spaces.type })
+          .from(spaces)
+          .where(eq(spaces.id, spaceId))
+          .limit(1);
+        const isDmLike = spaceRow?.type === 'dm' || spaceRow?.type === 'group_dm' || spaceRow?.type === 'agent_conversation';
+        const replyParentId = isDmLike ? (parsed.data.parent_id ?? null) : (parsed.data.parent_id || message!.id);
+        const deftyUserId = await ensureDeftyMembership(user.org_id);
+        const [agentMessage] = await db.insert(messages).values({
+          org_id: user.org_id,
+          space_id: spaceId,
+          user_id: deftyUserId,
+          content: `I need a usable reasoning model before I can answer. The current Defty reasoning route resolves to ${deftyProviderReason.provider}, but no usable ${deftyProviderReason.provider === 'ollama' ? 'Ollama endpoint' : 'API key'} is configured. Ask an admin to configure a reasoning provider in Settings > AI.`,
+          parent_id: replyParentId,
+          metadata: {
+            is_agent_reply: true,
+            kind: 'defty_provider_unavailable',
+            provider: deftyProviderReason.provider,
+            model: deftyProviderReason.model,
+          } as never,
+        }).returning();
+
+        const io = getIO();
+        if (io && agentMessage) {
+          io.to(`space:${spaceId}`).emit('message:new', {
+            ...agentMessage,
+            user_name: 'Defty',
+            user_avatar: null,
+            reactions: [],
+            reply_count: 0,
+            latest_reply_at: null,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to post Defty provider-unavailable reply:', err);
+      }
     }
 
     // Detect agent-employee mentions → enqueue agent-employee-message per employee.
-    // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention required.
-    // Gate on any usable AI provider (org or env), not Anthropic specifically.
-    if (await hasAnyAIProvider(user.org_id)) {
-      try {
-        const targetUserIds = new Set<string>(mentionedUserIds);
-        const [spaceRow] = await db.select({ type: spaces.type })
-          .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
-        if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
-          const dmMembers = await db.select({ user_id: spaceMembers.user_id })
-            .from(spaceMembers)
-            .where(and(eq(spaceMembers.space_id, spaceId), sql`${spaceMembers.user_id} != ${user.id}`));
-          for (const m of dmMembers) targetUserIds.add(m.user_id);
-        }
-
-        if (targetUserIds.size > 0) {
-          const targetEmployees = await db.select({
-            id: agentEmployees.id,
-            user_id: agentEmployees.user_id,
-          })
-            .from(agentEmployees)
-            .where(and(
-              eq(agentEmployees.org_id, user.org_id),
-              eq(agentEmployees.is_active, true),
-              inArray(agentEmployees.user_id, Array.from(targetUserIds)),
-            ));
-
-          for (const emp of targetEmployees) {
-            await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
-              messageId: message!.id,
-              spaceId,
-              orgId: user.org_id,
-              employeeId: emp.id,
-              isDM: spaceRow?.type === 'dm' || spaceRow?.type === 'agent_conversation',
-            });
-          }
-        }
-      } catch (err) {
-        console.error('Failed to enqueue agent-employee-message:', err);
+    // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention
+    // required. BYOA delivery must not depend on Deft's own hosted LLM provider:
+    // the external runtime already owns its model and pulls work through MCP.
+    try {
+      const targetUserIds = new Set<string>(mentionedUserIds);
+      const [spaceRow] = await db.select({ type: spaces.type })
+        .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+      if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
+        const dmMembers = await db.select({ user_id: spaceMembers.user_id })
+          .from(spaceMembers)
+          .where(and(eq(spaceMembers.space_id, spaceId), sql`${spaceMembers.user_id} != ${user.id}`));
+        for (const m of dmMembers) targetUserIds.add(m.user_id);
       }
+
+      if (targetUserIds.size > 0) {
+        const targetEmployees = await db.select({
+          id: agentEmployees.id,
+          user_id: agentEmployees.user_id,
+        })
+          .from(agentEmployees)
+          .where(and(
+            eq(agentEmployees.org_id, user.org_id),
+            eq(agentEmployees.is_active, true),
+            inArray(agentEmployees.user_id, Array.from(targetUserIds)),
+          ));
+
+        for (const emp of targetEmployees) {
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
+            messageId: message!.id,
+            spaceId,
+            orgId: user.org_id,
+            employeeId: emp.id,
+            isDM: spaceRow?.type === 'dm' || spaceRow?.type === 'agent_conversation',
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to enqueue agent-employee-message:', err);
     }
 
     // Cross-reference detection — check for task identifier patterns like PROJ-42

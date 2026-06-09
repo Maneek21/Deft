@@ -27,8 +27,7 @@
  *
  * Matrix update (autonomy tier — 2026-04-18):
  *   Autonomous was identical to Standard before this change. Now Autonomous
- *   auto-executes full-tier actions (post_message, create_calendar_event,
- *   create_github_issue, message_post) while still queuing destructive
+ *   auto-executes full-tier actions (post_message, message_post) while still queuing destructive
  *   admin operations (manage_agent_employee, manage_mcp_connection, remove_member)
  *   and any tool whose name begins with "delete_" or whose params.mode is
  *   delete/pause/revoke.
@@ -36,7 +35,7 @@
  * Approval tiers (assigned per action tool):
  *   auto  — low-risk internal state changes (status update, assignment)
  *   quick — moderate-risk entity creation (create task, add knowledge, wiki write)
- *   full  — high-risk external/visible actions (post message, calendar event, github issue)
+ *   full  - high-risk external/visible actions (post message, MCP writes)
  */
 
 import type { ToolResult } from './mcp-tools/types.js';
@@ -53,7 +52,6 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   add_knowledge: 'quick',
   wiki_write: 'quick',
   post_message: 'full',
-  create_calendar_event: 'full',
   create_github_issue: 'full',
 
   // Superintendent tools (Defty only)

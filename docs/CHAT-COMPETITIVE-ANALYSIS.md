@@ -137,7 +137,7 @@ Deft's chat is the **observation surface for the AI agent**. Every message is cl
 
 ## What NOT to Build
 
-- **Slack Apps marketplace** — Deft's value is integration, not extensibility. Connected tools (Calendar, GitHub, Gmail) cover the core use cases.
+- **Slack Apps marketplace** — Deft's value is integration, not extensibility. Connected tools and BYOA agents cover the core use cases.
 - **Discord-style server/role system** — Deft is for small-medium teams, not large communities.
 - **E2E encryption** — Not needed for team workspace. Would break agent classification.
 - **Stories/status updates** — Wrong metaphor for a work tool.

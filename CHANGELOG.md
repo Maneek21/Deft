@@ -30,7 +30,7 @@ Bring-Your-Own-Agent (BYOA) MCP surface for connecting external runtimes
   comments, recurrence (daily / weekly / biweekly / monthly), inline
   activity diff log, archive + soft-delete with 7-day recovery window.
 - Unified `events` table for connected tool data so the agent queries native
-  + Google Calendar / GitHub / Slack / Gmail in one breath.
+  + Google Calendar / GitHub in one breath.
 - Real-time over Socket.io with Redis adapter; background jobs via BullMQ.
 - Custom JWT + bcrypt auth (jsonwebtoken + bcryptjs); Google OAuth optional.
 - File storage via Cloudflare R2 or local disk with presigned uploads.

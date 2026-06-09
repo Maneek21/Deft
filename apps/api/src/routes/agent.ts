@@ -10,7 +10,6 @@ import {
   agentMemory,
   agentEmployees,
   actionReceipts,
-  connectedAccounts,
   orgs,
   tasks,
   messages,
@@ -23,7 +22,7 @@ import { ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { env } from '../lib/env.js';
 import { resolveReasonProvider, type ResolvedReasonProvider } from '../lib/org-ai-config.js';
-import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
+import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS, MANAGER_TOOLS, SUPERINTENDENT_TOOLS, SUPERINTENDENT_ACTION_TOOLS } from '../lib/agent-tools.js';
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
@@ -117,23 +116,9 @@ async function buildStreamContext(
 
   const trustLevel = (org?.trust_level || 'conservative') as TrustLevel;
 
-  // Check connected accounts for dynamic tool availability
-  const connections = await db.select({ provider: connectedAccounts.provider })
-    .from(connectedAccounts)
-    .where(and(eq(connectedAccounts.user_id, user.id), eq(connectedAccounts.org_id, user.org_id)));
-  const connectedProviders = connections.map(conn => conn.provider);
-
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
-  let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...MANAGER_TOOLS];
+  let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
   const allActionTools = new Set([...ACTION_TOOLS]);
-  if (connectedProviders.includes('google_calendar')) {
-    tools = [...tools, ...CALENDAR_TOOLS];
-    CALENDAR_ACTION_TOOLS.forEach(t => allActionTools.add(t));
-  }
-  if (connectedProviders.includes('github')) {
-    tools = [...tools, ...GITHUB_TOOLS];
-    GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
-  }
 
   // MCP tools — discover from active connections and auto-classify tiers.
   const mcpToolsBySlug = new Map<string, { originalName: string; tier: string }[]>();
@@ -195,16 +180,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   // flows through agent_employee_skills + capability packs. No filter
   // is applied here — scope enforcement lives in the skills loader.
 
-  let connectionInfo = '';
-  if (connectedProviders.includes('google_calendar')) {
-    connectionInfo += '\nThe user has Google Calendar connected. You can check their schedule and create events.';
-  }
-  if (connectedProviders.includes('github')) {
-    connectionInfo += '\nThe user has GitHub connected. You can check PRs, issues, and create issues.';
-  }
-  if (!connectionInfo) {
-    connectionInfo = '\nNo external services are connected. If the user asks about calendar or GitHub, suggest they connect in Settings → Integrations.';
-  }
+  let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
 
   // Load agent memories for this user, conversation, and org
   let memoryContext = '';
@@ -799,7 +775,24 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     LIMIT 100
   `);
 
-  return c.json(rows.rows);
+  const normalizedRows = rows.rows.map((row: any) => {
+    const normalizeTimestamp = (value: unknown) => {
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value !== 'string' || value.length === 0) return value;
+      if (value.includes('T')) return value;
+      return new Date(`${value.replace(' ', 'T')}Z`).toISOString();
+    };
+    return {
+      ...row,
+      created_at: normalizeTimestamp(row.created_at),
+      updated_at: normalizeTimestamp(row.updated_at),
+      approved_at: normalizeTimestamp(row.approved_at),
+      executed_at: normalizeTimestamp(row.executed_at),
+      undone_at: normalizeTimestamp(row.undone_at),
+    };
+  });
+
+  return c.json(normalizedRows);
 });
 
 // Block 3.8 — Agent trace export. Downloads the full tool-call tree

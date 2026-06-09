@@ -140,7 +140,7 @@ export default function MembersPage() {
       {showInvite && (
         <form onSubmit={handleInvite} className="mb-4 p-4 rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
           <p className="mb-3 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
-            Generate an invite link. Copy it and share it with the new teammate however you like — Slack, in person, anywhere. The link expires in 7 days and works once.
+            Generate an invite link. Copy it and share it with the new teammate however you like — chat, in person, anywhere. The link expires in 7 days and works once.
           </p>
           {inviteError && (
             <div className="mb-3 px-3 py-2 text-[12px] rounded" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)' }}>

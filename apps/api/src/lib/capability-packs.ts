@@ -5,7 +5,7 @@
  * BYOA agent during deployment. Packs fall into two layers:
  *
  *   - Layer 1 (Deft MCP server): `deft-workspace`, `google-calendar`
- *   - Layer 3 (External MCP servers): `tavily`, `github`
+ *   - Layer 3 (External MCP servers): `tavily`
  *
  * The wizard renders this catalog as a checklist in step 2. Packs marked
  * `user_provides_secret` prompt the user for a credential during the flow;
@@ -71,48 +71,15 @@ export const CAPABILITY_PACKS: CapabilityPack[] = [
     },
   },
   {
-    slug: 'github',
-    display_name: 'GitHub',
-    description:
-      'Read PRs, issues, commits; optionally create issues. Bring your own GitHub MCP server URL + token.',
-    is_always_on: false,
-    layer: 3,
-    user_provides_secret: true,
-    provider_env_var: 'GITHUB_MCP_TOKEN',
-    mcp_server_config: {
-      url: 'https://api.githubcopilot.com/mcp/',
-      transport: 'streamable-http',
-      headers_template: { Authorization: 'Bearer ${GITHUB_MCP_TOKEN}' },
-    },
-  },
-  {
     slug: 'google-calendar',
-    display_name: 'Google Calendar',
+    display_name: 'Calendar',
     description:
-      "Read your team's meeting schedule via Deft's existing Google Calendar integration. Uses Deft MCP — no separate credential.",
+      "Read your team's meeting schedule from Deft's native calendar and imported ICS feeds. Uses Deft MCP with no separate credential.",
     is_always_on: false,
     layer: 1,
     user_provides_secret: false,
   },
   // ─── Coming soon — disabled in wizard UI ─────────────────────────
-  {
-    slug: 'gmail',
-    display_name: 'Gmail',
-    description: 'Read and draft emails. Coming in a future release.',
-    is_always_on: false,
-    layer: 3,
-    user_provides_secret: true,
-    coming_soon: true,
-  },
-  {
-    slug: 'slack',
-    display_name: 'Slack',
-    description: 'Post messages, read channels. Coming in a future release.',
-    is_always_on: false,
-    layer: 3,
-    user_provides_secret: true,
-    coming_soon: true,
-  },
   {
     slug: 'linear',
     display_name: 'Linear',

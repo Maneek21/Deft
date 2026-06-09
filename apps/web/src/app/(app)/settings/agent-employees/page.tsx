@@ -8,21 +8,41 @@ import { Trash2, X, Plus, ExternalLink } from 'lucide-react';
 type AgentEmployee = {
   id: string;
   name: string;
+  slug: string;
   role: string;
   is_active: boolean;
+  is_byoa: boolean;
   trust_level: string;
   max_daily_actions: number;
-  daily_actions_used: number;
+  daily_action_count: number;
   avatar_url: string | null;
   created_at: string;
+  last_heartbeat_at: string | null;
+  last_mcp_call_at: string | null;
+  last_work_outcome_at: string | null;
+  byoa_model_info: string | null;
   heartbeat_enabled: boolean;
   heartbeat_interval_min: number;
+  runtime_kind: string;
+  wake_mode: string;
+  certification_status: string;
+  unhealthy: boolean;
+  unhealthy_reason: string | null;
+  pending_action_count?: number;
+  recent_turn_count_24h?: number;
+  last_turn_at?: string | null;
 };
 
 const ROLE_LABELS: Record<string, string> = {
   project_manager: 'Project Manager',
   engineering_lead: 'Engineering Lead',
   executive_assistant: 'Executive Assistant',
+  product_designer: 'Product Designer',
+  qa_engineer: 'QA Engineer',
+  customer_success: 'Customer Success',
+  community_manager: 'Community Manager',
+  cfo: 'CFO',
+  superintendent: 'Superintendent',
   custom: 'Custom',
 };
 
@@ -34,6 +54,21 @@ const TRUST_LABELS: Record<string, string> = {
 
 const isSelfHosted = process.env.NEXT_PUBLIC_DEFT_SELF_HOSTED === 'true';
 
+function connectionStatus(lastHeartbeatAt: string | null): { label: string; color: string } {
+  if (!lastHeartbeatAt) return { label: 'Never connected', color: '#9ca3af' };
+  const elapsedMs = Date.now() - new Date(lastHeartbeatAt).getTime();
+  const elapsedMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
+  if (elapsedMinutes < 5) return { label: 'Connected', color: '#10b981' };
+  if (elapsedMinutes < 60) return { label: `Last seen ${elapsedMinutes}m ago`, color: '#f59e0b' };
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return { label: `Last seen ${elapsedHours}h ago`, color: '#f59e0b' };
+  return { label: `Last seen ${Math.floor(elapsedHours / 24)}d ago`, color: '#ef4444' };
+}
+
+function runtimeLabel(value: string | null | undefined): string {
+  return value ? value.replace(/_/g, ' ') : 'custom MCP';
+}
+
 export default function AgentEmployeesPage() {
   const [employees, setEmployees] = useState<AgentEmployee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,7 +77,7 @@ export default function AgentEmployeesPage() {
 
   const fetchEmployees = async () => {
     try {
-      const res = await api.get('/api/agent-employees');
+      const res = await api.get('/api/agent-employees?expand=stats');
       if (res.ok) {
         setEmployees(await res.json());
       }
@@ -137,7 +172,9 @@ export default function AgentEmployeesPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {employees.map((emp) => (
+          {employees.map((emp) => {
+            const conn = connectionStatus(emp.last_mcp_call_at ?? emp.last_heartbeat_at);
+            return (
             <div
               key={emp.id}
               className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-4 py-3 rounded-lg cursor-pointer"
@@ -179,7 +216,19 @@ export default function AgentEmployeesPage() {
                       {TRUST_LABELS[emp.trust_level] || emp.trust_level}
                     </span>
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                      {emp.daily_actions_used ?? 0}/{emp.max_daily_actions} actions
+                      {emp.daily_action_count ?? 0}/{emp.max_daily_actions} actions
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {runtimeLabel(emp.runtime_kind)} / {emp.wake_mode}
+                    </span>
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {emp.pending_action_count ?? 0} pending
+                    </span>
+                    <span
+                      className="text-[11px]"
+                      style={{ color: emp.certification_status === 'verified' ? '#10b981' : 'var(--muted)' }}
+                    >
+                      {emp.certification_status}
                     </span>
                     <div className="flex items-center gap-1">
                       <div
@@ -195,6 +244,20 @@ export default function AgentEmployeesPage() {
                         </span>
                       )}
                     </div>
+                    <div className="flex items-center gap-1">
+                      <div
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: conn.color }}
+                      />
+                      <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                        {conn.label}
+                      </span>
+                    </div>
+                    {emp.unhealthy && (
+                      <span className="text-[11px]" style={{ color: 'var(--danger)' }}>
+                        Unhealthy: {emp.unhealthy_reason || 'needs attention'}
+                      </span>
+                    )}
                   </div>
                 </div>
               </Link>
@@ -252,7 +315,8 @@ export default function AgentEmployeesPage() {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

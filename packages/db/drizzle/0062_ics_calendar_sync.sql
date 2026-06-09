@@ -16,7 +16,7 @@
 -- platform credentials.
 
 -- 1. Extend the event_source enum so ICS-ingested events fit the unified
---    `events` table alongside Google/GitHub/Slack/Gmail.
+--    `events` table alongside Google/GitHub.
 ALTER TYPE event_source ADD VALUE IF NOT EXISTS 'ics';
 
 -- 2. Per-user outbound feed token. Lazily generated the first time the

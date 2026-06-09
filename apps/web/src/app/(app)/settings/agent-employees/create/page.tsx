@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { ArrowLeft, ArrowRight, Check, X, Copy } from 'lucide-react';
+import { AGENT_RUNTIMES, type AgentRuntimeId, getRuntimeById } from '@/lib/agent-runtime-catalog';
+import { ArrowLeft, ArrowRight, Check, X, Copy, Bot } from 'lucide-react';
 
 const AVATAR_COLORS = [
   '#6366f1',
@@ -54,7 +55,7 @@ type Template = {
   heartbeat_config?: string;
 };
 
-const MCP_ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL ?? ''}/api/mcp/v1`;
+const MCP_ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/mcp/v1`;
 
 export default function CreateAgentEmployeePage() {
   const router = useRouter();
@@ -66,19 +67,33 @@ export default function CreateAgentEmployeePage() {
   const [error, setError] = useState('');
 
   // Identity
+  const [selectedRuntimeId, setSelectedRuntimeId] = useState<AgentRuntimeId>('codex');
   const [name, setName] = useState('');
   const [role, setRole] = useState('');
+  const [jobTitle, setJobTitle] = useState('');
+  const [wakeMode, setWakeMode] = useState<'manual' | 'polling' | 'webhook' | 'external_chat'>('manual');
   const [avatarColor, setAvatarColor] = useState(AVATAR_COLORS[0]);
   const [expertiseDescription, setExpertiseDescription] = useState('');
+  const [connectionNotes, setConnectionNotes] = useState('');
 
   // Trust + cap
   const [trustLevel, setTrustLevel] = useState('conservative');
   const [maxDailyActions, setMaxDailyActions] = useState(50);
 
   // Success modal
-  const [mcpModal, setMcpModal] = useState<{ apiKey: string } | null>(null);
+  const [mcpModal, setMcpModal] = useState<{ apiKey: string; employeeId: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedConfig, setCopiedConfig] = useState(false);
+
+  useEffect(() => {
+    const runtime = getRuntimeById(selectedRuntimeId);
+    setName((current) => current || runtime.defaultName);
+    setRole((current) => current || runtime.defaultRole);
+    setJobTitle((current) => current || runtime.defaultJobTitle);
+    setWakeMode(runtime.defaultWakeMode);
+    setExpertiseDescription((current) => current || runtime.defaultExpertise);
+  }, [selectedRuntimeId]);
 
   useEffect(() => {
     api.get('/api/agent-employees/templates').then(async (res) => {
@@ -98,7 +113,8 @@ export default function CreateAgentEmployeePage() {
     }
   };
 
-  const canSubmit = name.trim().length > 0 && role.length > 0;
+  const selectedRuntime = getRuntimeById(selectedRuntimeId);
+  const canSubmit = name.trim().length > 0 && role.length > 0 && !selectedRuntime.disabled;
 
   const handleSubmit = async () => {
     setError('');
@@ -107,13 +123,22 @@ export default function CreateAgentEmployeePage() {
       const res = await api.post('/api/agent-employees', {
         name: name.trim(),
         role,
+        runtime_kind: selectedRuntimeId,
+        job_title: jobTitle.trim() || undefined,
+        wake_mode: wakeMode,
         // BYOA agents own their full system prompt in their own runtime;
         // Deft only needs a placeholder for surfaces that show "what does
         // this agent do".
         system_prompt: `${name.trim()} connects to Deft via MCP.`,
         expertise_description: expertiseDescription.trim() || undefined,
+        connection_notes: connectionNotes.trim() || undefined,
         trust_level: trustLevel,
         max_daily_actions: maxDailyActions,
+        byoa_model_info: JSON.stringify({
+          runtime: selectedRuntimeId,
+          runtime_name: getRuntimeById(selectedRuntimeId).name,
+          owns_identity: getRuntimeById(selectedRuntimeId).ownsIdentity,
+        }),
       });
 
       if (!res.ok) {
@@ -124,7 +149,7 @@ export default function CreateAgentEmployeePage() {
       const data = await res.json();
 
       if (data.api_key) {
-        setMcpModal({ apiKey: data.api_key });
+        setMcpModal({ apiKey: data.api_key, employeeId: data.employee.id });
       } else {
         // Fallback — shouldn't happen now that every employee is BYOA.
         router.push('/settings/agent-employees');
@@ -150,6 +175,30 @@ export default function CreateAgentEmployeePage() {
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
+  const mcpConfig = mcpModal
+    ? JSON.stringify(
+        {
+          mcpServers: {
+            deft: {
+              url: MCP_ENDPOINT,
+              headers: {
+                Authorization: `Bearer ${mcpModal.apiKey}`,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    : '';
+
+  const handleCopyMcpConfig = () => {
+    if (!mcpConfig) return;
+    navigator.clipboard.writeText(mcpConfig);
+    setCopiedConfig(true);
+    setTimeout(() => setCopiedConfig(false), 2000);
+  };
+
   const avatarLetter = name.trim().charAt(0).toUpperCase() || '?';
 
   return (
@@ -172,9 +221,9 @@ export default function CreateAgentEmployeePage() {
         Connect Agent
       </h2>
       <p className="text-[12px] mb-6" style={{ color: 'var(--muted)' }}>
-        Deft acts as the MCP server. Your agent runtime — Claude Desktop,
-        Claude Code, or your own loop — connects with the API key + endpoint
-        URL we&apos;ll show you next.
+        Pick the runtime you already operate. Deft will create the employee
+        record, issue MCP credentials, and show the exact endpoint to paste
+        into that runtime.
       </p>
 
       {error && (
@@ -185,6 +234,72 @@ export default function CreateAgentEmployeePage() {
           {error}
         </div>
       )}
+
+      {/* Runtime */}
+      <div
+        className="rounded-xl p-5 mb-4"
+        style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
+      >
+        <h3
+          className="text-[13px] font-semibold uppercase tracking-wide mb-4"
+          style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
+        >
+          Runtime
+        </h3>
+        <div className="grid grid-cols-1 gap-2">
+          {AGENT_RUNTIMES.map((runtime) => (
+            <button
+              key={runtime.id}
+              type="button"
+              onClick={() => {
+                if (runtime.disabled) return;
+                setSelectedRuntimeId(runtime.id);
+                setName(runtime.defaultName);
+                setRole(runtime.defaultRole);
+                setJobTitle(runtime.defaultJobTitle);
+                setWakeMode(runtime.defaultWakeMode);
+                setExpertiseDescription(runtime.defaultExpertise);
+              }}
+              className="flex items-start gap-3 p-3 text-left rounded-lg"
+              style={{
+                background: selectedRuntimeId === runtime.id ? 'var(--surface)' : 'transparent',
+                border: `1px solid ${selectedRuntimeId === runtime.id ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 8,
+                opacity: runtime.disabled ? 0.62 : 1,
+                cursor: runtime.disabled ? 'not-allowed' : 'pointer',
+              }}
+              disabled={runtime.disabled}
+            >
+              <Bot size={15} style={{ color: 'var(--muted)', marginTop: 2 }} />
+              <span className="min-w-0">
+                <span className="flex items-center gap-2 text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>
+                  <span>{runtime.name}</span>
+                  {runtime.disabledReason && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--surface)', color: 'var(--muted)', border: '1px solid var(--border)' }}>
+                      {runtime.disabledReason}
+                    </span>
+                  )}
+                </span>
+                <span className="block text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                  {runtime.description}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 rounded-md p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div className="text-[11px] font-medium mb-2" style={{ color: 'var(--foreground-secondary)' }}>
+            Setup notes
+          </div>
+          <ul className="space-y-1">
+            {getRuntimeById(selectedRuntimeId).setupNotes.map((note) => (
+              <li key={note} className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                {note}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
 
       {/* Identity */}
       <div
@@ -197,6 +312,12 @@ export default function CreateAgentEmployeePage() {
         >
           Identity
         </h3>
+        {getRuntimeById(selectedRuntimeId).ownsIdentity && (
+          <p className="text-[11px] mb-4" style={{ color: 'var(--muted)' }}>
+            This runtime brings its own system prompt and name. Deft only stores the employee
+            record, trust policy, and MCP credentials.
+          </p>
+        )}
 
         {/* Name */}
         <label
@@ -247,6 +368,49 @@ export default function CreateAgentEmployeePage() {
           ))}
         </select>
 
+        <label
+          className="block text-[11px] font-medium mb-1"
+          style={{ color: 'var(--foreground-secondary)' }}
+        >
+          Job title
+        </label>
+        <input
+          type="text"
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+          placeholder="e.g. Marketing Agent, QA Engineer"
+          className="w-full h-9 px-3 text-[13px] rounded-md outline-none mb-4"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--foreground)',
+            borderRadius: 4,
+          }}
+        />
+
+        <label
+          className="block text-[11px] font-medium mb-1"
+          style={{ color: 'var(--foreground-secondary)' }}
+        >
+          Wake mode
+        </label>
+        <select
+          value={wakeMode}
+          onChange={(e) => setWakeMode(e.target.value as typeof wakeMode)}
+          className="w-full h-9 px-2 text-[13px] rounded-md outline-none mb-4"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--foreground)',
+            borderRadius: 4,
+          }}
+        >
+          <option value="manual">Manual / human prompted</option>
+          <option value="polling">Runtime polls or heartbeats</option>
+          <option value="webhook">Webhook triggered</option>
+          <option value="external_chat">External chat surface</option>
+        </select>
+
         {/* Avatar color */}
         <label
           className="block text-[11px] font-medium mb-2"
@@ -289,7 +453,26 @@ export default function CreateAgentEmployeePage() {
           value={expertiseDescription}
           onChange={(e) => setExpertiseDescription(e.target.value)}
           placeholder="e.g. Sprint tracking, blocker detection"
-          className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+          className="w-full h-9 px-3 text-[13px] rounded-md outline-none mb-4"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--foreground)',
+            borderRadius: 4,
+          }}
+        />
+
+        <label
+          className="block text-[11px] font-medium mb-1"
+          style={{ color: 'var(--foreground-secondary)' }}
+        >
+          Connection notes (optional)
+        </label>
+        <textarea
+          value={connectionNotes}
+          onChange={(e) => setConnectionNotes(e.target.value)}
+          placeholder="Runtime already running, config path, operator notes, or restart requirement"
+          className="w-full min-h-[76px] px-3 py-2 text-[13px] rounded-md outline-none resize-y"
           style={{
             background: 'var(--surface)',
             border: '1px solid var(--border)',
@@ -412,7 +595,7 @@ export default function CreateAgentEmployeePage() {
               <button
                 onClick={() => {
                   setMcpModal(null);
-                  router.push('/settings/agent-employees');
+                  router.push(mcpModal ? `/settings/agent-employees/${mcpModal.employeeId}/developer` : '/settings/agent-employees');
                 }}
               >
                 <X size={16} style={{ color: 'var(--muted)' }} />
@@ -480,6 +663,33 @@ export default function CreateAgentEmployeePage() {
               </button>
             </div>
 
+            <label
+              className="block text-[11px] font-medium mb-1"
+              style={{ color: 'var(--foreground-secondary)' }}
+            >
+              MCP Client Config
+            </label>
+            <div
+              className="relative px-3 py-2 rounded-md mb-5"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                fontFamily: 'monospace',
+              }}
+            >
+              <pre className="text-[11px] whitespace-pre-wrap break-all pr-8" style={{ color: 'var(--foreground)' }}>
+                {mcpConfig}
+              </pre>
+              <button
+                onClick={handleCopyMcpConfig}
+                className="absolute right-2 top-2 p-1 rounded"
+                style={{ color: copiedConfig ? 'var(--accent)' : 'var(--muted)' }}
+                title="Copy MCP client config"
+              >
+                {copiedConfig ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+
             <p className="text-[11px] mb-4" style={{ color: 'var(--muted)' }}>
               In your MCP client config set{' '}
               <code style={{ fontFamily: 'monospace' }}>url</code> to the endpoint above
@@ -490,8 +700,8 @@ export default function CreateAgentEmployeePage() {
 
             <button
               onClick={() => {
-                setMcpModal(null);
-                router.push('/settings/agent-employees');
+              setMcpModal(null);
+                router.push(`/settings/agent-employees/${mcpModal.employeeId}/developer`);
               }}
               className="w-full py-2 text-[12px] font-medium rounded-md"
               style={{

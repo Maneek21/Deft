@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers } from '@deft/db/schema';
+import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
@@ -84,6 +84,7 @@ wikiRoutes.get('/', async (c) => {
       title: wikiPages.title,
       slug: wikiPages.slug,
       summary: wikiPages.summary,
+      metadata: wikiPages.metadata,
       confidence: wikiPages.confidence,
       version: wikiPages.version,
       space_id: wikiPages.space_id,
@@ -409,8 +410,20 @@ wikiRoutes.get('/:slug', async (c) => {
       .where(eq(wikiLinks.target_page_id, page.id));
 
     // Get citations
-    const citations = await db.select()
+    const citations = await db.select({
+      id: wikiCitations.id,
+      page_id: wikiCitations.page_id,
+      source_type: wikiCitations.source_type,
+      source_id: wikiCitations.source_id,
+      excerpt: wikiCitations.excerpt,
+      created_at: wikiCitations.created_at,
+      source_space_id: messages.space_id,
+    })
       .from(wikiCitations)
+      .leftJoin(messages, and(
+        eq(wikiCitations.source_id, messages.id),
+        eq(wikiCitations.source_type, 'message'),
+      ))
       .where(eq(wikiCitations.page_id, page.id))
       .orderBy(desc(wikiCitations.created_at));
 
@@ -437,6 +450,7 @@ const createPageSchema = z.object({
   summary: z.string().nullable().optional(),
   confidence: z.number().min(0).max(1).optional(),
   tags: z.array(z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
   related_slugs: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
 });
 
@@ -449,7 +463,7 @@ wikiRoutes.post('/', async (c) => {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const { title, content, type, scope, space_id, summary, confidence, tags, related_slugs } = parsed.data;
+    const { title, content, type, scope, space_id, summary, confidence, tags, metadata, related_slugs } = parsed.data;
 
     // Validate space_id belongs to org when scope is 'space'
     if (scope === 'space') {
@@ -491,6 +505,7 @@ wikiRoutes.post('/', async (c) => {
       slug,
       summary: summary || null,
       content,
+      metadata: metadata ?? null,
       confidence: confidence ?? 1.0,
       tags: tags && tags.length > 0 ? tags : [],
     }).returning();
@@ -539,6 +554,7 @@ const updatePageSchema = z.object({
   type: z.enum(['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']).optional(),
   confidence: z.number().min(0).max(1).optional(),
   tags: z.array(z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
   related_slugs: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
 });
 
@@ -576,6 +592,7 @@ wikiRoutes.patch('/:slug', async (c) => {
     if (parsed.data.summary !== undefined) updates.summary = parsed.data.summary;
     if (parsed.data.type !== undefined) updates.type = parsed.data.type;
     if (parsed.data.confidence !== undefined) updates.confidence = parsed.data.confidence;
+    if (parsed.data.metadata !== undefined) updates.metadata = parsed.data.metadata ?? null;
 
     if (parsed.data.content !== undefined && parsed.data.content !== existing.content) {
       updates.content = parsed.data.content;

@@ -56,7 +56,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   // BYOA agents run in the user's own Claude Code / Claude Desktop /
   // custom runtime. Deft has no push endpoint for them — they pull via
   // MCP. Queue the mention as a pending agent_actions row so the BYOA
-  // client can discover it through `poll_pending_work`, then post a
+  // client can discover it through `fetch_unread`, then post a
   // subtle system note so the human sees the mention was received but
   // the agent replies on its own schedule.
   try {
@@ -91,15 +91,26 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     const io = getIO();
     const deftyUserId = await ensureDeftyMembership(orgId);
     const cadence = employee.heartbeat_interval_min ?? 30;
+    const lastSeen = employee.last_mcp_call_at ?? employee.last_heartbeat_at ?? null;
+    const statusText = lastSeen
+      ? `Last MCP contact: ${new Date(lastSeen).toLocaleString('en-US', { timeZone: 'UTC' })} UTC.`
+      : 'No MCP contact has been recorded yet; connect or certify the runtime from the Developer tab.';
     const [sysMsg] = await db
       .insert(messages)
       .values({
         org_id: orgId,
         space_id: spaceId,
         user_id: deftyUserId,
-        content: `${employee.name} will respond when their runtime polls (every ${cadence}m).`,
+        content: `Queued for ${employee.name}. The runtime will see it through fetch_unread on its next poll${employee.wake_mode === 'polling' ? ` (about every ${cadence}m)` : ''}. ${statusText}`,
         parent_id: triggerMsg.parent_id ?? null,
-        metadata: { kind: 'system_note', subtype: 'byoa_mention_received' } as never,
+        metadata: {
+          kind: 'system_note',
+          subtype: 'byoa_mention_received',
+          agent_employee_id: employeeId,
+          wake_mode: employee.wake_mode,
+          last_mcp_call_at: employee.last_mcp_call_at,
+          last_heartbeat_at: employee.last_heartbeat_at,
+        } as never,
       })
       .returning();
     if (sysMsg && io) {

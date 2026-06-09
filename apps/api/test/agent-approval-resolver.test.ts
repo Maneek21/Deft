@@ -136,6 +136,11 @@ async function teardownFixtures() {
     );
     if (TEST_PROJECT_ID) {
       await c.query(
+        `DELETE FROM task_activity
+         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1 AND created_by = $2)`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID],
+      );
+      await c.query(
         `DELETE FROM tasks WHERE project_id = $1 AND created_by = $2`,
         [TEST_PROJECT_ID, SHADOW_USER_ID],
       );

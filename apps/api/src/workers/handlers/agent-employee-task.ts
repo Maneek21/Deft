@@ -9,6 +9,7 @@ import { db } from '../../lib/db.js';
 import {
   agentActions,
   agentEmployees,
+  taskActivity,
   tasks,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -52,7 +53,7 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
   // assignment via `poll_pending_work`. The assigning user is recorded
   // so the audit log shows who handed the work off.
   try {
-    await db.insert(agentActions).values({
+    const [actionRow] = await db.insert(agentActions).values({
       org_id: orgId,
       user_id: assignedBy,
       agent_employee_id: employeeId,
@@ -67,6 +68,18 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
       },
       approval_tier: 'auto',
       approval_status: 'pending',
+    }).returning({ id: agentActions.id });
+
+    await db.insert(taskActivity).values({
+      org_id: orgId,
+      task_id: task.id,
+      user_id: assignedBy,
+      action: 'agent_handoff_queued',
+      field: 'assignee_id',
+      old_value: null,
+      new_value: employee.user_id,
+      agent_action_id: actionRow?.id ?? null,
+      acting_agent_employee_id: employeeId,
     });
   } catch (err) {
     console.error(

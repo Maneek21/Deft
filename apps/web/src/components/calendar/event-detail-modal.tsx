@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { CalEvent, ITEM_COLORS } from '@/lib/calendar';
+import { CalEvent, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
 import { formatEventTime, formatFullDateLong } from '@/lib/time';
 import { api } from '@/lib/api';
 import {
@@ -30,6 +30,8 @@ export function EventDetailModal({
   const [deleting, setDeleting] = useState(false);
 
   const isNative = event.source === 'native';
+  const sourceColor = getEventSourceColor(event.source);
+  const sourceLabel = getEventSourceLabel(event);
   const meta = event.metadata || {};
   const startTime = formatEventTime(meta.start || event.timestamp);
   const endTime = meta.end ? formatEventTime(meta.end) : null;
@@ -77,13 +79,13 @@ export function EventDetailModal({
           style={{ borderBottom: '1px solid var(--border-default)' }}>
           <div className="flex items-start gap-3 min-w-0">
             <div className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
-              style={{ background: isNative ? ITEM_COLORS.event : ITEM_COLORS.event }} />
+              style={{ background: sourceColor }} />
             <div className="min-w-0">
               <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                 {event.title}
               </h2>
               <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                {isNative ? 'Deft Event' : 'Google Calendar'}
+                {sourceLabel}
               </p>
             </div>
           </div>
@@ -194,7 +196,7 @@ export function EventDetailModal({
                 className="flex items-center gap-1.5 text-[11px] hover:underline"
                 style={{ color: 'var(--accent)' }}>
                 <ExternalLink size={11} />
-                Open in Google Calendar
+                Open source event
               </a>
             )}
           </div>

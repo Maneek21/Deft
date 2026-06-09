@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -792,6 +792,86 @@ taskRoutes.get('/:id/assignees', async (c) => {
   } catch (err) {
     console.error('Failed to fetch assignees:', err);
     return c.json({ error: 'Failed to fetch assignees', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/tasks/:id/agent-handoff — explicitly queue the assigned agent employee.
+taskRoutes.post('/:id/agent-handoff', async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return c.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401);
+    const taskId = c.req.param('id');
+
+    const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!task) {
+      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (!task.assignee_id) {
+      return c.json({ error: 'Assign this task to an agent employee first', code: 'NO_ASSIGNEE' }, 400);
+    }
+
+    const [employee] = await db.select({
+      id: agentEmployees.id,
+      user_id: agentEmployees.user_id,
+      name: agentEmployees.name,
+      slug: agentEmployees.slug,
+      runtime_kind: agentEmployees.runtime_kind,
+      wake_mode: agentEmployees.wake_mode,
+      trust_level: agentEmployees.trust_level,
+      certification_status: agentEmployees.certification_status,
+      is_active: agentEmployees.is_active,
+      unhealthy: agentEmployees.unhealthy,
+      unhealthy_reason: agentEmployees.unhealthy_reason,
+      heartbeat_interval_min: agentEmployees.heartbeat_interval_min,
+      last_heartbeat_at: agentEmployees.last_heartbeat_at,
+      last_mcp_call_at: agentEmployees.last_mcp_call_at,
+    })
+      .from(agentEmployees)
+      .where(and(
+        eq(agentEmployees.org_id, user.org_id),
+        eq(agentEmployees.user_id, task.assignee_id),
+        eq(agentEmployees.is_deleted, false),
+      ))
+      .limit(1);
+
+    if (!employee) {
+      return c.json({ error: 'The assignee is not an agent employee', code: 'NOT_AGENT_ASSIGNEE' }, 400);
+    }
+    if (!employee.is_active) {
+      return c.json({ error: 'This agent employee is paused', code: 'AGENT_PAUSED' }, 409);
+    }
+
+    const dispatch = await dispatchAgentEmployeeTask({
+      taskId,
+      orgId: user.org_id,
+      assigneeUserId: task.assignee_id,
+      assignedBy: user.id,
+    });
+
+    if (!dispatch.queued) {
+      return c.json({ error: 'Could not queue this task for the agent employee', code: 'HANDOFF_FAILED', reason: dispatch.reason }, 500);
+    }
+
+    const [pending] = await db.select({
+      count: sql<number>`count(*)::int`,
+    })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.agent_employee_id, employee.id),
+        eq(agentActions.approval_status, 'pending'),
+      ));
+
+    return c.json({
+      queued: true,
+      employee: {
+        ...employee,
+        pending_action_count: pending?.count ?? 0,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to queue task agent handoff:', err);
+    return c.json({ error: 'Failed to queue agent handoff', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

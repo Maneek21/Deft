@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call every turn.
   _Example: `deft_platform_context({caller_employee_slug: "qa"})`_
-- **`wiki_search`** — pull specs, runbooks, and known-regression notes.
-  _Example: `wiki_search({query: "auth flow known issues"})`_
+- **`memory_recall`** — pull specs, runbooks, and known-regression notes.
+  _Example: `memory_recall({query: "auth flow known issues"})`_
 - **`tasks_list`** — filtered task list.
   _Example: `tasks_list({space_id: "sp_release", status: "in_review"})`_
 - **`task_create`** — file a bug ticket. Include steps, expected, actual, env.
@@ -23,14 +23,9 @@
 
 - **`browser_navigate`** / **`browser_snapshot`** — open the deployed URL in a lightweight browser to reproduce bugs that are reported on public pages.
 
-## GitHub
+## External repo tools
 
-- **`github_list_pulls`** — list PRs in a repo. Use to find what's currently under review.
-  _Example: `github_list_pulls({repo: "acme/backend", state: "open"})`_
-- **`github_get_pr`** — read a specific PR's description and diff.
-  _Example: `github_get_pr({repo: "acme/backend", number: 123})`_
-- **`github_get_issue`** — read a specific issue.
-- **`github_create_issue`** — open a bug upstream (write; gated by approval).
+Deft does not bundle source-control access. If this employee's own runtime already has repo-hosting tools, use those tool names from that runtime's docs. Otherwise, coordinate from Deft tasks, chat, wiki, and calendar context.
 
 ## Rules of thumb
 

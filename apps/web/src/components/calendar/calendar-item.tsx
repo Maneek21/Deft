@@ -6,15 +6,16 @@ import { FileText } from 'lucide-react';
 type ItemType = 'event' | 'task' | 'note' | 'reminder';
 
 export function CalendarItem({
-  type, title, time, hasBrief, onClick,
+  type, title, time, hasBrief, color: overrideColor, onClick,
 }: {
   type: ItemType;
   title: string;
   time?: string;
   hasBrief?: boolean;
+  color?: string;
   onClick?: () => void;
 }) {
-  const color = ITEM_COLORS[type];
+  const color = overrideColor ?? ITEM_COLORS[type];
 
   return (
     <button

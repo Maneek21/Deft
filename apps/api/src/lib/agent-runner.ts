@@ -5,12 +5,13 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { connectedAccounts, wikiPages, orgs, agentMemory } from '@deft/db/schema';
-import { eq, and, desc, or, ilike, sql } from 'drizzle-orm';
+import { orgs, agentMemory } from '@deft/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
 import { createAgentMessage } from './agent-llm.js';
 import { llm } from './llm.js';
-import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_TOOLS, GITHUB_TOOLS, CALENDAR_ACTION_TOOLS, GITHUB_ACTION_TOOLS } from './agent-tools.js';
+import { retrieveContext } from './retrieve-context.js';
+import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
@@ -153,23 +154,9 @@ export async function runAgentQuery(params: {
     throw new Error(`${reasonProvider.provider} API key not configured (org or env)`);
   }
 
-  // Check connected accounts for dynamic tool availability
-  const connections = await db.select({ provider: connectedAccounts.provider })
-    .from(connectedAccounts)
-    .where(and(eq(connectedAccounts.user_id, userId), eq(connectedAccounts.org_id, orgId)));
-  const connectedProviders = connections.map(conn => conn.provider);
-
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
-  let tools: Anthropic.Tool[] = [...AGENT_TOOLS];
+  let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
   const allActionTools = new Set([...ACTION_TOOLS]);
-  if (connectedProviders.includes('google_calendar')) {
-    tools = [...tools, ...CALENDAR_TOOLS];
-    CALENDAR_ACTION_TOOLS.forEach(t => allActionTools.add(t));
-  }
-  if (connectedProviders.includes('github')) {
-    tools = [...tools, ...GITHUB_TOOLS];
-    GITHUB_ACTION_TOOLS.forEach(t => allActionTools.add(t));
-  }
 
   // MCP tools
   try {
@@ -185,16 +172,7 @@ export async function runAgentQuery(params: {
     console.warn('[agent-runner] Failed to load MCP tools:', err instanceof Error ? err.message : err);
   }
 
-  let connectionInfo = '';
-  if (connectedProviders.includes('google_calendar')) {
-    connectionInfo += '\nThe user has Google Calendar connected. You can check their schedule and create events.';
-  }
-  if (connectedProviders.includes('github')) {
-    connectionInfo += '\nThe user has GitHub connected. You can check PRs, issues, and create issues.';
-  }
-  if (!connectionInfo) {
-    connectionInfo = '\nNo external services are connected. If the user asks about calendar or GitHub, suggest they connect in Settings → Integrations.';
-  }
+  let connectionInfo = '\nYou can read native Deft calendar events and imported ICS calendar feeds with check_calendar.';
 
   // Load trust level for background mode
   let trustLevel: TrustLevel = 'conservative';
@@ -223,56 +201,28 @@ export async function runAgentQuery(params: {
     }
   }
 
-  // Auto-load relevant wiki context using full-text search (two-tier: employee-specific then org-wide)
+  // Auto-load relevant wiki context through the shared retrieval gateway.
   try {
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
-      const allRelevantPages: { title: string; slug: string; summary: string | null; type: string; confidence: number }[] = [];
-
-      // Tier 1: Employee-tagged pages (if agent employee)
-      if (agentEmployeeId) {
-        const employeePages = await db.select({
-          title: wikiPages.title,
-          slug: wikiPages.slug,
-          summary: wikiPages.summary,
-          type: wikiPages.type,
-          confidence: wikiPages.confidence,
-        })
-          .from(wikiPages)
-          .where(and(
-            eq(wikiPages.org_id, orgId),
-            eq(wikiPages.is_deleted, false),
-            eq(wikiPages.agent_employee_id, agentEmployeeId),
-            sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-          ))
-          .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-          .limit(2);
-        allRelevantPages.push(...employeePages);
-      }
-
-      // Tier 2: Org-wide pages (no employee tag)
-      const orgWidePages = await db.select({
-        title: wikiPages.title,
-        slug: wikiPages.slug,
-        summary: wikiPages.summary,
-        type: wikiPages.type,
-        confidence: wikiPages.confidence,
-      })
-        .from(wikiPages)
-        .where(and(
-          eq(wikiPages.org_id, orgId),
-          eq(wikiPages.is_deleted, false),
-          sql`${wikiPages.agent_employee_id} IS NULL`,
-          sql`search_vector @@ plainto_tsquery('english', ${searchQuery})`,
-        ))
-        .orderBy(sql`ts_rank(search_vector, plainto_tsquery('english', ${searchQuery})) * ${wikiPages.confidence} DESC`)
-        .limit(3);
-      allRelevantPages.push(...orgWidePages);
+      const allRelevantPages = await retrieveContext({
+        query: searchQuery,
+        org_id: orgId,
+        user_id: userId,
+        agent_employee_id: agentEmployeeId,
+        types: ['wiki'],
+        limit: 5,
+      });
 
       if (allRelevantPages.length > 0) {
-        const wikiContext = allRelevantPages.map(p =>
-          `- **${p.title}** (${p.type}, confidence: ${p.confidence}): ${p.summary || 'No summary'}`
-        ).join('\n');
+        const wikiContext = allRelevantPages.map((p) => {
+          const type = typeof p.metadata?.type === 'string' ? p.metadata.type : 'wiki';
+          const slug = typeof p.metadata?.slug === 'string' ? p.metadata.slug : p.source_id;
+          const summary = typeof p.metadata?.summary === 'string' && p.metadata.summary.trim().length > 0
+            ? p.metadata.summary.trim()
+            : p.content.replace(/\s+/g, ' ').slice(0, 600);
+          return `- **${p.title}** (${type}, slug: ${slug}, confidence: ${p.confidence ?? 'unknown'}): ${summary}`;
+        }).join('\n');
         systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
       }
     }

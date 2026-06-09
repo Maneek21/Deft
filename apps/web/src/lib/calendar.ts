@@ -30,6 +30,9 @@ export const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 export const ITEM_COLORS = {
   event: '#22c55e',
+  eventNative: '#14b8a6',
+  eventIcs: '#8b5cf6',
+  eventGoogle: '#22c55e',
   task: '#3b82f6',
   note: '#f97316',
   reminder: '#a855f7',
@@ -87,6 +90,28 @@ export function bucketByDay(data: CalendarData): Map<string, DayBucket> {
     ensure(toDateKey(new Date(r.remind_at))).reminders.push(r);
   }
   return buckets;
+}
+
+export function getEventSourceColor(source: string): string {
+  if (source === 'native') return ITEM_COLORS.eventNative;
+  if (source === 'ics') return ITEM_COLORS.eventIcs;
+  if (source === 'google_calendar') return ITEM_COLORS.eventGoogle;
+  return ITEM_COLORS.event;
+}
+
+export function getEventSourceLabel(event: Pick<CalEvent, 'source' | 'metadata'>): string {
+  const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+  if (event.source === 'native') return 'Deft event';
+  if (event.source === 'ics') {
+    const label = typeof metadata.ics_label === 'string' && metadata.ics_label.trim()
+      ? metadata.ics_label.trim()
+      : typeof metadata.calendarName === 'string' && metadata.calendarName.trim()
+        ? metadata.calendarName.trim()
+        : null;
+    return label ? `ICS feed: ${label}` : 'ICS feed';
+  }
+  if (event.source === 'google_calendar') return 'Imported calendar';
+  return event.source.replace(/_/g, ' ');
 }
 
 export function getDateRangeForView(view: CalendarView, anchor: Date): { from: Date; to: Date } {

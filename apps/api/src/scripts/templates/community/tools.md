@@ -4,8 +4,8 @@
 
 - **`deft_platform_context`** — mandatory first call.
   _Example: `deft_platform_context({caller_employee_slug: "community"})`_
-- **`wiki_search`** — brand voice, FAQ, sensitive-topic guidance.
-  _Example: `wiki_search({query: "brand voice guide"})`_
+- **`memory_recall`** — brand voice, FAQ, sensitive-topic guidance.
+  _Example: `memory_recall({query: "brand voice guide"})`_
 - **`tasks_list`** — see what the team is shipping this week.
 - **`task_create`** — file an internal follow-up.
   _Example: `task_create({space_id: "sp_community", title: "HN thread on pricing — worth a reply", description: "Thread URL: ..."})`_
@@ -28,7 +28,7 @@
 
 ## Not available in v1 (do not call)
 
-- **Slack / Discord / Twitter / Reddit posting** — not installed. You draft replies in Deft and a human copies them to the platform.
+- **External posting** — not installed. You draft replies in Deft and a human copies them to the platform.
 
 ## Rules of thumb
 

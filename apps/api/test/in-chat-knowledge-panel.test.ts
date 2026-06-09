@@ -141,13 +141,13 @@ async function insertWikiPage(overrides: Record<string, unknown> = {}): Promise<
   return id;
 }
 
-async function insertMessage(spaceId: string): Promise<string> {
+async function insertMessage(spaceId: string, content = 'test message'): Promise<string> {
   const id = `ick-msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   await withClient(async (c) => {
     await c.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content, is_pinned, is_deleted)
-       VALUES ($1, $2, $3, $4, 'test message', false, false)`,
-      [id, ORG_ID, spaceId, USER_ID],
+       VALUES ($1, $2, $3, $4, $5, false, false)`,
+      [id, ORG_ID, spaceId, USER_ID, content],
     );
   });
   createdMessageIds.push(id);
@@ -239,6 +239,8 @@ test('2. GET returns org-scoped page that has a citation from a message in the s
   const data = await res.json() as any;
   const found = data.entries.find((e: any) => e.id === pageId);
   assert.ok(found, `Cited page ${pageId} should appear via citation join`);
+  assert.equal(found.source_message_id, messageId);
+  assert.equal(found.source_space_id, SPACE_ID);
 });
 
 // ─── Test 3: GET does NOT return page from a different space ─────────────────
@@ -257,10 +259,15 @@ test('3. GET does NOT return pages from a different space with no citation', asy
 // ─── Test 4: POST creates wiki_pages row + enqueues embed-content ─────────────
 
 test('4. POST creates wiki_pages row with type=resource, scope=space, embed-content enqueued', async () => {
+  const messageId = await insertMessage(SPACE_ID, '<p>Use the Tomato Buyers Guide as the current wholesale resource.</p>');
+  const metadata = { url: 'https://example.com/tomato-buyers-guide', status: 'accepted' };
+
   const res = await callRoute('POST', `/${SPACE_ID}/knowledge`, {
     type: 'resource',
     title: 'ICK Test Resource',
     content: 'A useful resource for testing.',
+    metadata,
+    source_message_id: messageId,
   });
   assert.equal(res.status, 201, `Expected 201, got ${res.status}`);
 
@@ -270,12 +277,15 @@ test('4. POST creates wiki_pages row with type=resource, scope=space, embed-cont
   assert.equal(entry.title, 'ICK Test Resource');
   assert.equal(entry.scope, 'space');
   assert.equal(entry.space_id, SPACE_ID);
+  assert.deepEqual(entry.metadata, metadata);
+  assert.equal(entry.source_message_id, messageId);
+  assert.equal(entry.source_space_id, SPACE_ID);
   createdPageIds.push(entry.id);
 
   // Verify DB row
   const row = await withClient(async (c) => {
     const r = await c.query(
-      `SELECT id, type, scope, space_id FROM wiki_pages WHERE id = $1`,
+      `SELECT id, type, scope, space_id, metadata FROM wiki_pages WHERE id = $1`,
       [entry.id],
     );
     return r.rows[0] ?? null;
@@ -284,6 +294,23 @@ test('4. POST creates wiki_pages row with type=resource, scope=space, embed-cont
   assert.equal(row.type, 'resource');
   assert.equal(row.scope, 'space');
   assert.equal(row.space_id, SPACE_ID);
+  assert.deepEqual(row.metadata, metadata);
+
+  const citation = await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT source_type, source_id, excerpt
+       FROM wiki_citations
+       WHERE page_id = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [entry.id],
+    );
+    return r.rows[0] ?? null;
+  });
+  assert.ok(citation, 'wiki_citations row should exist for source_message_id');
+  assert.equal(citation.source_type, 'message');
+  assert.equal(citation.source_id, messageId);
+  assert.match(citation.excerpt, /Tomato Buyers Guide/);
 
   // Verify embed-content job enqueued
   const job = await withClient(async (c) => {
@@ -306,10 +333,12 @@ test('4. POST creates wiki_pages row with type=resource, scope=space, embed-cont
 
 test('5. PATCH updates title and content, re-enqueues embed-content', async () => {
   const pageId = await insertWikiPage({ space_id: SPACE_ID, type: 'fact', title: 'Patch Target' });
+  const patchMetadata = { status: 'accepted', url: 'https://example.com/patch-target' };
 
   const res = await callRoute('PATCH', `/${SPACE_ID}/knowledge/${pageId}`, {
     title: 'Patch Target Updated',
     content: 'Updated content here.',
+    metadata: patchMetadata,
   });
   assert.equal(res.status, 200, `Expected 200, got ${res.status}`);
 
@@ -318,12 +347,13 @@ test('5. PATCH updates title and content, re-enqueues embed-content', async () =
 
   // Verify DB row updated
   const row = await withClient(async (c) => {
-    const r = await c.query(`SELECT title, content FROM wiki_pages WHERE id = $1`, [pageId]);
+    const r = await c.query(`SELECT title, content, metadata FROM wiki_pages WHERE id = $1`, [pageId]);
     return r.rows[0] ?? null;
   });
   assert.ok(row, 'wiki_pages row should exist');
   assert.equal(row.title, 'Patch Target Updated');
   assert.equal(row.content, 'Updated content here.');
+  assert.deepEqual(row.metadata, patchMetadata);
 
   // Verify embed-content re-enqueued
   const job = await withClient(async (c) => {
@@ -338,6 +368,21 @@ test('5. PATCH updates title and content, re-enqueues embed-content', async () =
     return r.rows[0] ?? null;
   });
   assert.ok(job, 'embed-content job should be re-enqueued after PATCH with content change');
+});
+
+test('5b. POST rejects source_message_id outside the target space', async () => {
+  const messageId = await insertMessage(ALT_SPACE_ID, 'Alt-space source should not be citeable from the main space.');
+
+  const res = await callRoute('POST', `/${SPACE_ID}/knowledge`, {
+    type: 'fact',
+    title: 'Invalid Source Message',
+    content: 'Should be rejected.',
+    source_message_id: messageId,
+  });
+
+  assert.equal(res.status, 400);
+  const data = await res.json() as any;
+  assert.equal(data.code, 'VALIDATION_ERROR');
 });
 
 // ─── Test 6: DELETE soft-deletes the entry ────────────────────────────────────

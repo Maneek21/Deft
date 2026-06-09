@@ -64,7 +64,7 @@ app.use('*', cors({
     'http://127.0.0.1:3000',
   ],
   credentials: true,
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'x-deft-audit-token'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
