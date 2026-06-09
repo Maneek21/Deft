@@ -92,7 +92,7 @@ pnpm db:seed
 
 `pnpm db:push-full` syncs the schema to Postgres at `localhost:5432` (exposed by Docker Compose) and applies two extra SQL files that create the wiki/task full-text-search columns and indexes Drizzle's pushed schema can't express — plain `pnpm db:push` skips them and leaves search broken. `pnpm db:seed` seeds the Defty agent template, default skills, and starter prompts. Both commands are idempotent — safe to run again if something goes wrong.
 
-> **No pnpm locally?** Install it with `npm install -g pnpm`, then run the commands above. Node.js 18+ is required.
+> **No pnpm locally?** Install it with `npm install -g pnpm`, then run the commands above. Node.js 20+ is required.
 
 ### 4. Open the app
 

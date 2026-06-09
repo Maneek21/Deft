@@ -70,7 +70,7 @@ For a deeper setup guide — environment variable reference, backups, upgrades, 
 ### Local Development
 
 ```bash
-# Prerequisites: Node.js 18+, pnpm, PostgreSQL 16, Redis
+# Prerequisites: Node.js 20+, pnpm, PostgreSQL 16, Redis
 git clone https://github.com/Maneek21/Deft.git
 cd deft
 pnpm install
