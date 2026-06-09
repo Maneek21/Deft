@@ -42,7 +42,7 @@
     "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "devDependencies": {
     "playwright": "^1.60.0",
