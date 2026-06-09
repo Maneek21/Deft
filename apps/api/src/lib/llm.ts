@@ -97,6 +97,9 @@ export async function llm(params: {
 }> {
   const config = getModelConfig(params.task, params.orgConfig);
   const apiKey = resolveApiKey(config.provider, params.orgConfig);
+  if (config.provider !== 'ollama' && !apiKey) {
+    throw new Error(`${config.provider} API key is not configured`);
+  }
 
   let result: {
     text: string;
@@ -252,6 +255,9 @@ async function callOllama(
   },
 ): Promise<{ text: string; toolCalls?: any[]; usage?: { input: number; output: number }; model: string }> {
   const baseURL = config.baseUrl || env.OLLAMA_URL;
+  if (!baseURL) {
+    throw new Error('Ollama URL is not configured');
+  }
 
   // Build messages array
   const apiMessages: { role: string; content: string }[] = [];

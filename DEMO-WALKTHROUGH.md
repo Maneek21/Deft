@@ -15,8 +15,6 @@ From the repo root, with the dev stack running (`docker compose up -d` or
 ```bash
 # Without AI — workspace boots, agent stays disabled until a key is configured
 pnpm db:seed:demo
-
-pnpm db:seed:demo
 ```
 
 The `db:seed:demo` proxy chains two scripts: this seed (wipes and re-creates

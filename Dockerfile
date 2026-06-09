@@ -18,6 +18,18 @@ RUN pnpm install --frozen-lockfile
 FROM node:22-alpine AS builder
 RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
+
+# NEXT_PUBLIC_* values are compiled into the browser bundle by Next.js.
+# docker-compose passes these as build args; declare and export them before
+# `next build` so self-hosted installs on custom domains/ports do not silently
+# fall back to localhost:3001.
+ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
+ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ARG NEXT_PUBLIC_WS_URL=http://localhost:3001
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
@@ -34,6 +46,7 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV API_PORT=3001
 
 # Copy built artifacts
 COPY --from=builder /app/node_modules ./node_modules
@@ -46,6 +59,7 @@ COPY --from=builder /app/apps/web/next.config.ts ./apps/web/
 COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=builder /app/apps/api ./apps/api
 COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/pnpm-lock.yaml ./

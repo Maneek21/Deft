@@ -46,13 +46,14 @@ Open `.env` and set the three required values. AI keys are optional and can be a
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional | Configure one provider for AI features; can also be set per-org in Settings -> AI |
 
 ```bash
-# 2. Start the stack (Postgres + Redis + Deft)
-docker compose up -d
+# 2. Build and start the stack (Postgres + Redis + Deft)
+docker compose up -d --build
 
-# 3. Initialize the database (run once on first boot)
-pnpm db:push-full   # applies schema + the two extras SQL files (FTS columns / triggers)
-pnpm db:seed        # seeds Defty + bundled skills/templates (prod-safe, idempotent)
-# pnpm db:seed:demo # ALSO inserts 5 test users for poking around — dev only, NEVER in prod
+# 3. Initialize the database from inside Docker (run once on first boot)
+docker compose run --rm init
+
+# Optional: verify the self-host stack
+docker compose run --rm doctor
 ```
 
 > **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies two orphan SQL files (`0020_wiki_search_vector.sql` and `0033_tasks_embedding.sql`) that create generated tsvector columns and GIN indexes Drizzle's pushed schema can't express. Plain `pnpm db:push` skips the orphans and leaves wiki/task FTS broken. Versioned `db:migrate` upgrade paths are not yet supported and will arrive post-alpha.
@@ -61,7 +62,7 @@ pnpm db:seed        # seeds Defty + bundled skills/templates (prod-safe, idempot
 
 Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
 
-> **Want to poke around without creating an account?** Run `pnpm db:seed:demo` (dev only — wipes the DB and inserts five test users with passwords listed in [CONTRIBUTING.md](./CONTRIBUTING.md#test-accounts-after-seeding)). Use them for a guided tour, then re-init the DB before inviting real testers.
+> **Want to poke around with demo data?** Use the local development or pilot path below and run `pnpm db:seed:demo` or `pnpm db:seed:pilot` (dev only — wipes the DB and inserts six Testers Tomatoes users with password `tomato123`). Never run demo/pilot seeds in production.
 
 > **Single-org note:** Deft is designed for one workspace per deployment. Additional users join via invite link from Settings → Members — direct signups after the first account are blocked.
 
@@ -80,11 +81,27 @@ cp .env.example .env
 # Set up database
 pnpm db:push-full
 pnpm db:seed         # Platform bundle only (prod-safe)
-# pnpm db:seed:demo  # OR: wipe + populate with 5 test users + demo content (dev only)
+# pnpm db:seed:demo  # OR: wipe + populate with 6 Testers Tomatoes users (dev only)
+# pnpm db:seed:pilot # OR: demo seed + pilot polish fixtures (dev/pilot only)
 
 # Start dev servers
 pnpm dev        # Starts web (3000) + API (3001)
 ```
+
+### Fresh Pilot/Demo Install
+
+For a local pilot workspace with the full Testers Tomatoes demo and pilot polish fixtures:
+
+```bash
+pnpm install
+cp .env.example .env
+# Set POSTGRES_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET, DATABASE_URL, REDIS_URL
+pnpm pilot:reset
+pnpm pilot:preflight:strict
+pnpm pilot:cracks:battery
+```
+
+The pilot seed creates six users. Password is `tomato123`; start with `diego@testers-tomatoes.com`.
 
 ## Architecture
 

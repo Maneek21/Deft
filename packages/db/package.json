@@ -10,7 +10,7 @@
   "scripts": {
     "generate": "drizzle-kit generate",
     "push": "drizzle-kit push",
-    "push-full": "drizzle-kit push --force && tsx scripts/apply-extras.ts",
+    "push-full": "tsx scripts/ensure-pgvector.ts && drizzle-kit push --force && tsx scripts/apply-extras.ts",
     "migrate": "drizzle-kit migrate",
     "seed": "tsx seed.ts",
     "seed:demo": "tsx seed-demo.ts",

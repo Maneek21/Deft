@@ -3,7 +3,7 @@
 ## Development Setup
 
 ### Prerequisites
-- Node.js 18+ (22 recommended)
+- Node.js 20+ (22 recommended)
 - pnpm 9+
 - PostgreSQL 16
 - Redis 7 (optional — needed for real-time features)
@@ -21,7 +21,7 @@ cp .env.example .env
 createdb deft
 pnpm db:push-full
 
-# Seed demo data (5 test users + demo org + sample messages/tasks).
+# Seed demo data (6 Testers Tomatoes users + demo org + sample messages/tasks).
 # This wipes the DB — dev only, NEVER run in production.
 pnpm db:seed:demo
 
@@ -37,11 +37,12 @@ The web app runs at `http://localhost:3000`, API at `http://localhost:3001`.
 ### Test accounts (after seeding)
 | Email | Password | Role |
 |-------|----------|------|
-| maneek@test.com | test1234 | Owner |
-| rahul@test.com | test1234 | Member |
-| priya@test.com | test1234 | Member |
-| arjun@test.com | test1234 | Member |
-| sara@test.com | test1234 | Member |
+| diego@testers-tomatoes.com | tomato123 | Owner |
+| marigold@testers-tomatoes.com | tomato123 | Admin |
+| cesar@testers-tomatoes.com | tomato123 | Member |
+| lina@testers-tomatoes.com | tomato123 | Member |
+| sage@testers-tomatoes.com | tomato123 | Member |
+| tomas@testers-tomatoes.com | tomato123 | Member |
 
 ## Project Structure
 

@@ -10,12 +10,14 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:3001}
     ports:
-      - '3000:3000'
-      - '3001:3001'
+      - '${DEFT_WEB_PORT:-3000}:3000'
+      - '${DEFT_API_PORT:-3001}:3001'
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
       REDIS_URL: redis://redis:6379
+      API_PORT: 3001
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,6 +26,50 @@ services:
     volumes:
       - uploads:/app/uploads
     restart: unless-stopped
+
+  init:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:3001}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "pnpm db:push-full && pnpm db:seed"
+    profiles: ['tools']
+
+  doctor:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:3001}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
+      REDIS_URL: redis://redis:6379
+      DEFT_API_URL: http://deft:3001
+      DEFT_WEB_URL: http://deft:3000
+      DEFT_SELFHOST_INTERNAL_CHECK: 1
+    depends_on:
+      deft:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "pnpm selfhost:doctor"
+    profiles: ['tools']
 
   postgres:
     # pgvector image ships a standard postgres:16 with the `vector`
@@ -42,10 +88,10 @@ services:
       # whole IPv4 space for 5432 and try default creds — this is how the
       # 2026-05-11 incident happened on a test deploy. Localhost-only
       # binding keeps it reachable from host-side dev tools but invisible
-      # to the public. Use `compose.prod.yml` to drop the binding entirely
-      # for hardened production deploys; containers still talk to each
-      # other on the internal docker network.
-      - '127.0.0.1:5432:5432'
+      # to the public. `compose.prod.yml` drops the binding entirely for
+      # hardened production deploys; containers still talk to each other on
+      # the internal docker network.
+      - '${DEFT_BIND_HOST:-127.0.0.1}:${DEFT_POSTGRES_PORT:-5432}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       # On first boot, enable the vector extension in the `deft` database.
@@ -66,7 +112,7 @@ services:
       # password (default) plus public exposure is an instant
       # cryptojacking on-ramp via `CONFIG SET dir / SAVE` shell escapes.
       # Loopback-only binding keeps it reachable for host-side dev tools.
-      - '127.0.0.1:6379:6379'
+      - '${DEFT_BIND_HOST:-127.0.0.1}:${DEFT_REDIS_PORT:-6379}:6379'
     volumes:
       - redisdata:/data
     healthcheck:
