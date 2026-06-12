@@ -1444,6 +1444,127 @@ export const agentMcpCallAudit = pgTable('agent_mcp_call_audit', {
   index('agent_mcp_audit_org_tool_idx').on(t.org_id, t.tool_name, t.created_at),
 ]);
 
+// Personal and agent MCP access tokens. Agent employee tokens are still stored
+// on agent_employees for backwards compatibility; this table is the first-class
+// home for human-owned AI client tokens and future tokenized MCP principals.
+export const mcpTokens = pgTable('mcp_tokens', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  agent_employee_id: text('agent_employee_id').references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  principal_kind: text('principal_kind').notNull(), // 'human' | 'agent'
+  name: text('name').notNull(),
+  token_hash: text('token_hash').notNull(),
+  token_prefix: text('token_prefix').notNull(),
+  scopes: text('scopes').array().notNull(),
+  last_used_at: timestamp('last_used_at'),
+  revoked_at: timestamp('revoked_at'),
+  created_by: text('created_by').references(() => users.id),
+  ...timestamps(),
+}, (t) => [
+  index('mcp_tokens_org_idx').on(t.org_id),
+  index('mcp_tokens_user_idx').on(t.user_id),
+  index('mcp_tokens_agent_idx').on(t.agent_employee_id),
+  index('mcp_tokens_prefix_idx').on(t.token_prefix),
+]);
+
+export const oauthClients = pgTable('oauth_clients', {
+  ...id(),
+  client_id: text('client_id').notNull().unique(),
+  client_secret_hash: text('client_secret_hash'),
+  client_name: text('client_name').notNull(),
+  client_uri: text('client_uri'),
+  logo_uri: text('logo_uri'),
+  redirect_uris: text('redirect_uris').array().notNull(),
+  grant_types: text('grant_types').array().notNull().default(['authorization_code', 'refresh_token']),
+  response_types: text('response_types').array().notNull().default(['code']),
+  token_endpoint_auth_method: text('token_endpoint_auth_method').notNull().default('none'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps(),
+}, (t) => [
+  index('oauth_clients_client_id_idx').on(t.client_id),
+]);
+
+export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {
+  ...id(),
+  code_hash: text('code_hash').notNull().unique(),
+  org_id: text('org_id').notNull(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  client_id: text('client_id').notNull(),
+  redirect_uri: text('redirect_uri').notNull(),
+  code_challenge: text('code_challenge').notNull(),
+  code_challenge_method: text('code_challenge_method').notNull(),
+  resource: text('resource').notNull(),
+  scopes: text('scopes').array().notNull(),
+  expires_at: timestamp('expires_at').notNull(),
+  used_at: timestamp('used_at'),
+  ...timestamps(),
+}, (t) => [
+  index('oauth_codes_hash_idx').on(t.code_hash),
+  index('oauth_codes_client_idx').on(t.client_id),
+  index('oauth_codes_user_idx').on(t.user_id),
+]);
+
+export const oauthGrants = pgTable('oauth_grants', {
+  ...id(),
+  org_id: text('org_id').notNull(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  client_id: text('client_id').notNull(),
+  app_name: text('app_name').notNull(),
+  connector_profile: text('connector_profile').notNull().default('knowledge'),
+  scopes: text('scopes').array().notNull(),
+  revoked_at: timestamp('revoked_at'),
+  ...timestamps(),
+}, (t) => [
+  index('oauth_grants_org_user_idx').on(t.org_id, t.user_id),
+  index('oauth_grants_client_idx').on(t.client_id),
+]);
+
+export const oauthAccessTokens = pgTable('oauth_access_tokens', {
+  ...id(),
+  token_hash: text('token_hash').notNull().unique(),
+  grant_id: text('grant_id').notNull().references(() => oauthGrants.id, { onDelete: 'cascade' }),
+  org_id: text('org_id').notNull(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  client_id: text('client_id').notNull(),
+  resource: text('resource').notNull(),
+  scopes: text('scopes').array().notNull(),
+  expires_at: timestamp('expires_at').notNull(),
+  last_used_at: timestamp('last_used_at'),
+  revoked_at: timestamp('revoked_at'),
+  ...timestamps(),
+}, (t) => [
+  index('oauth_access_tokens_hash_idx').on(t.token_hash),
+  index('oauth_access_tokens_grant_idx').on(t.grant_id),
+  index('oauth_access_tokens_user_idx').on(t.user_id),
+]);
+
+export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
+  ...id(),
+  token_hash: text('token_hash').notNull().unique(),
+  grant_id: text('grant_id').notNull().references(() => oauthGrants.id, { onDelete: 'cascade' }),
+  rotated_from: text('rotated_from'),
+  expires_at: timestamp('expires_at').notNull(),
+  revoked_at: timestamp('revoked_at'),
+  ...timestamps(),
+}, (t) => [
+  index('oauth_refresh_tokens_hash_idx').on(t.token_hash),
+  index('oauth_refresh_tokens_grant_idx').on(t.grant_id),
+]);
+
+export const oauthAuditEvents = pgTable('oauth_audit_events', {
+  ...id(),
+  org_id: text('org_id'),
+  user_id: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+  client_id: text('client_id'),
+  event: text('event').notNull(),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('oauth_audit_org_idx').on(t.org_id, t.created_at),
+  index('oauth_audit_client_idx').on(t.client_id, t.created_at),
+]);
+
 export const agentEmployeeSkills = pgTable('agent_employee_skills', {
   agent_employee_id: text('agent_employee_id').notNull()
     .references(() => agentEmployees.id, { onDelete: 'cascade' }),

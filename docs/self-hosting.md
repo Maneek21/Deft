@@ -83,9 +83,9 @@ The init service runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
 No host Node.js or pnpm install is required for the Docker self-host path.
 
 `db:push-full` enables the `vector` extension, syncs the schema, and applies the
-full-text-search extras Drizzle cannot express. `db:seed` seeds Defty, bundled
-skills, task templates, and first-party employee templates. It is idempotent and
-does not insert demo users.
+full-text-search extras Drizzle cannot express. `db:seed` seeds Defty, internal
+agent/tool bundles, task templates, and first-party employee templates. It is
+idempotent and does not insert demo users.
 
 ### 4. Verify
 
@@ -135,11 +135,18 @@ Self-hosted Deft does not send email. Password recovery is admin-generated:
 owners/admins create recovery URLs from Settings -> Members and share them
 manually.
 
-## Agents
+## MCP Access And Agents
 
 Defty is seeded by `docker compose run --rm init`. It becomes active once a
 usable AI provider is configured. Without a provider, Defty and AI features stay
 off while chat, tasks, notes, calendar, wiki, and the dashboard continue to work.
+
+Human employees can connect personal AI clients through Settings -> MCP Access.
+Create a personal token, choose read-only or write-enabled scopes, and paste the
+generated streamable HTTP MCP config into Claude Desktop, Claude Code, ChatGPT
+MCP clients, or any compatible MCP runtime. Personal tokens act as the user who
+created them. Writes create tasks, messages, and wiki pages under that user's
+identity.
 
 Bring-your-own-agent employees connect through MCP:
 
@@ -148,7 +155,14 @@ POST https://your-domain.com/api/mcp/v1
 ```
 
 Create an agent employee from Settings -> Agent Employees, copy the bearer token,
-and paste the generated MCP config into your runtime.
+and paste the generated MCP config into your runtime. Agent employee tokens act
+as that employee and are governed by the employee's trust level, approval rules,
+health status, and MCP audit log.
+
+Personal tokens and agent employee tokens use the same endpoint, but they are not
+the same authority model. Use personal tokens when a human wants their own AI
+assistant to help with work. Use agent employee tokens when an autonomous or
+semi-autonomous runtime should show up as a shared coworker in Deft.
 
 ## Environment Variables
 

@@ -58,6 +58,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const storedTz = data.user.timezone;
         const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
         setUserTimezone(storedTz && storedTz !== 'UTC' ? storedTz : browserTz);
+      } else if (res.status === 429) {
+        console.warn('[auth] /me rate limited; preserving current session state');
       } else {
         setUser(null);
         setOrg(null);
@@ -88,7 +90,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     api.setTokens(data.accessToken, data.refreshToken);
     await fetchMe();
-    router.push('/dashboard');
+    const redirect = sessionStorage.getItem('deft-redirect-after-login');
+    if (redirect) {
+      sessionStorage.removeItem('deft-redirect-after-login');
+      router.push(redirect);
+    } else {
+      router.push('/dashboard');
+    }
   };
 
   const signup = async (name: string, email: string, password: string, orgName: string) => {
