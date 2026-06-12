@@ -44,6 +44,22 @@ const CRON_KEYS: Record<string, string> = {
   'ics-sync': 'cron:ics-sync',
 };
 
+const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
+
+function runWithTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  if (!Number.isFinite(JOB_TIMEOUT_MS) || JOB_TIMEOUT_MS <= 0) return promise;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`${label} timed out after ${JOB_TIMEOUT_MS}ms`)),
+      JOB_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([promise, guard]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
 // ─── Lazy-loaded handler registry ───
 async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
@@ -228,7 +244,10 @@ export function startWorkers(): void {
         }
 
         try {
-          await handler({ id: job.id, name: job.name, data: job.data });
+          await runWithTimeout(
+            handler({ id: job.id, name: job.name, data: job.data }),
+            `Job ${job.name} (${job.id.slice(0, 8)})`,
+          );
           await completeJob(job.id);
           console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
 
