@@ -230,6 +230,8 @@ test('OAuth bearer can use JSON-RPC MCP read tools but not ungranted write tools
   assert.ok(names.has('wiki_search'));
   assert.ok(names.has('list_my_tasks'));
   assert.ok(!names.has('task_create'), 'write tool must be hidden without write:tasks');
+  const searchTool = listBody.result.tools.find((tool: any) => tool.name === 'search');
+  assert.equal(searchTool.annotations?.readOnlyHint, true);
 
   const searchRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
@@ -275,6 +277,38 @@ test('OAuth bearer can use JSON-RPC MCP read tools but not ungranted write tools
   const writeBody = (await writeRes.json()) as any;
   assert.equal(writeBody.result.isError, true);
   assert.match(writeBody.result.content[0].text, /Missing MCP scope: write:tasks/);
+});
+
+test('OAuth refresh tokens rotate and reject replay', async () => {
+  const client = await registerClient();
+  const token = await issueOAuthToken(client.client_id, ['read:workspace']);
+
+  const refreshed = await jsonPost('/oauth/token', {
+    grant_type: 'refresh_token',
+    client_id: client.client_id,
+    refresh_token: token.refresh_token,
+  });
+  assert.equal(refreshed.status, 200);
+  const refreshedBody = (await refreshed.json()) as { access_token: string; refresh_token: string };
+  assert.ok(refreshedBody.access_token);
+  assert.ok(refreshedBody.refresh_token);
+  assert.notEqual(refreshedBody.refresh_token, token.refresh_token);
+
+  const replay = await jsonPost('/oauth/token', {
+    grant_type: 'refresh_token',
+    client_id: client.client_id,
+    refresh_token: token.refresh_token,
+  });
+  assert.equal(replay.status, 400);
+  const replayBody = (await replay.json()) as { error: string };
+  assert.equal(replayBody.error, 'invalid_grant');
+
+  const secondRefresh = await jsonPost('/oauth/token', {
+    grant_type: 'refresh_token',
+    client_id: client.client_id,
+    refresh_token: refreshedBody.refresh_token,
+  });
+  assert.equal(secondRefresh.status, 200);
 });
 
 test('OAuth token audience and revocation are enforced', async () => {

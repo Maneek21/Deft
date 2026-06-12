@@ -201,6 +201,7 @@ export async function issueTokensForGrant(
   clientId: string,
   resource: string,
   scopes: string[],
+  rotatedFromRefreshTokenId?: string,
 ) {
   const accessToken = randomToken('deft_oat');
   const refreshToken = randomToken('deft_ort');
@@ -219,6 +220,7 @@ export async function issueTokensForGrant(
   await db.insert(oauthRefreshTokens).values({
     token_hash: sha256(refreshToken),
     grant_id: grantId,
+    rotated_from: rotatedFromRefreshTokenId,
     expires_at: refreshExpiresAt,
   });
   await auditOAuth({ orgId, userId, clientId, event: 'token_issued', metadata: { scopes, resource } });
@@ -247,7 +249,8 @@ export async function refreshOAuthAccessToken(params: {
   if (!grant || grant.revoked_at) throw new OAuthMcpError(400, 'invalid_grant', 'OAuth grant revoked');
   if (grant.client_id !== params.clientId) throw new OAuthMcpError(400, 'invalid_grant', 'client_id mismatch');
   const resource = params.resource || mcpResourceUrl();
-  return issueTokensForGrant(grant.id, grant.org_id, grant.user_id, grant.client_id, resource, grant.scopes);
+  await db.update(oauthRefreshTokens).set({ revoked_at: new Date() }).where(eq(oauthRefreshTokens.id, refresh.id));
+  return issueTokensForGrant(grant.id, grant.org_id, grant.user_id, grant.client_id, resource, grant.scopes, refresh.id);
 }
 
 export async function resolveOAuthAccessToken(bearer: string): Promise<OAuthAccessPrincipal> {

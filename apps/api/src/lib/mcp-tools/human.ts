@@ -544,6 +544,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       name: 'search',
       title: 'Search Deft',
       description: 'Search Deft wiki, tasks, visible messages, and calendar context. Human personal-MCP read: scoped to the token owner.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -557,6 +558,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       name: 'fetch',
       title: 'Fetch Deft Result',
       description: 'Fetch a result returned by search by stable id, such as wiki:slug, task:id, message:id, or event:id. Human personal-MCP read: scoped to the token owner.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -569,6 +571,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       name: 'list_my_tasks',
       title: 'List My Deft Tasks',
       description: 'List tasks assigned to the connected human user. Human personal-MCP read: scoped to the token owner and requires read:tasks.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -596,8 +599,10 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       const next = withoutCallerSlug(schema);
       if (HUMAN_WRITE_TOOLS.has(String(next.name))) {
         next.description = `${next.description ?? ''} Human personal-MCP write: executes as the token owner and requires a matching write scope.`;
+        next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: false, destructiveHint: false };
       } else {
         next.description = `${next.description ?? ''} Human personal-MCP read: scoped to the token owner's Deft permissions.`;
+        next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: true };
       }
       return next;
     });
