@@ -579,7 +579,7 @@ function TemplateDetailModal({
 // ─── Library Page ─────────────────────────────────────────────────────────────
 
 export default function LibraryPage() {
-  const [tab, setTab] = useState<'skills' | 'templates'>('skills');
+  const [tab] = useState<'skills' | 'templates'>('templates');
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -601,34 +601,8 @@ export default function LibraryPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
-        title="Library"
-        description="Browse skills to install on agents and task templates to apply to projects."
-        secondary={
-          <TabStrip>
-            <button
-              onClick={() => setTab('skills')}
-              className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors flex-shrink-0"
-              style={{
-                color: tab === 'skills' ? 'var(--accent)' : 'var(--text-tertiary)',
-                borderBottom: tab === 'skills' ? '2px solid var(--accent)' : '2px solid transparent',
-              }}
-            >
-              <Layers size={14} />
-              Skills
-            </button>
-            <button
-              onClick={() => setTab('templates')}
-              className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium transition-colors flex-shrink-0"
-              style={{
-                color: tab === 'templates' ? 'var(--accent)' : 'var(--text-tertiary)',
-                borderBottom: tab === 'templates' ? '2px solid var(--accent)' : '2px solid transparent',
-              }}
-            >
-              <FileStack size={14} />
-              Templates
-            </button>
-          </TabStrip>
-        }
+        title="Task Templates"
+        description="Browse repeatable task templates and apply them to projects."
         compact
       />
 

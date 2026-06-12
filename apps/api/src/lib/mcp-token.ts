@@ -12,10 +12,11 @@
  */
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { eq, and, isNotNull, isNull } from 'drizzle-orm';
 import { db } from './db.js';
-import { agentEmployees } from '@deft/db/schema';
+import { agentEmployees, mcpTokens, orgMembers } from '@deft/db/schema';
 import type { TrustLevel } from './mcp-tools/types.js';
+import { OAuthMcpError, resolveOAuthAccessToken } from './oauth-mcp.js';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -29,6 +30,25 @@ export type ResolvedGateway = {
   org_id: string;
   gateway_employees: GatewayEmployee[];
 };
+
+export type McpHumanPrincipal = {
+  kind: 'human' | 'oauth';
+  token_id: string;
+  org_id: string;
+  user_id: string;
+  role: 'owner' | 'admin' | 'member' | 'guest';
+  scopes: string[];
+  client_id?: string;
+  grant_id?: string;
+};
+
+export type McpAgentPrincipal = {
+  kind: 'agent';
+  org_id: string;
+  gateway_employees: GatewayEmployee[];
+};
+
+export type ResolvedMcpPrincipal = McpHumanPrincipal | McpAgentPrincipal;
 
 export class McpAuthError extends Error {
   constructor(
@@ -71,6 +91,34 @@ export async function issueEmployeeToken(
   }
 
   return raw;
+}
+
+export async function issuePersonalMcpToken(params: {
+  orgId: string;
+  userId: string;
+  name: string;
+  scopes: string[];
+  createdBy: string;
+}): Promise<{ raw: string; prefix: string; tokenId: string }> {
+  const secret = randomBytes(32).toString('base64url');
+  const raw = `deft_mcp_${secret}`;
+  const prefix = raw.slice(0, 18);
+  const hash = await bcrypt.hash(raw, BCRYPT_ROUNDS);
+  const [row] = await db
+    .insert(mcpTokens)
+    .values({
+      org_id: params.orgId,
+      user_id: params.userId,
+      principal_kind: 'human',
+      name: params.name,
+      token_hash: hash,
+      token_prefix: prefix,
+      scopes: params.scopes,
+      created_by: params.createdBy,
+    })
+    .returning({ id: mcpTokens.id });
+  if (!row?.id) throw new Error('issuePersonalMcpToken: insert returned no row');
+  return { raw, prefix, tokenId: row.id };
 }
 
 /**
@@ -121,6 +169,68 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
   }
 
   throw new McpAuthError(401, 'unauthorized', 'Invalid bearer token');
+}
+
+export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPrincipal> {
+  if (!bearer || bearer.length < 16) {
+    throw new McpAuthError(401, 'unauthorized', 'Missing or malformed bearer token');
+  }
+
+  const personalCandidates = await db
+    .select({
+      id: mcpTokens.id,
+      org_id: mcpTokens.org_id,
+      user_id: mcpTokens.user_id,
+      token_hash: mcpTokens.token_hash,
+      scopes: mcpTokens.scopes,
+    })
+    .from(mcpTokens)
+    .where(and(eq(mcpTokens.principal_kind, 'human'), isNull(mcpTokens.revoked_at)));
+
+  for (const row of personalCandidates) {
+    if (!row.user_id) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const ok = await bcrypt.compare(bearer, row.token_hash);
+    if (!ok) continue;
+    const [member] = await db
+      .select({ role: orgMembers.role, is_active: orgMembers.is_active })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, row.org_id), eq(orgMembers.user_id, row.user_id)))
+      .limit(1);
+    if (!member?.is_active) {
+      throw new McpAuthError(403, 'forbidden', 'MCP token owner is not an active org member');
+    }
+    await db.update(mcpTokens).set({ last_used_at: new Date() }).where(eq(mcpTokens.id, row.id));
+    return {
+      kind: 'human',
+      token_id: row.id,
+      org_id: row.org_id,
+      user_id: row.user_id,
+      role: member.role as McpHumanPrincipal['role'],
+      scopes: row.scopes ?? [],
+    };
+  }
+
+  try {
+    const oauth = await resolveOAuthAccessToken(bearer);
+    return {
+      kind: 'oauth',
+      token_id: oauth.token_id,
+      grant_id: oauth.grant_id,
+      org_id: oauth.org_id,
+      user_id: oauth.user_id,
+      role: oauth.role,
+      scopes: oauth.scopes,
+      client_id: oauth.client_id,
+    };
+  } catch (err) {
+    if (err instanceof OAuthMcpError && err.code !== 'unauthorized') {
+      throw new McpAuthError(err.status, err.code, err.message);
+    }
+  }
+
+  const agent = await resolveGatewayToken(bearer);
+  return { kind: 'agent', ...agent };
 }
 
 /**

@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, isNotNull, gte, lte } from 'drizzle-orm';
+import { eq, and, isNotNull, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { users, icsSubscriptions, tasks, events } from '@deft/db/schema';
-import { generateICS, newPublishToken } from '../lib/ics.js';
+import { users, icsSubscriptions, tasks, events, projects } from '@deft/db/schema';
+import { generateICS, newPublishToken, parseICS, extractICSCalendarName } from '../lib/ics.js';
 import { syncOne } from '../workers/handlers/ics-sync.js';
 import { env } from '../lib/env.js';
 
@@ -13,6 +13,9 @@ import { env } from '../lib/env.js';
 
 export const icsPublicRoutes = new Hono();
 export const icsRoutes = new Hono();
+
+const ICS_PREVIEW_TIMEOUT_MS = 20_000;
+const ICS_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
 
 function publicApiBase(c: { req: { url: string } }): string {
   const configured = process.env.NEXT_PUBLIC_API_URL || process.env.DEFT_API_URL;
@@ -63,11 +66,14 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
   const taskRows = await db
     .select({
       id: tasks.id,
+      number: tasks.number,
       title: tasks.title,
       description: tasks.description,
       due_date: tasks.due_date,
+      project_prefix: projects.prefix,
     })
     .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
     .where(
       and(
         eq(tasks.org_id, orgId),
@@ -79,12 +85,13 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
     )
     .limit(500);
 
-  // 2. ICS-ingested events for this user.
+  // 2. Deft-native and ICS-ingested events for this user.
   const eventRows = await db
     .select({
       id: events.id,
       title: events.title,
       body: events.body,
+      source: events.source,
       timestamp: events.timestamp,
       metadata: events.metadata,
     })
@@ -93,7 +100,8 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
       and(
         eq(events.org_id, orgId),
         eq(events.user_id, user.id),
-        eq(events.source, 'ics'),
+        inArray(events.source, ['native', 'ics']),
+        eq(events.event_type, 'calendar_event'),
         gte(events.timestamp, horizonStart),
         lte(events.timestamp, horizonEnd),
       ),
@@ -110,17 +118,18 @@ icsPublicRoutes.get('/feed/:token', async (c) => {
         start: t.due_date as Date,
         end: null,
         all_day: true,
-        url: `${appUrl}/tasks/${t.id}`,
+        url: `${appUrl}/tasks?task=${t.project_prefix}-${t.number}`,
       })),
       ...eventRows.map((e) => {
         const meta = (e.metadata ?? {}) as { end?: string | null; all_day?: boolean };
         return {
-          uid: `event-${e.id}@deft`,
+          uid: `${e.source}-event-${e.id}@deft`,
           summary: e.title ?? '(untitled)',
           description: e.body ?? null,
           start: e.timestamp as Date,
           end: meta.end ? new Date(meta.end) : null,
           all_day: Boolean(meta.all_day),
+          url: e.source === 'native' ? `${appUrl}/calendar` : null,
         };
       }),
     ],
@@ -149,11 +158,70 @@ icsRoutes.get('/subscriptions', async (c) => {
   return c.json(subs);
 });
 
+const icsUrlSchema = z.string().trim().min(1).max(2048).refine((value) => {
+  try {
+    const normalized = value.replace(/^webcal:\/\//i, 'https://');
+    const url = new URL(normalized);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'Must be an http, https, or webcal ICS URL');
+
 // POST /api/ics/subscriptions
 const createSchema = z.object({
-  ics_url: z.string().url().max(2048),
+  ics_url: icsUrlSchema,
   label: z.string().max(120).optional(),
   sync_interval_min: z.number().int().min(5).max(720).optional(),
+});
+
+const previewSchema = z.object({
+  ics_url: icsUrlSchema,
+});
+
+const updateSchema = z.object({
+  label: z.string().max(120).nullable().optional(),
+  sync_interval_min: z.number().int().min(5).max(720).optional(),
+  is_active: z.boolean().optional(),
+});
+
+// POST /api/ics/preview
+icsRoutes.post('/preview', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = previewSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
+  }
+
+  try {
+    const text = await fetchICSWithLimits(parsed.data.ics_url);
+    const parsedEvents = parseICS(text).sort((a, b) => a.start.getTime() - b.start.getTime());
+    const now = Date.now();
+    const upcoming = parsedEvents
+      .filter((event) => event.start.getTime() >= now - 24 * 60 * 60 * 1000)
+      .slice(0, 5)
+      .map((event) => ({
+        uid: event.uid,
+        title: event.summary || '(untitled event)',
+        starts_at: event.start.toISOString(),
+        ends_at: event.end?.toISOString() ?? null,
+        all_day: event.all_day,
+        location: event.location,
+      }));
+
+    return c.json({
+      ok: true,
+      calendar_name: extractICSCalendarName(text),
+      event_count: parsedEvents.length,
+      upcoming,
+    });
+  } catch (err) {
+    return c.json({
+      error: 'Preview failed',
+      code: 'PREVIEW_FAILED',
+      detail: humanizeIcsError(err),
+    }, 502);
+  }
 });
 
 icsRoutes.post('/subscriptions', async (c) => {
@@ -164,7 +232,7 @@ icsRoutes.post('/subscriptions', async (c) => {
     return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
   }
 
-  const url = parsed.data.ics_url.replace(/^webcal:\/\//i, 'https://');
+  const url = parsed.data.ics_url.trim().replace(/^webcal:\/\//i, 'https://');
 
   const [created] = await db
     .insert(icsSubscriptions)
@@ -176,8 +244,56 @@ icsRoutes.post('/subscriptions', async (c) => {
       sync_interval_min: parsed.data.sync_interval_min ?? 15,
     })
     .returning();
+  if (!created) {
+    return c.json({ error: 'Failed to create subscription', code: 'CREATE_FAILED' }, 500);
+  }
 
-  return c.json(created, 201);
+  try {
+    await syncOne({
+      id: created.id,
+      org_id: created.org_id,
+      user_id: created.user_id,
+      ics_url: created.ics_url,
+      label: created.label,
+    });
+  } catch (err) {
+    await db
+      .update(icsSubscriptions)
+      .set({ last_error: humanizeIcsError(err), last_synced_at: new Date() })
+      .where(eq(icsSubscriptions.id, created.id));
+  }
+
+  const [refreshed] = await db
+    .select()
+    .from(icsSubscriptions)
+    .where(eq(icsSubscriptions.id, created.id))
+    .limit(1);
+
+  return c.json(refreshed ?? created, 201);
+});
+
+// PATCH /api/ics/subscriptions/:id
+icsRoutes.patch('/subscriptions/:id', async (c) => {
+  const user = c.get('user') as { id: string; org_id: string };
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = updateSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', detail: parsed.error.message }, 400);
+  }
+
+  const updates: Record<string, unknown> = { updated_at: new Date() };
+  if (parsed.data.label !== undefined) updates.label = parsed.data.label?.trim() || null;
+  if (parsed.data.sync_interval_min !== undefined) updates.sync_interval_min = parsed.data.sync_interval_min;
+  if (parsed.data.is_active !== undefined) updates.is_active = parsed.data.is_active;
+
+  const [updated] = await db
+    .update(icsSubscriptions)
+    .set(updates)
+    .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)))
+    .returning();
+  if (!updated) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  return c.json(updated);
 });
 
 // DELETE /api/ics/subscriptions/:id
@@ -186,7 +302,7 @@ icsRoutes.delete('/subscriptions/:id', async (c) => {
   const id = c.req.param('id');
   const [removed] = await db
     .delete(icsSubscriptions)
-    .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id)))
+    .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)))
     .returning({ id: icsSubscriptions.id });
   if (!removed) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   return c.json({ ok: true });
@@ -199,7 +315,7 @@ icsRoutes.post('/subscriptions/:id/sync', async (c) => {
   const [sub] = await db
     .select()
     .from(icsSubscriptions)
-    .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id)))
+    .where(and(eq(icsSubscriptions.id, id), eq(icsSubscriptions.user_id, user.id), eq(icsSubscriptions.org_id, user.org_id)))
     .limit(1);
   if (!sub) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
@@ -218,7 +334,7 @@ icsRoutes.post('/subscriptions/:id/sync', async (c) => {
       .limit(1);
     return c.json({ ok: true, count, subscription: refreshed });
   } catch (err) {
-    const msg = (err as Error).message?.slice(0, 500) ?? 'unknown error';
+    const msg = humanizeIcsError(err);
     await db
       .update(icsSubscriptions)
       .set({ last_error: msg, last_synced_at: new Date() })
@@ -252,3 +368,41 @@ icsRoutes.post('/my-feed-url/regenerate', async (c) => {
   const apiBase = publicApiBase(c);
   return c.json({ feed_url: `${apiBase}/api/ics/feed/${token}` });
 });
+
+async function fetchICSWithLimits(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ICS_PREVIEW_TIMEOUT_MS);
+  try {
+    const httpsUrl = url.replace(/^webcal:\/\//i, 'https://');
+    const res = await globalThis.fetch(httpsUrl, {
+      method: 'GET',
+      headers: { Accept: 'text/calendar, text/plain, application/octet-stream, */*' },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > ICS_PREVIEW_MAX_BYTES) {
+      throw new Error(`Body too large: ${buf.byteLength} bytes`);
+    }
+    const text = Buffer.from(buf).toString('utf8');
+    if (/<!doctype html|<html[\s>]/i.test(text.slice(0, 500))) {
+      throw new Error('The URL returned a web page, not an ICS feed');
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function humanizeIcsError(err: unknown): string {
+  const message = (err as Error).message || 'unknown error';
+  if (/Body too large/i.test(message)) return 'Feed is too large to import.';
+  if (/aborted|AbortError/i.test(message)) return 'Feed request timed out.';
+  if (/HTTP 401|HTTP 403/i.test(message)) return 'Feed requires login or is not public/secret-shareable.';
+  if (/HTTP 404/i.test(message)) return 'Feed URL was not found.';
+  if (/web page/i.test(message)) return 'The URL returned a web page, not a calendar feed. Use the secret/public ICS URL.';
+  if (/ICS parse failed/i.test(message)) return message;
+  return message.slice(0, 500);
+}

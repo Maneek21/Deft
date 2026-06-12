@@ -546,8 +546,8 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
     { name: 'AI Providers', href: '/settings/ai' },
     { name: 'Agent', href: '/settings/agent' },
     { name: 'Agent Employees', href: '/settings/agent-employees' },
+    { name: 'MCP Access', href: '/settings/mcp-access' },
     { name: 'API Access', href: '/settings/api-access' },
-    { name: 'Library', href: '/settings/library' },
   ];
 
   return (

@@ -164,17 +164,26 @@ Self-hosted v1 does not promise native GitHub, Slack, Gmail, or Google Calendar 
 
 ---
 
-## 3. Skills Primitive
+## 3. MCP Access
 
-Deft ships a `skills` table for agent capabilities and first-party bundles. Project-level customization through `project_skills` / `project_config` was retired; projects now use fixed engineering defaults. Agent employees can install bundled, marketplace, or org-authored skills for prompt additions, tool access, triggers, and heartbeat guidance.
+Deft exposes workspace context and safe native actions through `/api/mcp/v1`. This is the current self-hosted v1 path for both human employees and agent employees.
 
-### Source Tiers
-- **`bundled`** - first-party skills shipped with Deft.
-- **`marketplace`** - installable catalog rows for future ecosystem use.
-- **`org`** - tenant-authored skills scoped to one workspace.
+### Human employees
+- Users create personal MCP tokens from Settings -> MCP Access.
+- Personal tokens act as that user: reads follow their org access, and writes create tasks, messages, and wiki pages under their user identity.
+- Read-only tokens expose context tools only. Write-enabled tokens add task, message, and wiki writes.
+- Intended clients include Claude Desktop, Claude Code, ChatGPT MCP clients, and any streamable HTTP MCP client.
+
+### Agent employees
+- Admins create agent employees from Settings -> Agent Employees.
+- Agent employee tokens act as that employee and keep the existing trust, approval, health, and audit model.
+- Customers can connect already-running OpenClaw, Hermes, Codex-style, or custom MCP/BYOA runtimes instead of asking Deft to host every external tool.
+
+### Internal capability registry
+Deft still has an internal `skills` table for first-party agent/tool bundles and future ecosystem work. It is not the pilot-facing integration surface. Project-level customization through `project_skills` / `project_config` was retired; projects now use fixed engineering defaults.
 
 ### Current self-hosted v1 stance
-- Deft Workspace, task tools, knowledge/wiki, calendar feed read context, and MCP/BYOA access are the supported path.
+- Deft Workspace, task tools, knowledge/wiki, calendar feed read context, personal MCP access, and MCP/BYOA agent employees are the supported path.
 - External SaaS tools such as GitHub, Slack, Gmail, Linear, and Notion should be connected inside the user's own agent runtime or MCP server.
 - Legacy slugs or enum values may remain for old data, but they should not be shown as native self-hosted v1 promises.
 

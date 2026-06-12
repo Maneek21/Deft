@@ -58,7 +58,7 @@ docker compose run --rm doctor
 
 > **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies two orphan SQL files (`0020_wiki_search_vector.sql` and `0033_tasks_embedding.sql`) that create generated tsvector columns and GIN indexes Drizzle's pushed schema can't express. Plain `pnpm db:push` skips the orphans and leaves wiki/task FTS broken. Versioned `db:migrate` upgrade paths are not yet supported and will arrive post-alpha.
 
-> **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, bundled skills, bundled task templates, first-party employee templates). It never inserts test accounts.
+> **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, internal agent/tool bundles, bundled task templates, first-party employee templates). It never inserts test accounts.
 
 Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
 

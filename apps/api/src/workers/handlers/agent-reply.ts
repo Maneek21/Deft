@@ -174,6 +174,8 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     // Call the agent reasoning engine with a 60s hard timeout so a stuck
     // MCP tool / Anthropic call can never wedge the worker.
     const AGENT_TIMEOUT_MS = 60_000;
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), AGENT_TIMEOUT_MS);
     const result = await Promise.race([
       runAgentQuery({
         content: promptContent,
@@ -190,11 +192,12 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           name: space.name,
           otherMemberName,
         } : undefined,
+        abortSignal: abort.signal,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('agent-reply: runAgentQuery timeout after 60s')), AGENT_TIMEOUT_MS),
       ),
-    ]);
+    ]).finally(() => clearTimeout(timeout));
 
     if (!result.text) {
       console.warn('[agent-reply] Agent returned empty text, skipping reply');

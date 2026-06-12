@@ -122,6 +122,8 @@ export async function runAgentQuery(params: {
    * task-detail UI can render a live status strip. No-op when unset.
    */
   taskId?: string;
+  /** Abort signal for worker-level cancellation/timeouts. */
+  abortSignal?: AbortSignal;
   /**
    * Surface context — what kind of space the agent is replying in. Drives
    * tone (DM = 1:1 conversation, channel = many viewers) and is appended
@@ -358,6 +360,7 @@ export async function runAgentQuery(params: {
       messages: apiMessages,
       tools,
       maxTokens: 4096,
+      abortSignal: params.abortSignal,
     });
 
     if (response.usage) {
