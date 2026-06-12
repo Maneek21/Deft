@@ -74,6 +74,12 @@ export function parseICS(text: string): ParsedEvent[] {
   return out;
 }
 
+export function extractICSCalendarName(text: string): string | null {
+  const match = text.match(/^X-WR-CALNAME:(.+)$/im);
+  if (!match?.[1]) return null;
+  return match[1].replace(/\\,/g, ',').replace(/\\;/g, ';').trim().slice(0, 120) || null;
+}
+
 function extractOrganizer(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === 'string') return value;

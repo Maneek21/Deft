@@ -15,6 +15,9 @@ import {
   ChevronRight,
   Loader2,
   AlertCircle,
+  Eye,
+  PauseCircle,
+  PlayCircle,
 } from 'lucide-react';
 
 type Subscription = {
@@ -37,8 +40,47 @@ const INTERVAL_OPTIONS = [
   { value: 60, label: '60 min' },
 ];
 
+const PROVIDERS = [
+  { id: 'google', label: 'Google', hint: 'Settings -> calendar -> Integrate calendar -> Secret address in iCal format.' },
+  { id: 'apple', label: 'Apple/iCloud', hint: 'Share Calendar -> Public Calendar -> copy the webcal URL.' },
+  { id: 'outlook', label: 'Outlook', hint: 'Settings -> Calendar -> Shared calendars -> Publish -> ICS URL.' },
+  { id: 'fastmail', label: 'Fastmail', hint: 'Calendar settings -> Sharing -> private iCalendar feed URL.' },
+  { id: 'generic', label: 'Generic ICS', hint: 'Paste any private, public, or webcal ICS feed URL.' },
+] as const;
+
+type ProviderId = typeof PROVIDERS[number]['id'];
+
+type FeedPreview = {
+  calendar_name: string | null;
+  event_count: number;
+  upcoming: Array<{
+    uid: string;
+    title: string;
+    starts_at: string;
+    ends_at: string | null;
+    all_day: boolean;
+    location: string | null;
+  }>;
+};
+
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function nextSyncAt(sub: Subscription): string {
+  if (!sub.is_active) return 'Paused';
+  if (!sub.last_synced_at) return 'Due now';
+  const date = new Date(sub.last_synced_at);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  date.setMinutes(date.getMinutes() + sub.sync_interval_min);
+  return formatDateTime(date.toISOString());
 }
 
 export default function CalendarSettingsPage() {
@@ -53,7 +95,7 @@ export default function CalendarSettingsPage() {
             Calendar sync
           </h2>
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
-            Bidirectional ICS subscriptions — no OAuth, no plugin. Works with Apple Calendar, Google Calendar, and Outlook.
+            Connect calendars with ICS links: show Deft work in your calendar, and read external calendar events into Deft without OAuth.
           </p>
         </div>
 
@@ -117,7 +159,7 @@ function OutboundSection() {
         className="text-[11px] font-semibold uppercase tracking-wide mb-1"
         style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
       >
-        Subscribe your calendar to Deft
+        Show Deft in your calendar
       </h3>
       <p className="text-[12px] mb-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
         Paste this URL into your calendar app to see your Deft tasks alongside your other events. Your calendar app re-fetches automatically — no OAuth, no plugin.
@@ -289,7 +331,7 @@ function InboundSection() {
           className="text-[11px] font-semibold uppercase tracking-wide"
           style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
         >
-          Subscribe Deft to other calendars
+          Connect external calendars to Deft
         </h3>
         {!showAdd && (
           <button
@@ -384,7 +426,31 @@ function AddSubscriptionForm({
   const [label, setLabel] = useState('');
   const [interval, setInterval] = useState<number>(15);
   const [submitting, setSubmitting] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [provider, setProvider] = useState<ProviderId>('google');
+  const [preview, setPreview] = useState<FeedPreview | null>(null);
   const [err, setErr] = useState('');
+
+  const selectedProvider = PROVIDERS.find((item) => item.id === provider) ?? PROVIDERS[0];
+
+  const previewFeed = async () => {
+    setPreviewing(true);
+    setErr('');
+    setPreview(null);
+    try {
+      const trimmed = url.trim();
+      if (!trimmed) throw new Error('URL required');
+      const r = await api.post('/api/ics/preview', { ics_url: trimmed });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || j.error || 'Preview failed');
+      setPreview(j as FeedPreview);
+      if (!label.trim() && j.calendar_name) setLabel(j.calendar_name);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setPreviewing(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -397,7 +463,7 @@ function AddSubscriptionForm({
       if (!trimmed) throw new Error('URL required');
       const r = await api.post('/api/ics/subscriptions', {
         ics_url: trimmed,
-        label: label.trim() || undefined,
+        label: label.trim() || preview?.calendar_name || selectedProvider.label,
         sync_interval_min: interval,
       });
       const j = await r.json();
@@ -423,6 +489,31 @@ function AddSubscriptionForm({
       )}
       <div>
         <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
+          Calendar provider
+        </label>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1">
+          {PROVIDERS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setProvider(item.id)}
+              className="h-8 px-2 text-[11px] font-medium rounded-md"
+              style={{
+                background: provider === item.id ? 'var(--accent)' : 'var(--surface)',
+                color: provider === item.id ? 'white' : 'var(--foreground)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+          {selectedProvider.hint}
+        </p>
+      </div>
+      <div>
+        <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
           ICS URL
         </label>
         <input
@@ -436,6 +527,33 @@ function AddSubscriptionForm({
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
         />
       </div>
+      {preview && (
+        <div className="rounded-md p-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>
+                {preview.calendar_name || 'Calendar feed'}
+              </p>
+              <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                Found {preview.event_count} event{preview.event_count === 1 ? '' : 's'}.
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success, #22c55e)' }}>
+              <Check size={11} /> Preview ok
+            </span>
+          </div>
+          {preview.upcoming.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {preview.upcoming.map((event) => (
+                <div key={event.uid} className="flex justify-between gap-3 text-[12px]">
+                  <span className="truncate" style={{ color: 'var(--foreground-secondary)' }}>{event.title}</span>
+                  <span className="shrink-0" style={{ color: 'var(--muted)' }}>{formatDateTime(event.starts_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex gap-3">
         <div className="flex-1">
           <label className="text-[11px] font-semibold uppercase tracking-wide block mb-1.5" style={{ color: 'var(--muted)' }}>
@@ -480,8 +598,18 @@ function AddSubscriptionForm({
           Cancel
         </button>
         <button
+          type="button"
+          onClick={previewFeed}
+          disabled={previewing || submitting || !url.trim()}
+          className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-medium rounded-md disabled:opacity-50"
+          style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+        >
+          <Eye size={12} />
+          {previewing ? 'Previewing...' : 'Preview'}
+        </button>
+        <button
           type="submit"
-          disabled={submitting || !url.trim()}
+          disabled={submitting || previewing || !url.trim()}
           className="h-9 px-4 text-[12px] font-medium rounded-md disabled:opacity-50"
           style={{ background: 'var(--accent)', color: 'white' }}
         >
@@ -529,6 +657,11 @@ function SubscriptionRow({
     await api.delete(`/api/ics/subscriptions/${sub.id}`);
   };
 
+  const toggleActive = async () => {
+    const r = await api.patch(`/api/ics/subscriptions/${sub.id}`, { is_active: !sub.is_active });
+    if (r.ok) onChange(await r.json());
+  };
+
   const displayLabel = sub.label || truncate(sub.ics_url, 40);
 
   let status: { text: string; tone: 'ok' | 'muted' | 'error' };
@@ -567,6 +700,15 @@ function SubscriptionRow({
           )}
           <div className="mt-1 flex items-center gap-2 flex-wrap">
             <span
+              className="text-[11px] px-1.5 py-0.5 rounded"
+              style={{
+                background: sub.is_active ? 'rgba(34,197,94,0.12)' : 'var(--surface)',
+                color: sub.is_active ? 'var(--success, #22c55e)' : 'var(--muted)',
+              }}
+            >
+              {sub.is_active ? 'active' : 'paused'}
+            </span>
+            <span
               className="text-[11px] px-1.5 py-0.5 rounded inline-flex items-center gap-1"
               style={{
                 background:
@@ -589,6 +731,9 @@ function SubscriptionRow({
             <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
               every {sub.sync_interval_min} min
             </span>
+            <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+              next sync: {nextSyncAt(sub)}
+            </span>
           </div>
           {err && (
             <p className="mt-2 text-[11px]" style={{ color: 'var(--error)' }}>
@@ -597,6 +742,15 @@ function SubscriptionRow({
           )}
         </div>
         <div className="flex flex-shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={toggleActive}
+            title={sub.is_active ? 'Pause subscription' : 'Resume subscription'}
+            className="h-8 w-8 inline-flex items-center justify-center rounded-md"
+            style={{ background: 'var(--surface)', color: 'var(--muted)', border: '1px solid var(--border)' }}
+          >
+            {sub.is_active ? <PauseCircle size={12} /> : <PlayCircle size={12} />}
+          </button>
           <button
             type="button"
             onClick={sync}
