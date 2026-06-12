@@ -148,6 +148,38 @@ MCP clients, or any compatible MCP runtime. Personal tokens act as the user who
 created them. Writes create tasks, messages, and wiki pages under that user's
 identity.
 
+### AI client compatibility
+
+Deft exposes a streamable HTTP MCP endpoint at:
+
+```text
+https://your-domain.com/api/mcp/v1
+```
+
+For remote AI apps that support OAuth MCP, use the public endpoint and Deft's
+OAuth discovery metadata:
+
+```text
+https://your-domain.com/.well-known/oauth-protected-resource
+https://your-domain.com/.well-known/oauth-authorization-server
+```
+
+For clients that support HTTP MCP but do not complete OAuth, create a personal
+token in Settings -> MCP Access and use it as a bearer token.
+
+| Client | Status | Recommended setup |
+|---|---|---|
+| Claude Code | Verified with Deft remote HTTP MCP. Runtime tool use still depends on the user's Claude Code subscription/API access. | `claude mcp add --transport http deft https://your-domain.com/api/mcp/v1`, then authenticate if the client asks. |
+| Codex CLI / IDE | Codex documents streamable HTTP MCP with bearer-token and OAuth support. | Add Deft as a streamable HTTP MCP server in Codex config. Use OAuth when available, or a personal bearer token from Settings -> MCP Access. |
+| ChatGPT main app | Account gated. Developer Mode/custom MCP apps are not visible in every plan or workspace. | In an eligible ChatGPT workspace, create a custom app/connector that points at the Deft MCP endpoint and follows the OAuth flow. |
+| Claude Desktop / Claude web | Support varies by surface and release channel. | Prefer OAuth when the client offers it; otherwise use a personal bearer token if HTTP MCP headers are supported. |
+| Generic MCP runtime | Compatible when it supports streamable HTTP plus OAuth or bearer headers. | Point the runtime at `/api/mcp/v1` and grant only the scopes needed for that workflow. |
+
+Start pilots with read-only scopes (`read:workspace`, `read:wiki`,
+`read:tasks`, `read:messages`, `read:calendar`). Add write scopes only when the
+user expects that AI client to create or update Deft records under their own
+identity.
+
 Bring-your-own-agent employees connect through MCP:
 
 ```text

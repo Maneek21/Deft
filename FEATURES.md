@@ -174,6 +174,17 @@ Deft exposes workspace context and safe native actions through `/api/mcp/v1`. Th
 - Read-only tokens expose context tools only. Write-enabled tokens add task, message, and wiki writes.
 - Intended clients include Claude Desktop, Claude Code, ChatGPT MCP clients, and any streamable HTTP MCP client.
 
+### AI client compatibility
+| Client | Current stance |
+|---|---|
+| Claude Code | Remote HTTP MCP connection verified. Model-side tool use still depends on the user's Claude Code subscription/API access. |
+| Codex CLI / IDE | Codex supports streamable HTTP MCP with bearer-token and OAuth flows; Deft exposes the matching endpoint and OAuth metadata. |
+| ChatGPT main app | Requires an eligible account/workspace with Developer Mode or custom MCP app support enabled. |
+| Claude Desktop / Claude web | Depends on the user's current MCP connector surface. Use OAuth when available, or personal bearer-token MCP when the client supports HTTP headers. |
+| Generic MCP runtimes | Supported when they can speak streamable HTTP MCP and send OAuth or bearer-token credentials. |
+
+Pilot guidance: start human AI clients with read-only scopes. Enable write scopes only when the user explicitly wants that AI client to create tasks, post messages, or write wiki entries as that user.
+
 ### Agent employees
 - Admins create agent employees from Settings -> Agent Employees.
 - Agent employee tokens act as that employee and keep the existing trust, approval, health, and audit model.
