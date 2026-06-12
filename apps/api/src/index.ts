@@ -43,6 +43,8 @@ import { eventRoutes } from './routes/events.js';
 import { wikiRoutes } from './routes/wiki.js';
 import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { mcpConnectionRoutes } from './routes/mcp-connections.js';
+import { mcpAccessRoutes } from './routes/mcp-access.js';
+import { oauthProtectedRoutes, oauthPublicRoutes, oauthWellKnownRoutes } from './routes/oauth-mcp.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
 import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
@@ -80,7 +82,19 @@ app.use('*', secureHeaders({
 }));
 
 // Public routes
-app.use('/api/auth/*', authLimiter);
+app.route('/.well-known', oauthWellKnownRoutes);
+app.route('/oauth', oauthPublicRoutes);
+// Keep credential-changing auth endpoints under the strict brute-force limiter,
+// but let read-only session checks use the normal app budget. UI-heavy pages
+// can call /auth/me repeatedly during navigation; treating those like login
+// attempts makes a valid session look expired after a short local demo sweep.
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/signup', authLimiter);
+app.use('/api/auth/refresh', authLimiter);
+app.use('/api/auth/logout', authLimiter);
+app.use('/api/auth/has-workspace', defaultLimiter);
+app.use('/api/auth/me', defaultLimiter);
+app.use('/api/auth/onboarding', defaultLimiter);
 app.route('/api/auth', authRoutes);
 
 // MCP server — own API key auth, mounted before auth middleware
@@ -161,6 +175,8 @@ app.route('/api/calendar', calendarRoutes);
 app.route('/api/events', eventRoutes);
 app.route('/api/agent-employees', agentEmployeeRoutes);
 app.route('/api/mcp-connections', mcpConnectionRoutes);
+app.route('/api/mcp-access', mcpAccessRoutes);
+app.route('/api/oauth', oauthProtectedRoutes);
 app.route('/api/api-keys', apiKeyRoutes);
 app.route('/api/agent-plans', agentPlanRoutes);
 app.route('/api/skills', skillsRoutes);

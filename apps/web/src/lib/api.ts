@@ -99,7 +99,10 @@ class ApiClient {
     if (this.accessToken) {
       headers.set('Authorization', `Bearer ${this.accessToken}`);
     }
-    headers.set('Content-Type', 'application/json');
+    const method = (options.method ?? 'GET').toUpperCase();
+    if (options.body && !headers.has('Content-Type') && method !== 'GET' && method !== 'HEAD') {
+      headers.set('Content-Type', 'application/json');
+    }
 
     let response = await this.fetchWithRetry(`${API_URL}${path}`, { ...options, headers });
 

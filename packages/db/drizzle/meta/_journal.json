@@ -477,6 +477,20 @@
       "when": 1780916400000,
       "tag": "0068_wiki_pages_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1781164800000,
+      "tag": "0069_mcp_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1781222400000,
+      "tag": "0070_remote_oauth_mcp",
+      "breakpoints": true
     }
   ]
 }

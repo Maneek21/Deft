@@ -25,6 +25,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   extractBearer,
+  resolveMcpPrincipal,
   resolveGatewayToken,
   validateCallerSlug,
   McpAuthError,
@@ -41,6 +42,12 @@ import {
   type ToolHandler,
 } from '../lib/mcp-tools/index.js';
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
+import {
+  HUMAN_TOOLS,
+  buildHumanToolSchemas,
+  type HumanToolContext,
+} from '../lib/mcp-tools/human.js';
+import { auditOAuth, metadataUrls } from '../lib/oauth-mcp.js';
 
 export const mcpServerV1Routes = new Hono();
 
@@ -73,6 +80,14 @@ async function requireGateway(
 // c.json returns a Response so we short-circuit with it.
 function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 500, code: string, message: string) {
   return c.json({ error: { code, message } }, status);
+}
+
+function setOAuthChallenge(c: Context, scope = 'read:workspace') {
+  const urls = metadataUrls();
+  c.header(
+    'WWW-Authenticate',
+    `Bearer resource_metadata="${urls.protectedResourceMetadata}", scope="${scope}"`,
+  );
 }
 
 async function auditMcpCall(params: {
@@ -183,6 +198,59 @@ async function dispatchTool(
   }
 }
 
+const HUMAN_TOOL_SCOPE: Record<string, string> = {
+  search: 'read:workspace',
+  fetch: 'read:workspace',
+  platform_context: 'read:workspace',
+  member_list: 'read:workspace',
+  events_query: 'read:calendar',
+  memory_recall: 'read:wiki',
+  wiki_search: 'read:wiki',
+  memory_list: 'read:wiki',
+  list_my_tasks: 'read:tasks',
+  task_query: 'read:tasks',
+  task_detail: 'read:tasks',
+  project_progress: 'read:tasks',
+  team_workload: 'read:tasks',
+  thread_fetch: 'read:messages',
+  messages_search: 'read:messages',
+  memory_write: 'write:wiki',
+  task_create: 'write:tasks',
+  task_update: 'write:tasks',
+  message_post: 'write:messages',
+};
+
+function humanCatalog(scopes: string[]) {
+  return buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
+    .filter((schema) => {
+      const name = String(schema.name ?? '');
+      const required = HUMAN_TOOL_SCOPE[name];
+      return !required || scopes.includes(required);
+    });
+}
+
+async function dispatchHumanTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+  const handler = HUMAN_TOOLS[canonicalToolName];
+  if (!handler) {
+    return { isError: true, content: [{ type: 'text', text: `Unknown or unavailable personal MCP tool: ${toolName}` }] };
+  }
+  const requiredScope = HUMAN_TOOL_SCOPE[canonicalToolName];
+  if (requiredScope && !ctx.scopes.includes(requiredScope)) {
+    return { isError: true, content: [{ type: 'text', text: `Missing MCP scope: ${requiredScope}` }] };
+  }
+  try {
+    return await handler(args, ctx);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { isError: true, content: [{ type: 'text', text: `Tool "${toolName}" threw: ${msg}` }] };
+  }
+}
+
 // ─── MCP streamable-http single-endpoint dispatcher ──────────────────────
 //
 // The MCP streamable-http spec (modelcontextprotocol.io) POSTs every
@@ -217,6 +285,7 @@ mcpServerV1Routes.post('/', async (c) => {
       if (err instanceof McpAuthError) {
         // JSON-RPC error codes: -32001 for auth, -32002 for forbidden.
         const code = err.status === 401 ? -32001 : err.status === 403 ? -32002 : -32000;
+        if (err.status === 401) setOAuthChallenge(c);
         return c.json({ jsonrpc: '2.0', id, error: { code, message: err.message, data: { status: err.status, code: err.code } } }, err.status as 400 | 401 | 403);
       }
       const msg = err instanceof Error ? err.message : String(err);
@@ -233,18 +302,22 @@ mcpServerV1Routes.post('/', async (c) => {
   }
 
   if (method === 'notifications/initialized') {
-    // MCP clients send this post-initialize handshake. No response body
-    // expected but we return an empty 200 with JSON-RPC wrapper for
-    // clients that still await.
-    return c.json({ jsonrpc: '2.0', id, result: {} });
+    // MCP clients send this post-initialize handshake as a JSON-RPC
+    // notification. Notifications do not receive JSON-RPC responses; Codex's
+    // streamable HTTP client treats a response object here as a handshake
+    // protocol error.
+    return c.body(null, 202);
   }
 
   if (method === 'ping') {
     return wrap(async () => {
       const bearer = extractBearer(c.req.header('Authorization'));
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
-      const gw = await resolveGatewayToken(bearer);
-      return { ok: true, org_id: gw.org_id, employee_count: gw.gateway_employees.length };
+      const principal = await resolveMcpPrincipal(bearer);
+      if (principal.kind !== 'agent') {
+        return { ok: true, org_id: principal.org_id, principal_kind: 'human', user_id: principal.user_id };
+      }
+      return { ok: true, org_id: principal.org_id, principal_kind: 'agent', employee_count: principal.gateway_employees.length };
     });
   }
 
@@ -252,7 +325,11 @@ mcpServerV1Routes.post('/', async (c) => {
     return wrap(async () => {
       const bearer = extractBearer(c.req.header('Authorization'));
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
-      const resolved = await resolveGatewayToken(bearer);
+      const principal = await resolveMcpPrincipal(bearer);
+      if (principal.kind === 'human' || principal.kind === 'oauth') {
+        return { tools: humanCatalog(principal.scopes) };
+      }
+      const resolved = principal as ResolvedGateway;
       const allConservative = resolved.gateway_employees.every((e) => e.trust_level === 'conservative');
       const writeNames = new Set(Object.keys(WRITE_TOOLS));
       const catalog = toolSchemas.filter((t) => (allConservative ? !writeNames.has(t.name) : true));
@@ -268,13 +345,32 @@ mcpServerV1Routes.post('/', async (c) => {
     return wrap(async () => {
       const bearer = extractBearer(c.req.header('Authorization'));
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
-      const resolved = await resolveGatewayToken(bearer);
+      const principal = await resolveMcpPrincipal(bearer);
       const params = (body.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
       const toolName = params.name;
       const args = params.arguments ?? {};
       if (!toolName || typeof toolName !== 'string') {
         throw new McpAuthError(400, 'bad_request', 'Missing params.name');
       }
+      if (principal.kind === 'human' || principal.kind === 'oauth') {
+        const result = await dispatchHumanTool(toolName, args, {
+          org_id: principal.org_id,
+          user_id: principal.user_id,
+          role: principal.role,
+          scopes: principal.scopes,
+        });
+        if (principal.kind === 'oauth') {
+          await auditOAuth({
+            orgId: principal.org_id,
+            userId: principal.user_id,
+            clientId: principal.client_id ?? null,
+            event: 'mcp_tool_call',
+            metadata: { tool_name: toolName, success: !result.isError, surface: 'jsonrpc' },
+          });
+        }
+        return result;
+      }
+      const resolved = principal as ResolvedGateway;
       const employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
       const ctx: ToolContext = {
         org_id: resolved.org_id,
@@ -322,15 +418,18 @@ mcpServerV1Routes.get('/sse', async (c) => {
 
 mcpServerV1Routes.post('/ping', async (c) => {
   const bearer = extractBearer(c.req.header('Authorization'));
-  if (!bearer) return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  if (!bearer) {
+    setOAuthChallenge(c);
+    return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  }
   try {
-    const gw = await resolveGatewayToken(bearer);
-    return c.json({
-      ok: true,
-      org_id: gw.org_id,
-      employee_count: gw.gateway_employees.length,
-    });
+    const principal = await resolveMcpPrincipal(bearer);
+    if (principal.kind !== 'agent') {
+      return c.json({ ok: true, org_id: principal.org_id, principal_kind: 'human', user_id: principal.user_id });
+    }
+    return c.json({ ok: true, org_id: principal.org_id, principal_kind: 'agent', employee_count: principal.gateway_employees.length });
   } catch (err) {
+    if (err instanceof McpAuthError && err.status === 401) setOAuthChallenge(c);
     if (err instanceof McpAuthError) {
       return errorResponse(c, err.status as 401, err.code, err.message);
     }
@@ -340,17 +439,27 @@ mcpServerV1Routes.post('/ping', async (c) => {
 
 mcpServerV1Routes.post('/tools/list', async (c) => {
   const bearer = extractBearer(c.req.header('Authorization'));
-  if (!bearer) return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  if (!bearer) {
+    setOAuthChallenge(c);
+    return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  }
 
-  let resolved: ResolvedGateway;
+  let principal: Awaited<ReturnType<typeof resolveMcpPrincipal>>;
   try {
-    resolved = await resolveGatewayToken(bearer);
+    principal = await resolveMcpPrincipal(bearer);
   } catch (err) {
+    if (err instanceof McpAuthError && err.status === 401) setOAuthChallenge(c);
     if (err instanceof McpAuthError) {
       return errorResponse(c, err.status as 401, err.code, err.message);
     }
     return errorResponse(c, 500, 'internal', 'Auth resolver error');
   }
+
+  if (principal.kind === 'human' || principal.kind === 'oauth') {
+    return c.json({ tools: humanCatalog(principal.scopes) });
+  }
+
+  const resolved = principal as ResolvedGateway;
 
   // Phase 3: if EVERY employee on this Gateway is conservative, strip write
   // tools from the catalog. Any single non-conservative employee exposes the
@@ -374,12 +483,16 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
 mcpServerV1Routes.post('/tools/call', async (c) => {
   // 1. Bearer auth
   const bearer = extractBearer(c.req.header('Authorization'));
-  if (!bearer) return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  if (!bearer) {
+    setOAuthChallenge(c);
+    return errorResponse(c, 401, 'unauthorized', 'Missing bearer token');
+  }
 
-  let resolved: ResolvedGateway;
+  let principal: Awaited<ReturnType<typeof resolveMcpPrincipal>>;
   try {
-    resolved = await resolveGatewayToken(bearer);
+    principal = await resolveMcpPrincipal(bearer);
   } catch (err) {
+    if (err instanceof McpAuthError && err.status === 401) setOAuthChallenge(c);
     if (err instanceof McpAuthError) {
       return errorResponse(c, err.status as 401, err.code, err.message);
     }
@@ -399,7 +512,27 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     return errorResponse(c, 400, 'bad_request', 'Missing tools/call.name');
   }
 
+  if (principal.kind === 'human' || principal.kind === 'oauth') {
+    const result = await dispatchHumanTool(toolName, args, {
+      org_id: principal.org_id,
+      user_id: principal.user_id,
+      role: principal.role,
+      scopes: principal.scopes,
+    });
+    if (principal.kind === 'oauth') {
+      await auditOAuth({
+        orgId: principal.org_id,
+        userId: principal.user_id,
+        clientId: principal.client_id ?? null,
+        event: 'mcp_tool_call',
+        metadata: { tool_name: toolName, success: !result.isError, surface: 'legacy' },
+      });
+    }
+    return c.json(result);
+  }
+
   // 3. Caller slug validation
+  const resolved = principal as ResolvedGateway;
   let employee: GatewayEmployee;
   try {
     employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));

@@ -73,11 +73,11 @@ function LoginContent() {
             )}
 
             <div className="flex flex-col gap-2">
-              <label className="text-[0.6875rem] font-semibold uppercase"
+              <label htmlFor="login-email" className="text-[0.6875rem] font-semibold uppercase"
                 style={{ color: 'var(--on-surface-variant)', letterSpacing: '0.05em' }}>
                 Email Address
               </label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+              <input id="login-email" type="email" value={email} onChange={e => setEmail(e.target.value)}
                 placeholder="name@company.com"
                 autoComplete="email"
                 inputMode="email"
@@ -94,7 +94,7 @@ function LoginContent() {
 
             <div className="flex flex-col gap-2">
               <div className="flex justify-between items-center">
-                <label className="text-[0.6875rem] font-semibold uppercase"
+                <label htmlFor="login-password" className="text-[0.6875rem] font-semibold uppercase"
                   style={{ color: 'var(--on-surface-variant)', letterSpacing: '0.05em' }}>
                   Password
                 </label>
@@ -105,7 +105,7 @@ function LoginContent() {
                 </Link>
               </div>
               <div className="relative">
-                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                <input id="login-password" type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
                   placeholder="••••••••"
                   autoComplete="current-password"
                   className="w-full h-11 px-4 pr-10 text-[0.875rem] outline-none"

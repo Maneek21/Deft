@@ -62,6 +62,8 @@ export const env = {
   RESEND_API_KEY: process.env.RESEND_API_KEY || '',
   API_PORT: parseInt(process.env.API_PORT || '3001'),
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.API_PORT || '3001'}`,
+  DEFT_PUBLIC_URL: process.env.DEFT_PUBLIC_URL || '',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
