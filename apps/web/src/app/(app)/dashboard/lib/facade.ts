@@ -81,7 +81,7 @@ export type DashboardAttention = {
   kind: 'overdue_task' | 'pending_agent_action' | 'failed_agent_action' | 'recent_decision' | string;
   severity: 'critical' | 'warning' | 'info' | string;
   title: string;
-  href: string;
+  href?: string;
   at: string | null;
 };
 

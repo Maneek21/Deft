@@ -11,21 +11,27 @@
  */
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentEmployees,
+  events,
   messages,
+  notes,
   notifications,
   orgMembers,
   orgs,
   projectSpaces,
   projects,
+  reminders,
   spaceMembers,
   spaces,
+  standups,
+  taskComments,
   tasks,
   teamHealthSnapshots,
   users,
+  wikiLinks,
   wikiPages,
 } from '@deft/db/schema';
 
@@ -49,6 +55,19 @@ function plusDays(days: number): Date {
   const date = new Date();
   date.setDate(date.getDate() + days);
   date.setHours(17, 0, 0, 0);
+  return date;
+}
+
+function atToday(hour: number, minute = 0): Date {
+  const date = new Date();
+  date.setUTCHours(hour, minute, 0, 0);
+  return date;
+}
+
+function atOffsetDay(days: number, hour: number, minute = 0): Date {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + days);
+  date.setUTCHours(hour, minute, 0, 0);
   return date;
 }
 
@@ -282,7 +301,7 @@ async function ensureProject(params: {
     is_archived: false,
     is_deleted: false,
     deleted_at: null,
-    task_counter: 4,
+    task_counter: 16,
     updated_at: new Date(),
   };
 
@@ -305,7 +324,7 @@ async function ensureProject(params: {
       icon: 'Megaphone',
       color: '#0ea5e9',
       lead_id: params.leadId,
-      task_counter: 4,
+      task_counter: 16,
     })
     .returning(), `created project ${params.prefix}`);
   return created;
@@ -315,6 +334,9 @@ async function seedTasks(params: {
   orgId: string;
   projectId: string;
   createdBy: string;
+  diegoId: string;
+  linaId: string;
+  sageId: string;
   tomId: string;
   mayaId: string;
 }) {
@@ -363,6 +385,138 @@ async function seedTasks(params: {
       due_date: plusDays(5),
       sort_order: 4,
     },
+    {
+      number: 5,
+      title: 'Review cold-chain wording for buyer launch',
+      description:
+        'Review Tom\'s buyer-facing copy for operational accuracy. Keep claims specific: delivery window, harvest timing, and temperature-log practice.',
+      status: 'in_review' as const,
+      priority: 'p1' as const,
+      assignee_id: params.linaId,
+      due_date: plusDays(2),
+      sort_order: 5,
+    },
+    {
+      number: 6,
+      title: 'Validate food-safety language in launch FAQ',
+      description:
+        'Check that the FAQ does not overstate audit status or cold-chain guarantees. Approve only claims backed by the wiki and current operating procedure.',
+      status: 'todo' as const,
+      priority: 'p2' as const,
+      assignee_id: params.sageId,
+      due_date: plusDays(3),
+      sort_order: 6,
+    },
+    {
+      number: 7,
+      title: 'Approve Sun Gold trial launch package',
+      description:
+        'Final Diego review once Tom drafts copy, Maya summarizes the buyer context, Lina reviews claims, and Sage clears food-safety language.',
+      status: 'done' as const,
+      priority: 'p2' as const,
+      assignee_id: params.diegoId,
+      due_date: plusDays(5),
+      sort_order: 7,
+    },
+    {
+      number: 8,
+      title: 'Confirm Tuesday route capacity with Tomas',
+      description:
+        'Before any buyer promise goes out, confirm whether Tomas can hold the Tuesday delivery window for the Sun Gold trial.',
+      status: 'in_progress' as const,
+      priority: 'p0' as const,
+      assignee_id: params.diegoId,
+      due_date: atToday(11, 30),
+      sort_order: 8,
+    },
+    {
+      number: 9,
+      title: 'Call Chef Amara about first Sun Gold sample box',
+      description:
+        'Confirm sample size, delivery preference, and whether the kitchen wants flavor notes or farm handling notes in the package.',
+      status: 'todo' as const,
+      priority: 'p1' as const,
+      assignee_id: params.diegoId,
+      due_date: atToday(15, 0),
+      sort_order: 9,
+    },
+    {
+      number: 10,
+      title: 'Update buyer list with cold-chain confidence notes',
+      description:
+        'Add a short note beside each buyer: needs strict delivery window, flexible pickup, chef sample, or wholesale volume conversation.',
+      status: 'todo' as const,
+      priority: 'p2' as const,
+      assignee_id: params.diegoId,
+      due_date: plusDays(1),
+      sort_order: 10,
+    },
+    {
+      number: 11,
+      title: 'Pull three quotes from farmers market regulars',
+      description:
+        'Collect short, plain-spoken customer quotes Tom can weave into booth signage without sounding like a cereal box.',
+      status: 'todo' as const,
+      priority: 'p2' as const,
+      assignee_id: params.mayaId,
+      due_date: plusDays(1),
+      sort_order: 11,
+    },
+    {
+      number: 12,
+      title: 'Check greenhouse photo set for launch visuals',
+      description:
+        'Choose four photos that show the actual Sun Gold crop, the harvest bins, and the cold-room handoff.',
+      status: 'in_progress' as const,
+      priority: 'p2' as const,
+      assignee_id: params.linaId,
+      due_date: plusDays(2),
+      sort_order: 12,
+    },
+    {
+      number: 13,
+      title: 'Draft booth sign microcopy for Saturday market',
+      description:
+        'Use the flavor-first positioning page. Keep it warm, specific, and operationally honest.',
+      status: 'todo' as const,
+      priority: 'p1' as const,
+      assignee_id: params.tomId,
+      due_date: plusDays(2),
+      sort_order: 13,
+    },
+    {
+      number: 14,
+      title: 'Reconcile sample-box inventory with harvest forecast',
+      description:
+        'Check whether the launch plan matches expected Sun Gold yield after tomorrow morning\'s harvest estimate.',
+      status: 'todo' as const,
+      priority: 'p1' as const,
+      assignee_id: params.sageId,
+      due_date: plusDays(2),
+      sort_order: 14,
+    },
+    {
+      number: 15,
+      title: 'Post launch-readiness update in marketing space',
+      description:
+        'Summarize what is ready, what is blocked, and which task owners need attention before the buyer send.',
+      status: 'todo' as const,
+      priority: 'p2' as const,
+      assignee_id: params.mayaId,
+      due_date: plusDays(3),
+      sort_order: 15,
+    },
+    {
+      number: 16,
+      title: 'Archive old spring promo claims from buyer deck',
+      description:
+        'Remove stale delivery and yield claims so the launch deck only reflects current Sun Gold operating reality.',
+      status: 'done' as const,
+      priority: 'p3' as const,
+      assignee_id: params.diegoId,
+      due_date: atOffsetDay(-1, 16, 0),
+      sort_order: 16,
+    },
   ];
 
   for (const task of seededTasks) {
@@ -388,6 +542,82 @@ async function seedTasks(params: {
           updated_at: new Date(),
         },
       });
+  }
+
+  const taskRows = await db
+    .select({ id: tasks.id, number: tasks.number })
+    .from(tasks)
+    .where(and(eq(tasks.org_id, params.orgId), eq(tasks.project_id, params.projectId)));
+  const taskByNumber = new Map(taskRows.map((task) => [task.number, task.id]));
+  const commentTaskIds = [...taskByNumber.values()];
+  if (commentTaskIds.length > 0) {
+    await db.delete(taskComments).where(inArray(taskComments.task_id, commentTaskIds));
+  }
+
+  const seededComments = [
+    {
+      task_id: taskByNumber.get(1),
+      user_id: params.tomId,
+      content:
+        'I will use the Marketing Positioning wiki page, keep the copy practical, and avoid making cold-chain claims before Lina reviews them.',
+    },
+    {
+      task_id: taskByNumber.get(2),
+      user_id: params.mayaId,
+      content:
+        'Drafting a weekly summary for Diego and Lina with buyer pressure, follow-up owner, and the ruby-sunrise-2026 decision marker.',
+    },
+    {
+      task_id: taskByNumber.get(5),
+      user_id: params.linaId,
+      content:
+        'Review focus: promise Tuesday delivery only after Tomas confirms route capacity. No fuzzy reliability language.',
+    },
+    {
+      task_id: taskByNumber.get(6),
+      user_id: params.sageId,
+      content:
+        'I will clear the FAQ language against food-safety notes and the cold storage procedure before launch.',
+    },
+    {
+      task_id: taskByNumber.get(7),
+      user_id: params.diegoId,
+      content:
+        'Approved for the demo board: the workflow shows chat to memory to tasks to agent work to human review.',
+    },
+    {
+      task_id: taskByNumber.get(8),
+      user_id: params.diegoId,
+      content:
+        'This is the gating item. No Tuesday language leaves the farm until route capacity is confirmed.',
+    },
+    {
+      task_id: taskByNumber.get(9),
+      user_id: params.diegoId,
+      content:
+        'Chef Amara wants confidence more than poetry. Ask about prep timing and whether the sample box needs basil pairings.',
+    },
+    {
+      task_id: taskByNumber.get(13),
+      user_id: params.tomId,
+      content:
+        'I will draft this from the positioning page and keep the tomatoes charming, not suspiciously heroic.',
+    },
+    {
+      task_id: taskByNumber.get(14),
+      user_id: params.sageId,
+      content:
+        'I will reconcile the sample-box count after the harvest forecast lands tomorrow morning.',
+    },
+  ].filter((comment): comment is { task_id: string; user_id: string; content: string } => Boolean(comment.task_id));
+
+  if (seededComments.length > 0) {
+    await db.insert(taskComments).values(seededComments.map((comment) => ({
+      org_id: params.orgId,
+      task_id: comment.task_id,
+      user_id: comment.user_id,
+      content: comment.content,
+    })));
   }
 }
 
@@ -447,6 +677,46 @@ async function seedWiki(params: { orgId: string; spaceId: string; diegoId: strin
       tags: ['marketing', 'positioning', 'buyers'],
       referenced_user_ids: [params.tomId, params.mayaId],
     },
+    {
+      type: 'decision' as const,
+      title: 'Sun Gold Trial Launch Decision',
+      slug: 'sun-gold-trial-launch-decision',
+      summary:
+        'Diego approved a buyer-facing Sun Gold trial launch with route-confirmed Tuesday delivery and reviewed cold-chain wording.',
+      content: [
+        '# Sun Gold Trial Launch Decision',
+        '',
+        `Decision marker: **${PROOF_PHRASE}**.`,
+        '',
+        'For the Sun Gold trial, Testers Tomatoes will promise Tuesday delivery windows only when Tomas confirms route capacity.',
+        '',
+        'Tom owns buyer-facing launch copy. Maya owns the weekly communications summary. Lina reviews buyer-facing cold-chain wording. Sage validates food-safety language before the launch package is sent.',
+        '',
+        'This page exists so the manual demo can show a decision moving from chat into wiki memory, then into tasks assigned to humans and BYOA employees.',
+      ].join('\n'),
+      tags: ['decision', 'sun-gold', 'launch', 'demo'],
+      referenced_user_ids: [params.diegoId, params.tomId, params.mayaId],
+    },
+    {
+      type: 'procedure' as const,
+      title: 'Buyer Launch Review Loop',
+      slug: 'buyer-launch-review-loop',
+      summary:
+        'The repeatable review path for agent-drafted buyer copy before it leaves Testers Tomatoes.',
+      content: [
+        '# Buyer Launch Review Loop',
+        '',
+        '1. Tom drafts buyer-facing copy from wiki positioning and current project tasks.',
+        '2. Maya summarizes stakeholder context for Diego and Lina.',
+        '3. Lina reviews claims for buyer practicality and sales accuracy.',
+        '4. Sage reviews food-safety and cold-chain language.',
+        '5. Diego approves the launch package after human review is complete.',
+        '',
+        'Agents can draft and summarize, but claims that affect customers stay on human review rails.',
+      ].join('\n'),
+      tags: ['procedure', 'review', 'agents', 'buyers'],
+      referenced_user_ids: [params.diegoId, params.tomId, params.mayaId],
+    },
   ];
 
   for (const page of pages) {
@@ -484,6 +754,33 @@ async function seedWiki(params: { orgId: string; spaceId: string; diegoId: strin
         },
       });
   }
+
+  const seededPages = await db
+    .select({ id: wikiPages.id, slug: wikiPages.slug })
+    .from(wikiPages)
+    .where(and(eq(wikiPages.org_id, params.orgId), inArray(wikiPages.slug, pages.map((page) => page.slug))));
+  const pageBySlug = new Map(seededPages.map((page) => [page.slug, page.id]));
+  const links: Array<[string, string, string]> = [
+    ['sun-gold-trial-launch-decision', 'testers-tomatoes-marketing-positioning', 'Decision relies on positioning guidance.'],
+    ['sun-gold-trial-launch-decision', 'byoa-employee-operating-model', 'Decision assigns work to BYOA employees.'],
+    ['sun-gold-trial-launch-decision', 'buyer-launch-review-loop', 'Decision follows the human review loop.'],
+    ['buyer-launch-review-loop', 'company-memory-proof-protocol', 'Review loop is part of the clean memory proof.'],
+    ['byoa-employee-operating-model', 'company-memory-proof-protocol', 'BYOA employees must retrieve the same memory humans can see.'],
+  ];
+  for (const [sourceSlug, targetSlug, context] of links) {
+    const sourceId = pageBySlug.get(sourceSlug);
+    const targetId = pageBySlug.get(targetSlug);
+    if (!sourceId || !targetId) continue;
+    await db
+      .insert(wikiLinks)
+      .values({
+        org_id: params.orgId,
+        source_page_id: sourceId,
+        target_page_id: targetId,
+        context,
+      })
+      .onConflictDoNothing();
+  }
 }
 
 async function seedMarketingMessage(params: { orgId: string; spaceId: string; diegoId: string }) {
@@ -506,6 +803,184 @@ async function seedMarketingMessage(params: { orgId: string; spaceId: string; di
       metadata: { seed: 'pilot-polish', knowledge_marker: PROOF_PHRASE },
     });
   }
+}
+
+async function seedRecordingNote(params: { orgId: string; spaceId: string; diegoId: string }) {
+  const title = 'Manual demo notes - Sun Gold launch';
+  await db
+    .delete(notes)
+    .where(and(eq(notes.org_id, params.orgId), eq(notes.user_id, params.diegoId), eq(notes.title, title)));
+
+  await db.insert(notes).values({
+    org_id: params.orgId,
+    user_id: params.diegoId,
+    title,
+    icon: 'Video',
+    is_pinned: true,
+    visibility: 'space',
+    visibility_space_id: params.spaceId,
+    content: [
+      '<h1>Manual demo notes - Sun Gold launch</h1>',
+      '<h2>Manager readout</h2>',
+      '<ul>',
+      '<li>Buyer wants Tuesday delivery reliability more than big marketing claims.</li>',
+      '<li>Use <strong>ruby-sunrise-2026</strong> as the clean proof marker.</li>',
+      '<li>Tom drafts launch copy from wiki positioning.</li>',
+      '<li>Maya summarizes buyer context for Diego and Lina.</li>',
+      '<li>Lina and Sage review claims before Diego approves.</li>',
+      '</ul>',
+      '<h2>Recording beat</h2>',
+      '<p>This note is the bridge between chat and durable company memory. Open it after the chat scene, then jump to the wiki decision page.</p>',
+    ].join('\n'),
+  });
+}
+
+async function seedOperatingDay(params: {
+  orgId: string;
+  diegoId: string;
+}) {
+  const todayStart = atToday(0, 0);
+  const todayEnd = atOffsetDay(1, 0, 0);
+
+  await db
+    .delete(standups)
+    .where(and(eq(standups.org_id, params.orgId), gte(standups.date, todayStart), lt(standups.date, todayEnd)));
+
+  await db.insert(standups).values({
+    org_id: params.orgId,
+    date: atToday(9, 0),
+    generated_by: params.diegoId,
+    summary:
+      'Sun Gold launch day is active: Diego is confirming route capacity, Tom is drafting buyer copy, Maya is preparing the communications pulse, and Lina/Sage are guarding claims before anything leaves the farm.',
+    raw_data: {
+      source: 'pilot-polish',
+      highlights: [
+        'Two buyer conversations today',
+        'Three launch tasks due today',
+        'BYOA employees have visible ownership',
+      ],
+    },
+  });
+
+  const seededEvents = [
+    {
+      external_id: 'pilot-sun-gold-standup',
+      title: 'Sun Gold launch standup',
+      body: 'Review route capacity, buyer-readiness, and agent-owned copy tasks.',
+      start: atToday(9, 15),
+      end: atToday(9, 45),
+      location: 'marketing space',
+      attendees: ['Diego Vargas', 'Lina Bhattacharya', 'Tom', 'Maya'],
+    },
+    {
+      external_id: 'pilot-route-capacity-check',
+      title: 'Route capacity check with Tomas',
+      body: 'Confirm whether Tuesday delivery can be promised for the Sun Gold buyer trial.',
+      start: atToday(11, 30),
+      end: atToday(12, 0),
+      location: 'Packing shed',
+      attendees: ['Diego Vargas', 'Tomas'],
+    },
+    {
+      external_id: 'pilot-chef-amara-call',
+      title: 'Chef Amara sample-box call',
+      body: 'Align sample size, delivery timing, and flavor notes for the first Sun Gold box.',
+      start: atToday(15, 0),
+      end: atToday(15, 30),
+      location: 'Phone',
+      attendees: ['Diego Vargas', 'Chef Amara'],
+    },
+    {
+      external_id: 'pilot-launch-review',
+      title: 'Buyer copy review with Lina and Sage',
+      body: 'Review Tom draft, cold-chain wording, and food-safety claims before buyer send.',
+      start: atToday(16, 15),
+      end: atToday(17, 0),
+      location: 'Deft task board',
+      attendees: ['Diego Vargas', 'Lina Bhattacharya', 'Sage Nakamura', 'Tom'],
+    },
+    {
+      external_id: 'pilot-farmers-market-prep',
+      title: 'Saturday market booth prep',
+      body: 'Check booth signs, sample crates, buyer handout, and launch wording.',
+      start: atOffsetDay(2, 10, 0),
+      end: atOffsetDay(2, 11, 0),
+      location: 'Farmers market stall',
+      attendees: ['Diego Vargas', 'Maya', 'Tom'],
+    },
+  ];
+
+  for (const event of seededEvents) {
+    await db
+      .insert(events)
+      .values({
+        org_id: params.orgId,
+        source: 'native',
+        event_type: 'calendar_event',
+        external_id: event.external_id,
+        title: event.title,
+        body: event.body,
+        url: null,
+        actor: 'diego@testers-tomatoes.com',
+        timestamp: event.start,
+        metadata: {
+          start: event.start.toISOString(),
+          end: event.end.toISOString(),
+          location: event.location,
+          attendees: event.attendees,
+          hangoutLink: null,
+          status: 'confirmed',
+          allDay: false,
+          seed: 'pilot-polish',
+        },
+        user_id: params.diegoId,
+        connected_account_id: null,
+      })
+      .onConflictDoUpdate({
+        target: [events.source, events.external_id],
+        set: {
+          title: event.title,
+          body: event.body,
+          timestamp: event.start,
+          metadata: {
+            start: event.start.toISOString(),
+            end: event.end.toISOString(),
+            location: event.location,
+            attendees: event.attendees,
+            hangoutLink: null,
+            status: 'confirmed',
+            allDay: false,
+            seed: 'pilot-polish',
+          },
+          user_id: params.diegoId,
+          updated_at: new Date(),
+        },
+      });
+  }
+
+  await db
+    .delete(reminders)
+    .where(and(eq(reminders.org_id, params.orgId), eq(reminders.user_id, params.diegoId), inArray(reminders.message, [
+      'Check if Tomas confirmed Tuesday route capacity',
+      'Send launch-readiness note before buyer copy review',
+    ])));
+
+  await db.insert(reminders).values([
+    {
+      org_id: params.orgId,
+      user_id: params.diegoId,
+      message: 'Check if Tomas confirmed Tuesday route capacity',
+      remind_at: atToday(13, 0),
+      is_sent: false,
+    },
+    {
+      org_id: params.orgId,
+      user_id: params.diegoId,
+      message: 'Send launch-readiness note before buyer copy review',
+      remind_at: atToday(15, 45),
+      is_sent: false,
+    },
+  ]);
 }
 
 async function seedTeamHealth(params: {
@@ -655,6 +1130,9 @@ export async function seedPilotWorkspace(): Promise<{
     orgId: org.id,
     projectId: marketingProject.id,
     createdBy: diego.id,
+    diegoId: diego.id,
+    linaId: lina.id,
+    sageId: sage.id,
     tomId: tom.id,
     mayaId: maya.id,
   });
@@ -668,6 +1146,11 @@ export async function seedPilotWorkspace(): Promise<{
   });
 
   await seedMarketingMessage({ orgId: org.id, spaceId: marketingSpace.id, diegoId: diego.id });
+  await seedRecordingNote({ orgId: org.id, spaceId: marketingSpace.id, diegoId: diego.id });
+  await seedOperatingDay({
+    orgId: org.id,
+    diegoId: diego.id,
+  });
   await seedTeamHealth({
     orgId: org.id,
     generatedBy: diego.id,

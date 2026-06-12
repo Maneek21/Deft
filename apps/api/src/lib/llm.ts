@@ -136,7 +136,7 @@ async function callAnthropic(
   },
 ): Promise<{ text: string; toolCalls?: any[]; usage?: { input: number; output: number }; model: string }> {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({ apiKey, timeout: 60_000, maxRetries: 1 });
 
   // Filter out system messages — Anthropic uses the system parameter instead
   const nonSystemMessages = params.messages.filter((m) => m.role !== 'system');
@@ -217,6 +217,7 @@ async function callOpenAI(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!response.ok) {
@@ -274,6 +275,7 @@ async function callOllama(
       messages: apiMessages,
       stream: false,
     }),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!response.ok) {

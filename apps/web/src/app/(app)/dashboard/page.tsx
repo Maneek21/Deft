@@ -179,30 +179,8 @@ function Hero({
                 maxWidth: 760,
               }}
             >
-              {attention.map((item) => (
-                <Link
-                  key={`${item.kind}:${item.href}:${item.title}`}
-                  href={item.href}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    minHeight: 34,
-                    maxWidth: '100%',
-                    borderRadius: 8,
-                    padding: '7px 10px',
-                    border: '1px solid var(--border-default)',
-                    background: item.severity === 'critical'
-                      ? 'rgba(239, 68, 68, 0.08)'
-                      : item.severity === 'warning'
-                        ? 'rgba(245, 158, 11, 0.08)'
-                        : 'color-mix(in srgb, var(--bg-surface) 90%, white 3%)',
-                    color: 'var(--text-secondary)',
-                    fontSize: 12,
-                    lineHeight: 1.25,
-                    textDecoration: 'none',
-                  }}
-                  title={item.title}
-                >
+              {attention.map((item) => {
+                const chip = (
                   <span
                     style={{
                       overflow: 'hidden',
@@ -212,8 +190,51 @@ function Hero({
                   >
                     {item.title}
                   </span>
+                );
+                const chipStyle = {
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  minHeight: 34,
+                  maxWidth: '100%',
+                  borderRadius: 8,
+                  padding: '7px 10px',
+                  border: '1px solid var(--border-default)',
+                  background: item.severity === 'critical'
+                    ? 'rgba(239, 68, 68, 0.08)'
+                    : item.severity === 'warning'
+                      ? 'rgba(245, 158, 11, 0.08)'
+                      : 'color-mix(in srgb, var(--bg-surface) 90%, white 3%)',
+                  color: 'var(--text-secondary)',
+                  fontSize: 12,
+                  lineHeight: 1.25,
+                  textDecoration: 'none',
+                } as const;
+
+                if (!item.href) {
+                  return (
+                    <span
+                      key={`${item.kind}:static:${item.title}`}
+                      style={chipStyle}
+                      title={item.title}
+                    >
+                      {chip}
+                    </span>
+                  );
+                }
+
+                return (
+                  <Link
+                    key={`${item.kind}:${item.href}:${item.title}`}
+                    href={item.href}
+                  style={{
+                    ...chipStyle,
+                  }}
+                  title={item.title}
+                >
+                  {chip}
                 </Link>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
