@@ -525,6 +525,7 @@ async function fetchWikiIlike(
 
 async function fetchDecisions(
   org_id: string,
+  user_id: string | undefined,
   forFTS: string,
   limit: number,
   queryEmbedding: number[] | null,
@@ -538,6 +539,8 @@ async function fetchDecisions(
       .select({
         id: wikiPages.id,
         title: wikiPages.title,
+        slug: wikiPages.slug,
+        summary: wikiPages.summary,
         content: wikiPages.content,
         scope: wikiPages.scope,
         confidence: wikiPages.confidence,
@@ -549,13 +552,14 @@ async function fetchDecisions(
           eq(wikiPages.org_id, org_id),
           eq(wikiPages.is_deleted, false),
           eq(wikiPages.type, 'decision'),
+          ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
           sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
         ),
       )
       .orderBy(sql`${scoreExpr} DESC`)
       .limit(limit);
 
-  const mapRows = (rows: Array<{ id: string; title: string; content: string; scope: string | null; confidence: number; rawScore: number }>) =>
+  const mapRows = (rows: Array<{ id: string; title: string; slug: string; summary: string | null; content: string; scope: string | null; confidence: number; rawScore: number }>) =>
     rows.map((row) => ({
       source_type: 'decision' as ContextSource,
       source_id: row.id,
@@ -564,6 +568,11 @@ async function fetchDecisions(
       score: clampScore(row.rawScore ?? 0),
       scope: row.scope ?? undefined,
       confidence: row.confidence,
+      metadata: {
+        slug: row.slug,
+        summary: row.summary ?? null,
+        type: 'decision',
+      },
     }));
 
   try {
@@ -876,7 +885,7 @@ export async function retrieveContext(
     // 5. Decisions branch: queries wikiPages WHERE type='decision'. Forward-
     //    compatible path — Task 2.3 migrates the legacy decisions table here.
     types.includes('decisions')
-      ? fetchDecisions(org_id, forFTS, limit, queryEmbedding, hybrid)
+      ? fetchDecisions(org_id, user_id, forFTS, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
     types.includes('memory')

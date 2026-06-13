@@ -27,11 +27,20 @@ const DATABASE_URL =
 const TEST_ID = randomUUID();
 const ORG_ID = `oauth-mcp-org-${TEST_ID}`;
 const USER_ID = `oauth-mcp-user-${TEST_ID}`;
+const OTHER_USER_ID = `oauth-mcp-other-user-${TEST_ID}`;
 const ORG_SLUG = `oauth-mcp-${TEST_ID.slice(0, 8)}`;
 const WIKI_ID = `oauth-mcp-wiki-${TEST_ID}`;
 const WIKI_SLUG = `oauth-mcp-salsa-${TEST_ID.slice(0, 8)}`;
+const PRIVATE_WIKI_ID = `oauth-mcp-private-wiki-${TEST_ID}`;
+const PRIVATE_WIKI_SLUG = `oauth-mcp-private-sauce-${TEST_ID.slice(0, 8)}`;
 const PROJECT_ID = `oauth-mcp-project-${TEST_ID}`;
+const PRIVATE_PROJECT_ID = `oauth-mcp-private-project-${TEST_ID}`;
 const TASK_ID = `oauth-mcp-task-${TEST_ID}`;
+const RESTRICTED_TASK_ID = `oauth-mcp-restricted-task-${TEST_ID}`;
+const PRIVATE_EVENT_ID = `oauth-mcp-private-event-${TEST_ID}`;
+const SPACE_ID = `oauth-mcp-space-${TEST_ID}`;
+const MESSAGE_ID = `oauth-mcp-message-${TEST_ID}`;
+const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
 
 let testApp: Hono;
 let helpers: typeof import('../src/lib/oauth-mcp.js');
@@ -50,19 +59,24 @@ async function cleanup() {
   await withClient(async (client) => {
     await client.query(
       `DELETE FROM oauth_refresh_tokens
-       WHERE grant_id IN (SELECT id FROM oauth_grants WHERE user_id = $1)`,
-      [USER_ID],
+       WHERE grant_id IN (SELECT id FROM oauth_grants WHERE org_id = $1)`,
+      [ORG_ID],
     );
-    await client.query(`DELETE FROM oauth_access_tokens WHERE user_id = $1`, [USER_ID]);
-    await client.query(`DELETE FROM oauth_grants WHERE user_id = $1`, [USER_ID]);
-    await client.query(`DELETE FROM oauth_authorization_codes WHERE user_id = $1`, [USER_ID]);
+    await client.query(`DELETE FROM oauth_access_tokens WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM oauth_grants WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM oauth_authorization_codes WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM oauth_audit_events WHERE user_id = $1 OR org_id = $2`, [USER_ID, ORG_ID]);
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
+    await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM spaces WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM projects WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_pages WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM org_members WHERE org_id = $1`, [ORG_ID]);
-    await client.query(`DELETE FROM users WHERE id = $1`, [USER_ID]);
+    await client.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await client.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
   });
 }
@@ -80,9 +94,19 @@ async function seedWorkspace() {
       [USER_ID, `oauth-mcp-${TEST_ID}@test.local`],
     );
     await client.query(
+      `INSERT INTO users (id, email, name, email_verified)
+       VALUES ($1, $2, 'OAuth MCP Other User', true)`,
+      [OTHER_USER_ID, `oauth-mcp-other-${TEST_ID}@test.local`],
+    );
+    await client.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
        VALUES ($1, $2, $3, 'owner', true)`,
       [`oauth-mcp-member-${TEST_ID}`, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES ($1, $2, $3, 'member', true)`,
+      [`oauth-mcp-other-member-${TEST_ID}`, ORG_ID, OTHER_USER_ID],
     );
     await client.query(
       `INSERT INTO wiki_pages
@@ -95,6 +119,14 @@ async function seedWorkspace() {
       [WIKI_ID, ORG_ID, WIKI_SLUG],
     );
     await client.query(
+      `INSERT INTO wiki_pages
+        (id, org_id, scope, user_id, type, title, slug, summary, content, confidence, version, is_deleted, metadata)
+       VALUES
+        ($1, $2, 'user', $3, 'fact', 'Private sauce plan', $4,
+         $5, $5, 0.95, 1, false, '{}'::jsonb)`,
+      [PRIVATE_WIKI_ID, ORG_ID, OTHER_USER_ID, PRIVATE_WIKI_SLUG, `${PRIVATE_PROOF} private wiki content`],
+    );
+    await client.query(
       `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
        VALUES ($1, $2, 'OAuth MCP Demo Project', 'OMCP', $3, 1)`,
       [PROJECT_ID, ORG_ID, USER_ID],
@@ -105,6 +137,35 @@ async function seedWorkspace() {
        VALUES
         ($1, $2, $3, 1, 'Prepare salsa tasting brief', 'todo', 'p1', $4, $4, false)`,
       [TASK_ID, ORG_ID, PROJECT_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES ($1, $2, 'OAuth MCP Private Project', 'OMCPX', $3, 1)`,
+      [PRIVATE_PROJECT_ID, ORG_ID, OTHER_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO tasks
+        (id, org_id, project_id, number, title, description, status, priority, assignee_id, created_by, is_deleted, metadata)
+       VALUES
+        ($1, $2, $3, 2, $4, $4, 'todo', 'p1', $5, $5, false, '{"visibility":"restricted"}'::jsonb)`,
+      [RESTRICTED_TASK_ID, ORG_ID, PRIVATE_PROJECT_ID, `${PRIVATE_PROOF} restricted task`, OTHER_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO events
+        (id, org_id, source, event_type, title, body, actor, timestamp, metadata, user_id)
+       VALUES
+        ($1, $2, 'ics', 'calendar_event', $3, $3, 'other user', now(), '{}'::jsonb, $4)`,
+      [PRIVATE_EVENT_ID, ORG_ID, `${PRIVATE_PROOF} private calendar event`, OTHER_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES ($1, $2, 'oauth-mcp-public', 'public', $3)`,
+      [SPACE_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, 'Salsa tasting thread for OAuth MCP contract tests')`,
+      [MESSAGE_ID, ORG_ID, SPACE_ID, USER_ID],
     );
   });
 }
@@ -155,12 +216,12 @@ async function registerClient() {
   return (await res.json()) as { client_id: string; scope: string };
 }
 
-async function issueOAuthToken(clientId: string, scopes = ['read:workspace', 'read:wiki']) {
+async function issueOAuthToken(clientId: string, scopes = ['read:workspace', 'read:wiki'], userId = USER_ID) {
   const verifier = `verifier-${TEST_ID}`;
   const resource = helpers.metadataUrls().resource;
   const { code } = await helpers.createAuthorizationCode({
     orgId: ORG_ID,
-    userId: USER_ID,
+    userId,
     clientId,
     redirectUri: 'http://localhost:3999/callback',
     codeChallenge: helpers.pkceS256(verifier),
@@ -196,7 +257,7 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
 
   const client = await registerClient();
   assert.ok(client.client_id.startsWith('deft_dcr_'));
-  assert.equal(client.scope, 'read:workspace read:wiki');
+  assert.equal(client.scope, 'read:workspace read:wiki write:tasks');
 });
 
 test('OAuth PKCE token exchange resolves to a scoped human MCP principal', async () => {
@@ -279,6 +340,190 @@ test('OAuth bearer can use JSON-RPC MCP read tools but not ungranted write tools
   assert.match(writeBody.result.content[0].text, /Missing MCP scope: write:tasks/);
 });
 
+test('OAuth task-helper profile can comment on and update visible tasks', async () => {
+  const client = await registerClient();
+  const token = await issueOAuthToken(client.client_id, ['read:workspace', 'read:tasks', 'write:tasks']);
+  assert.equal(token.scope, 'read:workspace read:tasks write:tasks');
+
+  const principal = await helpers.resolveOAuthAccessToken(token.access_token);
+  assert.equal(principal.connector_profile, 'task-helper');
+
+  const listRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 30,
+    method: 'tools/list',
+    params: {},
+  }, token.access_token);
+  assert.equal(listRes.status, 200);
+  const listBody = (await listRes.json()) as any;
+  const names = new Set<string>(listBody.result.tools.map((tool: any) => tool.name));
+  assert.ok(names.has('task_create'));
+  assert.ok(names.has('task_update'));
+  assert.ok(names.has('comment_on_task'));
+
+  const commentRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 31,
+    method: 'tools/call',
+    params: {
+      name: 'comment_on_task',
+      arguments: {
+        task_id: TASK_ID,
+        content: 'Codex task-helper contract test comment',
+      },
+    },
+  }, token.access_token);
+  assert.equal(commentRes.status, 200);
+  const commentBody = (await commentRes.json()) as any;
+  assert.equal(commentBody.result.isError, false, JSON.stringify(commentBody));
+  const comment = JSON.parse(commentBody.result.content[0].text);
+  assert.equal(comment.task_id, TASK_ID);
+  assert.equal(comment.user_id, USER_ID);
+
+  const updateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 32,
+    method: 'tools/call',
+    params: {
+      name: 'task_update',
+      arguments: {
+        task_id: TASK_ID,
+        patch: { status: 'done' },
+      },
+    },
+  }, token.access_token);
+  assert.equal(updateRes.status, 200);
+  const updateBody = (await updateRes.json()) as any;
+  assert.equal(updateBody.result.isError, false, JSON.stringify(updateBody));
+  const updatedTask = JSON.parse(updateBody.result.content[0].text);
+  assert.equal(updatedTask.id, TASK_ID);
+  assert.equal(updatedTask.status, 'done');
+
+  const blockedRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 33,
+    method: 'tools/call',
+    params: {
+      name: 'task_update',
+      arguments: {
+        task_id: RESTRICTED_TASK_ID,
+        patch: { status: 'done' },
+      },
+    },
+  }, token.access_token);
+  assert.equal(blockedRes.status, 200);
+  const blockedBody = (await blockedRes.json()) as any;
+  assert.equal(blockedBody.result.isError, true, JSON.stringify(blockedBody));
+  assert.match(blockedBody.result.content[0].text, /task not found/);
+});
+
+test('OAuth human MCP read tools match user-scoped wiki task and calendar visibility', async () => {
+  const client = await registerClient();
+  const scopes = ['read:workspace', 'read:wiki', 'read:tasks', 'read:calendar'];
+  const primaryToken = await issueOAuthToken(client.client_id, scopes, USER_ID);
+  const otherToken = await issueOAuthToken(client.client_id, scopes, OTHER_USER_ID);
+
+  async function callTool(accessToken: string, id: number, name: string, args: Record<string, unknown>) {
+    const res = await jsonPost('/api/mcp/v1', {
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    }, accessToken);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.result.isError, false, `${name} should not error: ${JSON.stringify(body)}`);
+    return JSON.parse(body.result.content[0].text);
+  }
+
+  async function callToolError(accessToken: string, id: number, name: string, args: Record<string, unknown>) {
+    const res = await jsonPost('/api/mcp/v1', {
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    }, accessToken);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.result.isError, true, `${name} should error: ${JSON.stringify(body)}`);
+    return body.result.content[0].text as string;
+  }
+
+  const primarySearch = await callTool(primaryToken.access_token, 10, 'search', { query: PRIVATE_PROOF, limit: 10 });
+  assert.ok(Array.isArray(primarySearch));
+  assert.ok(!primarySearch.some((result: any) => [PRIVATE_WIKI_SLUG, RESTRICTED_TASK_ID, PRIVATE_EVENT_ID].some((id) => String(result.id).includes(id))));
+
+  const primaryRecall = await callTool(primaryToken.access_token, 11, 'memory_recall', { query: PRIVATE_PROOF, limit: 10 });
+  assert.ok(Array.isArray(primaryRecall));
+  assert.ok(!primaryRecall.some((page: any) => page.slug === PRIVATE_WIKI_SLUG));
+
+  const primaryTasks = await callTool(primaryToken.access_token, 12, 'task_query', { limit: 50 });
+  assert.ok(!primaryTasks.some((task: any) => task.id === RESTRICTED_TASK_ID));
+
+  const primaryEvents = await callTool(primaryToken.access_token, 13, 'events_query', { limit: 50 });
+  assert.ok(!primaryEvents.some((event: any) => event.id === PRIVATE_EVENT_ID));
+
+  await callToolError(primaryToken.access_token, 14, 'fetch', { id: `wiki:${PRIVATE_WIKI_SLUG}` });
+  await callToolError(primaryToken.access_token, 15, 'fetch', { id: `task:${RESTRICTED_TASK_ID}` });
+  await callToolError(primaryToken.access_token, 16, 'fetch', { id: `event:${PRIVATE_EVENT_ID}` });
+
+  const otherRecall = await callTool(otherToken.access_token, 17, 'memory_recall', { query: PRIVATE_PROOF, limit: 10 });
+  assert.ok(otherRecall.some((page: any) => page.slug === PRIVATE_WIKI_SLUG), 'own user-scoped wiki page is visible');
+
+  const otherTasks = await callTool(otherToken.access_token, 18, 'task_query', { limit: 50 });
+  assert.ok(otherTasks.some((task: any) => task.id === RESTRICTED_TASK_ID), 'own restricted task is visible');
+
+  const otherEvents = await callTool(otherToken.access_token, 19, 'events_query', { limit: 50 });
+  assert.ok(otherEvents.some((event: any) => event.id === PRIVATE_EVENT_ID), 'own ICS event is visible');
+});
+
+test('OAuth tools/list read catalog only advertises callable tools', async () => {
+  const client = await registerClient();
+  const token = await issueOAuthToken(client.client_id, ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar']);
+
+  const listRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 20,
+    method: 'tools/list',
+    params: {},
+  }, token.access_token);
+  assert.equal(listRes.status, 200);
+  const listBody = (await listRes.json()) as any;
+  const tools = listBody.result.tools as Array<{ name: string }>;
+  assert.ok(tools.length > 0, 'read catalog is not empty');
+
+  const minimalArgs: Record<string, Record<string, unknown>> = {
+    search: { query: 'salsa tasting', limit: 5 },
+    fetch: { id: `wiki:${WIKI_SLUG}` },
+    platform_context: {},
+    memory_recall: { query: 'salsa tasting', limit: 5 },
+    wiki_search: { query: 'salsa tasting', limit: 5 },
+    memory_list: { limit: 5 },
+    list_my_tasks: { limit: 5 },
+    task_query: { limit: 5 },
+    thread_fetch: { parent_message_id: MESSAGE_ID, limit: 5 },
+    member_list: {},
+    events_query: { limit: 5 },
+    messages_search: { query: 'salsa', limit: 5 },
+    project_progress: { project_id: PROJECT_ID },
+    team_workload: { days: 7 },
+  };
+
+  for (const tool of tools) {
+    const args = minimalArgs[tool.name];
+    assert.ok(args, `test must define minimal args for advertised tool ${tool.name}`);
+    const res = await jsonPost('/api/mcp/v1', {
+      jsonrpc: '2.0',
+      id: `contract-${tool.name}`,
+      method: 'tools/call',
+      params: { name: tool.name, arguments: args },
+    }, token.access_token);
+    assert.equal(res.status, 200, `${tool.name} returns HTTP 200`);
+    const body = (await res.json()) as any;
+    assert.equal(body.result?.isError, false, `${tool.name} should be callable, got ${JSON.stringify(body)}`);
+  }
+});
+
 test('OAuth refresh tokens rotate and reject replay', async () => {
   const client = await registerClient();
   const token = await issueOAuthToken(client.client_id, ['read:workspace']);
@@ -321,12 +566,9 @@ test('OAuth token audience and revocation are enforced', async () => {
     refresh_token: token.refresh_token,
     resource: 'https://elsewhere.example/api/mcp/v1',
   });
-  assert.equal(badAudience.status, 200, 'refresh may issue, but MCP resolver must reject wrong audience');
-  const badToken = (await badAudience.json()) as { access_token: string };
-  await assert.rejects(
-    () => helpers.resolveOAuthAccessToken(badToken.access_token),
-    /audience does not match/,
-  );
+  assert.equal(badAudience.status, 400, 'refresh must reject wrong resource before issuing a token');
+  const badAudienceBody = (await badAudience.json()) as { error: string };
+  assert.equal(badAudienceBody.error, 'invalid_target');
 
   const revokeRes = await jsonPost('/oauth/revoke', { token: token.access_token });
   assert.equal(revokeRes.status, 200);

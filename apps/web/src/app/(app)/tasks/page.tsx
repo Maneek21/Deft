@@ -473,11 +473,62 @@ export default function TasksPage() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [selectedTask, selectionMode, selectedTaskIds]);
 
-  // On mount: if URL has ?task=DEFT-5, find and open that task
-  // If the task belongs to a different project, switch to that project first
+  // On mount: if URL has ?task=DEFT-5 or ?task=<task-id>, find and open that task.
+  // If the task belongs to a different project, switch to that project first.
   useEffect(() => {
     const taskParam = searchParams.get('task');
     if (taskParam && projects.length > 0) {
+      const rawTaskId = taskParam.startsWith('task:') ? taskParam.slice('task:'.length) : taskParam;
+      const looksLikeId = /^[0-9a-fA-F-]{20,}$/.test(rawTaskId) && !rawTaskId.includes('--');
+      if (looksLikeId) {
+        const existing = tasks.find(t => t.id === rawTaskId);
+        if (existing) {
+          if (existing.project_id !== selectedProject?.id) {
+            const targetProject = projects.find(p => p.id === existing.project_id);
+            if (targetProject) setSelectedProject(targetProject);
+          }
+          setSelectedTask(existing);
+          return;
+        }
+        api.get(`/api/tasks/${rawTaskId}`).then(async (res) => {
+          if (!res.ok) return;
+          const detail = await res.json();
+          const targetProject = projects.find(p => p.id === detail.project_id);
+          if (targetProject && targetProject.id !== selectedProject?.id) {
+            setSelectedProject(targetProject);
+          }
+          setSelectedTask({
+            id: detail.id,
+            number: detail.number,
+            title: detail.title,
+            description: detail.description,
+            status: detail.status,
+            priority: detail.priority,
+            assignee_id: detail.assignee_id,
+            assignee_name: detail.assignee?.name ?? null,
+            assignee_avatar: detail.assignee?.avatar_url ?? null,
+            created_by: detail.created_by,
+            creator_name: detail.creator?.name ?? null,
+            due_date: detail.due_date,
+            start_date: detail.start_date,
+            sort_order: detail.sort_order ?? 0,
+            source_message_id: detail.source_message_id ?? null,
+            is_deleted: detail.is_deleted ?? false,
+            project_id: detail.project_id,
+            project_prefix: detail.project_prefix,
+            project_name: detail.project_name,
+            project_color: targetProject?.color ?? null,
+            labels: detail.labels ?? [],
+            parent_task_id: detail.parent_task_id ?? null,
+            subtask_count: Array.isArray(detail.subtasks) ? detail.subtasks.length : 0,
+            subtask_done_count: Array.isArray(detail.subtasks) ? detail.subtasks.filter((task: Task) => task.status === 'done').length : 0,
+            estimation: detail.estimation ?? null,
+            created_at: detail.created_at,
+            updated_at: detail.updated_at,
+          });
+        });
+        return;
+      }
       const [prefix, numStr] = taskParam.split('-');
       const num = parseInt(numStr);
       if (prefix && !isNaN(num)) {

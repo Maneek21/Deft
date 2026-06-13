@@ -104,13 +104,16 @@ function OAuthAuthorizeContent() {
     window.location.href = url.toString();
   }
 
+  const canWriteTasks = preview?.scopes.includes('write:tasks') ?? false;
+  const accessLabel = canWriteTasks ? 'Task helper access' : 'Knowledge access';
+
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-10" style={{ background: 'var(--surface-lowest)' }}>
       <div className="w-full max-w-[560px] rounded-xl p-6 md:p-8" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
         <div className="flex items-center justify-between gap-4">
           <Logo variant="wordmark" className="h-9 w-auto" priority />
           <div className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px]" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-            <ShieldCheck size={14} /> Knowledge access
+            <ShieldCheck size={14} /> {accessLabel}
           </div>
         </div>
 
@@ -119,7 +122,9 @@ function OAuthAuthorizeContent() {
             Connect Deft to {preview?.client.client_name ?? 'this AI app'}?
           </h1>
           <p className="mt-2 text-[14px]" style={{ color: 'var(--text-secondary)' }}>
-            This read-only connector acts as {user?.email ?? 'your Deft user'} and can only see Deft data your account can access.
+            {canWriteTasks
+              ? `This connector acts as ${user?.email ?? 'your Deft user'} and can read your accessible workspace context plus create, comment on, and update tasks you can access.`
+              : `This read-only connector acts as ${user?.email ?? 'your Deft user'} and can only see Deft data your account can access.`}
           </p>
         </div>
 
@@ -148,12 +153,25 @@ function OAuthAuthorizeContent() {
             </section>
 
             <section className="mt-3 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-              <h2 className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>This app cannot</h2>
+              <h2 className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+                {canWriteTasks ? 'This app can also' : 'This app cannot'}
+              </h2>
               <ul className="mt-3 space-y-2 text-[14px]" style={{ color: 'var(--text-primary)' }}>
-                <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Create or update tasks</li>
-                <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post messages</li>
-                <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
-                <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Access private spaces you are not part of</li>
+                {canWriteTasks ? (
+                  <>
+                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create tasks in projects you can access</li>
+                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Comment on visible tasks</li>
+                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Update visible task fields, including status</li>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post chat messages or edit wiki pages</li>
+                  </>
+                ) : (
+                  <>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Create or update tasks</li>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post messages</li>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Access private spaces you are not part of</li>
+                  </>
+                )}
               </ul>
             </section>
 

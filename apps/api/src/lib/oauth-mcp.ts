@@ -20,7 +20,17 @@ export const REMOTE_MCP_READ_SCOPES = [
   'read:calendar',
 ] as const;
 
-export type RemoteMcpScope = typeof REMOTE_MCP_READ_SCOPES[number];
+export const REMOTE_MCP_WRITE_SCOPES = [
+  'write:tasks',
+] as const;
+
+export const REMOTE_MCP_SCOPES = [
+  ...REMOTE_MCP_READ_SCOPES,
+  ...REMOTE_MCP_WRITE_SCOPES,
+] as const;
+
+export type RemoteMcpScope = typeof REMOTE_MCP_SCOPES[number];
+export type ConnectorProfile = 'knowledge' | 'task-helper';
 
 export type OAuthAccessPrincipal = {
   kind: 'oauth';
@@ -31,6 +41,7 @@ export type OAuthAccessPrincipal = {
   role: 'owner' | 'admin' | 'member' | 'guest';
   client_id: string;
   scopes: string[];
+  connector_profile: ConnectorProfile;
 };
 
 export class OAuthMcpError extends Error {
@@ -55,9 +66,13 @@ export function randomToken(prefix: string): string {
 export function normalizeScopes(value: string | string[] | undefined | null): string[] {
   const raw = Array.isArray(value) ? value.join(' ') : value ?? '';
   const requested = raw.split(/\s+/).map((s) => s.trim()).filter(Boolean);
-  const allowed = new Set(REMOTE_MCP_READ_SCOPES);
+  const allowed = new Set(REMOTE_MCP_SCOPES);
   const scopes = requested.length > 0 ? requested.filter((s) => allowed.has(s as RemoteMcpScope)) : [...REMOTE_MCP_READ_SCOPES];
   return scopes.length > 0 ? Array.from(new Set(scopes)) : [...REMOTE_MCP_READ_SCOPES];
+}
+
+export function profileForScopes(scopes: string[]): ConnectorProfile {
+  return scopes.includes('write:tasks') ? 'task-helper' : 'knowledge';
 }
 
 export function pkceS256(verifier: string): string {
@@ -182,12 +197,13 @@ export async function exchangeAuthorizationCode(params: {
 
   await db.update(oauthAuthorizationCodes).set({ used_at: new Date() }).where(eq(oauthAuthorizationCodes.id, row.id));
   const client = await getOAuthClient(row.client_id);
+  const connectorProfile = profileForScopes(row.scopes);
   const [grant] = await db.insert(oauthGrants).values({
     org_id: row.org_id,
     user_id: row.user_id,
     client_id: row.client_id,
     app_name: client?.client_name ?? 'Remote AI app',
-    connector_profile: 'knowledge',
+    connector_profile: connectorProfile,
     scopes: row.scopes,
   }).returning();
   if (!grant) throw new OAuthMcpError(500, 'server_error', 'Failed to create OAuth grant');
@@ -249,6 +265,9 @@ export async function refreshOAuthAccessToken(params: {
   if (!grant || grant.revoked_at) throw new OAuthMcpError(400, 'invalid_grant', 'OAuth grant revoked');
   if (grant.client_id !== params.clientId) throw new OAuthMcpError(400, 'invalid_grant', 'client_id mismatch');
   const resource = params.resource || mcpResourceUrl();
+  if (resource !== mcpResourceUrl()) {
+    throw new OAuthMcpError(400, 'invalid_target', 'resource does not match this Deft MCP server');
+  }
   await db.update(oauthRefreshTokens).set({ revoked_at: new Date() }).where(eq(oauthRefreshTokens.id, refresh.id));
   return issueTokensForGrant(grant.id, grant.org_id, grant.user_id, grant.client_id, resource, grant.scopes, refresh.id);
 }
@@ -280,6 +299,7 @@ export async function resolveOAuthAccessToken(bearer: string): Promise<OAuthAcce
     role: member.role as OAuthAccessPrincipal['role'],
     client_id: row.client_id,
     scopes: row.scopes,
+    connector_profile: grant.connector_profile as ConnectorProfile,
   };
 }
 

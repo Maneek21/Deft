@@ -209,7 +209,6 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   memory_list: 'read:wiki',
   list_my_tasks: 'read:tasks',
   task_query: 'read:tasks',
-  task_detail: 'read:tasks',
   project_progress: 'read:tasks',
   team_workload: 'read:tasks',
   thread_fetch: 'read:messages',
@@ -217,6 +216,7 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   memory_write: 'write:wiki',
   task_create: 'write:tasks',
   task_update: 'write:tasks',
+  comment_on_task: 'write:tasks',
   message_post: 'write:messages',
 };
 

@@ -5,13 +5,14 @@ import { db } from '../lib/db.js';
 import { oauthClients, oauthGrants, oauthAccessTokens, oauthRefreshTokens } from '@deft/db/schema';
 import {
   OAuthMcpError,
-  REMOTE_MCP_READ_SCOPES,
+  REMOTE_MCP_SCOPES,
   auditOAuth,
   createAuthorizationCode,
   exchangeAuthorizationCode,
   isSafeRedirectUri,
   metadataUrls,
   normalizeScopes,
+  profileForScopes,
   refreshOAuthAccessToken,
   revokeGrant,
   sha256,
@@ -67,7 +68,7 @@ oauthWellKnownRoutes.get('/oauth-protected-resource', (c) => {
   return c.json({
     resource: urls.resource,
     authorization_servers: [urls.issuer],
-    scopes_supported: REMOTE_MCP_READ_SCOPES,
+    scopes_supported: REMOTE_MCP_SCOPES,
     resource_documentation: `${urls.issuer}/docs/self-hosting#mcp-access`,
     token_endpoint_auth_methods_supported: ['none'],
   });
@@ -85,7 +86,7 @@ oauthWellKnownRoutes.get('/oauth-authorization-server', (c) => {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: REMOTE_MCP_READ_SCOPES,
+    scopes_supported: REMOTE_MCP_SCOPES,
   });
 });
 
@@ -191,8 +192,8 @@ oauthProtectedRoutes.get('/readiness', async (c) => {
     protected_resource_metadata: urls.protectedResourceMetadata,
     authorization_server_metadata: urls.authorizationServerMetadata,
     https_ready: isHttpsPublicUrl(),
-    scopes: REMOTE_MCP_READ_SCOPES,
-    profile: 'knowledge',
+    scopes: REMOTE_MCP_SCOPES,
+    profiles: ['knowledge', 'task-helper'],
   });
 });
 
@@ -211,6 +212,7 @@ oauthProtectedRoutes.get('/authorize/preview', async (c) => {
       codeChallengeMethod: parsed.data.code_challenge_method,
       resource: parsed.data.resource,
     });
+    const scopes = normalizeScopes(parsed.data.scope);
     return c.json({
       client: {
         client_id: client.client_id,
@@ -219,8 +221,8 @@ oauthProtectedRoutes.get('/authorize/preview', async (c) => {
         logo_uri: client.logo_uri,
       },
       resource,
-      scopes: normalizeScopes(parsed.data.scope),
-      profile: 'knowledge',
+      scopes,
+      profile: profileForScopes(scopes),
     });
   } catch (err) {
     return oauthError(c, err);

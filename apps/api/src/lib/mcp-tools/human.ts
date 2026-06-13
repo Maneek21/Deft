@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
+  connectedAccounts,
+  events,
   messages,
   orgMembers,
   orgs,
@@ -9,10 +11,14 @@ import {
   spaceMembers,
   spaces,
   taskActivity,
+  taskComments,
   tasks,
   users,
   wikiPages,
 } from '@deft/db/schema';
+import { retrieveContext, type ContextResult } from '../retrieve-context.js';
+import { visibleTaskCondition } from '../task-visibility.js';
+import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
 
 export type HumanToolContext = {
@@ -48,6 +54,74 @@ async function userCanSeeSpace(ctx: HumanToolContext, spaceId: string): Promise<
   return Boolean(member);
 }
 
+async function userCanSeeTask(ctx: HumanToolContext, taskId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.org_id, ctx.org_id),
+      eq(tasks.is_deleted, false),
+      visibleTaskCondition(ctx.user_id),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function userCanSeeProject(ctx: HumanToolContext, projectId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function userCanSeeEvent(ctx: HumanToolContext, eventId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: events.id })
+    .from(events)
+    .leftJoin(connectedAccounts, eq(events.connected_account_id, connectedAccounts.id))
+    .where(and(
+      eq(events.id, eventId),
+      eq(events.org_id, ctx.org_id),
+      sql`(${events.user_id} = ${ctx.user_id} OR ${connectedAccounts.user_id} = ${ctx.user_id})`,
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+function retrievalResultToSearchResult(row: ContextResult): Record<string, unknown> | null {
+  const summary = typeof row.metadata?.summary === 'string' ? row.metadata.summary : null;
+  const snippet = summary ?? row.content.slice(0, 280);
+  if (row.source_type === 'wiki_page' || row.source_type === 'decision') {
+    const slug = typeof row.metadata?.slug === 'string' ? row.metadata.slug : null;
+    if (!slug) return null;
+    return {
+      id: `wiki:${slug}`,
+      type: 'wiki',
+      title: row.title,
+      snippet,
+      url: `/knowledge?slug=${encodeURIComponent(slug)}`,
+      score: row.score,
+      updated_at: null,
+    };
+  }
+  if (row.source_type === 'task') {
+    return {
+      id: `task:${row.source_id}`,
+      type: 'task',
+      title: row.title,
+      snippet,
+      url: `/tasks?task=${encodeURIComponent(row.source_id)}`,
+      score: row.score,
+      updated_at: null,
+    };
+  }
+  return null;
+}
+
 export const HUMAN_READ_TOOLS = new Set([
   'search',
   'fetch',
@@ -69,6 +143,7 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'memory_write',
   'task_create',
   'task_update',
+  'comment_on_task',
   'message_post',
 ]);
 
@@ -84,6 +159,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   task_query: humanTaskQuery,
   task_create: humanTaskCreate,
   task_update: humanTaskUpdate,
+  comment_on_task: humanCommentOnTask,
   message_post: humanMessagePost,
   thread_fetch: humanThreadFetch,
   member_list: humanMemberList,
@@ -116,7 +192,7 @@ export async function humanPlatformContext(_args: {}, ctx: HumanToolContext): Pr
   const activeProjects = await db
     .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
     .from(projects)
-    .where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false)))
+    .where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
     .orderBy(desc(projects.updated_at))
     .limit(25);
   return textResult({
@@ -139,35 +215,19 @@ export async function humanSearch(args: { query?: string; limit?: number }, ctx:
   const limit = Math.min(Math.max(1, args.limit ?? 10), 20);
   const results: Array<Record<string, unknown>> = [];
 
-  if (hasScope(ctx, 'read:wiki')) {
-    const rows = await db.execute(sql`
-      SELECT ('wiki:' || slug) AS id, 'wiki' AS type, title,
-             COALESCE(summary, left(content, 240)) AS snippet,
-             ('/wiki/' || slug) AS url, updated_at
-      FROM wiki_pages
-      WHERE org_id = ${ctx.org_id}
-        AND is_deleted = false
-        AND agent_employee_id IS NULL
-        AND (lower(title) LIKE ${pattern} OR lower(summary) LIKE ${pattern} OR lower(content) LIKE ${pattern})
-      ORDER BY updated_at DESC
-      LIMIT ${limit}
-    `);
-    results.push(...((rows as any).rows ?? []));
-  }
-
-  if (hasScope(ctx, 'read:tasks')) {
-    const rows = await db.execute(sql`
-      SELECT ('task:' || id) AS id, 'task' AS type, title,
-             COALESCE(description, status || ' / ' || priority) AS snippet,
-             ('/tasks?task=' || id) AS url, updated_at
-      FROM tasks
-      WHERE org_id = ${ctx.org_id}
-        AND is_deleted = false
-        AND (lower(title) LIKE ${pattern} OR lower(COALESCE(description, '')) LIKE ${pattern})
-      ORDER BY updated_at DESC
-      LIMIT ${limit}
-    `);
-    results.push(...((rows as any).rows ?? []));
+  const retrievalTypes: Array<'wiki' | 'decisions' | 'tasks'> = [];
+  if (hasScope(ctx, 'read:wiki')) retrievalTypes.push('wiki', 'decisions');
+  if (hasScope(ctx, 'read:tasks')) retrievalTypes.push('tasks');
+  if (retrievalTypes.length > 0) {
+    const retrievalRows = await retrieveContext({
+      query,
+      org_id: ctx.org_id,
+      user_id: ctx.user_id,
+      types: retrievalTypes,
+      limit,
+      hybrid: false,
+    });
+    results.push(...retrievalRows.map(retrievalResultToSearchResult).filter(Boolean) as Array<Record<string, unknown>>);
   }
 
   if (hasScope(ctx, 'read:messages')) {
@@ -192,14 +252,16 @@ export async function humanSearch(args: { query?: string; limit?: number }, ctx:
 
   if (hasScope(ctx, 'read:calendar') || hasScope(ctx, 'read:workspace')) {
     const rows = await db.execute(sql`
-      SELECT ('event:' || id) AS id, 'event' AS type, title,
-             COALESCE(body, source || ' calendar event') AS snippet,
-             ('/calendar?event=' || id) AS url,
-             COALESCE(timestamp, created_at) AS updated_at
+      SELECT ('event:' || events.id) AS id, 'event' AS type, events.title,
+             COALESCE(events.body, events.source || ' calendar event') AS snippet,
+             ('/calendar?event=' || events.id) AS url,
+             COALESCE(events.timestamp, events.created_at) AS updated_at
       FROM events
-      WHERE org_id = ${ctx.org_id}
-        AND (lower(COALESCE(title, '')) LIKE ${pattern} OR lower(COALESCE(body, '')) LIKE ${pattern})
-      ORDER BY timestamp DESC NULLS LAST, created_at DESC
+      LEFT JOIN connected_accounts ca ON ca.id = events.connected_account_id
+      WHERE events.org_id = ${ctx.org_id}
+        AND (events.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+        AND (lower(COALESCE(events.title, '')) LIKE ${pattern} OR lower(COALESCE(events.body, '')) LIKE ${pattern})
+      ORDER BY events.timestamp DESC NULLS LAST, events.created_at DESC
       LIMIT ${limit}
     `);
     results.push(...((rows as any).rows ?? []));
@@ -231,7 +293,13 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
         updated_at: wikiPages.updated_at,
       })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.slug, rawId), eq(wikiPages.is_deleted, false), isNull(wikiPages.agent_employee_id)))
+      .where(and(
+        eq(wikiPages.org_id, ctx.org_id),
+        eq(wikiPages.slug, rawId),
+        eq(wikiPages.is_deleted, false),
+        isNull(wikiPages.agent_employee_id),
+        visibleWikiPageCondition(ctx.user_id),
+      ))
       .limit(1);
     return row ? textResult(row) : errorResult('fetch: wiki page not found');
   }
@@ -239,6 +307,7 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
   if (kind === 'task') {
     const scopeError = requireScope(ctx, 'read:tasks');
     if (scopeError) return scopeError;
+    if (!(await userCanSeeTask(ctx, rawId))) return errorResult('fetch: task not found');
     const [row] = await db.select().from(tasks).where(and(eq(tasks.org_id, ctx.org_id), eq(tasks.id, rawId), eq(tasks.is_deleted, false))).limit(1);
     return row ? textResult(row) : errorResult('fetch: task not found');
   }
@@ -255,10 +324,12 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
   if (kind === 'event') {
     const scopeError = requireAnyScope(ctx, ['read:calendar', 'read:workspace']);
     if (scopeError) return scopeError;
+    if (!(await userCanSeeEvent(ctx, rawId))) return errorResult('fetch: event not found');
     const rows = await db.execute(sql`
-      SELECT id, event_type, source, title, body, url, actor, timestamp, metadata, created_at, updated_at
+      SELECT events.id, events.event_type, events.source, events.title, events.body, events.url, events.actor, events.timestamp, events.metadata, events.created_at, events.updated_at
       FROM events
-      WHERE org_id = ${ctx.org_id} AND id = ${rawId}
+      WHERE events.org_id = ${ctx.org_id}
+        AND events.id = ${rawId}
       LIMIT 1
     `);
     const row = ((rows as any).rows ?? [])[0];
@@ -290,6 +361,7 @@ export async function humanMemoryRecall(args: { query?: string; limit?: number }
       eq(wikiPages.org_id, ctx.org_id),
       eq(wikiPages.is_deleted, false),
       isNull(wikiPages.agent_employee_id),
+      visibleWikiPageCondition(ctx.user_id),
       ...terms.map((term) => {
         const pattern = `%${term}%`;
         return sql`(lower(${wikiPages.title}) like ${pattern} or lower(${wikiPages.summary}) like ${pattern} or lower(${wikiPages.content}) like ${pattern})`;
@@ -308,7 +380,7 @@ export async function humanMemoryList(args: { type?: string; limit?: number }, c
   const scopeError = requireScope(ctx, 'read:wiki');
   if (scopeError) return scopeError;
   const limit = Math.min(Math.max(1, args.limit ?? 25), 100);
-  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), isNull(wikiPages.agent_employee_id)];
+  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), isNull(wikiPages.agent_employee_id), visibleWikiPageCondition(ctx.user_id)];
   if (args.type) conditions.push(eq(wikiPages.type, args.type as any));
   const rows = await db
     .select({ slug: wikiPages.slug, title: wikiPages.title, summary: wikiPages.summary, type: wikiPages.type, updated_at: wikiPages.updated_at })
@@ -369,8 +441,14 @@ export async function humanTaskQuery(args: { filter?: { status?: string; assigne
   if (filter.status) conditions.push(eq(tasks.status, filter.status as any));
   if (filter.assignee_id) conditions.push(eq(tasks.assignee_id, filter.assignee_id));
   if (filter.project_id) conditions.push(eq(tasks.project_id, filter.project_id));
-  const rows = await db.select().from(tasks).where(and(...conditions)).orderBy(desc(tasks.updated_at)).limit(Math.min(Math.max(1, args.limit ?? 20), 50));
-  return textResult(rows);
+  const rows = await db
+    .select({ task: tasks })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(...conditions, visibleTaskCondition(ctx.user_id)))
+    .orderBy(desc(tasks.updated_at))
+    .limit(Math.min(Math.max(1, args.limit ?? 20), 50));
+  return textResult(rows.map((row) => row.task));
 }
 
 export async function humanTaskCreate(args: { title?: string; description?: string; project_id?: string; assignee_id?: string; priority?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -379,11 +457,20 @@ export async function humanTaskCreate(args: { title?: string; description?: stri
   if (!args.title?.trim()) return errorResult('task_create requires title');
   let projectId = args.project_id ?? null;
   if (!projectId) {
-    const [p] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false))).limit(1);
+    const [p] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false))).limit(1);
     projectId = p?.id ?? null;
   }
   if (!projectId) return errorResult('task_create: no project available');
-  const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} RETURNING task_counter`);
+  if (!(await userCanSeeProject(ctx, projectId))) return errorResult('task_create: project not found');
+  if (args.assignee_id) {
+    const [member] = await db
+      .select({ id: orgMembers.id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, args.assignee_id), eq(orgMembers.is_active, true)))
+      .limit(1);
+    if (!member) return errorResult('task_create: assignee is not an active org member');
+  }
+  const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} AND is_deleted = false RETURNING task_counter`);
   const first = ((counterRow as any).rows ?? [])[0] as { task_counter?: number } | undefined;
   if (!first) return errorResult('task_create: project not found');
   const [task] = await db.insert(tasks).values({
@@ -414,10 +501,36 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
   if (typeof patch.priority === 'string') updates.priority = patch.priority;
   if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) updates.assignee_id = patch.assignee_id;
   if (Object.keys(updates).length === 0) return errorResult('task_update requires at least one supported patch field');
+  if (!(await userCanSeeTask(ctx, args.task_id))) return errorResult('task_update: task not found');
+  if (typeof patch.assignee_id === 'string') {
+    const [member] = await db
+      .select({ id: orgMembers.id })
+      .from(orgMembers)
+      .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true)))
+      .limit(1);
+    if (!member) return errorResult('task_update: assignee is not an active org member');
+  }
   const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
   if (!task) return errorResult('task_update: task not found');
   await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'updated' });
   return textResult(task);
+}
+
+export async function humanCommentOnTask(args: { task_id?: string; content?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:tasks');
+  if (scopeError) return scopeError;
+  if (!args.task_id) return errorResult('comment_on_task requires task_id');
+  const content = args.content?.trim();
+  if (!content) return errorResult('comment_on_task requires content');
+  if (!(await userCanSeeTask(ctx, args.task_id))) return errorResult('comment_on_task: task not found');
+  const [comment] = await db.insert(taskComments).values({
+    org_id: ctx.org_id,
+    task_id: args.task_id,
+    user_id: ctx.user_id,
+    content,
+  }).returning();
+  await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: args.task_id, user_id: ctx.user_id, action: 'commented' });
+  return textResult(comment);
 }
 
 export async function humanMessagePost(args: { space_id?: string; content?: string; parent_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -426,6 +539,14 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
   if (!args.space_id) return errorResult('message_post requires space_id');
   if (!args.content?.trim()) return errorResult('message_post requires content');
   if (!(await userCanSeeSpace(ctx, args.space_id))) return errorResult('message_post: space not found or not visible to user');
+  if (args.parent_id) {
+    const [parent] = await db
+      .select({ id: messages.id, space_id: messages.space_id })
+      .from(messages)
+      .where(and(eq(messages.id, args.parent_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+      .limit(1);
+    if (!parent || parent.space_id !== args.space_id) return errorResult('message_post: parent message not found in target space');
+  }
   const [row] = await db.insert(messages).values({
     org_id: ctx.org_id,
     space_id: args.space_id,
@@ -440,9 +561,9 @@ export async function humanThreadFetch(args: { parent_message_id?: string; limit
   const scopeError = requireScope(ctx, 'read:messages');
   if (scopeError) return scopeError;
   if (!args.parent_message_id) return errorResult('thread_fetch requires parent_message_id');
-  const [parent] = await db.select().from(messages).where(and(eq(messages.id, args.parent_message_id), eq(messages.org_id, ctx.org_id))).limit(1);
+  const [parent] = await db.select().from(messages).where(and(eq(messages.id, args.parent_message_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).limit(1);
   if (!parent || !(await userCanSeeSpace(ctx, parent.space_id))) return errorResult('thread_fetch: thread not visible');
-  const replies = await db.select().from(messages).where(and(eq(messages.parent_id, parent.id), eq(messages.org_id, ctx.org_id))).orderBy(desc(messages.created_at)).limit(Math.min(Math.max(1, args.limit ?? 100), 200));
+  const replies = await db.select().from(messages).where(and(eq(messages.parent_id, parent.id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false))).orderBy(desc(messages.created_at)).limit(Math.min(Math.max(1, args.limit ?? 100), 200));
   return textResult({ parent, replies: replies.reverse() });
 }
 
@@ -490,8 +611,21 @@ export async function humanProjectProgress(args: { project_id?: string; project_
   const rows = await db.execute(sql`
     SELECT p.id, p.name, p.prefix, t.status, count(t.id)::int AS count
     FROM projects p
-    LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id AND t.is_deleted = false
-    WHERE p.org_id = ${ctx.org_id} AND ${projectWhere}
+    LEFT JOIN tasks t ON t.project_id = p.id
+      AND t.org_id = p.org_id
+      AND t.is_deleted = false
+      AND (
+        coalesce(t.metadata->>'visibility', 'org') != 'restricted'
+        OR t.assignee_id = ${ctx.user_id}
+        OR t.created_by = ${ctx.user_id}
+        OR p.lead_id = ${ctx.user_id}
+        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
+        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
+        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
+      )
+    WHERE p.org_id = ${ctx.org_id}
+      AND p.is_deleted = false
+      AND ${projectWhere}
     GROUP BY p.id, p.name, p.prefix, t.status
     ORDER BY p.updated_at DESC
     LIMIT 30
@@ -507,8 +641,22 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
     SELECT u.id AS user_id, u.name, count(t.id)::int AS open_tasks
     FROM users u
     JOIN org_members om ON om.user_id = u.id AND om.org_id = ${ctx.org_id} AND om.is_active = true
-    LEFT JOIN tasks t ON t.assignee_id = u.id AND t.org_id = ${ctx.org_id} AND t.is_deleted = false AND t.status NOT IN ('done', 'cancelled')
+    LEFT JOIN tasks t ON t.assignee_id = u.id
+      AND t.org_id = ${ctx.org_id}
+      AND t.is_deleted = false
+      AND t.status NOT IN ('done', 'cancelled')
+    LEFT JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
     WHERE u.is_agent = false
+      AND (
+        t.id IS NULL
+        OR coalesce(t.metadata->>'visibility', 'org') != 'restricted'
+        OR t.assignee_id = ${ctx.user_id}
+        OR t.created_by = ${ctx.user_id}
+        OR p.lead_id = ${ctx.user_id}
+        OR coalesce(t.metadata->'visible_user_ids', '[]'::jsonb) ? ${ctx.user_id}
+        OR exists (select 1 from task_watchers tw where tw.task_id = t.id and tw.user_id = ${ctx.user_id})
+        OR exists (select 1 from task_assignees ta where ta.task_id = t.id and ta.user_id = ${ctx.user_id})
+      )
     GROUP BY u.id, u.name
     ORDER BY open_tasks DESC, u.name ASC
     LIMIT 50
@@ -520,10 +668,12 @@ export async function humanEventsQuery(args: { limit?: number }, ctx: HumanToolC
   const scopeError = requireAnyScope(ctx, ['read:calendar', 'read:workspace']);
   if (scopeError) return scopeError;
   const rows = await db.execute(sql`
-    SELECT id, event_type, source, title, body, url, actor, timestamp, metadata, created_at
+    SELECT events.id, events.event_type, events.source, events.title, events.body, events.url, events.actor, events.timestamp, events.metadata, events.created_at
     FROM events
-    WHERE org_id = ${ctx.org_id}
-    ORDER BY timestamp DESC NULLS LAST, created_at DESC
+    LEFT JOIN connected_accounts ca ON ca.id = events.connected_account_id
+    WHERE events.org_id = ${ctx.org_id}
+      AND (events.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+    ORDER BY events.timestamp DESC NULLS LAST, events.created_at DESC
     LIMIT ${Math.min(Math.max(1, args.limit ?? 50), 200)}
   `);
   return textResult((rows as any).rows ?? []);
@@ -587,6 +737,20 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
           },
           limit: { type: 'number', minimum: 1, maximum: 50 },
         },
+      },
+    },
+    {
+      name: 'comment_on_task',
+      title: 'Comment On Deft Task',
+      description: 'Add a comment to a visible task as the connected human user. Human personal-MCP write: requires write:tasks.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string' },
+          content: { type: 'string' },
+        },
+        required: ['task_id', 'content'],
       },
     },
   ];
