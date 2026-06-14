@@ -204,6 +204,7 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   platform_context: 'read:workspace',
   member_list: 'read:workspace',
   member_get: 'read:workspace',
+  activity_query: 'read:workspace',
   events_query: 'read:calendar',
   memory_recall: 'read:wiki',
   wiki_search: 'read:wiki',

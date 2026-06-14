@@ -71,6 +71,11 @@ function actionDetail(action: OAuthAuditAction) {
   return pieces.length > 0 ? pieces.join(' / ') : 'recorded';
 }
 
+function isStale(value: string | null | undefined) {
+  if (!value) return true;
+  return Date.now() - new Date(value).getTime() > 1000 * 60 * 60 * 24 * 14;
+}
+
 export default function McpAccessPage() {
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [remote, setRemote] = useState<RemoteReadiness | null>(null);
@@ -350,11 +355,16 @@ export default function McpAccessPage() {
                             connected {formatDate(grant.created_at)} / last used {formatDate(grant.last_used_at)}
                           </div>
                         </div>
-                        <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="p-1.5 rounded-md disabled:opacity-50" style={{ color: 'var(--danger)' }} aria-label={`Revoke ${grant.app_name}`}>
-                          <Trash2 size={14} />
+                        <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${grant.app_name}`}>
+                          <Trash2 size={13} /> Revoke
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-1 mt-3">
+                        {isStale(grant.last_used_at) && (
+                          <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
+                            {grant.last_used_at ? 'stale' : 'unused'}
+                          </span>
+                        )}
                         {grant.scopes.map((scope) => (
                           <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
                         ))}
@@ -405,8 +415,8 @@ export default function McpAccessPage() {
                       ))}
                     </div>
                   </div>
-                  <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="p-1.5 rounded-md disabled:opacity-50" style={{ color: 'var(--danger)' }} aria-label={`Revoke ${token.name}`}>
-                    <Trash2 size={14} />
+                  <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${token.name}`}>
+                    <Trash2 size={13} /> Revoke
                   </button>
                 </div>
               ))}

@@ -380,6 +380,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.ok(names.has('task_transition'));
   assert.ok(names.has('comment_on_task'));
   assert.ok(names.has('message_post'));
+  assert.ok(names.has('activity_query'));
 
   const createArgs = {
     title: `Retry-safe OAuth follow-up ${TEST_ID}`,
@@ -424,6 +425,57 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
       [ORG_ID, createArgs.title],
     );
     assert.equal(count.rows[0].count, 1, 'idempotent task_create must not create duplicates');
+  });
+
+  const fallbackCreateArgs = {
+    title: `Fallback duplicate-safe OAuth follow-up ${TEST_ID}`,
+    project_id: PROJECT_ID,
+    assignee_id: USER_ID,
+    priority: 'p3',
+    description: 'first no-key create call',
+  };
+  const fallbackCreateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 292,
+    method: 'tools/call',
+    params: {
+      name: 'task_create',
+      arguments: fallbackCreateArgs,
+    },
+  }, token.access_token);
+  assert.equal(fallbackCreateRes.status, 200);
+  const fallbackCreateBody = (await fallbackCreateRes.json()) as any;
+  assert.equal(fallbackCreateBody.result.isError, false, JSON.stringify(fallbackCreateBody));
+  const fallbackCreatedTask = JSON.parse(fallbackCreateBody.result.content[0].text);
+
+  const fallbackDuplicateCreateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 293,
+    method: 'tools/call',
+    params: {
+      name: 'task_create',
+      arguments: {
+        ...fallbackCreateArgs,
+        description: 'second no-key create call from the same user intent',
+      },
+    },
+  }, token.access_token);
+  assert.equal(fallbackDuplicateCreateRes.status, 200);
+  const fallbackDuplicateCreateBody = (await fallbackDuplicateCreateRes.json()) as any;
+  assert.equal(fallbackDuplicateCreateBody.result.isError, false, JSON.stringify(fallbackDuplicateCreateBody));
+  const fallbackDuplicateTask = JSON.parse(fallbackDuplicateCreateBody.result.content[0].text);
+  assert.equal(
+    fallbackDuplicateTask.id,
+    fallbackCreatedTask.id,
+    'fallback duplicate detection should replay the original task_create result even without idempotency_key',
+  );
+
+  await withClient(async (pgClient) => {
+    const count = await pgClient.query(
+      `SELECT count(*)::int AS count FROM tasks WHERE org_id = $1 AND title = $2`,
+      [ORG_ID, fallbackCreateArgs.title],
+    );
+    assert.equal(count.rows[0].count, 1, 'fallback duplicate detection must not create duplicate task rows');
   });
 
   const commentRes = await jsonPost('/api/mcp/v1', {
@@ -545,6 +597,27 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const duplicateMessage = JSON.parse(duplicateMessageBody.result.content[0].text);
   assert.equal(duplicateMessage.id, postedMessage.id, 'same idempotency key should replay the original message result');
 
+  const activityRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 342,
+    method: 'tools/call',
+    params: {
+      name: 'activity_query',
+      arguments: {
+        tool_name: 'task_create',
+        limit: 10,
+      },
+    },
+  }, token.access_token);
+  assert.equal(activityRes.status, 200);
+  const activityBody = (await activityRes.json()) as any;
+  assert.equal(activityBody.result.isError, false, JSON.stringify(activityBody));
+  const activity = JSON.parse(activityBody.result.content[0].text);
+  assert.ok(
+    activity.some((event: any) => event.event === 'mcp_tool_call' && event.metadata?.tool_name === 'task_create'),
+    'activity_query should expose recent task_create audit activity',
+  );
+
   const blockedRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
     id: 33,
@@ -612,6 +685,16 @@ test('OAuth human MCP read tools match user-scoped wiki task and calendar visibi
   const primarySpaces = await callTool(primaryToken.access_token, 131, 'space_list', { limit: 50 });
   assert.ok(!primarySpaces.some((space: any) => space.id === PRIVATE_SPACE_ID));
 
+  const projectProgress = await callTool(primaryToken.access_token, 132, 'project_progress', { project_identifier: 'OMCP' });
+  assert.equal(projectProgress.project.id, PROJECT_ID);
+  assert.equal(projectProgress.project.prefix, 'OMCP');
+  assert.ok(projectProgress.total_tasks >= 1);
+  assert.ok(typeof projectProgress.status_counts === 'object');
+  assert.ok(!Array.isArray(projectProgress), 'filtered project_progress should return one project summary, not an org-wide list');
+
+  const projectProgressById = await callTool(primaryToken.access_token, 133, 'project_progress', { project_id: PROJECT_ID });
+  assert.equal(projectProgressById.project.id, PROJECT_ID);
+
   await callToolError(primaryToken.access_token, 14, 'fetch', { id: `wiki:${PRIVATE_WIKI_SLUG}` });
   await callToolError(primaryToken.access_token, 15, 'fetch', { id: `task:${RESTRICTED_TASK_ID}` });
   await callToolError(primaryToken.access_token, 16, 'fetch', { id: `event:${PRIVATE_EVENT_ID}` });
@@ -663,6 +746,7 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     thread_fetch: { parent_message_id: MESSAGE_ID, limit: 5 },
     member_list: { limit: 5 },
     member_get: { user_id: USER_ID },
+    activity_query: { limit: 5 },
     events_query: { limit: 5 },
     messages_search: { query: 'salsa', limit: 5 },
     project_progress: { project_id: PROJECT_ID },

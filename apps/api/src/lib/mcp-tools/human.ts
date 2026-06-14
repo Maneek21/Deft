@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
@@ -144,6 +144,7 @@ export const HUMAN_READ_TOOLS = new Set([
   'thread_fetch',
   'member_list',
   'member_get',
+  'activity_query',
   'events_query',
   'messages_search',
   'project_progress',
@@ -182,6 +183,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   thread_fetch: humanThreadFetch,
   member_list: humanMemberList,
   member_get: humanMemberGet,
+  activity_query: humanActivityQuery,
   messages_search: humanMessagesSearch,
   project_progress: humanProjectProgress,
   team_workload: humanTeamWorkload,
@@ -211,34 +213,81 @@ function storedToolResult(value: unknown): ToolResult | null {
   return { content: maybe.content, isError: maybe.isError };
 }
 
+function normalizedText(value: unknown): string | null {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : null;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined && key !== 'idempotency_key')
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(',')}}`;
+}
+
+function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): Record<string, unknown> | null {
+  switch (toolName) {
+    case 'task_create':
+      return {
+        title: normalizedText(args.title),
+        project_id: args.project_id ?? null,
+        assignee_id: args.assignee_id ?? null,
+        priority: args.priority ?? null,
+      };
+    case 'task_update':
+      return { task_id: args.task_id ?? null, patch: args.patch ?? null };
+    case 'task_transition':
+      return { task_id: args.task_id ?? null, status: args.status ?? null };
+    case 'comment_on_task':
+      return { task_id: args.task_id ?? null, content: normalizedText(args.content) };
+    case 'message_post':
+      return { space_id: args.space_id ?? null, parent_id: args.parent_id ?? null, content: normalizedText(args.content) };
+    default:
+      return null;
+  }
+}
+
+function fallbackDedupeSignature(toolName: string, args: Record<string, unknown>): string | null {
+  const input = fallbackDedupeInput(toolName, args);
+  if (!input) return null;
+  return createHash('sha256').update(`${toolName}:${stableJson(input)}`).digest('hex');
+}
+
 async function withIdempotency(
   toolName: string,
-  args: { idempotency_key?: unknown },
+  args: { idempotency_key?: unknown } & Record<string, unknown>,
   ctx: HumanToolContext,
   execute: () => Promise<ToolResult>,
 ): Promise<ToolResult> {
   const idempotencyKey = normalizeIdempotencyKey(args.idempotency_key);
-  if (!idempotencyKey) return execute();
+  const fallbackSignature = idempotencyKey ? null : fallbackDedupeSignature(toolName, args);
 
   const clientId = ctx.client_id ?? `personal-token:${ctx.token_id ?? 'unknown'}`;
-  const [existing] = await db
-    .select({ metadata: oauthAuditEvents.metadata })
-    .from(oauthAuditEvents)
-    .where(and(
-      eq(oauthAuditEvents.org_id, ctx.org_id),
-      eq(oauthAuditEvents.user_id, ctx.user_id),
-      eq(oauthAuditEvents.client_id, clientId),
-      eq(oauthAuditEvents.event, 'mcp_idempotency_result'),
-      sql`${oauthAuditEvents.metadata}->>'tool_name' = ${toolName}`,
-      sql`${oauthAuditEvents.metadata}->>'idempotency_key' = ${idempotencyKey}`,
-    ))
-    .orderBy(desc(oauthAuditEvents.created_at))
-    .limit(1);
-  const replay = storedToolResult(existing?.metadata?.result);
-  if (replay) return replay;
+  if (idempotencyKey || fallbackSignature) {
+    const [existing] = await db
+      .select({ metadata: oauthAuditEvents.metadata })
+      .from(oauthAuditEvents)
+      .where(and(
+        eq(oauthAuditEvents.org_id, ctx.org_id),
+        eq(oauthAuditEvents.user_id, ctx.user_id),
+        eq(oauthAuditEvents.client_id, clientId),
+        eq(oauthAuditEvents.event, 'mcp_idempotency_result'),
+        sql`${oauthAuditEvents.metadata}->>'tool_name' = ${toolName}`,
+        idempotencyKey
+          ? sql`${oauthAuditEvents.metadata}->>'idempotency_key' = ${idempotencyKey}`
+          : sql`${oauthAuditEvents.metadata}->>'fallback_signature' = ${fallbackSignature} AND ${oauthAuditEvents.created_at} >= now() - interval '2 minutes'`,
+      ))
+      .orderBy(desc(oauthAuditEvents.created_at))
+      .limit(1);
+    const replay = storedToolResult(existing?.metadata?.result);
+    if (replay) return replay;
+  }
 
   const result = await execute();
-  if (!result.isError) {
+  if (!result.isError && (idempotencyKey || fallbackSignature)) {
     await db.insert(oauthAuditEvents).values({
       org_id: ctx.org_id,
       user_id: ctx.user_id,
@@ -246,7 +295,9 @@ async function withIdempotency(
       event: 'mcp_idempotency_result',
       metadata: {
         tool_name: toolName,
-        idempotency_key: idempotencyKey,
+        idempotency_key: idempotencyKey ?? null,
+        fallback_signature: fallbackSignature,
+        fallback_window_seconds: fallbackSignature ? 120 : null,
         grant_id: ctx.grant_id ?? null,
         principal_kind: ctx.principal_kind ?? 'human',
         result,
@@ -960,16 +1011,37 @@ export async function humanMessagesSearch(args: { query?: string; limit?: number
   return textResult((rows as any).rows ?? []);
 }
 
-export async function humanProjectProgress(args: { project_id?: string; project_name?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+type ProjectProgressArgs = {
+  project_id?: string;
+  project_identifier?: string;
+  project_name?: string;
+};
+
+export async function humanProjectProgress(args: ProjectProgressArgs, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:tasks');
   if (scopeError) return scopeError;
-  const projectWhere = args.project_id
-    ? sql`p.id = ${args.project_id}`
-    : args.project_name
-      ? sql`lower(p.name) = ${args.project_name.toLowerCase()}`
-      : sql`true`;
+  const projectId = args.project_id?.trim();
+  const projectIdentifier = args.project_identifier?.trim();
+  const projectName = args.project_name?.trim();
+  const identifier = projectIdentifier ? projectIdentifier.toLowerCase() : '';
+  const prefixIdentifier = identifier.includes('-') ? identifier.split('-')[0] : identifier;
+  const hasSpecificProject = Boolean(projectId || projectIdentifier || projectName);
+  const projectWhere = projectId
+    ? sql`p.id = ${projectId}`
+    : projectIdentifier
+      ? sql`(lower(p.prefix) = ${prefixIdentifier} OR lower(p.name) = ${identifier} OR p.id = ${projectIdentifier})`
+      : projectName
+        ? sql`lower(p.name) = ${projectName.toLowerCase()}`
+        : sql`true`;
   const rows = await db.execute(sql`
-    SELECT p.id, p.name, p.prefix, t.status, count(t.id)::int AS count
+    SELECT
+      p.id,
+      p.name,
+      p.prefix,
+      p.updated_at,
+      t.status,
+      count(t.id)::int AS count,
+      count(t.id) FILTER (WHERE t.status = 'done' AND t.updated_at >= now() - interval '7 days')::int AS done_last_7_days
     FROM projects p
     LEFT JOIN tasks t ON t.project_id = p.id
       AND t.org_id = p.org_id
@@ -986,9 +1058,75 @@ export async function humanProjectProgress(args: { project_id?: string; project_
     WHERE p.org_id = ${ctx.org_id}
       AND p.is_deleted = false
       AND ${projectWhere}
-    GROUP BY p.id, p.name, p.prefix, t.status
+    GROUP BY p.id, p.name, p.prefix, p.updated_at, t.status
     ORDER BY p.updated_at DESC
-    LIMIT 30
+    LIMIT ${hasSpecificProject ? 20 : 200}
+  `);
+  const summaries = new Map<string, {
+    project: { id: string; name: string; prefix: string | null };
+    status_counts: Record<string, number>;
+    total_tasks: number;
+    open_tasks: number;
+    done_tasks: number;
+    cancelled_tasks: number;
+    completion_rate: number;
+    recent_velocity: { done_last_7_days: number };
+  }>();
+
+  for (const row of ((rows as any).rows ?? []) as Array<Record<string, unknown>>) {
+    const id = String(row.id);
+    const summary = summaries.get(id) ?? {
+      project: { id, name: String(row.name), prefix: row.prefix == null ? null : String(row.prefix) },
+      status_counts: {},
+      total_tasks: 0,
+      open_tasks: 0,
+      done_tasks: 0,
+      cancelled_tasks: 0,
+      completion_rate: 0,
+      recent_velocity: { done_last_7_days: 0 },
+    };
+    const status = row.status == null ? null : String(row.status);
+    const count = Number(row.count ?? 0);
+    if (status && count > 0) {
+      summary.status_counts[status] = count;
+      summary.total_tasks += count;
+      if (status === 'done') summary.done_tasks += count;
+      else if (status === 'cancelled') summary.cancelled_tasks += count;
+      else summary.open_tasks += count;
+    }
+    summary.recent_velocity.done_last_7_days += Number(row.done_last_7_days ?? 0);
+    summaries.set(id, summary);
+  }
+
+  const result = Array.from(summaries.values()).map((summary) => ({
+    ...summary,
+    completion_rate: summary.total_tasks > 0 ? Number((summary.done_tasks / summary.total_tasks).toFixed(2)) : 0,
+  }));
+
+  if (hasSpecificProject) {
+    if (!result[0]) return errorResult('project_progress: project not found');
+    return textResult(result[0]);
+  }
+
+  return textResult({ projects: result });
+}
+
+export async function humanActivityQuery(args: { limit?: number; tool_name?: string; since?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const limit = Math.min(Math.max(1, args.limit ?? 25), 100);
+  const toolName = args.tool_name?.trim();
+  const since = args.since && !Number.isNaN(Date.parse(args.since)) ? new Date(args.since) : null;
+  const rows = await db.execute(sql`
+    SELECT id, client_id, event, metadata, created_at
+    FROM oauth_audit_events
+    WHERE org_id = ${ctx.org_id}
+      AND user_id = ${ctx.user_id}
+      AND event IN ('mcp_tool_call', 'mcp_idempotency_result', 'token_issued', 'grant_revoked', 'token_revoked')
+      AND (${toolName ? sql`metadata->>'tool_name' = ${toolName}` : sql`true`})
+      AND (${since ? sql`created_at >= ${since}` : sql`true`})
+    ORDER BY created_at DESC
+    LIMIT ${limit}
   `);
   return textResult((rows as any).rows ?? []);
 }
@@ -1174,9 +1312,23 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
     {
+      name: 'activity_query',
+      title: 'Query Deft MCP Activity',
+      description: 'Query recent OAuth/Codex MCP activity for the connected human user: tool calls, idempotency results, token events, and grant revocations. Use this to answer "what did my connected AI app do?" Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tool_name: { type: 'string', description: 'Optional tool name filter such as task_create, task_update, message_post, or search.' },
+          since: { type: 'string', description: 'Optional ISO timestamp lower bound.' },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+    {
       name: 'task_transition',
       title: 'Transition Deft Task',
-      description: 'Change one visible task status as the connected human user. Prefer this over task_update for status-only changes. Human personal-MCP write: requires write:tasks.',
+      description: 'Change one visible task status as the connected human user. Prefer this over task_update for status-only changes. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:tasks.',
       annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: {
         type: 'object',
@@ -1192,7 +1344,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     {
       name: 'comment_on_task',
       title: 'Comment On Deft Task',
-      description: 'Add a comment to a visible task as the connected human user. Human personal-MCP write: requires write:tasks.',
+      description: 'Add a comment to a visible task as the connected human user. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:tasks.',
       annotations: { readOnlyHint: false, destructiveHint: false },
       inputSchema: {
         type: 'object',
@@ -1213,7 +1365,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     .map((schema) => {
       const next = withoutCallerSlug(schema);
       if (HUMAN_WRITE_TOOLS.has(String(next.name))) {
-        next.description = `${next.description ?? ''} Human personal-MCP write: executes as the token owner and requires a matching write scope.`;
+        next.description = `${next.description ?? ''} Human personal-MCP write: executes as the token owner and requires a matching write scope. Always include idempotency_key for retry-safe writes; if you retry the same user intent, reuse the same key.`;
         next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: false, destructiveHint: false };
         const inputSchema = next.inputSchema as { properties?: Record<string, unknown> } | undefined;
         if (inputSchema?.properties && !inputSchema.properties.idempotency_key) {
