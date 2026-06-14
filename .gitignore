@@ -51,6 +51,7 @@ migration-*.sql
 
 # Ad-hoc scratch test reports
 deft-human-test-results.md
+backups/
 
 # Playwright MCP internal browser state
 .playwright-mcp/

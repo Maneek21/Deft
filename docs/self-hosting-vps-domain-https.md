@@ -122,6 +122,54 @@ pnpm selfhost:bootstrap --prod --seed-pilot
 
 Do not use `--seed-pilot` for a real customer workspace.
 
+## 4.1 Fresh Reset On An Existing VPS
+
+If the VPS already has a Deft stack and you want a clean first-signup workspace,
+use the reset command instead of manually dropping schemas or deleting Docker
+volumes. It takes a Postgres backup first, preserves reverse-proxy state, and
+validates the rebuilt app before returning.
+The command rebuilds the Deft, init, doctor, and smoke images before it drops
+the schema, so validation uses the checked-out code instead of a stale image.
+
+Clean internal workspace:
+
+```bash
+pnpm selfhost:reset --prod --platform-only --force --force-production-reset
+```
+
+Clean demo workspace:
+
+```bash
+pnpm selfhost:reset --prod --seed-pilot --force --force-production-reset
+```
+
+If this VPS has an additional local Compose overlay, include it explicitly:
+
+```bash
+pnpm selfhost:reset --prod --compose-file compose.demo.yml --platform-only --force --force-production-reset
+```
+
+Dry-run first when you are unsure which stack will be touched:
+
+```bash
+pnpm selfhost:reset --prod --compose-file compose.demo.yml --platform-only --dry-run
+```
+
+Expected post-reset shape for `--platform-only`:
+
+```text
+orgs=0
+org_members=0
+spaces=0
+projects=0
+tasks=0
+messages=0
+```
+
+`users` may be `1` because the platform seed creates Defty, the internal system
+user. `skills` and `employee_templates` should be non-zero because platform
+bundles are seeded.
+
 ## 5. Verify Browser And OAuth MCP
 
 Open:

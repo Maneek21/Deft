@@ -39,9 +39,11 @@
     "pilot:preflight:strict": "tsx scripts/pilot-preflight.ts --strict",
     "pilot:reset": "pnpm db:push-full && pnpm db:seed:pilot && pnpm pilot:preflight",
     "pilot:swarm": "node scripts/pilot-multi-user-swarm.mjs",
+    "selfhost:backup": "tsx scripts/selfhost-backup.ts",
     "selfhost:bootstrap": "tsx scripts/selfhost-bootstrap.ts",
     "selfhost:doctor": "tsx scripts/selfhost-doctor.ts",
     "selfhost:preflight": "tsx scripts/selfhost-doctor.ts",
+    "selfhost:reset": "tsx scripts/selfhost-reset.ts",
     "selfhost:smoke": "tsx scripts/selfhost-smoke.ts",
     "typecheck": "pnpm -r --parallel typecheck"
   },
