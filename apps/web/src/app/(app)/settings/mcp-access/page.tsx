@@ -32,15 +32,44 @@ type RemoteReadiness = {
   profile: string;
 };
 
+type OAuthAuditAction = {
+  id: string;
+  event: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
+
 type OAuthGrant = {
   id: string;
   client_id: string;
   app_name: string;
   connector_profile: string;
   scopes: string[];
+  last_used_at: string | null;
   created_at: string;
   updated_at: string;
+  recent_actions: OAuthAuditAction[];
 };
+
+function formatDate(value: string | null | undefined) {
+  return value ? new Date(value).toLocaleString() : 'never';
+}
+
+function actionTitle(action: OAuthAuditAction) {
+  const metadata = action.metadata ?? {};
+  const toolName = typeof metadata.tool_name === 'string' ? metadata.tool_name : null;
+  return toolName ?? action.event.replaceAll('_', ' ');
+}
+
+function actionDetail(action: OAuthAuditAction) {
+  const metadata = action.metadata ?? {};
+  const pieces = [
+    typeof metadata.surface === 'string' ? metadata.surface : null,
+    typeof metadata.target_id === 'string' ? metadata.target_id : null,
+    typeof metadata.success === 'boolean' ? (metadata.success ? 'ok' : 'failed') : null,
+  ].filter(Boolean);
+  return pieces.length > 0 ? pieces.join(' / ') : 'recorded';
+}
 
 export default function McpAccessPage() {
   const [tokens, setTokens] = useState<McpToken[]>([]);
@@ -246,7 +275,7 @@ export default function McpAccessPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Client config</h2>
-          <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>Use this shape in Claude Desktop, Claude Code, ChatGPT MCP apps, or any streamable HTTP MCP client.</p>
+              <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>Use this shape in Claude Desktop, Claude Code, ChatGPT MCP apps, or any streamable HTTP MCP client.</p>
             </div>
             <button type="button" onClick={() => copy('config', clientConfig)} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px]" style={{ border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
               <Copy size={13} /> Copy
@@ -263,9 +292,9 @@ export default function McpAccessPage() {
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Remote AI apps</h2>
+                  <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Connected AI apps</h2>
                   <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    For ChatGPT and Claude web. This testable build exposes a read-only Knowledge connector over OAuth.
+                    For ChatGPT, Claude web, Codex, and OAuth MCP clients. Connected apps act as you, inside the scopes you approve.
                   </p>
                 </div>
                 <span className="text-[11px] rounded-md px-2 py-1" style={{ background: remote?.https_ready ? 'var(--accent-muted)' : 'var(--surface-container)', color: remote?.https_ready ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
@@ -304,22 +333,49 @@ export default function McpAccessPage() {
                 ))}
               </div>
 
-              <h3 className="text-[13px] font-semibold mt-5 mb-2" style={{ color: 'var(--text-primary)' }}>Connected remote apps</h3>
+              <h3 className="text-[13px] font-semibold mt-5 mb-2" style={{ color: 'var(--text-primary)' }}>App connections</h3>
               {grants.length === 0 ? (
                 <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>No ChatGPT or Claude-style OAuth connections yet.</p>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {grants.map((grant) => (
-                    <div key={grant.id} className="flex items-start justify-between gap-3 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                      <div className="min-w-0">
-                        <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
-                        <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                          {grant.connector_profile} · {grant.client_id} · connected {new Date(grant.created_at).toLocaleString()}
+                    <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
+                          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                            {grant.connector_profile} / {grant.client_id}
+                          </div>
+                          <div className="text-[11px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                            connected {formatDate(grant.created_at)} / last used {formatDate(grant.last_used_at)}
+                          </div>
                         </div>
+                        <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="p-1.5 rounded-md disabled:opacity-50" style={{ color: 'var(--danger)' }} aria-label={`Revoke ${grant.app_name}`}>
+                          <Trash2 size={14} />
+                        </button>
                       </div>
-                      <button type="button" disabled={busy} onClick={() => revokeGrant(grant.id)} className="p-1.5 rounded-md disabled:opacity-50" style={{ color: 'var(--danger)' }} aria-label={`Revoke ${grant.app_name}`}>
-                        <Trash2 size={14} />
-                      </button>
+                      <div className="flex flex-wrap gap-1 mt-3">
+                        {grant.scopes.map((scope) => (
+                          <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
+                        ))}
+                      </div>
+                      <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
+                        <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Recent actions</div>
+                        {grant.recent_actions?.length ? (
+                          <div className="mt-2 space-y-1.5">
+                            {grant.recent_actions.slice(0, 5).map((action) => (
+                              <div key={action.id} className="grid grid-cols-[1fr_auto] gap-3 text-[11px]">
+                                <span className="min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+                                  {actionTitle(action)} <span style={{ color: 'var(--text-tertiary)' }}>({actionDetail(action)})</span>
+                                </span>
+                                <span style={{ color: 'var(--text-tertiary)' }}>{formatDate(action.created_at)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No recent actions recorded.</div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -341,7 +397,7 @@ export default function McpAccessPage() {
                   <div className="min-w-0">
                     <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
                     <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                      {token.token_prefix}... · created {new Date(token.created_at).toLocaleString()} · last used {token.last_used_at ? new Date(token.last_used_at).toLocaleString() : 'never'}
+                      {token.token_prefix}... / created {formatDate(token.created_at)} / last used {formatDate(token.last_used_at)}
                     </div>
                     <div className="flex flex-wrap gap-1 mt-2">
                       {token.scopes.map((scope) => (

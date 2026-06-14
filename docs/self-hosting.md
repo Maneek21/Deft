@@ -28,6 +28,38 @@ The stack runs comfortably on 2 vCPU / 4 GB RAM for small pilots.
 
 ## First Boot
 
+### Fast path: one-command bootstrap
+
+If you are working from a cloned repo with Node.js and pnpm available on the
+host, use the bootstrap wrapper:
+
+```bash
+pnpm selfhost:bootstrap
+```
+
+That validates `.env`, builds and starts Compose, runs the database init, runs
+the doctor, and runs the OAuth/MCP smoke test. For a demo/pilot environment
+with seeded Testers Tomatoes data:
+
+```bash
+pnpm selfhost:bootstrap --seed-pilot
+```
+
+For a hardened production overlay:
+
+```bash
+pnpm selfhost:bootstrap --prod
+```
+
+To validate `.env` before starting or rebuilding containers:
+
+```bash
+pnpm selfhost:bootstrap --prod --check-only
+```
+
+The Docker-only path below remains supported and does not require host-side
+Node.js or pnpm.
+
 ### 1. Clone and configure
 
 ```bash
@@ -96,6 +128,17 @@ docker compose run --rm doctor
 The doctor checks API health, web reachability, browser/API origin agreement,
 Postgres schema, Redis, and the platform seed.
 
+Then run the public connector smoke test:
+
+```bash
+docker compose run --rm smoke
+```
+
+The smoke test verifies API health, OAuth discovery metadata, dynamic client
+registration, MCP initialize, and the protected MCP auth challenge. To also
+exercise an authenticated MCP `tools/list` call, set `DEFT_MCP_BEARER_TOKEN` in
+`.env` to a personal MCP token from Settings -> MCP Access and rerun smoke.
+
 ### 5. Open the app
 
 Open `http://localhost:3000`, create the first account, and keep that account as
@@ -110,6 +153,7 @@ ports:
 docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
+docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
 ```
 
 If default local ports are already occupied, change these values in `.env`
@@ -125,6 +169,9 @@ DEFT_REDIS_PORT=6379
 
 The app still listens on ports 3000 and 3001 inside the container. These values
 only control host-side published ports.
+
+For a full VPS, DNS, reverse proxy, and HTTPS runbook, see
+[`docs/self-hosting-vps-domain-https.md`](./self-hosting-vps-domain-https.md).
 
 ## Invites And Password Recovery
 

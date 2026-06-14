@@ -40,6 +40,8 @@ const RESTRICTED_TASK_ID = `oauth-mcp-restricted-task-${TEST_ID}`;
 const PRIVATE_EVENT_ID = `oauth-mcp-private-event-${TEST_ID}`;
 const SPACE_ID = `oauth-mcp-space-${TEST_ID}`;
 const MESSAGE_ID = `oauth-mcp-message-${TEST_ID}`;
+const PRIVATE_SPACE_ID = `oauth-mcp-private-space-${TEST_ID}`;
+const PRIVATE_MESSAGE_ID = `oauth-mcp-private-message-${TEST_ID}`;
 const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
 
 let testApp: Hono;
@@ -69,6 +71,7 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM space_members WHERE space_id IN ($1, $2)`, [SPACE_ID, PRIVATE_SPACE_ID]);
     await client.query(`DELETE FROM spaces WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
@@ -166,6 +169,21 @@ async function seedWorkspace() {
       `INSERT INTO messages (id, org_id, space_id, user_id, content)
        VALUES ($1, $2, $3, $4, 'Salsa tasting thread for OAuth MCP contract tests')`,
       [MESSAGE_ID, ORG_ID, SPACE_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES ($1, $2, 'oauth-mcp-private', 'private', $3)`,
+      [PRIVATE_SPACE_ID, ORG_ID, OTHER_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES ($1, $2, $3)`,
+      [`oauth-mcp-private-space-member-${TEST_ID}`, PRIVATE_SPACE_ID, OTHER_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [PRIVATE_MESSAGE_ID, ORG_ID, PRIVATE_SPACE_ID, OTHER_USER_ID, `${PRIVATE_PROOF} private space message`],
     );
   });
 }
@@ -359,8 +377,54 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const names = new Set<string>(listBody.result.tools.map((tool: any) => tool.name));
   assert.ok(names.has('task_create'));
   assert.ok(names.has('task_update'));
+  assert.ok(names.has('task_transition'));
   assert.ok(names.has('comment_on_task'));
   assert.ok(names.has('message_post'));
+
+  const createArgs = {
+    title: `Retry-safe OAuth follow-up ${TEST_ID}`,
+    project_id: PROJECT_ID,
+    assignee_id: USER_ID,
+    priority: 'p2',
+    idempotency_key: `create-${TEST_ID}`,
+  };
+  const createRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 29,
+    method: 'tools/call',
+    params: {
+      name: 'task_create',
+      arguments: createArgs,
+    },
+  }, token.access_token);
+  assert.equal(createRes.status, 200);
+  const createBody = (await createRes.json()) as any;
+  assert.equal(createBody.result.isError, false, JSON.stringify(createBody));
+  const createdTask = JSON.parse(createBody.result.content[0].text);
+  assert.equal(createdTask.title, createArgs.title);
+
+  const duplicateCreateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 291,
+    method: 'tools/call',
+    params: {
+      name: 'task_create',
+      arguments: createArgs,
+    },
+  }, token.access_token);
+  assert.equal(duplicateCreateRes.status, 200);
+  const duplicateCreateBody = (await duplicateCreateRes.json()) as any;
+  assert.equal(duplicateCreateBody.result.isError, false, JSON.stringify(duplicateCreateBody));
+  const duplicateCreatedTask = JSON.parse(duplicateCreateBody.result.content[0].text);
+  assert.equal(duplicateCreatedTask.id, createdTask.id, 'same idempotency key should replay the original task_create result');
+
+  await withClient(async (pgClient) => {
+    const count = await pgClient.query(
+      `SELECT count(*)::int AS count FROM tasks WHERE org_id = $1 AND title = $2`,
+      [ORG_ID, createArgs.title],
+    );
+    assert.equal(count.rows[0].count, 1, 'idempotent task_create must not create duplicates');
+  });
 
   const commentRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
@@ -371,6 +435,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
       arguments: {
         task_id: TASK_ID,
         content: 'Codex task-helper contract test comment',
+        idempotency_key: `comment-${TEST_ID}`,
       },
     },
   }, token.access_token);
@@ -381,15 +446,56 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.equal(comment.task_id, TASK_ID);
   assert.equal(comment.user_id, USER_ID);
 
-  const updateRes = await jsonPost('/api/mcp/v1', {
+  const duplicateCommentRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 311,
+    method: 'tools/call',
+    params: {
+      name: 'comment_on_task',
+      arguments: {
+        task_id: TASK_ID,
+        content: 'Codex task-helper contract test comment',
+        idempotency_key: `comment-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(duplicateCommentRes.status, 200);
+  const duplicateCommentBody = (await duplicateCommentRes.json()) as any;
+  assert.equal(duplicateCommentBody.result.isError, false, JSON.stringify(duplicateCommentBody));
+  const duplicateComment = JSON.parse(duplicateCommentBody.result.content[0].text);
+  assert.equal(duplicateComment.id, comment.id, 'same idempotency key should replay the original comment result');
+
+  const transitionRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
     id: 32,
+    method: 'tools/call',
+    params: {
+      name: 'task_transition',
+      arguments: {
+        task_id: TASK_ID,
+        status: 'in_progress',
+        reason: 'contract test starts work',
+        idempotency_key: `transition-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(transitionRes.status, 200);
+  const transitionBody = (await transitionRes.json()) as any;
+  assert.equal(transitionBody.result.isError, false, JSON.stringify(transitionBody));
+  const transitionedTask = JSON.parse(transitionBody.result.content[0].text);
+  assert.equal(transitionedTask.id, TASK_ID);
+  assert.equal(transitionedTask.status, 'in_progress');
+
+  const updateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 321,
     method: 'tools/call',
     params: {
       name: 'task_update',
       arguments: {
         task_id: TASK_ID,
         patch: { status: 'done' },
+        idempotency_key: `update-${TEST_ID}`,
       },
     },
   }, token.access_token);
@@ -409,6 +515,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
       arguments: {
         space_id: SPACE_ID,
         content: 'Codex task-helper contract test completion message',
+        idempotency_key: `message-${TEST_ID}`,
       },
     },
   }, token.access_token);
@@ -418,6 +525,25 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const postedMessage = JSON.parse(messageBody.result.content[0].text);
   assert.equal(postedMessage.space_id, SPACE_ID);
   assert.equal(postedMessage.user_id, USER_ID);
+
+  const duplicateMessageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 341,
+    method: 'tools/call',
+    params: {
+      name: 'message_post',
+      arguments: {
+        space_id: SPACE_ID,
+        content: 'Codex task-helper contract test completion message',
+        idempotency_key: `message-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(duplicateMessageRes.status, 200);
+  const duplicateMessageBody = (await duplicateMessageRes.json()) as any;
+  assert.equal(duplicateMessageBody.result.isError, false, JSON.stringify(duplicateMessageBody));
+  const duplicateMessage = JSON.parse(duplicateMessageBody.result.content[0].text);
+  assert.equal(duplicateMessage.id, postedMessage.id, 'same idempotency key should replay the original message result');
 
   const blockedRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
@@ -439,7 +565,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
 
 test('OAuth human MCP read tools match user-scoped wiki task and calendar visibility', async () => {
   const client = await registerClient();
-  const scopes = ['read:workspace', 'read:wiki', 'read:tasks', 'read:calendar'];
+  const scopes = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar'];
   const primaryToken = await issueOAuthToken(client.client_id, scopes, USER_ID);
   const otherToken = await issueOAuthToken(client.client_id, scopes, OTHER_USER_ID);
 
@@ -483,9 +609,14 @@ test('OAuth human MCP read tools match user-scoped wiki task and calendar visibi
   const primaryEvents = await callTool(primaryToken.access_token, 13, 'events_query', { limit: 50 });
   assert.ok(!primaryEvents.some((event: any) => event.id === PRIVATE_EVENT_ID));
 
+  const primarySpaces = await callTool(primaryToken.access_token, 131, 'space_list', { limit: 50 });
+  assert.ok(!primarySpaces.some((space: any) => space.id === PRIVATE_SPACE_ID));
+
   await callToolError(primaryToken.access_token, 14, 'fetch', { id: `wiki:${PRIVATE_WIKI_SLUG}` });
   await callToolError(primaryToken.access_token, 15, 'fetch', { id: `task:${RESTRICTED_TASK_ID}` });
   await callToolError(primaryToken.access_token, 16, 'fetch', { id: `event:${PRIVATE_EVENT_ID}` });
+  await callToolError(primaryToken.access_token, 161, 'space_get', { space_id: PRIVATE_SPACE_ID });
+  await callToolError(primaryToken.access_token, 162, 'fetch', { id: `message:${PRIVATE_MESSAGE_ID}` });
 
   const otherRecall = await callTool(otherToken.access_token, 17, 'memory_recall', { query: PRIVATE_PROOF, limit: 10 });
   assert.ok(otherRecall.some((page: any) => page.slug === PRIVATE_WIKI_SLUG), 'own user-scoped wiki page is visible');
@@ -495,6 +626,9 @@ test('OAuth human MCP read tools match user-scoped wiki task and calendar visibi
 
   const otherEvents = await callTool(otherToken.access_token, 19, 'events_query', { limit: 50 });
   assert.ok(otherEvents.some((event: any) => event.id === PRIVATE_EVENT_ID), 'own ICS event is visible');
+
+  const otherSpace = await callTool(otherToken.access_token, 191, 'space_get', { space_id: PRIVATE_SPACE_ID });
+  assert.equal(otherSpace.space.id, PRIVATE_SPACE_ID, 'private space is visible to members');
 });
 
 test('OAuth tools/list read catalog only advertises callable tools', async () => {
@@ -520,9 +654,15 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     wiki_search: { query: 'salsa tasting', limit: 5 },
     memory_list: { limit: 5 },
     list_my_tasks: { limit: 5 },
+    task_get: { task_id: TASK_ID },
     task_query: { limit: 5 },
+    project_list: { limit: 5 },
+    project_get: { project_id: PROJECT_ID },
+    space_list: { limit: 5 },
+    space_get: { space_id: SPACE_ID },
     thread_fetch: { parent_message_id: MESSAGE_ID, limit: 5 },
-    member_list: {},
+    member_list: { limit: 5 },
+    member_get: { user_id: USER_ID },
     events_query: { limit: 5 },
     messages_search: { query: 'salsa', limit: 5 },
     project_progress: { project_id: PROJECT_ID },
