@@ -5,6 +5,7 @@ import {
   connectedAccounts,
   events,
   messages,
+  oauthAuditEvents,
   orgMembers,
   orgs,
   projects,
@@ -26,6 +27,10 @@ export type HumanToolContext = {
   user_id: string;
   role: 'owner' | 'admin' | 'member' | 'guest';
   scopes: string[];
+  token_id?: string;
+  client_id?: string;
+  grant_id?: string;
+  principal_kind?: 'human' | 'oauth';
 };
 
 type HumanToolHandler = (args: any, ctx: HumanToolContext) => Promise<ToolResult>;
@@ -130,9 +135,15 @@ export const HUMAN_READ_TOOLS = new Set([
   'wiki_search',
   'memory_list',
   'list_my_tasks',
+  'task_get',
   'task_query',
+  'project_list',
+  'project_get',
+  'space_list',
+  'space_get',
   'thread_fetch',
   'member_list',
+  'member_get',
   'events_query',
   'messages_search',
   'project_progress',
@@ -143,6 +154,7 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'memory_write',
   'task_create',
   'task_update',
+  'task_transition',
   'comment_on_task',
   'message_post',
 ]);
@@ -155,14 +167,21 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   wiki_search: humanMemoryRecall,
   memory_list: humanMemoryList,
   list_my_tasks: humanListMyTasks,
+  task_get: humanTaskGet,
   memory_write: humanMemoryWrite,
   task_query: humanTaskQuery,
+  project_list: humanProjectList,
+  project_get: humanProjectGet,
+  space_list: humanSpaceList,
+  space_get: humanSpaceGet,
   task_create: humanTaskCreate,
   task_update: humanTaskUpdate,
+  task_transition: humanTaskTransition,
   comment_on_task: humanCommentOnTask,
   message_post: humanMessagePost,
   thread_fetch: humanThreadFetch,
   member_list: humanMemberList,
+  member_get: humanMemberGet,
   messages_search: humanMessagesSearch,
   project_progress: humanProjectProgress,
   team_workload: humanTeamWorkload,
@@ -175,6 +194,75 @@ function hasAnyScope(ctx: HumanToolContext, scopes: string[]): boolean {
 
 function requireAnyScope(ctx: HumanToolContext, scopes: string[]): ToolResult | null {
   return hasAnyScope(ctx, scopes) ? null : errorResult(`Missing MCP scope: ${scopes.join(' or ')}`);
+}
+
+function normalizeIdempotencyKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const key = value.trim();
+  if (!key) return null;
+  return key.slice(0, 160);
+}
+
+function storedToolResult(value: unknown): ToolResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const maybe = value as Partial<ToolResult>;
+  if (!Array.isArray(maybe.content)) return null;
+  if (!maybe.content.every((item) => item && item.type === 'text' && typeof item.text === 'string')) return null;
+  return { content: maybe.content, isError: maybe.isError };
+}
+
+async function withIdempotency(
+  toolName: string,
+  args: { idempotency_key?: unknown },
+  ctx: HumanToolContext,
+  execute: () => Promise<ToolResult>,
+): Promise<ToolResult> {
+  const idempotencyKey = normalizeIdempotencyKey(args.idempotency_key);
+  if (!idempotencyKey) return execute();
+
+  const clientId = ctx.client_id ?? `personal-token:${ctx.token_id ?? 'unknown'}`;
+  const [existing] = await db
+    .select({ metadata: oauthAuditEvents.metadata })
+    .from(oauthAuditEvents)
+    .where(and(
+      eq(oauthAuditEvents.org_id, ctx.org_id),
+      eq(oauthAuditEvents.user_id, ctx.user_id),
+      eq(oauthAuditEvents.client_id, clientId),
+      eq(oauthAuditEvents.event, 'mcp_idempotency_result'),
+      sql`${oauthAuditEvents.metadata}->>'tool_name' = ${toolName}`,
+      sql`${oauthAuditEvents.metadata}->>'idempotency_key' = ${idempotencyKey}`,
+    ))
+    .orderBy(desc(oauthAuditEvents.created_at))
+    .limit(1);
+  const replay = storedToolResult(existing?.metadata?.result);
+  if (replay) return replay;
+
+  const result = await execute();
+  if (!result.isError) {
+    await db.insert(oauthAuditEvents).values({
+      org_id: ctx.org_id,
+      user_id: ctx.user_id,
+      client_id: clientId,
+      event: 'mcp_idempotency_result',
+      metadata: {
+        tool_name: toolName,
+        idempotency_key: idempotencyKey,
+        grant_id: ctx.grant_id ?? null,
+        principal_kind: ctx.principal_kind ?? 'human',
+        result,
+      },
+    });
+  }
+  return result;
+}
+
+function taskReference(projectPrefix: string | null, number: number | null): string | null {
+  if (!projectPrefix || !number) return null;
+  return `${projectPrefix}-${number}`;
+}
+
+function validTaskStatus(value: unknown): value is 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled' {
+  return typeof value === 'string' && ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'].includes(value);
 }
 
 export async function humanPlatformContext(_args: {}, ctx: HumanToolContext): Promise<ToolResult> {
@@ -433,6 +521,57 @@ export async function humanListMyTasks(args: { status?: string; include_complete
   return textResult(rows);
 }
 
+export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:tasks');
+  if (scopeError) return scopeError;
+  if (!args.task_id) return errorResult('task_get requires task_id');
+  if (!(await userCanSeeTask(ctx, args.task_id))) return errorResult('task_get: task not found');
+  const taskRows = await db.execute(sql`
+    SELECT
+      t.*,
+      p.name AS project_name,
+      p.prefix AS project_prefix,
+      (p.prefix || '-' || t.number) AS task_key,
+      assignee.name AS assignee_name,
+      assignee.email AS assignee_email,
+      creator.name AS created_by_name,
+      creator.email AS created_by_email
+    FROM tasks t
+    JOIN projects p ON p.id = t.project_id AND p.org_id = t.org_id
+    LEFT JOIN users assignee ON assignee.id = t.assignee_id
+    LEFT JOIN users creator ON creator.id = t.created_by
+    WHERE t.org_id = ${ctx.org_id}
+      AND t.id = ${args.task_id}
+      AND t.is_deleted = false
+    LIMIT 1
+  `);
+  const task = ((taskRows as any).rows ?? [])[0];
+  if (!task) return errorResult('task_get: task not found');
+  const comments = await db.execute(sql`
+    SELECT c.id, c.user_id, u.name AS user_name, u.email AS user_email, c.content, c.created_at
+    FROM task_comments c
+    LEFT JOIN users u ON u.id = c.user_id
+    WHERE c.org_id = ${ctx.org_id}
+      AND c.task_id = ${args.task_id}
+    ORDER BY c.created_at DESC
+    LIMIT 10
+  `);
+  const activity = await db.execute(sql`
+    SELECT a.id, a.user_id, u.name AS user_name, u.email AS user_email, a.action, a.field, a.old_value, a.new_value, a.created_at
+    FROM task_activity a
+    LEFT JOIN users u ON u.id = a.user_id
+    WHERE a.org_id = ${ctx.org_id}
+      AND a.task_id = ${args.task_id}
+    ORDER BY a.created_at DESC
+    LIMIT 10
+  `);
+  return textResult({
+    task,
+    recent_comments: ((comments as any).rows ?? []).reverse(),
+    recent_activity: ((activity as any).rows ?? []).reverse(),
+  });
+}
+
 export async function humanTaskQuery(args: { filter?: { status?: string; assignee_id?: string; project_id?: string }; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:tasks');
   if (scopeError) return scopeError;
@@ -451,110 +590,307 @@ export async function humanTaskQuery(args: { filter?: { status?: string; assigne
   return textResult(rows.map((row) => row.task));
 }
 
-export async function humanTaskCreate(args: { title?: string; description?: string; project_id?: string; assignee_id?: string; priority?: string }, ctx: HumanToolContext): Promise<ToolResult> {
-  const scopeError = requireScope(ctx, 'write:tasks');
+export async function humanProjectList(args: { query?: string; include_archived?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
-  if (!args.title?.trim()) return errorResult('task_create requires title');
-  let projectId = args.project_id ?? null;
-  if (!projectId) {
-    const [p] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false))).limit(1);
-    projectId = p?.id ?? null;
-  }
-  if (!projectId) return errorResult('task_create: no project available');
-  if (!(await userCanSeeProject(ctx, projectId))) return errorResult('task_create: project not found');
-  if (args.assignee_id) {
-    const [member] = await db
-      .select({ id: orgMembers.id })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, args.assignee_id), eq(orgMembers.is_active, true)))
-      .limit(1);
-    if (!member) return errorResult('task_create: assignee is not an active org member');
-  }
-  const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} AND is_deleted = false RETURNING task_counter`);
-  const first = ((counterRow as any).rows ?? [])[0] as { task_counter?: number } | undefined;
-  if (!first) return errorResult('task_create: project not found');
-  const [task] = await db.insert(tasks).values({
-    org_id: ctx.org_id,
-    project_id: projectId,
-    number: Number(first.task_counter),
-    title: args.title.trim(),
-    description: args.description ?? null,
-    priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',
-    assignee_id: args.assignee_id ?? null,
-    created_by: ctx.user_id,
-  }).returning();
-  if (task) {
-    await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'created' });
-  }
-  return textResult(task);
+  const query = (args.query ?? '').trim().toLowerCase();
+  const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
+  const rows = await db.execute(sql`
+    SELECT p.id, p.name, p.prefix, p.lead_id, lead.name AS lead_name, p.is_archived, p.created_at, p.updated_at,
+           count(t.id) FILTER (WHERE t.is_deleted = false AND t.status NOT IN ('done', 'cancelled'))::int AS open_tasks
+    FROM projects p
+    LEFT JOIN users lead ON lead.id = p.lead_id
+    LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
+    WHERE p.org_id = ${ctx.org_id}
+      AND p.is_deleted = false
+      AND (${args.include_archived ? sql`true` : sql`p.is_archived = false`})
+      AND (${query ? sql`lower(p.name) LIKE ${`%${query}%`} OR lower(p.prefix) LIKE ${`%${query}%`}` : sql`true`})
+    GROUP BY p.id, p.name, p.prefix, p.lead_id, lead.name, p.is_archived, p.created_at, p.updated_at
+    ORDER BY p.updated_at DESC
+    LIMIT ${limit}
+  `);
+  return textResult((rows as any).rows ?? []);
 }
 
-export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<string, unknown> }, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanProjectGet(args: { project_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  if (!args.project_id) return errorResult('project_get requires project_id');
+  if (!(await userCanSeeProject(ctx, args.project_id))) return errorResult('project_get: project not found');
+  const rows = await db.execute(sql`
+    SELECT p.id, p.name, p.prefix, p.description, p.lead_id, lead.name AS lead_name, p.is_archived, p.created_at, p.updated_at,
+           count(t.id) FILTER (WHERE t.is_deleted = false)::int AS total_tasks,
+           count(t.id) FILTER (WHERE t.is_deleted = false AND t.status NOT IN ('done', 'cancelled'))::int AS open_tasks,
+           count(t.id) FILTER (WHERE t.is_deleted = false AND t.status = 'done')::int AS done_tasks
+    FROM projects p
+    LEFT JOIN users lead ON lead.id = p.lead_id
+    LEFT JOIN tasks t ON t.project_id = p.id AND t.org_id = p.org_id
+    WHERE p.org_id = ${ctx.org_id}
+      AND p.id = ${args.project_id}
+      AND p.is_deleted = false
+    GROUP BY p.id, p.name, p.prefix, p.description, p.lead_id, lead.name, p.is_archived, p.created_at, p.updated_at
+    LIMIT 1
+  `);
+  const project = ((rows as any).rows ?? [])[0];
+  if (!project) return errorResult('project_get: project not found');
+  const linkedSpaces = await db.execute(sql`
+    SELECT s.id, s.name, s.type
+    FROM project_spaces ps
+    JOIN spaces s ON s.id = ps.space_id AND s.org_id = ${ctx.org_id}
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+    WHERE ps.project_id = ${args.project_id}
+      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND s.is_archived = false
+    ORDER BY s.name ASC
+  `);
+  return textResult({ project, linked_spaces: (linkedSpaces as any).rows ?? [] });
+}
+
+export async function humanSpaceList(args: { query?: string; type?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:messages');
+  if (scopeError) return scopeError;
+  const query = (args.query ?? '').trim().toLowerCase();
+  const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
+  const rows = await db.execute(sql`
+    SELECT s.id, s.name, s.type, s.description, s.is_default, s.created_at, s.updated_at,
+           count(sm_all.id)::int AS member_count
+    FROM spaces s
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+    LEFT JOIN space_members sm_all ON sm_all.space_id = s.id
+    WHERE s.org_id = ${ctx.org_id}
+      AND s.is_archived = false
+      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${args.type ? sql`s.type = ${args.type}` : sql`true`})
+      AND (${query ? sql`lower(s.name) LIKE ${`%${query}%`} OR lower(coalesce(s.description, '')) LIKE ${`%${query}%`}` : sql`true`})
+    GROUP BY s.id, s.name, s.type, s.description, s.is_default, s.created_at, s.updated_at
+    ORDER BY s.is_default DESC, s.name ASC
+    LIMIT ${limit}
+  `);
+  return textResult((rows as any).rows ?? []);
+}
+
+export async function humanSpaceGet(args: { space_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:messages');
+  if (scopeError) return scopeError;
+  if (!args.space_id) return errorResult('space_get requires space_id');
+  if (!(await userCanSeeSpace(ctx, args.space_id))) return errorResult('space_get: space not found');
+  const rows = await db.execute(sql`
+    SELECT s.id, s.name, s.type, s.description, s.is_default, s.created_at, s.updated_at
+    FROM spaces s
+    WHERE s.org_id = ${ctx.org_id}
+      AND s.id = ${args.space_id}
+      AND s.is_archived = false
+    LIMIT 1
+  `);
+  const space = ((rows as any).rows ?? [])[0];
+  if (!space) return errorResult('space_get: space not found');
+  const members = await db.execute(sql`
+    SELECT u.id, u.name, u.email, u.is_agent
+    FROM space_members sm
+    JOIN users u ON u.id = sm.user_id
+    WHERE sm.space_id = ${args.space_id}
+    ORDER BY u.name ASC
+    LIMIT 100
+  `);
+  return textResult({ space, members: (members as any).rows ?? [] });
+}
+
+export async function humanTaskCreate(args: { title?: string; description?: string; project_id?: string; assignee_id?: string; priority?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:tasks');
+  if (scopeError) return scopeError;
+  const title = args.title?.trim();
+  if (!title) return errorResult('task_create requires title');
+  return withIdempotency('task_create', args, ctx, async () => {
+    let projectId = args.project_id ?? null;
+    if (!projectId) {
+      const [p] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false))).limit(1);
+      projectId = p?.id ?? null;
+    }
+    if (!projectId) return errorResult('task_create: no project available');
+    if (!(await userCanSeeProject(ctx, projectId))) return errorResult('task_create: project not found');
+    if (args.assignee_id) {
+      const [member] = await db
+        .select({ id: orgMembers.id })
+        .from(orgMembers)
+        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, args.assignee_id), eq(orgMembers.is_active, true)))
+        .limit(1);
+      if (!member) return errorResult('task_create: assignee is not an active org member');
+    }
+    const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} AND is_deleted = false RETURNING task_counter`);
+    const first = ((counterRow as any).rows ?? [])[0] as { task_counter?: number } | undefined;
+    if (!first) return errorResult('task_create: project not found');
+    const [task] = await db.insert(tasks).values({
+      org_id: ctx.org_id,
+      project_id: projectId,
+      number: Number(first.task_counter),
+      title,
+      description: args.description ?? null,
+      priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',
+      assignee_id: args.assignee_id ?? null,
+      created_by: ctx.user_id,
+    }).returning();
+    if (task) {
+      await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'created' });
+    }
+    return textResult(task);
+  });
+}
+
+export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<string, unknown>; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:tasks');
   if (scopeError) return scopeError;
   if (!args.task_id) return errorResult('task_update requires task_id');
-  const patch = args.patch ?? {};
-  const updates: Record<string, unknown> = {};
-  if (typeof patch.title === 'string') updates.title = patch.title;
-  if (typeof patch.description === 'string') updates.description = patch.description;
-  if (typeof patch.status === 'string') updates.status = patch.status;
-  if (typeof patch.priority === 'string') updates.priority = patch.priority;
-  if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) updates.assignee_id = patch.assignee_id;
-  if (Object.keys(updates).length === 0) return errorResult('task_update requires at least one supported patch field');
-  if (!(await userCanSeeTask(ctx, args.task_id))) return errorResult('task_update: task not found');
-  if (typeof patch.assignee_id === 'string') {
-    const [member] = await db
-      .select({ id: orgMembers.id })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true)))
-      .limit(1);
-    if (!member) return errorResult('task_update: assignee is not an active org member');
-  }
-  const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
-  if (!task) return errorResult('task_update: task not found');
-  await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'updated' });
-  return textResult(task);
+  const taskId = args.task_id;
+  return withIdempotency('task_update', args, ctx, async () => {
+    const patch = args.patch ?? {};
+    const updates: Record<string, unknown> = {};
+    if (typeof patch.title === 'string') updates.title = patch.title;
+    if (typeof patch.description === 'string') updates.description = patch.description;
+    if (patch.status !== undefined) {
+      if (!validTaskStatus(patch.status)) return errorResult('task_update requires valid status: backlog, todo, in_progress, in_review, done, or cancelled');
+      updates.status = patch.status;
+    }
+    if (typeof patch.priority === 'string') updates.priority = patch.priority;
+    if (typeof patch.assignee_id === 'string' || patch.assignee_id === null) updates.assignee_id = patch.assignee_id;
+    if (Object.keys(updates).length === 0) return errorResult('task_update requires at least one supported patch field');
+    if (!(await userCanSeeTask(ctx, taskId))) return errorResult('task_update: task not found');
+    const [existingTask] = await db.select().from(tasks).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).limit(1);
+    if (!existingTask) return errorResult('task_update: task not found');
+    if (typeof patch.assignee_id === 'string') {
+      const [member] = await db
+        .select({ id: orgMembers.id })
+        .from(orgMembers)
+        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, patch.assignee_id), eq(orgMembers.is_active, true)))
+        .limit(1);
+      if (!member) return errorResult('task_update: assignee is not an active org member');
+    }
+    const [task] = await db.update(tasks).set(updates).where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false))).returning();
+    if (!task) return errorResult('task_update: task not found');
+    const activityEntries: Array<{ action: string; field: string; old_value: string | null; new_value: string | null }> = [];
+    if (typeof updates.status === 'string' && updates.status !== existingTask.status) {
+      activityEntries.push({ action: 'status_changed', field: 'status', old_value: existingTask.status, new_value: updates.status });
+    }
+    if (typeof updates.priority === 'string' && updates.priority !== existingTask.priority) {
+      activityEntries.push({ action: 'priority_changed', field: 'priority', old_value: existingTask.priority, new_value: updates.priority });
+    }
+    if ('assignee_id' in updates && updates.assignee_id !== existingTask.assignee_id) {
+      activityEntries.push({ action: 'assigned', field: 'assignee_id', old_value: existingTask.assignee_id ?? null, new_value: (updates.assignee_id as string | null) ?? null });
+    }
+    if (typeof updates.title === 'string' && updates.title !== existingTask.title) {
+      activityEntries.push({ action: 'title_changed', field: 'title', old_value: existingTask.title, new_value: updates.title });
+    }
+    if (typeof updates.description === 'string' && updates.description !== (existingTask.description ?? null)) {
+      activityEntries.push({ action: 'description_changed', field: 'description', old_value: existingTask.description ?? null, new_value: updates.description });
+    }
+    if (activityEntries.length === 0) {
+      await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'updated' });
+    } else {
+      await db.insert(taskActivity).values(activityEntries.map((entry) => ({
+        org_id: ctx.org_id,
+        task_id: task.id,
+        user_id: ctx.user_id,
+        action: entry.action,
+        field: entry.field,
+        old_value: entry.old_value,
+        new_value: entry.new_value,
+      })));
+    }
+    return textResult(task);
+  });
 }
 
-export async function humanCommentOnTask(args: { task_id?: string; content?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanTaskTransition(args: { task_id?: string; status?: string; reason?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:tasks');
+  if (scopeError) return scopeError;
+  if (!args.task_id) return errorResult('task_transition requires task_id');
+  if (!validTaskStatus(args.status)) return errorResult('task_transition requires valid status: backlog, todo, in_progress, in_review, done, or cancelled');
+  const taskId = args.task_id;
+  const status = args.status;
+  return withIdempotency('task_transition', args, ctx, async () => {
+    if (!(await userCanSeeTask(ctx, taskId))) return errorResult('task_transition: task not found');
+    const [existingTask] = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false)))
+      .limit(1);
+    if (!existingTask) return errorResult('task_transition: task not found');
+    if (existingTask.status === status) {
+      return textResult({ ...existingTask, unchanged: true, task_key: null });
+    }
+    const [task] = await db
+      .update(tasks)
+      .set({ status })
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false)))
+      .returning();
+    if (!task) return errorResult('task_transition: task not found');
+    const [project] = await db.select({ prefix: projects.prefix }).from(projects).where(eq(projects.id, task.project_id)).limit(1);
+    await db.insert(taskActivity).values({
+      org_id: ctx.org_id,
+      task_id: task.id,
+      user_id: ctx.user_id,
+      action: 'status_changed',
+      field: 'status',
+      old_value: existingTask.status,
+      new_value: status,
+    });
+    return textResult({
+      ...task,
+      task_key: taskReference(project?.prefix ?? null, task.number),
+      transition: {
+        from: existingTask.status,
+        to: status,
+        reason: args.reason ?? null,
+      },
+    });
+  });
+}
+
+export async function humanCommentOnTask(args: { task_id?: string; content?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:tasks');
   if (scopeError) return scopeError;
   if (!args.task_id) return errorResult('comment_on_task requires task_id');
+  const taskId = args.task_id;
   const content = args.content?.trim();
   if (!content) return errorResult('comment_on_task requires content');
-  if (!(await userCanSeeTask(ctx, args.task_id))) return errorResult('comment_on_task: task not found');
-  const [comment] = await db.insert(taskComments).values({
-    org_id: ctx.org_id,
-    task_id: args.task_id,
-    user_id: ctx.user_id,
-    content,
-  }).returning();
-  await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: args.task_id, user_id: ctx.user_id, action: 'commented' });
-  return textResult(comment);
+  return withIdempotency('comment_on_task', args, ctx, async () => {
+    if (!(await userCanSeeTask(ctx, taskId))) return errorResult('comment_on_task: task not found');
+    const [comment] = await db.insert(taskComments).values({
+      org_id: ctx.org_id,
+      task_id: taskId,
+      user_id: ctx.user_id,
+      content,
+    }).returning();
+    await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: taskId, user_id: ctx.user_id, action: 'commented' });
+    return textResult(comment);
+  });
 }
 
-export async function humanMessagePost(args: { space_id?: string; content?: string; parent_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanMessagePost(args: { space_id?: string; content?: string; parent_id?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:messages');
   if (scopeError) return scopeError;
   if (!args.space_id) return errorResult('message_post requires space_id');
-  if (!args.content?.trim()) return errorResult('message_post requires content');
-  if (!(await userCanSeeSpace(ctx, args.space_id))) return errorResult('message_post: space not found or not visible to user');
-  if (args.parent_id) {
-    const [parent] = await db
-      .select({ id: messages.id, space_id: messages.space_id })
-      .from(messages)
-      .where(and(eq(messages.id, args.parent_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
-      .limit(1);
-    if (!parent || parent.space_id !== args.space_id) return errorResult('message_post: parent message not found in target space');
-  }
-  const [row] = await db.insert(messages).values({
-    org_id: ctx.org_id,
-    space_id: args.space_id,
-    user_id: ctx.user_id,
-    content: args.content,
-    parent_id: args.parent_id ?? null,
-  }).returning();
-  return textResult(row);
+  const spaceId = args.space_id;
+  const content = args.content?.trim();
+  if (!content) return errorResult('message_post requires content');
+  return withIdempotency('message_post', args, ctx, async () => {
+    if (!(await userCanSeeSpace(ctx, spaceId))) return errorResult('message_post: space not found or not visible to user');
+    if (args.parent_id) {
+      const [parent] = await db
+        .select({ id: messages.id, space_id: messages.space_id })
+        .from(messages)
+        .where(and(eq(messages.id, args.parent_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+        .limit(1);
+      if (!parent || parent.space_id !== spaceId) return errorResult('message_post: parent message not found in target space');
+    }
+    const [row] = await db.insert(messages).values({
+      org_id: ctx.org_id,
+      space_id: spaceId,
+      user_id: ctx.user_id,
+      content,
+      parent_id: args.parent_id ?? null,
+    }).returning();
+    return textResult(row);
+  });
 }
 
 export async function humanThreadFetch(args: { parent_message_id?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -567,15 +903,39 @@ export async function humanThreadFetch(args: { parent_message_id?: string; limit
   return textResult({ parent, replies: replies.reverse() });
 }
 
-export async function humanMemberList(_args: {}, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanMemberList(args: { query?: string; include_agents?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
-  const rows = await db
-    .select({ id: users.id, name: users.name, email: users.email, role: orgMembers.role, is_agent: users.is_agent })
-    .from(orgMembers)
-    .innerJoin(users, eq(users.id, orgMembers.user_id))
-    .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.is_active, true)));
-  return textResult(rows);
+  const query = (args.query ?? '').trim().toLowerCase();
+  const rows = await db.execute(sql`
+    SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
+    FROM org_members om
+    JOIN users u ON u.id = om.user_id
+    WHERE om.org_id = ${ctx.org_id}
+      AND om.is_active = true
+      AND (${args.include_agents === false ? sql`u.is_agent = false` : sql`true`})
+      AND (${query ? sql`lower(u.name) LIKE ${`%${query}%`} OR lower(u.email) LIKE ${`%${query}%`}` : sql`true`})
+    ORDER BY u.is_agent ASC, u.name ASC
+    LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
+  `);
+  return textResult((rows as any).rows ?? []);
+}
+
+export async function humanMemberGet(args: { user_id?: string; email?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  if (!args.user_id && !args.email) return errorResult('member_get requires user_id or email');
+  const rows = await db.execute(sql`
+    SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
+    FROM org_members om
+    JOIN users u ON u.id = om.user_id
+    WHERE om.org_id = ${ctx.org_id}
+      AND om.is_active = true
+      AND (${args.user_id ? sql`u.id = ${args.user_id}` : sql`lower(u.email) = ${args.email!.toLowerCase()}`})
+    LIMIT 1
+  `);
+  const member = ((rows as any).rows ?? [])[0];
+  return member ? textResult(member) : errorResult('member_get: member not found');
 }
 
 export async function humanMessagesSearch(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -740,6 +1100,96 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
     {
+      name: 'task_get',
+      title: 'Get Deft Task',
+      description: 'Fetch one visible task by id, including project key, assignee, recent comments, and recent activity. Human personal-MCP read: requires read:tasks.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: { task_id: { type: 'string' } },
+        required: ['task_id'],
+      },
+    },
+    {
+      name: 'project_list',
+      title: 'List Deft Projects',
+      description: 'List active projects in the connected user workspace. Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          include_archived: { type: 'boolean' },
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+    {
+      name: 'project_get',
+      title: 'Get Deft Project',
+      description: 'Fetch one project by id, including task counts and linked visible spaces. Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: { project_id: { type: 'string' } },
+        required: ['project_id'],
+      },
+    },
+    {
+      name: 'space_list',
+      title: 'List Deft Spaces',
+      description: 'List public spaces and private spaces the connected user can access. Human personal-MCP read: requires read:messages.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          type: { type: 'string', description: 'Optional space type such as public, private, or dm.' },
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+    {
+      name: 'space_get',
+      title: 'Get Deft Space',
+      description: 'Fetch one visible space by id, including members. Human personal-MCP read: requires read:messages.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: { space_id: { type: 'string' } },
+        required: ['space_id'],
+      },
+    },
+    {
+      name: 'member_get',
+      title: 'Get Deft Member',
+      description: 'Fetch one active org member by user_id or email. Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          user_id: { type: 'string' },
+          email: { type: 'string' },
+        },
+      },
+    },
+    {
+      name: 'task_transition',
+      title: 'Transition Deft Task',
+      description: 'Change one visible task status as the connected human user. Prefer this over task_update for status-only changes. Human personal-MCP write: requires write:tasks.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string' },
+          status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'] },
+          reason: { type: 'string' },
+          idempotency_key: { type: 'string', description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.' },
+        },
+        required: ['task_id', 'status'],
+      },
+    },
+    {
       name: 'comment_on_task',
       title: 'Comment On Deft Task',
       description: 'Add a comment to a visible task as the connected human user. Human personal-MCP write: requires write:tasks.',
@@ -749,6 +1199,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
         properties: {
           task_id: { type: 'string' },
           content: { type: 'string' },
+          idempotency_key: { type: 'string', description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.' },
         },
         required: ['task_id', 'content'],
       },
@@ -764,6 +1215,13 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       if (HUMAN_WRITE_TOOLS.has(String(next.name))) {
         next.description = `${next.description ?? ''} Human personal-MCP write: executes as the token owner and requires a matching write scope.`;
         next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: false, destructiveHint: false };
+        const inputSchema = next.inputSchema as { properties?: Record<string, unknown> } | undefined;
+        if (inputSchema?.properties && !inputSchema.properties.idempotency_key) {
+          inputSchema.properties.idempotency_key = {
+            type: 'string',
+            description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.',
+          };
+        }
       } else {
         next.description = `${next.description ?? ''} Human personal-MCP read: scoped to the token owner's Deft permissions.`;
         next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: true };

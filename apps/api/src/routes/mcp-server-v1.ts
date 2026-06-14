@@ -203,12 +203,18 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   fetch: 'read:workspace',
   platform_context: 'read:workspace',
   member_list: 'read:workspace',
+  member_get: 'read:workspace',
   events_query: 'read:calendar',
   memory_recall: 'read:wiki',
   wiki_search: 'read:wiki',
   memory_list: 'read:wiki',
   list_my_tasks: 'read:tasks',
+  task_get: 'read:tasks',
   task_query: 'read:tasks',
+  project_list: 'read:workspace',
+  project_get: 'read:workspace',
+  space_list: 'read:messages',
+  space_get: 'read:messages',
   project_progress: 'read:tasks',
   team_workload: 'read:tasks',
   thread_fetch: 'read:messages',
@@ -216,6 +222,7 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   memory_write: 'write:wiki',
   task_create: 'write:tasks',
   task_update: 'write:tasks',
+  task_transition: 'write:tasks',
   comment_on_task: 'write:tasks',
   message_post: 'write:messages',
 };
@@ -358,6 +365,10 @@ mcpServerV1Routes.post('/', async (c) => {
           user_id: principal.user_id,
           role: principal.role,
           scopes: principal.scopes,
+          token_id: principal.token_id,
+          client_id: principal.client_id,
+          grant_id: principal.grant_id,
+          principal_kind: principal.kind,
         });
         if (principal.kind === 'oauth') {
           await auditOAuth({
@@ -365,7 +376,20 @@ mcpServerV1Routes.post('/', async (c) => {
             userId: principal.user_id,
             clientId: principal.client_id ?? null,
             event: 'mcp_tool_call',
-            metadata: { tool_name: toolName, success: !result.isError, surface: 'jsonrpc' },
+            metadata: {
+              tool_name: toolName,
+              success: !result.isError,
+              surface: 'jsonrpc',
+              grant_id: principal.grant_id ?? null,
+              idempotency_key: typeof args.idempotency_key === 'string' ? args.idempotency_key : null,
+              target_id: typeof args.task_id === 'string'
+                ? args.task_id
+                : typeof args.space_id === 'string'
+                  ? args.space_id
+                  : typeof args.project_id === 'string'
+                    ? args.project_id
+                    : null,
+            },
           });
         }
         return result;
@@ -518,6 +542,10 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
       user_id: principal.user_id,
       role: principal.role,
       scopes: principal.scopes,
+      token_id: principal.token_id,
+      client_id: principal.client_id,
+      grant_id: principal.grant_id,
+      principal_kind: principal.kind,
     });
     if (principal.kind === 'oauth') {
       await auditOAuth({
@@ -525,7 +553,20 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
         userId: principal.user_id,
         clientId: principal.client_id ?? null,
         event: 'mcp_tool_call',
-        metadata: { tool_name: toolName, success: !result.isError, surface: 'legacy' },
+        metadata: {
+          tool_name: toolName,
+          success: !result.isError,
+          surface: 'legacy',
+          grant_id: principal.grant_id ?? null,
+          idempotency_key: typeof args.idempotency_key === 'string' ? args.idempotency_key : null,
+          target_id: typeof args.task_id === 'string'
+            ? args.task_id
+            : typeof args.space_id === 'string'
+              ? args.space_id
+              : typeof args.project_id === 'string'
+                ? args.project_id
+                : null,
+        },
       });
     }
     return c.json(result);

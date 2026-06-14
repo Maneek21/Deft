@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { oauthClients, oauthGrants, oauthAccessTokens, oauthRefreshTokens } from '@deft/db/schema';
+import { oauthClients, oauthGrants, oauthAccessTokens, oauthRefreshTokens, oauthAuditEvents } from '@deft/db/schema';
 import {
   OAuthMcpError,
   REMOTE_MCP_SCOPES,
@@ -267,7 +267,7 @@ oauthProtectedRoutes.post('/authorize', async (c) => {
 
 oauthProtectedRoutes.get('/grants', async (c) => {
   const user = c.get('user');
-  const rows = await db
+  const grants = await db
     .select({
       id: oauthGrants.id,
       client_id: oauthGrants.client_id,
@@ -280,6 +280,35 @@ oauthProtectedRoutes.get('/grants', async (c) => {
     .from(oauthGrants)
     .where(and(eq(oauthGrants.org_id, user.org_id), eq(oauthGrants.user_id, user.id), isNull(oauthGrants.revoked_at)))
     .orderBy(desc(oauthGrants.created_at));
+  const rows = await Promise.all(grants.map(async (grant) => {
+    const [lastUsed] = await db
+      .select({ last_used_at: oauthAccessTokens.last_used_at })
+      .from(oauthAccessTokens)
+      .where(and(eq(oauthAccessTokens.grant_id, grant.id), isNotNull(oauthAccessTokens.last_used_at)))
+      .orderBy(desc(oauthAccessTokens.last_used_at))
+      .limit(1);
+    const recentActions = await db
+      .select({
+        id: oauthAuditEvents.id,
+        event: oauthAuditEvents.event,
+        metadata: oauthAuditEvents.metadata,
+        created_at: oauthAuditEvents.created_at,
+      })
+      .from(oauthAuditEvents)
+      .where(and(
+        eq(oauthAuditEvents.org_id, user.org_id),
+        eq(oauthAuditEvents.user_id, user.id),
+        eq(oauthAuditEvents.client_id, grant.client_id),
+        sql`(${oauthAuditEvents.metadata}->>'grant_id' = ${grant.id} OR ${oauthAuditEvents.metadata}->>'grant_id' IS NULL)`,
+      ))
+      .orderBy(desc(oauthAuditEvents.created_at))
+      .limit(8);
+    return {
+      ...grant,
+      last_used_at: lastUsed?.last_used_at ?? null,
+      recent_actions: recentActions,
+    };
+  }));
   return c.json({ grants: rows });
 });
 
