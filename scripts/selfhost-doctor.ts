@@ -11,9 +11,16 @@ type Check = {
   warn?: boolean;
 };
 
-const API_URL = (process.env.DEFT_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
-const WEB_URL = (process.env.DEFT_WEB_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
-const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || WEB_URL).replace(/\/$/, '');
+const explicitApiUrl = process.env.DEFT_API_URL;
+const explicitWebUrl = process.env.DEFT_WEB_URL;
+const API_URL = (explicitApiUrl || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
+const WEB_URL = (explicitWebUrl || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+const APP_URL = (
+  process.env.DEFT_APP_URL
+  || process.env.DEFT_APP_ORIGIN
+  || (explicitApiUrl && explicitWebUrl ? WEB_URL : process.env.NEXT_PUBLIC_APP_URL)
+  || WEB_URL
+).replace(/\/$/, '');
 
 function maskDatabaseUrl(url: string): string {
   return url.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:***@');
@@ -180,6 +187,13 @@ async function checkUrlAgreement(): Promise<Check> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || '';
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+  if (explicitApiUrl || explicitWebUrl || process.env.DEFT_APP_URL || process.env.DEFT_APP_ORIGIN) {
+    return {
+      name: 'Public URL config',
+      ok: true,
+      detail: `target app=${APP_URL}, api=${API_URL}; configured env app=${appUrl || '(unset)'}, api=${apiUrl || '(unset)'}, ws=${wsUrl || '(unset)'}`,
+    };
+  }
   const missing = [
     apiUrl ? null : 'NEXT_PUBLIC_API_URL',
     wsUrl ? null : 'NEXT_PUBLIC_WS_URL',

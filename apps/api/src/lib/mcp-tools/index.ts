@@ -552,6 +552,7 @@ export const toolSchemas: ToolSchema[] = [
       type: 'object',
       properties: {
         ...CALLER_SLUG_PROP,
+        project_id: { type: 'string', description: 'Exact Deft project id. Prefer this when known.' },
         project_identifier: { type: 'string' },
         project_name: { type: 'string' },
       },

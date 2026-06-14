@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+const args = new Set(process.argv.slice(2));
+
 type Check = {
   name: string;
   ok: boolean;
@@ -13,6 +15,7 @@ const CLIENT_NAME = process.env.DEFT_SMOKE_CLIENT_NAME || `Deft self-host smoke 
 const REDIRECT_URI = process.env.DEFT_SMOKE_REDIRECT_URI || 'http://localhost:3999/callback';
 const REQUESTED_SCOPE = process.env.DEFT_SMOKE_SCOPE || 'read:workspace read:wiki read:tasks read:messages read:calendar';
 const OPTIONAL_BEARER = process.env.DEFT_MCP_BEARER_TOKEN || process.env.DEFT_SMOKE_MCP_TOKEN || '';
+const REQUIRE_AUTH = args.has('--require-auth') || process.env.DEFT_REQUIRE_AUTH_SMOKE === '1';
 
 function mark(check: Check) {
   const icon = check.ok ? (check.warn ? 'WARN' : 'OK') : 'FAIL';
@@ -138,9 +141,11 @@ async function checkOptionalBearerToolsList(): Promise<Check> {
   if (!OPTIONAL_BEARER) {
     return {
       name: 'Optional bearer MCP flow',
-      ok: true,
-      warn: true,
-      detail: 'DEFT_MCP_BEARER_TOKEN not set; skipped authenticated tools/list smoke',
+      ok: !REQUIRE_AUTH,
+      warn: !REQUIRE_AUTH,
+      detail: REQUIRE_AUTH
+        ? 'DEFT_MCP_BEARER_TOKEN not set; authenticated tools/list smoke is required'
+        : 'DEFT_MCP_BEARER_TOKEN not set; skipped authenticated tools/list smoke. Set DEFT_REQUIRE_AUTH_SMOKE=1 or pass --require-auth to make this a failure.',
     };
   }
   const res = await fetchJson(MCP_URL, {
@@ -162,6 +167,7 @@ async function main() {
   console.log('Deft self-host smoke');
   console.log(`  api: ${API_URL}`);
   console.log(`  mcp: ${MCP_URL}`);
+  console.log(`  authenticated tools/list: ${REQUIRE_AUTH ? 'required' : 'optional'}`);
   console.log('');
 
   const checks = [
