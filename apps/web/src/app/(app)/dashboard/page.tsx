@@ -376,15 +376,6 @@ function DashboardBody() {
   const [standupGenerating, setStandupGenerating] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  // Mobile-deep P2-8: inner-scroll container breaks iOS Safari URL-bar
-  // auto-hide, pull-to-refresh, and scroll-to-top. Use body scroll on <md.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
 
   const isManager = user?.role === 'owner' || user?.role === 'admin';
   const { layout, setLayout, reset } = useLayoutStorage(user?.id, isManager);
@@ -469,9 +460,14 @@ function DashboardBody() {
 
   return (
     <div style={{
-      // On <md: let the body scroll naturally (no height constraint, no overflowY).
-      // On md+: use inner-scroll so the fixed sidebar layout stays intact.
-      ...(isMobile ? {} : { height: '100%', overflowY: 'auto' as const }),
+      // The app shell owns the viewport and clips body overflow, so the
+      // dashboard must provide its own scroll area on mobile and desktop.
+      height: '100%',
+      minHeight: 0,
+      overflowX: 'hidden',
+      overflowY: 'auto',
+      WebkitOverflowScrolling: 'touch',
+      touchAction: 'pan-y',
       background: 'var(--bg-primary)',
       color: 'var(--text-primary)',
     }}>
