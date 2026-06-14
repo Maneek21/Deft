@@ -342,8 +342,8 @@ test('OAuth bearer can use JSON-RPC MCP read tools but not ungranted write tools
 
 test('OAuth task-helper profile can comment on and update visible tasks', async () => {
   const client = await registerClient();
-  const token = await issueOAuthToken(client.client_id, ['read:workspace', 'read:tasks', 'write:tasks']);
-  assert.equal(token.scope, 'read:workspace read:tasks write:tasks');
+  const token = await issueOAuthToken(client.client_id, ['read:workspace', 'read:tasks', 'read:messages', 'write:tasks', 'write:messages']);
+  assert.equal(token.scope, 'read:workspace read:tasks read:messages write:tasks write:messages');
 
   const principal = await helpers.resolveOAuthAccessToken(token.access_token);
   assert.equal(principal.connector_profile, 'task-helper');
@@ -360,6 +360,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.ok(names.has('task_create'));
   assert.ok(names.has('task_update'));
   assert.ok(names.has('comment_on_task'));
+  assert.ok(names.has('message_post'));
 
   const commentRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
@@ -398,6 +399,25 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const updatedTask = JSON.parse(updateBody.result.content[0].text);
   assert.equal(updatedTask.id, TASK_ID);
   assert.equal(updatedTask.status, 'done');
+
+  const messageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 34,
+    method: 'tools/call',
+    params: {
+      name: 'message_post',
+      arguments: {
+        space_id: SPACE_ID,
+        content: 'Codex task-helper contract test completion message',
+      },
+    },
+  }, token.access_token);
+  assert.equal(messageRes.status, 200);
+  const messageBody = (await messageRes.json()) as any;
+  assert.equal(messageBody.result.isError, false, JSON.stringify(messageBody));
+  const postedMessage = JSON.parse(messageBody.result.content[0].text);
+  assert.equal(postedMessage.space_id, SPACE_ID);
+  assert.equal(postedMessage.user_id, USER_ID);
 
   const blockedRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',

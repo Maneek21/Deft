@@ -22,6 +22,7 @@ export const REMOTE_MCP_READ_SCOPES = [
 
 export const REMOTE_MCP_WRITE_SCOPES = [
   'write:tasks',
+  'write:messages',
 ] as const;
 
 export const REMOTE_MCP_SCOPES = [
@@ -72,7 +73,7 @@ export function normalizeScopes(value: string | string[] | undefined | null): st
 }
 
 export function profileForScopes(scopes: string[]): ConnectorProfile {
-  return scopes.includes('write:tasks') ? 'task-helper' : 'knowledge';
+  return scopes.includes('write:tasks') || scopes.includes('write:messages') ? 'task-helper' : 'knowledge';
 }
 
 export function pkceS256(verifier: string): string {

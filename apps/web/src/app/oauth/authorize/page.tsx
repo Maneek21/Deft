@@ -105,7 +105,9 @@ function OAuthAuthorizeContent() {
   }
 
   const canWriteTasks = preview?.scopes.includes('write:tasks') ?? false;
-  const accessLabel = canWriteTasks ? 'Task helper access' : 'Knowledge access';
+  const canWriteMessages = preview?.scopes.includes('write:messages') ?? false;
+  const hasWriteAccess = canWriteTasks || canWriteMessages;
+  const accessLabel = hasWriteAccess ? 'Workspace helper access' : 'Knowledge access';
 
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-10" style={{ background: 'var(--surface-lowest)' }}>
@@ -122,8 +124,8 @@ function OAuthAuthorizeContent() {
             Connect Deft to {preview?.client.client_name ?? 'this AI app'}?
           </h1>
           <p className="mt-2 text-[14px]" style={{ color: 'var(--text-secondary)' }}>
-            {canWriteTasks
-              ? `This connector acts as ${user?.email ?? 'your Deft user'} and can read your accessible workspace context plus create, comment on, and update tasks you can access.`
+            {hasWriteAccess
+              ? `This connector acts as ${user?.email ?? 'your Deft user'} and can read your accessible workspace context plus perform the approved write actions shown below.`
               : `This read-only connector acts as ${user?.email ?? 'your Deft user'} and can only see Deft data your account can access.`}
           </p>
         </div>
@@ -154,15 +156,26 @@ function OAuthAuthorizeContent() {
 
             <section className="mt-3 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
               <h2 className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
-                {canWriteTasks ? 'This app can also' : 'This app cannot'}
+                {hasWriteAccess ? 'This app can also' : 'This app cannot'}
               </h2>
               <ul className="mt-3 space-y-2 text-[14px]" style={{ color: 'var(--text-primary)' }}>
-                {canWriteTasks ? (
+                {hasWriteAccess ? (
                   <>
-                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create tasks in projects you can access</li>
-                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Comment on visible tasks</li>
-                    <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Update visible task fields, including status</li>
-                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post chat messages or edit wiki pages</li>
+                    {canWriteTasks ? (
+                      <>
+                        <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create tasks in projects you can access</li>
+                        <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Comment on visible tasks</li>
+                        <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Update visible task fields, including status</li>
+                      </>
+                    ) : (
+                      <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Create or update tasks</li>
+                    )}
+                    {canWriteMessages ? (
+                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Post messages in spaces you can access</li>
+                    ) : (
+                      <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post chat messages</li>
+                    )}
+                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
                   </>
                 ) : (
                   <>
