@@ -40,6 +40,7 @@ const RESTRICTED_TASK_ID = `oauth-mcp-restricted-task-${TEST_ID}`;
 const PRIVATE_EVENT_ID = `oauth-mcp-private-event-${TEST_ID}`;
 const SPACE_ID = `oauth-mcp-space-${TEST_ID}`;
 const MESSAGE_ID = `oauth-mcp-message-${TEST_ID}`;
+const PUBLIC_NONMEMBER_SPACE_ID = `oauth-mcp-public-nonmember-space-${TEST_ID}`;
 const PRIVATE_SPACE_ID = `oauth-mcp-private-space-${TEST_ID}`;
 const PRIVATE_MESSAGE_ID = `oauth-mcp-private-message-${TEST_ID}`;
 const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
@@ -71,7 +72,7 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
-    await client.query(`DELETE FROM space_members WHERE space_id IN ($1, $2)`, [SPACE_ID, PRIVATE_SPACE_ID]);
+    await client.query(`DELETE FROM space_members WHERE space_id IN ($1, $2, $3)`, [SPACE_ID, PRIVATE_SPACE_ID, PUBLIC_NONMEMBER_SPACE_ID]);
     await client.query(`DELETE FROM spaces WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
@@ -166,9 +167,19 @@ async function seedWorkspace() {
       [SPACE_ID, ORG_ID, USER_ID],
     );
     await client.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES ($1, $2, $3)`,
+      [`oauth-mcp-public-space-member-${TEST_ID}`, SPACE_ID, USER_ID],
+    );
+    await client.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content)
        VALUES ($1, $2, $3, $4, 'Salsa tasting thread for OAuth MCP contract tests')`,
       [MESSAGE_ID, ORG_ID, SPACE_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES ($1, $2, 'oauth-mcp-public-nonmember', 'public', $3)`,
+      [PUBLIC_NONMEMBER_SPACE_ID, ORG_ID, OTHER_USER_ID],
     );
     await client.query(
       `INSERT INTO spaces (id, org_id, name, type, created_by)
@@ -596,6 +607,24 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.equal(duplicateMessageBody.result.isError, false, JSON.stringify(duplicateMessageBody));
   const duplicateMessage = JSON.parse(duplicateMessageBody.result.content[0].text);
   assert.equal(duplicateMessage.id, postedMessage.id, 'same idempotency key should replay the original message result');
+
+  const nonmemberMessageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 343,
+    method: 'tools/call',
+    params: {
+      name: 'message_post',
+      arguments: {
+        space_id: PUBLIC_NONMEMBER_SPACE_ID,
+        content: 'This should not post because the user has not joined the public space',
+        idempotency_key: `message-nonmember-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(nonmemberMessageRes.status, 200);
+  const nonmemberMessageBody = (await nonmemberMessageRes.json()) as any;
+  assert.equal(nonmemberMessageBody.result.isError, true, JSON.stringify(nonmemberMessageBody));
+  assert.match(nonmemberMessageBody.result.content[0].text, /not a member/i);
 
   const activityRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',

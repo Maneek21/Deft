@@ -59,6 +59,20 @@ async function userCanSeeSpace(ctx: HumanToolContext, spaceId: string): Promise<
   return Boolean(member);
 }
 
+async function userIsSpaceMember(ctx: HumanToolContext, spaceId: string): Promise<boolean> {
+  const [member] = await db
+    .select({ id: spaceMembers.id })
+    .from(spaceMembers)
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(
+      eq(spaceMembers.space_id, spaceId),
+      eq(spaceMembers.user_id, ctx.user_id),
+      eq(spaces.org_id, ctx.org_id),
+    ))
+    .limit(1);
+  return Boolean(member);
+}
+
 async function userCanSeeTask(ctx: HumanToolContext, taskId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: tasks.id })
@@ -925,6 +939,7 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
   if (!content) return errorResult('message_post requires content');
   return withIdempotency('message_post', args, ctx, async () => {
     if (!(await userCanSeeSpace(ctx, spaceId))) return errorResult('message_post: space not found or not visible to user');
+    if (!(await userIsSpaceMember(ctx, spaceId))) return errorResult('message_post: user is not a member of this space');
     if (args.parent_id) {
       const [parent] = await db
         .select({ id: messages.id, space_id: messages.space_id })
