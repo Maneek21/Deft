@@ -21,6 +21,7 @@ const APP_URL = (
   || (explicitApiUrl && explicitWebUrl ? WEB_URL : process.env.NEXT_PUBLIC_APP_URL)
   || WEB_URL
 ).replace(/\/$/, '');
+const BROWSER_ORIGIN = (process.env.NEXT_PUBLIC_APP_URL || APP_URL).replace(/\/$/, '');
 
 function maskDatabaseUrl(url: string): string {
   return url.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:***@');
@@ -81,7 +82,7 @@ async function checkCors(): Promise<Check> {
   const res = await fetchStatus(`${API_URL}/api/auth/login`, {
     method: 'OPTIONS',
     headers: {
-      Origin: APP_URL,
+      Origin: BROWSER_ORIGIN,
       'Access-Control-Request-Method': 'POST',
       'Access-Control-Request-Headers': 'Content-Type',
     },
@@ -89,9 +90,9 @@ async function checkCors(): Promise<Check> {
   const allowOrigin = res.headers?.get('access-control-allow-origin') ?? '';
   return {
     name: 'Browser API origin',
-    ok: res.status === 204 && allowOrigin === APP_URL,
+    ok: res.status === 204 && allowOrigin === BROWSER_ORIGIN,
     detail: res.status === 204
-      ? `CORS allows ${allowOrigin || '(empty)'}; expected ${APP_URL}`
+      ? `CORS allows ${allowOrigin || '(empty)'}; expected ${BROWSER_ORIGIN}`
       : `OPTIONS returned ${res.status}: ${res.text.slice(0, 160)}`,
   };
 }
@@ -214,6 +215,7 @@ async function main() {
   console.log(`  web: ${WEB_URL}`);
   console.log(`  api: ${API_URL}`);
   console.log(`  app origin: ${APP_URL}`);
+  console.log(`  browser origin: ${BROWSER_ORIGIN}`);
   console.log('');
 
   const checks = [

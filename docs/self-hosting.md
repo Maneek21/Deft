@@ -144,6 +144,64 @@ exercise an authenticated MCP `tools/list` call, set `DEFT_MCP_BEARER_TOKEN` in
 Open `http://localhost:3000`, create the first account, and keep that account as
 the owner/admin seat.
 
+## Fresh Reset For A Pilot Or Internal Workspace
+
+Use `selfhost:reset` when the stack already exists and you want to return it to
+a clean first-user experience. The command takes a Postgres backup by default,
+stops only the app container, drops and recreates the application schema, flushes
+Redis, clears the local uploads volume, runs the supported `init` path, restarts
+the app, and then runs doctor + smoke. It rebuilds the app and tool images before
+the destructive reset so the validation containers match the checked-out code.
+
+Empty internal workspace, ready for the first owner signup:
+
+```bash
+pnpm selfhost:reset --platform-only --force
+```
+
+Fresh Testers Tomatoes/demo workspace:
+
+```bash
+pnpm selfhost:reset --seed-pilot --force
+```
+
+For a public or production-overlay deployment, the command intentionally needs a
+second confirmation flag:
+
+```bash
+pnpm selfhost:reset --prod --platform-only --force --force-production-reset
+```
+
+If your server uses a site-specific Compose overlay, append it after the base
+and production files:
+
+```bash
+pnpm selfhost:reset --prod --compose-file compose.demo.yml --platform-only --force --force-production-reset
+```
+
+Preview the exact plan without touching data:
+
+```bash
+pnpm selfhost:reset --prod --platform-only --dry-run
+```
+
+Take only a backup:
+
+```bash
+pnpm selfhost:backup --prod
+```
+
+Reset safety notes:
+
+- `--force` is required for any real reset.
+- `--force-production-reset` is also required when URLs or overlays look public.
+- Backups are written to `./backups` unless `--backup-dir` is supplied.
+- Use `--skip-build` only when you intentionally want to reuse the existing
+  Docker images.
+- The command never deletes Docker volumes or reverse-proxy state.
+- Use `--keep-redis` or `--keep-uploads` only when you intentionally want stale
+  runtime state or files to survive.
+
 ## Production Overlay
 
 For production, use the overlay that does not publish Postgres or Redis to host
@@ -282,13 +340,32 @@ Persistent data lives in Docker volumes:
 Postgres backup:
 
 ```bash
+pnpm selfhost:backup
+```
+
+The backup command writes a gzip-compressed SQL dump to `./backups`. For the
+production overlay:
+
+```bash
+pnpm selfhost:backup --prod
+```
+
+Raw Docker equivalent:
+
+```bash
 docker compose exec postgres pg_dump -U postgres deft > deft-backup-$(date +%Y%m%d).sql
 ```
 
-Restore:
+Restore from an uncompressed SQL dump:
 
 ```bash
 docker compose exec -T postgres psql -U postgres deft < deft-backup-20260101.sql
+```
+
+Restore from a `.sql.gz` backup:
+
+```bash
+gunzip -c backups/deft-backup-20260101T120000Z.sql.gz | docker compose exec -T postgres psql -U postgres deft
 ```
 
 ## Upgrading

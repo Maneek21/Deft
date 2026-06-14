@@ -10,7 +10,9 @@ type Check = {
 };
 
 const API_URL = (process.env.DEFT_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
+const PUBLIC_API_URL = (process.env.DEFT_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL || API_URL).replace(/\/$/, '');
 const MCP_URL = `${API_URL}/api/mcp/v1`;
+const PUBLIC_MCP_URL = `${PUBLIC_API_URL}/api/mcp/v1`;
 const CLIENT_NAME = process.env.DEFT_SMOKE_CLIENT_NAME || `Deft self-host smoke ${new Date().toISOString()}`;
 const REDIRECT_URI = process.env.DEFT_SMOKE_REDIRECT_URI || 'http://localhost:3999/callback';
 const REQUESTED_SCOPE = process.env.DEFT_SMOKE_SCOPE || 'read:workspace read:wiki read:tasks read:messages read:calendar';
@@ -53,15 +55,15 @@ async function checkProtectedResource(): Promise<Check> {
   const res = await fetchJson(`${API_URL}/.well-known/oauth-protected-resource`);
   const body = res.json as any;
   const ok = res.status === 200
-    && body?.resource === MCP_URL
+    && body?.resource === PUBLIC_MCP_URL
     && Array.isArray(body?.authorization_servers)
-    && body.authorization_servers.includes(API_URL);
+    && body.authorization_servers.includes(PUBLIC_API_URL);
   return {
     name: 'OAuth protected resource metadata',
     ok,
     detail: ok
       ? `resource=${body.resource}; issuer=${body.authorization_servers[0]}`
-      : `expected resource ${MCP_URL} and issuer ${API_URL}; got ${res.status}: ${res.text.slice(0, 180)}`,
+      : `expected resource ${PUBLIC_MCP_URL} and issuer ${PUBLIC_API_URL}; got ${res.status}: ${res.text.slice(0, 180)}`,
   };
 }
 
@@ -69,9 +71,9 @@ async function checkAuthorizationServer(): Promise<Check> {
   const res = await fetchJson(`${API_URL}/.well-known/oauth-authorization-server`);
   const body = res.json as any;
   const ok = res.status === 200
-    && body?.issuer === API_URL
-    && body?.token_endpoint === `${API_URL}/oauth/token`
-    && body?.registration_endpoint === `${API_URL}/oauth/register`
+    && body?.issuer === PUBLIC_API_URL
+    && body?.token_endpoint === `${PUBLIC_API_URL}/oauth/token`
+    && body?.registration_endpoint === `${PUBLIC_API_URL}/oauth/register`
     && Array.isArray(body?.code_challenge_methods_supported)
     && body.code_challenge_methods_supported.includes('S256');
   return {
@@ -126,7 +128,7 @@ async function checkProtectedToolsList(): Promise<Check> {
     body: JSON.stringify({ jsonrpc: '2.0', id: 'smoke-tools-denied', method: 'tools/list', params: {} }),
   });
   const challenge = res.headers?.get('www-authenticate') ?? '';
-  const metadataUrl = `${API_URL}/.well-known/oauth-protected-resource`;
+  const metadataUrl = `${PUBLIC_API_URL}/.well-known/oauth-protected-resource`;
   const ok = res.status === 401 && challenge.includes('Bearer') && challenge.includes(metadataUrl);
   return {
     name: 'MCP protected tools/list',
@@ -166,6 +168,7 @@ async function checkOptionalBearerToolsList(): Promise<Check> {
 async function main() {
   console.log('Deft self-host smoke');
   console.log(`  api: ${API_URL}`);
+  console.log(`  public api: ${PUBLIC_API_URL}`);
   console.log(`  mcp: ${MCP_URL}`);
   console.log(`  authenticated tools/list: ${REQUIRE_AUTH ? 'required' : 'optional'}`);
   console.log('');
