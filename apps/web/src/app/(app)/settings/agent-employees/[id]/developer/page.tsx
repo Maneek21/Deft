@@ -218,6 +218,7 @@ export default function DeveloperPage() {
   );
 
   return (
+    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
     <div className="mx-auto max-w-4xl p-6">
       <div className="mb-4">
         <button
@@ -440,6 +441,7 @@ export default function DeveloperPage() {
           }))}
         />
       </section>
+    </div>
     </div>
   );
 }
