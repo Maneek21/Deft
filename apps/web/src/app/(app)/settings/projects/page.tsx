@@ -63,6 +63,7 @@ export default function ProjectsRecoveryPage() {
   };
 
   return (
+    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
     <div className="max-w-3xl">
       <div className="mb-6">
         <h1 className="text-[20px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
@@ -129,6 +130,7 @@ export default function ProjectsRecoveryPage() {
           ))}
         </div>
       )}
+    </div>
     </div>
   );
 }
