@@ -1651,12 +1651,16 @@ export function SpaceChat({
                                 onApprove={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
                                   if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  return body;
                                 }}
                                 onReject={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
                                   if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  return body;
                                 }}
                               />
                             ))}
@@ -1788,12 +1792,16 @@ export function SpaceChat({
                                 onApprove={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
                                   if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  return body;
                                 }}
                                 onReject={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
                                   if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  return body;
                                 }}
                               />
                             ))}

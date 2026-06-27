@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
+import { stripHtml } from '@/lib/strip-html';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -48,6 +49,17 @@ import { useProjectResolvedConfig, priorityLabel, priorityFullLabel, type Canoni
 registerBuiltInCommands();
 registerAICommands();
 
+type SourceMessage = {
+  id: string;
+  content: string | null;
+  space_id: string;
+  space_name: string | null;
+  user_id: string;
+  author_name: string | null;
+  author_avatar: string | null;
+  created_at: string;
+};
+
 type Task = {
   id: string;
   number: number;
@@ -68,6 +80,7 @@ type Task = {
   estimation: string | null;
   sort_order: number;
   source_message_id: string | null;
+  source_message?: SourceMessage | null;
   is_deleted: boolean;
   project_id: string;
   project_prefix: string;
@@ -82,6 +95,20 @@ type Task = {
   created_at: string;
   updated_at: string;
 };
+
+function normalizeTaskDetailPayload(data: any): Task {
+  return {
+    ...data,
+    assignee_id: data.assignee_id ?? data.assignee?.id ?? null,
+    assignee_name: data.assignee_name ?? data.assignee?.name ?? null,
+    assignee_avatar: data.assignee_avatar ?? data.assignee?.avatar_url ?? null,
+    creator_name: data.creator_name ?? data.creator?.name ?? null,
+    project_color: data.project_color ?? null,
+    labels: data.labels ?? [],
+    recurrence: data.recurrence ?? null,
+    source_message: data.source_message ?? null,
+  } as Task;
+}
 
 type Subtask = {
   id: string;
@@ -689,6 +716,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     message_preview: string | null; message_space_id: string | null; space_name: string | null;
     author_name: string | null; author_avatar: string | null; created_at: string;
   }[]>([]);
+  const sourceMessage = task?.source_message ?? null;
+  const sourceMessageHref = sourceMessage
+    ? `/chat?space=${sourceMessage.space_id}&message=${sourceMessage.id}`
+    : null;
+  const sourceMessagePreview = sourceMessage
+    ? stripHtml(sourceMessage.content).slice(0, 220)
+    : '';
+  const visibleReferenceCount = references.length + (sourceMessage ? 1 : 0);
 
   const titleRef = useRef<HTMLInputElement>(null);
   const dueDateInputRef = useRef<HTMLInputElement>(null);
@@ -702,9 +737,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const res = await api.get(`/api/tasks/${taskId}`);
     if (res.ok) {
       const data = await res.json();
-      setTask(data);
-      setTitleValue(data.title);
-      setDescValue(data.description || '');
+      const normalized = normalizeTaskDetailPayload(data);
+      setTask(normalized);
+      setTitleValue(normalized.title);
+      setDescValue(normalized.description || '');
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
     }
@@ -1168,9 +1204,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
           <div className="flex items-center gap-2">
             {task.source_message_id && (
               <button
+                onClick={() => {
+                  if (sourceMessageHref) router.push(sourceMessageHref);
+                }}
                 className="p-1.5 rounded-md"
                 style={{ color: 'var(--muted)' }}
                 title="View source message"
+                disabled={!sourceMessageHref}
               >
                 <ExternalLink size={14} />
               </button>
@@ -1791,7 +1831,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               { key: 'comments', label: 'Comments', badge: comments.length || undefined },
               { key: 'activity', label: 'Activity' },
               { key: 'attachments', label: 'Attachments', badge: attachments.length || undefined },
-              { key: 'references', label: 'References', badge: references.length || undefined },
+              { key: 'references', label: 'References', badge: visibleReferenceCount || undefined },
             ] as { key: TabKey; label: string; badge?: number }[]).map((t) => (
               <button
                 key={t.key}
@@ -2455,16 +2495,55 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               <h3 className="text-[12px] font-semibold mb-2 uppercase tracking-wide flex items-center gap-1.5"
                 style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>
                 <Link2 size={12} />
-                {references.length === 0
+                {visibleReferenceCount === 0
                   ? 'No references'
-                  : `Referenced in ${references.length} message${references.length !== 1 ? 's' : ''}`}
+                  : `${visibleReferenceCount} reference${visibleReferenceCount !== 1 ? 's' : ''}`}
               </h3>
-              {references.length === 0 ? (
+              {visibleReferenceCount === 0 ? (
                 <p className="text-[12px] px-2" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
                   No messages or notes link to this task yet.
                 </p>
               ) : (
                 <div className="space-y-1.5">
+                  {sourceMessage && (
+                    <div
+                      onClick={() => {
+                        if (sourceMessageHref) {
+                          router.push(sourceMessageHref);
+                        }
+                      }}
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      style={{ background: 'var(--surface-container)' }}
+                    >
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
+                        style={{ background: 'var(--accent)' }}>
+                        {sourceMessage.author_name?.charAt(0).toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
+                            Source chat message
+                          </span>
+                          {sourceMessage.space_name && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded"
+                              style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
+                              #{sourceMessage.space_name}
+                            </span>
+                          )}
+                          {sourceMessage.author_name && (
+                            <span className="text-[10px]" style={{ color: 'var(--muted)' }}>
+                              by {sourceMessage.author_name}
+                            </span>
+                          )}
+                        </div>
+                        {sourceMessagePreview && (
+                          <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
+                            {sourceMessagePreview}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {references.map(ref => (
                     <div key={ref.id}
                       onClick={() => {

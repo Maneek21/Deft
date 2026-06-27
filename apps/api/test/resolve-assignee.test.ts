@@ -20,6 +20,7 @@ const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 
 const U_ALICE = 'test-resolve-alice';
 const U_ALICIA = 'test-resolve-alicia';
+const U_RENEE = 'test-resolve-renee';
 const U_AGENT_SHADOW = 'test-resolve-agent-shadow';
 const AGENT_EMP_ID = 'test-resolve-agent-emp';
 
@@ -49,6 +50,12 @@ before(async () => {
        ON CONFLICT (id) DO NOTHING`,
       [U_ALICIA, 'resolve-alicia@test.local'],
     );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, 'Renée Albright', false)
+       ON CONFLICT (id) DO NOTHING`,
+      [U_RENEE, 'resolve-renee@test.local'],
+    );
     // Shadow user for agent employee
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
@@ -70,6 +77,12 @@ before(async () => {
        ON CONFLICT (org_id, user_id) DO NOTHING`,
       [ORG_ID, U_ALICIA],
     );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO NOTHING`,
+      [ORG_ID, U_RENEE],
+    );
 
     // Agent employee row — shadow user is NOT in org_members; resolution
     // must still find it via the agent_employees branch.
@@ -88,8 +101,8 @@ before(async () => {
 after(async () => {
   await withClient(async (c) => {
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [AGENT_EMP_ID]);
-    await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2)`, [U_ALICE, U_ALICIA]);
-    await c.query(`DELETE FROM users WHERE id IN ($1, $2, $3)`, [U_ALICE, U_ALICIA, U_AGENT_SHADOW]);
+    await c.query(`DELETE FROM org_members WHERE user_id IN ($1, $2, $3)`, [U_ALICE, U_ALICIA, U_RENEE]);
+    await c.query(`DELETE FROM users WHERE id IN ($1, $2, $3, $4)`, [U_ALICE, U_ALICIA, U_RENEE, U_AGENT_SHADOW]);
   });
 });
 
@@ -108,6 +121,21 @@ test('partial ilike match resolves when unique', async () => {
   const r = await resolveAssignee('Smith', ORG_ID);
   assert.ok(r);
   assert.equal(r!.id, U_ALICE);
+});
+
+test('accent-insensitive partial match resolves human user', async () => {
+  const { resolveAssignee, resolveAssigneeWithMatches } = await import('../src/lib/resolve-assignee.js');
+
+  const simple = await resolveAssignee('Renee', ORG_ID);
+  assert.ok(simple);
+  assert.equal(simple!.id, U_RENEE);
+  assert.equal(simple!.name, 'Renée Albright');
+
+  const detailed = await resolveAssigneeWithMatches('Renee', ORG_ID);
+  assert.equal(detailed.ok, true);
+  if (detailed.ok) {
+    assert.equal(detailed.value.id, U_RENEE);
+  }
 });
 
 test('agent-employee user (no org_members row) is resolvable', async () => {

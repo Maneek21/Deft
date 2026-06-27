@@ -69,6 +69,7 @@ export const MCP_ACTION_KINDS = new Set([
 export type ApprovalResolverError =
   | { status: 'error'; code: 'NOT_FOUND'; message: string }
   | { status: 'error'; code: 'FORBIDDEN'; message: string }
+  | { status: 'error'; code: 'INVALID_STATE'; message: string }
   | { status: 'error'; code: 'UNSUPPORTED_ACTION'; message: string }
   | { status: 'error'; code: 'EMPLOYEE_MISSING'; message: string }
   | { status: 'error'; code: 'EXECUTE_FAILED'; message: string };
@@ -133,11 +134,16 @@ async function dispatchAction(
   params: Record<string, unknown>,
   ctx: ToolContext,
   actionId?: string,
+  dispatchOpts?: { sourceReaderUserId?: string | null },
 ): Promise<ToolResult> {
   // Phase 7 — skipReceipt=true: the approval resolver owns receipt
   // generation for approved actions (it knows the approver_id). The inner
   // executors only emit receipts in the auto-exec path.
-  const opts = { skipReceipt: true, actionId } as const;
+  const opts = {
+    skipReceipt: true,
+    actionId,
+    sourceReaderUserId: dispatchOpts?.sourceReaderUserId ?? null,
+  } as const;
   switch (actionName) {
     case 'task_create':
       return executeTaskCreate(params as unknown as TaskCreateArgs, ctx, opts);
@@ -229,6 +235,13 @@ export async function approveAction(
       message: `action ${actionId} has expired`,
     };
   }
+  if (row.approval_status !== 'pending') {
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} is not pending`,
+    };
+  }
 
   // Permission check.
   const isMember = await assertUserInOrg(approverUserId, row.org_id);
@@ -292,21 +305,48 @@ export async function approveAction(
       .from(agentActions)
       .where(eq(agentActions.id, actionId))
       .limit(1);
+    if (winner?.approval_status === 'approved') {
+      return {
+        status: 'approved',
+        message: 'already approved (lost race)',
+        result: winner.result ?? undefined,
+      };
+    }
+    if (winner?.approval_status === 'rejected') {
+      return { status: 'rejected', message: 'already rejected (lost race)' };
+    }
+    if (winner?.approval_status === 'expired') {
+      return {
+        status: 'error',
+        code: 'NOT_FOUND',
+        message: `action ${actionId} has expired`,
+      };
+    }
     return {
-      status: 'approved',
-      message: 'already approved (lost race)',
-      result: winner?.result ?? undefined,
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} is no longer pending`,
     };
   }
 
   let toolResult: ToolResult;
   let caughtError: Error | null = null;
   try {
+    const actionParams = (row.params ?? {}) as Record<string, unknown>;
+    const sourceReaderUserId =
+      row.source === 'defty_capture'
+        ? typeof actionParams.source_user_id === 'string'
+          ? actionParams.source_user_id
+          : typeof actionParams.origin_user_id === 'string'
+            ? actionParams.origin_user_id
+            : null
+        : null;
     toolResult = await dispatchAction(
       row.action,
-      (row.params ?? {}) as Record<string, unknown>,
+      actionParams,
       ctx,
       row.id,
+      { sourceReaderUserId },
     );
   } catch (err) {
     caughtError = err instanceof Error ? err : new Error(String(err));
@@ -456,13 +496,58 @@ export async function rejectAction(
     };
   }
 
-  await db
+  if (row.agent_employee_id) {
+    const emp = await loadEmployeeForAction(row.agent_employee_id);
+    if (!emp || emp.org_id !== row.org_id) {
+      return {
+        status: 'error',
+        code: 'FORBIDDEN',
+        message: 'agent employee does not belong to the action org',
+      };
+    }
+  }
+
+  const [updated] = await db
     .update(agentActions)
     .set({
       approval_status: 'rejected',
       error: reason ? reason.slice(0, 2000) : null,
     })
-    .where(eq(agentActions.id, actionId));
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.approval_status, 'pending'),
+    ))
+    .returning({ id: agentActions.id });
+
+  if (!updated) {
+    const [winner] = await db
+      .select()
+      .from(agentActions)
+      .where(eq(agentActions.id, actionId))
+      .limit(1);
+    if (winner?.approval_status === 'approved') {
+      return {
+        status: 'approved',
+        message: 'already approved — cannot reject after approval',
+        result: winner.result ?? undefined,
+      };
+    }
+    if (winner?.approval_status === 'rejected') {
+      return { status: 'rejected', message: 'already rejected' };
+    }
+    if (winner?.approval_status === 'expired') {
+      return {
+        status: 'error',
+        code: 'NOT_FOUND',
+        message: `action ${actionId} has expired`,
+      };
+    }
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} is no longer pending`,
+    };
+  }
 
   // ── Phase 7 — signed rejection receipt ───────────────────────────────
   const isDeftyCapture = row.source === 'defty_capture';

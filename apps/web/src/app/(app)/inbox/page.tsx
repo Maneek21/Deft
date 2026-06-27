@@ -47,7 +47,9 @@ type WorkIntent = {
   converted_at: string | null;
   dismissed_at: string | null;
   failure_reason: string | null;
+  metadata?: Record<string, unknown> | null;
   created_at: string;
+  updated_at: string;
 };
 
 type WorkIntentResponse = { intents: WorkIntent[] };
@@ -71,50 +73,75 @@ const INTENT_STATUS_LABEL: Record<WorkIntent['status'], string> = {
 
 async function fetchWorkIntents(url: string): Promise<WorkIntentResponse> {
   const res = await api.get(url);
-  if (!res.ok) return { intents: [] };
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Failed to load captures (${res.status})`);
+  }
   return (await res.json()) as WorkIntentResponse;
+}
+
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  const body = await res.json().catch(() => null) as { error?: string; code?: string } | null;
+  if (body?.error) return body.code ? `${body.error} (${body.code})` : body.error;
+  return `${fallback} (${res.status})`;
 }
 
 function WorkIntentRow({
   intent,
   onRetry,
   retrying,
+  retryError,
+  convertedRetryId,
 }: {
   intent: WorkIntent;
   onRetry: (intentId: string) => void;
   retrying: boolean;
+  retryError: string | null;
+  convertedRetryId?: string | null;
 }) {
   const statusColor =
     intent.status === 'converted' ? 'var(--status-green)'
     : intent.status === 'failed' ? 'var(--status-red)'
     : intent.status === 'dismissed' ? 'var(--muted)'
+    : intent.status === 'expired' ? 'var(--status-amber)'
     : 'var(--primary)';
+  const statusBackground =
+    intent.status === 'failed' ? 'rgba(239,68,68,0.1)'
+    : intent.status === 'expired' ? 'rgba(245,158,11,0.1)'
+    : 'var(--bg-active)';
   const messagePreview = stripHtml(intent.source_message_content ?? intent.summary ?? '');
-  const timestamp = intent.converted_at ?? intent.dismissed_at ?? intent.created_at;
+  const timestamp = intent.converted_at
+    ?? intent.dismissed_at
+    ?? (intent.status === 'failed' || intent.status === 'expired' ? intent.updated_at : null)
+    ?? intent.created_at;
+  const reasonLabel =
+    intent.status === 'dismissed' ? 'Dismissed reason'
+    : intent.status === 'expired' ? 'Expired reason'
+    : 'Failure reason';
 
   return (
     <div
-      className="px-3 py-2.5 rounded-lg border"
+      className="px-3 py-2.5 rounded-lg border min-w-0"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
-          <p className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
+          <p className="text-[12px] font-medium break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground)' }}>
             {intent.title}
           </p>
-          <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+          <p className="text-[11px] mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--muted)' }}>
             {INTENT_KIND_LABEL[intent.kind]} from {intent.source_user_name ?? 'chat'}{intent.space_name ? ` in #${intent.space_name}` : ''}
           </p>
         </div>
         <span
-          className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
-          style={{ color: statusColor, background: 'var(--bg-active)' }}
+          className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap self-start"
+          style={{ color: statusColor, background: statusBackground }}
         >
           {INTENT_STATUS_LABEL[intent.status]}
         </span>
       </div>
       {messagePreview && (
-        <p className="text-[12px] mt-2 line-clamp-2" style={{ color: 'var(--foreground-secondary)' }}>
+        <p className="text-[12px] mt-2 line-clamp-2 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
           "{messagePreview.slice(0, 180)}{messagePreview.length > 180 ? '...' : ''}"
         </p>
       )}
@@ -143,10 +170,22 @@ function WorkIntentRow({
       </div>
       {intent.failure_reason && (
         <p className="text-[11px] mt-1" style={{ color: 'var(--status-red)' }}>
-          {stripHtml(intent.failure_reason).slice(0, 180)}
+          <span style={{ color: intent.status === 'failed' ? 'var(--status-red)' : 'var(--muted)' }}>
+            {reasonLabel}: {stripHtml(intent.failure_reason).slice(0, 180)}
+          </span>
         </p>
       )}
-      {intent.status === 'failed' && (
+      {intent.status === 'expired' && !intent.failure_reason && (
+        <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
+          This proposal expired before review. Retry from a failed capture or create a new task from the source message.
+        </p>
+      )}
+      {intent.status === 'failed' && convertedRetryId && (
+        <p className="text-[11px] mt-2" style={{ color: 'var(--muted)' }}>
+          This failed capture was already retried and converted.
+        </p>
+      )}
+      {intent.status === 'failed' && !convertedRetryId && (
         <div className="mt-2">
           <button
             type="button"
@@ -157,6 +196,11 @@ function WorkIntentRow({
           >
             {retrying ? 'Retrying...' : 'Retry as proposal'}
           </button>
+          {retryError && (
+            <p className="text-[11px] mt-1" style={{ color: 'var(--status-red)' }}>
+              {retryError}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -168,13 +212,14 @@ export default function InboxPage() {
   const initialTab = (params.get('tab') as Tab) ?? 'all';
   const [tab, setTab] = useState<Tab>(initialTab);
   const [retryingIntentId, setRetryingIntentId] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<{ intentId: string; message: string } | null>(null);
 
   // For 'tasks' we want both task_assigned and task_updated. Fetch all and filter
   // client-side for that tab; for the others we pass kind to the API.
   const apiKind = tab === 'tasks' ? undefined : TAB_TO_KIND[tab];
-  const { items, unreadCount, isLoading, markRead, markAllRead, refresh } = useInbox(apiKind);
+  const { items, unreadCount, isLoading, error: inboxError, markRead, markAllRead, refresh } = useInbox(apiKind);
   const shouldLoadWorkIntents = tab === 'captures';
-  const { data: workIntentData, isLoading: workIntentsLoading, mutate: refreshWorkIntents } = useSWR(
+  const { data: workIntentData, error: workIntentsError, isLoading: workIntentsLoading, mutate: refreshWorkIntents } = useSWR(
     shouldLoadWorkIntents ? '/api/work-intents?limit=50' : null,
     fetchWorkIntents,
     { refreshInterval: 15_000, revalidateOnFocus: true },
@@ -190,40 +235,66 @@ export default function InboxPage() {
     () => (workIntentData?.intents ?? []).filter((intent) => intent.status !== 'proposed'),
     [workIntentData?.intents],
   );
+  const convertedRetryByOriginal = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const intent of workIntentData?.intents ?? []) {
+      if (intent.status !== 'converted') continue;
+      const retryOf = intent.metadata?.retry_of_work_intent_id;
+      if (typeof retryOf === 'string') map.set(retryOf, intent.id);
+    }
+    return map;
+  }, [workIntentData?.intents]);
+  const loadError = shouldLoadWorkIntents
+    ? (inboxError ?? workIntentsError)
+    : inboxError;
+  const refreshCaptureSurfaces = useCallback(async () => {
+    await Promise.allSettled([refresh(), refreshWorkIntents()]);
+  }, [refresh, refreshWorkIntents]);
 
   const handleApprove = useCallback(
     async (id: string) => {
-      const res = await api.post(`/api/agent/actions/${id}/approve`, {});
-      if (!res.ok) throw new Error(`Approve failed (${res.status})`);
-      void refresh();
-      void refreshWorkIntents();
+      try {
+        const res = await api.post(`/api/agent/actions/${id}/approve`, {});
+        if (!res.ok) throw new Error(await readApiError(res, 'Approve failed'));
+        return await res.json().catch(() => ({ status: 'approved' }));
+      } finally {
+        await refreshCaptureSurfaces();
+      }
     },
-    [refresh, refreshWorkIntents],
+    [refreshCaptureSurfaces],
   );
 
   const handleReject = useCallback(
     async (id: string) => {
-      const res = await api.post(`/api/agent/actions/${id}/reject`, {});
-      if (!res.ok) throw new Error(`Reject failed (${res.status})`);
-      void refresh();
-      void refreshWorkIntents();
+      try {
+        const res = await api.post(`/api/agent/actions/${id}/reject`, {});
+        if (!res.ok) throw new Error(await readApiError(res, 'Reject failed'));
+        return await res.json().catch(() => ({ status: 'rejected' }));
+      } finally {
+        await refreshCaptureSurfaces();
+      }
     },
-    [refresh, refreshWorkIntents],
+    [refreshCaptureSurfaces],
   );
 
   const handleRetryIntent = useCallback(
     async (id: string) => {
       setRetryingIntentId(id);
+      setRetryError(null);
       try {
         const res = await api.post(`/api/work-intents/${id}/retry`, {});
-        if (!res.ok) throw new Error(`Retry failed (${res.status})`);
-        void refresh();
-        void refreshWorkIntents();
+        if (!res.ok) throw new Error(await readApiError(res, 'Retry failed'));
+        await refreshCaptureSurfaces();
+      } catch (err) {
+        setRetryError({
+          intentId: id,
+          message: err instanceof Error ? err.message : 'Retry failed.',
+        });
       } finally {
         setRetryingIntentId(null);
       }
     },
-    [refresh, refreshWorkIntents],
+    [refreshCaptureSurfaces],
   );
 
   const handleRowClick = useCallback(
@@ -285,6 +356,21 @@ export default function InboxPage() {
         {/* Body */}
         {isLoading || (shouldLoadWorkIntents && workIntentsLoading) ? (
           <p className="text-[13px]" style={{ color: 'var(--muted)' }}>Loading...</p>
+        ) : loadError ? (
+          <div
+            className="text-[13px] py-8 px-4 text-center rounded-lg"
+            style={{ color: 'var(--status-red)', border: '1px dashed var(--border)' }}
+          >
+            <p>{loadError instanceof Error ? loadError.message : 'Could not load inbox.'}</p>
+            <button
+              type="button"
+              onClick={() => { void refreshCaptureSurfaces(); }}
+              className="mt-3 text-[12px] px-3 py-1.5 rounded-md"
+              style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+            >
+              Retry
+            </button>
+          </div>
         ) : filtered.length === 0 && (!shouldLoadWorkIntents || historicWorkIntents.length === 0) ? (
           <div
             className="text-[13px] py-12 text-center rounded-lg"
@@ -327,6 +413,8 @@ export default function InboxPage() {
                   intent={intent}
                   onRetry={handleRetryIntent}
                   retrying={retryingIntentId === intent.id}
+                  retryError={retryError?.intentId === intent.id ? retryError.message : null}
+                  convertedRetryId={convertedRetryByOriginal.get(intent.id) ?? null}
                 />
               ))}
           </div>

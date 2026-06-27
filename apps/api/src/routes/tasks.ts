@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -348,6 +348,7 @@ taskRoutes.get('/my', async (c) => {
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
       parent_task_id: tasks.parent_task_id,
+      metadata: tasks.metadata,
       is_deleted: tasks.is_deleted,
       created_at: tasks.created_at,
       updated_at: tasks.updated_at,
@@ -1042,11 +1043,28 @@ taskRoutes.get('/:id', async (c) => {
         id: messages.id,
         content: messages.content,
         space_id: messages.space_id,
+        space_name: spaces.name,
         user_id: messages.user_id,
+        author_name: users.name,
+        author_avatar: users.avatar_url,
         created_at: messages.created_at,
       })
         .from(messages)
-        .where(eq(messages.id, task.source_message_id))
+        .innerJoin(spaceMembers, and(
+          eq(spaceMembers.space_id, messages.space_id),
+          eq(spaceMembers.user_id, user.id),
+        ))
+        .innerJoin(spaces, and(
+          eq(spaces.id, messages.space_id),
+          eq(spaces.org_id, user.org_id),
+          eq(spaces.is_archived, false),
+        ))
+        .leftJoin(users, eq(users.id, messages.user_id))
+        .where(and(
+          eq(messages.id, task.source_message_id),
+          eq(messages.org_id, user.org_id),
+          eq(messages.is_deleted, false),
+        ))
         .limit(1);
       sourceMessage = msg ?? null;
     }
@@ -1069,6 +1087,10 @@ taskRoutes.get('/:id', async (c) => {
 
     return c.json({
       ...task,
+      assignee_name: assignee?.name ?? null,
+      assignee_avatar: assignee?.avatar_url ?? null,
+      creator_name: creator?.name ?? null,
+      creator_avatar: creator?.avatar_url ?? null,
       assignee,
       creator: creator ?? null,
       labels: labelsMap.get(task.id) ?? [],

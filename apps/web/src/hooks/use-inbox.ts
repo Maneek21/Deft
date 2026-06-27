@@ -42,14 +42,15 @@ type InboxResponse = {
 async function fetchInbox(url: string): Promise<InboxResponse> {
   const res = await api.get(url);
   if (!res.ok) {
-    return { items: [], unread_count: 0, has_more: false, next_cursor: null };
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Failed to load inbox (${res.status})`);
   }
   return (await res.json()) as InboxResponse;
 }
 
 export function useInbox(kind?: InboxItemKind) {
   const url = kind ? `/api/inbox?kind=${kind}` : '/api/inbox';
-  const { data, mutate, isLoading } = useSWR<InboxResponse>(url, fetchInbox, {
+  const { data, mutate, isLoading, error } = useSWR<InboxResponse>(url, fetchInbox, {
     refreshInterval: 15_000,
     revalidateOnFocus: true,
     fallbackData: { items: [], unread_count: 0, has_more: false, next_cursor: null },
@@ -70,6 +71,7 @@ export function useInbox(kind?: InboxItemKind) {
     unreadCount: data?.unread_count ?? 0,
     hasMore: data?.has_more ?? false,
     isLoading,
+    error,
     markRead,
     markAllRead,
     refresh: mutate,

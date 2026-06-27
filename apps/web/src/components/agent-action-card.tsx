@@ -18,6 +18,11 @@ export type AgentAction = {
 };
 
 type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
+export type AgentActionMutationResult = {
+  status?: string;
+  approval_status?: string;
+  success?: boolean;
+} | void;
 
 const ACTION_LABELS: Record<string, string> = {
   create_task: 'Create task',
@@ -89,8 +94,8 @@ export function AgentActionCard({
   onUndo,
 }: {
   action: AgentAction;
-  onApprove: () => void | Promise<void>;
-  onReject: () => void | Promise<void>;
+  onApprove: () => AgentActionMutationResult | Promise<AgentActionMutationResult>;
+  onReject: () => AgentActionMutationResult | Promise<AgentActionMutationResult>;
   onUndo?: () => void;
 }) {
   const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
@@ -127,8 +132,9 @@ export function AgentActionCard({
     setLocalError(null);
     setLocalStatus('approving');
     try {
-      await onApprove();
-      setLocalStatus('approved');
+      const result = await onApprove();
+      const status = normalizeReturnedStatus(result, 'approved');
+      setLocalStatus(status);
     } catch (err) {
       setLocalStatus(null);
       setLocalError(err instanceof Error ? err.message : 'Approval failed.');
@@ -140,8 +146,9 @@ export function AgentActionCard({
     setLocalError(null);
     setLocalStatus('rejecting');
     try {
-      await onReject();
-      setLocalStatus('rejected');
+      const result = await onReject();
+      const status = normalizeReturnedStatus(result, 'rejected');
+      setLocalStatus(status);
     } catch (err) {
       setLocalStatus(null);
       setLocalError(err instanceof Error ? err.message : 'Rejection failed.');
@@ -341,4 +348,15 @@ export function AgentActionCard({
       </div>
     </div>
   );
+}
+
+function normalizeReturnedStatus(
+  result: AgentActionMutationResult,
+  fallback: 'approved' | 'rejected',
+): 'approved' | 'rejected' {
+  if (result && typeof result === 'object') {
+    const status = result.status ?? result.approval_status;
+    if (status === 'approved' || status === 'rejected') return status;
+  }
+  return fallback;
 }

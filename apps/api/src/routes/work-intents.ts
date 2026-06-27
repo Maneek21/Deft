@@ -127,6 +127,7 @@ workIntentRoutes.get('/', async (c) => {
       converted_at: workIntents.converted_at,
       dismissed_at: workIntents.dismissed_at,
       failure_reason: workIntents.failure_reason,
+      metadata: workIntents.metadata,
       created_at: workIntents.created_at,
       updated_at: workIntents.updated_at,
     })
@@ -217,13 +218,33 @@ workIntentRoutes.post('/:id/retry', async (c) => {
     );
   }
 
+  const [convertedRetry] = await db
+    .select({ id: workIntents.id })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, user.org_id),
+      eq(workIntents.status, 'converted'),
+      sql`${workIntents.metadata}->>'retry_of_work_intent_id' = ${row.id}`,
+    ))
+    .limit(1);
+
+  if (convertedRetry) {
+    return c.json(
+      {
+        error: 'This capture already has a converted retry',
+        code: 'RETRY_ALREADY_CONVERTED',
+        retry_intent_id: convertedRetry.id,
+      },
+      409,
+    );
+  }
+
   const fallbackDefty = row.agent_employee_id && row.agent_user_id && row.agent_slug
     ? null
     : await ensureDeftyEmployee(user.org_id);
   const employeeId = row.agent_employee_id && row.agent_user_id ? row.agent_employee_id : fallbackDefty!.employeeId;
   const employeeUserId = row.agent_user_id ?? fallbackDefty!.userId;
   const employeeSlug = row.agent_slug ?? fallbackDefty!.slug;
-  const retryDedupeKey = `${row.dedupe_key}:retry`;
 
   const retry = await db.transaction(async (tx) => {
     await tx.execute(sql`
@@ -235,15 +256,31 @@ workIntentRoutes.post('/:id/retry', async (c) => {
     `);
 
     let [intent] = await tx
-      .select({ id: workIntents.id })
+      .select({
+        id: workIntents.id,
+        dedupe_key: workIntents.dedupe_key,
+      })
       .from(workIntents)
       .where(and(
         eq(workIntents.org_id, user.org_id),
-        eq(workIntents.dedupe_key, retryDedupeKey),
+        eq(workIntents.status, 'proposed'),
+        sql`${workIntents.metadata}->>'retry_of_work_intent_id' = ${row.id}`,
       ))
+      .orderBy(desc(workIntents.created_at))
       .limit(1);
 
     if (!intent) {
+      const attempts = await tx
+        .select({ id: workIntents.id })
+        .from(workIntents)
+        .where(and(
+          eq(workIntents.org_id, user.org_id),
+          sql`${workIntents.metadata}->>'retry_of_work_intent_id' = ${row.id}`,
+        ));
+      const retryDedupeKey = attempts.length === 0
+        ? `${row.dedupe_key}:retry`
+        : `${row.dedupe_key}:retry:${attempts.length + 1}`;
+
       [intent] = await tx
         .insert(workIntents)
         .values({
@@ -271,7 +308,10 @@ workIntentRoutes.post('/:id/retry', async (c) => {
         .onConflictDoNothing({
           target: [workIntents.org_id, workIntents.dedupe_key],
         })
-        .returning({ id: workIntents.id });
+        .returning({
+          id: workIntents.id,
+          dedupe_key: workIntents.dedupe_key,
+        });
     }
 
     if (!intent) {
@@ -294,7 +334,7 @@ workIntentRoutes.post('/:id/retry', async (c) => {
       retry_of_work_intent_id: row.id,
       retry_failure_reason: row.failure_reason ?? null,
       retried_by: user.id,
-      dedupe_key: retryDedupeKey,
+      dedupe_key: intent.dedupe_key,
       proposed_by: 'defty',
     };
 
@@ -307,6 +347,7 @@ workIntentRoutes.post('/:id/retry', async (c) => {
       .where(and(
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.source, 'defty_capture'),
+        eq(agentActions.approval_status, 'pending'),
         sql`${agentActions.params}->>'work_intent_id' = ${intent.id}`,
         sql`${agentActions.params}->>'retry_of_work_intent_id' = ${row.id}`,
       ))

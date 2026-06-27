@@ -120,35 +120,6 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
             )
         )
       )
-      AND (
-        ${agentActions.params}->>'source_message_id' IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM messages inbox_capture_m
-          INNER JOIN space_members inbox_capture_msg_sm
-            ON inbox_capture_msg_sm.space_id = inbox_capture_m.space_id
-          INNER JOIN spaces inbox_capture_msg_s
-            ON inbox_capture_msg_s.id = inbox_capture_m.space_id
-          WHERE inbox_capture_m.id = ${agentActions.params}->>'source_message_id'
-            AND inbox_capture_m.org_id = ${user.org_id}
-            AND inbox_capture_m.is_deleted = false
-            AND inbox_capture_msg_sm.user_id = ${user.id}
-            AND inbox_capture_msg_s.org_id = ${user.org_id}
-            AND inbox_capture_msg_s.is_archived = false
-            AND (
-              COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              ) IS NULL
-              OR inbox_capture_m.space_id = COALESCE(
-                ${agentActions.params}->>'source_space_id',
-                ${agentActions.params}->>'origin_space_id',
-                ${agentActions.params}->>'space_id'
-              )
-            )
-        )
-      )
     )
   )`;
 }
@@ -167,6 +138,7 @@ inboxRoutes.get('/', async (c) => {
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.approval_status, 'pending'),
         lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+        visibleCaptureActionSql(user),
       ))
       .returning({ id: agentActions.id, params: agentActions.params });
     await markWorkIntentsExpiredForActions({

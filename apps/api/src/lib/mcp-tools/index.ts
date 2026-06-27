@@ -340,6 +340,11 @@ export const toolSchemas: ToolSchema[] = [
         project_id: { type: 'string' },
         space_id: { type: 'string' },
         assignee_id: { type: 'string' },
+        assignee_name: {
+          type: 'string',
+          description:
+            'Optional assignee display name. Use when you know the person name but not the user id; Deft resolves it inside the caller org.',
+        },
         source_message_id: {
           type: 'string',
           description: 'Optional source chat message id to link the created task back to the conversation.',

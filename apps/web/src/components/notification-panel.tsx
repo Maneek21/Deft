@@ -45,16 +45,20 @@ export function NotificationPanel({ onClose }: Props) {
     if (!item.approval) return;
     const res = await api.post(`/api/agent/actions/${item.approval.action_id}/approve`, {});
     if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+    const body = await res.json().catch(() => ({ status: 'approved' }));
     await markRead([item.id]);
     void refresh();
+    return body;
   };
 
   const handleReject = async (item: InboxItem) => {
     if (!item.approval) return;
     const res = await api.post(`/api/agent/actions/${item.approval.action_id}/reject`, {});
     if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+    const body = await res.json().catch(() => ({ status: 'rejected' }));
     await markRead([item.id]);
     void refresh();
+    return body;
   };
 
   const handleRowClick = (item: InboxItem) => {

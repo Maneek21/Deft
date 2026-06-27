@@ -41,6 +41,7 @@ let CREATED_TEST_ORG = false;
 let CREATED_TEST_PROJECT_ID: string | null = null;
 let CREATED_TEST_SPACE_ID: string | null = null;
 const SOURCE_MESSAGE_IDS: string[] = [];
+const SOURCE_SPACE_IDS: string[] = [];
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -185,6 +186,15 @@ async function seedFixtures() {
       TEST_SPACE_ID = r.rows[0].id;
       CREATED_TEST_SPACE_ID = TEST_SPACE_ID;
     }
+
+    for (const memberId of [APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID]) {
+      await c.query(
+        `INSERT INTO space_members (id, space_id, user_id)
+         VALUES (gen_random_uuid()::text, $1, $2)
+         ON CONFLICT (space_id, user_id) DO NOTHING`,
+        [TEST_SPACE_ID, memberId],
+      );
+    }
   });
 }
 
@@ -223,10 +233,28 @@ async function teardownFixtures() {
         [SOURCE_MESSAGE_IDS],
       );
     }
+    if (SOURCE_SPACE_IDS.length > 0) {
+      await c.query(
+        `DELETE FROM space_members WHERE space_id = ANY($1::text[])`,
+        [SOURCE_SPACE_IDS],
+      );
+      await c.query(
+        `DELETE FROM spaces WHERE id = ANY($1::text[])`,
+        [SOURCE_SPACE_IDS],
+      );
+    }
     await c.query(
       `DELETE FROM messages WHERE user_id = $1`,
       [SHADOW_USER_ID],
     );
+    if (TEST_SPACE_ID) {
+      await c.query(
+        `DELETE FROM space_members
+         WHERE space_id = $1
+           AND user_id IN ($2, $3, $4)`,
+        [TEST_SPACE_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+      );
+    }
     if (CREATED_TEST_SPACE_ID) {
       await c.query(
         `DELETE FROM spaces WHERE id = $1`,
@@ -261,7 +289,10 @@ async function teardownFixtures() {
   });
 }
 
-async function insertPendingTaskCreate(title: string): Promise<string> {
+async function insertPendingTaskCreate(
+  title: string,
+  extraParams: Record<string, unknown> = {},
+): Promise<string> {
   return withClient(async (c) => {
     const r = await c.query(
       `INSERT INTO agent_actions
@@ -278,6 +309,7 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
           title,
           project_id: TEST_PROJECT_ID,
           priority: 'p2',
+          ...extraParams,
         }),
       ],
     );
@@ -356,9 +388,87 @@ async function insertSourceMessage(content: string): Promise<string> {
   });
 }
 
+async function insertUnreadSourceMessage(content: string): Promise<string> {
+  return withClient(async (c) => {
+    const spaceId = `test-resolver-hidden-source-space-${crypto.randomUUID()}`;
+    const messageId = `test-resolver-hidden-source-${crypto.randomUUID()}`;
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES ($1, $2, 'Resolver Hidden Source', 'private', $3)`,
+      [spaceId, ORG_ID, APPROVER_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [spaceId, APPROVER_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, ORG_ID, spaceId, APPROVER_USER_ID, content],
+    );
+    SOURCE_SPACE_IDS.push(spaceId);
+    SOURCE_MESSAGE_IDS.push(messageId);
+    return messageId;
+  });
+}
+
+async function insertSourceMessageVisibleOnlyToApprover(
+  content: string,
+): Promise<{ messageId: string; spaceId: string }> {
+  return withClient(async (c) => {
+    const spaceId = `test-resolver-source-only-space-${crypto.randomUUID()}`;
+    const messageId = `test-resolver-source-only-${crypto.randomUUID()}`;
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES ($1, $2, 'Resolver Source Only', 'private', $3)`,
+      [spaceId, ORG_ID, APPROVER_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [spaceId, APPROVER_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, ORG_ID, spaceId, APPROVER_USER_ID, content],
+    );
+    SOURCE_SPACE_IDS.push(spaceId);
+    SOURCE_MESSAGE_IDS.push(messageId);
+    return { messageId, spaceId };
+  });
+}
+
+async function seedForeignAssigneeUser() {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug)
+       VALUES ($1, 'Resolver Other Org', 'resolver-other-org')
+       ON CONFLICT (id) DO NOTHING`,
+      [OTHER_ORG_ID],
+    );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, 'resolver-foreign@test.local', 'Resolver Foreign User', false)
+       ON CONFLICT (id) DO UPDATE SET name = 'Resolver Foreign User'`,
+      [FOREIGN_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO NOTHING`,
+      [OTHER_ORG_ID, FOREIGN_USER_ID],
+    );
+  });
+}
+
 async function insertPendingDeftyTaskCreate(
   title: string,
   sourceMessageId: string,
+  extraParams: Record<string, unknown> = {},
 ): Promise<string> {
   return withClient(async (c) => {
     const r = await c.query(
@@ -385,6 +495,7 @@ async function insertPendingDeftyTaskCreate(
           proposed_by: 'defty',
           dedupe_key: `defty_capture:test:task_create:${sourceMessageId}`,
           priority: 'p2',
+          ...extraParams,
         }),
       ],
     );
@@ -430,6 +541,123 @@ test('1. approving a pending task_create runs executor and marks approved', asyn
       [title],
     );
     assert.equal(t.rows.length, 1, 'task row should have been created');
+  });
+});
+
+test('1b. approving task_create resolves assignee_name when assignee_id is absent', async () => {
+  const title = `resolver-test-1b-${Date.now()}`;
+  const actionId = await insertPendingTaskCreate(title, {
+    assignee_name: 'resolver approver',
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'approved', `expected approved: ${JSON.stringify(result)}`);
+
+  await withClient(async (c) => {
+    const task = await c.query(
+      `SELECT assignee_id FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(task.rows.length, 1, 'task should be created');
+    assert.equal(task.rows[0].assignee_id, APPROVER_USER_ID);
+
+    const action = await c.query(
+      `SELECT result FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].result.assignee_id, APPROVER_USER_ID);
+  });
+});
+
+test('1c. approving task_create rejects direct foreign assignee_id', async () => {
+  const title = `resolver-test-1c-${Date.now()}`;
+  await seedForeignAssigneeUser();
+  const actionId = await insertPendingTaskCreate(title, {
+    assignee_id: FOREIGN_USER_ID,
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrow
+  assert.equal(result.code, 'EXECUTE_FAILED');
+  // @ts-expect-error narrow
+  assert.match(result.message, /assignee_id .* not found/i);
+
+  await withClient(async (c) => {
+    const task = await c.query(
+      `SELECT id FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(task.rows.length, 0, 'foreign assignee id must not create a task');
+  });
+});
+
+test('1d. approving task_create rejects unread source_message_id', async () => {
+  const title = `resolver-test-1d-${Date.now()}`;
+  const unreadMessageId = await insertUnreadSourceMessage('hidden source content');
+  const actionId = await insertPendingTaskCreate(title, {
+    source_message_id: unreadMessageId,
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrow
+  assert.equal(result.code, 'EXECUTE_FAILED');
+  // @ts-expect-error narrow
+  assert.match(result.message, /source_message_id .* not readable/i);
+
+  await withClient(async (c) => {
+    const task = await c.query(
+      `SELECT id FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(task.rows.length, 0, 'unread source message must not create a task');
+  });
+});
+
+test('1e. approving Defty capture accepts source_message_id readable by the captured source user', async () => {
+  const title = `resolver-test-1e-${Date.now()}`;
+  const { messageId, spaceId } = await insertSourceMessageVisibleOnlyToApprover(
+    'source visible to human approver, not Defty system user',
+  );
+  const actionId = await insertPendingDeftyTaskCreate(title, messageId, {
+    space_id: spaceId,
+    source_space_id: spaceId,
+    source_user_id: APPROVER_USER_ID,
+    origin_space_id: spaceId,
+    origin_user_id: APPROVER_USER_ID,
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'approved', `expected approved: ${JSON.stringify(result)}`);
+
+  await withClient(async (c) => {
+    const task = await c.query(
+      `SELECT title, source_message_id, created_by
+       FROM tasks
+       WHERE title = $1`,
+      [title],
+    );
+    assert.equal(task.rows.length, 1, 'Defty capture should create the task');
+    assert.equal(task.rows[0].source_message_id, messageId);
+    assert.equal(task.rows[0].created_by, DEFTY_USER_ID);
+
+    const action = await c.query(
+      `SELECT approval_status, error
+       FROM agent_actions
+       WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].approval_status, 'approved');
+    assert.equal(action.rows[0].error, null);
   });
 });
 
@@ -540,6 +768,35 @@ test('4b. approving an action whose employee belongs to another org returns FORB
       [title],
     );
     assert.equal(tasks.rows[0].n, 0, 'cross-org employee row must not create a task');
+  });
+});
+
+test('4c. rejecting an action whose employee belongs to another org returns FORBIDDEN', async () => {
+  const title = `resolver-test-4c-${Date.now()}`;
+  const actionId = await insertPendingTaskCreateWithForeignEmployee(title);
+
+  const { rejectAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await rejectAction(actionId, APPROVER_USER_ID, 'not my employee');
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrow
+  assert.equal(result.code, 'FORBIDDEN');
+  // @ts-expect-error narrow
+  assert.match(result.message, /does not belong/i);
+
+  await withClient(async (c) => {
+    const action = await c.query(
+      `SELECT approval_status, error FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].approval_status, 'pending');
+    assert.equal(action.rows[0].error, null);
+
+    const receipt = await c.query(
+      `SELECT COUNT(*)::int AS n FROM action_receipts WHERE action_id = $1`,
+      [actionId],
+    );
+    assert.equal(receipt.rows[0].n, 0, 'forbidden reject must not write a receipt');
   });
 });
 

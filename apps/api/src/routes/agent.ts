@@ -546,6 +546,24 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
+  const [membership] = await db
+    .select({ space_id: spaceMembers.space_id })
+    .from(spaceMembers)
+    .innerJoin(spaces, and(
+      eq(spaces.id, spaceMembers.space_id),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.is_archived, false),
+    ))
+    .where(and(
+      eq(spaceMembers.space_id, id),
+      eq(spaceMembers.user_id, user.id),
+    ))
+    .limit(1);
+
+  if (!membership) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+
   // Expire stale pending actions (older than 1 hour)
   const expiredActions = await db.update(agentActions)
     .set({ approval_status: 'expired' })
@@ -554,6 +572,7 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
+      visibleCaptureActionSql(user),
     ))
     .returning({ id: agentActions.id, params: agentActions.params });
   await markWorkIntentsExpiredForActions({
@@ -772,6 +791,7 @@ agentRoutes.get('/actions/pending', async (c) => {
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+      visibleCaptureActionSql(user),
     ))
     .returning({ id: agentActions.id, params: agentActions.params });
   await markWorkIntentsExpiredForActions({
@@ -1075,8 +1095,55 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
+  if (action.approval_status === 'approved') {
+    return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
+  }
+  if (action.approval_status === 'rejected') {
+    return c.json({ status: 'rejected', message: 'already rejected' });
+  }
+  if (action.approval_status === 'expired') {
+    return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+  }
   if (action.approval_status !== 'pending') {
-    return c.json({ error: 'Already processed', code: 'ALREADY_PROCESSED' }, 400);
+    return c.json({ error: 'Action is not pending', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [claimedAction] = await db
+    .update(agentActions)
+    .set({ approval_status: 'approved', approved_at: new Date() })
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+    ))
+    .returning({
+      id: agentActions.id,
+      approval_status: agentActions.approval_status,
+      result: agentActions.result,
+    });
+
+  if (!claimedAction) {
+    const [winner] = await db
+      .select({
+        approval_status: agentActions.approval_status,
+        result: agentActions.result,
+      })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.org_id, user.org_id),
+      ))
+      .limit(1);
+    if (winner?.approval_status === 'approved') {
+      return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
+    }
+    if (winner?.approval_status === 'rejected') {
+      return c.json({ status: 'rejected', message: 'already rejected' });
+    }
+    if (winner?.approval_status === 'expired') {
+      return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
   }
 
   // Phase 6 invariant — the executor must receive the ORIGINAL proposer's
@@ -1130,7 +1197,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   } else {
     await db
       .update(agentActions)
-      .set({ error: execResult.error ?? 'Action failed' })
+      .set({
+        approval_status: 'pending',
+        approved_at: null,
+        error: execResult.error ?? 'Action failed',
+      })
       .where(eq(agentActions.id, actionId));
     await markWorkIntentFailedForAction({
       actionId,
@@ -1221,10 +1292,32 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     return c.json({ status: result.status });
   }
 
-  await db
+  if (action.approval_status === 'rejected') {
+    return c.json({ success: true, status: 'rejected', message: 'already rejected' });
+  }
+  if (action.approval_status === 'approved') {
+    return c.json({ success: true, status: 'approved', message: 'already approved - cannot reject after approval' });
+  }
+  if (action.approval_status === 'expired') {
+    return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+  }
+  if (action.approval_status !== 'pending') {
+    return c.json({ error: 'Action is not pending', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [updatedAction] = await db
     .update(agentActions)
     .set({ approval_status: 'rejected', error: reason ?? null })
-    .where(eq(agentActions.id, actionId));
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+    ))
+    .returning({ id: agentActions.id });
+  if (!updatedAction) {
+    return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
+  }
+
   if (action.source === 'defty_capture') {
     await generateReceipt({
       actionId,
@@ -1397,6 +1490,7 @@ agentRoutes.get('/actions', async (c) => {
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
+      visibleCaptureActionSql(user),
     ))
     .returning({ id: agentActions.id, params: agentActions.params });
   await markWorkIntentsExpiredForActions({
@@ -1435,7 +1529,10 @@ agentRoutes.get('/actions/:id/receipt', async (c) => {
   const [action] = await db
     .select({ id: agentActions.id, org_id: agentActions.org_id })
     .from(agentActions)
-    .where(eq(agentActions.id, actionId))
+    .where(and(
+      eq(agentActions.id, actionId),
+      visibleCaptureActionSql(user),
+    ))
     .limit(1);
 
   if (!action) {

@@ -158,9 +158,10 @@ export async function queueDeftyCreateTaskCapture(params: {
   const defty = await ensureDeftyEmployee(orgId);
   const finalTitle = truncatePlainText(title || buildFallbackTitle(content), 80);
   let assigneeId: string | null = null;
-  let resolvedAssigneeName = assigneeName || null;
-  if (assigneeName?.trim()) {
-    const resolved = await resolveAssigneeWithMatches(assigneeName, orgId);
+  let resolvedAssigneeName: string | null = null;
+  const requestedAssigneeName = assigneeName?.trim() || null;
+  if (requestedAssigneeName) {
+    const resolved = await resolveAssigneeWithMatches(requestedAssigneeName, orgId);
     if (resolved.ok) {
       assigneeId = resolved.value.id;
       resolvedAssigneeName = resolved.value.name;

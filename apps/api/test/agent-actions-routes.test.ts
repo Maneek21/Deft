@@ -601,6 +601,96 @@ test('GET /api/agent action surfaces hide Defty captures from private spaces', a
   );
 });
 
+test('GET /api/agent/actions/:id/receipt respects hidden Defty capture ACL', async () => {
+  const visible = await insertDeftyCaptureActionWithSource({
+    title: `routes-visible-receipt-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    messageContent: 'visible receipt source',
+  });
+  const hidden = await insertDeftyCaptureActionWithSource({
+    title: `routes-hidden-receipt-${Date.now()}`,
+    spaceId: HIDDEN_SPACE_ID,
+    messageContent: 'hidden receipt source',
+  });
+
+  await withClient(async (c) => {
+    for (const actionId of [visible.actionId, hidden.actionId]) {
+      await c.query(
+        `INSERT INTO action_receipts
+          (id, org_id, action_id, employee_id, proposer, proposer_id, approver_id,
+           decision, action_name, action_params_json, result_json, signature_hmac)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty', $4, $5,
+           'rejected', 'task_create', '{}'::jsonb, NULL, 'test-signature')`,
+        [ORG_ID, actionId, EMP_ID, SHADOW_USER_ID, APPROVER_USER_ID],
+      );
+    }
+  });
+
+  const visibleRes = await app().request(`/api/agent/actions/${visible.actionId}/receipt`, {
+    method: 'GET',
+  });
+  assert.equal(visibleRes.status, 200);
+
+  const hiddenRes = await app().request(`/api/agent/actions/${hidden.actionId}/receipt`, {
+    method: 'GET',
+  });
+  assert.equal(hiddenRes.status, 404);
+});
+
+test('GET /api/agent expiry pass does not mutate hidden Defty captures', async () => {
+  const hidden = await insertDeftyCaptureActionWithSource({
+    title: `routes-hidden-stale-capture-${Date.now()}`,
+    spaceId: HIDDEN_SPACE_ID,
+    messageContent: 'hidden stale capture action source',
+  });
+
+  await withClient(async (c) => {
+    await c.query(
+      `UPDATE agent_actions
+          SET created_at = NOW() - INTERVAL '25 hours',
+              conversation_id = $2
+        WHERE id = $1`,
+      [hidden.actionId, HIDDEN_SPACE_ID],
+    );
+  });
+
+  const pendingRes = await app().request('/api/agent/actions/pending', { method: 'GET' });
+  assert.equal(pendingRes.status, 200);
+  const pendingBody = await pendingRes.json();
+  assert.equal(
+    pendingBody.actions.some((action: any) => action.id === hidden.actionId),
+    false,
+    'hidden stale capture should not appear in pending approvals',
+  );
+
+  const conversationRes = await app().request(
+    `/api/agent/conversations/${HIDDEN_SPACE_ID}/messages`,
+    { method: 'GET' },
+  );
+  assert.equal(conversationRes.status, 404);
+
+  const historyRes = await app().request('/api/agent/actions', { method: 'GET' });
+  assert.equal(historyRes.status, 200);
+  const historyBody = await historyRes.json();
+  assert.equal(
+    historyBody.some((action: any) => action.id === hidden.actionId),
+    false,
+    'hidden stale capture should not appear in action history',
+  );
+
+  await withClient(async (c) => {
+    const action = await c.query(
+      `SELECT approval_status FROM agent_actions WHERE id = $1`,
+      [hidden.actionId],
+    );
+    assert.equal(
+      action.rows[0].approval_status,
+      'pending',
+      'hidden stale capture must not be expired by a viewer who cannot see its source',
+    );
+  });
+});
+
 test('GET /api/agent/actions/pending expires linked proposed work intents', async () => {
   const title = `routes-intent-expire-${Date.now()}`;
   const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
@@ -750,6 +840,79 @@ test('POST /api/work-intents/:id/retry reopens failed capture as a fresh proposa
     );
     assert.equal(task.rows[0].title, title);
   });
+
+  const duplicateRetryRes = await app().request(`/api/work-intents/${failed.intentId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(duplicateRetryRes.status, 409);
+  const duplicateRetryBody = await duplicateRetryRes.json();
+  assert.equal(duplicateRetryBody.code, 'RETRY_ALREADY_CONVERTED');
+});
+
+test('POST /api/work-intents/:id/retry creates a fresh proposal after a retry is rejected', async () => {
+  const title = `routes-intent-retry-terminal-${Date.now()}`;
+  const failed = await insertFailedDeftyTaskIntent(title);
+
+  const firstRetryRes = await app().request(`/api/work-intents/${failed.intentId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(firstRetryRes.status, 200);
+  const firstRetryBody = await firstRetryRes.json();
+
+  const rejectRes = await app().request(`/api/agent/actions/${firstRetryBody.action.id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'still too noisy' }),
+  });
+  assert.equal(rejectRes.status, 200);
+
+  const secondRetryRes = await app().request(`/api/work-intents/${failed.intentId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(secondRetryRes.status, 200);
+  const secondRetryBody = await secondRetryRes.json();
+
+  assert.notEqual(secondRetryBody.intent.id, firstRetryBody.intent.id);
+  assert.notEqual(secondRetryBody.action.id, firstRetryBody.action.id);
+
+  await withClient(async (c) => {
+    const intents = await c.query(
+      `SELECT id, status, failure_reason
+         FROM work_intents
+        WHERE org_id = $1
+          AND metadata->>'retry_of_work_intent_id' = $2
+        ORDER BY created_at ASC`,
+      [ORG_ID, failed.intentId],
+    );
+    assert.equal(intents.rows.length, 2);
+    assert.equal(intents.rows[0].id, firstRetryBody.intent.id);
+    assert.equal(intents.rows[0].status, 'dismissed');
+    assert.equal(intents.rows[0].failure_reason, 'still too noisy');
+    assert.equal(intents.rows[1].id, secondRetryBody.intent.id);
+    assert.equal(intents.rows[1].status, 'proposed');
+
+    const firstAction = await c.query(
+      `SELECT approval_status FROM agent_actions WHERE id = $1`,
+      [firstRetryBody.action.id],
+    );
+    assert.equal(firstAction.rows[0].approval_status, 'rejected');
+
+    const secondAction = await c.query(
+      `SELECT approval_status, params
+         FROM agent_actions
+        WHERE id = $1`,
+      [secondRetryBody.action.id],
+    );
+    assert.equal(secondAction.rows[0].approval_status, 'pending');
+    assert.equal(secondAction.rows[0].params.work_intent_id, secondRetryBody.intent.id);
+    assert.equal(secondAction.rows[0].params.retry_of_work_intent_id, failed.intentId);
+  });
 });
 
 test('POST /api/agent/actions/:id/approve executes the write', async () => {
@@ -895,6 +1058,46 @@ test('POST approve on Defty work capture converts the work intent', async () => 
       [r.rows[0].converted_task_id],
     );
     assert.equal(task.rows[0].title, title);
+  });
+});
+
+test('POST reject after Defty work capture approval leaves the intent converted', async () => {
+  const title = `routes-intent-late-reject-${Date.now()}`;
+  const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
+
+  const approveRes = await app().request(`/api/agent/actions/${actionId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(approveRes.status, 200);
+
+  const rejectRes = await app().request(`/api/agent/actions/${actionId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'too late' }),
+  });
+  assert.equal(rejectRes.status, 200);
+  const rejectBody = await rejectRes.json();
+  assert.equal(rejectBody.status, 'approved');
+
+  await withClient(async (c) => {
+    const intent = await c.query(
+      `SELECT status, converted_action_id, dismissed_by, failure_reason
+         FROM work_intents
+        WHERE id = $1`,
+      [intentId],
+    );
+    assert.equal(intent.rows[0].status, 'converted');
+    assert.equal(intent.rows[0].converted_action_id, actionId);
+    assert.equal(intent.rows[0].dismissed_by, null);
+    assert.equal(intent.rows[0].failure_reason, null);
+
+    const tasks = await c.query(
+      `SELECT COUNT(*)::int AS count FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(tasks.rows[0].count, 1, 'late reject must not duplicate or delete the task');
   });
 });
 

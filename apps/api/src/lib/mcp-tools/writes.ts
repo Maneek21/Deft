@@ -45,6 +45,7 @@ import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { isValidTransition } from '../task-status-machine.js';
 import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
+import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -193,6 +194,33 @@ async function verifyParentMessageMatches(
   return !!row;
 }
 
+/** Verifies a source message belongs to this org and is readable by the actor. */
+async function verifyMessageVisibleToUser(
+  messageId: string,
+  userId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, messages.space_id),
+      eq(spaceMembers.user_id, userId),
+    ))
+    .innerJoin(spaces, and(
+      eq(spaces.id, messages.space_id),
+      eq(spaces.org_id, orgId),
+      eq(spaces.is_archived, false),
+    ))
+    .where(and(
+      eq(messages.id, messageId),
+      eq(messages.org_id, orgId),
+      eq(messages.is_deleted, false),
+    ))
+    .limit(1);
+  return !!row;
+}
+
 // ─── task_create ──────────────────────────────────────────────────────────
 
 const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
@@ -204,6 +232,7 @@ export type TaskCreateArgs = {
   project_id?: string;
   space_id?: string;
   assignee_id?: string;
+  assignee_name?: string;
   priority?: string;
   size?: string;
   source_message_id?: string;
@@ -217,7 +246,11 @@ export type TaskCreateArgs = {
 export async function executeTaskCreate(
   args: TaskCreateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean; actionId?: string | null },
+  opts?: {
+    skipReceipt?: boolean;
+    actionId?: string | null;
+    sourceReaderUserId?: string | null;
+  },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
@@ -253,6 +286,55 @@ export async function executeTaskCreate(
         ? (args.priority as 'p2')
         : ('p2' as const);
 
+    if (args.source_message_id?.trim()) {
+      const sourceReaderIds = [
+        shadowUserId,
+        opts?.sourceReaderUserId ?? null,
+      ].filter((value, index, values): value is string =>
+        typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
+      );
+      let canReadSource = false;
+      for (const readerUserId of sourceReaderIds) {
+        canReadSource = await verifyMessageVisibleToUser(
+          args.source_message_id,
+          readerUserId,
+          ctx.org_id,
+        );
+        if (canReadSource) break;
+      }
+      if (!canReadSource) {
+        return errorResult(
+          `task_create: source_message_id ${args.source_message_id} is not readable in caller's org`,
+        );
+      }
+    }
+
+    let assigneeId: string | null = null;
+    if (args.assignee_id?.trim()) {
+      const resolved = await resolveAssigneeWithMatches(args.assignee_id, ctx.org_id);
+      if (!resolved.ok) {
+        return errorResult(
+          `task_create: assignee_id ${args.assignee_id} not found in caller's org`,
+        );
+      }
+      assigneeId = resolved.value.id;
+    } else if (args.assignee_name?.trim()) {
+      const resolved = await resolveAssigneeWithMatches(args.assignee_name, ctx.org_id);
+      if (!resolved.ok) {
+        if (resolved.ambiguous) {
+          return errorResult(
+            `task_create: ambiguous assignee "${args.assignee_name}". Matches: ${resolved.matches
+              .map((m) => m.name)
+              .join(', ')}`,
+          );
+        }
+        return errorResult(
+          `task_create: assignee "${args.assignee_name}" not found in caller's org`,
+        );
+      }
+      assigneeId = resolved.value.id;
+    }
+
     const taskNumber = await reserveNextTaskNumber({
       projectId,
       orgId: ctx.org_id,
@@ -267,7 +349,7 @@ export async function executeTaskCreate(
         title: args.title.trim(),
         description: args.description ?? null,
         priority,
-        assignee_id: args.assignee_id ?? null,
+        assignee_id: assigneeId,
         created_by: shadowUserId,
         source_message_id: args.source_message_id ?? null,
       })
@@ -463,6 +545,14 @@ export async function executeTaskUpdate(
     }
     if (patch.assignee_id !== undefined) {
       const assigneeId = patch.assignee_id || null;
+      if (assigneeId) {
+        const resolved = await resolveAssigneeWithMatches(assigneeId, ctx.org_id);
+        if (!resolved.ok) {
+          return errorResult(
+            `task_update: assignee_id ${assigneeId} not found in caller's org`,
+          );
+        }
+      }
       if (assigneeId !== existingTask.assignee_id) {
         update.assignee_id = assigneeId;
         activityEntries.push({
