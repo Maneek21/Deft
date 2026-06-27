@@ -1,8 +1,9 @@
 /**
  * Demo seeder — wipes the database and inserts the "Testers Tomatoes" workspace
  * (1 manager + 5 employees, rich chat/task history, notes, a wiki knowledge
- * graph, cross-references, plus an encrypted per-org OpenAI key on orgs.ai_config
- * when SEED_OPENAI_KEY is set).
+ * graph, cross-references, plus provider routes on orgs.ai_config when an AI
+ * provider is available. Seed-specific keys are stored encrypted; ordinary env
+ * provider keys are used as runtime fallbacks and are not copied into the DB.
  *
  * Credentials — password is tomato123 for every user:
  *   diego@testers-tomatoes.com     (owner, Farm Manager)
@@ -25,8 +26,9 @@
  * Optional env:
  *   SEED_OPENAI_KEY  — when set, encrypted via AES-256-GCM (keyed off
  *                      ENCRYPTION_KEY) and stored on orgs.ai_config.api_keys.openai.
- *                      All four LLM-task slots (classify/summarize/reason/extract)
- *                      are routed to OpenAI when set.
+ *                      When absent, OPENAI_API_KEY / ANTHROPIC_API_KEY /
+ *                      OPENROUTER_API_KEY / OLLAMA_URL still set model routes
+ *                      but keep secret material in the environment.
  */
 import { config as loadEnv } from 'dotenv';
 import pg from 'pg';
@@ -42,11 +44,56 @@ const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: path.resolve(__dirname, '../../.env') });
 
-const OPENAI_KEY = process.env.SEED_OPENAI_KEY || '';
+const SEED_OPENAI_KEY = process.env.SEED_OPENAI_KEY || '';
+const ENV_OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+const ENV_ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ENV_OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+const ENV_OLLAMA_URL = process.env.OLLAMA_URL || '';
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '';
 
-if (!OPENAI_KEY) console.log('[seed-demo] SEED_OPENAI_KEY not set — workspace will boot without OpenAI configured');
-if (OPENAI_KEY && !ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY env required to encrypt the OpenAI key');
+if (!SEED_OPENAI_KEY && !ENV_OPENAI_KEY && !ENV_ANTHROPIC_KEY && !ENV_OPENROUTER_KEY && !ENV_OLLAMA_URL) {
+  console.log('[seed-demo] No AI provider env found — workspace will boot without LLM routing');
+}
+if (SEED_OPENAI_KEY && !ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY env required to encrypt the OpenAI key');
+
+type LLMProvider = 'anthropic' | 'openai' | 'openrouter' | 'ollama';
+type LLMTask = 'classify' | 'summarize' | 'reason' | 'extract';
+type ModelRoute = { provider: LLMProvider; model: string; baseUrl?: string };
+
+const MODEL_ROUTES: Record<LLMProvider, Record<LLMTask, ModelRoute>> = {
+  anthropic: {
+    classify: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    summarize: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    reason: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    extract: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  },
+  openai: {
+    classify: { provider: 'openai', model: 'gpt-4o-mini' },
+    summarize: { provider: 'openai', model: 'gpt-4o-mini' },
+    reason: { provider: 'openai', model: 'gpt-4o' },
+    extract: { provider: 'openai', model: 'gpt-4o-mini' },
+  },
+  openrouter: {
+    classify: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+    summarize: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+    reason: { provider: 'openrouter', model: 'openai/gpt-4o' },
+    extract: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+  },
+  ollama: {
+    classify: { provider: 'ollama', model: 'llama3.1', baseUrl: ENV_OLLAMA_URL },
+    summarize: { provider: 'ollama', model: 'llama3.1', baseUrl: ENV_OLLAMA_URL },
+    reason: { provider: 'ollama', model: 'llama3.1', baseUrl: ENV_OLLAMA_URL },
+    extract: { provider: 'ollama', model: 'llama3.1', baseUrl: ENV_OLLAMA_URL },
+  },
+};
+
+function selectSeedProvider(): LLMProvider | null {
+  if (SEED_OPENAI_KEY || ENV_OPENAI_KEY) return 'openai';
+  if (ENV_ANTHROPIC_KEY) return 'anthropic';
+  if (ENV_OPENROUTER_KEY) return 'openrouter';
+  if (ENV_OLLAMA_URL) return 'ollama';
+  return null;
+}
 
 function encrypt(text: string): string {
   const key = scryptSync(ENCRYPTION_KEY, 'deft-salt', 32);
@@ -131,16 +178,17 @@ async function seed() {
 
   console.log('Created 6 users');
 
-  // ── Org with optional OpenAI BYOK ──
+  // ── Org with optional provider routing ──
   const aiConfig: Record<string, unknown> = {};
-  if (OPENAI_KEY) {
-    aiConfig.api_keys = { openai: encrypt(OPENAI_KEY) };
-    aiConfig.ai_models = {
-      classify: { provider: 'openai', model: 'gpt-4o-mini' },
-      summarize: { provider: 'openai', model: 'gpt-4o-mini' },
-      reason: { provider: 'openai', model: 'gpt-4o' },
-      extract: { provider: 'openai', model: 'gpt-4o-mini' },
-    };
+  const seedProvider = selectSeedProvider();
+  if (seedProvider) {
+    aiConfig.ai_models = MODEL_ROUTES[seedProvider];
+    if (SEED_OPENAI_KEY) {
+      aiConfig.api_keys = { openai: encrypt(SEED_OPENAI_KEY) };
+    }
+    if (seedProvider === 'ollama' && ENV_OLLAMA_URL) {
+      aiConfig.ollama_url = ENV_OLLAMA_URL;
+    }
   }
 
   const [org] = await db.insert(schema.orgs).values({
@@ -1049,7 +1097,10 @@ async function seed() {
   console.log('  tomas@testers-tomatoes.com     (member, Logistics)');
   console.log('  sage@testers-tomatoes.com      (member, QC + Food Safety)\n');
   console.log('Projects: HARV (Spring Harvest), WHL (Wholesale Expansion), GH3 (Greenhouse 3 Build-out)');
-  console.log(`OpenAI key: ${OPENAI_KEY ? '✅ stored encrypted on orgs.ai_config' : 'not set (workspace boots without LLM; set SEED_OPENAI_KEY to enable)'}`);
+  const routeSummary = seedProvider
+    ? `${seedProvider}${SEED_OPENAI_KEY ? ' (seed key stored encrypted)' : ' (env fallback, no key copied to DB)'}`
+    : 'not set (workspace boots without LLM routing)';
+  console.log(`AI routing: ${routeSummary}`);
 
   await pool.end();
 }

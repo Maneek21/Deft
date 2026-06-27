@@ -344,10 +344,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pendingSpaceIdRef = useRef<string | null>(null);
 
   const handleSelectSpace = useCallback(
-    (id: string) => {
+    (id: string, options?: { navigate?: boolean }) => {
       pendingSpaceIdRef.current = id;
       setActiveSpaceId(id);
       setThreadMessage(null);
+      if (options?.navigate === false) return;
       if (pathname.startsWith('/chat')) {
         // Preserve existing query params (e.g. ?thread=) but update ?space=
         const params = new URLSearchParams(window.location.search);
@@ -358,6 +359,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
     },
     [pathname, router],
+  );
+
+  const handleSidebarSelectSpace = useCallback(
+    (id: string) => {
+      handleSelectSpace(id, { navigate: false });
+    },
+    [handleSelectSpace],
   );
 
   const syncActiveSpaceIdFromUrl = useCallback((urlId: string) => {
@@ -441,7 +449,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Sidebar
             spaces={spaces}
             activeSpaceId={activeSpaceId}
-            onSelectSpace={handleSelectSpace}
+            onSelectSpace={handleSidebarSelectSpace}
             presence={presence}
             mobileOpen={mobileMenuOpen}
             setMobileOpen={setMobileMenuOpen}

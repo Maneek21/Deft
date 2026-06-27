@@ -20,8 +20,16 @@ import {
   agentCertificationChallenges,
   agentMcpCallAudit,
   agentCooperativeLog,
+  agentChannelConnections,
+  agentChannelEvents,
+  agentChannelTokens,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
+import {
+  AGENT_CHANNEL_PROTOCOL_VERSION,
+  issueAgentChannelToken,
+  publishAgentChannelEvent,
+} from '../lib/agent-channel.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -483,6 +491,15 @@ function mcpEndpointUrl(): string {
   return `${apiBase.replace(/\/$/, '')}/api/mcp/v1`;
 }
 
+function agentChannelEndpointUrl(): string {
+  const apiBase =
+    process.env.PUBLIC_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.API_BASE_URL ??
+    'http://localhost:3001';
+  return `${apiBase.replace(/\/$/, '')}/api/agent-channel/v1`;
+}
+
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',
   'task_query',
@@ -500,6 +517,9 @@ type RuntimeSetupCommand = {
 type RuntimeSetup = {
   runtime_kind: string;
   tool_server_name: string | null;
+  channel_protocol_version: string;
+  mcp_endpoint_url: string;
+  channel_endpoint_url: string;
   tool_name_style: 'bare' | 'server_prefixed';
   tool_call_names: string[];
   setup_steps: string[];
@@ -584,7 +604,7 @@ async function handleEnvelope(raw) {
     return;
   }
 
-  let response;
+  const isNotification = envelope.id === undefined || envelope.id === null;
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -594,15 +614,29 @@ async function handleEnvelope(raw) {
       },
       body: JSON.stringify(envelope),
     });
-    response = await res.json();
+    const text = await res.text();
+    if (isNotification) {
+      return;
+    }
+    if (!text.trim()) {
+      writeEnvelope({
+        jsonrpc: '2.0',
+        id: envelope.id,
+        error: { code: -32000, message: \`Deft MCP returned HTTP \${res.status} with an empty body\` },
+      });
+      return;
+    }
+    writeEnvelope(JSON.parse(text));
   } catch (err) {
-    response = {
+    if (isNotification) {
+      return;
+    }
+    writeEnvelope({
       jsonrpc: '2.0',
-      id: envelope.id ?? null,
+      id: envelope.id,
       error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
-    };
+    });
   }
-  writeEnvelope(response);
 }
 
 function writeEnvelope(payload) {
@@ -644,12 +678,16 @@ function buildRuntimeSetup(
 ): RuntimeSetup {
   const runtimeKind = runtimeKindOf(employee);
   const endpoint = mcpEndpointUrl();
+  const channelEndpoint = agentChannelEndpointUrl();
   const certificationPrompt = buildCertificationPrompt(employee, nonce ?? '<challenge-nonce>');
 
   if (runtimeKind === 'hermes') {
     return {
       runtime_kind: runtimeKind,
       tool_server_name: 'deft',
+      channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+      mcp_endpoint_url: endpoint,
+      channel_endpoint_url: channelEndpoint,
       tool_name_style: 'server_prefixed',
       tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
       setup_steps: [
@@ -657,6 +695,7 @@ function buildRuntimeSetup(
         'Add the mcp_servers.deft block to the active Hermes config.yaml.',
         'Restart or reload Hermes so the MCP server is discovered.',
         'Run hermes mcp test deft and verify Deft reports the Deft MCP tool list.',
+        'Configure the Deft Agent Channel endpoint with DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN so Deft messages wake Hermes.',
         'Run a Hermes chat prompt that uses the model-visible mcp_deft_<tool> names.',
         'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
       ],
@@ -691,6 +730,8 @@ function buildRuntimeSetup(
         '    env:',
         `      DEFT_MCP_URL: ${endpoint}`,
         '      DEFT_MCP_TOKEN: <bearer-token>',
+        `      DEFT_CHANNEL_URL: ${channelEndpoint}`,
+        '      DEFT_CHANNEL_TOKEN: <channel-token>',
         '    connect_timeout: 60',
         '    timeout: 120',
       ].join('\n'),
@@ -710,10 +751,14 @@ function buildRuntimeSetup(
   return {
     runtime_kind: runtimeKind,
     tool_server_name: null,
+    channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+    mcp_endpoint_url: endpoint,
+    channel_endpoint_url: channelEndpoint,
     tool_name_style: 'bare',
     tool_call_names: [...CERTIFICATION_REQUIRED_TOOLS],
     setup_steps: [
       'Connect the runtime to the Deft MCP endpoint with its bearer token.',
+      'Connect the runtime to the Deft Agent Channel endpoint with its channel token for live message/task delivery.',
       'Pass caller_employee_slug on every Deft MCP tool call.',
       'Use memory_recall for Deft wiki context; wiki_search is accepted as a compatibility alias.',
       'Run certification before assigning real work.',
@@ -972,12 +1017,21 @@ agentEmployeeRoutes.post('/', async (c) => {
       employeeName: data.name,
       createdBy: currentUser.id,
     });
+    const channelToken = await issueAgentChannelToken({
+      orgId: currentUser.org_id,
+      employeeId: employee!.id,
+      employeeName: data.name,
+      createdBy: currentUser.id,
+      deactivateExisting: false,
+    });
 
     return c.json(
       {
         employee: employee!,
         user_id: agentUser!.id,
         api_key: rawApiKey,
+        channel_key: channelToken.raw,
+        channel_endpoint_url: agentChannelEndpointUrl(),
       },
       201,
     );
@@ -1621,6 +1675,54 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .orderBy(desc(agentCooperativeLog.created_at))
       .limit(10);
 
+    const [channelConnection] = await db
+      .select()
+      .from(agentChannelConnections)
+      .where(and(eq(agentChannelConnections.agent_employee_id, id), eq(agentChannelConnections.org_id, user.org_id)))
+      .limit(1);
+    const [activeChannelToken] = await db
+      .select({
+        id: agentChannelTokens.id,
+        token_prefix: agentChannelTokens.token_prefix,
+        last_used_at: agentChannelTokens.last_used_at,
+        created_at: agentChannelTokens.created_at,
+      })
+      .from(agentChannelTokens)
+      .where(and(
+        eq(agentChannelTokens.agent_employee_id, id),
+        eq(agentChannelTokens.org_id, user.org_id),
+        eq(agentChannelTokens.is_active, true),
+        isNull(agentChannelTokens.revoked_at),
+      ))
+      .orderBy(desc(agentChannelTokens.created_at))
+      .limit(1);
+    const channelQueueRows = await db.execute(sql`
+      SELECT status, COUNT(*)::int AS count
+      FROM agent_channel_events
+      WHERE org_id = ${user.org_id}
+        AND agent_employee_id = ${id}
+      GROUP BY status
+    `);
+    const channelQueue = Object.fromEntries(
+      ((channelQueueRows as any).rows ?? channelQueueRows).map((row: any) => [row.status, Number(row.count)]),
+    ) as Record<string, number>;
+    const recentChannelEvents = await db
+      .select({
+        id: agentChannelEvents.id,
+        kind: agentChannelEvents.kind,
+        status: agentChannelEvents.status,
+        source_kind: agentChannelEvents.source_kind,
+        source_id: agentChannelEvents.source_id,
+        delivery_count: agentChannelEvents.delivery_count,
+        error: agentChannelEvents.error,
+        created_at: agentChannelEvents.created_at,
+        updated_at: agentChannelEvents.updated_at,
+      })
+      .from(agentChannelEvents)
+      .where(and(eq(agentChannelEvents.agent_employee_id, id), eq(agentChannelEvents.org_id, user.org_id)))
+      .orderBy(desc(agentChannelEvents.created_at))
+      .limit(15);
+
     const challengeStartedAt = latestChallenge?.started_at ? new Date(latestChallenge.started_at) : null;
     const challengeCalls = challengeStartedAt
       ? recentMcpCalls.filter((call) => call.success && new Date(call.created_at) >= challengeStartedAt)
@@ -1678,10 +1780,25 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       diagnostics: {
         recent_mcp_calls: recentMcpCalls,
         recent_cooperative_log: recentCooperativeLog,
+        recent_channel_events: recentChannelEvents,
       },
       mcp_endpoint_url: mcpEndpointUrl(),
       mcp_token_masked: employee.mcp_token_hash ? '********' : null,
       mcp_token: null,
+      channel_endpoint_url: agentChannelEndpointUrl(),
+      channel_token_masked: activeChannelToken ? `${activeChannelToken.token_prefix}********` : null,
+      channel_token: null,
+      channel: {
+        protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+        connection: channelConnection ?? null,
+        token: activeChannelToken ?? null,
+        queue: {
+          pending: channelQueue.pending ?? 0,
+          delivered: channelQueue.delivered ?? 0,
+          completed: channelQueue.completed ?? 0,
+          failed: channelQueue.failed ?? 0,
+        },
+      },
     });
   } catch (err) {
     console.error('Failed to fetch developer credentials:', err);
@@ -1690,6 +1807,54 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
 });
 
 // ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
+agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const nonce = `deft-channel-${employee.slug}-${crypto.randomBytes(4).toString('hex')}`;
+    const { event, created } = await publishAgentChannelEvent({
+      orgId: user.org_id,
+      employeeId: employee.id,
+      kind: 'certification.challenge',
+      sourceKind: 'certification',
+      sourceId: id,
+      actorUserId: user.id,
+      idempotencyKey: `channel-certification:${nonce}`,
+      payload: {
+        nonce,
+        employee_slug: employee.slug,
+        instruction: 'Acknowledge this event, then reply through /api/agent-channel/v1/reply with the nonce in the message.',
+        expected_reply_contains: nonce,
+      },
+    });
+
+    return c.json({
+      ok: true,
+      created,
+      event,
+      nonce,
+      channel_endpoint_url: agentChannelEndpointUrl(),
+      instructions: [
+        `Connect with Authorization: Bearer <channel-token> at ${agentChannelEndpointUrl()}.`,
+        'GET /events to receive this challenge.',
+        `POST /ack with event_id ${event?.id ?? '<event-id>'}.`,
+        `POST /reply with the same event_id and content containing ${nonce}.`,
+      ],
+    }, 201);
+  } catch (err) {
+    console.error('Failed to start channel test:', err);
+    return c.json({ error: 'Failed to start channel test', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
   try {
     const user = c.get('user');
@@ -1956,6 +2121,51 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
   } catch (err) {
     console.error('Failed to regenerate agent employee token:', err);
     return c.json({ error: 'Failed to regenerate token', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const [employee] = await db
+      .select()
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
+      .limit(1);
+    if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+
+    const role = await getOrgRole(user.id, user.org_id);
+    const isCreator = employee.created_by === user.id;
+    if (role !== 'owner' && role !== 'admin' && !isCreator) {
+      return c.json(
+        { error: 'Only owners, admins, or the employee creator can regenerate a channel token', code: 'FORBIDDEN' },
+        403,
+      );
+    }
+
+    const channelToken = await issueAgentChannelToken({
+      orgId: user.org_id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      createdBy: user.id,
+      deactivateExisting: true,
+    });
+
+    return c.json({
+      employee: {
+        id: employee.id,
+        slug: employee.slug,
+        name: employee.name,
+      },
+      channel_endpoint_url: agentChannelEndpointUrl(),
+      channel_key: channelToken.raw,
+      channel_token_prefix: channelToken.prefix,
+    });
+  } catch (err) {
+    console.error('Failed to regenerate agent employee channel token:', err);
+    return c.json({ error: 'Failed to regenerate channel token', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 

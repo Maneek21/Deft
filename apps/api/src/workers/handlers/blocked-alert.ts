@@ -10,6 +10,7 @@ import {
   agentNudges,
   taskRelationships,
   agentActions,
+  projectSpaces,
 } from '@deft/db/schema';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
@@ -66,6 +67,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         title: tasks.title,
         number: tasks.number,
         project_id: tasks.project_id,
+        project_name: projects.name,
         project_prefix: projects.prefix,
         project_lead_id: projects.lead_id,
       })
@@ -85,6 +87,38 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
     // inbox. Independent of the lead-notification path below so it
     // still fires for users with no in-progress tasks.
     try {
+      let proposalProjectName = userTasks[0]?.project_name ?? null;
+      if (!proposalProjectName) {
+        const [linkedProject] = await db
+          .select({ name: projects.name })
+          .from(projectSpaces)
+          .innerJoin(projects, eq(projectSpaces.project_id, projects.id))
+          .where(
+            and(
+              eq(projectSpaces.space_id, spaceId),
+              eq(projects.org_id, orgId),
+              eq(projects.is_archived, false),
+              eq(projects.is_deleted, false),
+            ),
+          )
+          .limit(1);
+        proposalProjectName = linkedProject?.name ?? null;
+      }
+      if (!proposalProjectName) {
+        const [fallbackProject] = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(
+            and(
+              eq(projects.org_id, orgId),
+              eq(projects.is_archived, false),
+              eq(projects.is_deleted, false),
+            ),
+          )
+          .limit(1);
+        proposalProjectName = fallbackProject?.name ?? null;
+      }
+
       const plainContent = toPlainText(content);
       const draftSnippet = truncatePlainText(plainContent, 80);
       await db.insert(agentActions).values({
@@ -95,6 +129,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         params: {
           title: `Blocker: ${draftSnippet}`,
           description: plainContent,
+          project_name: proposalProjectName ?? '',
           source_message_id: messageId,
           source_space_id: spaceId,
         } as any,

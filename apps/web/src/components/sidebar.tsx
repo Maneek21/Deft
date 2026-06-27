@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
@@ -124,6 +124,12 @@ function ChatSidebarContent({
 
   const publicSpaces = spaces.filter((s) => s.type === 'public' || s.type === 'private');
   const dmSpaces = spaces.filter((s) => s.type === 'dm' || s.type === 'group_dm');
+  const handleSpaceLinkClick = (event: ReactMouseEvent<HTMLAnchorElement>, id: string) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    onSpaceClick(id);
+  };
 
   return (
     <>
@@ -153,32 +159,50 @@ function ChatSidebarContent({
           const hasMentions = mentions > 0;
 
           return (
-            <button
-              key={space.id}
-              onClick={() => onSpaceClick(space.id)}
-              className="w-full text-left px-2 flex items-center gap-1.5 relative min-h-[44px] md:min-h-0 md:h-8"
-              style={{
-                background: active ? 'var(--bg-active)' : 'transparent',
-                color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
-                fontWeight: active ? 500 : hasUnread ? 600 : 500,
-                fontSize: '0.8125rem',
-                borderRadius: 'var(--radius-lg)',
-              }}
-            >
-              <Hash
-                size={14}
-                strokeWidth={1.5}
-                className="flex-shrink-0"
-                style={{ opacity: active ? 0.7 : 0.4 }}
-              />
-              <span className="truncate flex-1">{space.name}</span>
-              {space.is_muted && (
-                <BellOff size={10} className="flex-shrink-0" style={{ color: 'var(--outline)', opacity: 0.5 }} />
-              )}
+            <div key={space.id} className="relative">
+              <Link
+                href={`/chat?space=${space.id}`}
+                onClick={(event) => handleSpaceLinkClick(event, space.id)}
+                className="w-full text-left px-2 flex items-center gap-1.5 relative min-h-[44px] md:min-h-0 md:h-8"
+                style={{
+                  background: active ? 'var(--bg-active)' : 'transparent',
+                  color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+                  fontWeight: active ? 500 : hasUnread ? 600 : 500,
+                  fontSize: '0.8125rem',
+                  borderRadius: 'var(--radius-lg)',
+                  paddingRight: activeHuddles.has(space.id) ? '3rem' : undefined,
+                }}
+              >
+                <Hash
+                  size={14}
+                  strokeWidth={1.5}
+                  className="flex-shrink-0"
+                  style={{ opacity: active ? 0.7 : 0.4 }}
+                />
+                <span className="truncate flex-1">{space.name}</span>
+                {space.is_muted && (
+                  <BellOff size={10} className="flex-shrink-0" style={{ color: 'var(--outline)', opacity: 0.5 }} />
+                )}
+                {hasMentions ? (
+                  <div
+                    className="min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1 flex-shrink-0"
+                    style={{ background: 'var(--primary-container)' }}
+                  >
+                    {mentions}
+                  </div>
+                ) : hasUnread ? (
+                  <div
+                    className="min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-medium text-white px-1 flex-shrink-0"
+                    style={{ background: 'var(--outline-variant)' }}
+                  >
+                    {unread > 99 ? '99+' : unread}
+                  </div>
+                ) : null}
+              </Link>
               {activeHuddles.has(space.id) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); joinHuddleBySpace?.(space.id); }}
-                  className="flex items-center gap-1 text-[9px] font-medium flex-shrink-0 px-1.5 py-0.5 rounded-full hover:opacity-80"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[9px] font-medium flex-shrink-0 px-1.5 py-0.5 rounded-full hover:opacity-80"
                   style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                   title="Join huddle"
                 >
@@ -186,22 +210,7 @@ function ChatSidebarContent({
                   {activeHuddles.get(space.id)!.participants.length}
                 </button>
               )}
-              {hasMentions ? (
-                <div
-                  className="min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1 flex-shrink-0"
-                  style={{ background: 'var(--primary-container)' }}
-                >
-                  {mentions}
-                </div>
-              ) : hasUnread ? (
-                <div
-                  className="min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-medium text-white px-1 flex-shrink-0"
-                  style={{ background: 'var(--outline-variant)' }}
-                >
-                  {unread > 99 ? '99+' : unread}
-                </div>
-              ) : null}
-            </button>
+            </div>
           );
         })}
       </div>
@@ -260,9 +269,10 @@ function ChatSidebarContent({
             const initial = primary?.name?.charAt(0).toUpperCase() ?? '?';
 
             return (
-              <button
+              <Link
                 key={space.id}
-                onClick={() => onSpaceClick(space.id)}
+                href={`/chat?space=${space.id}`}
+                onClick={(event) => handleSpaceLinkClick(event, space.id)}
                 className="w-full text-left px-2 flex items-center gap-2 min-h-[44px] md:min-h-0 md:h-8"
                 style={{
                   background: active ? 'var(--bg-active)' : 'transparent',
@@ -344,7 +354,7 @@ function ChatSidebarContent({
                     {unread > 99 ? '99+' : unread}
                   </div>
                 ) : null}
-              </button>
+              </Link>
             );
           })}
       </div>

@@ -12,6 +12,7 @@ import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
 import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
+import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
 
 export const taskRoutes = new Hono();
 
@@ -140,6 +141,71 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
     )
     .limit(1);
   return task ?? null;
+}
+
+async function publishTaskChannelEventForAssignee(params: {
+  orgId: string;
+  task: NonNullable<Awaited<ReturnType<typeof getVisibleTaskForOrg>>>;
+  actorUserId: string;
+  kind: AgentChannelEventKind;
+  idempotencyKey: string;
+  projectPrefix?: string | null;
+  payload: Record<string, unknown>;
+}) {
+  if (!params.task.assignee_id || params.task.assignee_id === params.actorUserId) return;
+
+  try {
+    const [employee] = await db
+      .select({
+        id: agentEmployees.id,
+        user_id: agentEmployees.user_id,
+      })
+      .from(agentEmployees)
+      .where(
+        and(
+          eq(agentEmployees.org_id, params.orgId),
+          eq(agentEmployees.user_id, params.task.assignee_id),
+          eq(agentEmployees.is_active, true),
+          eq(agentEmployees.is_deleted, false),
+        ),
+      )
+      .limit(1);
+
+    if (!employee || employee.user_id === params.actorUserId) return;
+
+    let prefix = params.projectPrefix;
+    if (prefix === undefined) {
+      const [project] = await db
+        .select({ prefix: projects.prefix })
+        .from(projects)
+        .where(eq(projects.id, params.task.project_id))
+        .limit(1);
+      prefix = project?.prefix ?? null;
+    }
+
+    await publishAgentChannelEvent({
+      orgId: params.orgId,
+      employeeId: employee.id,
+      kind: params.kind,
+      sourceKind: 'task',
+      sourceId: params.task.id,
+      actorUserId: params.actorUserId,
+      idempotencyKey: `${params.kind}:${params.idempotencyKey}:employee:${employee.id}`,
+      payload: {
+        task_id: params.task.id,
+        task_key: prefix ? `${prefix}-${params.task.number}` : null,
+        project_id: params.task.project_id,
+        title: params.task.title,
+        description: params.task.description ?? null,
+        status: params.task.status,
+        priority: params.task.priority,
+        assignee_user_id: params.task.assignee_id,
+        ...params.payload,
+      },
+    });
+  } catch (err) {
+    console.error(`[tasks] failed to publish ${params.kind} channel event for task ${params.task.id}:`, err);
+  }
 }
 
 /**
@@ -1134,6 +1200,20 @@ taskRoutes.post('/:id/comments', async (c) => {
       console.error('Comment notification error:', err);
     }
 
+    await publishTaskChannelEventForAssignee({
+      orgId: user.org_id,
+      task,
+      actorUserId: user.id,
+      kind: 'task.commented',
+      idempotencyKey: `comment:${comment!.id}`,
+      payload: {
+        comment_id: comment!.id,
+        commenter_id: user.id,
+        commenter_name: userData?.name ?? null,
+        content: parsed.data.content,
+      },
+    });
+
     return c.json({
       ...comment,
       user_name: userData?.name ?? null,
@@ -1746,9 +1826,11 @@ taskRoutes.patch('/:id', async (c) => {
       .where(eq(tasks.id, taskId))
       .returning();
 
+    let activityRows: { id: string; action: string; field: string | null }[] = [];
+
     // Create activity log entries for each changed field
     if (activityEntries.length > 0) {
-      await db.insert(taskActivity).values(
+      activityRows = await db.insert(taskActivity).values(
         activityEntries.map((entry) => ({
           org_id: user.org_id,
           task_id: taskId,
@@ -1758,7 +1840,7 @@ taskRoutes.patch('/:id', async (c) => {
           old_value: entry.old_value,
           new_value: entry.new_value,
         }))
-      );
+      ).returning({ id: taskActivity.id, action: taskActivity.action, field: taskActivity.field });
     }
 
     // Task 6.4 — dispatch mention notifications on description edits.
@@ -1902,6 +1984,20 @@ taskRoutes.patch('/:id', async (c) => {
           emitToUser(assignee, 'notification:new', { type: 'task_updated', title: `${taskId_str} → ${statusLabel}` });
         } catch {}
       }
+
+      const statusActivity = activityRows.find((row) => row.action === 'status_changed');
+      await publishTaskChannelEventForAssignee({
+        orgId: user.org_id,
+        task: updatedTask!,
+        projectPrefix: project?.prefix ?? null,
+        actorUserId: user.id,
+        kind: 'task.status_changed',
+        idempotencyKey: `activity:${statusActivity?.id ?? `${taskId}:${existingTask.status}:${parsed.data.status}`}`,
+        payload: {
+          old_status: existingTask.status,
+          new_status: parsed.data.status,
+        },
+      });
     }
 
     const io = getIO();

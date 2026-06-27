@@ -10,12 +10,14 @@ import {
   projects,
   tasks,
   taskComments,
+  agentActions,
 } from '@deft/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getOrgAIConfig, hasAnyAIProvider } from '../../lib/org-ai-config.js';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
+import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 
 const TASK_EXTRACT_TRIGGER_KIND = 'event:task-extract';
 
@@ -58,6 +60,159 @@ interface ExtractedTask {
   assignee_name?: string;
   project_name?: string;
   skip?: boolean;
+}
+
+type ResolvedProject = { id: string; name: string };
+
+async function resolveProjectForTaskExtract(
+  orgId: string,
+  spaceId: string,
+  projectName?: string | null,
+): Promise<ResolvedProject | null> {
+  if (projectName) {
+    const [proj] = await db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(and(
+        eq(projects.org_id, orgId),
+        eq(projects.name, projectName),
+        eq(projects.is_archived, false),
+        eq(projects.is_deleted, false),
+      ))
+      .limit(1);
+    if (proj) return proj;
+  }
+
+  const [linked] = await db
+    .select({ id: projectSpaces.project_id, name: projects.name })
+    .from(projectSpaces)
+    .innerJoin(projects, eq(projectSpaces.project_id, projects.id))
+    .where(and(
+      eq(projectSpaces.space_id, spaceId),
+      eq(projects.org_id, orgId),
+      eq(projects.is_archived, false),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  if (linked) return linked;
+
+  const [anyProj] = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(
+      eq(projects.org_id, orgId),
+      eq(projects.is_archived, false),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  return anyProj ?? null;
+}
+
+export function buildDeterministicTaskTitle(content: string): string {
+  const plainContent = toPlainText(content);
+  const explicit = plainContent.match(
+    /\b(?:create|add|make|open|track)\b.{0,40}\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
+  );
+  const candidate = (explicit?.[1]?.trim() || plainContent).replace(/[.!?]+$/g, '');
+  return truncatePlainText(candidate.replace(/^please\s+/i, ''), 80) || 'Follow up from chat';
+}
+
+function normalizePriority(priority?: string | null): 'p0' | 'p1' | 'p2' | 'p3' {
+  const normalized = priority?.toLowerCase();
+  return normalized === 'p0' || normalized === 'p1' || normalized === 'p2' || normalized === 'p3'
+    ? normalized
+    : 'p2';
+}
+
+async function queueTaskCreateApproval(params: {
+  orgId: string;
+  userId: string;
+  spaceId: string;
+  messageId: string;
+  content: string;
+  projectName?: string | null;
+  title?: string | null;
+  description?: string | null;
+  priority?: 'p0' | 'p1' | 'p2' | 'p3' | null;
+  assigneeName?: string | null;
+  source?: string;
+  extraction?: 'llm' | 'deterministic';
+}): Promise<boolean> {
+  const {
+    orgId,
+    userId,
+    spaceId,
+    messageId,
+    content,
+    projectName,
+    title: providedTitle,
+    description,
+    priority,
+    assigneeName,
+    source = 'task_extract',
+    extraction = 'llm',
+  } = params;
+  const plainContent = toPlainText(content);
+  if (!plainContent) return false;
+
+  const project = await resolveProjectForTaskExtract(orgId, spaceId, projectName);
+  if (!project) {
+    console.warn(`[task-extract] No project found for create-task approval in org ${orgId}`);
+    return false;
+  }
+
+  const [existing] = await db
+    .select({ id: agentActions.id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, orgId),
+      eq(agentActions.message_id, messageId),
+      eq(agentActions.action, 'create_task'),
+    ))
+    .limit(1);
+  if (existing) {
+    console.log(`[task-extract] Create-task approval already queued for message ${messageId}`);
+    return true;
+  }
+
+  const title = truncatePlainText(providedTitle || buildDeterministicTaskTitle(content), 80);
+  await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: userId,
+    action: 'create_task',
+    message_id: messageId,
+    params: {
+      title,
+      description: description || plainContent,
+      priority: priority || 'p2',
+      assignee_name: assigneeName || null,
+      project_name: project.name,
+      source_message_id: messageId,
+      source_space_id: spaceId,
+      extraction,
+    } as any,
+    approval_tier: 'quick',
+    approval_status: 'pending',
+    source,
+  });
+
+  console.log(`[task-extract] Queued ${extraction} create_task approval "${title}" for message ${messageId}`);
+  return true;
+}
+
+async function queueDeterministicTaskCreateApproval(params: {
+  orgId: string;
+  userId: string;
+  spaceId: string;
+  messageId: string;
+  content: string;
+  projectName?: string | null;
+}): Promise<boolean> {
+  return queueTaskCreateApproval({
+    ...params,
+    source: 'task_extract_fallback',
+    extraction: 'deterministic',
+  });
 }
 
 const EXTRACTION_PROMPT = `You are a task extraction assistant. Extract a task from the user's chat message.
@@ -120,7 +275,19 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
   // BYOK — fall back to env when org hasn't configured a key, but require at
   // least one provider somewhere before we do real LLM work.
   if (!(await hasAnyAIProvider(orgId))) {
-    console.warn('[task-extract] No AI provider configured (org or env), skipping extraction');
+    const queued = classification.intent === 'task_create'
+      ? await queueDeterministicTaskCreateApproval({
+        orgId,
+        userId,
+        spaceId,
+        messageId,
+        content,
+        projectName: classification.entities?.project,
+      })
+      : false;
+    if (!queued) {
+      console.warn('[task-extract] No AI provider configured and no deterministic fallback applied');
+    }
     return;
   }
 
@@ -151,68 +318,65 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
       extracted = JSON.parse(text);
     } catch {
       console.error('[task-extract] Failed to parse LLM response:', text);
+      if (classification.intent === 'task_create') {
+        await queueDeterministicTaskCreateApproval({
+          orgId,
+          userId,
+          spaceId,
+          messageId,
+          content,
+          projectName: classification.entities?.project,
+        });
+      }
       return;
     }
 
     if (extracted.skip) {
       console.log(`[task-extract] Skipped message ${messageId} — not a clear task`);
+      if (classification.intent === 'task_create') {
+        await queueDeterministicTaskCreateApproval({
+          orgId,
+          userId,
+          spaceId,
+          messageId,
+          content,
+          projectName: classification.entities?.project,
+        });
+      }
       return;
     }
 
     // Try to resolve a default project for the space
-    let projectId: string | null = null;
-    let projectName = extracted.project_name || null;
-
-    if (projectName) {
-      // Try to find by name
-      const [proj] = await db
-        .select({ id: projects.id, name: projects.name })
-        .from(projects)
-        .where(and(eq(projects.org_id, orgId), eq(projects.name, projectName)))
-        .limit(1);
-      if (proj) projectId = proj.id;
-    }
-
-    if (!projectId) {
-      // Fall back to the first project linked to this space
-      const [linked] = await db
-        .select({ project_id: projectSpaces.project_id, project_name: projects.name })
-        .from(projectSpaces)
-        .innerJoin(projects, eq(projectSpaces.project_id, projects.id))
-        .where(eq(projectSpaces.space_id, spaceId))
-        .limit(1);
-      if (linked) {
-        projectId = linked.project_id;
-        projectName = linked.project_name;
-      }
-    }
-
-    if (!projectId) {
-      // Fall back to any project in the org
-      const [anyProj] = await db
-        .select({ id: projects.id, name: projects.name })
-        .from(projects)
-        .where(eq(projects.org_id, orgId))
-        .limit(1);
-      if (anyProj) {
-        projectId = anyProj.id;
-        projectName = anyProj.name;
-      }
-    }
-
-    if (!projectId) {
+    const project = await resolveProjectForTaskExtract(orgId, spaceId, extracted.project_name || null);
+    if (!project) {
       console.warn('[task-extract] No project found for org', orgId);
       return;
     }
 
+    const suggestionPriority = normalizePriority(extracted.priority);
     const suggestion = {
       title: extracted.title,
       description: extracted.description || null,
-      priority: extracted.priority || 'p2',
+      priority: suggestionPriority,
       assignee_name: extracted.assignee_name || classification.entities.assignee || null,
-      project_id: projectId,
-      project_name: projectName,
+      project_id: project.id,
+      project_name: project.name,
     };
+
+    await queueTaskCreateApproval({
+      orgId,
+      userId,
+      spaceId,
+      messageId,
+      content,
+      projectName: project.name,
+      title: suggestion.title,
+      description: suggestion.description,
+      priority: suggestion.priority,
+      assigneeName: suggestion.assignee_name,
+      source: 'task_extract',
+      extraction: 'llm',
+    });
 
     // Task 3.11 — if the suggestion is auto-accepted (future: autonomous
     // trust level), the created task should carry an agent-authored
@@ -258,6 +422,16 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     console.log(`[task-extract] Suggested task "${suggestion.title}" for message ${messageId}`);
   } catch (err) {
     console.error('[task-extract] Extraction failed:', (err as Error).message);
+    if (classification.intent === 'task_create') {
+      await queueDeterministicTaskCreateApproval({
+        orgId,
+        userId,
+        spaceId,
+        messageId,
+        content,
+        projectName: classification.entities?.project,
+      });
+    }
   }
 }
 

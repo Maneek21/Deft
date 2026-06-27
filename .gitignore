@@ -104,3 +104,8 @@ reports/*.mjs
 reports/*.png
 reports/screenshots/
 reports/*/
+
+# Local Codex/audit scratch folders.
+tmp/
+.codex-site-review/
+.agents/

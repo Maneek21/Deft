@@ -16,6 +16,7 @@ import {
 import { eq, and } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { ensureDeftyMembership } from '../../lib/ensure-defty-membership.js';
+import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
 
 interface AgentEmployeeMessageData {
   messageId: string;
@@ -60,7 +61,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   // subtle system note so the human sees the mention was received but
   // the agent replies on its own schedule.
   try {
-    await db.insert(agentActions).values({
+    const [actionRow] = await db.insert(agentActions).values({
       org_id: orgId,
       user_id: author!.id,
       agent_employee_id: employeeId,
@@ -75,6 +76,29 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       },
       approval_tier: 'auto',
       approval_status: 'pending',
+    }).returning({ id: agentActions.id });
+
+    await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'message.created',
+      sourceKind: 'message',
+      sourceId: messageId,
+      spaceId,
+      threadId: triggerMsg.parent_id ?? messageId,
+      actorUserId: author!.id,
+      idempotencyKey: `message:${messageId}:employee:${employeeId}`,
+      payload: {
+        message_id: messageId,
+        space_id: spaceId,
+        parent_id: triggerMsg.parent_id ?? null,
+        reply_thread_id: triggerMsg.parent_id ?? messageId,
+        author_id: author!.id,
+        author_name: author!.name,
+        content: triggerMsg.content,
+        is_dm: isDM,
+        pending_action_id: actionRow?.id ?? null,
+      },
     });
   } catch (err) {
     console.error(
@@ -101,7 +125,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
         org_id: orgId,
         space_id: spaceId,
         user_id: deftyUserId,
-        content: `Queued for ${employee.name}. The runtime will see it through fetch_unread on its next poll${employee.wake_mode === 'polling' ? ` (about every ${cadence}m)` : ''}. ${statusText}`,
+        content: `Queued for ${employee.name}. Live channel delivery will wake the runtime when it is connected; fetch_unread remains available as a fallback${employee.wake_mode === 'polling' ? ` (polling about every ${cadence}m)` : ''}. ${statusText}`,
         parent_id: triggerMsg.parent_id ?? null,
         metadata: {
           kind: 'system_note',

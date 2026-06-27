@@ -12,13 +12,59 @@ export type LLMConfig = {
   baseUrl?: string; // for Ollama or custom endpoints
 };
 
-// Default model routing — used when org has no custom config
-const DEFAULT_ROUTES: Record<LLMTask, LLMConfig> = {
-  classify: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-  summarize: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-  reason: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-  extract: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+const PROVIDER_ORDER: readonly LLMProvider[] = ['anthropic', 'openai', 'openrouter', 'ollama'];
+
+// Default model routing by provider — used when org has no custom task route.
+const PROVIDER_DEFAULT_ROUTES: Record<LLMProvider, Record<LLMTask, LLMConfig>> = {
+  anthropic: {
+    classify: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    summarize: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    reason: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    extract: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+  },
+  openai: {
+    classify: { provider: 'openai', model: 'gpt-4o-mini' },
+    summarize: { provider: 'openai', model: 'gpt-4o-mini' },
+    reason: { provider: 'openai', model: 'gpt-4o' },
+    extract: { provider: 'openai', model: 'gpt-4o-mini' },
+  },
+  openrouter: {
+    classify: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+    summarize: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+    reason: { provider: 'openrouter', model: 'openai/gpt-4o' },
+    extract: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+  },
+  ollama: {
+    classify: { provider: 'ollama', model: 'llama3.1' },
+    summarize: { provider: 'ollama', model: 'llama3.1' },
+    reason: { provider: 'ollama', model: 'llama3.1' },
+    extract: { provider: 'ollama', model: 'llama3.1' },
+  },
 };
+
+const DEFAULT_ROUTES = PROVIDER_DEFAULT_ROUTES.anthropic;
+
+function hasOrgProviderConfigured(provider: LLMProvider, orgConfig?: Record<string, any>): boolean {
+  if (provider === 'ollama') {
+    return Boolean(orgConfig?.ollama_url);
+  }
+  return Boolean(orgConfig?.api_keys?.[provider]);
+}
+
+function hasEnvProviderConfigured(provider: LLMProvider): boolean {
+  if (provider === 'ollama') {
+    return Boolean(env.OLLAMA_URL);
+  }
+  return Boolean(resolveApiKey(provider));
+}
+
+function routeWithProviderDefaults(provider: LLMProvider, task: LLMTask, orgConfig?: Record<string, any>): LLMConfig {
+  const route = PROVIDER_DEFAULT_ROUTES[provider][task];
+  if (provider === 'ollama' && !route.baseUrl) {
+    return { ...route, baseUrl: orgConfig?.ollama_url || env.OLLAMA_URL };
+  }
+  return route;
+}
 
 // Get the model config for a task, checking org overrides first
 export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): LLMConfig {
@@ -32,6 +78,16 @@ export function getModelConfig(task: LLMTask, orgConfig?: Record<string, any>): 
       return { ...route, baseUrl: orgConfig.ollama_url };
     }
     return route;
+  }
+  for (const provider of PROVIDER_ORDER) {
+    if (hasOrgProviderConfigured(provider, orgConfig)) {
+      return routeWithProviderDefaults(provider, task, orgConfig);
+    }
+  }
+  for (const provider of PROVIDER_ORDER) {
+    if (hasEnvProviderConfigured(provider)) {
+      return routeWithProviderDefaults(provider, task, orgConfig);
+    }
   }
   return DEFAULT_ROUTES[task];
 }

@@ -44,6 +44,7 @@ import { wikiRoutes } from './routes/wiki.js';
 import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { mcpConnectionRoutes } from './routes/mcp-connections.js';
 import { mcpAccessRoutes } from './routes/mcp-access.js';
+import { agentChannelRoutes } from './routes/agent-channel.js';
 import { oauthProtectedRoutes, oauthPublicRoutes, oauthWellKnownRoutes } from './routes/oauth-mcp.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
@@ -102,6 +103,8 @@ app.route('/mcp', mcpServerRoutes);
 
 // Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
 app.route('/api/mcp/v1', mcpServerV1Routes);
+app.use('/api/agent-channel/v1/*', agentLimiter);
+app.route('/api/agent-channel/v1', agentChannelRoutes);
 
 // Phase 10 — Prometheus metrics export, own bearer scheme, mounted before
 // authMiddleware so scrapers don't need a JWT.

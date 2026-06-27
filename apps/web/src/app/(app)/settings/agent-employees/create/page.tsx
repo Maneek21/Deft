@@ -55,7 +55,9 @@ type Template = {
   heartbeat_config?: string;
 };
 
-const MCP_ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/mcp/v1`;
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const MCP_ENDPOINT = `${API_BASE}/api/mcp/v1`;
+const CHANNEL_ENDPOINT = `${API_BASE}/api/agent-channel/v1`;
 
 export default function CreateAgentEmployeePage() {
   const router = useRouter();
@@ -81,9 +83,11 @@ export default function CreateAgentEmployeePage() {
   const [maxDailyActions, setMaxDailyActions] = useState(50);
 
   // Success modal
-  const [mcpModal, setMcpModal] = useState<{ apiKey: string; employeeId: string } | null>(null);
+  const [mcpModal, setMcpModal] = useState<{ apiKey: string; channelKey: string | null; employeeId: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [copiedChannelKey, setCopiedChannelKey] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedChannelUrl, setCopiedChannelUrl] = useState(false);
   const [copiedConfig, setCopiedConfig] = useState(false);
 
   useEffect(() => {
@@ -149,7 +153,7 @@ export default function CreateAgentEmployeePage() {
       const data = await res.json();
 
       if (data.api_key) {
-        setMcpModal({ apiKey: data.api_key, employeeId: data.employee.id });
+        setMcpModal({ apiKey: data.api_key, channelKey: data.channel_key ?? null, employeeId: data.employee.id });
       } else {
         // Fallback — shouldn't happen now that every employee is BYOA.
         router.push('/settings/agent-employees');
@@ -175,6 +179,20 @@ export default function CreateAgentEmployeePage() {
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
+  const handleCopyChannelKey = () => {
+    if (mcpModal?.channelKey) {
+      navigator.clipboard.writeText(mcpModal.channelKey);
+      setCopiedChannelKey(true);
+      setTimeout(() => setCopiedChannelKey(false), 2000);
+    }
+  };
+
+  const handleCopyChannelUrl = () => {
+    navigator.clipboard.writeText(CHANNEL_ENDPOINT);
+    setCopiedChannelUrl(true);
+    setTimeout(() => setCopiedChannelUrl(false), 2000);
+  };
+
   const mcpConfig = mcpModal
     ? JSON.stringify(
         {
@@ -192,9 +210,25 @@ export default function CreateAgentEmployeePage() {
       )
     : '';
 
+  const channelEnv = mcpModal
+    ? [
+        `DEFT_CHANNEL_URL=${CHANNEL_ENDPOINT}`,
+        `DEFT_CHANNEL_TOKEN=${mcpModal.channelKey ?? '<channel-token>'}`,
+        `DEFT_MCP_URL=${MCP_ENDPOINT}`,
+        `DEFT_MCP_TOKEN=${mcpModal.apiKey}`,
+      ].join('\n')
+    : '';
+
   const handleCopyMcpConfig = () => {
     if (!mcpConfig) return;
     navigator.clipboard.writeText(mcpConfig);
+    setCopiedConfig(true);
+    setTimeout(() => setCopiedConfig(false), 2000);
+  };
+
+  const handleCopyChannelEnv = () => {
+    if (!channelEnv) return;
+    navigator.clipboard.writeText(channelEnv);
     setCopiedConfig(true);
     setTimeout(() => setCopiedConfig(false), 2000);
   };
@@ -582,7 +616,7 @@ export default function CreateAgentEmployeePage() {
       {mcpModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.5)' }}>
           <div
-            className="w-full max-w-md mx-4 rounded-xl p-6"
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto mx-4 rounded-xl p-6"
             style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
           >
             <div className="flex items-center justify-between mb-4">
@@ -593,6 +627,7 @@ export default function CreateAgentEmployeePage() {
                 Agent Connected
               </h3>
               <button
+                type="button"
                 onClick={() => {
                   setMcpModal(null);
                   router.push(mcpModal ? `/settings/agent-employees/${mcpModal.employeeId}/developer` : '/settings/agent-employees');
@@ -626,12 +661,42 @@ export default function CreateAgentEmployeePage() {
                 {MCP_ENDPOINT}
               </code>
               <button
+                type="button"
                 onClick={handleCopyMcpUrl}
                 className="flex-shrink-0 p-1 rounded"
                 style={{ color: copiedUrl ? 'var(--accent)' : 'var(--muted)' }}
                 title="Copy endpoint URL"
               >
                 {copiedUrl ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+
+            {/* Agent Channel Endpoint URL */}
+            <label
+              className="block text-[11px] font-medium mb-1"
+              style={{ color: 'var(--foreground-secondary)' }}
+            >
+              Agent Channel Endpoint URL
+            </label>
+            <div
+              className="flex items-center gap-2 px-3 py-2 rounded-md mb-4"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                fontFamily: 'monospace',
+              }}
+            >
+              <code className="text-[12px] flex-1 break-all" style={{ color: 'var(--foreground)' }}>
+                {CHANNEL_ENDPOINT}
+              </code>
+              <button
+                type="button"
+                onClick={handleCopyChannelUrl}
+                className="flex-shrink-0 p-1 rounded"
+                style={{ color: copiedChannelUrl ? 'var(--accent)' : 'var(--muted)' }}
+                title="Copy channel endpoint URL"
+              >
+                {copiedChannelUrl ? <Check size={14} /> : <Copy size={14} />}
               </button>
             </div>
 
@@ -654,6 +719,7 @@ export default function CreateAgentEmployeePage() {
                 {mcpModal.apiKey}
               </code>
               <button
+                type="button"
                 onClick={handleCopyMcpKey}
                 className="flex-shrink-0 p-1 rounded"
                 style={{ color: copiedKey ? 'var(--accent)' : 'var(--muted)' }}
@@ -661,6 +727,37 @@ export default function CreateAgentEmployeePage() {
               >
                 {copiedKey ? <Check size={14} /> : <Copy size={14} />}
               </button>
+            </div>
+
+            {/* Channel Token */}
+            <label
+              className="block text-[11px] font-medium mb-1"
+              style={{ color: 'var(--foreground-secondary)' }}
+            >
+              Agent Channel Token
+            </label>
+            <div
+              className="flex items-center gap-2 px-3 py-2 rounded-md mb-5"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                fontFamily: 'monospace',
+              }}
+            >
+              <code className="text-[12px] flex-1 break-all" style={{ color: 'var(--foreground)' }}>
+                {mcpModal.channelKey ?? 'Open Developer tab to generate a channel token'}
+              </code>
+              {mcpModal.channelKey && (
+                <button
+                  type="button"
+                  onClick={handleCopyChannelKey}
+                  className="flex-shrink-0 p-1 rounded"
+                  style={{ color: copiedChannelKey ? 'var(--accent)' : 'var(--muted)' }}
+                  title="Copy channel token"
+                >
+                  {copiedChannelKey ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              )}
             </div>
 
             <label
@@ -681,10 +778,39 @@ export default function CreateAgentEmployeePage() {
                 {mcpConfig}
               </pre>
               <button
+                type="button"
                 onClick={handleCopyMcpConfig}
                 className="absolute right-2 top-2 p-1 rounded"
                 style={{ color: copiedConfig ? 'var(--accent)' : 'var(--muted)' }}
                 title="Copy MCP client config"
+              >
+                {copiedConfig ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+
+            <label
+              className="block text-[11px] font-medium mb-1"
+              style={{ color: 'var(--foreground-secondary)' }}
+            >
+              MCP + Agent Channel Environment
+            </label>
+            <div
+              className="relative px-3 py-2 rounded-md mb-5"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                fontFamily: 'monospace',
+              }}
+            >
+              <pre className="text-[11px] whitespace-pre-wrap break-all pr-8" style={{ color: 'var(--foreground)' }}>
+                {channelEnv}
+              </pre>
+              <button
+                type="button"
+                onClick={handleCopyChannelEnv}
+                className="absolute right-2 top-2 p-1 rounded"
+                style={{ color: copiedConfig ? 'var(--accent)' : 'var(--muted)' }}
+                title="Copy channel env"
               >
                 {copiedConfig ? <Check size={14} /> : <Copy size={14} />}
               </button>
@@ -699,8 +825,9 @@ export default function CreateAgentEmployeePage() {
             </p>
 
             <button
+              type="button"
               onClick={() => {
-              setMcpModal(null);
+                setMcpModal(null);
                 router.push(`/settings/agent-employees/${mcpModal.employeeId}/developer`);
               }}
               className="w-full py-2 text-[12px] font-medium rounded-md"

@@ -14,6 +14,7 @@ import {
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
+import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
 
 interface AgentEmployeeTaskData {
   taskId: string;
@@ -80,6 +81,26 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
       new_value: employee.user_id,
       agent_action_id: actionRow?.id ?? null,
       acting_agent_employee_id: employeeId,
+    });
+
+    await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: task.id,
+      actorUserId: assignedBy,
+      idempotencyKey: `task:${task.id}:assigned:${employeeId}`,
+      payload: {
+        task_id: task.id,
+        title: task.title,
+        description: task.description ?? null,
+        priority: task.priority,
+        status: task.status,
+        assigned_by: assignedBy,
+        assignee_user_id: employee.user_id,
+        pending_action_id: actionRow?.id ?? null,
+      },
     });
   } catch (err) {
     console.error(
