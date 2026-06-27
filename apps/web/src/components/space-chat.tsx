@@ -1649,11 +1649,13 @@ export function SpaceChat({
                                 key={action.id}
                                 action={action}
                                 onApprove={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                 }}
                                 onReject={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                 }}
                               />
@@ -1784,11 +1786,13 @@ export function SpaceChat({
                                 key={action.id}
                                 action={action}
                                 onApprove={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                 }}
                                 onReject={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                 }}
                               />

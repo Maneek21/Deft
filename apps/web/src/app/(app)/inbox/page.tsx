@@ -48,7 +48,8 @@ export default function InboxPage() {
   const handleApprove = useCallback(
     async (id: string) => {
       const res = await api.post(`/api/agent/actions/${id}/approve`, {});
-      if (res.ok) void refresh();
+      if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+      void refresh();
     },
     [refresh],
   );
@@ -56,7 +57,8 @@ export default function InboxPage() {
   const handleReject = useCallback(
     async (id: string) => {
       const res = await api.post(`/api/agent/actions/${id}/reject`, {});
-      if (res.ok) void refresh();
+      if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+      void refresh();
     },
     [refresh],
   );
@@ -132,6 +134,7 @@ export default function InboxPage() {
                   id: item.approval.action_id,
                   action: item.approval.action,
                   params: item.approval.params as Record<string, any>,
+                  created_at: item.created_at,
                 };
                 return (
                   <AgentActionCard

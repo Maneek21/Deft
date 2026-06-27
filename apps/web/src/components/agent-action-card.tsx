@@ -1,29 +1,45 @@
 'use client';
 
+import { useState } from 'react';
+import { ReceiptViewer } from './receipt-viewer';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export type AgentAction = {
   id: string;
   action: string;
   params: Record<string, any>;
   status?: string;
+  approval_status?: string;
+  error?: string | null;
+  created_at?: string;
   executed_at?: string;
+  has_receipt?: boolean;
 };
 
-// ---------------------------------------------------------------------------
-// GenericParams — fallback param renderer for unknown tool types
-// ---------------------------------------------------------------------------
+type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
+
+const ACTION_LABELS: Record<string, string> = {
+  create_task: 'Create task',
+  task_create: 'Create task',
+  task_update: 'Update task',
+  memory_update: 'Update memory',
+  update_task_status: 'Update status',
+  assign_task: 'Assign task',
+  post_message: 'Post message',
+};
+
+const CAPTURE_LABELS: Record<string, string> = {
+  task_candidate: 'Defty captured this as possible work from chat',
+  blocker_candidate: 'Defty captured this as a possible blocker from chat',
+};
 
 function GenericParams({ params }: { params: Record<string, any> }) {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
   if (entries.length === 0) {
     return <p style={{ opacity: 0.6 }}>(no parameters)</p>;
   }
+
   return (
     <div className="space-y-0.5">
       {entries.map(([k, v]) => {
@@ -47,31 +63,32 @@ function GenericParams({ params }: { params: Record<string, any> }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// AgentActionCard — per-action approve / reject card
-// ---------------------------------------------------------------------------
+function InlineSpinner() {
+  return (
+    <div className="relative flex items-center justify-center w-4 h-4 flex-shrink-0">
+      <div
+        className="absolute w-4 h-4 rounded-full border-2 border-t-transparent animate-spin"
+        style={{ borderColor: 'var(--primary)', borderTopColor: 'transparent' }}
+      />
+    </div>
+  );
+}
 
-const ACTION_LABELS: Record<string, string> = {
-  create_task: 'Create task',
-  task_create: 'Create task',
-  task_update: 'Update task',
-  memory_update: 'Update memory',
-  update_task_status: 'Update status',
-  assign_task: 'Assign task',
-  post_message: 'Post message',
-};
-
-const CAPTURE_LABELS: Record<string, string> = {
-  task_candidate: 'Defty captured this as possible work from chat',
-  blocker_candidate: 'Defty captured this as a possible blocker from chat',
-};
-
-export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
+export function AgentActionCard({
+  action,
+  onApprove,
+  onReject,
+  onUndo,
+}: {
   action: AgentAction;
-  onApprove: () => void;
-  onReject: () => void;
+  onApprove: () => void | Promise<void>;
+  onReject: () => void | Promise<void>;
   onUndo?: () => void;
 }) {
+  const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [showReceipt, setShowReceipt] = useState(false);
+
   const humanized = humanizeToolName(action.action);
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
   const title = stripHtml(action.params.title);
@@ -87,61 +104,138 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
     : typeof action.params.space_id === 'string'
       ? action.params.space_id
       : null;
+  const serverStatus = action.status ?? action.approval_status ?? 'pending';
+  const resolvedStatus = localStatus ?? serverStatus;
+  const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
+  const hasReceipt = Boolean(action.has_receipt || resolvedStatus === 'approved' || resolvedStatus === 'rejected');
+  const createdAtMs = action.created_at ? new Date(action.created_at).getTime() : null;
+  const isPossiblyStale = resolvedStatus === 'pending' && createdAtMs != null && Date.now() - createdAtMs > 60 * 60 * 1000;
 
-  if (action.status === 'executing') {
+  async function handleApprove() {
+    if (isBusy) return;
+    setLocalError(null);
+    setLocalStatus('approving');
+    try {
+      await onApprove();
+      setLocalStatus('approved');
+    } catch (err) {
+      setLocalStatus(null);
+      setLocalError(err instanceof Error ? err.message : 'Approval failed.');
+    }
+  }
+
+  async function handleReject() {
+    if (isBusy) return;
+    setLocalError(null);
+    setLocalStatus('rejecting');
+    try {
+      await onReject();
+      setLocalStatus('rejected');
+    } catch (err) {
+      setLocalStatus(null);
+      setLocalError(err instanceof Error ? err.message : 'Rejection failed.');
+    }
+  }
+
+  if (resolvedStatus === 'executing' || resolvedStatus === 'approving' || resolvedStatus === 'rejecting') {
+    const verb = resolvedStatus === 'rejecting'
+      ? 'Rejecting'
+      : resolvedStatus === 'approving'
+        ? 'Approving'
+        : 'Executing';
     return (
-      <div className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2.5"
-        style={{ background: 'rgba(124,107,79,0.08)', border: '1px solid rgba(124,107,79,0.15)', color: 'var(--on-surface-variant)' }}>
-        <div className="relative flex items-center justify-center w-4 h-4 flex-shrink-0">
-          <div className="absolute w-4 h-4 rounded-full border-2 border-t-transparent animate-spin"
-            style={{ borderColor: 'var(--primary)', borderTopColor: 'transparent' }} />
-        </div>
-        <span className="font-medium">Executing {displayLabel.toLowerCase()}...</span>
+      <div
+        className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2.5"
+        style={{ background: 'rgba(124,107,79,0.08)', border: '1px solid rgba(124,107,79,0.15)', color: 'var(--on-surface-variant)' }}
+      >
+        <InlineSpinner />
+        <span className="font-medium">{verb} {displayLabel.toLowerCase()}...</span>
       </div>
     );
   }
-  if (action.status === 'approved') {
+
+  if (resolvedStatus === 'approved') {
     const canUndo = action.executed_at && (Date.now() - new Date(action.executed_at).getTime() < 5 * 60 * 1000);
     return (
-      <div className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2"
-        style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}>
-        <span>{'✓'} {displayLabel} — done</span>
-        {canUndo && onUndo && (
-          <button onClick={onUndo} className="text-[11px] underline ml-2" style={{ color: 'var(--muted)' }}>
-            Undo
-          </button>
-        )}
+      <>
+        <div
+          className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2 flex-wrap"
+          style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}
+        >
+          <span>{displayLabel} done</span>
+          {hasReceipt && (
+            <button onClick={() => setShowReceipt(true)} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              View receipt
+            </button>
+          )}
+          {canUndo && onUndo && (
+            <button onClick={onUndo} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              Undo
+            </button>
+          )}
+        </div>
+        <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />
+      </>
+    );
+  }
+
+  if (resolvedStatus === 'failed') {
+    return (
+      <div
+        className="rounded-lg px-3 py-2 mt-2 text-[12px]"
+        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--status-red)' }}
+      >
+        {displayLabel} failed{action.error ? `: ${stripHtml(action.error).slice(0, 120)}` : ''}
       </div>
     );
   }
-  if (action.status === 'failed') {
+
+  if (resolvedStatus === 'expired') {
     return (
-      <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
-        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--status-red)' }}>
-        {'✗'} {displayLabel} - failed
+      <div
+        className="rounded-lg px-3 py-2 mt-2 text-[12px]"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+      >
+        {displayLabel} expired before review.
       </div>
     );
   }
-  if (action.status === 'undone') {
+
+  if (resolvedStatus === 'undone') {
     return (
-      <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
-        {'↩'} {displayLabel} — undone
+      <div
+        className="rounded-lg px-3 py-2 mt-2 text-[12px]"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+      >
+        {displayLabel} undone
       </div>
     );
   }
-  if (action.status === 'rejected') {
+
+  if (resolvedStatus === 'rejected') {
     return (
-      <div className="rounded-lg px-3 py-2 mt-2 text-[12px]"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
-        ✗ {displayLabel} — rejected
-      </div>
+      <>
+        <div
+          className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2 flex-wrap"
+          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
+        >
+          <span>{displayLabel} rejected</span>
+          {hasReceipt && (
+            <button onClick={() => setShowReceipt(true)} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              View receipt
+            </button>
+          )}
+        </div>
+        <ReceiptViewer actionId={action.id} isOpen={showReceipt} onClose={() => setShowReceipt(false)} />
+      </>
     );
   }
 
   return (
-    <div className="p-3 mt-2 max-w-[380px] w-full"
-      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}>
+    <div
+      className="p-3 mt-2 max-w-[420px] w-full"
+      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
@@ -158,22 +252,24 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
             className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
             style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
           >
-            Needs approval
+            {isPossiblyStale ? 'Review age' : 'Needs approval'}
           </span>
         )}
       </div>
+
       {captureLabel && (
         <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
           {captureLabel}
         </p>
       )}
+
       <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
         {action.action in ACTION_LABELS ? (
           <>
             {title && <p>"{title}"</p>}
             {action.params.project_name && <p>{action.params.project_name}</p>}
             {(action.params.priority || action.params.assignee_name) && (
-              <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' · ')}</p>
+              <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' - ')}</p>
             )}
             {content && <p>"{content.slice(0, 80)}{content.length > 80 ? '...' : ''}"</p>}
             {action.params.space_name && <p>in #{action.params.space_name}</p>}
@@ -197,12 +293,35 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
             </a>
           </p>
         )}
+        {isPossiblyStale && (
+          <p style={{ color: 'var(--muted)' }}>
+            This capture is older than an hour. Check the source before approving.
+          </p>
+        )}
+        {localError && (
+          <p style={{ color: 'var(--status-red)' }}>
+            {localError}
+          </p>
+        )}
       </div>
-      <div className="flex gap-2 mt-2.5">
-        <button onClick={onApprove} className="px-3 py-1 rounded-md text-[11px] font-medium text-white"
-          style={{ background: 'var(--status-green)' }}>Approve</button>
-        <button onClick={onReject} className="px-3 py-1 rounded-md text-[11px] font-medium"
-          style={{ background: 'var(--bg-overlay)', color: 'var(--text-secondary)' }}>Reject</button>
+
+      <div className="flex gap-2 mt-2.5 flex-wrap">
+        <button
+          onClick={handleApprove}
+          disabled={isBusy}
+          className="px-3 py-1 rounded-md text-[11px] font-medium text-white disabled:opacity-60"
+          style={{ background: 'var(--status-green)' }}
+        >
+          Approve
+        </button>
+        <button
+          onClick={handleReject}
+          disabled={isBusy}
+          className="px-3 py-1 rounded-md text-[11px] font-medium disabled:opacity-60"
+          style={{ background: 'var(--bg-overlay)', color: 'var(--text-secondary)' }}
+        >
+          Reject
+        </button>
       </div>
     </div>
   );
