@@ -1042,7 +1042,23 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
-  return c.json({ ...execResult, executed_at: new Date().toISOString() });
+  const legacyResultBody = {
+    ...execResult,
+    executed_at: new Date().toISOString(),
+  };
+
+  if (!execResult.success) {
+    return c.json(
+      {
+        ...legacyResultBody,
+        error: execResult.error ?? 'Action failed',
+        code: 'EXECUTE_FAILED',
+      },
+      500,
+    );
+  }
+
+  return c.json(legacyResultBody);
 });
 
 agentRoutes.post('/actions/:id/reject', async (c) => {

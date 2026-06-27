@@ -14,6 +14,8 @@ import bcrypt from 'bcryptjs';
 import { and, eq, gte, inArray, lt } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
+  actionReceipts,
+  agentActions,
   agentEmployees,
   events,
   messages,
@@ -27,6 +29,7 @@ import {
   spaceMembers,
   spaces,
   standups,
+  taskActivity,
   taskComments,
   tasks,
   teamHealthSnapshots,
@@ -38,6 +41,12 @@ import {
 const TOM_TOKEN = process.env.SEED_TOM_MCP_TOKEN ?? 'tom-pilot-mcp-token-2026';
 const MAYA_TOKEN = process.env.SEED_MAYA_MCP_TOKEN ?? 'maya-pilot-mcp-token-2026';
 const PROOF_PHRASE = 'ruby-sunrise-2026';
+const PILOT_ACTION_SOURCES_TO_PRUNE = [
+  'pilot-living',
+  'task_extract',
+  'blocked_classifier',
+  'defty_capture',
+];
 
 type SeedUser = typeof users.$inferSelect;
 type SeedSpace = typeof spaces.$inferSelect;
@@ -1044,6 +1053,26 @@ async function cleanReadState(orgId: string) {
   await db.update(notifications).set({ is_read: true }).where(eq(notifications.org_id, orgId));
 }
 
+async function cleanPilotActionNoise(orgId: string) {
+  const staleActions = await db
+    .select({ id: agentActions.id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, orgId),
+      inArray(agentActions.source, PILOT_ACTION_SOURCES_TO_PRUNE),
+    ));
+  const staleActionIds = staleActions.map((action) => action.id);
+  if (staleActionIds.length === 0) return;
+
+  await db
+    .update(taskActivity)
+    .set({ agent_action_id: null })
+    .where(inArray(taskActivity.agent_action_id, staleActionIds));
+  await db.delete(actionReceipts).where(inArray(actionReceipts.action_id, staleActionIds));
+  await db.delete(agentActions).where(inArray(agentActions.id, staleActionIds));
+  console.log(`[seed-pilot-workspace] pruned ${staleActionIds.length} stale pilot/capture action rows`);
+}
+
 export async function seedPilotWorkspace(): Promise<{
   orgId: string;
   tomToken: string;
@@ -1158,6 +1187,7 @@ export async function seedPilotWorkspace(): Promise<{
     tom,
     maya,
   });
+  await cleanPilotActionNoise(org.id);
   await cleanReadState(org.id);
 
   console.log('[seed-pilot-workspace] done');
