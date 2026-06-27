@@ -256,6 +256,68 @@ async function insertDeftyTaskCreateWithIntent(title: string): Promise<{ actionI
   });
 }
 
+async function insertFailedDeftyTaskIntent(title: string): Promise<{
+  actionId: string;
+  dedupeKey: string;
+  intentId: string;
+}> {
+  return withClient(async (c) => {
+    const dedupeKey = `routes-work-intent-failed:${crypto.randomUUID()}`;
+    const intent = await c.query(
+      `INSERT INTO work_intents
+        (id, org_id, source_user_id, agent_employee_id, kind, status, title,
+         summary, proposed_action, proposed_params, dedupe_key, failure_reason)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'task_candidate', 'failed',
+         $4, $5, 'task_create', $6::jsonb, $7, 'Project not found')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        title,
+        `Create ${title}`,
+        JSON.stringify({
+          title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+        dedupeKey,
+      ],
+    );
+    const intentId = intent.rows[0].id as string;
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status, approved_at, executed_at, error)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'task_create',
+         $4::jsonb, 'quick', 'approved', NOW(), NOW(), 'Project not found')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        JSON.stringify({
+          caller_employee_slug: EMP_SLUG,
+          title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+          work_intent_id: intentId,
+          work_intent_status: 'failed',
+          capture_kind: 'task_candidate',
+          proposed_by: 'defty',
+          dedupe_key: dedupeKey,
+        }),
+      ],
+    );
+    const actionId = action.rows[0].id as string;
+    await c.query(
+      `UPDATE work_intents SET converted_action_id = $1 WHERE id = $2`,
+      [actionId, intentId],
+    );
+    return { actionId, dedupeKey, intentId };
+  });
+}
+
 before(async () => {
   await seedFixtures();
 
@@ -320,6 +382,91 @@ test('GET /api/work-intents lists proposed Defty work captures', async () => {
   assert.equal(match.status, 'proposed');
   assert.equal(match.kind, 'task_candidate');
   assert.equal(match.proposed_action, 'task_create');
+});
+
+test('POST /api/work-intents/:id/retry reopens failed capture as a fresh proposal', async () => {
+  const title = `routes-intent-retry-${Date.now()}`;
+  const failed = await insertFailedDeftyTaskIntent(title);
+
+  const retryRes = await app().request(`/api/work-intents/${failed.intentId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(retryRes.status, 200);
+  const retryBody = await retryRes.json();
+  assert.equal(retryBody.success, true);
+  assert.equal(retryBody.intent.retry_of_work_intent_id, failed.intentId);
+  assert.ok(retryBody.intent.id);
+  assert.ok(retryBody.action.id);
+
+  await withClient(async (c) => {
+    const original = await c.query(
+      `SELECT status, converted_action_id, failure_reason
+         FROM work_intents
+        WHERE id = $1`,
+      [failed.intentId],
+    );
+    assert.equal(original.rows[0].status, 'failed');
+    assert.equal(original.rows[0].converted_action_id, failed.actionId);
+    assert.equal(original.rows[0].failure_reason, 'Project not found');
+
+    const reopened = await c.query(
+      `SELECT status, dedupe_key, metadata, proposed_params
+         FROM work_intents
+        WHERE id = $1`,
+      [retryBody.intent.id],
+    );
+    assert.equal(reopened.rows[0].status, 'proposed');
+    assert.notEqual(reopened.rows[0].dedupe_key, failed.dedupeKey);
+    assert.equal(reopened.rows[0].metadata.retry_of_work_intent_id, failed.intentId);
+
+    const action = await c.query(
+      `SELECT approval_status, approval_tier, source, params
+         FROM agent_actions
+        WHERE id = $1`,
+      [retryBody.action.id],
+    );
+    assert.equal(action.rows[0].approval_status, 'pending');
+    assert.equal(action.rows[0].approval_tier, 'quick');
+    assert.equal(action.rows[0].source, 'defty_capture');
+    assert.equal(action.rows[0].params.work_intent_id, retryBody.intent.id);
+    assert.equal(action.rows[0].params.retry_of_work_intent_id, failed.intentId);
+  });
+
+  const approveRes = await app().request(`/api/agent/actions/${retryBody.action.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(approveRes.status, 200);
+  const approveBody = await approveRes.json();
+  assert.equal(approveBody.status, 'approved', `body: ${JSON.stringify(approveBody)}`);
+
+  await withClient(async (c) => {
+    const original = await c.query(
+      `SELECT status FROM work_intents WHERE id = $1`,
+      [failed.intentId],
+    );
+    assert.equal(original.rows[0].status, 'failed');
+
+    const reopened = await c.query(
+      `SELECT status, converted_action_id, converted_task_id, converted_by
+         FROM work_intents
+        WHERE id = $1`,
+      [retryBody.intent.id],
+    );
+    assert.equal(reopened.rows[0].status, 'converted');
+    assert.equal(reopened.rows[0].converted_action_id, retryBody.action.id);
+    assert.ok(reopened.rows[0].converted_task_id);
+    assert.equal(reopened.rows[0].converted_by, APPROVER_USER_ID);
+
+    const task = await c.query(
+      `SELECT title FROM tasks WHERE id = $1`,
+      [reopened.rows[0].converted_task_id],
+    );
+    assert.equal(task.rows[0].title, title);
+  });
 });
 
 test('POST /api/agent/actions/:id/approve executes the write', async () => {

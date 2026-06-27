@@ -1,7 +1,10 @@
 import { Hono } from 'hono';
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { agentEmployees, messages, spaces, users, workIntents } from '@deft/db/schema';
+import { agentActions, agentEmployees, messages, spaces, users, workIntents } from '@deft/db/schema';
+import { getApprovalTier } from '../lib/agent-approval.js';
+import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
 
 export const workIntentRoutes = new Hono();
 
@@ -15,8 +18,15 @@ const VALID_KINDS = [
   'question_candidate',
 ] as const;
 
+type AuthedUser = { id: string; org_id: string };
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
 workIntentRoutes.get('/', async (c) => {
-  const user = c.get('user') as { id: string; org_id: string };
+  const user = c.get('user') as AuthedUser;
   const rawLimit = parseInt(c.req.query('limit') ?? '50', 10);
   const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 100);
   const status = c.req.query('status');
@@ -68,7 +78,7 @@ workIntentRoutes.get('/', async (c) => {
 });
 
 workIntentRoutes.get('/:id', async (c) => {
-  const user = c.get('user') as { id: string; org_id: string };
+  const user = c.get('user') as AuthedUser;
   const id = c.req.param('id');
 
   const [row] = await db
@@ -82,4 +92,137 @@ workIntentRoutes.get('/:id', async (c) => {
   }
 
   return c.json({ intent: row });
+});
+
+workIntentRoutes.post('/:id/retry', async (c) => {
+  const user = c.get('user') as AuthedUser;
+  const id = c.req.param('id');
+
+  const [row] = await db
+    .select({
+      id: workIntents.id,
+      org_id: workIntents.org_id,
+      space_id: workIntents.space_id,
+      source_message_id: workIntents.source_message_id,
+      source_user_id: workIntents.source_user_id,
+      agent_employee_id: workIntents.agent_employee_id,
+      kind: workIntents.kind,
+      status: workIntents.status,
+      title: workIntents.title,
+      summary: workIntents.summary,
+      confidence: workIntents.confidence,
+      proposed_action: workIntents.proposed_action,
+      proposed_params: workIntents.proposed_params,
+      dedupe_key: workIntents.dedupe_key,
+      failure_reason: workIntents.failure_reason,
+      metadata: workIntents.metadata,
+      agent_user_id: agentEmployees.user_id,
+      agent_slug: agentEmployees.slug,
+    })
+    .from(workIntents)
+    .leftJoin(agentEmployees, eq(workIntents.agent_employee_id, agentEmployees.id))
+    .where(and(eq(workIntents.org_id, user.org_id), eq(workIntents.id, id)))
+    .limit(1);
+
+  if (!row) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+
+  if (row.status !== 'failed') {
+    return c.json(
+      { error: 'Only failed work intents can be retried', code: 'INVALID_STATE' },
+      409,
+    );
+  }
+
+  const fallbackDefty = row.agent_employee_id && row.agent_user_id && row.agent_slug
+    ? null
+    : await ensureDeftyEmployee(user.org_id);
+  const employeeId = row.agent_employee_id && row.agent_user_id ? row.agent_employee_id : fallbackDefty!.employeeId;
+  const employeeUserId = row.agent_user_id ?? fallbackDefty!.userId;
+  const employeeSlug = row.agent_slug ?? fallbackDefty!.slug;
+  const retryDedupeKey = `${row.dedupe_key}:retry:${randomUUID()}`;
+
+  const retry = await db.transaction(async (tx) => {
+    const [intent] = await tx
+      .insert(workIntents)
+      .values({
+        org_id: user.org_id,
+        space_id: row.space_id,
+        source_message_id: row.source_message_id,
+        source_user_id: row.source_user_id,
+        agent_employee_id: employeeId,
+        kind: row.kind,
+        status: 'proposed',
+        title: row.title,
+        summary: row.summary,
+        confidence: row.confidence,
+        proposed_action: row.proposed_action,
+        proposed_params: row.proposed_params,
+        dedupe_key: retryDedupeKey,
+        metadata: {
+          ...asRecord(row.metadata),
+          retry_of_work_intent_id: row.id,
+          retry_of_dedupe_key: row.dedupe_key,
+          retry_failure_reason: row.failure_reason ?? null,
+          retried_by: user.id,
+        },
+      })
+      .returning({ id: workIntents.id });
+
+    if (!intent) {
+      throw new Error('Failed to create retry work intent');
+    }
+
+    const params = {
+      ...asRecord(row.proposed_params),
+      caller_employee_slug: employeeSlug,
+      work_intent_id: intent.id,
+      work_intent_status: 'proposed',
+      retry_of_work_intent_id: row.id,
+      retry_failure_reason: row.failure_reason ?? null,
+      retried_by: user.id,
+      dedupe_key: retryDedupeKey,
+      proposed_by: 'defty',
+    };
+
+    const [action] = await tx
+      .insert(agentActions)
+      .values({
+        org_id: user.org_id,
+        user_id: employeeUserId,
+        agent_employee_id: employeeId,
+        conversation_id: row.space_id,
+        action: row.proposed_action,
+        message_id: row.source_message_id,
+        params,
+        approval_tier: getApprovalTier(row.proposed_action),
+        approval_status: 'pending',
+        source: 'defty_capture',
+      })
+      .returning({ id: agentActions.id });
+
+    if (!action) {
+      throw new Error('Failed to create retry approval');
+    }
+
+    return {
+      intent_id: intent.id,
+      action_id: action.id,
+      approval_tier: getApprovalTier(row.proposed_action),
+    };
+  });
+
+  return c.json({
+    success: true,
+    intent: {
+      id: retry.intent_id,
+      status: 'proposed',
+      retry_of_work_intent_id: row.id,
+    },
+    action: {
+      id: retry.action_id,
+      approval_tier: retry.approval_tier,
+    },
+  });
 });

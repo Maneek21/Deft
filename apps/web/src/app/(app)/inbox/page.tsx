@@ -75,7 +75,15 @@ async function fetchWorkIntents(url: string): Promise<WorkIntentResponse> {
   return (await res.json()) as WorkIntentResponse;
 }
 
-function WorkIntentRow({ intent }: { intent: WorkIntent }) {
+function WorkIntentRow({
+  intent,
+  onRetry,
+  retrying,
+}: {
+  intent: WorkIntent;
+  onRetry: (intentId: string) => void;
+  retrying: boolean;
+}) {
   const statusColor =
     intent.status === 'converted' ? 'var(--status-green)'
     : intent.status === 'failed' ? 'var(--status-red)'
@@ -114,6 +122,15 @@ function WorkIntentRow({ intent }: { intent: WorkIntent }) {
         <span>{intent.proposed_action.replaceAll('_', ' ')}</span>
         {intent.agent_employee_name && <span>by {intent.agent_employee_name}</span>}
         {timestamp && <span>{new Date(timestamp).toLocaleString()}</span>}
+        {intent.converted_task_id && (
+          <a
+            href={`/tasks?task=${intent.converted_task_id}`}
+            className="underline underline-offset-2"
+            style={{ color: 'var(--primary)' }}
+          >
+            Task
+          </a>
+        )}
         {intent.source_message_id && intent.space_id && (
           <a
             href={`/chat?space=${intent.space_id}&message=${intent.source_message_id}`}
@@ -129,6 +146,19 @@ function WorkIntentRow({ intent }: { intent: WorkIntent }) {
           {stripHtml(intent.failure_reason).slice(0, 180)}
         </p>
       )}
+      {intent.status === 'failed' && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => onRetry(intent.id)}
+            disabled={retrying}
+            className="text-[11px] px-2.5 py-1 rounded-md disabled:opacity-60"
+            style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+          >
+            {retrying ? 'Retrying...' : 'Retry as proposal'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -137,6 +167,7 @@ export default function InboxPage() {
   const params = useSearchParams();
   const initialTab = (params.get('tab') as Tab) ?? 'all';
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [retryingIntentId, setRetryingIntentId] = useState<string | null>(null);
 
   // For 'tasks' we want both task_assigned and task_updated. Fetch all and filter
   // client-side for that tab; for the others we pass kind to the API.
@@ -176,6 +207,21 @@ export default function InboxPage() {
       if (!res.ok) throw new Error(`Reject failed (${res.status})`);
       void refresh();
       void refreshWorkIntents();
+    },
+    [refresh, refreshWorkIntents],
+  );
+
+  const handleRetryIntent = useCallback(
+    async (id: string) => {
+      setRetryingIntentId(id);
+      try {
+        const res = await api.post(`/api/work-intents/${id}/retry`, {});
+        if (!res.ok) throw new Error(`Retry failed (${res.status})`);
+        void refresh();
+        void refreshWorkIntents();
+      } finally {
+        setRetryingIntentId(null);
+      }
     },
     [refresh, refreshWorkIntents],
   );
@@ -276,7 +322,12 @@ export default function InboxPage() {
             })}
             {shouldLoadWorkIntents && historicWorkIntents
               .map((intent) => (
-                <WorkIntentRow key={intent.id} intent={intent} />
+                <WorkIntentRow
+                  key={intent.id}
+                  intent={intent}
+                  onRetry={handleRetryIntent}
+                  retrying={retryingIntentId === intent.id}
+                />
               ))}
           </div>
         )}
