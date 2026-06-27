@@ -10,6 +10,7 @@ import {
   agentActions,
   agentEmployees,
 } from '@deft/db/schema';
+import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
 
 export const inboxRoutes = new Hono();
 
@@ -65,6 +66,93 @@ const NOTIF_KIND_MAP: Record<string, InboxItemKind> = {
   skill_update_available: 'system',
 };
 
+function visibleCaptureActionSql(user: { id: string; org_id: string }) {
+  return sql`(
+    ${agentActions.source} IS DISTINCT FROM 'defty_capture'
+    OR (
+      (
+        COALESCE(
+          ${agentActions.params}->>'source_space_id',
+          ${agentActions.params}->>'origin_space_id',
+          ${agentActions.params}->>'space_id'
+        ) IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM space_members inbox_capture_sm
+          INNER JOIN spaces inbox_capture_s
+            ON inbox_capture_s.id = inbox_capture_sm.space_id
+          WHERE inbox_capture_sm.space_id = COALESCE(
+              ${agentActions.params}->>'source_space_id',
+              ${agentActions.params}->>'origin_space_id',
+              ${agentActions.params}->>'space_id'
+            )
+            AND inbox_capture_sm.user_id = ${user.id}
+            AND inbox_capture_s.org_id = ${user.org_id}
+            AND inbox_capture_s.is_archived = false
+        )
+      )
+      AND (
+        ${agentActions.params}->>'source_message_id' IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM messages inbox_capture_m
+          INNER JOIN space_members inbox_capture_msg_sm
+            ON inbox_capture_msg_sm.space_id = inbox_capture_m.space_id
+          INNER JOIN spaces inbox_capture_msg_s
+            ON inbox_capture_msg_s.id = inbox_capture_m.space_id
+          WHERE inbox_capture_m.id = ${agentActions.params}->>'source_message_id'
+            AND inbox_capture_m.org_id = ${user.org_id}
+            AND inbox_capture_m.is_deleted = false
+            AND inbox_capture_msg_sm.user_id = ${user.id}
+            AND inbox_capture_msg_s.org_id = ${user.org_id}
+            AND inbox_capture_msg_s.is_archived = false
+            AND (
+              COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              ) IS NULL
+              OR inbox_capture_m.space_id = COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              )
+            )
+        )
+      )
+      AND (
+        ${agentActions.params}->>'source_message_id' IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM messages inbox_capture_m
+          INNER JOIN space_members inbox_capture_msg_sm
+            ON inbox_capture_msg_sm.space_id = inbox_capture_m.space_id
+          INNER JOIN spaces inbox_capture_msg_s
+            ON inbox_capture_msg_s.id = inbox_capture_m.space_id
+          WHERE inbox_capture_m.id = ${agentActions.params}->>'source_message_id'
+            AND inbox_capture_m.org_id = ${user.org_id}
+            AND inbox_capture_m.is_deleted = false
+            AND inbox_capture_msg_sm.user_id = ${user.id}
+            AND inbox_capture_msg_s.org_id = ${user.org_id}
+            AND inbox_capture_msg_s.is_archived = false
+            AND (
+              COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              ) IS NULL
+              OR inbox_capture_m.space_id = COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              )
+            )
+        )
+      )
+    )
+  )`;
+}
+
 inboxRoutes.get('/', async (c) => {
   try {
     const user = c.get('user') as { id: string; org_id: string };
@@ -73,13 +161,18 @@ inboxRoutes.get('/', async (c) => {
     const kindFilter = c.req.query('kind') as InboxItemKind | undefined;
     const countOnly = c.req.query('count_only') === '1';
 
-    await db.update(agentActions)
+    const expiredActions = await db.update(agentActions)
       .set({ approval_status: 'expired' })
       .where(and(
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.approval_status, 'pending'),
         lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
-      ));
+      ))
+      .returning({ id: agentActions.id, params: agentActions.params });
+    await markWorkIntentsExpiredForActions({
+      orgId: user.org_id,
+      actions: expiredActions,
+    });
 
     const notifRows = await db.select()
       .from(notifications)
@@ -123,11 +216,12 @@ inboxRoutes.get('/', async (c) => {
       const [agg] = await db.select({
         count: sql<number>`count(*)::int`,
         latest: sql<Date | null>`MAX(${messages.created_at})`,
-        preview: sql<string | null>`(SELECT content FROM ${messages} WHERE space_id = ${s.space_id} AND user_id <> ${user.id} AND is_deleted = false ORDER BY created_at DESC LIMIT 1)`,
+        preview: sql<string | null>`(SELECT content FROM ${messages} WHERE space_id = ${s.space_id} AND org_id = ${user.org_id} AND user_id <> ${user.id} AND is_deleted = false ORDER BY created_at DESC LIMIT 1)`,
       })
         .from(messages)
         .where(and(
           eq(messages.space_id, s.space_id),
+          eq(messages.org_id, user.org_id),
           gt(messages.created_at, lastRead),
           eq(messages.is_deleted, false),
           sql`${messages.user_id} != ${user.id}`,
@@ -162,7 +256,10 @@ inboxRoutes.get('/', async (c) => {
       employee_avatar: agentEmployees.avatar_url,
     })
       .from(agentActions)
-      .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
+      .leftJoin(agentEmployees, and(
+        eq(agentActions.agent_employee_id, agentEmployees.id),
+        eq(agentEmployees.org_id, user.org_id),
+      ))
       .where(and(
         eq(agentActions.org_id, user.org_id),
         eq(agentActions.approval_status, 'pending'),
@@ -170,6 +267,7 @@ inboxRoutes.get('/', async (c) => {
         // heartbeat ticks, trigger dispatch, task assignments are
         // pull-queue entries for BYOA runtimes — not user-actionable).
         inArray(agentActions.approval_tier, ['quick', 'full']),
+        visibleCaptureActionSql(user),
       ))
       .orderBy(desc(agentActions.created_at))
       .limit(limit);

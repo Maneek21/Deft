@@ -30,6 +30,7 @@ import {
   issueAgentChannelToken,
   publishAgentChannelEvent,
 } from '../lib/agent-channel.js';
+import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -1509,15 +1510,22 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
 
     // Expire pending agent actions
-    await db
+    const expiredActions = await db
       .update(agentActions)
       .set({ approval_status: 'expired' })
       .where(
         and(
+          eq(agentActions.org_id, user.org_id),
           eq(agentActions.agent_employee_id, id),
           eq(agentActions.approval_status, 'pending'),
         ),
-      );
+      )
+      .returning({ id: agentActions.id, params: agentActions.params });
+    await markWorkIntentsExpiredForActions({
+      orgId: user.org_id,
+      actions: expiredActions,
+      reason: 'Agent employee removed',
+    });
 
     // BYOA agents are long-running processes on the operator's own infra;
     // deleting the employee record releases the MCP token and stops Defty

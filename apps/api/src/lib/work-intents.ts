@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 
@@ -86,4 +86,63 @@ export async function markWorkIntentFailedForAction(params: {
       eq(workIntents.id, workIntentId),
       eq(workIntents.org_id, params.orgId),
     ));
+}
+
+export async function markWorkIntentsExpiredForActions(params: {
+  orgId: string;
+  actions: Array<{ id?: string | null; params: unknown }>;
+  reason?: string | null;
+}): Promise<number> {
+  const actionByIntentId = new Map<string, string | null>();
+  for (const action of params.actions) {
+    const workIntentId = getWorkIntentIdFromParams(action.params);
+    if (workIntentId) actionByIntentId.set(workIntentId, action.id ?? null);
+  }
+  const workIntentIds = [...actionByIntentId.keys()];
+
+  if (workIntentIds.length === 0) return 0;
+
+  const reason = params.reason?.slice(0, 2000) ?? 'Approval expired';
+  let count = 0;
+  for (const workIntentId of workIntentIds) {
+    const updated = await db
+      .update(workIntents)
+      .set({
+        status: 'expired',
+        converted_action_id: actionByIntentId.get(workIntentId) ?? null,
+        failure_reason: reason,
+      })
+      .where(and(
+        eq(workIntents.org_id, params.orgId),
+        eq(workIntents.status, 'proposed'),
+        eq(workIntents.id, workIntentId),
+      ))
+      .returning({ id: workIntents.id });
+    count += updated.length;
+  }
+  return count;
+}
+
+export async function markWorkIntentsExpiredByIds(params: {
+  orgId: string;
+  workIntentIds: string[];
+  reason?: string | null;
+}): Promise<number> {
+  const workIntentIds = [...new Set(params.workIntentIds.filter(Boolean))];
+  if (workIntentIds.length === 0) return 0;
+
+  const updated = await db
+    .update(workIntents)
+    .set({
+      status: 'expired',
+      failure_reason: params.reason?.slice(0, 2000) ?? 'Approval expired',
+    })
+    .where(and(
+      eq(workIntents.org_id, params.orgId),
+      eq(workIntents.status, 'proposed'),
+      inArray(workIntents.id, workIntentIds),
+    ))
+    .returning({ id: workIntents.id });
+
+  return updated.length;
 }

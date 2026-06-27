@@ -264,6 +264,13 @@ export async function approveAction(
       message: `agent_employee ${row.agent_employee_id} not found`,
     };
   }
+  if (emp.org_id !== row.org_id) {
+    return {
+      status: 'error',
+      code: 'FORBIDDEN',
+      message: 'agent employee does not belong to the action org',
+    };
+  }
 
   const ctx = buildCtxFromEmployee(emp);
 

@@ -205,6 +205,76 @@ test('proposal payload description keeps the full message', async () => {
   assert.equal(params.description, 'I am completely stuck on the database migration');
 });
 
+test('blocked-alert repairs an orphaned Defty work intent by recreating the approval action', async () => {
+  await handleBlockedAlert({
+    id: 'job',
+    name: 'blocked-alert',
+    data: {
+      messageId: msgId,
+      spaceId,
+      content: 'I am completely stuck on the database migration',
+      orgId: testOrgId,
+      userId: testUserId,
+    },
+  } as any);
+
+  const [intent] = await db
+    .select()
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, testOrgId),
+      eq(workIntents.source_message_id, msgId),
+    ))
+    .limit(1);
+  assert.ok(intent, 'first run should create a work intent');
+
+  await db.delete(agentActions).where(
+    and(
+      eq(agentActions.org_id, testOrgId),
+      eq(agentActions.message_id, msgId),
+      eq(agentActions.source, 'defty_capture'),
+    ),
+  );
+  await db.delete(agentNudges).where(
+    and(
+      eq(agentNudges.user_id, testUserId),
+      eq(agentNudges.nudge_type, 'blocked'),
+    ),
+  );
+
+  await handleBlockedAlert({
+    id: 'job',
+    name: 'blocked-alert',
+    data: {
+      messageId: msgId,
+      spaceId,
+      content: 'I am completely stuck on the database migration',
+      orgId: testOrgId,
+      userId: testUserId,
+    },
+  } as any);
+
+  const actions = await db
+    .select()
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, testOrgId),
+      eq(agentActions.message_id, msgId),
+      eq(agentActions.source, 'defty_capture'),
+    ));
+  assert.equal(actions.length, 1, 'second run should recreate exactly one approval action');
+  assert.equal((actions[0]!.params as any).work_intent_id, intent.id);
+
+  const intents = await db
+    .select()
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, testOrgId),
+      eq(workIntents.source_message_id, msgId),
+    ));
+  assert.equal(intents.length, 1, 'repair must reuse the existing intent');
+});
+
 test('blocked-alert strips rich text from task proposal fields', async () => {
   await handleBlockedAlert({
     id: 'job',

@@ -32,6 +32,8 @@ const APPROVER_EMAIL = 'resolver-approver@test.local';
 const OTHER_ORG_ID = '00000000-0000-0000-0000-000000000999';
 const OUTSIDER_USER_ID = 'test-resolver-outsider';
 const OUTSIDER_EMAIL = 'resolver-outsider@test.local';
+const FOREIGN_EMP_ID = 'test-resolver-foreign-emp';
+const FOREIGN_USER_ID = 'test-resolver-foreign-user';
 
 let TEST_PROJECT_ID: string | null = null;
 let TEST_SPACE_ID: string | null = null;
@@ -193,14 +195,14 @@ async function teardownFixtures() {
       `DELETE FROM action_receipts
        WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
           OR action_id IN (SELECT id FROM agent_actions WHERE user_id = $2)
-          OR employee_id IN ($3, $4)`,
-      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID],
+          OR employee_id IN ($3, $4, $5)`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     await c.query(
       `DELETE FROM agent_actions
        WHERE user_id IN ($1, $2)
-          OR agent_employee_id IN ($3, $4)`,
-      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID],
+          OR agent_employee_id IN ($3, $4, $5)`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     if (TEST_PROJECT_ID) {
       await c.query(
@@ -238,16 +240,20 @@ async function teardownFixtures() {
       );
     }
     await c.query(
-      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4)`,
-      [APPROVER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4, $5)`,
+      [APPROVER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
     );
     await c.query(
-      `DELETE FROM agent_employees WHERE id IN ($1, $2)`,
-      [EMP_ID, DEFTY_EMP_ID],
+      `DELETE FROM agent_employees WHERE id IN ($1, $2, $3)`,
+      [EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     await c.query(
-      `DELETE FROM users WHERE id IN ($1, $2, $3, $4)`,
-      [SHADOW_USER_ID, APPROVER_USER_ID, OUTSIDER_USER_ID, DEFTY_USER_ID],
+      `DELETE FROM users WHERE id IN ($1, $2, $3, $4, $5)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID, OUTSIDER_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM orgs WHERE id = $1 AND slug = 'resolver-other-org'`,
+      [OTHER_ORG_ID],
     );
     if (CREATED_TEST_ORG) {
       await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
@@ -269,6 +275,63 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
         EMP_ID,
         JSON.stringify({
           caller_employee_slug: EMP_SLUG,
+          title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
+async function insertPendingTaskCreateWithForeignEmployee(title: string): Promise<string> {
+  return withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug)
+       VALUES ($1, 'Resolver Other Org', 'resolver-other-org')
+       ON CONFLICT (id) DO NOTHING`,
+      [OTHER_ORG_ID],
+    );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, 'resolver-foreign@test.local', 'Resolver Foreign Employee', true)
+       ON CONFLICT (id) DO NOTHING`,
+      [FOREIGN_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO NOTHING`,
+      [OTHER_ORG_ID, FOREIGN_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         is_byoa, is_active, created_by)
+       VALUES ($1, $2, $3, 'Resolver Foreign Employee', 'resolver-foreign',
+         'project_manager', 'foreign resolver employee', 'standard',
+         true, true, $3)
+       ON CONFLICT (id) DO UPDATE SET
+         org_id = EXCLUDED.org_id,
+         user_id = EXCLUDED.user_id,
+         is_active = true`,
+      [FOREIGN_EMP_ID, OTHER_ORG_ID, FOREIGN_USER_ID],
+    );
+
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'mcp', 'task_create',
+         $4::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        FOREIGN_EMP_ID,
+        JSON.stringify({
+          caller_employee_slug: 'resolver-foreign',
           title,
           project_id: TEST_PROJECT_ID,
           priority: 'p2',
@@ -445,6 +508,38 @@ test('4. approving by a user not in the org returns FORBIDDEN', async () => {
       'pending',
       'row must stay pending when approver is not in the org',
     );
+  });
+});
+
+test('4b. approving an action whose employee belongs to another org returns FORBIDDEN', async () => {
+  const title = `resolver-test-4b-${Date.now()}`;
+  const actionId = await insertPendingTaskCreateWithForeignEmployee(title);
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrow
+  assert.equal(result.code, 'FORBIDDEN');
+  // @ts-expect-error narrow
+  assert.match(result.message, /does not belong/i);
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT approval_status FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(
+      r.rows[0].approval_status,
+      'pending',
+      'cross-org employee rows must not be claimed or executed',
+    );
+
+    const tasks = await c.query(
+      `SELECT COUNT(*)::int AS n FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(tasks.rows[0].n, 0, 'cross-org employee row must not create a task');
   });
 });
 

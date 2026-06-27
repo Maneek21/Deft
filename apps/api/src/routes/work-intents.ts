@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
-import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { agentActions, agentEmployees, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
@@ -25,6 +24,72 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function visibleWorkIntentSourceSql(user: AuthedUser) {
+  return sql`(
+    (${workIntents.space_id} IS NULL AND ${workIntents.source_message_id} IS NULL)
+    OR (
+      ${workIntents.source_message_id} IS NULL
+      AND ${workIntents.space_id} IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM space_members wi_sm
+        INNER JOIN spaces wi_s ON wi_s.id = wi_sm.space_id
+        WHERE wi_sm.space_id = ${workIntents.space_id}
+          AND wi_sm.user_id = ${user.id}
+          AND wi_s.org_id = ${user.org_id}
+          AND wi_s.is_archived = false
+      )
+    )
+    OR (
+      ${workIntents.source_message_id} IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM messages wi_m
+        INNER JOIN space_members wi_sm ON wi_sm.space_id = wi_m.space_id
+        INNER JOIN spaces wi_s ON wi_s.id = wi_m.space_id
+        WHERE wi_m.id = ${workIntents.source_message_id}
+          AND wi_m.org_id = ${user.org_id}
+          AND wi_m.is_deleted = false
+          AND wi_sm.user_id = ${user.id}
+          AND wi_s.org_id = ${user.org_id}
+          AND wi_s.is_archived = false
+          AND (${workIntents.space_id} IS NULL OR wi_m.space_id = ${workIntents.space_id})
+      )
+    )
+  )`;
+}
+
+function visibleSourceMessageJoinSql(user: AuthedUser) {
+  return and(
+    eq(workIntents.source_message_id, messages.id),
+    eq(messages.org_id, user.org_id),
+    eq(messages.is_deleted, false),
+    sql`(${workIntents.space_id} IS NULL OR ${messages.space_id} = ${workIntents.space_id})`,
+    sql`EXISTS (
+      SELECT 1
+      FROM space_members wi_msg_sm
+      INNER JOIN spaces wi_msg_s ON wi_msg_s.id = wi_msg_sm.space_id
+      WHERE wi_msg_sm.space_id = ${messages.space_id}
+        AND wi_msg_sm.user_id = ${user.id}
+        AND wi_msg_s.org_id = ${user.org_id}
+        AND wi_msg_s.is_archived = false
+    )`,
+  );
+}
+
+function visibleSourceUserJoinSql(user: AuthedUser) {
+  return and(
+    eq(workIntents.source_user_id, users.id),
+    sql`EXISTS (
+      SELECT 1
+      FROM org_members wi_om
+      WHERE wi_om.org_id = ${user.org_id}
+        AND wi_om.user_id = ${users.id}
+        AND wi_om.is_active = true
+    )`,
+  );
+}
+
 workIntentRoutes.get('/', async (c) => {
   const user = c.get('user') as AuthedUser;
   const rawLimit = parseInt(c.req.query('limit') ?? '50', 10);
@@ -32,7 +97,7 @@ workIntentRoutes.get('/', async (c) => {
   const status = c.req.query('status');
   const kind = c.req.query('kind');
 
-  const filters = [eq(workIntents.org_id, user.org_id)];
+  const filters = [eq(workIntents.org_id, user.org_id), visibleWorkIntentSourceSql(user)];
   if (status && (VALID_STATUSES as readonly string[]).includes(status)) {
     filters.push(eq(workIntents.status, status as typeof VALID_STATUSES[number]));
   }
@@ -66,10 +131,16 @@ workIntentRoutes.get('/', async (c) => {
       updated_at: workIntents.updated_at,
     })
     .from(workIntents)
-    .leftJoin(messages, eq(workIntents.source_message_id, messages.id))
-    .leftJoin(spaces, eq(workIntents.space_id, spaces.id))
-    .leftJoin(users, eq(workIntents.source_user_id, users.id))
-    .leftJoin(agentEmployees, eq(workIntents.agent_employee_id, agentEmployees.id))
+    .leftJoin(messages, visibleSourceMessageJoinSql(user))
+    .leftJoin(spaces, and(
+      eq(workIntents.space_id, spaces.id),
+      eq(spaces.org_id, user.org_id),
+    ))
+    .leftJoin(users, visibleSourceUserJoinSql(user))
+    .leftJoin(agentEmployees, and(
+      eq(workIntents.agent_employee_id, agentEmployees.id),
+      eq(agentEmployees.org_id, user.org_id),
+    ))
     .where(and(...filters))
     .orderBy(desc(workIntents.created_at))
     .limit(limit);
@@ -84,7 +155,11 @@ workIntentRoutes.get('/:id', async (c) => {
   const [row] = await db
     .select()
     .from(workIntents)
-    .where(and(eq(workIntents.org_id, user.org_id), eq(workIntents.id, id)))
+    .where(and(
+      eq(workIntents.org_id, user.org_id),
+      eq(workIntents.id, id),
+      visibleWorkIntentSourceSql(user),
+    ))
     .limit(1);
 
   if (!row) {
@@ -120,8 +195,15 @@ workIntentRoutes.post('/:id/retry', async (c) => {
       agent_slug: agentEmployees.slug,
     })
     .from(workIntents)
-    .leftJoin(agentEmployees, eq(workIntents.agent_employee_id, agentEmployees.id))
-    .where(and(eq(workIntents.org_id, user.org_id), eq(workIntents.id, id)))
+    .leftJoin(agentEmployees, and(
+      eq(workIntents.agent_employee_id, agentEmployees.id),
+      eq(agentEmployees.org_id, user.org_id),
+    ))
+    .where(and(
+      eq(workIntents.org_id, user.org_id),
+      eq(workIntents.id, id),
+      visibleWorkIntentSourceSql(user),
+    ))
     .limit(1);
 
   if (!row) {
@@ -141,38 +223,68 @@ workIntentRoutes.post('/:id/retry', async (c) => {
   const employeeId = row.agent_employee_id && row.agent_user_id ? row.agent_employee_id : fallbackDefty!.employeeId;
   const employeeUserId = row.agent_user_id ?? fallbackDefty!.userId;
   const employeeSlug = row.agent_slug ?? fallbackDefty!.slug;
-  const retryDedupeKey = `${row.dedupe_key}:retry:${randomUUID()}`;
+  const retryDedupeKey = `${row.dedupe_key}:retry`;
 
   const retry = await db.transaction(async (tx) => {
-    const [intent] = await tx
-      .insert(workIntents)
-      .values({
-        org_id: user.org_id,
-        space_id: row.space_id,
-        source_message_id: row.source_message_id,
-        source_user_id: row.source_user_id,
-        agent_employee_id: employeeId,
-        kind: row.kind,
-        status: 'proposed',
-        title: row.title,
-        summary: row.summary,
-        confidence: row.confidence,
-        proposed_action: row.proposed_action,
-        proposed_params: row.proposed_params,
-        dedupe_key: retryDedupeKey,
-        metadata: {
-          ...asRecord(row.metadata),
-          retry_of_work_intent_id: row.id,
-          retry_of_dedupe_key: row.dedupe_key,
-          retry_failure_reason: row.failure_reason ?? null,
-          retried_by: user.id,
-        },
-      })
-      .returning({ id: workIntents.id });
+    await tx.execute(sql`
+      SELECT id
+      FROM work_intents
+      WHERE id = ${row.id}
+        AND org_id = ${user.org_id}
+      FOR UPDATE
+    `);
+
+    let [intent] = await tx
+      .select({ id: workIntents.id })
+      .from(workIntents)
+      .where(and(
+        eq(workIntents.org_id, user.org_id),
+        eq(workIntents.dedupe_key, retryDedupeKey),
+      ))
+      .limit(1);
+
+    if (!intent) {
+      [intent] = await tx
+        .insert(workIntents)
+        .values({
+          org_id: user.org_id,
+          space_id: row.space_id,
+          source_message_id: row.source_message_id,
+          source_user_id: row.source_user_id,
+          agent_employee_id: employeeId,
+          kind: row.kind,
+          status: 'proposed',
+          title: row.title,
+          summary: row.summary,
+          confidence: row.confidence,
+          proposed_action: row.proposed_action,
+          proposed_params: row.proposed_params,
+          dedupe_key: retryDedupeKey,
+          metadata: {
+            ...asRecord(row.metadata),
+            retry_of_work_intent_id: row.id,
+            retry_of_dedupe_key: row.dedupe_key,
+            retry_failure_reason: row.failure_reason ?? null,
+            retried_by: user.id,
+          },
+        })
+        .onConflictDoNothing({
+          target: [workIntents.org_id, workIntents.dedupe_key],
+        })
+        .returning({ id: workIntents.id });
+    }
 
     if (!intent) {
       throw new Error('Failed to create retry work intent');
     }
+
+    await tx.execute(sql`
+      SELECT id
+      FROM work_intents
+      WHERE id = ${intent.id}
+        AND org_id = ${user.org_id}
+      FOR UPDATE
+    `);
 
     const params = {
       ...asRecord(row.proposed_params),
@@ -185,6 +297,29 @@ workIntentRoutes.post('/:id/retry', async (c) => {
       dedupe_key: retryDedupeKey,
       proposed_by: 'defty',
     };
+
+    const [existingAction] = await tx
+      .select({
+        id: agentActions.id,
+        approval_tier: agentActions.approval_tier,
+      })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, user.org_id),
+        eq(agentActions.source, 'defty_capture'),
+        sql`${agentActions.params}->>'work_intent_id' = ${intent.id}`,
+        sql`${agentActions.params}->>'retry_of_work_intent_id' = ${row.id}`,
+      ))
+      .orderBy(desc(agentActions.created_at))
+      .limit(1);
+
+    if (existingAction) {
+      return {
+        intent_id: intent.id,
+        action_id: existingAction.id,
+        approval_tier: existingAction.approval_tier,
+      };
+    }
 
     const [action] = await tx
       .insert(agentActions)

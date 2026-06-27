@@ -23,6 +23,8 @@ const EMP_SLUG = 'actions-routes-emp';
 const SHADOW_USER_ID = 'test-actions-routes-shadow';
 const APPROVER_USER_ID = 'test-actions-routes-approver';
 const APPROVER_EMAIL = 'actions-routes-approver@test.local';
+const VISIBLE_SPACE_ID = 'test-actions-routes-visible-space';
+const HIDDEN_SPACE_ID = 'test-actions-routes-hidden-space';
 
 let TEST_PROJECT_ID: string | null = null;
 let testApp: Hono | null = null;
@@ -67,6 +69,26 @@ async function seedFixtures() {
        VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
        ON CONFLICT (org_id, user_id) DO NOTHING`,
       [ORG_ID, APPROVER_USER_ID],
+    );
+
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES
+         ($1, $3, 'Actions Routes Visible', 'private', $4),
+         ($2, $3, 'Actions Routes Hidden', 'private', $4)
+       ON CONFLICT (id) DO UPDATE
+         SET org_id = EXCLUDED.org_id,
+             name = EXCLUDED.name,
+             type = EXCLUDED.type,
+             created_by = EXCLUDED.created_by,
+             is_archived = false`,
+      [VISIBLE_SPACE_ID, HIDDEN_SPACE_ID, ORG_ID, APPROVER_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [VISIBLE_SPACE_ID, APPROVER_USER_ID],
     );
 
     await c.query(
@@ -118,6 +140,18 @@ async function teardownFixtures() {
     await c.query(
       `DELETE FROM agent_actions WHERE user_id = $1`,
       [SHADOW_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM messages WHERE space_id IN ($1, $2)`,
+      [VISIBLE_SPACE_ID, HIDDEN_SPACE_ID],
+    );
+    await c.query(
+      `DELETE FROM space_members WHERE space_id IN ($1, $2)`,
+      [VISIBLE_SPACE_ID, HIDDEN_SPACE_ID],
+    );
+    await c.query(
+      `DELETE FROM spaces WHERE id IN ($1, $2)`,
+      [VISIBLE_SPACE_ID, HIDDEN_SPACE_ID],
     );
     if (TEST_PROJECT_ID) {
       await c.query(
@@ -256,6 +290,94 @@ async function insertDeftyTaskCreateWithIntent(title: string): Promise<{ actionI
   });
 }
 
+async function insertWorkIntentWithSource(params: {
+  title: string;
+  spaceId: string;
+  messageSpaceId?: string;
+  messageContent: string;
+  status?: 'proposed' | 'failed';
+}): Promise<{ intentId: string; messageId: string }> {
+  return withClient(async (c) => {
+    const messageId = `routes-work-intent-msg-${crypto.randomUUID()}`;
+    const messageSpaceId = params.messageSpaceId ?? params.spaceId;
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, ORG_ID, messageSpaceId, APPROVER_USER_ID, params.messageContent],
+    );
+
+    const intent = await c.query(
+      `INSERT INTO work_intents
+        (id, org_id, space_id, source_message_id, source_user_id,
+         agent_employee_id, kind, status, title, summary, proposed_action,
+         proposed_params, dedupe_key, failure_reason)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5,
+         'task_candidate', $6, $7, $8, 'task_create', $9::jsonb, $10, $11)
+       RETURNING id`,
+      [
+        ORG_ID,
+        params.spaceId,
+        messageId,
+        APPROVER_USER_ID,
+        EMP_ID,
+        params.status ?? 'proposed',
+        params.title,
+        `Summary ${params.title}`,
+        JSON.stringify({
+          title: params.title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+        `routes-work-intent-source:${crypto.randomUUID()}`,
+        params.status === 'failed' ? 'Project not found' : null,
+      ],
+    );
+    return { intentId: intent.rows[0].id as string, messageId };
+  });
+}
+
+async function insertDeftyCaptureActionWithSource(params: {
+  title: string;
+  spaceId: string;
+  messageContent: string;
+}): Promise<{ actionId: string; messageId: string }> {
+  return withClient(async (c) => {
+    const messageId = `routes-capture-action-msg-${crypto.randomUUID()}`;
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, ORG_ID, params.spaceId, APPROVER_USER_ID, params.messageContent],
+    );
+
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, message_id,
+         params, approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture',
+         'task_create', $4, $5::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        messageId,
+        JSON.stringify({
+          caller_employee_slug: EMP_SLUG,
+          title: params.title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+          source_message_id: messageId,
+          source_space_id: params.spaceId,
+          capture_kind: 'task_candidate',
+          proposed_by: 'defty',
+          dedupe_key: `routes-capture-action:${crypto.randomUUID()}`,
+        }),
+      ],
+    );
+    return { actionId: action.rows[0].id as string, messageId };
+  });
+}
+
 async function insertFailedDeftyTaskIntent(title: string): Promise<{
   actionId: string;
   dedupeKey: string;
@@ -384,6 +506,139 @@ test('GET /api/work-intents lists proposed Defty work captures', async () => {
   assert.equal(match.proposed_action, 'task_create');
 });
 
+test('GET /api/work-intents filters hidden and mismatched source messages', async () => {
+  const visible = await insertWorkIntentWithSource({
+    title: `routes-intent-visible-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    messageContent: 'visible source message',
+  });
+  const hidden = await insertWorkIntentWithSource({
+    title: `routes-intent-hidden-${Date.now()}`,
+    spaceId: HIDDEN_SPACE_ID,
+    messageContent: 'hidden source message',
+  });
+  const mismatched = await insertWorkIntentWithSource({
+    title: `routes-intent-redacted-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    messageSpaceId: HIDDEN_SPACE_ID,
+    messageContent: 'redacted source message',
+  });
+
+  const res = await app().request('/api/work-intents?status=proposed', { method: 'GET' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  const visibleMatch = body.intents.find((intent: any) => intent.id === visible.intentId);
+  assert.ok(visibleMatch, 'visible-space intent should appear');
+  assert.equal(visibleMatch.source_message_content, 'visible source message');
+  assert.equal(visibleMatch.space_name, 'Actions Routes Visible');
+
+  const hiddenMatch = body.intents.find((intent: any) => intent.id === hidden.intentId);
+  assert.equal(hiddenMatch, undefined, 'hidden-space intent should not appear');
+
+  const mismatchedMatch = body.intents.find((intent: any) => intent.id === mismatched.intentId);
+  assert.equal(
+    mismatchedMatch,
+    undefined,
+    'intent with a source message outside its claimed space should not appear',
+  );
+
+  const hiddenDetail = await app().request(`/api/work-intents/${hidden.intentId}`, {
+    method: 'GET',
+  });
+  assert.equal(hiddenDetail.status, 404);
+});
+
+test('GET /api/agent action surfaces hide Defty captures from private spaces', async () => {
+  const visible = await insertDeftyCaptureActionWithSource({
+    title: `routes-visible-capture-action-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    messageContent: 'visible capture action source',
+  });
+  const hidden = await insertDeftyCaptureActionWithSource({
+    title: `routes-hidden-capture-action-${Date.now()}`,
+    spaceId: HIDDEN_SPACE_ID,
+    messageContent: 'hidden capture action source',
+  });
+
+  const pendingRes = await app().request('/api/agent/actions/pending', { method: 'GET' });
+  assert.equal(pendingRes.status, 200);
+  const pendingBody = await pendingRes.json();
+  assert.ok(
+    pendingBody.actions.some((action: any) => action.id === visible.actionId),
+    'visible capture action should appear in pending approvals',
+  );
+  assert.equal(
+    pendingBody.actions.some((action: any) => action.id === hidden.actionId),
+    false,
+    'hidden capture action should not appear in pending approvals',
+  );
+
+  const recentRes = await app().request('/api/agent/actions/recent?limit=50', { method: 'GET' });
+  assert.equal(recentRes.status, 200);
+  const recentBody = await recentRes.json();
+  assert.ok(
+    recentBody.actions.some((action: any) => action.id === visible.actionId),
+    'visible capture action should appear in recent activity',
+  );
+  assert.equal(
+    recentBody.actions.some((action: any) => action.id === hidden.actionId),
+    false,
+    'hidden capture action should not appear in recent activity',
+  );
+
+  const historyRes = await app().request('/api/agent/actions', { method: 'GET' });
+  assert.equal(historyRes.status, 200);
+  const historyBody = await historyRes.json();
+  assert.ok(
+    historyBody.some((action: any) => action.id === visible.actionId),
+    'visible capture action should appear in action history',
+  );
+  assert.equal(
+    historyBody.some((action: any) => action.id === hidden.actionId),
+    false,
+    'hidden capture action should not appear in action history',
+  );
+});
+
+test('GET /api/agent/actions/pending expires linked proposed work intents', async () => {
+  const title = `routes-intent-expire-${Date.now()}`;
+  const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
+
+  await withClient(async (c) => {
+    await c.query(
+      `UPDATE agent_actions
+          SET created_at = NOW() - INTERVAL '25 hours'
+        WHERE id = $1`,
+      [actionId],
+    );
+  });
+
+  const res = await app().request('/api/agent/actions/pending', { method: 'GET' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(
+    body.actions.some((action: any) => action.id === actionId),
+    false,
+    'expired action should not remain pending',
+  );
+
+  await withClient(async (c) => {
+    const action = await c.query(
+      `SELECT approval_status FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].approval_status, 'expired');
+
+    const intent = await c.query(
+      `SELECT status, failure_reason FROM work_intents WHERE id = $1`,
+      [intentId],
+    );
+    assert.equal(intent.rows[0].status, 'expired');
+    assert.equal(intent.rows[0].failure_reason, 'Approval expired');
+  });
+});
+
 test('POST /api/work-intents/:id/retry reopens failed capture as a fresh proposal', async () => {
   const title = `routes-intent-retry-${Date.now()}`;
   const failed = await insertFailedDeftyTaskIntent(title);
@@ -399,6 +654,16 @@ test('POST /api/work-intents/:id/retry reopens failed capture as a fresh proposa
   assert.equal(retryBody.intent.retry_of_work_intent_id, failed.intentId);
   assert.ok(retryBody.intent.id);
   assert.ok(retryBody.action.id);
+
+  const secondRetryRes = await app().request(`/api/work-intents/${failed.intentId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(secondRetryRes.status, 200);
+  const secondRetryBody = await secondRetryRes.json();
+  assert.equal(secondRetryBody.intent.id, retryBody.intent.id);
+  assert.equal(secondRetryBody.action.id, retryBody.action.id);
 
   await withClient(async (c) => {
     const original = await c.query(
@@ -432,6 +697,24 @@ test('POST /api/work-intents/:id/retry reopens failed capture as a fresh proposa
     assert.equal(action.rows[0].source, 'defty_capture');
     assert.equal(action.rows[0].params.work_intent_id, retryBody.intent.id);
     assert.equal(action.rows[0].params.retry_of_work_intent_id, failed.intentId);
+
+    const retryIntentCount = await c.query(
+      `SELECT COUNT(*)::int AS count
+         FROM work_intents
+        WHERE org_id = $1
+          AND metadata->>'retry_of_work_intent_id' = $2`,
+      [ORG_ID, failed.intentId],
+    );
+    assert.equal(retryIntentCount.rows[0].count, 1);
+
+    const retryActionCount = await c.query(
+      `SELECT COUNT(*)::int AS count
+         FROM agent_actions
+        WHERE org_id = $1
+          AND params->>'retry_of_work_intent_id' = $2`,
+      [ORG_ID, failed.intentId],
+    );
+    assert.equal(retryActionCount.rows[0].count, 1);
   });
 
   const approveRes = await app().request(`/api/agent/actions/${retryBody.action.id}/approve`, {
