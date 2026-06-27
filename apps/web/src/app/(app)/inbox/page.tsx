@@ -71,8 +71,8 @@ export default function InboxPage() {
   );
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[760px] mx-auto px-6 py-8">
+    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
+      <div className="max-w-[760px] mx-auto px-4 py-6 md:px-6 md:py-8">
         <header className="mb-6 flex items-end justify-between">
           <div>
             <h1
