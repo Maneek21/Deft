@@ -17,6 +17,7 @@ import { and, eq, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { projects, tasks, taskActivity, taskTemplates } from '@deft/db/schema';
 import { getIO } from '../socket.js';
+import { reserveTaskNumberRange } from '../lib/task-numbering.js';
 
 export const taskTemplateRoutes = new Hono();
 
@@ -128,14 +129,12 @@ taskTemplateRoutes.post('/:id/apply-template', async (c) => {
 
     const applyDate = new Date();
     const createdTasks = await db.transaction(async (tx) => {
-      const [updated] = await tx
-        .update(projects)
-        .set({ task_counter: (project.task_counter as number) + tasksPayload.length })
-        .where(eq(projects.id, projectId))
-        .returning({ task_counter: projects.task_counter });
-
-      const finalCounter = updated!.task_counter as number;
-      const firstNumber = finalCounter - tasksPayload.length + 1;
+      const { firstNumber } = await reserveTaskNumberRange({
+        projectId,
+        orgId: user.org_id,
+        count: tasksPayload.length,
+        executor: tx,
+      });
 
       const rowsToInsert = tasksPayload.map((t, idx) => {
         let dueDate: Date | undefined = undefined;

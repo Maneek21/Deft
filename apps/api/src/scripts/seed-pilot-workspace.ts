@@ -14,6 +14,7 @@ import bcrypt from 'bcryptjs';
 import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { generateReceipt } from '../lib/receipts.js';
+import { reconcileProjectTaskCountersForOrg } from '../lib/task-numbering.js';
 import {
   actionReceipts,
   agentEmployees,
@@ -2925,6 +2926,10 @@ export async function seedPilotWorkspace(): Promise<{
     orgId: org.id,
     diegoId: diego.id,
   });
+  const reconciledCounters = await reconcileProjectTaskCountersForOrg(org.id);
+  if (reconciledCounters.length > 0) {
+    console.log(`[seed-pilot-workspace] reconciled ${reconciledCounters.length} project task counters`);
+  }
 
   console.log('[seed-pilot-workspace] done');
   console.log(`[seed-pilot-workspace] proof phrase: ${PROOF_PHRASE}`);

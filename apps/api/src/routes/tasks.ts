@@ -13,6 +13,7 @@ import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
 import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
 import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
+import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 
 export const taskRoutes = new Hono();
 
@@ -1519,13 +1520,7 @@ async function createTaskForProject(
     throw Object.assign(new Error('Project not found'), { code: 'NOT_FOUND' });
   }
 
-  // Atomically increment task_counter
-  const [updated] = await db.update(projects)
-    .set({ task_counter: sql`${projects.task_counter} + 1` })
-    .where(eq(projects.id, projectId))
-    .returning({ task_counter: projects.task_counter });
-
-  const taskNumber = updated!.task_counter;
+  const taskNumber = await reserveNextTaskNumber({ projectId, orgId });
 
   const [task] = await db.insert(tasks).values({
     org_id: orgId,
@@ -1880,10 +1875,10 @@ taskRoutes.patch('/:id', async (c) => {
           case 'monthly': nextDue.setMonth(nextDue.getMonth() + 1); break;
         }
 
-        // Get next task number
-        const [maxNum] = await db.select({ max: sql<number>`COALESCE(MAX(number), 0)` })
-          .from(tasks).where(eq(tasks.project_id, recurringTask.project_id));
-        const nextNumber = (maxNum?.max || 0) + 1;
+        const nextNumber = await reserveNextTaskNumber({
+          projectId: recurringTask.project_id,
+          orgId: recurringTask.org_id,
+        });
 
         // Task 4.12 — clone-gap fix. The previous implementation only
         // cloned scalar fields; we now also propagate parent_task_id and
@@ -1921,8 +1916,7 @@ taskRoutes.patch('/:id', async (c) => {
           }
         }
 
-        // Update project task counter
-        await db.execute(sql`UPDATE projects SET task_counter = ${nextNumber} WHERE id = ${recurringTask.project_id}`);
+        // reserveNextTaskNumber already advanced the project task counter.
       }
     }
 
@@ -2142,11 +2136,10 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    // Increment task counter
-    const [updated] = await db.update(projects)
-      .set({ task_counter: sql`${projects.task_counter} + 1` })
-      .where(eq(projects.id, original.project_id))
-      .returning({ task_counter: projects.task_counter });
+    const taskNumber = await reserveNextTaskNumber({
+      projectId: original.project_id,
+      orgId: user.org_id,
+    });
 
     const [project] = await db.select({ prefix: projects.prefix, name: projects.name })
       .from(projects).where(eq(projects.id, original.project_id)).limit(1);
@@ -2154,7 +2147,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
     const [dup] = await db.insert(tasks).values({
       org_id: user.org_id,
       project_id: original.project_id,
-      number: updated!.task_counter,
+      number: taskNumber,
       title: original.title + ' (copy)',
       description: original.description,
       status: 'backlog',

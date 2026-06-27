@@ -40,6 +40,9 @@ let testApp: Hono | null = null;
 let TEST_PROJECT_ID: string | null = null;
 let TEST_SPACE_ID: string | null = null;
 let OTHER_EMP_WIKI_SLUG: string | null = null;
+let createdTestOrg = false;
+let createdTestProject = false;
+let createdTestSpace = false;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -53,6 +56,15 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 async function seedFixtures() {
   await withClient(async (c) => {
+    const org = await c.query(
+      `INSERT INTO orgs (id, name, slug)
+       VALUES ($1, 'MCP Phase4 Test Org', 'mcp-phase4-test-org')
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [ORG_ID],
+    );
+    createdTestOrg = org.rows.length > 0;
+
     // Shadow user for all test employees
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
@@ -108,6 +120,7 @@ async function seedFixtures() {
         [ORG_ID, TEST_USER_ID]
       );
       TEST_PROJECT_ID = r.rows[0].id;
+      createdTestProject = true;
     }
 
     // Grab a space for message_post + space_memory
@@ -126,6 +139,7 @@ async function seedFixtures() {
         [ORG_ID, TEST_USER_ID]
       );
       TEST_SPACE_ID = r.rows[0].id;
+      createdTestSpace = true;
     }
 
     // Seed one wiki page owned by OTHER_EMP_ID so memory_update rejection
@@ -177,16 +191,29 @@ async function teardownFixtures() {
         `DELETE FROM tasks WHERE project_id = $1 AND created_by = $2`,
         [TEST_PROJECT_ID, TEST_USER_ID]
       );
+      if (createdTestProject) {
+        await c.query(`DELETE FROM projects WHERE id = $1`, [TEST_PROJECT_ID]);
+      }
     }
     await c.query(
       `DELETE FROM wiki_pages WHERE agent_employee_id IN ($1,$2,$3,$4)`,
       [EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]
     );
+    if (createdTestSpace && TEST_SPACE_ID) {
+      await c.query(`DELETE FROM space_members WHERE space_id = $1`, [TEST_SPACE_ID]);
+      await c.query(`DELETE FROM spaces WHERE id = $1`, [TEST_SPACE_ID]);
+    }
     await c.query(
       `DELETE FROM agent_employees WHERE id = ANY($1::text[])`,
       [[EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]]
     );
     await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
+    if (createdTestOrg) {
+      await c.query(
+        `DELETE FROM orgs WHERE id = $1 AND slug = 'mcp-phase4-test-org'`,
+        [ORG_ID],
+      );
+    }
   });
 }
 

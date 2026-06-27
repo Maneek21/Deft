@@ -216,7 +216,10 @@ export default function InboxPage() {
         </header>
 
         {/* Tab strip */}
-        <nav className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--border)' }}>
+        <nav
+          className="flex gap-1 mb-5 border-b overflow-x-auto whitespace-nowrap"
+          style={{ borderColor: 'var(--border)' }}
+        >
           {TABS.map((t) => (
             <button
               key={t.id}

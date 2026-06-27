@@ -348,6 +348,92 @@ test('POST /api/agent/actions/:id/approve executes the write', async () => {
   });
 });
 
+test('POST approve task_create repairs stale project counter before insert', async () => {
+  const title = `routes-counter-drift-${Date.now()}`;
+  let projectId: string | null = null;
+  let actionId: string | null = null;
+
+  try {
+    await withClient(async (c) => {
+      const project = await c.query(
+        `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+         VALUES (gen_random_uuid()::text, $1, $2, 'DRIFT', $3, 0)
+         RETURNING id`,
+        [ORG_ID, `Counter Drift ${Date.now()}`, SHADOW_USER_ID],
+      );
+      projectId = project.rows[0].id as string;
+
+      await c.query(
+        `INSERT INTO tasks
+           (id, org_id, project_id, number, title, status, priority, created_by, is_deleted)
+         VALUES (gen_random_uuid()::text, $1, $2, 7, 'Existing high-number task', 'todo', 'p2', $3, false)`,
+        [ORG_ID, projectId, SHADOW_USER_ID],
+      );
+
+      const action = await c.query(
+        `INSERT INTO agent_actions
+          (id, org_id, user_id, agent_employee_id, source, action, params,
+           approval_tier, approval_status)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, 'mcp', 'task_create', $4::jsonb, 'quick', 'pending')
+         RETURNING id`,
+        [
+          ORG_ID,
+          SHADOW_USER_ID,
+          EMP_ID,
+          JSON.stringify({
+            caller_employee_slug: EMP_SLUG,
+            title,
+            project_id: projectId,
+            priority: 'p2',
+          }),
+        ],
+      );
+      actionId = action.rows[0].id as string;
+    });
+
+    const res = await app().request(`/api/agent/actions/${actionId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, 'approved', `body: ${JSON.stringify(body)}`);
+    assert.equal(body.result.number, 8);
+
+    await withClient(async (c) => {
+      const created = await c.query(
+        `SELECT number FROM tasks WHERE project_id = $1 AND title = $2`,
+        [projectId, title],
+      );
+      assert.equal(created.rows.length, 1);
+      assert.equal(created.rows[0].number, 8);
+
+      const project = await c.query(
+        `SELECT task_counter FROM projects WHERE id = $1`,
+        [projectId],
+      );
+      assert.equal(project.rows[0].task_counter, 8);
+    });
+  } finally {
+    await withClient(async (c) => {
+      if (actionId) {
+        await c.query(`DELETE FROM action_receipts WHERE action_id = $1`, [actionId]);
+        await c.query(`DELETE FROM agent_actions WHERE id = $1`, [actionId]);
+      }
+      if (projectId) {
+        await c.query(
+          `DELETE FROM task_activity
+           WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
+          [projectId],
+        );
+        await c.query(`DELETE FROM tasks WHERE project_id = $1`, [projectId]);
+        await c.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
+      }
+    });
+  }
+});
+
 test('POST approve on Defty work capture converts the work intent', async () => {
   const title = `routes-intent-approve-${Date.now()}`;
   const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);

@@ -31,6 +31,7 @@ import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
+import { reserveNextTaskNumber } from './task-numbering.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -155,18 +156,17 @@ export async function executeAction(
           }
         }
 
-        const [upd] = await db
-          .update(projects)
-          .set({ task_counter: sql`${projects.task_counter} + 1` })
-          .where(eq(projects.id, project.id))
-          .returning({ task_counter: projects.task_counter });
+        const taskNumber = await reserveNextTaskNumber({
+          projectId: project.id,
+          orgId,
+        });
 
         const [task] = await db
           .insert(tasks)
           .values({
             org_id: orgId,
             project_id: project.id,
-            number: upd!.task_counter,
+            number: taskNumber,
             title: params.title,
             description: params.description || null,
             status: 'backlog',

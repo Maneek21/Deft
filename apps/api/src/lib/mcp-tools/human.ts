@@ -21,6 +21,7 @@ import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
+import { reserveNextTaskNumber } from '../task-numbering.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -781,13 +782,16 @@ export async function humanTaskCreate(args: { title?: string; description?: stri
         .limit(1);
       if (!member) return errorResult('task_create: assignee is not an active org member');
     }
-    const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} AND is_deleted = false RETURNING task_counter`);
-    const first = ((counterRow as any).rows ?? [])[0] as { task_counter?: number } | undefined;
-    if (!first) return errorResult('task_create: project not found');
+    let taskNumber: number;
+    try {
+      taskNumber = await reserveNextTaskNumber({ projectId, orgId: ctx.org_id });
+    } catch {
+      return errorResult('task_create: project not found');
+    }
     const [task] = await db.insert(tasks).values({
       org_id: ctx.org_id,
       project_id: projectId,
-      number: Number(first.task_counter),
+      number: taskNumber,
       title,
       description: args.description ?? null,
       priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',

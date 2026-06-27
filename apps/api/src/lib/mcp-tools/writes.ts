@@ -43,6 +43,7 @@ import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
 import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { isValidTransition } from '../task-status-machine.js';
+import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 
 /**
@@ -252,16 +253,10 @@ export async function executeTaskCreate(
         ? (args.priority as 'p2')
         : ('p2' as const);
 
-    // Atomically bump the project's task_counter and use it as the task
-    // number. Counter UPDATE is also org-scoped as defence-in-depth.
-    const counterRow = await db.execute(
-      sql`UPDATE projects SET task_counter = task_counter + 1
-          WHERE id = ${projectId} AND org_id = ${ctx.org_id} RETURNING task_counter`,
-    );
-    const rawRows = (counterRow as { rows?: unknown[] }).rows ?? (counterRow as unknown as unknown[]);
-    const first = (rawRows as Array<Record<string, unknown>>)[0];
-    if (!first) return errorResult('task_create: project counter update failed');
-    const taskNumber = Number(first.task_counter);
+    const taskNumber = await reserveNextTaskNumber({
+      projectId,
+      orgId: ctx.org_id,
+    });
 
     const [task] = await db
       .insert(tasks)

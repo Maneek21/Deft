@@ -9,6 +9,7 @@ import { visibleTaskCondition } from '../lib/task-visibility.js';
 import {
   getProjectResolvedConfig,
 } from '../lib/project-resolved-config.js';
+import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 
 export const projectRoutes = new Hono();
 
@@ -593,13 +594,10 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
     }
 
-    // Atomically increment task_counter
-    const [updated] = await db.update(projects)
-      .set({ task_counter: sql`${projects.task_counter} + 1` })
-      .where(eq(projects.id, projectId))
-      .returning({ task_counter: projects.task_counter });
-
-    const taskNumber = updated!.task_counter;
+    const taskNumber = await reserveNextTaskNumber({
+      projectId,
+      orgId: user.org_id,
+    });
 
     const [task] = await db.insert(tasks).values({
       org_id: user.org_id,
