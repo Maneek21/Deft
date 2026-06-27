@@ -79,6 +79,14 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
   const captureLabel = typeof action.params.capture_kind === 'string'
     ? CAPTURE_LABELS[action.params.capture_kind] ?? null
     : null;
+  const isCapture = Boolean(captureLabel || action.params.proposed_by === 'defty' || action.params.source_message_id);
+  const captureReason = stripHtml(action.params.capture_reason ?? action.params.policy_reason ?? '');
+  const sourceMessageId = typeof action.params.source_message_id === 'string' ? action.params.source_message_id : null;
+  const sourceSpaceId = typeof action.params.source_space_id === 'string'
+    ? action.params.source_space_id
+    : typeof action.params.space_id === 'string'
+      ? action.params.space_id
+      : null;
 
   if (action.status === 'executing') {
     return (
@@ -134,9 +142,26 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
   return (
     <div className="p-3 mt-2 max-w-[380px] w-full"
       style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}>
-      <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
-        {displayLabel}
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
+            {isCapture ? 'Work capture' : displayLabel}
+          </p>
+          {isCapture && (
+            <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+              Proposed action: {displayLabel.toLowerCase()}
+            </p>
+          )}
+        </div>
+        {isCapture && (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
+            style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+          >
+            Needs approval
+          </span>
+        )}
+      </div>
       {captureLabel && (
         <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
           {captureLabel}
@@ -155,6 +180,22 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
           </>
         ) : (
           <GenericParams params={action.params} />
+        )}
+        {captureReason && (
+          <p style={{ color: 'var(--muted)' }}>
+            Reason: {captureReason.slice(0, 120)}{captureReason.length > 120 ? '...' : ''}
+          </p>
+        )}
+        {sourceMessageId && sourceSpaceId && (
+          <p>
+            <a
+              href={`/chat?space=${sourceSpaceId}&message=${sourceMessageId}`}
+              className="underline underline-offset-2"
+              style={{ color: 'var(--primary)' }}
+            >
+              View source message
+            </a>
+          </p>
         )}
       </div>
       <div className="flex gap-2 mt-2.5">

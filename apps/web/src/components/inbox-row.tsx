@@ -17,6 +17,7 @@ const KIND_ICON: Record<InboxItemKind, typeof AtSign> = {
   cross_reference: LinkIcon,
   wiki_update: BookOpen,
   system: Bell,
+  work_capture: Bell,
   pending_approval: Bell, // not used here — approvals use AgentActionCard
 };
 

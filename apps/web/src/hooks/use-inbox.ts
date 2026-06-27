@@ -7,7 +7,7 @@ import { api } from '@/lib/api';
 
 export type InboxItemKind =
   | 'mention' | 'dm_unread' | 'task_assigned' | 'task_updated'
-  | 'blocked' | 'cross_reference' | 'wiki_update' | 'system' | 'pending_approval';
+  | 'blocked' | 'cross_reference' | 'wiki_update' | 'system' | 'work_capture' | 'pending_approval';
 
 export type InboxItem = {
   id: string;

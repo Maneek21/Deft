@@ -8,13 +8,14 @@ import { InboxRow } from '@/components/inbox-row';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
 import { api } from '@/lib/api';
 
-type Tab = 'all' | 'mentions' | 'dms' | 'tasks' | 'approvals';
+type Tab = 'all' | 'mentions' | 'dms' | 'tasks' | 'captures' | 'approvals';
 
 const TAB_TO_KIND: Record<Tab, InboxItemKind | undefined> = {
   all: undefined,
   mentions: 'mention',
   dms: 'dm_unread',
   tasks: 'task_assigned',
+  captures: 'work_capture',
   approvals: 'pending_approval',
 };
 
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'mentions', label: 'Mentions' },
   { id: 'dms', label: 'DMs' },
   { id: 'tasks', label: 'Tasks' },
+  { id: 'captures', label: 'Captures' },
   { id: 'approvals', label: 'Approvals' },
 ];
 
@@ -125,7 +127,7 @@ export default function InboxPage() {
         ) : (
           <div className="flex flex-col gap-2">
             {filtered.map((item) => {
-              if (item.kind === 'pending_approval' && item.approval) {
+              if ((item.kind === 'pending_approval' || item.kind === 'work_capture') && item.approval) {
                 const action: AgentAction = {
                   id: item.approval.action_id,
                   action: item.approval.action,

@@ -100,7 +100,7 @@ export function NotificationPanel({ onClose }: Props) {
         ) : (
           <div className="flex flex-col gap-1 p-2">
             {items.map((item) => {
-              if (item.kind === 'pending_approval' && item.approval) {
+              if ((item.kind === 'pending_approval' || item.kind === 'work_capture') && item.approval) {
                 const action: AgentAction = {
                   id: item.approval.action_id,
                   action: item.approval.action,

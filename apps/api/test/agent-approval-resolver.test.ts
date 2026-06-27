@@ -24,6 +24,9 @@ const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const EMP_ID = 'test-resolver-emp';
 const EMP_SLUG = 'resolver-emp';
 const SHADOW_USER_ID = 'test-resolver-shadow-user';
+const DEFTY_EMP_ID = 'test-resolver-defty-emp';
+const DEFTY_USER_ID = 'test-resolver-defty-user';
+const DEFTY_SLUG = 'defty-system';
 const APPROVER_USER_ID = 'test-resolver-approver';
 const APPROVER_EMAIL = 'resolver-approver@test.local';
 const OTHER_ORG_ID = '00000000-0000-0000-0000-000000000999';
@@ -32,6 +35,10 @@ const OUTSIDER_EMAIL = 'resolver-outsider@test.local';
 
 let TEST_PROJECT_ID: string | null = null;
 let TEST_SPACE_ID: string | null = null;
+let CREATED_TEST_ORG = false;
+let CREATED_TEST_PROJECT_ID: string | null = null;
+let CREATED_TEST_SPACE_ID: string | null = null;
+const SOURCE_MESSAGE_IDS: string[] = [];
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -45,6 +52,16 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 async function seedFixtures() {
   await withClient(async (c) => {
+    const org = await c.query(`SELECT id FROM orgs WHERE id = $1`, [ORG_ID]);
+    if (org.rows.length === 0) {
+      await c.query(
+        `INSERT INTO orgs (id, name, slug)
+         VALUES ($1, 'Resolver Test Org', 'resolver-test-org')`,
+        [ORG_ID],
+      );
+      CREATED_TEST_ORG = true;
+    }
+
     // Shadow user for the agent employee.
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
@@ -77,6 +94,22 @@ async function seedFixtures() {
       [OUTSIDER_USER_ID, OUTSIDER_EMAIL],
     );
 
+    await c.query(
+      `INSERT INTO users (id, email, name, kind, is_agent)
+       VALUES ($1, 'resolver-defty@test.local', 'Defty', 'system', true)
+       ON CONFLICT (id) DO UPDATE SET
+         name = 'Defty',
+         kind = 'system',
+         is_agent = true`,
+      [DEFTY_USER_ID],
+    );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO NOTHING`,
+      [ORG_ID, DEFTY_USER_ID],
+    );
+
     // Conservative-trust employee — important for test 7 (inner function
     // must be called with conservative trust despite approval).
     await c.query(
@@ -92,13 +125,35 @@ async function seedFixtures() {
       [EMP_ID, ORG_ID, SHADOW_USER_ID, EMP_SLUG],
     );
 
+    await c.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         is_byoa, is_active, is_deleted, runtime_kind, created_by)
+       VALUES ($1, $2, $3, 'Defty', $4,
+         'superintendent', 'test hidden Defty employee', 'conservative',
+         false, true, true, 'defty_system', $3)
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = $3,
+         trust_level = 'conservative',
+         is_active = true,
+         is_deleted = true,
+         runtime_kind = 'defty_system'`,
+      [DEFTY_EMP_ID, ORG_ID, DEFTY_USER_ID, DEFTY_SLUG],
+    );
+
     // Project for task_create dispatch.
     const proj = await c.query(
-      `SELECT id FROM projects WHERE org_id = $1 ORDER BY created_at ASC LIMIT 1`,
+      `SELECT id, lead_id, name FROM projects WHERE org_id = $1 ORDER BY created_at ASC LIMIT 1`,
       [ORG_ID],
     );
     if (proj.rows.length > 0) {
       TEST_PROJECT_ID = proj.rows[0].id;
+      if (
+        proj.rows[0].lead_id === SHADOW_USER_ID &&
+        proj.rows[0].name === 'Resolver Test Project'
+      ) {
+        CREATED_TEST_PROJECT_ID = TEST_PROJECT_ID;
+      }
     } else {
       const r = await c.query(
         `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
@@ -107,6 +162,7 @@ async function seedFixtures() {
         [ORG_ID, SHADOW_USER_ID],
       );
       TEST_PROJECT_ID = r.rows[0].id;
+      CREATED_TEST_PROJECT_ID = TEST_PROJECT_ID;
     }
 
     // Space for message_post dispatch.
@@ -117,6 +173,15 @@ async function seedFixtures() {
     );
     if (sp.rows.length > 0) {
       TEST_SPACE_ID = sp.rows[0].id;
+    } else {
+      const r = await c.query(
+        `INSERT INTO spaces (id, org_id, name, type, created_by)
+         VALUES (gen_random_uuid()::text, $1, 'Resolver Test Space', 'public', $2)
+         RETURNING id`,
+        [ORG_ID, APPROVER_USER_ID],
+      );
+      TEST_SPACE_ID = r.rows[0].id;
+      CREATED_TEST_SPACE_ID = TEST_SPACE_ID;
     }
   });
 }
@@ -127,40 +192,66 @@ async function teardownFixtures() {
     await c.query(
       `DELETE FROM action_receipts
        WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
-          OR employee_id = $2`,
-      [SHADOW_USER_ID, EMP_ID],
+          OR action_id IN (SELECT id FROM agent_actions WHERE user_id = $2)
+          OR employee_id IN ($3, $4)`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID],
     );
     await c.query(
-      `DELETE FROM agent_actions WHERE user_id = $1`,
-      [SHADOW_USER_ID],
+      `DELETE FROM agent_actions
+       WHERE user_id IN ($1, $2)
+          OR agent_employee_id IN ($3, $4)`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID],
     );
     if (TEST_PROJECT_ID) {
       await c.query(
         `DELETE FROM task_activity
-         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1 AND created_by = $2)`,
-        [TEST_PROJECT_ID, SHADOW_USER_ID],
+         WHERE task_id IN (
+           SELECT id FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3)
+         )`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID, DEFTY_USER_ID],
       );
       await c.query(
-        `DELETE FROM tasks WHERE project_id = $1 AND created_by = $2`,
-        [TEST_PROJECT_ID, SHADOW_USER_ID],
+        `DELETE FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3)`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+      );
+    }
+    if (SOURCE_MESSAGE_IDS.length > 0) {
+      await c.query(
+        `DELETE FROM messages WHERE id = ANY($1::text[])`,
+        [SOURCE_MESSAGE_IDS],
       );
     }
     await c.query(
       `DELETE FROM messages WHERE user_id = $1`,
       [SHADOW_USER_ID],
     );
+    if (CREATED_TEST_SPACE_ID) {
+      await c.query(
+        `DELETE FROM spaces WHERE id = $1`,
+        [CREATED_TEST_SPACE_ID],
+      );
+    }
+    if (CREATED_TEST_PROJECT_ID) {
+      await c.query(
+        `DELETE FROM projects WHERE id = $1`,
+        [CREATED_TEST_PROJECT_ID],
+      );
+    }
     await c.query(
-      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3)`,
-      [APPROVER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID],
+      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4)`,
+      [APPROVER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
     );
     await c.query(
-      `DELETE FROM agent_employees WHERE id = $1`,
-      [EMP_ID],
+      `DELETE FROM agent_employees WHERE id IN ($1, $2)`,
+      [EMP_ID, DEFTY_EMP_ID],
     );
     await c.query(
-      `DELETE FROM users WHERE id IN ($1, $2, $3)`,
-      [SHADOW_USER_ID, APPROVER_USER_ID, OUTSIDER_USER_ID],
+      `DELETE FROM users WHERE id IN ($1, $2, $3, $4)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID, OUTSIDER_USER_ID, DEFTY_USER_ID],
     );
+    if (CREATED_TEST_ORG) {
+      await c.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
+    }
   });
 }
 
@@ -180,6 +271,56 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
           caller_employee_slug: EMP_SLUG,
           title,
           project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
+async function insertSourceMessage(content: string): Promise<string> {
+  return withClient(async (c) => {
+    assert.ok(TEST_SPACE_ID, 'TEST_SPACE_ID must be seeded');
+    const messageId = `test-resolver-source-${crypto.randomUUID()}`;
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, ORG_ID, TEST_SPACE_ID, APPROVER_USER_ID, content],
+    );
+    SOURCE_MESSAGE_IDS.push(messageId);
+    return messageId;
+  });
+}
+
+async function insertPendingDeftyTaskCreate(
+  title: string,
+  sourceMessageId: string,
+): Promise<string> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, message_id,
+         params, approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'task_create',
+         $4, $5::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        DEFTY_USER_ID,
+        DEFTY_EMP_ID,
+        sourceMessageId,
+        JSON.stringify({
+          caller_employee_slug: DEFTY_SLUG,
+          title,
+          description: 'Tracked from a Defty capture test.',
+          project_id: TEST_PROJECT_ID,
+          space_id: TEST_SPACE_ID,
+          source_message_id: sourceMessageId,
+          source_space_id: TEST_SPACE_ID,
+          capture_kind: 'blocker_candidate',
+          proposed_by: 'defty',
+          dedupe_key: `defty_capture:test:task_create:${sourceMessageId}`,
           priority: 'p2',
         }),
       ],
@@ -387,5 +528,83 @@ test('7. inner executor is called with the employee\'s original trust_level', as
       [EMP_ID],
     );
     assert.equal(emp.rows[0].trust_level, 'conservative');
+  });
+});
+
+test('8. approving a Defty capture links task, source message, activity, and receipt', async () => {
+  const sourceMessageId = await insertSourceMessage('I am blocked on resolver coverage');
+  const title = `resolver-defty-capture-${Date.now()}`;
+  const actionId = await insertPendingDeftyTaskCreate(title, sourceMessageId);
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+  assert.equal(result.status, 'approved', `expected approved: ${JSON.stringify(result)}`);
+
+  await withClient(async (c) => {
+    const task = await c.query(
+      `SELECT id, title, source_message_id, created_by
+       FROM tasks
+       WHERE title = $1`,
+      [title],
+    );
+    assert.equal(task.rows.length, 1, 'Defty capture approval should create one task');
+    assert.equal(task.rows[0].source_message_id, sourceMessageId);
+    assert.equal(task.rows[0].created_by, DEFTY_USER_ID);
+
+    const activity = await c.query(
+      `SELECT agent_action_id, acting_agent_employee_id
+       FROM task_activity
+       WHERE task_id = $1 AND action = 'created'`,
+      [task.rows[0].id],
+    );
+    assert.equal(activity.rows.length, 1, 'created activity should be written');
+    assert.equal(activity.rows[0].agent_action_id, actionId);
+    assert.equal(activity.rows[0].acting_agent_employee_id, DEFTY_EMP_ID);
+
+    const receipt = await c.query(
+      `SELECT proposer, proposer_id, employee_id, approver_id, decision, action_name
+       FROM action_receipts
+       WHERE action_id = $1`,
+      [actionId],
+    );
+    assert.equal(receipt.rows.length, 1, 'approval receipt should be written');
+    assert.equal(receipt.rows[0].proposer, 'defty');
+    assert.equal(receipt.rows[0].proposer_id, DEFTY_USER_ID);
+    assert.equal(receipt.rows[0].employee_id, DEFTY_EMP_ID);
+    assert.equal(receipt.rows[0].approver_id, APPROVER_USER_ID);
+    assert.equal(receipt.rows[0].decision, 'approved');
+    assert.equal(receipt.rows[0].action_name, 'task_create');
+  });
+});
+
+test('9. rejecting a Defty capture keeps Defty receipt attribution', async () => {
+  const sourceMessageId = await insertSourceMessage('Maybe track this, maybe not');
+  const title = `resolver-defty-reject-${Date.now()}`;
+  const actionId = await insertPendingDeftyTaskCreate(title, sourceMessageId);
+
+  const { rejectAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await rejectAction(actionId, APPROVER_USER_ID, 'not useful');
+  assert.equal(result.status, 'rejected');
+
+  await withClient(async (c) => {
+    const tasksForTitle = await c.query(
+      `SELECT COUNT(*)::int AS n FROM tasks WHERE title = $1`,
+      [title],
+    );
+    assert.equal(tasksForTitle.rows[0].n, 0, 'rejected Defty capture should not create a task');
+
+    const receipt = await c.query(
+      `SELECT proposer, proposer_id, employee_id, approver_id, decision, decision_reason
+       FROM action_receipts
+       WHERE action_id = $1`,
+      [actionId],
+    );
+    assert.equal(receipt.rows.length, 1, 'rejection receipt should be written');
+    assert.equal(receipt.rows[0].proposer, 'defty');
+    assert.equal(receipt.rows[0].proposer_id, DEFTY_USER_ID);
+    assert.equal(receipt.rows[0].employee_id, DEFTY_EMP_ID);
+    assert.equal(receipt.rows[0].approver_id, APPROVER_USER_ID);
+    assert.equal(receipt.rows[0].decision, 'rejected');
+    assert.equal(receipt.rows[0].decision_reason, 'not useful');
   });
 });

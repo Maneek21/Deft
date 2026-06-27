@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { eq, and } from 'drizzle-orm';
 import {
   db, agentActions, agentNudges, spaces, messages,
-  orgs, users, orgMembers, projects, projectSpaces,
+  orgs, users, orgMembers, projects, projectSpaces, agentEmployees,
 } from '@deft/db';
 import { handleBlockedAlert } from '../src/workers/handlers/blocked-alert.js';
 
@@ -23,20 +23,28 @@ let msgId: string;
 let projectId: string;
 
 before(async () => {
-  const existingOrg = await db.query.orgs.findFirst();
-  testOrgId = existingOrg?.id ?? crypto.randomUUID();
-  if (!existingOrg) await db.insert(orgs).values({ id: testOrgId, name: 'b24', slug: 'b24' });
+  const suffix = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 
-  const existingUser = await db.query.users.findFirst();
-  testUserId = existingUser?.id ?? crypto.randomUUID();
-  if (!existingUser) await db.insert(users).values({ id: testUserId, email: `b24-${Date.now()}@t.local`, name: 'b24' });
-
-  const mem = await db.query.orgMembers.findFirst({
-    where: (m, { and, eq }) => and(eq(m.user_id, testUserId), eq(m.org_id, testOrgId)),
+  testOrgId = crypto.randomUUID();
+  await db.insert(orgs).values({
+    id: testOrgId,
+    name: `b24-${suffix}`,
+    slug: `b24-${suffix}`,
   });
-  if (!mem) {
-    await db.insert(orgMembers).values({ id: crypto.randomUUID(), org_id: testOrgId, user_id: testUserId, role: 'admin' });
-  }
+
+  testUserId = crypto.randomUUID();
+  await db.insert(users).values({
+    id: testUserId,
+    email: `b24-${suffix}@t.local`,
+    name: `b24 ${suffix}`,
+  });
+
+  await db.insert(orgMembers).values({
+    id: crypto.randomUUID(),
+    org_id: testOrgId,
+    user_id: testUserId,
+    role: 'admin',
+  });
 
   spaceId = crypto.randomUUID();
   await db.insert(spaces).values({
@@ -86,10 +94,18 @@ afterEach(async () => {
 });
 
 after(async () => {
+  if (testOrgId) {
+    await db.delete(agentActions).where(eq(agentActions.org_id, testOrgId));
+    await db.delete(agentNudges).where(eq(agentNudges.org_id, testOrgId));
+  }
   if (msgId) await db.delete(messages).where(eq(messages.id, msgId));
   if (projectId) await db.delete(projectSpaces).where(eq(projectSpaces.project_id, projectId));
   if (projectId) await db.delete(projects).where(eq(projects.id, projectId));
   if (spaceId) await db.delete(spaces).where(eq(spaces.id, spaceId));
+  if (testOrgId) await db.delete(agentEmployees).where(eq(agentEmployees.org_id, testOrgId));
+  if (testOrgId) await db.delete(orgMembers).where(eq(orgMembers.org_id, testOrgId));
+  if (testOrgId) await db.delete(orgs).where(eq(orgs.id, testOrgId));
+  if (testUserId) await db.delete(users).where(eq(users.id, testUserId));
 });
 
 test('blocked-alert queues a Defty task_create proposal for the blocked user', async () => {
