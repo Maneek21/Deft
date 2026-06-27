@@ -26,6 +26,7 @@ const APPROVER_EMAIL = 'actions-routes-approver@test.local';
 
 let TEST_PROJECT_ID: string | null = null;
 let testApp: Hono | null = null;
+let createdTestOrg = false;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -39,6 +40,15 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 async function seedFixtures() {
   await withClient(async (c) => {
+    const org = await c.query(
+      `INSERT INTO orgs (id, name, slug)
+       VALUES ($1, 'Actions Routes Test Org', 'actions-routes-test-org')
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [ORG_ID],
+    );
+    createdTestOrg = org.rows.length > 0;
+
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
        VALUES ($1, 'actions-routes-shadow@test.local', 'Actions Shadow', true)
@@ -133,6 +143,12 @@ async function teardownFixtures() {
       `DELETE FROM users WHERE id IN ($1, $2)`,
       [SHADOW_USER_ID, APPROVER_USER_ID],
     );
+    if (createdTestOrg) {
+      await c.query(
+        `DELETE FROM orgs WHERE id = $1 AND slug = 'actions-routes-test-org'`,
+        [ORG_ID],
+      );
+    }
   });
 }
 
@@ -153,6 +169,27 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
           title,
           project_id: TEST_PROJECT_ID,
           priority: 'p2',
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
+async function insertLegacyCreateTaskWithoutProject(title: string): Promise<string> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, 'blocked_classifier', 'create_task', $3::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        JSON.stringify({
+          title,
+          description: 'Legacy create_task rows need a resolvable project_name.',
         }),
       ],
     );
@@ -230,6 +267,33 @@ test('POST /api/agent/actions/:id/approve executes the write', async () => {
 
     const t = await c.query(`SELECT title FROM tasks WHERE title = $1`, [title]);
     assert.equal(t.rows.length, 1);
+  });
+});
+
+test('POST approve on failed legacy action returns non-2xx and leaves it pending', async () => {
+  const title = `routes-legacy-fail-${Date.now()}`;
+  const actionId = await insertLegacyCreateTaskWithoutProject(title);
+
+  const res = await app().request(`/api/agent/actions/${actionId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 500);
+  const body = await res.json();
+  assert.equal(body.code, 'EXECUTE_FAILED');
+  assert.equal(body.success, false);
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT approval_status, error FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(r.rows[0].approval_status, 'pending');
+    assert.equal(r.rows[0].error, 'Project not found');
+
+    const t = await c.query(`SELECT id FROM tasks WHERE title = $1`, [title]);
+    assert.equal(t.rows.length, 0, 'failed legacy approve must not create a task');
   });
 });
 
