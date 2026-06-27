@@ -96,7 +96,7 @@ function localClassificationHints(content: string): Partial<ClassificationResult
   const lower = text.toLowerCase();
   const taskRefs = Array.from(text.matchAll(/\b[A-Z][A-Z0-9]+-\d+\b/g), (m) => m[0]);
   const agentMentioned = /(^|\s)@(agent|deft|defty)\b/i.test(text);
-  const blocked = /\b(blocked|blocker|stuck|held up|waiting on|dependency|dependencies|can't proceed|cannot proceed|can't move forward|cannot move forward|unable to proceed)\b/i.test(text);
+  const blocked = hasBlockedSignal(text) && !hasNegatedBlockedSignal(text);
   const explicitTask = /\b(create|add|make|open|track)\b.{0,40}\b(task|todo|ticket)\b/i.test(text);
   const actionable = blocked || explicitTask || /\b(need to|should|please|can someone|follow up)\b/i.test(lower);
 
@@ -110,6 +110,46 @@ function localClassificationHints(content: string): Partial<ClassificationResult
       : actionable
         ? { intent: 'actionable' as const, confidence: blocked ? 0.85 : 0.72 }
         : {}),
+  };
+}
+
+function hasBlockedSignal(text: string): boolean {
+  return /\b(blocked|blocker|stuck|held up|waiting on|dependency|dependencies|can't proceed|cannot proceed|can't move forward|cannot move forward|unable to proceed)\b/i.test(text);
+}
+
+function hasNegatedBlockedSignal(text: string): boolean {
+  const lower = plainText(text).toLowerCase();
+  const negatedBefore =
+    /\b(no|not|nothing|none|without)\b.{0,32}\b(blocked|blocker|blockers|stuck|dependency|dependencies|waiting on)\b/i.test(lower);
+  const explicitUnblocked = /\b(unblocked|not blocked|not stuck)\b/i.test(lower);
+  const resolvedBeforeSignal =
+    /\b(resolved|cleared|fixed|handled)\b.{0,16}\b(blocker|blockers|dependency|dependencies)\b/i.test(lower);
+  const signalBeforeResolved =
+    /\b(blocked|blocker|blockers|stuck|dependency|dependencies)\b.{0,32}\b(resolved|cleared|fixed|done|handled)\b/i.test(lower);
+  return negatedBefore || explicitUnblocked || resolvedBeforeSignal || signalBeforeResolved;
+}
+
+function hasNonBlockedActionableSignal(text: string): boolean {
+  const lower = plainText(text).toLowerCase();
+  return /\b(create|add|make|open|track)\b.{0,40}\b(task|todo|ticket)\b/i.test(lower) ||
+    /\b(need to|should|please|can someone|follow up)\b/i.test(lower);
+}
+
+function applyBlockedSuppression(
+  result: ClassificationResult,
+  content: string,
+): ClassificationResult {
+  if (!hasNegatedBlockedSignal(content)) return result;
+  if (!result.blocked) return result;
+
+  const stillActionable = hasNonBlockedActionableSignal(content);
+  return {
+    ...result,
+    blocked: false,
+    intent: result.intent === 'actionable' && !stillActionable ? 'discussion' : result.intent,
+    confidence: result.intent === 'actionable' && !stillActionable
+      ? Math.min(result.confidence, 0.6)
+      : result.confidence,
   };
 }
 
@@ -130,7 +170,10 @@ function mergeLocalHints(
 }
 
 export function classifyMessageLocally(content: string): ClassificationResult {
-  return mergeLocalHints({ ...DEFAULT_RESULT }, localClassificationHints(content));
+  return applyBlockedSuppression(
+    mergeLocalHints({ ...DEFAULT_RESULT }, localClassificationHints(content)),
+    content,
+  );
 }
 
 const CLASSIFICATION_PROMPT = `You are a workspace message classifier. Analyze the message and return JSON only.
@@ -191,7 +234,7 @@ export async function classifyMessage(
       .trim();
     const parsed = JSON.parse(cleaned);
 
-    return mergeLocalHints({
+    const merged = mergeLocalHints({
       intent: parsed.intent ?? 'none',
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
       agent_mentioned: Boolean(parsed.agent_mentioned),
@@ -205,6 +248,7 @@ export async function classifyMessage(
       memorable_facts: Array.isArray(parsed.memorable_facts) ? parsed.memorable_facts : [],
       decision: typeof parsed.decision === 'string' ? parsed.decision : null,
     }, localHints);
+    return applyBlockedSuppression(merged, content);
   } catch (err) {
     console.error('[classifier] Classification failed:', (err as Error).message);
     return classifyMessageLocally(content);

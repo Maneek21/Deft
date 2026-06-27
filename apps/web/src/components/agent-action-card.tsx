@@ -53,9 +53,17 @@ function GenericParams({ params }: { params: Record<string, any> }) {
 
 const ACTION_LABELS: Record<string, string> = {
   create_task: 'Create task',
+  task_create: 'Create task',
+  task_update: 'Update task',
+  memory_update: 'Update memory',
   update_task_status: 'Update status',
   assign_task: 'Assign task',
   post_message: 'Post message',
+};
+
+const CAPTURE_LABELS: Record<string, string> = {
+  task_candidate: 'Defty captured this as possible work from chat',
+  blocker_candidate: 'Defty captured this as a possible blocker from chat',
 };
 
 export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
@@ -68,6 +76,9 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
   const title = stripHtml(action.params.title);
   const content = stripHtml(action.params.content);
+  const captureLabel = typeof action.params.capture_kind === 'string'
+    ? CAPTURE_LABELS[action.params.capture_kind] ?? null
+    : null;
 
   if (action.status === 'executing') {
     return (
@@ -126,6 +137,11 @@ export function AgentActionCard({ action, onApprove, onReject, onUndo }: {
       <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
         {displayLabel}
       </p>
+      {captureLabel && (
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+          {captureLabel}
+        </p>
+      )}
       <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
         {action.action in ACTION_LABELS ? (
           <>

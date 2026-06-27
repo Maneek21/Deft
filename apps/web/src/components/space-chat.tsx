@@ -44,7 +44,6 @@ import { EmptyState } from './empty-state';
 import { RichComposer } from './rich-composer';
 import { SpaceMembersPanel } from './space-members-panel';
 import { TaskQuickCreate } from './task-quick-create';
-import { TaskSuggestionCard } from './task-suggestion-card';
 import { PinnedBar } from './pinned-messages';
 import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
@@ -549,8 +548,6 @@ export function SpaceChat({
   const [forwardMsgId, setForwardMsgId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
   const [linkPreviews, setLinkPreviews] = useState<Map<string, LinkPreview[]>>(new Map());
-  const [taskSuggestions, setTaskSuggestions] = useState<Map<string, any>>(new Map());
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(new Set());
   const [renamingSpace, setRenamingSpace] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -632,96 +629,6 @@ export function SpaceChat({
   useEffect(() => {
     if (cmdToast) { const t = setTimeout(() => setCmdToast(null), 3000); return () => clearTimeout(t); }
   }, [cmdToast]);
-
-  // Load dismissed task-suggestion message IDs for this space from localStorage
-  const dismissedSuggestionsKey = `chat:dismissed-suggestions:${spaceId}`;
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = window.localStorage.getItem(dismissedSuggestionsKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setDismissedSuggestions(new Set(Array.isArray(parsed) ? parsed : []));
-      } else {
-        setDismissedSuggestions(new Set());
-      }
-    } catch {
-      setDismissedSuggestions(new Set());
-    }
-    // Also reset any in-memory suggestions when switching spaces
-    setTaskSuggestions(new Map());
-  }, [dismissedSuggestionsKey]);
-
-  const persistDismissedSuggestion = useCallback((messageId: string) => {
-    setDismissedSuggestions((prev) => {
-      if (prev.has(messageId)) return prev;
-      const next = new Set(prev);
-      next.add(messageId);
-      try {
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(dismissedSuggestionsKey, JSON.stringify(Array.from(next)));
-        }
-      } catch {
-        /* ignore localStorage quota errors */
-      }
-      return next;
-    });
-  }, [dismissedSuggestionsKey]);
-
-  const removeTaskSuggestion = useCallback((messageId: string) => {
-    setTaskSuggestions((prev) => {
-      if (!prev.has(messageId)) return prev;
-      const next = new Map(prev);
-      next.delete(messageId);
-      return next;
-    });
-  }, []);
-
-  const handleCreateTaskSuggestion = useCallback(async (messageId: string) => {
-    const s = taskSuggestions.get(messageId);
-    if (!s) return;
-    try {
-      const res = await api.post(`/api/projects/${s.project_id}/tasks`, {
-        title: s.title,
-        description: s.description || '',
-        priority: s.priority || 'p2',
-        source_message_id: messageId,
-      });
-      if (!res.ok) throw new Error('Failed to create task');
-      removeTaskSuggestion(messageId);
-      persistDismissedSuggestion(messageId);
-      setCmdToast(`Task "${s.title}" created`);
-    } catch (err) {
-      console.error('Failed to create task from suggestion:', err);
-      setCmdToast('Failed to create task');
-    }
-  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
-
-  const handleEditTaskSuggestion = useCallback((messageId: string) => {
-    const s = taskSuggestions.get(messageId);
-    if (!s) return;
-    if (s.project_id) {
-      setDefaultProjectId(s.project_id);
-    }
-    setCreateTaskMsg({
-      title: s.title || '',
-      description: s.description || '',
-      messageId,
-    });
-    removeTaskSuggestion(messageId);
-    persistDismissedSuggestion(messageId);
-  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
-
-  const handleDismissTaskSuggestion = useCallback((messageId: string, notificationId?: string | null) => {
-    if (notificationId) {
-      // Best-effort dismiss on server if a notification id is attached to the suggestion
-      api.patch(`/api/notifications/${notificationId}`, { dismissed: true }).catch(() => {
-        /* ignore — the local dismiss below is the source of truth for UX */
-      });
-    }
-    removeTaskSuggestion(messageId);
-    persistDismissedSuggestion(messageId);
-  }, [removeTaskSuggestion, persistDismissedSuggestion]);
 
   // Sync mute status from spaces list
   useEffect(() => {
@@ -930,31 +837,6 @@ export function SpaceChat({
     socket.on('message:pinned', onMessagePinned);
     socket.on('message:unpinned', onMessageUnpinned);
 
-    // Agent task suggestion listener
-    const onTaskSuggestion = (data: { messageId: string; spaceId: string; suggestion: any }) => {
-      if (data.spaceId !== spaceId) return;
-      // Re-check dismissed state from storage (state may be stale inside the closure)
-      let dismissed = false;
-      try {
-        if (typeof window !== 'undefined') {
-          const raw = window.localStorage.getItem(`chat:dismissed-suggestions:${spaceId}`);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.includes(data.messageId)) dismissed = true;
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-      if (dismissed) return;
-      setTaskSuggestions((prev) => {
-        const next = new Map(prev);
-        next.set(data.messageId, data.suggestion);
-        return next;
-      });
-    };
-    socket.on('agent:task_suggestion', onTaskSuggestion);
-
     return () => {
       socket.emit('space:leave', spaceId);
       socket.off('message:new', onNew);
@@ -969,7 +851,6 @@ export function SpaceChat({
       socket.off('message:link_previews', onLinkPreviews);
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
-      socket.off('agent:task_suggestion', onTaskSuggestion);
     };
   }, [spaceId, user?.id, scrollToBottom]);
 
@@ -1793,23 +1674,6 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
-                              const s = taskSuggestions.get(msg.id);
-                              return (
-                                <TaskSuggestionCard
-                                  messageId={msg.id}
-                                  taskTitle={s.title}
-                                  taskDescription={s.description}
-                                  projectId={s.project_id}
-                                  projectName={s.project_name}
-                                  priority={s.priority}
-                                  agentName={s.agent_name || 'Alex'}
-                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
-                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
-                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
-                                />
-                              );
-                            })()}
                           </>
                         )}
                       </div>
@@ -1945,23 +1809,6 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
-                              const s = taskSuggestions.get(msg.id);
-                              return (
-                                <TaskSuggestionCard
-                                  messageId={msg.id}
-                                  taskTitle={s.title}
-                                  taskDescription={s.description}
-                                  projectId={s.project_id}
-                                  projectName={s.project_name}
-                                  priority={s.priority}
-                                  agentName={s.agent_name || 'Alex'}
-                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
-                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
-                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
-                                />
-                              );
-                            })()}
                           </>
                         )}
                       </div>

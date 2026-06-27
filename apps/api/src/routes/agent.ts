@@ -35,6 +35,7 @@ import {
   rejectAction as resolveRejectAction,
   MCP_ACTION_KINDS,
 } from '../lib/agent-approval-resolver.js';
+import { generateReceipt } from '../lib/receipts.js';
 
 export const agentRoutes = new Hono();
 
@@ -1007,6 +1008,20 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       .update(agentActions)
       .set({ approval_status: 'approved', approved_at: new Date() })
       .where(eq(agentActions.id, actionId));
+    if (action.source === 'defty_capture') {
+      await generateReceipt({
+        actionId,
+        orgId: action.org_id,
+        proposer: 'defty',
+        proposerId: action.user_id,
+        approverId: user.id,
+        decision: 'approved',
+        decisionReason: null,
+        actionName: action.action,
+        actionParams: action.params,
+        resultJson: execResult.result,
+      });
+    }
   } else {
     await db
       .update(agentActions)
@@ -1079,6 +1094,20 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     .update(agentActions)
     .set({ approval_status: 'rejected', error: reason ?? null })
     .where(eq(agentActions.id, actionId));
+  if (action.source === 'defty_capture') {
+    await generateReceipt({
+      actionId,
+      orgId: action.org_id,
+      proposer: 'defty',
+      proposerId: action.user_id,
+      approverId: user.id,
+      decision: 'rejected',
+      decisionReason: reason ?? null,
+      actionName: action.action,
+      actionParams: action.params,
+      resultJson: null,
+    });
+  }
   return c.json({ success: true });
 });
 

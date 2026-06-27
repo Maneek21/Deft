@@ -1,0 +1,155 @@
+import { and, eq, sql } from 'drizzle-orm';
+import { agentActions, projects, projectSpaces } from '@deft/db/schema';
+import { db } from './db.js';
+import { ensureDeftyMembership } from './ensure-defty-membership.js';
+import { toPlainText, truncatePlainText } from './plain-text.js';
+
+type ResolvedProject = { id: string; name: string };
+
+async function resolveProjectForCapture(
+  orgId: string,
+  spaceId: string,
+  projectName?: string | null,
+): Promise<ResolvedProject | null> {
+  const normalizedProjectName = projectName?.trim();
+  if (normalizedProjectName) {
+    const [proj] = await db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(and(
+        eq(projects.org_id, orgId),
+        eq(projects.name, normalizedProjectName),
+        eq(projects.is_archived, false),
+        eq(projects.is_deleted, false),
+      ))
+      .limit(1);
+    if (proj) return proj;
+  }
+
+  const [linked] = await db
+    .select({ id: projectSpaces.project_id, name: projects.name })
+    .from(projectSpaces)
+    .innerJoin(projects, eq(projectSpaces.project_id, projects.id))
+    .where(and(
+      eq(projectSpaces.space_id, spaceId),
+      eq(projects.org_id, orgId),
+      eq(projects.is_archived, false),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  if (linked) return linked;
+
+  const [anyProj] = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(
+      eq(projects.org_id, orgId),
+      eq(projects.is_archived, false),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  return anyProj ?? null;
+}
+
+function buildFallbackTitle(content: string): string {
+  const plainContent = toPlainText(content);
+  const explicit = plainContent.match(
+    /\b(?:create|add|make|open|track)\b.{0,40}\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
+  );
+  const candidate = (explicit?.[1]?.trim() || plainContent).replace(/[.!?]+$/g, '');
+  return truncatePlainText(candidate.replace(/^please\s+/i, ''), 80) || 'Follow up from chat';
+}
+
+export async function queueDeftyCreateTaskCapture(params: {
+  orgId: string;
+  sourceUserId: string;
+  spaceId: string;
+  messageId: string;
+  content: string;
+  title?: string | null;
+  description?: string | null;
+  priority?: 'p0' | 'p1' | 'p2' | 'p3' | null;
+  assigneeName?: string | null;
+  projectName?: string | null;
+  captureKind: 'task_candidate' | 'blocker_candidate';
+  captureReason?: string | null;
+  extraction?: 'llm' | 'deterministic' | 'classifier';
+}): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
+  const {
+    orgId,
+    sourceUserId,
+    spaceId,
+    messageId,
+    content,
+    title,
+    description,
+    priority,
+    assigneeName,
+    projectName,
+    captureKind,
+    captureReason,
+    extraction = 'classifier',
+  } = params;
+
+  const plainContent = toPlainText(content);
+  if (!plainContent) return { queued: false, skippedReason: 'empty_content' };
+
+  const dedupeKey = `defty_capture:${captureKind}:create_task:${messageId}`;
+  const [existing] = await db
+    .select({ id: agentActions.id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, orgId),
+      eq(agentActions.action, 'create_task'),
+      sql`(
+        ${agentActions.params}->>'dedupe_key' = ${dedupeKey}
+        OR (
+          ${agentActions.message_id} = ${messageId}
+          AND COALESCE(${agentActions.params}->>'capture_kind', '') IN ('', 'task_candidate', 'blocker_candidate')
+        )
+      )`,
+    ))
+    .limit(1);
+  if (existing) return { queued: false, actionId: existing.id, skippedReason: 'duplicate' };
+
+  const project = await resolveProjectForCapture(orgId, spaceId, projectName);
+  if (!project) return { queued: false, skippedReason: 'project_missing' };
+
+  const deftyUserId = await ensureDeftyMembership(orgId);
+  const finalTitle = truncatePlainText(title || buildFallbackTitle(content), 80);
+
+  const [action] = await db
+    .insert(agentActions)
+    .values({
+      org_id: orgId,
+      user_id: deftyUserId,
+      conversation_id: spaceId,
+      action: 'create_task',
+      message_id: messageId,
+      params: {
+        title: finalTitle,
+        description: description || plainContent,
+        priority: priority || 'p2',
+        assignee_name: assigneeName || null,
+        project_name: project.name,
+        source_message_id: messageId,
+        source_space_id: spaceId,
+        source_user_id: sourceUserId,
+        origin_message_id: messageId,
+        origin_space_id: spaceId,
+        origin_user_id: sourceUserId,
+        capture_kind: captureKind,
+        capture_reason: captureReason || null,
+        policy_reason: captureReason || null,
+        dedupe_key: dedupeKey,
+        extraction,
+        proposed_by: 'defty',
+      } as any,
+      approval_tier: 'quick',
+      approval_status: 'pending',
+      source: 'defty_capture',
+    })
+    .returning({ id: agentActions.id });
+
+  return { queued: true, actionId: action?.id };
+}

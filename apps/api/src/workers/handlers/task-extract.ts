@@ -4,20 +4,15 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
   agentEmployees,
-  notifications,
-  spaces,
-  projectSpaces,
-  projects,
   tasks,
   taskComments,
-  agentActions,
 } from '@deft/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getOrgAIConfig, hasAnyAIProvider } from '../../lib/org-ai-config.js';
-import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
+import { queueDeftyCreateTaskCapture } from '../../lib/defty-capture.js';
 
 const TASK_EXTRACT_TRIGGER_KIND = 'event:task-extract';
 
@@ -62,52 +57,6 @@ interface ExtractedTask {
   skip?: boolean;
 }
 
-type ResolvedProject = { id: string; name: string };
-
-async function resolveProjectForTaskExtract(
-  orgId: string,
-  spaceId: string,
-  projectName?: string | null,
-): Promise<ResolvedProject | null> {
-  if (projectName) {
-    const [proj] = await db
-      .select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(and(
-        eq(projects.org_id, orgId),
-        eq(projects.name, projectName),
-        eq(projects.is_archived, false),
-        eq(projects.is_deleted, false),
-      ))
-      .limit(1);
-    if (proj) return proj;
-  }
-
-  const [linked] = await db
-    .select({ id: projectSpaces.project_id, name: projects.name })
-    .from(projectSpaces)
-    .innerJoin(projects, eq(projectSpaces.project_id, projects.id))
-    .where(and(
-      eq(projectSpaces.space_id, spaceId),
-      eq(projects.org_id, orgId),
-      eq(projects.is_archived, false),
-      eq(projects.is_deleted, false),
-    ))
-    .limit(1);
-  if (linked) return linked;
-
-  const [anyProj] = await db
-    .select({ id: projects.id, name: projects.name })
-    .from(projects)
-    .where(and(
-      eq(projects.org_id, orgId),
-      eq(projects.is_archived, false),
-      eq(projects.is_deleted, false),
-    ))
-    .limit(1);
-  return anyProj ?? null;
-}
-
 export function buildDeterministicTaskTitle(content: string): string {
   const plainContent = toPlainText(content);
   const explicit = plainContent.match(
@@ -135,7 +84,6 @@ async function queueTaskCreateApproval(params: {
   description?: string | null;
   priority?: 'p0' | 'p1' | 'p2' | 'p3' | null;
   assigneeName?: string | null;
-  source?: string;
   extraction?: 'llm' | 'deterministic';
 }): Promise<boolean> {
   const {
@@ -149,55 +97,40 @@ async function queueTaskCreateApproval(params: {
     description,
     priority,
     assigneeName,
-    source = 'task_extract',
     extraction = 'llm',
   } = params;
   const plainContent = toPlainText(content);
   if (!plainContent) return false;
 
-  const project = await resolveProjectForTaskExtract(orgId, spaceId, projectName);
-  if (!project) {
-    console.warn(`[task-extract] No project found for create-task approval in org ${orgId}`);
+  const title = truncatePlainText(providedTitle || buildDeterministicTaskTitle(content), 80);
+  const queued = await queueDeftyCreateTaskCapture({
+    orgId,
+    sourceUserId: userId,
+    spaceId,
+    messageId,
+    content,
+    projectName,
+    title,
+    description,
+    priority: priority || 'p2',
+    assigneeName,
+    captureKind: 'task_candidate',
+    captureReason: 'A chat message looked actionable enough to capture as possible work.',
+    extraction,
+  });
+
+  if (!queued.queued && queued.skippedReason === 'project_missing') {
+    console.warn(`[task-extract] No project found for create-task capture in org ${orgId}`);
     return false;
   }
 
-  const [existing] = await db
-    .select({ id: agentActions.id })
-    .from(agentActions)
-    .where(and(
-      eq(agentActions.org_id, orgId),
-      eq(agentActions.message_id, messageId),
-      eq(agentActions.action, 'create_task'),
-    ))
-    .limit(1);
-  if (existing) {
-    console.log(`[task-extract] Create-task approval already queued for message ${messageId}`);
+  if (!queued.queued && queued.skippedReason === 'duplicate') {
+    console.log(`[task-extract] Create-task capture already queued for message ${messageId}`);
     return true;
   }
 
-  const title = truncatePlainText(providedTitle || buildDeterministicTaskTitle(content), 80);
-  await db.insert(agentActions).values({
-    org_id: orgId,
-    user_id: userId,
-    action: 'create_task',
-    message_id: messageId,
-    params: {
-      title,
-      description: description || plainContent,
-      priority: priority || 'p2',
-      assignee_name: assigneeName || null,
-      project_name: project.name,
-      source_message_id: messageId,
-      source_space_id: spaceId,
-      extraction,
-    } as any,
-    approval_tier: 'quick',
-    approval_status: 'pending',
-    source,
-  });
-
-  console.log(`[task-extract] Queued ${extraction} create_task approval "${title}" for message ${messageId}`);
-  return true;
+  console.log(`[task-extract] Queued ${extraction} Defty task capture "${title}" for message ${messageId}`);
+  return queued.queued;
 }
 
 async function queueDeterministicTaskCreateApproval(params: {
@@ -210,7 +143,6 @@ async function queueDeterministicTaskCreateApproval(params: {
 }): Promise<boolean> {
   return queueTaskCreateApproval({
     ...params,
-    source: 'task_extract_fallback',
     extraction: 'deterministic',
   });
 }
@@ -346,22 +278,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
       return;
     }
 
-    // Try to resolve a default project for the space
-    const project = await resolveProjectForTaskExtract(orgId, spaceId, extracted.project_name || null);
-    if (!project) {
-      console.warn('[task-extract] No project found for org', orgId);
-      return;
-    }
-
     const suggestionPriority = normalizePriority(extracted.priority);
-    const suggestion = {
-      title: extracted.title,
-      description: extracted.description || null,
-      priority: suggestionPriority,
-      assignee_name: extracted.assignee_name || classification.entities.assignee || null,
-      project_id: project.id,
-      project_name: project.name,
-    };
 
     await queueTaskCreateApproval({
       orgId,
@@ -369,12 +286,11 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
       spaceId,
       messageId,
       content,
-      projectName: project.name,
-      title: suggestion.title,
-      description: suggestion.description,
-      priority: suggestion.priority,
-      assigneeName: suggestion.assignee_name,
-      source: 'task_extract',
+      projectName: extracted.project_name || classification.entities.project,
+      title: extracted.title,
+      description: extracted.description || null,
+      priority: suggestionPriority,
+      assigneeName: extracted.assignee_name || classification.entities.assignee || null,
       extraction: 'llm',
     });
 
@@ -400,26 +316,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
       return;
     }
 
-    // Create a notification for the message author
-    const [notification] = await db.insert(notifications).values({
-      org_id: orgId,
-      user_id: userId,
-      type: 'agent_suggestion',
-      title: `Create task: ${suggestion.title}?`,
-      body: JSON.stringify(suggestion),
-      link: `/chat?space=${spaceId}&message=${messageId}`,
-      metadata: { action: 'create_task', ...suggestion },
-    }).returning();
-
-    // Emit real-time event
-    emitToUser(userId, 'notification:new', notification);
-    emitToUser(userId, 'agent:task_suggestion', {
-      messageId,
-      spaceId,
-      suggestion,
-    });
-
-    console.log(`[task-extract] Suggested task "${suggestion.title}" for message ${messageId}`);
+    console.log(`[task-extract] Captured possible task "${extracted.title}" for message ${messageId}`);
   } catch (err) {
     console.error('[task-extract] Extraction failed:', (err as Error).message);
     if (classification.intent === 'task_create') {
