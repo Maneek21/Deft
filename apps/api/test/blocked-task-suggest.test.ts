@@ -115,12 +115,16 @@ test('blocked-alert queues a Defty task_create proposal for the blocked user', a
     ));
   assert.equal(rows.length, 1, `expected 1 proposal, got ${rows.length}`);
   const row = rows[0]!;
-  assert.equal(row.action, 'create_task');
+  assert.equal(row.action, 'task_create');
   assert.equal(row.approval_tier, 'quick');
   assert.equal(row.approval_status, 'pending');
   assert.equal(row.message_id, msgId);
+  assert.ok(row.agent_employee_id, 'Defty capture should execute through a hidden agent employee');
   const params = row.params as any;
+  assert.equal(params.caller_employee_slug, 'defty-system');
   assert.ok(typeof params.title === 'string' && params.title.startsWith('Blocker:'));
+  assert.equal(params.project_id, projectId);
+  assert.equal(params.space_id, spaceId);
   assert.equal(params.source_message_id, msgId);
   assert.equal(params.source_space_id, spaceId);
   assert.equal(params.source_user_id, testUserId);
@@ -129,7 +133,7 @@ test('blocked-alert queues a Defty task_create proposal for the blocked user', a
   assert.equal(params.origin_user_id, testUserId);
   assert.equal(params.capture_kind, 'blocker_candidate');
   assert.equal(params.proposed_by, 'defty');
-  assert.equal(params.dedupe_key, `defty_capture:blocker_candidate:create_task:${msgId}`);
+  assert.equal(params.dedupe_key, `defty_capture:blocker_candidate:task_create:${msgId}`);
 });
 
 test('proposal payload description keeps the full message', async () => {

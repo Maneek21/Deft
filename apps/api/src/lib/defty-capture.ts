@@ -1,8 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { agentActions, projects, projectSpaces } from '@deft/db/schema';
 import { db } from './db.js';
-import { ensureDeftyMembership } from './ensure-defty-membership.js';
+import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
+import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 
 type ResolvedProject = { id: string; name: string };
 
@@ -94,15 +95,16 @@ export async function queueDeftyCreateTaskCapture(params: {
   const plainContent = toPlainText(content);
   if (!plainContent) return { queued: false, skippedReason: 'empty_content' };
 
-  const dedupeKey = `defty_capture:${captureKind}:create_task:${messageId}`;
+  const dedupeKey = `defty_capture:${captureKind}:task_create:${messageId}`;
+  const legacyDedupeKey = `defty_capture:${captureKind}:create_task:${messageId}`;
   const [existing] = await db
     .select({ id: agentActions.id })
     .from(agentActions)
     .where(and(
       eq(agentActions.org_id, orgId),
-      eq(agentActions.action, 'create_task'),
+      sql`${agentActions.action} IN ('create_task', 'task_create')`,
       sql`(
-        ${agentActions.params}->>'dedupe_key' = ${dedupeKey}
+        ${agentActions.params}->>'dedupe_key' IN (${dedupeKey}, ${legacyDedupeKey})
         OR (
           ${agentActions.message_id} = ${messageId}
           AND COALESCE(${agentActions.params}->>'capture_kind', '') IN ('', 'task_candidate', 'blocker_candidate')
@@ -115,22 +117,36 @@ export async function queueDeftyCreateTaskCapture(params: {
   const project = await resolveProjectForCapture(orgId, spaceId, projectName);
   if (!project) return { queued: false, skippedReason: 'project_missing' };
 
-  const deftyUserId = await ensureDeftyMembership(orgId);
+  const defty = await ensureDeftyEmployee(orgId);
   const finalTitle = truncatePlainText(title || buildFallbackTitle(content), 80);
+  let assigneeId: string | null = null;
+  let resolvedAssigneeName = assigneeName || null;
+  if (assigneeName?.trim()) {
+    const resolved = await resolveAssigneeWithMatches(assigneeName, orgId);
+    if (resolved.ok) {
+      assigneeId = resolved.value.id;
+      resolvedAssigneeName = resolved.value.name;
+    }
+  }
 
   const [action] = await db
     .insert(agentActions)
     .values({
       org_id: orgId,
-      user_id: deftyUserId,
+      user_id: defty.userId,
+      agent_employee_id: defty.employeeId,
       conversation_id: spaceId,
-      action: 'create_task',
+      action: 'task_create',
       message_id: messageId,
       params: {
+        caller_employee_slug: defty.slug,
         title: finalTitle,
         description: description || plainContent,
         priority: priority || 'p2',
-        assignee_name: assigneeName || null,
+        project_id: project.id,
+        space_id: spaceId,
+        assignee_id: assigneeId,
+        assignee_name: resolvedAssigneeName,
         project_name: project.name,
         source_message_id: messageId,
         source_space_id: spaceId,

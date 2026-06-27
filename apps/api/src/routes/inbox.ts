@@ -152,6 +152,7 @@ inboxRoutes.get('/', async (c) => {
       id: agentActions.id,
       action: agentActions.action,
       params: agentActions.params,
+      action_source: agentActions.source,
       approval_tier: agentActions.approval_tier,
       created_at: agentActions.created_at,
       agent_employee_id: agentActions.agent_employee_id,
@@ -175,7 +176,9 @@ inboxRoutes.get('/', async (c) => {
     const approvalItems: InboxItem[] = approvalRows.map((r) => ({
       id: `approval:${r.id}`,
       kind: 'pending_approval',
-      title: r.employee_name ? `${r.employee_name} proposes: ${r.action}` : `Defty proposes: ${r.action}`,
+      title: r.action_source === 'defty_capture' || !r.agent_employee_id
+        ? `Defty proposes: ${r.action}`
+        : `${r.employee_name ?? 'Agent'} proposes: ${r.action}`,
       body: null,
       link: `/inbox?tab=approvals&action=${r.id}`,
       created_at: (r.created_at instanceof Date ? r.created_at : new Date(r.created_at as unknown as string)).toISOString(),
@@ -190,7 +193,7 @@ inboxRoutes.get('/', async (c) => {
         employee_name: r.employee_name,
         employee_slug: r.employee_slug,
         employee_avatar: r.employee_avatar,
-        proposer: r.agent_employee_id ? 'employee' : 'defty',
+        proposer: r.action_source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
       },
     }));
 

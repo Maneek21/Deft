@@ -340,6 +340,10 @@ export const toolSchemas: ToolSchema[] = [
         project_id: { type: 'string' },
         space_id: { type: 'string' },
         assignee_id: { type: 'string' },
+        source_message_id: {
+          type: 'string',
+          description: 'Optional source chat message id to link the created task back to the conversation.',
+        },
         priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
         size: { type: 'string' },
       },

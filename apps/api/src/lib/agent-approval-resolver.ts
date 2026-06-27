@@ -127,11 +127,12 @@ async function dispatchAction(
   actionName: string,
   params: Record<string, unknown>,
   ctx: ToolContext,
+  actionId?: string,
 ): Promise<ToolResult> {
   // Phase 7 — skipReceipt=true: the approval resolver owns receipt
   // generation for approved actions (it knows the approver_id). The inner
   // executors only emit receipts in the auto-exec path.
-  const opts = { skipReceipt: true } as const;
+  const opts = { skipReceipt: true, actionId } as const;
   switch (actionName) {
     case 'task_create':
       return executeTaskCreate(params as unknown as TaskCreateArgs, ctx, opts);
@@ -293,6 +294,7 @@ export async function approveAction(
       row.action,
       (row.params ?? {}) as Record<string, unknown>,
       ctx,
+      row.id,
     );
   } catch (err) {
     caughtError = err instanceof Error ? err : new Error(String(err));
@@ -340,12 +342,13 @@ export async function approveAction(
   // the inner executor succeeded. decision_reason captures the failure
   // message so a compliance officer can read "approved but execution
   // failed: X" instead of silently losing the decision.
+  const isDeftyCapture = row.source === 'defty_capture';
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
     employeeId: ctx.employee_id,
-    proposer: 'employee',
-    proposerId: ctx.employee_id,
+    proposer: isDeftyCapture ? 'defty' : 'employee',
+    proposerId: isDeftyCapture ? row.user_id : ctx.employee_id,
     approverId: approverUserId,
     decision: 'approved',
     decisionReason: isError
@@ -433,12 +436,13 @@ export async function rejectAction(
     .where(eq(agentActions.id, actionId));
 
   // ── Phase 7 — signed rejection receipt ───────────────────────────────
+  const isDeftyCapture = row.source === 'defty_capture';
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
     employeeId: row.agent_employee_id ?? null,
-    proposer: 'employee',
-    proposerId: row.agent_employee_id ?? null,
+    proposer: isDeftyCapture ? 'defty' : 'employee',
+    proposerId: isDeftyCapture ? row.user_id : row.agent_employee_id ?? null,
     approverId: rejecterUserId,
     decision: 'rejected',
     decisionReason: reason ?? null,

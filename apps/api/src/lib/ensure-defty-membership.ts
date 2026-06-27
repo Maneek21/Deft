@@ -8,11 +8,12 @@
 // agent-chat unification — see docs/superpowers/specs/2026-05-07-agent-chat-unification.md.
 
 import { db } from './db.js';
-import { users, orgMembers, spaces, spaceMembers } from '@deft/db/schema';
+import { users, orgMembers, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 
 export const DEFTY_EMAIL = 'deft-agent@system.local';
 export const DEFTY_NAME = 'Defty';
+export const DEFTY_SYSTEM_EMPLOYEE_SLUG = 'defty-system';
 
 export async function ensureDeftyMembership(orgId: string): Promise<string> {
   // 1. Find or create the Defty user. If it already exists (created by the
@@ -51,6 +52,85 @@ export async function ensureDeftyMembership(orgId: string): Promise<string> {
   }).onConflictDoNothing();
 
   return userId;
+}
+
+/**
+ * Ensure Defty has an internal agent_employee row for approval-resolver
+ * execution. This row is intentionally soft-hidden from normal Agent
+ * Employees lists (`is_deleted=true`) while remaining active for canonical
+ * MCP-style execution and receipt attribution.
+ */
+export async function ensureDeftyEmployee(
+  orgId: string,
+): Promise<{ userId: string; employeeId: string; slug: string }> {
+  const deftyUserId = await ensureDeftyMembership(orgId);
+
+  const [existing] = await db
+    .select({ id: agentEmployees.id })
+    .from(agentEmployees)
+    .where(and(
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.slug, DEFTY_SYSTEM_EMPLOYEE_SLUG),
+    ))
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(agentEmployees)
+      .set({
+        user_id: deftyUserId,
+        name: DEFTY_NAME,
+        role: 'superintendent',
+        system_prompt: 'Internal Defty system employee for governed workspace captures.',
+        trust_level: 'conservative',
+        is_active: true,
+        is_deleted: true,
+        runtime_kind: 'defty_system',
+        job_title: 'Platform superintendent',
+        wake_mode: 'manual',
+        certification_status: 'internal',
+      })
+      .where(eq(agentEmployees.id, existing.id));
+    return {
+      userId: deftyUserId,
+      employeeId: existing.id,
+      slug: DEFTY_SYSTEM_EMPLOYEE_SLUG,
+    };
+  }
+
+  const [employee] = await db
+    .insert(agentEmployees)
+    .values({
+      org_id: orgId,
+      user_id: deftyUserId,
+      name: DEFTY_NAME,
+      slug: DEFTY_SYSTEM_EMPLOYEE_SLUG,
+      role: 'superintendent',
+      system_prompt: 'Internal Defty system employee for governed workspace captures.',
+      expertise_description: 'Captures possible work from chat and routes it through approval rails.',
+      starter_prompts: [],
+      disabled_tools: [],
+      space_ids: [],
+      project_ids: [],
+      trust_level: 'conservative',
+      max_daily_actions: 1000,
+      heartbeat_enabled: false,
+      is_active: true,
+      is_deleted: true,
+      is_byoa: false,
+      runtime_kind: 'defty_system',
+      job_title: 'Platform superintendent',
+      wake_mode: 'manual',
+      certification_status: 'internal',
+      created_by: deftyUserId,
+    })
+    .returning({ id: agentEmployees.id });
+
+  return {
+    userId: deftyUserId,
+    employeeId: employee!.id,
+    slug: DEFTY_SYSTEM_EMPLOYEE_SLUG,
+  };
 }
 
 /**

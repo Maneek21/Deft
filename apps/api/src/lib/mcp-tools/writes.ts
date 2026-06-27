@@ -205,6 +205,7 @@ export type TaskCreateArgs = {
   assignee_id?: string;
   priority?: string;
   size?: string;
+  source_message_id?: string;
 };
 
 /**
@@ -215,7 +216,7 @@ export type TaskCreateArgs = {
 export async function executeTaskCreate(
   args: TaskCreateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean },
+  opts?: { skipReceipt?: boolean; actionId?: string | null },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
@@ -273,6 +274,7 @@ export async function executeTaskCreate(
         priority,
         assignee_id: args.assignee_id ?? null,
         created_by: shadowUserId,
+        source_message_id: args.source_message_id ?? null,
       })
       .returning();
 
@@ -281,6 +283,8 @@ export async function executeTaskCreate(
       task_id: task!.id,
       user_id: shadowUserId,
       action: 'created',
+      agent_action_id: opts?.actionId ?? null,
+      acting_agent_employee_id: ctx.employee_id,
     });
 
     try {
@@ -323,6 +327,7 @@ export async function executeTaskCreate(
       status: task!.status,
       priority: task!.priority,
       assignee_id: task!.assignee_id,
+      source_message_id: task!.source_message_id,
       created_at: task!.created_at,
     };
 

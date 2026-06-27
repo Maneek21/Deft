@@ -737,7 +737,7 @@ agentRoutes.get('/actions/pending', async (c) => {
 
   const actions = rows.map((r) => ({
     ...r,
-    proposer: r.agent_employee_id ? 'employee' : 'defty',
+    proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
   }));
   return c.json({ actions });
 });
@@ -936,7 +936,7 @@ agentRoutes.get('/actions/recent', async (c) => {
   return c.json({
     actions: rows.map((r) => ({
       ...r,
-      proposer: r.agent_employee_id ? 'employee' : 'defty',
+      proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
     })),
   });
 });
