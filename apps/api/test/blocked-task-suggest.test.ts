@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { eq, and } from 'drizzle-orm';
 import {
   db, agentActions, agentNudges, spaces, messages,
-  orgs, users, orgMembers, projects, projectSpaces, agentEmployees,
+  orgs, users, orgMembers, projects, projectSpaces, agentEmployees, workIntents,
 } from '@deft/db';
 import { handleBlockedAlert } from '../src/workers/handlers/blocked-alert.js';
 
@@ -83,6 +83,12 @@ afterEach(async () => {
       eq(agentActions.source, 'defty_capture'),
     ),
   );
+  await db.delete(workIntents).where(
+    and(
+      eq(workIntents.org_id, testOrgId),
+      eq(workIntents.source_message_id, msgId),
+    ),
+  );
   // Clear the dedup nudge too so the next test isn't skipped by the
   // 4h "already alerted" guard in handleBlockedAlert.
   await db.delete(agentNudges).where(
@@ -96,6 +102,7 @@ afterEach(async () => {
 after(async () => {
   if (testOrgId) {
     await db.delete(agentActions).where(eq(agentActions.org_id, testOrgId));
+    await db.delete(workIntents).where(eq(workIntents.org_id, testOrgId));
     await db.delete(agentNudges).where(eq(agentNudges.org_id, testOrgId));
   }
   if (msgId) await db.delete(messages).where(eq(messages.id, msgId));
@@ -150,6 +157,26 @@ test('blocked-alert queues a Defty task_create proposal for the blocked user', a
   assert.equal(params.capture_kind, 'blocker_candidate');
   assert.equal(params.proposed_by, 'defty');
   assert.equal(params.dedupe_key, `defty_capture:blocker_candidate:task_create:${msgId}`);
+  assert.ok(params.work_intent_id, 'proposal should link back to a work intent');
+  assert.equal(params.work_intent_status, 'proposed');
+
+  const intents = await db
+    .select()
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, testOrgId),
+      eq(workIntents.source_message_id, msgId),
+    ));
+  assert.equal(intents.length, 1, `expected 1 work intent, got ${intents.length}`);
+  const intent = intents[0]!;
+  assert.equal(intent.id, params.work_intent_id);
+  assert.equal(intent.kind, 'blocker_candidate');
+  assert.equal(intent.status, 'proposed');
+  assert.equal(intent.proposed_action, 'task_create');
+  assert.equal(intent.title, params.title);
+  assert.equal(intent.space_id, spaceId);
+  assert.equal(intent.source_user_id, testUserId);
+  assert.equal((intent.proposed_params as any).source_message_id, msgId);
 });
 
 test('proposal payload description keeps the full message', async () => {

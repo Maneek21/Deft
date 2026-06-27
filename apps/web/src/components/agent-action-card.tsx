@@ -34,6 +34,14 @@ const CAPTURE_LABELS: Record<string, string> = {
   blocker_candidate: 'Defty captured this as a possible blocker from chat',
 };
 
+const INTENT_STATUS_LABELS: Record<string, string> = {
+  proposed: 'Intent proposed',
+  converted: 'Intent converted',
+  dismissed: 'Intent dismissed',
+  expired: 'Intent expired',
+  failed: 'Intent failed',
+};
+
 function GenericParams({ params }: { params: Record<string, any> }) {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
   if (entries.length === 0) {
@@ -98,6 +106,9 @@ export function AgentActionCard({
     : null;
   const isCapture = Boolean(captureLabel || action.params.proposed_by === 'defty' || action.params.source_message_id);
   const captureReason = stripHtml(action.params.capture_reason ?? action.params.policy_reason ?? '');
+  const workIntentStatus = typeof action.params.work_intent_status === 'string'
+    ? INTENT_STATUS_LABELS[action.params.work_intent_status] ?? null
+    : null;
   const sourceMessageId = typeof action.params.source_message_id === 'string' ? action.params.source_message_id : null;
   const sourceSpaceId = typeof action.params.source_space_id === 'string'
     ? action.params.source_space_id
@@ -280,6 +291,11 @@ export function AgentActionCard({
         {captureReason && (
           <p style={{ color: 'var(--muted)' }}>
             Reason: {captureReason.slice(0, 120)}{captureReason.length > 120 ? '...' : ''}
+          </p>
+        )}
+        {workIntentStatus && (
+          <p style={{ color: 'var(--muted)' }}>
+            Ledger: {workIntentStatus}
           </p>
         )}
         {sourceMessageId && sourceSpaceId && (

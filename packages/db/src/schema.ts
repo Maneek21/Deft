@@ -21,6 +21,21 @@ export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_prog
 export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard', 'autonomous']);
 export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full']);
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
+export const workIntentKindEnum = pgEnum('work_intent_kind', [
+  'task_candidate',
+  'blocker_candidate',
+  'decision_candidate',
+  'resource_candidate',
+  'note_candidate',
+  'question_candidate',
+]);
+export const workIntentStatusEnum = pgEnum('work_intent_status', [
+  'proposed',
+  'converted',
+  'dismissed',
+  'expired',
+  'failed',
+]);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
@@ -464,6 +479,43 @@ export const agentActions = pgTable('agent_actions', {
 }, (t) => [
   index('agent_action_org_idx').on(t.org_id),
   index('agent_action_user_idx').on(t.user_id),
+]);
+
+// ═══ WORK INTENTS ═══
+// Canonical ledger for "Defty noticed possible work" events. Existing
+// agent_actions rows remain the approval/execution surface; work_intents
+// carry the source evidence and lifecycle so chat classification does not
+// silently become task creation.
+export const workIntents = pgTable('work_intents', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  space_id: text('space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  source_message_id: text('source_message_id').references(() => messages.id, { onDelete: 'set null' }),
+  source_user_id: text('source_user_id').references(() => users.id, { onDelete: 'set null' }),
+  agent_employee_id: text('agent_employee_id').references(() => agentEmployees.id, { onDelete: 'set null' }),
+  kind: workIntentKindEnum('kind').notNull(),
+  status: workIntentStatusEnum('status').default('proposed').notNull(),
+  title: text('title').notNull(),
+  summary: text('summary'),
+  confidence: real('confidence'),
+  proposed_action: text('proposed_action').default('task_create').notNull(),
+  proposed_params: jsonb('proposed_params').$type<Record<string, unknown>>().notNull().default({}),
+  dedupe_key: text('dedupe_key').notNull(),
+  converted_action_id: text('converted_action_id'),
+  converted_task_id: text('converted_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  converted_by: text('converted_by').references(() => users.id, { onDelete: 'set null' }),
+  converted_at: timestamp('converted_at'),
+  dismissed_by: text('dismissed_by').references(() => users.id, { onDelete: 'set null' }),
+  dismissed_at: timestamp('dismissed_at'),
+  failure_reason: text('failure_reason'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('work_intent_dedupe_unique').on(t.org_id, t.dedupe_key),
+  index('work_intent_org_status_idx').on(t.org_id, t.status, t.created_at),
+  index('work_intent_source_message_idx').on(t.source_message_id),
+  index('work_intent_space_idx').on(t.space_id),
+  index('work_intent_converted_task_idx').on(t.converted_task_id),
 ]);
 
 // ═══ AGENT: SKILLS ═══

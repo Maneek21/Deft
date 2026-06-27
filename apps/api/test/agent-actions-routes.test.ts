@@ -109,6 +109,13 @@ async function teardownFixtures() {
       [SHADOW_USER_ID, EMP_ID],
     );
     await c.query(
+      `DELETE FROM work_intents
+       WHERE org_id = $1
+          OR agent_employee_id = $2
+          OR source_user_id IN ($3, $4)`,
+      [ORG_ID, EMP_ID, SHADOW_USER_ID, APPROVER_USER_ID],
+    );
+    await c.query(
       `DELETE FROM agent_actions WHERE user_id = $1`,
       [SHADOW_USER_ID],
     );
@@ -197,6 +204,58 @@ async function insertLegacyCreateTaskWithoutProject(title: string): Promise<stri
   });
 }
 
+async function insertDeftyTaskCreateWithIntent(title: string): Promise<{ actionId: string; intentId: string }> {
+  return withClient(async (c) => {
+    const dedupeKey = `routes-work-intent:${crypto.randomUUID()}`;
+    const intent = await c.query(
+      `INSERT INTO work_intents
+        (id, org_id, source_user_id, agent_employee_id, kind, status, title,
+         summary, proposed_action, proposed_params, dedupe_key)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'task_candidate', 'proposed',
+         $4, $5, 'task_create', $6::jsonb, $7)
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        title,
+        `Create ${title}`,
+        JSON.stringify({
+          title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+        }),
+        dedupeKey,
+      ],
+    );
+    const intentId = intent.rows[0].id as string;
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'task_create', $4::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        JSON.stringify({
+          caller_employee_slug: EMP_SLUG,
+          title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+          work_intent_id: intentId,
+          work_intent_status: 'proposed',
+          capture_kind: 'task_candidate',
+          proposed_by: 'defty',
+          dedupe_key: dedupeKey,
+        }),
+      ],
+    );
+    return { actionId: action.rows[0].id as string, intentId };
+  });
+}
+
 before(async () => {
   await seedFixtures();
 
@@ -204,6 +263,7 @@ before(async () => {
   // mounting agentRoutes. This sidesteps the JWT middleware so we don't
   // need to mint tokens in the test.
   const { agentRoutes } = await import('../src/routes/agent.js');
+  const { workIntentRoutes } = await import('../src/routes/work-intents.js');
   testApp = new Hono();
   testApp.use('*', async (c, next) => {
     c.set('user', {
@@ -214,6 +274,7 @@ before(async () => {
     await next();
   });
   testApp.route('/api/agent', agentRoutes);
+  testApp.route('/api/work-intents', workIntentRoutes);
 });
 
 after(async () => {
@@ -244,6 +305,23 @@ test('GET /api/agent/actions/pending returns MCP-queued actions', async () => {
   assert.equal(match.employee_slug, EMP_SLUG);
 });
 
+test('GET /api/work-intents lists proposed Defty work captures', async () => {
+  const title = `routes-intent-list-${Date.now()}`;
+  const { intentId } = await insertDeftyTaskCreateWithIntent(title);
+
+  const res = await app().request('/api/work-intents?status=proposed', { method: 'GET' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(Array.isArray(body.intents), 'expected { intents: [...] }');
+
+  const match = body.intents.find((intent: any) => intent.id === intentId);
+  assert.ok(match, 'seeded intent should appear in the proposed list');
+  assert.equal(match.title, title);
+  assert.equal(match.status, 'proposed');
+  assert.equal(match.kind, 'task_candidate');
+  assert.equal(match.proposed_action, 'task_create');
+});
+
 test('POST /api/agent/actions/:id/approve executes the write', async () => {
   const title = `routes-approve-${Date.now()}`;
   const actionId = await insertPendingTaskCreate(title);
@@ -267,6 +345,40 @@ test('POST /api/agent/actions/:id/approve executes the write', async () => {
 
     const t = await c.query(`SELECT title FROM tasks WHERE title = $1`, [title]);
     assert.equal(t.rows.length, 1);
+  });
+});
+
+test('POST approve on Defty work capture converts the work intent', async () => {
+  const title = `routes-intent-approve-${Date.now()}`;
+  const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
+
+  const res = await app().request(`/api/agent/actions/${actionId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.status, 'approved', `body: ${JSON.stringify(body)}`);
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT status, converted_action_id, converted_task_id, converted_by, converted_at
+         FROM work_intents
+        WHERE id = $1`,
+      [intentId],
+    );
+    assert.equal(r.rows[0].status, 'converted');
+    assert.equal(r.rows[0].converted_action_id, actionId);
+    assert.ok(r.rows[0].converted_task_id, 'converted intent should link to the created task');
+    assert.equal(r.rows[0].converted_by, APPROVER_USER_ID);
+    assert.ok(r.rows[0].converted_at);
+
+    const task = await c.query(
+      `SELECT title FROM tasks WHERE id = $1`,
+      [r.rows[0].converted_task_id],
+    );
+    assert.equal(task.rows[0].title, title);
   });
 });
 
@@ -319,6 +431,37 @@ test('POST /api/agent/actions/:id/reject with reason records reason', async () =
     assert.equal(r.rows[0].error, 'looks unsafe');
     const t = await c.query(`SELECT id FROM tasks WHERE title = $1`, [title]);
     assert.equal(t.rows.length, 0, 'reject must not create a task');
+  });
+});
+
+test('POST reject on Defty work capture dismisses the work intent', async () => {
+  const title = `routes-intent-reject-${Date.now()}`;
+  const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
+
+  const res = await app().request(`/api/agent/actions/${actionId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'not actually work' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.status, 'rejected');
+
+  await withClient(async (c) => {
+    const r = await c.query(
+      `SELECT status, converted_action_id, dismissed_by, dismissed_at, failure_reason
+         FROM work_intents
+        WHERE id = $1`,
+      [intentId],
+    );
+    assert.equal(r.rows[0].status, 'dismissed');
+    assert.equal(r.rows[0].converted_action_id, actionId);
+    assert.equal(r.rows[0].dismissed_by, APPROVER_USER_ID);
+    assert.ok(r.rows[0].dismissed_at);
+    assert.equal(r.rows[0].failure_reason, 'not actually work');
+
+    const task = await c.query(`SELECT id FROM tasks WHERE title = $1`, [title]);
+    assert.equal(task.rows.length, 0, 'reject must not create a task');
   });
 });
 

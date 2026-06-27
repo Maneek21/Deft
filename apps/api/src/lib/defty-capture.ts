@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { agentActions, projects, projectSpaces } from '@deft/db/schema';
+import { agentActions, projects, projectSpaces, workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
@@ -97,6 +97,27 @@ export async function queueDeftyCreateTaskCapture(params: {
 
   const dedupeKey = `defty_capture:${captureKind}:task_create:${messageId}`;
   const legacyDedupeKey = `defty_capture:${captureKind}:create_task:${messageId}`;
+  const [existingIntent] = await db
+    .select({ id: workIntents.id })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, orgId),
+      eq(workIntents.dedupe_key, dedupeKey),
+    ))
+    .limit(1);
+  if (existingIntent) {
+    const [existingAction] = await db
+      .select({ id: agentActions.id })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, orgId),
+        eq(agentActions.source, 'defty_capture'),
+        sql`${agentActions.params}->>'work_intent_id' = ${existingIntent.id}`,
+      ))
+      .limit(1);
+    return { queued: false, actionId: existingAction?.id, skippedReason: 'duplicate' };
+  }
+
   const [existing] = await db
     .select({ id: agentActions.id })
     .from(agentActions)
@@ -130,6 +151,49 @@ export async function queueDeftyCreateTaskCapture(params: {
   }
 
   const [action] = await db
+    .insert(workIntents)
+    .values({
+      org_id: orgId,
+      space_id: spaceId,
+      source_message_id: messageId,
+      source_user_id: sourceUserId,
+      agent_employee_id: defty.employeeId,
+      kind: captureKind,
+      status: 'proposed',
+      title: finalTitle,
+      summary: description || plainContent,
+      proposed_action: 'task_create',
+      proposed_params: {
+        title: finalTitle,
+        description: description || plainContent,
+        priority: priority || 'p2',
+        project_id: project.id,
+        space_id: spaceId,
+        assignee_id: assigneeId,
+        assignee_name: resolvedAssigneeName,
+        project_name: project.name,
+        source_message_id: messageId,
+        source_space_id: spaceId,
+        source_user_id: sourceUserId,
+        capture_kind: captureKind,
+        capture_reason: captureReason || null,
+        extraction,
+      },
+      dedupe_key: dedupeKey,
+      metadata: {
+        extraction,
+        legacy_dedupe_key: legacyDedupeKey,
+      },
+    })
+    .onConflictDoNothing({
+      target: [workIntents.org_id, workIntents.dedupe_key],
+    })
+    .returning({ id: workIntents.id });
+
+  const intentId = action?.id;
+  if (!intentId) return { queued: false, skippedReason: 'duplicate' };
+
+  const [queuedAction] = await db
     .insert(agentActions)
     .values({
       org_id: orgId,
@@ -158,6 +222,8 @@ export async function queueDeftyCreateTaskCapture(params: {
         capture_reason: captureReason || null,
         policy_reason: captureReason || null,
         dedupe_key: dedupeKey,
+        work_intent_id: intentId,
+        work_intent_status: 'proposed',
         extraction,
         proposed_by: 'defty',
       } as any,
@@ -167,5 +233,5 @@ export async function queueDeftyCreateTaskCapture(params: {
     })
     .returning({ id: agentActions.id });
 
-  return { queued: true, actionId: action?.id };
+  return { queued: true, actionId: queuedAction?.id };
 }

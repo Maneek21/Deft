@@ -53,6 +53,11 @@ import {
   type MemoryUpdateArgs,
 } from './mcp-tools/memory-update.js';
 import { generateReceipt } from './receipts.js';
+import {
+  markWorkIntentConvertedForAction,
+  markWorkIntentDismissedForAction,
+  markWorkIntentFailedForAction,
+} from './work-intents.js';
 export const MCP_ACTION_KINDS = new Set([
   'task_create',
   'task_update',
@@ -360,6 +365,23 @@ export async function approveAction(
   });
 
   if (isError) {
+    await markWorkIntentFailedForAction({
+      actionId: row.id,
+      orgId: row.org_id,
+      actionParams: row.params,
+      reason: resultText || caughtError?.message || 'execution failed',
+    });
+  } else {
+    await markWorkIntentConvertedForAction({
+      actionId: row.id,
+      orgId: row.org_id,
+      actionParams: row.params,
+      result: parsedResult,
+      convertedBy: approverUserId,
+    });
+  }
+
+  if (isError) {
     return {
       status: 'error',
       code: 'EXECUTE_FAILED',
@@ -449,6 +471,14 @@ export async function rejectAction(
     actionName: row.action,
     actionParams: (row.params ?? {}) as Record<string, unknown>,
     resultJson: null,
+  });
+
+  await markWorkIntentDismissedForAction({
+    actionId: row.id,
+    orgId: row.org_id,
+    actionParams: row.params,
+    dismissedBy: rejecterUserId,
+    reason: reason ?? null,
   });
 
   return { status: 'rejected', message: reason };

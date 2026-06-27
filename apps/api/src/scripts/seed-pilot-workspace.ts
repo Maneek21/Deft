@@ -45,6 +45,7 @@ import {
   tasks,
   teamHealthSnapshots,
   users,
+  workIntents,
   wikiCitations,
   wikiLinks,
   wikiOpsLog,
@@ -2695,15 +2696,25 @@ async function cleanReadState(orgId: string) {
 }
 
 async function cleanPilotActionNoise(orgId: string) {
+  const deletedIntents = await db
+    .delete(workIntents)
+    .where(eq(workIntents.org_id, orgId))
+    .returning({ id: workIntents.id });
+
   const staleActions = await db
     .select({ id: agentActions.id })
     .from(agentActions)
     .where(and(
       eq(agentActions.org_id, orgId),
       inArray(agentActions.source, PILOT_ACTION_SOURCES_TO_PRUNE),
-    ));
+  ));
   const staleActionIds = staleActions.map((action) => action.id);
-  if (staleActionIds.length === 0) return;
+  if (staleActionIds.length === 0) {
+    if (deletedIntents.length > 0) {
+      console.log(`[seed-pilot-workspace] pruned ${deletedIntents.length} stale work intent rows`);
+    }
+    return;
+  }
 
   await db
     .update(taskActivity)
@@ -2712,6 +2723,9 @@ async function cleanPilotActionNoise(orgId: string) {
   await db.delete(actionReceipts).where(inArray(actionReceipts.action_id, staleActionIds));
   await db.delete(agentActions).where(inArray(agentActions.id, staleActionIds));
   console.log(`[seed-pilot-workspace] pruned ${staleActionIds.length} stale pilot/capture action rows`);
+  if (deletedIntents.length > 0) {
+    console.log(`[seed-pilot-workspace] pruned ${deletedIntents.length} stale work intent rows`);
+  }
 }
 
 export async function seedPilotWorkspace(): Promise<{

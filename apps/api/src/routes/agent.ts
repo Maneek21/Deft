@@ -36,6 +36,11 @@ import {
   MCP_ACTION_KINDS,
 } from '../lib/agent-approval-resolver.js';
 import { generateReceipt } from '../lib/receipts.js';
+import {
+  markWorkIntentConvertedForAction,
+  markWorkIntentDismissedForAction,
+  markWorkIntentFailedForAction,
+} from '../lib/work-intents.js';
 
 export const agentRoutes = new Hono();
 
@@ -1021,12 +1026,25 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         actionParams: action.params,
         resultJson: execResult.result,
       });
+      await markWorkIntentConvertedForAction({
+        actionId,
+        orgId: action.org_id,
+        actionParams: action.params,
+        result: execResult.result,
+        convertedBy: user.id,
+      });
     }
   } else {
     await db
       .update(agentActions)
       .set({ error: execResult.error ?? 'Action failed' })
       .where(eq(agentActions.id, actionId));
+    await markWorkIntentFailedForAction({
+      actionId,
+      orgId: action.org_id,
+      actionParams: action.params,
+      reason: execResult.error ?? 'Action failed',
+    });
   }
 
   // Insert a hidden tool_result message into the unified messages table so
@@ -1122,6 +1140,13 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       actionName: action.action,
       actionParams: action.params,
       resultJson: null,
+    });
+    await markWorkIntentDismissedForAction({
+      actionId,
+      orgId: action.org_id,
+      actionParams: action.params,
+      dismissedBy: user.id,
+      reason: reason ?? null,
     });
   }
   return c.json({ success: true });
