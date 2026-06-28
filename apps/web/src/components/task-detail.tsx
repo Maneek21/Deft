@@ -1209,7 +1209,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                 }}
                 className="p-1.5 rounded-md"
                 style={{ color: 'var(--muted)' }}
-                title="View source message"
+                title="View capture source"
                 disabled={!sourceMessageHref}
               >
                 <ExternalLink size={14} />
@@ -2512,7 +2512,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                           router.push(sourceMessageHref);
                         }
                       }}
-                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors min-w-0"
                       style={{ background: 'var(--surface-container)' }}
                     >
                       <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
@@ -2520,9 +2520,14 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         {sourceMessage.author_name?.charAt(0).toUpperCase() || '?'}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
                           <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
-                            Source chat message
+                            Work capture source
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded"
+                            style={{ background: 'var(--bg-active)', color: 'var(--primary)' }}>
+                            <ExternalLink size={9} />
+                            Chat receipt
                           </span>
                           {sourceMessage.space_name && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded"
@@ -2537,7 +2542,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                           )}
                         </div>
                         {sourceMessagePreview && (
-                          <p className="text-[11px] truncate" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
+                          <p className="text-[11px] line-clamp-2 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--muted)', lineHeight: '1.4' }}>
                             {sourceMessagePreview}
                           </p>
                         )}

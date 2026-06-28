@@ -2729,6 +2729,44 @@ async function cleanPilotActionNoise(orgId: string) {
   }
 }
 
+async function cleanDuplicatePilotAgents(orgId: string) {
+  const stalePilotAgents = await db
+    .select({
+      id: agentEmployees.id,
+      user_id: agentEmployees.user_id,
+      name: agentEmployees.name,
+      slug: agentEmployees.slug,
+    })
+    .from(agentEmployees)
+    .where(and(
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_deleted, false),
+      or(
+        inArray(agentEmployees.slug, ['tom-1', 'maya-1']),
+        inArray(agentEmployees.name, ['Tom 1', 'Maya 1']),
+      ),
+    ));
+
+  if (stalePilotAgents.length === 0) {
+    return;
+  }
+
+  const now = new Date();
+  const staleEmployeeIds = stalePilotAgents.map((employee) => employee.id);
+  await db
+    .update(agentEmployees)
+    .set({ is_active: false, is_deleted: true, deleted_at: now, updated_at: now })
+    .where(inArray(agentEmployees.id, staleEmployeeIds));
+
+  const staleUserIds = stalePilotAgents.map((employee) => employee.user_id);
+  await db
+    .update(orgMembers)
+    .set({ is_active: false, updated_at: now })
+    .where(and(eq(orgMembers.org_id, orgId), inArray(orgMembers.user_id, staleUserIds)));
+
+  console.log(`[seed-pilot-workspace] archived ${stalePilotAgents.length} stale duplicate pilot agent rows`);
+}
+
 export async function seedPilotWorkspace(): Promise<{
   orgId: string;
   tomToken: string;
@@ -2744,6 +2782,8 @@ export async function seedPilotWorkspace(): Promise<{
   const lina = await findUserByEmail('lina@testers-tomatoes.com');
   const tomas = await findUserByEmail('tomas@testers-tomatoes.com');
   const sage = await findUserByEmail('sage@testers-tomatoes.com');
+
+  await cleanDuplicatePilotAgents(org.id);
 
   const tom = await upsertAgentUser({
     orgId: org.id,

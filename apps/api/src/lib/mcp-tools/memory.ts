@@ -6,7 +6,7 @@
  * and `scope = 'user'` for now. Phase 4 adds `memory_update` with approval
  * gating for cross-scope promotion.
  */
-import { sql, and, eq, or, isNull, desc } from 'drizzle-orm';
+import { sql, and, eq, or, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { wikiPages } from '@deft/db/schema';
@@ -24,6 +24,30 @@ const VALID_TYPES = new Set([
   'preference',
   'fact',
 ]);
+
+function wikiScopeCondition(scope: 'own' | 'org' | 'all', employeeId: string) {
+  const orgScope = eq(wikiPages.scope, 'org');
+  const ownScope = and(
+    eq(wikiPages.agent_employee_id, employeeId),
+    sql`${wikiPages.scope} != 'org'`,
+  );
+  if (scope === 'own') return ownScope;
+  if (scope === 'org') return orgScope;
+  return or(orgScope, ownScope);
+}
+
+function contextResultMatchesMemoryScope(
+  scope: 'own' | 'org' | 'all',
+  employeeId: string,
+  resultScope?: string,
+  resultEmployeeId?: string | null,
+) {
+  const isOrgScope = resultScope === 'org';
+  const isOwnScope = resultEmployeeId === employeeId && !isOrgScope;
+  if (scope === 'own') return isOwnScope;
+  if (scope === 'org') return isOrgScope;
+  return isOrgScope || isOwnScope;
+}
 
 // ─── memory_recall ────────────────────────────────────────────────────────
 
@@ -66,11 +90,7 @@ export async function memoryRecall(
           .where(and(
             eq(wikiPages.org_id, ctx.org_id),
             eq(wikiPages.is_deleted, false),
-            scope === 'own'
-              ? eq(wikiPages.agent_employee_id, ctx.employee_id)
-              : scope === 'org'
-                ? isNull(wikiPages.agent_employee_id)
-                : or(isNull(wikiPages.agent_employee_id), eq(wikiPages.agent_employee_id, ctx.employee_id)),
+            wikiScopeCondition(scope, ctx.employee_id),
             ...terms.map((term) => {
               const pattern = `%${term}%`;
               return sql`(
@@ -94,16 +114,12 @@ export async function memoryRecall(
       hybrid: false, // FTS-only; pgvector is a separate phase
     });
 
-    // Post-filter by scope using agent_employee_id stored in metadata:
-    //   'own'  → only pages tagged to this employee (tier: 'employee')
-    //   'org'  → only org-wide pages (agent_employee_id is null)
-    //   'all'  → both tiers, no filter
+    // Post-filter by explicit wiki scope. Org pages can retain an
+    // agent_employee_id for audit, so employee ownership is not the tier.
     const filtered = contextResults.filter((r) => {
       if (r.source_type !== 'wiki_page') return false;
       const empId = r.metadata?.agent_employee_id as string | null | undefined;
-      if (scope === 'own') return empId === ctx.employee_id;
-      if (scope === 'org') return empId == null;
-      return true; // 'all'
+      return contextResultMatchesMemoryScope(scope, ctx.employee_id, r.scope, empId);
     });
 
     // Map ContextResult back to the shape clients expect.
@@ -258,10 +274,7 @@ export async function memoryList(
     const conditions = [
       eq(wikiPages.org_id, ctx.org_id),
       eq(wikiPages.is_deleted, false),
-      or(
-        eq(wikiPages.agent_employee_id, ctx.employee_id),
-        isNull(wikiPages.agent_employee_id),
-      ),
+      wikiScopeCondition('all', ctx.employee_id),
     ];
     if (args.type && VALID_TYPES.has(args.type)) {
       conditions.push(eq(wikiPages.type, args.type as 'fact'));

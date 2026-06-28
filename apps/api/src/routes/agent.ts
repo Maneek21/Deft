@@ -103,6 +103,72 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   )`;
 }
 
+function actionParamString(params: unknown, key: string): string | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+async function attachSourceMessagePreviews<T extends { params: unknown }>(
+  user: { id: string; org_id: string },
+  rows: T[],
+): Promise<Array<T & { source_message_content: string | null; source_message_space_id: string | null }>> {
+  const sourceIds = Array.from(new Set(
+    rows
+      .map((row) => actionParamString(row.params, 'source_message_id'))
+      .filter((id): id is string => Boolean(id)),
+  ));
+  if (sourceIds.length === 0) {
+    return rows.map((row) => ({
+      ...row,
+      source_message_content: null,
+      source_message_space_id: null,
+    }));
+  }
+
+  const sourceRows = await db
+    .select({
+      id: messages.id,
+      content: messages.content,
+      space_id: messages.space_id,
+    })
+    .from(messages)
+    .innerJoin(spaces, and(
+      eq(spaces.id, messages.space_id),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.is_archived, false),
+    ))
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, messages.space_id),
+      eq(spaceMembers.user_id, user.id),
+    ))
+    .where(and(
+      eq(messages.org_id, user.org_id),
+      eq(messages.is_deleted, false),
+      inArray(messages.id, sourceIds),
+    ));
+  const byId = new Map(sourceRows.map((row) => [row.id, row]));
+
+  return rows.map((row) => {
+    const sourceId = actionParamString(row.params, 'source_message_id');
+    const source = sourceId ? byId.get(sourceId) : undefined;
+    const enrichedParams = row.params && typeof row.params === 'object' && !Array.isArray(row.params)
+      ? {
+          ...(row.params as Record<string, unknown>),
+          source_message_content: source?.content ?? null,
+          source_message_space_id: source?.space_id ?? null,
+        }
+      : row.params;
+
+    return {
+      ...row,
+      params: enrichedParams,
+      source_message_content: source?.content ?? null,
+      source_message_space_id: source?.space_id ?? null,
+    };
+  });
+}
+
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
 Rules:
@@ -834,7 +900,8 @@ agentRoutes.get('/actions/pending', async (c) => {
     .orderBy(desc(agentActions.created_at))
     .limit(50);
 
-  const actions = rows.map((r) => ({
+  const rowsWithSources = await attachSourceMessagePreviews(user, rows);
+  const actions = rowsWithSources.map((r) => ({
     ...r,
     proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
   }));
@@ -869,7 +936,10 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
   }
 
   const rows = await db.execute(sql`
-    SELECT a.*
+    SELECT
+      a.*,
+      msg.content AS source_message_content,
+      msg.space_id AS source_message_space_id
     FROM agent_actions a
     JOIN messages msg ON msg.id = a.message_id
     WHERE msg.space_id = ${spaceId}
@@ -877,6 +947,27 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.org_id = ${user.org_id}
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
+      AND (
+        a.source IS DISTINCT FROM 'defty_capture'
+        OR (
+          (
+            COALESCE(
+              a.params->>'source_space_id',
+              a.params->>'origin_space_id',
+              a.params->>'space_id'
+            ) IS NULL
+            OR COALESCE(
+              a.params->>'source_space_id',
+              a.params->>'origin_space_id',
+              a.params->>'space_id'
+            ) = ${spaceId}
+          )
+          AND (
+            a.params->>'source_message_id' IS NULL
+            OR a.params->>'source_message_id' = msg.id
+          )
+        )
+      )
     ORDER BY a.created_at DESC
     LIMIT 100
   `);
@@ -890,6 +981,14 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     };
     return {
       ...row,
+      params: row.params && typeof row.params === 'object' && !Array.isArray(row.params)
+        ? {
+            ...row.params,
+            source_message_content: row.source_message_content ?? null,
+            source_message_space_id: row.source_message_space_id ?? null,
+          }
+        : row.params,
+      proposer: row.source === 'defty_capture' || !row.agent_employee_id ? 'defty' : 'employee',
       created_at: normalizeTimestamp(row.created_at),
       updated_at: normalizeTimestamp(row.updated_at),
       approved_at: normalizeTimestamp(row.approved_at),

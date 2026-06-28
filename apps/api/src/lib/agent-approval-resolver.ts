@@ -52,6 +52,12 @@ import {
   executeMemoryUpdate,
   type MemoryUpdateArgs,
 } from './mcp-tools/memory-update.js';
+import {
+  executeWikiCreate,
+  executeWikiUpdate,
+  type WikiCreateArgs,
+  type WikiUpdateArgs,
+} from './mcp-tools/wiki-create.js';
 import { generateReceipt } from './receipts.js';
 import {
   markWorkIntentConvertedForAction,
@@ -64,6 +70,8 @@ export const MCP_ACTION_KINDS = new Set([
   'message_post',
   'send_message',
   'memory_update',
+  'wiki_create',
+  'wiki_update',
 ]);
 
 export type ApprovalResolverError =
@@ -182,6 +190,10 @@ async function dispatchAction(
     }
     case 'memory_update':
       return executeMemoryUpdate(params as unknown as MemoryUpdateArgs, ctx, opts);
+    case 'wiki_create':
+      return executeWikiCreate(params as unknown as WikiCreateArgs, ctx, opts);
+    case 'wiki_update':
+      return executeWikiUpdate(params as unknown as WikiUpdateArgs, ctx, opts);
     default:
       throw new Error(`Unsupported action: ${actionName}`);
   }

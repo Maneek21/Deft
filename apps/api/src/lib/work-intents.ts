@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 
@@ -15,6 +15,20 @@ function getTaskIdFromResult(result: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+function getWikiResultFromResult(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== 'object') return null;
+  const record = result as Record<string, unknown>;
+  const slug = record.slug;
+  const pageId = record.page_id ?? record.id;
+  if (typeof slug !== 'string' || !slug.trim()) return null;
+  return {
+    converted_wiki_slug: slug,
+    converted_wiki_page_id: typeof pageId === 'string' ? pageId : null,
+    converted_wiki_title: typeof record.title === 'string' ? record.title : null,
+    converted_wiki_type: typeof record.type === 'string' ? record.type : null,
+  };
+}
+
 export async function markWorkIntentConvertedForAction(params: {
   actionId: string;
   orgId: string;
@@ -24,6 +38,7 @@ export async function markWorkIntentConvertedForAction(params: {
 }): Promise<void> {
   const workIntentId = getWorkIntentIdFromParams(params.actionParams);
   if (!workIntentId) return;
+  const wikiResult = getWikiResultFromResult(params.result);
 
   await db
     .update(workIntents)
@@ -34,6 +49,9 @@ export async function markWorkIntentConvertedForAction(params: {
       converted_by: params.convertedBy,
       converted_at: new Date(),
       failure_reason: null,
+      ...(wikiResult
+        ? { metadata: sql`${workIntents.metadata} || ${JSON.stringify(wikiResult)}::jsonb` as any }
+        : {}),
     })
     .where(and(
       eq(workIntents.id, workIntentId),

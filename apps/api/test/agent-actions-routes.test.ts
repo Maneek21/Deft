@@ -169,6 +169,10 @@ async function teardownFixtures() {
       [APPROVER_USER_ID],
     );
     await c.query(
+      `DELETE FROM people_patterns WHERE user_id IN ($1, $2)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID],
+    );
+    await c.query(
       `DELETE FROM agent_employees WHERE id = $1`,
       [EMP_ID],
     );
@@ -293,6 +297,7 @@ async function insertDeftyTaskCreateWithIntent(title: string): Promise<{ actionI
 async function insertWorkIntentWithSource(params: {
   title: string;
   spaceId: string;
+  intentSpaceId?: string | null;
   messageSpaceId?: string;
   messageContent: string;
   status?: 'proposed' | 'failed';
@@ -316,7 +321,7 @@ async function insertWorkIntentWithSource(params: {
        RETURNING id`,
       [
         ORG_ID,
-        params.spaceId,
+        params.intentSpaceId === undefined ? params.spaceId : params.intentSpaceId,
         messageId,
         APPROVER_USER_ID,
         EMP_ID,
@@ -375,6 +380,56 @@ async function insertDeftyCaptureActionWithSource(params: {
       ],
     );
     return { actionId: action.rows[0].id as string, messageId };
+  });
+}
+
+async function insertDeftyCaptureActionWithMismatchedSource(params: {
+  title: string;
+  visibleSpaceId: string;
+  hiddenSpaceId: string;
+}): Promise<{ actionId: string; visibleMessageId: string; hiddenSourceMessageId: string }> {
+  return withClient(async (c) => {
+    const visibleMessageId = `routes-capture-visible-msg-${crypto.randomUUID()}`;
+    const hiddenSourceMessageId = `routes-capture-hidden-source-msg-${crypto.randomUUID()}`;
+    await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES
+         ($1, $2, $3, $5, 'visible trigger message'),
+         ($4, $2, $6, $5, 'hidden source message that must not leak')`,
+      [visibleMessageId, ORG_ID, params.visibleSpaceId, hiddenSourceMessageId, APPROVER_USER_ID, params.hiddenSpaceId],
+    );
+
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, message_id,
+         params, approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture',
+         'task_create', $4, $5::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        visibleMessageId,
+        JSON.stringify({
+          caller_employee_slug: EMP_SLUG,
+          title: params.title,
+          project_id: TEST_PROJECT_ID,
+          priority: 'p2',
+          source_message_id: hiddenSourceMessageId,
+          source_space_id: params.hiddenSpaceId,
+          capture_kind: 'task_candidate',
+          proposed_by: 'defty',
+          dedupe_key: `routes-capture-mismatch:${crypto.randomUUID()}`,
+        }),
+      ],
+    );
+
+    return {
+      actionId: action.rows[0].id as string,
+      visibleMessageId,
+      hiddenSourceMessageId,
+    };
   });
 }
 
@@ -549,6 +604,39 @@ test('GET /api/work-intents filters hidden and mismatched source messages', asyn
   assert.equal(hiddenDetail.status, 404);
 });
 
+test('GET /api/work-intents filters by space_id while preserving source-message receipts', async () => {
+  const visible = await insertWorkIntentWithSource({
+    title: `routes-space-filter-visible-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    messageContent: 'visible source message for space filter',
+  });
+  const legacyVisible = await insertWorkIntentWithSource({
+    title: `routes-space-filter-legacy-${Date.now()}`,
+    spaceId: VISIBLE_SPACE_ID,
+    intentSpaceId: null,
+    messageContent: 'legacy source message for space filter',
+  });
+  const global = await insertDeftyTaskCreateWithIntent(`routes-space-filter-global-${Date.now()}`);
+
+  const res = await app().request(`/api/work-intents?space_id=${VISIBLE_SPACE_ID}&limit=100`, { method: 'GET' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  assert.ok(
+    body.intents.some((intent: any) => intent.id === visible.intentId),
+    'intent with matching space_id should appear',
+  );
+  assert.ok(
+    body.intents.some((intent: any) => intent.id === legacyVisible.intentId),
+    'intent without space_id should still appear when its source message is in the requested space',
+  );
+  assert.equal(
+    body.intents.some((intent: any) => intent.id === global.intentId),
+    false,
+    'global/source-less capture should not appear in a space-scoped receipt feed',
+  );
+});
+
 test('GET /api/agent action surfaces hide Defty captures from private spaces', async () => {
   const visible = await insertDeftyCaptureActionWithSource({
     title: `routes-visible-capture-action-${Date.now()}`,
@@ -568,11 +656,25 @@ test('GET /api/agent action surfaces hide Defty captures from private spaces', a
     pendingBody.actions.some((action: any) => action.id === visible.actionId),
     'visible capture action should appear in pending approvals',
   );
+  const visiblePending = pendingBody.actions.find((action: any) => action.id === visible.actionId);
+  assert.equal(visiblePending.source_message_content, 'visible capture action source');
+  assert.equal(visiblePending.params.source_message_content, 'visible capture action source');
   assert.equal(
     pendingBody.actions.some((action: any) => action.id === hidden.actionId),
     false,
     'hidden capture action should not appear in pending approvals',
   );
+
+  const inlineRes = await app().request(
+    `/api/agent/actions/pending-by-space?space_id=${VISIBLE_SPACE_ID}`,
+    { method: 'GET' },
+  );
+  assert.equal(inlineRes.status, 200);
+  const inlineBody = await inlineRes.json();
+  const inlineMatch = inlineBody.find((action: any) => action.id === visible.actionId);
+  assert.ok(inlineMatch, 'visible capture action should appear in inline space approvals');
+  assert.equal(inlineMatch.proposer, 'defty');
+  assert.equal(inlineMatch.params.source_message_content, 'visible capture action source');
 
   const recentRes = await app().request('/api/agent/actions/recent?limit=50', { method: 'GET' });
   assert.equal(recentRes.status, 200);
@@ -598,6 +700,35 @@ test('GET /api/agent action surfaces hide Defty captures from private spaces', a
     historyBody.some((action: any) => action.id === hidden.actionId),
     false,
     'hidden capture action should not appear in action history',
+  );
+});
+
+test('GET /api/agent/actions/pending-by-space hides Defty captures with hidden source metadata', async () => {
+  const mismatched = await insertDeftyCaptureActionWithMismatchedSource({
+    title: `routes-mismatched-inline-source-${Date.now()}`,
+    visibleSpaceId: VISIBLE_SPACE_ID,
+    hiddenSpaceId: HIDDEN_SPACE_ID,
+  });
+
+  const globalRes = await app().request('/api/agent/actions/pending', { method: 'GET' });
+  assert.equal(globalRes.status, 200);
+  const globalBody = await globalRes.json();
+  assert.equal(
+    globalBody.actions.some((action: any) => action.id === mismatched.actionId),
+    false,
+    'global pending approvals should hide captures whose source points at a hidden space',
+  );
+
+  const inlineRes = await app().request(
+    `/api/agent/actions/pending-by-space?space_id=${VISIBLE_SPACE_ID}`,
+    { method: 'GET' },
+  );
+  assert.equal(inlineRes.status, 200);
+  const inlineBody = await inlineRes.json();
+  assert.equal(
+    inlineBody.some((action: any) => action.id === mismatched.actionId),
+    false,
+    'inline approval cards must also hide captures whose source metadata points at a hidden space',
   );
 });
 

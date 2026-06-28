@@ -22,6 +22,7 @@ import { sql, eq, and } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   tasks,
+  taskComments,
   messages,
   agentActions,
   agentEmployees,
@@ -474,14 +475,24 @@ export type TaskUpdateArgs = {
     status?: string;
     priority?: string;
     assignee_id?: string | null;
+    due_date?: string | null;
+    comment?: string;
   };
 };
+
+function parseDueDate(value: string | null | undefined): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value.trim() === '') return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed;
+}
 
 /** Inner executor for task_update. No trust-gating. */
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean },
+  opts?: { skipReceipt?: boolean; actionId?: string | null },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -491,6 +502,7 @@ export async function executeTaskUpdate(
   try {
     const patch = args.patch;
     const update: Record<string, unknown> = {};
+    let createdCommentId: string | null = null;
     const activityEntries: {
       action: string;
       field: string;
@@ -563,6 +575,23 @@ export async function executeTaskUpdate(
         });
       }
     }
+    if (patch.due_date !== undefined) {
+      const dueDate = parseDueDate(patch.due_date);
+      if (dueDate === undefined) {
+        return errorResult(`task_update: invalid due_date ${patch.due_date}`);
+      }
+      const oldDue = existingTask.due_date?.toISOString() ?? null;
+      const newDue = dueDate?.toISOString() ?? null;
+      if (oldDue !== newDue) {
+        update.due_date = dueDate;
+        activityEntries.push({
+          action: 'due_date_changed',
+          field: 'due_date',
+          old_value: oldDue,
+          new_value: newDue,
+        });
+      }
+    }
     if (typeof patch.title === 'string' && patch.title !== existingTask.title) {
       activityEntries.push({
         action: 'title_changed',
@@ -584,16 +613,41 @@ export async function executeTaskUpdate(
     }
 
     if (Object.keys(update).length === 0) {
-      return errorResult('task_update: no valid fields in patch');
+      const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
+      if (!comment) {
+        return errorResult('task_update: no valid fields in patch');
+      }
     }
 
-    const [row] = await db
-      .update(tasks)
-      .set(update)
-      .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
-      .returning();
+    const [row] = Object.keys(update).length > 0
+      ? await db
+        .update(tasks)
+        .set(update)
+        .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
+        .returning()
+      : [existingTask];
 
     if (!row) return errorResult(`task_update: task ${args.task_id} not found`);
+
+    const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
+    if (comment) {
+      const [commentRow] = await db
+        .insert(taskComments)
+        .values({
+          org_id: ctx.org_id,
+          task_id: args.task_id,
+          user_id: shadowUserId,
+          content: comment,
+        })
+        .returning({ id: taskComments.id });
+      createdCommentId = commentRow?.id ?? null;
+      activityEntries.push({
+        action: 'commented',
+        field: 'comment',
+        old_value: null,
+        new_value: createdCommentId,
+      });
+    }
 
     if (activityEntries.length > 0) {
       await db.insert(taskActivity).values(
@@ -605,6 +659,8 @@ export async function executeTaskUpdate(
           field: entry.field,
           old_value: entry.old_value,
           new_value: entry.new_value,
+          agent_action_id: opts?.actionId ?? null,
+          acting_agent_employee_id: ctx.employee_id,
         })),
       );
     }
@@ -662,6 +718,8 @@ export async function executeTaskUpdate(
       status: row.status,
       priority: row.priority,
       assignee_id: row.assignee_id,
+      due_date: row.due_date,
+      comment_id: createdCommentId,
       updated_at: row.updated_at,
     };
 

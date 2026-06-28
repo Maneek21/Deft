@@ -11,6 +11,7 @@ import { resolveReasonProvider } from '../lib/org-ai-config.js';
 import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 export const messageRoutes = new Hono();
 
@@ -18,6 +19,42 @@ const sendMessageSchema = z.object({
   content: z.string().min(1),
   parent_id: z.string().optional(),
 });
+
+function tokenOverlap(a: string, b: string): number {
+  const toTokens = (value: string) => new Set(
+    toPlainText(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((token) => token.length >= 3),
+  );
+  const left = toTokens(a);
+  const right = toTokens(b);
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection = 0;
+  for (const token of left) {
+    if (right.has(token)) intersection += 1;
+  }
+  const union = left.size + right.size - intersection;
+  return intersection / union;
+}
+
+function factsWithoutDecisionEcho(
+  facts: string[] | null | undefined,
+  decision: string | null | undefined,
+): string[] {
+  const cleanFacts = Array.isArray(facts) ? facts.filter((fact) => fact.trim().length > 0) : [];
+  if (!decision) return cleanFacts;
+  return cleanFacts.filter((fact) => tokenOverlap(fact, decision) < 0.5);
+}
+
+function looksLikeResourceCapture(content: string): boolean {
+  const plain = toPlainText(content).toLowerCase();
+  if (!/https?:\/\//i.test(plain) && !/\b(?:resource|reference|doc|docs|checklist|link)\s*:/i.test(plain)) {
+    return false;
+  }
+  return /\b(?:save|capture|remember|canonical|reference|resource|checklist|doc|docs|link|source)\b/i.test(plain);
+}
 
 // Helper: aggregate reactions for a set of message IDs
 async function getReactionsForMessages(messageIds: string[]) {
@@ -749,19 +786,26 @@ messageRoutes.post('/:spaceId', async (c) => {
           });
         }
 
-        // Memory auto-extraction — enqueue if classifier found memorable facts or a decision
+        // Governed memory capture: durable knowledge writes should enter
+        // Defty's approval ledger instead of silently mutating wiki pages.
+        const factCandidates = factsWithoutDecisionEcho(
+          classification.memorable_facts,
+          classification.decision,
+        );
+
         if (
-          (classification.memorable_facts && classification.memorable_facts.length > 0) ||
-          classification.decision
+          classification.decision ||
+          factCandidates.length > 0 ||
+          looksLikeResourceCapture(parsed.data.content)
         ) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'memory-extract', {
+          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'memory-capture', {
             messageId: message!.id,
             spaceId,
             content: parsed.data.content,
             orgId: user.org_id,
             userId: user.id,
-            facts: classification.memorable_facts || [],
             decision: classification.decision || null,
+            facts: factCandidates,
           });
         }
       } catch (err) {

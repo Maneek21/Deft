@@ -96,8 +96,22 @@ workIntentRoutes.get('/', async (c) => {
   const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 100);
   const status = c.req.query('status');
   const kind = c.req.query('kind');
+  const spaceId = c.req.query('space_id')?.trim();
 
   const filters = [eq(workIntents.org_id, user.org_id), visibleWorkIntentSourceSql(user)];
+  if (spaceId) {
+    filters.push(sql`(
+      ${workIntents.space_id} = ${spaceId}
+      OR EXISTS (
+        SELECT 1
+        FROM messages wi_filter_m
+        WHERE wi_filter_m.id = ${workIntents.source_message_id}
+          AND wi_filter_m.org_id = ${user.org_id}
+          AND wi_filter_m.space_id = ${spaceId}
+          AND wi_filter_m.is_deleted = false
+      )
+    )`);
+  }
   if (status && (VALID_STATUSES as readonly string[]).includes(status)) {
     filters.push(eq(workIntents.status, status as typeof VALID_STATUSES[number]));
   }
@@ -114,6 +128,7 @@ workIntentRoutes.get('/', async (c) => {
       summary: workIntents.summary,
       proposed_action: workIntents.proposed_action,
       proposed_params: workIntents.proposed_params,
+      confidence: workIntents.confidence,
       source_message_id: workIntents.source_message_id,
       source_message_content: messages.content,
       space_id: workIntents.space_id,

@@ -79,6 +79,8 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   message_post: 'full',
   send_message: 'full',
   memory_update: 'quick',
+  wiki_create: 'quick',
+  wiki_update: 'quick',
   space_memory_set: 'auto',
   space_memory_get: 'auto',
   delegation_self_report: 'auto',

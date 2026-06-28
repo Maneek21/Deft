@@ -84,7 +84,7 @@ before(async () => {
     const empPageId = `agent-rc-emp-wiki-${Date.now()}`;
     await c.query(
       `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, agent_employee_id, is_deleted, created_at, updated_at)
-       VALUES ($1, $2, 'concept', 'org', $3, $4, $5, 1.0, $6, false, NOW(), NOW())`,
+       VALUES ($1, $2, 'concept', 'user', $3, $4, $5, 1.0, $6, false, NOW(), NOW())`,
       [
         empPageId,
         ORG_ID,

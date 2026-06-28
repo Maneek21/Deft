@@ -83,6 +83,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/memory-extract.js');
       return mod.handleMemoryExtract;
     }
+    case 'memory-capture': {
+      const mod = await import('./handlers/memory-capture.js');
+      return mod.handleMemoryCapture;
+    }
     case 'blocked-alert': {
       const mod = await import('./handlers/blocked-alert.js');
       return mod.handleBlockedAlert;

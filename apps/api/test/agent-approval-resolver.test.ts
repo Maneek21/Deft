@@ -209,6 +209,31 @@ async function teardownFixtures() {
       [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     await c.query(
+      `DELETE FROM wiki_citations
+       WHERE page_id IN (
+         SELECT id FROM wiki_pages
+         WHERE org_id = $1
+           AND agent_employee_id IN ($2, $3)
+       )`,
+      [ORG_ID, EMP_ID, DEFTY_EMP_ID],
+    );
+    await c.query(
+      `DELETE FROM wiki_ops_log
+       WHERE org_id = $1
+         AND page_id IN (
+           SELECT id FROM wiki_pages
+           WHERE org_id = $1
+             AND agent_employee_id IN ($2, $3)
+         )`,
+      [ORG_ID, EMP_ID, DEFTY_EMP_ID],
+    );
+    await c.query(
+      `DELETE FROM wiki_pages
+       WHERE org_id = $1
+         AND agent_employee_id IN ($2, $3)`,
+      [ORG_ID, EMP_ID, DEFTY_EMP_ID],
+    );
+    await c.query(
       `DELETE FROM agent_actions
        WHERE user_id IN ($1, $2)
           OR agent_employee_id IN ($3, $4, $5)`,
@@ -503,6 +528,85 @@ async function insertPendingDeftyTaskCreate(
   });
 }
 
+async function insertPendingDeftyWikiCreate(
+  title: string,
+  sourceMessageId: string,
+  extraParams: Record<string, unknown> = {},
+): Promise<string> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, message_id,
+         params, approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'wiki_create',
+         $4, $5::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        DEFTY_USER_ID,
+        DEFTY_EMP_ID,
+        sourceMessageId,
+        JSON.stringify({
+          caller_employee_slug: DEFTY_SLUG,
+          title,
+          content: 'Decision: keep chef sample boxes as the launch priority.',
+          summary: 'Chef sample boxes are the launch priority.',
+          type: 'decision',
+          scope: 'org',
+          space_id: TEST_SPACE_ID,
+          source_message_id: sourceMessageId,
+          source_space_id: TEST_SPACE_ID,
+          source_user_id: APPROVER_USER_ID,
+          capture_kind: 'decision_candidate',
+          proposed_by: 'defty',
+          dedupe_key: `defty_capture:test:wiki_create:${sourceMessageId}`,
+          ...extraParams,
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
+async function insertPendingDeftyWikiUpdate(
+  pageId: string,
+  sourceMessageId: string,
+  extraParams: Record<string, unknown> = {},
+): Promise<string> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, message_id,
+         params, approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'defty_capture', 'wiki_update',
+         $4, $5::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        DEFTY_USER_ID,
+        DEFTY_EMP_ID,
+        sourceMessageId,
+        JSON.stringify({
+          caller_employee_slug: DEFTY_SLUG,
+          page_id: pageId,
+          patch: {
+            content: 'Decision: ship chef sample boxes after the Monday QA check.',
+            summary: 'Chef sample boxes ship after Monday QA.',
+          },
+          source_message_id: sourceMessageId,
+          source_space_id: TEST_SPACE_ID,
+          source_user_id: APPROVER_USER_ID,
+          capture_reason: 'Test governed wiki update.',
+          proposed_by: 'defty',
+          dedupe_key: `defty_capture:test:wiki_update:${sourceMessageId}`,
+          ...extraParams,
+        }),
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+}
+
 before(async () => {
   await seedFixtures();
 });
@@ -658,6 +762,156 @@ test('1e. approving Defty capture accepts source_message_id readable by the capt
     );
     assert.equal(action.rows[0].approval_status, 'approved');
     assert.equal(action.rows[0].error, null);
+  });
+});
+
+test('1f. approving Defty wiki_create saves knowledge with source citation', async () => {
+  const title = `resolver-decision-${Date.now()}`;
+  const sourceMessageId = await insertSourceMessage(
+    'Decision: keep chef sample boxes as the Saturday market launch priority.',
+  );
+  const actionId = await insertPendingDeftyWikiCreate(title, sourceMessageId);
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'approved', `expected approved: ${JSON.stringify(result)}`);
+  // @ts-expect-error narrow
+  assert.ok(result.result?.slug, 'approved wiki_create should return a slug');
+
+  await withClient(async (c) => {
+    const page = await c.query(
+      `SELECT id, title, type, user_id, agent_employee_id, metadata
+       FROM wiki_pages
+       WHERE title = $1 AND org_id = $2`,
+      [title, ORG_ID],
+    );
+    assert.equal(page.rows.length, 1, 'wiki page should have been created');
+    assert.equal(page.rows[0].type, 'decision');
+    assert.equal(page.rows[0].user_id, DEFTY_USER_ID);
+    assert.equal(page.rows[0].agent_employee_id, DEFTY_EMP_ID);
+    assert.equal(page.rows[0].metadata.source_message_id, sourceMessageId);
+
+    const citation = await c.query(
+      `SELECT source_type, source_id, excerpt
+       FROM wiki_citations
+       WHERE page_id = $1`,
+      [page.rows[0].id],
+    );
+    assert.equal(citation.rows.length, 1, 'wiki page should cite the source message');
+    assert.equal(citation.rows[0].source_type, 'message');
+    assert.equal(citation.rows[0].source_id, sourceMessageId);
+    assert.match(citation.rows[0].excerpt, /chef sample boxes/i);
+
+    const op = await c.query(
+      `SELECT operation, performed_by
+       FROM wiki_ops_log
+       WHERE page_id = $1`,
+      [page.rows[0].id],
+    );
+    assert.equal(op.rows.length, 1, 'wiki page should have an ops log row');
+    assert.equal(op.rows[0].operation, 'create');
+    assert.equal(op.rows[0].performed_by, DEFTY_USER_ID);
+
+    const action = await c.query(
+      `SELECT approval_status, result, error
+       FROM agent_actions
+       WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].approval_status, 'approved');
+    assert.equal(action.rows[0].error, null);
+    assert.equal(action.rows[0].result.page_id, page.rows[0].id);
+
+    const receipt = await c.query(
+      `SELECT proposer, proposer_id, employee_id, approver_id, decision, action_name, result_json
+       FROM action_receipts
+       WHERE action_id = $1`,
+      [actionId],
+    );
+    assert.equal(receipt.rows.length, 1, 'approval receipt should be written for wiki capture');
+    assert.equal(receipt.rows[0].proposer, 'defty');
+    assert.equal(receipt.rows[0].proposer_id, DEFTY_USER_ID);
+    assert.equal(receipt.rows[0].employee_id, DEFTY_EMP_ID);
+    assert.equal(receipt.rows[0].approver_id, APPROVER_USER_ID);
+    assert.equal(receipt.rows[0].decision, 'approved');
+    assert.equal(receipt.rows[0].action_name, 'wiki_create');
+    assert.equal(receipt.rows[0].result_json.page_id, page.rows[0].id);
+  });
+});
+
+test('1g. approving Defty wiki_update updates page with version history and ops log', async () => {
+  const sourceMessageId = await insertSourceMessage(
+    'Update: chef sample boxes ship after the Monday QA check.',
+  );
+  const pageId = await withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO wiki_pages
+        (id, org_id, scope, type, title, slug, summary, content, confidence,
+         user_id, agent_employee_id)
+       VALUES (gen_random_uuid()::text, $1, 'org', 'decision', $2, $3, $4, $5, 0.9, $6, $7)
+       RETURNING id`,
+      [
+        ORG_ID,
+        `resolver-update-${Date.now()}`,
+        `resolver-update-${Date.now()}`,
+        'Chef sample boxes ship on Saturday.',
+        'Decision: chef sample boxes ship on Saturday.',
+        DEFTY_USER_ID,
+        DEFTY_EMP_ID,
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+  const actionId = await insertPendingDeftyWikiUpdate(pageId, sourceMessageId);
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'approved', `expected approved: ${JSON.stringify(result)}`);
+  // @ts-expect-error narrow
+  assert.equal(result.result?.page_id, pageId);
+  // @ts-expect-error narrow
+  assert.deepEqual(result.result?.changed_fields, ['content', 'summary']);
+
+  await withClient(async (c) => {
+    const page = await c.query(
+      `SELECT content, summary, version, previous_content
+       FROM wiki_pages
+       WHERE id = $1`,
+      [pageId],
+    );
+    assert.match(page.rows[0].content, /Monday QA check/);
+    assert.equal(page.rows[0].summary, 'Chef sample boxes ship after Monday QA.');
+    assert.equal(page.rows[0].version, 2);
+    assert.match(page.rows[0].previous_content, /Saturday/);
+
+    const version = await c.query(
+      `SELECT version, content
+       FROM wiki_page_versions
+       WHERE page_id = $1 AND version = 1`,
+      [pageId],
+    );
+    assert.equal(version.rows.length, 1, 'previous page version should be snapshotted');
+    assert.match(version.rows[0].content, /Saturday/);
+
+    const op = await c.query(
+      `SELECT operation, details, performed_by
+       FROM wiki_ops_log
+       WHERE page_id = $1 AND operation = 'update'`,
+      [pageId],
+    );
+    assert.equal(op.rows.length, 1, 'wiki update should have an ops log row');
+    assert.deepEqual(op.rows[0].details.changed_fields, ['content', 'summary']);
+    assert.equal(op.rows[0].performed_by, DEFTY_USER_ID);
+
+    const citation = await c.query(
+      `SELECT source_type, source_id
+       FROM wiki_citations
+       WHERE page_id = $1 AND source_id = $2`,
+      [pageId, sourceMessageId],
+    );
+    assert.equal(citation.rows.length, 1, 'wiki update should cite the source message');
   });
 });
 

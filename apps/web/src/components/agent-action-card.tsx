@@ -1,6 +1,16 @@
 'use client';
 
 import { useState } from 'react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock3,
+  ExternalLink,
+  Info,
+  ReceiptText,
+  RotateCcw,
+  XCircle,
+} from 'lucide-react';
 import { ReceiptViewer } from './receipt-viewer';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
@@ -9,12 +19,17 @@ export type AgentAction = {
   id: string;
   action: string;
   params: Record<string, any>;
+  result?: unknown;
   status?: string;
   approval_status?: string;
   error?: string | null;
   created_at?: string;
   executed_at?: string;
   has_receipt?: boolean;
+  approval_tier?: 'auto' | 'quick' | 'full' | string | null;
+  source?: string | null;
+  employee_name?: string | null;
+  proposer?: 'employee' | 'defty' | string | null;
 };
 
 type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
@@ -22,6 +37,7 @@ export type AgentActionMutationResult = {
   status?: string;
   approval_status?: string;
   success?: boolean;
+  result?: unknown;
 } | void;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -29,14 +45,18 @@ const ACTION_LABELS: Record<string, string> = {
   task_create: 'Create task',
   task_update: 'Update task',
   memory_update: 'Update memory',
+  wiki_create: 'Save knowledge',
   update_task_status: 'Update status',
   assign_task: 'Assign task',
   post_message: 'Post message',
 };
 
 const CAPTURE_LABELS: Record<string, string> = {
-  task_candidate: 'Defty captured this as possible work from chat',
-  blocker_candidate: 'Defty captured this as a possible blocker from chat',
+  task_candidate: 'Source: chat message that sounds like follow-up work.',
+  blocker_candidate: 'Source: chat message that sounds like a blocker.',
+  decision_candidate: 'Source: chat message that sounds like a decision.',
+  resource_candidate: 'Source: chat message that includes a useful resource.',
+  note_candidate: 'Source: chat message that sounds like useful team memory.',
 };
 
 const INTENT_STATUS_LABELS: Record<string, string> = {
@@ -87,6 +107,179 @@ function InlineSpinner() {
   );
 }
 
+function getRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null;
+}
+
+function getApprovedResult(value: unknown): Record<string, any> | null {
+  const record = getRecord(value);
+  if (!record) return null;
+  const nested = getRecord(record.result);
+  return nested ?? record;
+}
+
+function getCaptureHeadline(actionName: string, captureKind: unknown, fallbackLabel: string) {
+  if (actionName === 'wiki_create') {
+    if (captureKind === 'decision_candidate') return 'Defty wants to save this decision';
+    if (captureKind === 'resource_candidate') return 'Defty wants to save this resource';
+    if (captureKind === 'note_candidate') return 'Defty wants to save this as team memory';
+    return 'Defty wants to save this knowledge';
+  }
+  if (actionName === 'task_create' || actionName === 'create_task') {
+    if (captureKind === 'blocker_candidate') return 'Defty wants to create a blocker task';
+    return 'Defty wants to create a task';
+  }
+  return `Defty wants to ${fallbackLabel.toLowerCase()}`;
+}
+
+function getApproveLabel(actionName: string, captureKind: unknown, fallbackLabel: string) {
+  if (actionName === 'wiki_create') {
+    if (captureKind === 'decision_candidate') return 'Save decision';
+    if (captureKind === 'resource_candidate') return 'Save resource';
+    return 'Save knowledge';
+  }
+  if (actionName === 'task_create' || actionName === 'create_task') return 'Create task';
+  return fallbackLabel;
+}
+
+function getStateLabel(actionName: string, captureKind: unknown, fallbackLabel: string) {
+  if (actionName === 'wiki_create') {
+    if (captureKind === 'decision_candidate') return 'Decision saved';
+    if (captureKind === 'resource_candidate') return 'Resource saved';
+    return 'Knowledge saved';
+  }
+  if (actionName === 'task_create' || actionName === 'create_task') return 'Task created';
+  if (actionName === 'task_update') return 'Task updated';
+  if (actionName === 'memory_update') return 'Memory updated';
+  return `${fallbackLabel} done`;
+}
+
+function truncate(value: string, max = 140) {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  return cleaned.length > max ? `${cleaned.slice(0, max - 3)}...` : cleaned;
+}
+
+function getStringParam(params: Record<string, any>, keys: string[]) {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === 'string' && value.trim()) return stripHtml(value);
+  }
+  return '';
+}
+
+function getNumberParam(params: Record<string, any>, keys: string[]) {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function formatConfidence(value: number | null) {
+  if (value === null) return null;
+  const normalized = value > 1 ? value / 100 : value;
+  const clamped = Math.max(0, Math.min(1, normalized));
+  if (clamped >= 0.8) return `${Math.round(clamped * 100)}% confidence`;
+  if (clamped >= 0.55) return `${Math.round(clamped * 100)}% confidence - review source`;
+  return `${Math.round(clamped * 100)}% confidence - verify carefully`;
+}
+
+function formatAge(createdAt?: string) {
+  if (!createdAt) return null;
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+  const minutes = Math.floor(ageMs / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m old`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h old`;
+  const days = Math.floor(hours / 24);
+  return `${days}d old`;
+}
+
+function getScopeLabel(params: Record<string, any>) {
+  const scope = getStringParam(params, ['scope']);
+  if (scope === 'org') return 'Team-wide memory';
+  if (scope === 'space') return params.space_name ? `Only #${stripHtml(String(params.space_name))}` : 'Space memory';
+  if (scope === 'user') return 'Personal memory';
+  if (scope) return `${scope.replaceAll('_', ' ')} scope`;
+  if (params.source_space_id || params.space_id) return 'Space source';
+  return null;
+}
+
+function getExtractionLabel(params: Record<string, any>) {
+  const extraction = getStringParam(params, ['extraction']);
+  if (!extraction) return null;
+  if (extraction === 'llm') return 'LLM classified';
+  if (extraction === 'deterministic') return 'Rule matched';
+  if (extraction === 'classifier') return 'Classifier';
+  return extraction.replaceAll('_', ' ');
+}
+
+function getProposedOutcome(actionName: string, params: Record<string, any>, fallbackLabel: string) {
+  const title = getStringParam(params, ['title', 'name']);
+  const content = getStringParam(params, ['description', 'content', 'summary']);
+  const priority = getStringParam(params, ['priority']);
+  const assignee = getStringParam(params, ['assignee_name', 'assignee']);
+  const project = getStringParam(params, ['project_name']);
+  const space = getStringParam(params, ['space_name']);
+  const type = getStringParam(params, ['type']);
+
+  if (actionName === 'wiki_create') {
+    return {
+      label: title ? `Save "${truncate(title, 90)}"` : 'Save a knowledge entry',
+      detail: [
+        type ? type.replaceAll('_', ' ') : null,
+        getScopeLabel(params),
+        content ? truncate(content, 120) : null,
+      ].filter(Boolean).join(' - '),
+    };
+  }
+
+  if (actionName === 'task_create' || actionName === 'create_task') {
+    return {
+      label: title ? `Create "${truncate(title, 90)}"` : 'Create a task',
+      detail: [
+        priority ? priority.toUpperCase() : null,
+        assignee ? `assigned to ${assignee}` : null,
+        project ? `in ${project}` : null,
+        content ? truncate(content, 120) : null,
+      ].filter(Boolean).join(' - '),
+    };
+  }
+
+  if (actionName === 'post_message') {
+    return {
+      label: space ? `Post in #${space}` : 'Post a message',
+      detail: content ? truncate(content, 140) : '',
+    };
+  }
+
+  return {
+    label: fallbackLabel,
+    detail: content ? truncate(content, 140) : '',
+  };
+}
+
+function getSourceQuote(params: Record<string, any>) {
+  return getStringParam(params, [
+    'source_message_content',
+    'source_message_preview',
+    'source_content',
+    'origin_message_content',
+  ]);
+}
+
+function getTierLabel(tier?: string | null) {
+  if (tier === 'quick') return 'Quick approval';
+  if (tier === 'full') return 'Full review';
+  if (tier === 'auto') return 'Auto tier';
+  return null;
+}
+
 export function AgentActionCard({
   action,
   onApprove,
@@ -100,17 +293,21 @@ export function AgentActionCard({
 }) {
   const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [localResult, setLocalResult] = useState<unknown>(null);
   const [showReceipt, setShowReceipt] = useState(false);
 
   const humanized = humanizeToolName(action.action);
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
-  const title = stripHtml(action.params.title);
-  const content = stripHtml(action.params.content);
   const captureLabel = typeof action.params.capture_kind === 'string'
     ? CAPTURE_LABELS[action.params.capture_kind] ?? null
     : null;
-  const isCapture = Boolean(captureLabel || action.params.proposed_by === 'defty' || action.params.source_message_id);
-  const captureReason = stripHtml(action.params.capture_reason ?? action.params.policy_reason ?? '');
+  const isCapture = Boolean(captureLabel || action.params.proposed_by === 'defty' || action.params.source_message_id || action.source === 'defty_capture');
+  const captureHeadline = isCapture
+    ? getCaptureHeadline(action.action, action.params.capture_kind, displayLabel)
+    : displayLabel;
+  const approveLabel = getApproveLabel(action.action, action.params.capture_kind, displayLabel);
+  const doneLabel = getStateLabel(action.action, action.params.capture_kind, displayLabel);
+  const captureReason = getStringParam(action.params, ['capture_reason', 'policy_reason']);
   const workIntentStatus = typeof action.params.work_intent_status === 'string'
     ? INTENT_STATUS_LABELS[action.params.work_intent_status] ?? null
     : null;
@@ -124,6 +321,31 @@ export function AgentActionCard({
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = Boolean(action.has_receipt || resolvedStatus === 'approved' || resolvedStatus === 'rejected');
+  const sourceQuote = getSourceQuote(action.params);
+  const outcome = getProposedOutcome(action.action, action.params, displayLabel);
+  const confidence = formatConfidence(getNumberParam(action.params, ['confidence', 'capture_confidence', 'classification_confidence']));
+  const age = formatAge(action.created_at);
+  const extraction = getExtractionLabel(action.params);
+  const tierLabel = getTierLabel(action.approval_tier ?? (typeof action.params.approval_tier === 'string' ? action.params.approval_tier : null));
+  const scopeLabel = getScopeLabel(action.params);
+  const proposerLabel = action.proposer === 'employee' && action.employee_name
+    ? `${action.employee_name} proposal`
+    : isCapture
+      ? 'Defty capture'
+      : 'Agent proposal';
+  const metaChips = [scopeLabel, confidence, age, extraction, tierLabel].filter(Boolean) as string[];
+  const approvedResult = getApprovedResult(localResult ?? action.result);
+  const approvedTaskId = typeof approvedResult?.task_id === 'string'
+    ? approvedResult.task_id
+    : typeof approvedResult?.id === 'string' && action.action.includes('task')
+      ? approvedResult.id
+      : null;
+  const approvedWikiSlug = typeof approvedResult?.slug === 'string' ? approvedResult.slug : null;
+  const approvedWikiId = typeof approvedResult?.wiki_id === 'string'
+    ? approvedResult.wiki_id
+    : typeof approvedResult?.knowledge_id === 'string'
+      ? approvedResult.knowledge_id
+      : null;
   const createdAtMs = action.created_at ? new Date(action.created_at).getTime() : null;
   const isPossiblyStale = resolvedStatus === 'pending' && createdAtMs != null && Date.now() - createdAtMs > 60 * 60 * 1000;
 
@@ -134,6 +356,9 @@ export function AgentActionCard({
     try {
       const result = await onApprove();
       const status = normalizeReturnedStatus(result, 'approved');
+      if (result && typeof result === 'object' && 'result' in result) {
+        setLocalResult(result.result);
+      }
       setLocalStatus(status);
     } catch (err) {
       setLocalStatus(null);
@@ -167,7 +392,9 @@ export function AgentActionCard({
         style={{ background: 'rgba(124,107,79,0.08)', border: '1px solid rgba(124,107,79,0.15)', color: 'var(--on-surface-variant)' }}
       >
         <InlineSpinner />
-        <span className="font-medium">{verb} {displayLabel.toLowerCase()}...</span>
+        <span className="font-medium break-words [overflow-wrap:anywhere]">
+          {verb} {isCapture ? captureHeadline.replace(/^Defty wants to /, '').toLowerCase() : displayLabel.toLowerCase()}...
+        </span>
       </div>
     );
   }
@@ -180,14 +407,35 @@ export function AgentActionCard({
           className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2 flex-wrap"
           style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', color: 'var(--success)' }}
         >
-          <span>{displayLabel} done</span>
+          <CheckCircle2 size={14} strokeWidth={1.8} />
+          <span className="font-medium">{doneLabel}</span>
           {hasReceipt && (
-            <button onClick={() => setShowReceipt(true)} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+            <button onClick={() => setShowReceipt(true)} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <ReceiptText size={12} strokeWidth={1.7} />
               View receipt
             </button>
           )}
+          {approvedTaskId && (
+            <a href={`/tasks?task=${approvedTaskId}`} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <ExternalLink size={12} strokeWidth={1.7} />
+              Open task
+            </a>
+          )}
+          {approvedWikiSlug && (
+            <a href={`/knowledge?slug=${approvedWikiSlug}`} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <ExternalLink size={12} strokeWidth={1.7} />
+              Open knowledge
+            </a>
+          )}
+          {!approvedWikiSlug && approvedWikiId && (
+            <a href={`/knowledge?id=${approvedWikiId}`} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <ExternalLink size={12} strokeWidth={1.7} />
+              Open knowledge
+            </a>
+          )}
           {canUndo && onUndo && (
-            <button onClick={onUndo} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+            <button onClick={onUndo} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <RotateCcw size={12} strokeWidth={1.7} />
               Undo
             </button>
           )}
@@ -200,10 +448,22 @@ export function AgentActionCard({
   if (resolvedStatus === 'failed') {
     return (
       <div
-        className="rounded-lg px-3 py-2 mt-2 text-[12px]"
-        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--status-red)' }}
+        className="rounded-lg px-3 py-2.5 mt-2 text-[12px] max-w-[460px]"
+        style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.22)', color: 'var(--status-red)' }}
       >
-        {displayLabel} failed{action.error ? `: ${stripHtml(action.error).slice(0, 120)}` : ''}
+        <div className="flex items-start gap-2">
+          <AlertTriangle size={15} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
+          <div className="min-w-0">
+            <p className="font-medium break-words">{captureHeadline} could not run.</p>
+            <p className="mt-0.5 break-words" style={{ color: 'var(--muted)' }}>
+              {action.error ? truncate(stripHtml(action.error), 160) : 'The proposal is preserved for review.'}
+            </p>
+            <a href="/inbox?tab=captures" className="inline-flex items-center gap-1 mt-1.5 underline underline-offset-2" style={{ color: 'var(--primary)' }}>
+              Open Captures for retry
+              <ExternalLink size={12} strokeWidth={1.7} />
+            </a>
+          </div>
+        </div>
       </div>
     );
   }
@@ -211,10 +471,11 @@ export function AgentActionCard({
   if (resolvedStatus === 'expired') {
     return (
       <div
-        className="rounded-lg px-3 py-2 mt-2 text-[12px]"
+        className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-start gap-2 max-w-[460px]"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
       >
-        {displayLabel} expired before review.
+        <Clock3 size={14} strokeWidth={1.7} className="mt-0.5 flex-shrink-0" />
+        <span>{captureHeadline} expired before review. Check the source before recreating it.</span>
       </div>
     );
   }
@@ -237,9 +498,11 @@ export function AgentActionCard({
           className="rounded-lg px-3 py-2 mt-2 text-[12px] flex items-center gap-2 flex-wrap"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}
         >
-          <span>{displayLabel} rejected</span>
+          <XCircle size={14} strokeWidth={1.8} />
+          <span>{isCapture ? 'Capture dismissed' : `${displayLabel} rejected`}</span>
           {hasReceipt && (
-            <button onClick={() => setShowReceipt(true)} className="text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+            <button onClick={() => setShowReceipt(true)} className="inline-flex items-center gap-1 text-[11px] underline ml-1" style={{ color: 'var(--muted)' }}>
+              <ReceiptText size={12} strokeWidth={1.7} />
               View receipt
             </button>
           )}
@@ -251,69 +514,116 @@ export function AgentActionCard({
 
   return (
     <div
-      className="p-3 mt-2 max-w-[420px] w-full"
+      className="p-3 sm:p-3.5 mt-2 max-w-[460px] w-full min-w-0"
       style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
-            {isCapture ? 'Work capture' : displayLabel}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+            {proposerLabel}
+          </p>
+          <p className="text-[13px] font-semibold break-words [overflow-wrap:anywhere]" style={{ color: 'var(--text-primary)' }}>
+            {captureHeadline}
           </p>
           {isCapture && (
             <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-              Proposed action: {displayLabel.toLowerCase()}
+              Nothing changes until you approve.
             </p>
           )}
         </div>
-        {isCapture && (
+        <div className="flex flex-wrap gap-1.5 sm:justify-end">
+          {isPossiblyStale && (
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
+              style={{ color: 'var(--status-amber)', background: 'rgba(245,158,11,0.1)' }}
+            >
+              Check source
+            </span>
+          )}
           <span
             className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
             style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
           >
-            {isPossiblyStale ? 'Review age' : 'Needs approval'}
+            Needs approval
           </span>
+        </div>
+      </div>
+
+      <div
+        className="mt-3 rounded-md px-3 py-2 min-w-0"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+      >
+        <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+          Proposed outcome
+        </p>
+        <p className="text-[12px] font-medium mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground)' }}>
+          {outcome.label}
+        </p>
+        {outcome.detail && (
+          <p className="text-[11px] mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+            {outcome.detail}
+          </p>
         )}
       </div>
 
-      {captureLabel && (
-        <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-          {captureLabel}
-        </p>
-      )}
-
-      <div className="text-[12px] mt-1 space-y-0.5" style={{ color: 'var(--foreground-secondary)' }}>
-        {action.action in ACTION_LABELS ? (
-          <>
-            {title && <p>"{title}"</p>}
-            {action.params.project_name && <p>{action.params.project_name}</p>}
-            {(action.params.priority || action.params.assignee_name) && (
-              <p>{[action.params.priority?.toUpperCase(), action.params.assignee_name].filter(Boolean).join(' - ')}</p>
-            )}
-            {content && <p>"{content.slice(0, 80)}{content.length > 80 ? '...' : ''}"</p>}
-            {action.params.space_name && <p>in #{action.params.space_name}</p>}
-          </>
-        ) : (
-          <GenericParams params={action.params} />
-        )}
-        {captureReason && (
-          <p style={{ color: 'var(--muted)' }}>
-            Reason: {captureReason.slice(0, 120)}{captureReason.length > 120 ? '...' : ''}
+      <div
+        className="mt-2 rounded-md px-3 py-2 min-w-0"
+        style={{ background: 'rgba(124,107,79,0.06)', border: '1px solid rgba(124,107,79,0.14)' }}
+      >
+        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+          <Info size={12} strokeWidth={1.8} />
+          Source
+        </div>
+        {sourceQuote ? (
+          <p className="text-[12px] mt-1 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+            "{truncate(sourceQuote, 180)}"
           </p>
-        )}
-        {workIntentStatus && (
-          <p style={{ color: 'var(--muted)' }}>
-            Ledger: {workIntentStatus}
+        ) : (
+          <p className="text-[12px] mt-1" style={{ color: 'var(--foreground-secondary)' }}>
+            Source message attached. Open it before approving if the wording feels ambiguous.
           </p>
         )}
         {sourceMessageId && sourceSpaceId && (
-          <p>
-            <a
-              href={`/chat?space=${sourceSpaceId}&message=${sourceMessageId}`}
-              className="underline underline-offset-2"
-              style={{ color: 'var(--primary)' }}
+          <a
+            href={`/chat?space=${sourceSpaceId}&message=${sourceMessageId}`}
+            className="inline-flex items-center gap-1 mt-1.5 text-[11px] underline underline-offset-2"
+            style={{ color: 'var(--primary)' }}
+          >
+            View source message
+            <ExternalLink size={12} strokeWidth={1.7} />
+          </a>
+        )}
+      </div>
+
+      {metaChips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {metaChips.map((chip) => (
+            <span
+              key={chip}
+              className="text-[10px] px-2 py-0.5 rounded-full break-words"
+              style={{ color: 'var(--muted)', background: 'var(--surface-container-highest)', border: '1px solid var(--border)' }}
             >
-              View source message
-            </a>
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="text-[12px] mt-2 space-y-1" style={{ color: 'var(--foreground-secondary)' }}>
+        {!(action.action in ACTION_LABELS) && <GenericParams params={action.params} />}
+        {captureLabel && (
+          <p style={{ color: 'var(--muted)' }}>
+            {captureLabel}
+          </p>
+        )}
+        {captureReason && (
+          <p className="break-words [overflow-wrap:anywhere]" style={{ color: 'var(--muted)' }}>
+            Why: {truncate(captureReason, 160)}
+          </p>
+        )}
+        {workIntentStatus && action.params.work_intent_status !== 'proposed' && (
+          <p style={{ color: 'var(--muted)' }}>
+            Status: {workIntentStatus}
           </p>
         )}
         {isPossiblyStale && (
@@ -322,28 +632,36 @@ export function AgentActionCard({
           </p>
         )}
         {localError && (
-          <p style={{ color: 'var(--status-red)' }}>
-            {localError}
-          </p>
+          <div
+            className="mt-2 flex items-start gap-2 rounded-md px-2.5 py-2"
+            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', color: 'var(--status-red)' }}
+          >
+            <AlertTriangle size={13} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
+            <p className="min-w-0 break-words [overflow-wrap:anywhere]">
+              {truncate(localError, 180)}
+            </p>
+          </div>
         )}
       </div>
 
-      <div className="flex gap-2 mt-2.5 flex-wrap">
+      <div className="flex flex-col sm:flex-row gap-2 mt-3">
         <button
           onClick={handleApprove}
           disabled={isBusy}
-          className="px-3 py-1 rounded-md text-[11px] font-medium text-white disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium text-white disabled:opacity-60 min-h-[32px]"
           style={{ background: 'var(--status-green)' }}
         >
-          Approve
+          <CheckCircle2 size={13} strokeWidth={1.8} />
+          {approveLabel}
         </button>
         <button
           onClick={handleReject}
           disabled={isBusy}
-          className="px-3 py-1 rounded-md text-[11px] font-medium disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium disabled:opacity-60 min-h-[32px]"
           style={{ background: 'var(--bg-overlay)', color: 'var(--text-secondary)' }}
         >
-          Reject
+          <XCircle size={13} strokeWidth={1.8} />
+          Dismiss
         </button>
       </div>
     </div>

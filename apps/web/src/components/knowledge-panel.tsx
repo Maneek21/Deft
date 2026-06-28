@@ -326,8 +326,8 @@ function EntryCard({
           <Icon size={13} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-medium truncate" style={{ color: 'var(--foreground)' }}>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-[13px] font-medium truncate min-w-0" style={{ color: 'var(--foreground)' }}>
               {entry.title}
             </span>
             {entry.type === 'procedure' && entry.metadata?.status === 'done' && (
@@ -368,9 +368,10 @@ function EntryCard({
           )}
           {sourceHref && (
             <a href={sourceHref}
-              className="inline-flex items-center gap-1 text-[10px] mb-2 hover:underline"
-              style={{ color: 'var(--muted)' }}>
-              <ExternalLink size={9} /> From conversation
+              className="inline-flex max-w-full items-center gap-1 text-[10px] mb-2 rounded px-1.5 py-0.5 hover:underline"
+              style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}>
+              <ExternalLink size={9} className="flex-shrink-0" />
+              <span className="truncate">Source message</span>
             </a>
           )}
           <div className="flex items-center gap-2 mt-1">

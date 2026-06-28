@@ -50,3 +50,21 @@ test('local classifier preserves separate active blockers in mixed resolved mess
   assert.equal(result.blocked, true);
   assert.equal(result.intent, 'actionable');
 });
+
+test('local classifier does not turn tentative planning chatter into durable memory', () => {
+  const result = classifyMessageLocally(
+    'Maybe we should discuss whether the chef sample crates need new labels next week.',
+  );
+
+  assert.equal(result.decision, null);
+  assert.deepEqual(result.memorable_facts, []);
+});
+
+test('local classifier extracts explicit decisions and preferences separately', () => {
+  const result = classifyMessageLocally(
+    'Decision: use blue crates for chef samples. Preference: keep buyer updates under three bullets.',
+  );
+
+  assert.equal(result.decision, 'use blue crates for chef samples');
+  assert.deepEqual(result.memorable_facts, ['keep buyer updates under three bullets']);
+});

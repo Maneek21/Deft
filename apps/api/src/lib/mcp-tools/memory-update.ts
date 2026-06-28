@@ -4,8 +4,8 @@
  * Logic:
  *   1. Look up the page by slug + org_id + not-deleted.
  *   2. Reject if the page belongs to a different employee (cross-employee
- *      isolation). Pages where agent_employee_id IS NULL (org-wide) are
- *      updateable via the scope-promotion path.
+ *      isolation). Org-scoped pages are shared knowledge even when
+ *      agent_employee_id is retained for audit.
  *   3. If patch.scope === 'org' → cross-scope promotion → apply approval
  *      gating. Conservative/standard employees must queue; autonomous can
  *      auto-execute (quick tier + autonomous = auto-exec).
@@ -86,6 +86,7 @@ export async function executeMemoryUpdate(
     }
 
     if (
+      page.scope !== 'org' &&
       page.agent_employee_id !== null &&
       page.agent_employee_id !== ctx.employee_id
     ) {

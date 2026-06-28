@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   connectedAccounts,
@@ -451,7 +451,6 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
         eq(wikiPages.org_id, ctx.org_id),
         eq(wikiPages.slug, rawId),
         eq(wikiPages.is_deleted, false),
-        isNull(wikiPages.agent_employee_id),
         visibleWikiPageCondition(ctx.user_id),
       ))
       .limit(1);
@@ -514,7 +513,6 @@ export async function humanMemoryRecall(args: { query?: string; limit?: number }
     .where(and(
       eq(wikiPages.org_id, ctx.org_id),
       eq(wikiPages.is_deleted, false),
-      isNull(wikiPages.agent_employee_id),
       visibleWikiPageCondition(ctx.user_id),
       ...terms.map((term) => {
         const pattern = `%${term}%`;
@@ -534,7 +532,7 @@ export async function humanMemoryList(args: { type?: string; limit?: number }, c
   const scopeError = requireScope(ctx, 'read:wiki');
   if (scopeError) return scopeError;
   const limit = Math.min(Math.max(1, args.limit ?? 25), 100);
-  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), isNull(wikiPages.agent_employee_id), visibleWikiPageCondition(ctx.user_id)];
+  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(ctx.user_id)];
   if (args.type) conditions.push(eq(wikiPages.type, args.type as any));
   const rows = await db
     .select({ slug: wikiPages.slug, title: wikiPages.title, summary: wikiPages.summary, type: wikiPages.type, updated_at: wikiPages.updated_at })

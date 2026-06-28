@@ -4,6 +4,16 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
+import {
+  AlertTriangle,
+  BookOpen,
+  CheckCircle2,
+  CheckSquare,
+  Clock3,
+  ExternalLink,
+  RotateCcw,
+  XCircle,
+} from 'lucide-react';
 import { useInbox, type InboxItemKind } from '@/hooks/use-inbox';
 import { InboxRow } from '@/components/inbox-row';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
@@ -37,12 +47,14 @@ type WorkIntent = {
   title: string;
   summary: string | null;
   proposed_action: string;
+  proposed_params?: Record<string, unknown> | null;
   source_message_id: string | null;
   source_message_content: string | null;
   space_id: string | null;
   space_name: string | null;
   source_user_name: string | null;
   agent_employee_name: string | null;
+  confidence?: number | null;
   converted_task_id: string | null;
   converted_at: string | null;
   dismissed_at: string | null;
@@ -70,6 +82,95 @@ const INTENT_STATUS_LABEL: Record<WorkIntent['status'], string> = {
   expired: 'Expired',
   failed: 'Failed',
 };
+
+function compactText(value: string, max = 180) {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  return cleaned.length > max ? `${cleaned.slice(0, max - 3)}...` : cleaned;
+}
+
+function formatIntentAge(value?: string | null) {
+  if (!value) return null;
+  const ageMs = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+  const minutes = Math.floor(ageMs / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function formatIntentConfidence(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const normalized = value > 1 ? value / 100 : value;
+  return `${Math.round(Math.max(0, Math.min(1, normalized)) * 100)}% confidence`;
+}
+
+function getIntentScope(intent: WorkIntent) {
+  const proposedParams = intent.proposed_params ?? null;
+  const metadataScope = typeof intent.metadata?.scope === 'string' ? intent.metadata.scope : null;
+  const proposedScope = proposedParams && typeof proposedParams.scope === 'string' ? proposedParams.scope : null;
+  const scope = proposedScope ?? metadataScope;
+  if (scope === 'org') return 'Team-wide memory';
+  if (scope === 'space') return intent.space_name ? `Only #${intent.space_name}` : 'Space-scoped';
+  if (scope === 'user') return 'Personal';
+  if (intent.space_name) return `#${intent.space_name}`;
+  return null;
+}
+
+function getProposedParam(intent: WorkIntent, keys: string[]) {
+  const params = intent.proposed_params ?? {};
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === 'string' && value.trim()) return stripHtml(value);
+  }
+  return '';
+}
+
+function formatActionName(action: string) {
+  return action.replaceAll('_', ' ');
+}
+
+function getIntentOutcome(intent: WorkIntent) {
+  const title = getProposedParam(intent, ['title', 'name']) || intent.title;
+  const description = getProposedParam(intent, ['description', 'content', 'summary']) || intent.summary || '';
+  const priority = getProposedParam(intent, ['priority']);
+  const assignee = getProposedParam(intent, ['assignee_name', 'assignee']);
+  const type = getProposedParam(intent, ['type']);
+  const project = getProposedParam(intent, ['project_name']);
+  const action = intent.proposed_action;
+
+  if (action === 'wiki_create' || ['decision_candidate', 'resource_candidate', 'note_candidate'].includes(intent.kind)) {
+    const noun = intent.kind === 'decision_candidate'
+      ? 'decision'
+      : intent.kind === 'resource_candidate'
+        ? 'resource'
+        : 'knowledge entry';
+    return {
+      label: title ? `Save "${compactText(title, 92)}"` : `Save ${noun}`,
+      detail: [type || noun, getIntentScope(intent), description ? compactText(description, 160) : null]
+        .filter(Boolean)
+        .join(' - '),
+    };
+  }
+
+  if (action === 'task_create' || action === 'create_task' || intent.kind === 'task_candidate' || intent.kind === 'blocker_candidate') {
+    return {
+      label: title ? `Create "${compactText(title, 92)}"` : 'Create a task',
+      detail: [
+        priority ? priority.toUpperCase() : null,
+        assignee ? `assigned to ${assignee}` : null,
+        project ? `in ${project}` : null,
+        description ? compactText(description, 160) : null,
+      ].filter(Boolean).join(' - '),
+    };
+  }
+
+  return {
+    label: formatActionName(action),
+    detail: description ? compactText(description, 160) : '',
+  };
+}
 
 async function fetchWorkIntents(url: string): Promise<WorkIntentResponse> {
   const res = await api.get(url);
@@ -110,6 +211,10 @@ function WorkIntentRow({
     : intent.status === 'expired' ? 'rgba(245,158,11,0.1)'
     : 'var(--bg-active)';
   const messagePreview = stripHtml(intent.source_message_content ?? intent.summary ?? '');
+  const metadata = intent.metadata ?? {};
+  const convertedWikiSlug = typeof metadata.converted_wiki_slug === 'string'
+    ? metadata.converted_wiki_slug
+    : null;
   const timestamp = intent.converted_at
     ?? intent.dismissed_at
     ?? (intent.status === 'failed' || intent.status === 'expired' ? intent.updated_at : null)
@@ -118,52 +223,126 @@ function WorkIntentRow({
     intent.status === 'dismissed' ? 'Dismissed reason'
     : intent.status === 'expired' ? 'Expired reason'
     : 'Failure reason';
+  const age = formatIntentAge(timestamp);
+  const confidence = formatIntentConfidence(intent.confidence);
+  const scope = getIntentScope(intent);
+  const metaChips = [scope, confidence, age].filter(Boolean) as string[];
+  const outcome = getIntentOutcome(intent);
+  const isConvertedToTask = Boolean(intent.converted_task_id);
+  const isConvertedToKnowledge = Boolean(convertedWikiSlug);
+  const StatusIcon =
+    intent.status === 'converted' ? CheckCircle2
+    : intent.status === 'failed' ? AlertTriangle
+    : intent.status === 'dismissed' ? XCircle
+    : intent.status === 'expired' ? Clock3
+    : Clock3;
+  const outcomeIcon = isConvertedToTask || intent.kind === 'task_candidate' || intent.kind === 'blocker_candidate'
+    ? CheckSquare
+    : BookOpen;
+  const OutcomeIcon = outcomeIcon;
+  const statusLabel = intent.status === 'converted'
+    ? isConvertedToTask
+      ? 'Converted to task'
+      : isConvertedToKnowledge
+        ? 'Saved to knowledge'
+        : 'Converted'
+    : INTENT_STATUS_LABEL[intent.status];
 
   return (
     <div
-      className="px-3 py-2.5 rounded-lg border min-w-0"
+      className="px-3 py-3 rounded-lg border min-w-0"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
-          <p className="text-[12px] font-medium break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground)' }}>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+            {INTENT_KIND_LABEL[intent.kind]}
+          </p>
+          <p className="text-[13px] font-semibold break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground)' }}>
             {intent.title}
           </p>
           <p className="text-[11px] mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--muted)' }}>
-            {INTENT_KIND_LABEL[intent.kind]} from {intent.source_user_name ?? 'chat'}{intent.space_name ? ` in #${intent.space_name}` : ''}
+            From {intent.source_user_name ?? 'chat'}{intent.space_name ? ` in #${intent.space_name}` : ''}
           </p>
         </div>
         <span
-          className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap self-start"
+          className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap self-start"
           style={{ color: statusColor, background: statusBackground }}
         >
-          {INTENT_STATUS_LABEL[intent.status]}
+          <StatusIcon size={11} strokeWidth={1.8} />
+          {statusLabel}
         </span>
       </div>
       {messagePreview && (
-        <p className="text-[12px] mt-2 line-clamp-2 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
-          "{messagePreview.slice(0, 180)}{messagePreview.length > 180 ? '...' : ''}"
+        <div
+          className="mt-2 rounded-md px-3 py-2"
+          style={{ background: 'rgba(124,107,79,0.06)', border: '1px solid rgba(124,107,79,0.14)' }}
+        >
+          <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+            Source
+          </p>
+          <p className="text-[12px] mt-0.5 line-clamp-3 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+            "{compactText(messagePreview, 220)}"
+          </p>
+        </div>
+      )}
+      <div
+        className="mt-2 rounded-md px-3 py-2"
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+      >
+        <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+          Proposed outcome
         </p>
+        <p className="text-[12px] mt-0.5 flex items-start gap-1.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+          <OutcomeIcon size={13} strokeWidth={1.7} className="mt-0.5 flex-shrink-0" />
+          <span className="min-w-0">
+            <span className="font-medium" style={{ color: 'var(--foreground)' }}>{outcome.label}</span>
+            {outcome.detail && <span> - {outcome.detail}</span>}
+          </span>
+        </p>
+      </div>
+      {metaChips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {metaChips.map((chip) => (
+            <span
+              key={chip}
+              className="text-[10px] px-2 py-0.5 rounded-full"
+              style={{ color: 'var(--muted)', background: 'var(--surface-container-highest)', border: '1px solid var(--border)' }}
+            >
+              {chip}
+            </span>
+          ))}
+        </div>
       )}
       <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[11px]" style={{ color: 'var(--muted)' }}>
-        <span>{intent.proposed_action.replaceAll('_', ' ')}</span>
         {intent.agent_employee_name && <span>by {intent.agent_employee_name}</span>}
-        {timestamp && <span>{new Date(timestamp).toLocaleString()}</span>}
         {intent.converted_task_id && (
           <a
             href={`/tasks?task=${intent.converted_task_id}`}
-            className="underline underline-offset-2"
+            className="inline-flex items-center gap-1 underline underline-offset-2"
             style={{ color: 'var(--primary)' }}
           >
+            <ExternalLink size={11} strokeWidth={1.7} />
             Task
+          </a>
+        )}
+        {convertedWikiSlug && (
+          <a
+            href={`/knowledge?slug=${convertedWikiSlug}`}
+            className="inline-flex items-center gap-1 underline underline-offset-2"
+            style={{ color: 'var(--primary)' }}
+          >
+            <ExternalLink size={11} strokeWidth={1.7} />
+            Knowledge
           </a>
         )}
         {intent.source_message_id && intent.space_id && (
           <a
             href={`/chat?space=${intent.space_id}&message=${intent.source_message_id}`}
-            className="underline underline-offset-2"
+            className="inline-flex items-center gap-1 underline underline-offset-2"
             style={{ color: 'var(--primary)' }}
           >
+            <ExternalLink size={11} strokeWidth={1.7} />
             Source
           </a>
         )}
@@ -191,9 +370,10 @@ function WorkIntentRow({
             type="button"
             onClick={() => onRetry(intent.id)}
             disabled={retrying}
-            className="text-[11px] px-2.5 py-1 rounded-md disabled:opacity-60"
+            className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md disabled:opacity-60"
             style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
           >
+            <RotateCcw size={12} strokeWidth={1.7} className={retrying ? 'animate-spin' : ''} />
             {retrying ? 'Retrying...' : 'Retry as proposal'}
           </button>
           {retryError && (
@@ -387,6 +567,9 @@ export default function InboxPage() {
                   action: item.approval.action,
                   params: item.approval.params as Record<string, any>,
                   created_at: item.created_at,
+                  approval_tier: item.approval.approval_tier,
+                  employee_name: item.approval.employee_name,
+                  proposer: item.approval.proposer,
                 };
                 return (
                   <AgentActionCard

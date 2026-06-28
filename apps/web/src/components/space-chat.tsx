@@ -16,6 +16,8 @@ import {
   X,
   Smile,
   MessageSquare,
+  AlertTriangle,
+  ExternalLink,
   Pin,
   MoreHorizontal,
   Copy,
@@ -98,6 +100,19 @@ type Message = {
   latest_reply_at: string | null;
   file_ids: string[];
   files?: FileAttachment[];
+};
+
+type WorkIntentReceipt = {
+  id: string;
+  kind: string;
+  status: 'proposed' | 'converted' | 'dismissed' | 'expired' | 'failed';
+  title: string | null;
+  source_message_id: string | null;
+  converted_task_id: string | null;
+  failure_reason: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
 };
 
 // formatTime, formatDayLabel, isSameDay imported from @/lib/time
@@ -214,6 +229,77 @@ function displayEmoji(emoji: string): string {
   // Strip optional colons (e.g. ":thumbsup:")
   const key = emoji.replace(/^:|:$/g, '').toLowerCase();
   return SHORTCODE_TO_EMOJI[key] || emoji;
+}
+
+function compactReceiptTitle(title: string) {
+  const cleaned = title.replace(/\s+/g, ' ').trim();
+  return cleaned.length > 44 ? `${cleaned.slice(0, 41)}...` : cleaned;
+}
+
+function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) {
+  if (!intents?.length) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {intents.map((intent) => {
+        const metadata = intent.metadata ?? {};
+        const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
+        const title = intent.title ?? 'Work capture';
+        const isTask = Boolean(intent.converted_task_id);
+        const isKnowledge = Boolean(wikiSlug);
+        const href = isTask
+          ? `/tasks?task=${encodeURIComponent(intent.converted_task_id!)}`
+          : isKnowledge
+            ? `/knowledge?slug=${encodeURIComponent(wikiSlug!)}`
+            : null;
+        const label = intent.status === 'converted'
+          ? isTask
+            ? `Task: ${compactReceiptTitle(title)}`
+            : isKnowledge
+              ? `Knowledge: ${compactReceiptTitle(title)}`
+              : 'Capture converted'
+          : intent.status === 'dismissed'
+            ? 'Capture dismissed'
+            : intent.status === 'failed'
+              ? 'Capture failed'
+              : 'Capture expired';
+        const Icon = isTask
+          ? CheckSquare
+          : isKnowledge
+            ? BookOpen
+            : intent.status === 'failed'
+              ? AlertTriangle
+              : intent.status === 'dismissed'
+                ? X
+                : Clock;
+        const color = intent.status === 'converted'
+          ? 'var(--success)'
+          : intent.status === 'failed'
+            ? 'var(--status-red)'
+            : 'var(--muted)';
+
+        const chip = (
+          <span
+            className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium"
+            style={{ background: 'var(--surface-container-highest)', border: '1px solid var(--border)', color }}
+            title={intent.failure_reason ? `${title}: ${intent.failure_reason}` : title}
+          >
+            <Icon size={12} strokeWidth={1.7} />
+            <span className="min-w-0 truncate">{label}</span>
+            {href && <ExternalLink size={11} strokeWidth={1.7} className="flex-shrink-0" />}
+          </span>
+        );
+
+        return href ? (
+          <a key={intent.id} href={href} className="min-w-0 max-w-full no-underline hover:opacity-80">
+            {chip}
+          </a>
+        ) : (
+          <span key={intent.id} className="min-w-0 max-w-full">{chip}</span>
+        );
+      })}
+    </div>
+  );
 }
 
 function isImageUrl(url: string) {
@@ -598,6 +684,28 @@ export function SpaceChat({
       return map;
     },
     { refreshInterval: 5000, fallbackData: {} },
+  );
+
+  const workIntentBySpaceKey = spaceId
+    ? `/api/work-intents?space_id=${spaceId}&limit=100`
+    : null;
+
+  const { data: workIntentsByMessage } = useSWR(
+    workIntentBySpaceKey,
+    async (url: string) => {
+      const res = await api.get(url);
+      if (!res.ok) return {} as Record<string, WorkIntentReceipt[]>;
+      const data = await res.json();
+      const list = (data.intents ?? []) as WorkIntentReceipt[];
+      const map: Record<string, WorkIntentReceipt[]> = {};
+      for (const intent of list) {
+        if (!intent.source_message_id) continue;
+        if (intent.status === 'proposed') continue;
+        (map[intent.source_message_id] ??= []).push(intent);
+      }
+      return map;
+    },
+    { refreshInterval: 10000, fallbackData: {} },
   );
 
   // Load user's saved/bookmarked message IDs for this space
@@ -1653,6 +1761,7 @@ export function SpaceChat({
                                   if (!res.ok) throw new Error(`Approve failed (${res.status})`);
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;
                                 }}
                                 onReject={async () => {
@@ -1660,10 +1769,12 @@ export function SpaceChat({
                                   if (!res.ok) throw new Error(`Reject failed (${res.status})`);
                                   const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;
                                 }}
                               />
                             ))}
+                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1794,6 +1905,7 @@ export function SpaceChat({
                                   if (!res.ok) throw new Error(`Approve failed (${res.status})`);
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;
                                 }}
                                 onReject={async () => {
@@ -1801,10 +1913,12 @@ export function SpaceChat({
                                   if (!res.ok) throw new Error(`Reject failed (${res.status})`);
                                   const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
                                   return body;
                                 }}
                               />
                             ))}
+                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
