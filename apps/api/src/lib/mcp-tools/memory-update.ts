@@ -68,6 +68,7 @@ export async function executeMemoryUpdate(
       .select({
         id: wikiPages.id,
         agent_employee_id: wikiPages.agent_employee_id,
+        user_id: wikiPages.user_id,
         title: wikiPages.title,
         scope: wikiPages.scope,
       })
@@ -85,7 +86,16 @@ export async function executeMemoryUpdate(
       return errorResult(`memory_update: page "${args.slug}" not found`);
     }
 
-    if (
+    const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
+    if (page.scope === 'user') {
+      const ownedByEmployee = page.agent_employee_id === ctx.employee_id;
+      const ownedByShadowUser = page.user_id === shadowUserId;
+      if (!ownedByEmployee && !ownedByShadowUser) {
+        return errorResult(
+          `memory_update: cannot update another user's memory (page is owned by a different user or employee)`,
+        );
+      }
+    } else if (
       page.scope !== 'org' &&
       page.agent_employee_id !== null &&
       page.agent_employee_id !== ctx.employee_id
@@ -209,6 +219,7 @@ export async function memoryUpdate(
       .select({
         id: wikiPages.id,
         agent_employee_id: wikiPages.agent_employee_id,
+        user_id: wikiPages.user_id,
         scope: wikiPages.scope,
       })
       .from(wikiPages)
@@ -225,7 +236,16 @@ export async function memoryUpdate(
       return errorResult(`memory_update: page "${args.slug}" not found`);
     }
 
-    if (
+    const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
+    if (page.scope === 'user') {
+      const ownedByEmployee = page.agent_employee_id === ctx.employee_id;
+      const ownedByShadowUser = page.user_id === shadowUserId;
+      if (!ownedByEmployee && !ownedByShadowUser) {
+        return errorResult(
+          `memory_update: cannot update another user's memory (page is owned by a different user or employee)`,
+        );
+      }
+    } else if (
       page.agent_employee_id !== null &&
       page.agent_employee_id !== ctx.employee_id
     ) {
@@ -236,7 +256,6 @@ export async function memoryUpdate(
 
     const isPromotion = args.patch.scope === 'org' && page.scope !== 'org';
     if (isPromotion && !shouldAutoExecute('memory_update', ctx.trust_level, args)) {
-      const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
       if (!shadowUserId) {
         return errorResult(
           `memory_update: no shadow user for employee ${ctx.employee_id}`,

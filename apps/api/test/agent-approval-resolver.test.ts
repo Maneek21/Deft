@@ -42,6 +42,7 @@ let CREATED_TEST_PROJECT_ID: string | null = null;
 let CREATED_TEST_SPACE_ID: string | null = null;
 const SOURCE_MESSAGE_IDS: string[] = [];
 const SOURCE_SPACE_IDS: string[] = [];
+const TEST_WIKI_PAGE_IDS: string[] = [];
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -208,6 +209,28 @@ async function teardownFixtures() {
           OR employee_id IN ($3, $4, $5)`,
       [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
+    if (TEST_WIKI_PAGE_IDS.length > 0) {
+      await c.query(
+        `DELETE FROM wiki_citations
+         WHERE page_id = ANY($1::text[])`,
+        [TEST_WIKI_PAGE_IDS],
+      );
+      await c.query(
+        `DELETE FROM wiki_page_versions
+         WHERE page_id = ANY($1::text[])`,
+        [TEST_WIKI_PAGE_IDS],
+      );
+      await c.query(
+        `DELETE FROM wiki_ops_log
+         WHERE page_id = ANY($1::text[])`,
+        [TEST_WIKI_PAGE_IDS],
+      );
+      await c.query(
+        `DELETE FROM wiki_pages
+         WHERE id = ANY($1::text[])`,
+        [TEST_WIKI_PAGE_IDS],
+      );
+    }
     await c.query(
       `DELETE FROM wiki_citations
        WHERE page_id IN (
@@ -912,6 +935,61 @@ test('1g. approving Defty wiki_update updates page with version history and ops 
       [pageId, sourceMessageId],
     );
     assert.equal(citation.rows.length, 1, 'wiki update should cite the source message');
+  });
+});
+
+test('1h. approving Defty wiki_update rejects another user-scoped page', async () => {
+  const sourceMessageId = await insertSourceMessage(
+    'Update: private grower notes should be rewritten.',
+  );
+  const pageId = await withClient(async (c) => {
+    const r = await c.query(
+      `INSERT INTO wiki_pages
+        (id, org_id, scope, type, title, slug, summary, content, confidence,
+         user_id, agent_employee_id)
+       VALUES (gen_random_uuid()::text, $1, 'user', 'fact', $2, $3, $4, $5, 0.9,
+         $6, NULL)
+       RETURNING id`,
+      [
+        ORG_ID,
+        `resolver-human-private-${Date.now()}`,
+        `resolver-human-private-${Date.now()}`,
+        'Private human memory.',
+        'This page belongs to a human user, not Defty.',
+        APPROVER_USER_ID,
+      ],
+    );
+    return r.rows[0].id as string;
+  });
+  TEST_WIKI_PAGE_IDS.push(pageId);
+  const actionId = await insertPendingDeftyWikiUpdate(pageId, sourceMessageId);
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrow
+  assert.equal(result.code, 'EXECUTE_FAILED');
+  // @ts-expect-error narrow
+  assert.match(result.message, /another user-scoped page/i);
+
+  await withClient(async (c) => {
+    const page = await c.query(
+      `SELECT content, version
+       FROM wiki_pages
+       WHERE id = $1`,
+      [pageId],
+    );
+    assert.equal(page.rows[0].content, 'This page belongs to a human user, not Defty.');
+    assert.equal(page.rows[0].version, 1);
+
+    const op = await c.query(
+      `SELECT id
+       FROM wiki_ops_log
+       WHERE page_id = $1 AND operation = 'update'`,
+      [pageId],
+    );
+    assert.equal(op.rows.length, 0, 'blocked update must not write an ops row');
   });
 });
 

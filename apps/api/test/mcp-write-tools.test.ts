@@ -32,6 +32,7 @@ const EMP_STANDARD_SLUG = 'mcp-phase4-std';
 const EMP_AUTONOMOUS_ID = 'test-mcp-phase4-auto';
 const EMP_AUTONOMOUS_SLUG = 'mcp-phase4-auto';
 const TEST_USER_ID = 'test-mcp-phase4-user';
+const OTHER_HUMAN_USER_ID = 'test-mcp-phase4-other-human';
 const OTHER_EMP_ID = 'test-mcp-phase4-other';
 const OTHER_EMP_SLUG = 'mcp-phase4-other';
 
@@ -71,6 +72,18 @@ async function seedFixtures() {
        VALUES ($1, $2, $3, true)
        ON CONFLICT (id) DO NOTHING`,
       [TEST_USER_ID, 'mcp-phase4@test.local', 'MCP Phase 4 Test User']
+    );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, $3, false)
+       ON CONFLICT (id) DO NOTHING`,
+      [OTHER_HUMAN_USER_ID, 'mcp-phase4-other-human@test.local', 'MCP Phase 4 Other Human']
+    );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO NOTHING`,
+      [ORG_ID, OTHER_HUMAN_USER_ID]
     );
 
     // Three BYOA employees with three different trust levels. Each gets
@@ -199,6 +212,10 @@ async function teardownFixtures() {
       `DELETE FROM wiki_pages WHERE agent_employee_id IN ($1,$2,$3,$4)`,
       [EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]
     );
+    await c.query(
+      `DELETE FROM wiki_pages WHERE user_id = $1`,
+      [OTHER_HUMAN_USER_ID]
+    );
     if (createdTestSpace && TEST_SPACE_ID) {
       await c.query(`DELETE FROM space_members WHERE space_id = $1`, [TEST_SPACE_ID]);
       await c.query(`DELETE FROM spaces WHERE id = $1`, [TEST_SPACE_ID]);
@@ -207,7 +224,8 @@ async function teardownFixtures() {
       `DELETE FROM agent_employees WHERE id = ANY($1::text[])`,
       [[EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]]
     );
-    await c.query(`DELETE FROM users WHERE id = $1`, [TEST_USER_ID]);
+    await c.query(`DELETE FROM org_members WHERE user_id = $1`, [OTHER_HUMAN_USER_ID]);
+    await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [TEST_USER_ID, OTHER_HUMAN_USER_ID]);
     if (createdTestOrg) {
       await c.query(
         `DELETE FROM orgs WHERE id = $1 AND slug = 'mcp-phase4-test-org'`,
@@ -395,6 +413,41 @@ test('5. memory_update rejects cross-employee updates', async () => {
   assert.ok(body.isError === true, `cross-employee update must set isError: ${JSON.stringify(body)}`);
   const txt = body.content?.[0]?.text ?? '';
   assert.match(txt, /another|not allowed|cannot|forbidden/i);
+});
+
+test('5b. memory_update rejects human-owned user-scoped pages', async () => {
+  const slug = `phase4-human-private-${Date.now()}`;
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO wiki_pages
+        (id, org_id, scope, user_id, agent_employee_id, type, title, slug, summary,
+         content, confidence, version, is_deleted, created_at, updated_at)
+       VALUES
+        (gen_random_uuid()::text, $1, 'user', $2, NULL, 'fact', 'Human private memory', $3,
+         'sum', 'private content', 0.7, 1, false, now(), now())`,
+      [ORG_ID, OTHER_HUMAN_USER_ID, slug]
+    );
+  });
+
+  const { status, body } = await mcpCall('memory_update', {
+    caller_employee_slug: EMP_STANDARD_SLUG,
+    slug,
+    patch: { title: 'hacked human memory' },
+  });
+  assert.equal(status, 200);
+  assert.equal(body.isError, true, `human-owned memory update must error: ${JSON.stringify(body)}`);
+  const txt = body.content?.[0]?.text ?? '';
+  assert.match(txt, /another user|different user|cannot/i);
+
+  await withClient(async (c) => {
+    const page = await c.query(
+      `SELECT title, content, version FROM wiki_pages WHERE slug = $1`,
+      [slug]
+    );
+    assert.equal(page.rows[0].title, 'Human private memory');
+    assert.equal(page.rows[0].content, 'private content');
+    assert.equal(page.rows[0].version, 1);
+  });
 });
 
 test('6. memory_update scope=org returns pseudo-result for conservative', async () => {

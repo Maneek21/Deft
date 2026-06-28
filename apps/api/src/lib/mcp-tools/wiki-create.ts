@@ -473,12 +473,12 @@ export async function executeWikiUpdate(
       .limit(1);
     if (!existingPage) return errorResult('wiki_update: page not found');
 
-    if (
-      existingPage.scope === 'user' &&
-      existingPage.agent_employee_id &&
-      existingPage.agent_employee_id !== ctx.employee_id
-    ) {
-      return errorResult('wiki_update: cannot update another employee user-scoped page');
+    if (existingPage.scope === 'user') {
+      const ownedByEmployee = existingPage.agent_employee_id === ctx.employee_id;
+      const ownedByShadowUser = existingPage.user_id === shadowUserId;
+      if (!ownedByEmployee && !ownedByShadowUser) {
+        return errorResult('wiki_update: cannot update another user-scoped page');
+      }
     }
 
     const patch = args.patch;
