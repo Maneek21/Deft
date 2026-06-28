@@ -27,7 +27,11 @@ const UPLOAD_LIMIT_PER_MINUTE = positiveIntFromEnv(
 );
 const DEFAULT_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE',
-  isProduction ? 100 : 2000,
+  // The web app is a chatty SPA: a normal dashboard/chat/task sweep can issue
+  // many protected reads before the user even sends a message. Keep auth,
+  // upload, webhook, and agent-spend surfaces tighter, but give authenticated
+  // app routes enough room for multi-user pilot/demo workflows.
+  isProduction ? 600 : 2000,
 );
 const WEBHOOK_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_WEBHOOK_RATE_LIMIT_PER_MINUTE',
