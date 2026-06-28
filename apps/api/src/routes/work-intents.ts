@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { agentActions, agentEmployees, messages, spaces, users, workIntents } from '@deft/db/schema';
+import { agentActions, agentEmployees, messageObservations, messages, spaces, users, workIntents } from '@deft/db/schema';
 import { getApprovalTier } from '../lib/agent-approval.js';
 import { ensureDeftyEmployee } from '../lib/ensure-defty-membership.js';
 
@@ -90,6 +90,21 @@ function visibleSourceUserJoinSql(user: AuthedUser) {
   );
 }
 
+function visibleObservationSourceSql(user: AuthedUser) {
+  return sql`EXISTS (
+    SELECT 1
+    FROM messages obs_m
+    INNER JOIN space_members obs_sm ON obs_sm.space_id = obs_m.space_id
+    INNER JOIN spaces obs_s ON obs_s.id = obs_m.space_id
+    WHERE obs_m.id = ${messageObservations.message_id}
+      AND obs_m.org_id = ${user.org_id}
+      AND obs_m.is_deleted = false
+      AND obs_sm.user_id = ${user.id}
+      AND obs_s.org_id = ${user.org_id}
+      AND obs_s.is_archived = false
+  )`;
+}
+
 workIntentRoutes.get('/', async (c) => {
   const user = c.get('user') as AuthedUser;
   const rawLimit = parseInt(c.req.query('limit') ?? '50', 10);
@@ -162,6 +177,72 @@ workIntentRoutes.get('/', async (c) => {
     .limit(limit);
 
   return c.json({ intents: rows });
+});
+
+workIntentRoutes.get('/observations', async (c) => {
+  const user = c.get('user') as AuthedUser;
+  const rawLimit = parseInt(c.req.query('limit') ?? '50', 10);
+  const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 500);
+  const status = c.req.query('status')?.trim();
+  const marker = c.req.query('marker')?.trim();
+
+  const filters = [
+    eq(messageObservations.org_id, user.org_id),
+    visibleObservationSourceSql(user),
+  ];
+  if (status) {
+    filters.push(eq(messageObservations.status, status as any));
+  }
+  if (marker) {
+    filters.push(sql`${messages.content} ILIKE ${`%${marker}%`}`);
+  }
+
+  const rows = await db
+    .select({
+      id: messageObservations.id,
+      message_id: messageObservations.message_id,
+      space_id: messageObservations.space_id,
+      user_id: messageObservations.user_id,
+      observation_version: messageObservations.observation_version,
+      status: messageObservations.status,
+      ignored_reason: messageObservations.ignored_reason,
+      classifier_result: messageObservations.classifier_result,
+      downstream_jobs: messageObservations.downstream_jobs,
+      capture_count: messageObservations.capture_count,
+      last_error: messageObservations.last_error,
+      started_at: messageObservations.started_at,
+      completed_at: messageObservations.completed_at,
+      created_at: messageObservations.created_at,
+      updated_at: messageObservations.updated_at,
+      source_message_content: messages.content,
+      source_user_name: users.name,
+      space_name: spaces.name,
+    })
+    .from(messageObservations)
+    .innerJoin(messages, and(
+      eq(messageObservations.message_id, messages.id),
+      eq(messages.org_id, user.org_id),
+      eq(messages.is_deleted, false),
+    ))
+    .innerJoin(spaces, and(
+      eq(messages.space_id, spaces.id),
+      eq(spaces.org_id, user.org_id),
+    ))
+    .leftJoin(users, and(
+      eq(messageObservations.user_id, users.id),
+      sql`EXISTS (
+        SELECT 1
+        FROM org_members obs_om
+        WHERE obs_om.org_id = ${user.org_id}
+          AND obs_om.user_id = ${users.id}
+          AND obs_om.is_active = true
+      )`,
+    ))
+    .where(and(...filters))
+    .orderBy(desc(messageObservations.created_at))
+    .limit(limit);
+
+  return c.json({ observations: rows });
 });
 
 workIntentRoutes.get('/:id', async (c) => {

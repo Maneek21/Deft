@@ -110,6 +110,24 @@ function tokenOverlap(a: string, b: string): number {
   return intersection / union;
 }
 
+function distinctiveReferenceTokens(value: string): Set<string> {
+  return new Set(
+    normalizeComparable(value)
+      .split(/\s+/)
+      .filter((token) => token.length >= 4 && /\d/.test(token)),
+  );
+}
+
+function hasMissingDistinctiveReference(candidate: string, existing: string): boolean {
+  const candidateRefs = distinctiveReferenceTokens(candidate);
+  if (candidateRefs.size === 0) return false;
+  const existingRefs = distinctiveReferenceTokens(existing);
+  for (const ref of candidateRefs) {
+    if (!existingRefs.has(ref)) return true;
+  }
+  return false;
+}
+
 function sameNormalizedText(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = normalizeComparable(a ?? '');
   const right = normalizeComparable(b ?? '');
@@ -414,12 +432,16 @@ async function findSimilarActiveTask(params: {
 
   const wantedTitle = normalizeComparable(params.title);
   for (const row of rows) {
+    const existingComparable = `${row.title}\n${row.description ?? ''}`;
+    if (hasMissingDistinctiveReference(`${params.title}\n${params.content}`, existingComparable)) {
+      continue;
+    }
     const existingTitle = normalizeComparable(row.title);
     if (wantedTitle && existingTitle === wantedTitle) {
       return row as ExistingTaskMatch;
     }
     const titleOverlap = tokenOverlap(params.title, row.title);
-    const bodyOverlap = tokenOverlap(params.content, `${row.title}\n${row.description ?? ''}`);
+    const bodyOverlap = tokenOverlap(params.content, existingComparable);
     if (titleOverlap >= 0.9 || (titleOverlap >= 0.75 && bodyOverlap >= 0.6)) {
       return row as ExistingTaskMatch;
     }
@@ -454,6 +476,12 @@ async function findSimilarWikiPage(params: {
     .limit(250);
 
   for (const row of rows) {
+    if (hasMissingDistinctiveReference(
+      `${params.title}\n${params.content}`,
+      `${row.title}\n${row.summary ?? ''}\n${row.content ?? ''}`,
+    )) {
+      continue;
+    }
     if (equivalentKnowledgeCapture(params, row)) {
       return { id: row.id, title: row.title, slug: row.slug };
     }
@@ -1137,14 +1165,16 @@ export async function queueDeftyCreateTaskCapture(params: {
 
   const defty = await ensureDeftyEmployee(orgId);
   const finalTitle = truncatePlainText(title || buildFallbackTitle(content), 80);
-  const similarTask = await findSimilarActiveTask({
-    orgId,
-    projectId: project.id,
-    title: finalTitle,
-    content: description || plainContent,
-  });
-  if (similarTask) {
-    return { queued: false, skippedReason: 'task_already_captured' };
+  if (captureKind === 'task_candidate') {
+    const similarTask = await findSimilarActiveTask({
+      orgId,
+      projectId: project.id,
+      title: finalTitle,
+      content: description || plainContent,
+    });
+    if (similarTask) {
+      return { queued: false, skippedReason: 'task_already_captured' };
+    }
   }
 
   let assigneeId: string | null = null;

@@ -36,10 +36,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
       )
       .limit(1);
 
-    if (existingNudge.length > 0) {
-      console.log('[blocked-alert] Skipped — already alerted for this user within 4h');
-      return;
-    }
+    const shouldSkipLeadAlert = existingNudge.length > 0;
 
     // Get the user's name
     const [blockedUser] = await db
@@ -110,6 +107,11 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
       }
     } catch (err) {
       console.warn('[blocked-alert] failed to queue blocker capture:', err);
+    }
+
+    if (shouldSkipLeadAlert) {
+      console.log('[blocked-alert] Skipped lead alert: already alerted for this user within 4h');
+      return;
     }
 
     if (userTasks.length === 0) {

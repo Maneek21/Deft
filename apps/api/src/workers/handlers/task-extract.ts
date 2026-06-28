@@ -58,12 +58,20 @@ interface ExtractedTask {
 }
 
 export function buildDeterministicTaskTitle(content: string): string {
-  const plainContent = toPlainText(content);
+  const plainContent = toPlainText(content)
+    .replace(/^[A-Z0-9][A-Z0-9_-]{2,80}:\s*/i, '')
+    .trim();
   const explicit = plainContent.match(
-    /\b(?:create|add|make|open|track)\b.{0,40}\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
+    /\b(?:create|add|make|open|track)\b.{0,60}?\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
   );
   const candidate = (explicit?.[1]?.trim() || plainContent).replace(/[.!?]+$/g, '');
   return truncatePlainText(candidate.replace(/^please\s+/i, ''), 80) || 'Follow up from chat';
+}
+
+function hasExplicitTaskRequest(content: string): boolean {
+  const plainContent = toPlainText(content);
+  return /\b(?:create|add|make|open|track)\b.{0,50}\b(?:task|todo|ticket)\b/i.test(plainContent) ||
+    /\b(?:task|todo|ticket)\s*:\s*\S+/i.test(plainContent);
 }
 
 function normalizePriority(priority?: string | null): 'p0' | 'p1' | 'p2' | 'p3' {
@@ -102,7 +110,11 @@ async function queueTaskCreateApproval(params: {
   const plainContent = toPlainText(content);
   if (!plainContent) return false;
 
-  const title = truncatePlainText(providedTitle || buildDeterministicTaskTitle(content), 80);
+  const deterministicTitle = buildDeterministicTaskTitle(content);
+  const titleSeed = hasExplicitTaskRequest(content)
+    ? deterministicTitle
+    : providedTitle || deterministicTitle;
+  const title = truncatePlainText(titleSeed, 80);
   const queued = await queueDeftyCreateTaskCapture({
     orgId,
     sourceUserId: userId,
@@ -140,6 +152,7 @@ async function queueDeterministicTaskCreateApproval(params: {
   messageId: string;
   content: string;
   projectName?: string | null;
+  assigneeName?: string | null;
 }): Promise<boolean> {
   return queueTaskCreateApproval({
     ...params,
@@ -169,6 +182,19 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
 
   // Only process task_create or actionable intents
   if (classification.intent !== 'task_create' && classification.intent !== 'actionable') {
+    return;
+  }
+
+  if (hasExplicitTaskRequest(content)) {
+    await queueDeterministicTaskCreateApproval({
+      orgId,
+      userId,
+      spaceId,
+      messageId,
+      content,
+      projectName: classification.entities?.project,
+      assigneeName: classification.entities?.assignee,
+    });
     return;
   }
 
