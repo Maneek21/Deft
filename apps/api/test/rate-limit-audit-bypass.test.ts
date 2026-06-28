@@ -55,3 +55,25 @@ test('audit bypass token is ignored in production', async () => {
   if (oldDefaultLimit === undefined) delete process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE;
   else process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE = oldDefaultLimit;
 });
+
+test('production default app limiter allows normal chatty UI bursts', async () => {
+  const oldNodeEnv = process.env.NODE_ENV;
+  const oldDefaultLimit = process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE;
+
+  process.env.NODE_ENV = 'production';
+  delete process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE;
+
+  const { defaultLimiter } = await import(`../src/middleware/rate-limit.js?default-budget=${Date.now()}`);
+  const app = new Hono();
+  app.use('*', defaultLimiter);
+  app.get('/ok', (c) => c.json({ ok: true }));
+
+  for (let i = 0; i < 120; i += 1) {
+    const res = await app.request('/ok', { headers: { 'x-forwarded-for': '203.0.113.42' } });
+    assert.equal(res.status, 200, `request ${i + 1} should not be rate-limited`);
+  }
+
+  process.env.NODE_ENV = oldNodeEnv;
+  if (oldDefaultLimit === undefined) delete process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE;
+  else process.env.DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE = oldDefaultLimit;
+});

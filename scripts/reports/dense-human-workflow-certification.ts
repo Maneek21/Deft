@@ -247,17 +247,24 @@ async function screenshot(page: Page, name: string) {
 
 async function loginUi(page: Page, email: string) {
   await page.goto(`${WEB_URL}/login`, { waitUntil: 'domcontentloaded' });
+  // Public/demo Next builds can show the form before client hydration finishes.
+  // Wait for the login page to go network-quiet so the React submit handler is
+  // attached before we click; otherwise the browser may no-op/reload /login.
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => null);
   await page.locator('#login-email').waitFor({ state: 'visible', timeout: 20_000 });
   await page.locator('#login-email').fill(email);
   await page.locator('#login-password').fill(PASSWORD);
   const responsePromise = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.url().includes('/api/auth/login'),
-    { timeout: 15_000 },
-  ).catch(() => null);
-  await page.getByRole('button', { name: /^sign in$/i }).click();
-  await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 30_000 });
+    { timeout: 30_000 },
+  );
+  await Promise.all([
+    responsePromise,
+    page.getByRole('button', { name: /^sign in$/i }).click(),
+  ]);
   const response = await responsePromise;
-  if (response && response.status() >= 400) throw new Error(`UI login failed for ${email}: ${response.status()}`);
+  if (response.status() >= 400) throw new Error(`UI login failed for ${email}: ${response.status()}`);
+  await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 45_000 });
   await page.locator('main').waitFor({ state: 'visible', timeout: 20_000 });
 }
 
