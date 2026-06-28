@@ -51,6 +51,15 @@ let triggeringMessageId: string;
 
 before(async () => {
   await withClient(async (c) => {
+    // Keep the fixture self-contained on a freshly pushed schema. Many legacy
+    // tests share this org id, so do not remove it in after().
+    await c.query(
+      `INSERT INTO orgs (id, name, slug, timezone)
+       VALUES ($1, 'MCP Context Test Org', 'mcp-context-test-org', 'UTC')
+       ON CONFLICT (id) DO NOTHING`,
+      [ORG_ID],
+    );
+
     // Ensure test user exists.
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
