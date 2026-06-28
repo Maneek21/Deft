@@ -32,6 +32,8 @@ let testApp: Hono | null = null;
 let projectAId: string | null = null;
 let projectBId: string | null = null;
 let taskId: string | null = null;
+let sourceSpaceId: string | null = null;
+let sourceMessageId: string | null = null;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -81,14 +83,35 @@ async function seedFixtures() {
     );
     projectBId = pb.rows[0].id as string;
 
+    const space = await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, created_by)
+       VALUES (gen_random_uuid()::text, $1, 'tasks-patch-source', 'private', $2)
+       RETURNING id`,
+      [ORG_ID, MEMBER_USER_ID],
+    );
+    sourceSpaceId = space.rows[0].id as string;
+    await c.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES (gen_random_uuid()::text, $1, $2)
+       ON CONFLICT (space_id, user_id) DO NOTHING`,
+      [sourceSpaceId, MEMBER_USER_ID],
+    );
+    const source = await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4)
+       RETURNING id`,
+      [ORG_ID, sourceSpaceId, MEMBER_USER_ID, '<p>source task message</p>'],
+    );
+    sourceMessageId = source.rows[0].id as string;
+
     const t = await c.query(
       `INSERT INTO tasks
-         (id, org_id, project_id, number, title, status, priority, created_by, is_deleted)
+         (id, org_id, project_id, number, title, status, priority, assignee_id, created_by, source_message_id, is_deleted)
        VALUES (gen_random_uuid()::text, $1, $2,
          (SELECT coalesce(max(number), 0) + 1 FROM tasks WHERE project_id = $2),
-         $3, 'backlog', 'p2', $4, false)
+         $3, 'backlog', 'p2', $4, $4, $5, false)
        RETURNING id`,
-      [ORG_ID, projectAId, `tasks-patch test ${stamp}`, MEMBER_USER_ID],
+      [ORG_ID, projectAId, `tasks-patch test ${stamp}`, MEMBER_USER_ID, sourceMessageId],
     );
     taskId = t.rows[0].id as string;
   });
@@ -99,6 +122,13 @@ async function teardownFixtures() {
     if (taskId) {
       await c.query(`DELETE FROM task_activity WHERE task_id = $1`, [taskId]);
       await c.query(`DELETE FROM tasks WHERE id = $1`, [taskId]);
+    }
+    if (sourceMessageId) {
+      await c.query(`DELETE FROM messages WHERE id = $1`, [sourceMessageId]);
+    }
+    if (sourceSpaceId) {
+      await c.query(`DELETE FROM space_members WHERE space_id = $1`, [sourceSpaceId]);
+      await c.query(`DELETE FROM spaces WHERE id = $1`, [sourceSpaceId]);
     }
     if (projectAId) {
       await c.query(`DELETE FROM tasks WHERE project_id = $1`, [projectAId]);
@@ -146,6 +176,23 @@ async function getTaskProjectId(tid: string): Promise<string | null> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+test('GET /api/tasks/:id returns flattened assignee fields for task detail clients', async () => {
+  const res = await app().request(`/api/tasks/${taskId}`, { method: 'GET' });
+  assert.equal(res.status, 200);
+  const body = await res.json() as any;
+
+  assert.equal(body.assignee_id, MEMBER_USER_ID);
+  assert.equal(body.assignee_name, 'Tasks Patch Member');
+  assert.equal(body.assignee?.id, MEMBER_USER_ID);
+  assert.equal(body.assignee?.name, 'Tasks Patch Member');
+  assert.equal(body.source_message_id, sourceMessageId);
+  assert.equal(body.source_message?.id, sourceMessageId);
+  assert.equal(body.source_message?.space_id, sourceSpaceId);
+  assert.equal(body.source_message?.space_name, 'tasks-patch-source');
+  assert.equal(body.source_message?.author_name, 'Tasks Patch Member');
+  assert.equal(body.source_message?.content, '<p>source task message</p>');
+});
 
 test('PATCH /api/tasks/:id rejects project_id change with 400 PROJECT_CHANGE_UNSUPPORTED', async () => {
   const res = await app().request(`/api/tasks/${taskId}`, {

@@ -150,6 +150,74 @@ test('GET /api/inbox surfaces pending approvals', async () => {
   assert.equal(ap.id, `approval:${a.id}`);
 });
 
+test('GET /api/inbox does not expire hidden Defty captures', async () => {
+  let hiddenSpaceId: string | null = null;
+  let hiddenMessageId: string | null = null;
+  let hiddenActionId: string | null = null;
+
+  try {
+    const [hiddenSpace] = await db.insert(spaces).values({
+      name: 'hidden-captures',
+      type: 'private',
+      org_id: testOrgId,
+      created_by: dmPartnerId,
+    }).returning();
+    hiddenSpaceId = hiddenSpace.id;
+
+    const [hiddenMessage] = await db.insert(messages).values({
+      org_id: testOrgId,
+      space_id: hiddenSpaceId,
+      user_id: dmPartnerId,
+      content: 'private blocker that current user cannot see',
+    }).returning();
+    hiddenMessageId = hiddenMessage.id;
+
+    const [hiddenAction] = await db.insert(agentActions).values({
+      org_id: testOrgId,
+      user_id: dmPartnerId,
+      source: 'defty_capture',
+      action: 'task_create',
+      params: {
+        title: 'Hidden capture should stay pending',
+        source_space_id: hiddenSpaceId,
+        source_message_id: hiddenMessageId,
+      },
+      approval_status: 'pending',
+      approval_tier: 'quick',
+      created_at: new Date(Date.now() - 25 * 60 * 60 * 1000),
+    }).returning();
+    hiddenActionId = hiddenAction.id;
+
+    const res = await app.request('/api/inbox');
+    assert.equal(res.status, 200);
+    const body = await res.json() as { items: { kind: string; approval?: { action_id: string } }[] };
+    assert.equal(
+      body.items.some((it) => it.approval?.action_id === hiddenActionId),
+      false,
+      'hidden stale capture should not appear in the current user inbox',
+    );
+
+    const [after] = await db.select()
+      .from(agentActions)
+      .where(eq(agentActions.id, hiddenActionId));
+    assert.equal(
+      after.approval_status,
+      'pending',
+      'hidden stale capture must not be expired by inbox polling from a non-member',
+    );
+  } finally {
+    if (hiddenActionId) {
+      await db.delete(agentActions).where(eq(agentActions.id, hiddenActionId));
+    }
+    if (hiddenMessageId) {
+      await db.delete(messages).where(eq(messages.id, hiddenMessageId));
+    }
+    if (hiddenSpaceId) {
+      await db.delete(spaces).where(eq(spaces.id, hiddenSpaceId));
+    }
+  }
+});
+
 test('GET /api/inbox sorts items desc by created_at', async () => {
   const res = await app.request('/api/inbox');
   const body = await res.json() as { items: { created_at: string }[] };

@@ -8,8 +8,8 @@
  *
  * Strategy (in order):
  *   1. Direct id match (either users.id or agent_employees.id -> user_id)
- *   2. Exact case-insensitive name match
- *   3. Partial ilike '%name%' match. If multiple rows match, returns null and
+ *   2. Exact case-insensitive, accent-insensitive name match
+ *   3. Partial accent-insensitive match. If multiple rows match, returns null and
  *      emits a console.warn — callers should return a disambiguation error to
  *      the LLM with the list of matches.
  *
@@ -17,7 +17,7 @@
  */
 import { db } from './db.js';
 import { users, orgMembers, agentEmployees } from '@deft/db/schema';
-import { eq, and, ilike, or, sql } from 'drizzle-orm';
+import { or, sql } from 'drizzle-orm';
 
 export type ResolvedAssignee = {
   id: string;
@@ -61,8 +61,8 @@ export async function resolveAssignee(
   if (idMatch) return toResolved(idMatch);
 
   // 2. Exact case-insensitive name match
-  const lower = input.toLowerCase();
-  const exactMatches = candidates.filter((c) => c.name.toLowerCase() === lower);
+  const normalizedInput = normalizeAssigneeLookup(input);
+  const exactMatches = candidates.filter((c) => normalizeAssigneeLookup(c.name) === normalizedInput);
   if (exactMatches.length === 1) return toResolved(exactMatches[0]!);
   if (exactMatches.length > 1) {
     console.warn(
@@ -75,7 +75,7 @@ export async function resolveAssignee(
 
   // 3. Partial ilike match
   const partialMatches = candidates.filter((c) =>
-    c.name.toLowerCase().includes(lower),
+    normalizeAssigneeLookup(c.name).includes(normalizedInput),
   );
   if (partialMatches.length === 1) return toResolved(partialMatches[0]!);
   if (partialMatches.length > 1) {
@@ -128,14 +128,16 @@ export async function resolveAssigneeWithMatches(
   const idMatch = candidates.find((c) => c.id === input);
   if (idMatch) return { ok: true, value: toResolved(idMatch) };
 
-  const lower = input.toLowerCase();
-  const exact = candidates.filter((c) => c.name.toLowerCase() === lower);
+  const normalizedInput = normalizeAssigneeLookup(input);
+  const exact = candidates.filter((c) => normalizeAssigneeLookup(c.name) === normalizedInput);
   if (exact.length === 1) return { ok: true, value: toResolved(exact[0]!) };
   if (exact.length > 1) {
     return { ok: false, ambiguous: true, matches: exact.map(toResolved) };
   }
 
-  const partial = candidates.filter((c) => c.name.toLowerCase().includes(lower));
+  const partial = candidates.filter((c) =>
+    normalizeAssigneeLookup(c.name).includes(normalizedInput),
+  );
   if (partial.length === 1) return { ok: true, value: toResolved(partial[0]!) };
   if (partial.length > 1) {
     return { ok: false, ambiguous: true, matches: partial.map(toResolved) };
@@ -151,4 +153,11 @@ function toResolved(row: { id: string; name: string; is_agent: boolean }): Resol
     is_agent: row.is_agent,
     kind: row.is_agent ? 'agent' : 'user',
   };
+}
+
+function normalizeAssigneeLookup(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
 }

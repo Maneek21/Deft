@@ -491,6 +491,13 @@
       "when": 1781222400000,
       "tag": "0070_remote_oauth_mcp",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1781654400000,
+      "tag": "0071_agent_channel",
+      "breakpoints": true
     }
   ]
 }

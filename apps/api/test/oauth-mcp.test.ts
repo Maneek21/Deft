@@ -31,6 +31,10 @@ const OTHER_USER_ID = `oauth-mcp-other-user-${TEST_ID}`;
 const ORG_SLUG = `oauth-mcp-${TEST_ID.slice(0, 8)}`;
 const WIKI_ID = `oauth-mcp-wiki-${TEST_ID}`;
 const WIKI_SLUG = `oauth-mcp-salsa-${TEST_ID.slice(0, 8)}`;
+const ATTRIBUTED_WIKI_ID = `oauth-mcp-attributed-wiki-${TEST_ID}`;
+const ATTRIBUTED_WIKI_SLUG = `oauth-mcp-defty-audit-${TEST_ID.slice(0, 8)}`;
+const ATTRIBUTED_AGENT_EMPLOYEE_ID = `oauth-mcp-agent-${TEST_ID}`;
+const ATTRIBUTED_WIKI_PROOF = `DEFTY-AUDIT-WIKI-PROOF-${TEST_ID}`;
 const PRIVATE_WIKI_ID = `oauth-mcp-private-wiki-${TEST_ID}`;
 const PRIVATE_WIKI_SLUG = `oauth-mcp-private-sauce-${TEST_ID.slice(0, 8)}`;
 const PROJECT_ID = `oauth-mcp-project-${TEST_ID}`;
@@ -79,6 +83,7 @@ async function cleanup() {
     await client.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM projects WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_pages WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM agent_employees WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM org_members WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
     await client.query(`DELETE FROM orgs WHERE id = $1`, [ORG_ID]);
@@ -113,6 +118,14 @@ async function seedWorkspace() {
       [`oauth-mcp-other-member-${TEST_ID}`, ORG_ID, OTHER_USER_ID],
     );
     await client.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         is_byoa, is_active, created_by)
+       VALUES ($1, $2, $3, 'OAuth MCP Defty', $4, 'custom', 'test', 'standard',
+         true, true, $3)`,
+      [ATTRIBUTED_AGENT_EMPLOYEE_ID, ORG_ID, USER_ID, `oauth-mcp-defty-${TEST_ID.slice(0, 8)}`],
+    );
+    await client.query(
       `INSERT INTO wiki_pages
         (id, org_id, scope, type, title, slug, summary, content, confidence, version, is_deleted, metadata)
        VALUES
@@ -121,6 +134,20 @@ async function seedWorkspace() {
          'The Testers Tomatoes team decided to use salsa tasting as the public pilot demo proof point.',
          0.95, 1, false, '{}'::jsonb)`,
       [WIKI_ID, ORG_ID, WIKI_SLUG],
+    );
+    await client.query(
+      `INSERT INTO wiki_pages
+        (id, org_id, scope, agent_employee_id, type, title, slug, summary, content, confidence, version, is_deleted, metadata)
+       VALUES
+        ($1, $2, 'org', $3, 'fact', 'Defty audit-attributed org fact', $4,
+         $5, $5, 0.92, 1, false, '{}'::jsonb)`,
+      [
+        ATTRIBUTED_WIKI_ID,
+        ORG_ID,
+        ATTRIBUTED_AGENT_EMPLOYEE_ID,
+        ATTRIBUTED_WIKI_SLUG,
+        `${ATTRIBUTED_WIKI_PROOF} shared org knowledge created by Defty`,
+      ],
     );
     await client.query(
       `INSERT INTO wiki_pages
@@ -704,6 +731,21 @@ test('OAuth human MCP read tools match user-scoped wiki task and calendar visibi
   const primaryRecall = await callTool(primaryToken.access_token, 11, 'memory_recall', { query: PRIVATE_PROOF, limit: 10 });
   assert.ok(Array.isArray(primaryRecall));
   assert.ok(!primaryRecall.some((page: any) => page.slug === PRIVATE_WIKI_SLUG));
+
+  const attributedSearch = await callTool(primaryToken.access_token, 111, 'search', { query: ATTRIBUTED_WIKI_PROOF, limit: 10 });
+  assert.ok(
+    attributedSearch.some((result: any) => result.id === `wiki:${ATTRIBUTED_WIKI_SLUG}`),
+    'human MCP search should include Defty-authored org pages that retain agent attribution',
+  );
+
+  const attributedRecall = await callTool(primaryToken.access_token, 112, 'memory_recall', { query: ATTRIBUTED_WIKI_PROOF, limit: 10 });
+  assert.ok(
+    attributedRecall.some((page: any) => page.slug === ATTRIBUTED_WIKI_SLUG),
+    'human MCP memory_recall should include Defty-authored org pages that retain agent attribution',
+  );
+
+  const attributedFetch = await callTool(primaryToken.access_token, 113, 'fetch', { id: `wiki:${ATTRIBUTED_WIKI_SLUG}` });
+  assert.equal(attributedFetch.slug, ATTRIBUTED_WIKI_SLUG);
 
   const primaryTasks = await callTool(primaryToken.access_token, 12, 'task_query', { limit: 50 });
   assert.ok(!primaryTasks.some((task: any) => task.id === RESTRICTED_TASK_ID));

@@ -7,6 +7,7 @@ import { Bell, ChevronRight } from 'lucide-react';
 import { useInbox, type InboxItem } from '@/hooks/use-inbox';
 import { InboxRow } from '@/components/inbox-row';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
+import { api } from '@/lib/api';
 
 type Props = {
   onClose: () => void;
@@ -14,7 +15,7 @@ type Props = {
 
 export function NotificationPanel({ onClose }: Props) {
   const router = useRouter();
-  const { items, isLoading, markRead, markAllRead } = useInbox();
+  const { items, isLoading, markRead, markAllRead, refresh } = useInbox();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,8 +37,28 @@ export function NotificationPanel({ onClose }: Props) {
 
   const handleApprovalNav = (item: InboxItem) => {
     void markRead([item.id]);
-    router.push('/inbox?tab=approvals');
+    router.push(`/inbox?tab=${item.kind === 'work_capture' ? 'captures' : 'approvals'}`);
     onClose();
+  };
+
+  const handleApprove = async (item: InboxItem) => {
+    if (!item.approval) return;
+    const res = await api.post(`/api/agent/actions/${item.approval.action_id}/approve`, {});
+    if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+    const body = await res.json().catch(() => ({ status: 'approved' }));
+    await markRead([item.id]);
+    void refresh();
+    return body;
+  };
+
+  const handleReject = async (item: InboxItem) => {
+    if (!item.approval) return;
+    const res = await api.post(`/api/agent/actions/${item.approval.action_id}/reject`, {});
+    if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+    const body = await res.json().catch(() => ({ status: 'rejected' }));
+    await markRead([item.id]);
+    void refresh();
+    return body;
   };
 
   const handleRowClick = (item: InboxItem) => {
@@ -100,19 +121,28 @@ export function NotificationPanel({ onClose }: Props) {
         ) : (
           <div className="flex flex-col gap-1 p-2">
             {items.map((item) => {
-              if (item.kind === 'pending_approval' && item.approval) {
+              if ((item.kind === 'pending_approval' || item.kind === 'work_capture') && item.approval) {
                 const action: AgentAction = {
                   id: item.approval.action_id,
                   action: item.approval.action,
                   params: item.approval.params as Record<string, any>,
+                  created_at: item.created_at,
                 };
                 return (
-                  <div key={item.id} onClick={() => handleApprovalNav(item)}>
+                  <div key={item.id}>
                     <AgentActionCard
                       action={action}
-                      onApprove={() => handleApprovalNav(item)}
-                      onReject={() => handleApprovalNav(item)}
+                      onApprove={() => handleApprove(item)}
+                      onReject={() => handleReject(item)}
                     />
+                    <button
+                      type="button"
+                      onClick={() => handleApprovalNav(item)}
+                      className="ml-3 mb-2 text-[11px] underline"
+                      style={{ color: 'var(--muted)' }}
+                    >
+                      Open in Inbox
+                    </button>
                   </div>
                 );
               }

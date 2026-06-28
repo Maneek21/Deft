@@ -16,6 +16,8 @@ import {
   X,
   Smile,
   MessageSquare,
+  AlertTriangle,
+  ExternalLink,
   Pin,
   MoreHorizontal,
   Copy,
@@ -44,7 +46,6 @@ import { EmptyState } from './empty-state';
 import { RichComposer } from './rich-composer';
 import { SpaceMembersPanel } from './space-members-panel';
 import { TaskQuickCreate } from './task-quick-create';
-import { TaskSuggestionCard } from './task-suggestion-card';
 import { PinnedBar } from './pinned-messages';
 import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
@@ -99,6 +100,19 @@ type Message = {
   latest_reply_at: string | null;
   file_ids: string[];
   files?: FileAttachment[];
+};
+
+type WorkIntentReceipt = {
+  id: string;
+  kind: string;
+  status: 'proposed' | 'converted' | 'dismissed' | 'expired' | 'failed';
+  title: string | null;
+  source_message_id: string | null;
+  converted_task_id: string | null;
+  failure_reason: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
 };
 
 // formatTime, formatDayLabel, isSameDay imported from @/lib/time
@@ -215,6 +229,77 @@ function displayEmoji(emoji: string): string {
   // Strip optional colons (e.g. ":thumbsup:")
   const key = emoji.replace(/^:|:$/g, '').toLowerCase();
   return SHORTCODE_TO_EMOJI[key] || emoji;
+}
+
+function compactReceiptTitle(title: string) {
+  const cleaned = title.replace(/\s+/g, ' ').trim();
+  return cleaned.length > 44 ? `${cleaned.slice(0, 41)}...` : cleaned;
+}
+
+function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) {
+  if (!intents?.length) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {intents.map((intent) => {
+        const metadata = intent.metadata ?? {};
+        const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
+        const title = intent.title ?? 'Work capture';
+        const isTask = Boolean(intent.converted_task_id);
+        const isKnowledge = Boolean(wikiSlug);
+        const href = isTask
+          ? `/tasks?task=${encodeURIComponent(intent.converted_task_id!)}`
+          : isKnowledge
+            ? `/knowledge?slug=${encodeURIComponent(wikiSlug!)}`
+            : null;
+        const label = intent.status === 'converted'
+          ? isTask
+            ? `Task: ${compactReceiptTitle(title)}`
+            : isKnowledge
+              ? `Knowledge: ${compactReceiptTitle(title)}`
+              : 'Capture converted'
+          : intent.status === 'dismissed'
+            ? 'Capture dismissed'
+            : intent.status === 'failed'
+              ? 'Capture failed'
+              : 'Capture expired';
+        const Icon = isTask
+          ? CheckSquare
+          : isKnowledge
+            ? BookOpen
+            : intent.status === 'failed'
+              ? AlertTriangle
+              : intent.status === 'dismissed'
+                ? X
+                : Clock;
+        const color = intent.status === 'converted'
+          ? 'var(--success)'
+          : intent.status === 'failed'
+            ? 'var(--status-red)'
+            : 'var(--muted)';
+
+        const chip = (
+          <span
+            className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium"
+            style={{ background: 'var(--surface-container-highest)', border: '1px solid var(--border)', color }}
+            title={intent.failure_reason ? `${title}: ${intent.failure_reason}` : title}
+          >
+            <Icon size={12} strokeWidth={1.7} />
+            <span className="min-w-0 truncate">{label}</span>
+            {href && <ExternalLink size={11} strokeWidth={1.7} className="flex-shrink-0" />}
+          </span>
+        );
+
+        return href ? (
+          <a key={intent.id} href={href} className="min-w-0 max-w-full no-underline hover:opacity-80">
+            {chip}
+          </a>
+        ) : (
+          <span key={intent.id} className="min-w-0 max-w-full">{chip}</span>
+        );
+      })}
+    </div>
+  );
 }
 
 function isImageUrl(url: string) {
@@ -549,8 +634,6 @@ export function SpaceChat({
   const [forwardMsgId, setForwardMsgId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
   const [linkPreviews, setLinkPreviews] = useState<Map<string, LinkPreview[]>>(new Map());
-  const [taskSuggestions, setTaskSuggestions] = useState<Map<string, any>>(new Map());
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(new Set());
   const [renamingSpace, setRenamingSpace] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -603,6 +686,28 @@ export function SpaceChat({
     { refreshInterval: 5000, fallbackData: {} },
   );
 
+  const workIntentBySpaceKey = spaceId
+    ? `/api/work-intents?space_id=${spaceId}&limit=100`
+    : null;
+
+  const { data: workIntentsByMessage } = useSWR(
+    workIntentBySpaceKey,
+    async (url: string) => {
+      const res = await api.get(url);
+      if (!res.ok) return {} as Record<string, WorkIntentReceipt[]>;
+      const data = await res.json();
+      const list = (data.intents ?? []) as WorkIntentReceipt[];
+      const map: Record<string, WorkIntentReceipt[]> = {};
+      for (const intent of list) {
+        if (!intent.source_message_id) continue;
+        if (intent.status === 'proposed') continue;
+        (map[intent.source_message_id] ??= []).push(intent);
+      }
+      return map;
+    },
+    { refreshInterval: 10000, fallbackData: {} },
+  );
+
   // Load user's saved/bookmarked message IDs for this space
   useEffect(() => {
     api.get('/api/bookmarks').then(async res => {
@@ -632,96 +737,6 @@ export function SpaceChat({
   useEffect(() => {
     if (cmdToast) { const t = setTimeout(() => setCmdToast(null), 3000); return () => clearTimeout(t); }
   }, [cmdToast]);
-
-  // Load dismissed task-suggestion message IDs for this space from localStorage
-  const dismissedSuggestionsKey = `chat:dismissed-suggestions:${spaceId}`;
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = window.localStorage.getItem(dismissedSuggestionsKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setDismissedSuggestions(new Set(Array.isArray(parsed) ? parsed : []));
-      } else {
-        setDismissedSuggestions(new Set());
-      }
-    } catch {
-      setDismissedSuggestions(new Set());
-    }
-    // Also reset any in-memory suggestions when switching spaces
-    setTaskSuggestions(new Map());
-  }, [dismissedSuggestionsKey]);
-
-  const persistDismissedSuggestion = useCallback((messageId: string) => {
-    setDismissedSuggestions((prev) => {
-      if (prev.has(messageId)) return prev;
-      const next = new Set(prev);
-      next.add(messageId);
-      try {
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(dismissedSuggestionsKey, JSON.stringify(Array.from(next)));
-        }
-      } catch {
-        /* ignore localStorage quota errors */
-      }
-      return next;
-    });
-  }, [dismissedSuggestionsKey]);
-
-  const removeTaskSuggestion = useCallback((messageId: string) => {
-    setTaskSuggestions((prev) => {
-      if (!prev.has(messageId)) return prev;
-      const next = new Map(prev);
-      next.delete(messageId);
-      return next;
-    });
-  }, []);
-
-  const handleCreateTaskSuggestion = useCallback(async (messageId: string) => {
-    const s = taskSuggestions.get(messageId);
-    if (!s) return;
-    try {
-      const res = await api.post(`/api/projects/${s.project_id}/tasks`, {
-        title: s.title,
-        description: s.description || '',
-        priority: s.priority || 'p2',
-        source_message_id: messageId,
-      });
-      if (!res.ok) throw new Error('Failed to create task');
-      removeTaskSuggestion(messageId);
-      persistDismissedSuggestion(messageId);
-      setCmdToast(`Task "${s.title}" created`);
-    } catch (err) {
-      console.error('Failed to create task from suggestion:', err);
-      setCmdToast('Failed to create task');
-    }
-  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
-
-  const handleEditTaskSuggestion = useCallback((messageId: string) => {
-    const s = taskSuggestions.get(messageId);
-    if (!s) return;
-    if (s.project_id) {
-      setDefaultProjectId(s.project_id);
-    }
-    setCreateTaskMsg({
-      title: s.title || '',
-      description: s.description || '',
-      messageId,
-    });
-    removeTaskSuggestion(messageId);
-    persistDismissedSuggestion(messageId);
-  }, [taskSuggestions, removeTaskSuggestion, persistDismissedSuggestion]);
-
-  const handleDismissTaskSuggestion = useCallback((messageId: string, notificationId?: string | null) => {
-    if (notificationId) {
-      // Best-effort dismiss on server if a notification id is attached to the suggestion
-      api.patch(`/api/notifications/${notificationId}`, { dismissed: true }).catch(() => {
-        /* ignore — the local dismiss below is the source of truth for UX */
-      });
-    }
-    removeTaskSuggestion(messageId);
-    persistDismissedSuggestion(messageId);
-  }, [removeTaskSuggestion, persistDismissedSuggestion]);
 
   // Sync mute status from spaces list
   useEffect(() => {
@@ -930,31 +945,6 @@ export function SpaceChat({
     socket.on('message:pinned', onMessagePinned);
     socket.on('message:unpinned', onMessageUnpinned);
 
-    // Agent task suggestion listener
-    const onTaskSuggestion = (data: { messageId: string; spaceId: string; suggestion: any }) => {
-      if (data.spaceId !== spaceId) return;
-      // Re-check dismissed state from storage (state may be stale inside the closure)
-      let dismissed = false;
-      try {
-        if (typeof window !== 'undefined') {
-          const raw = window.localStorage.getItem(`chat:dismissed-suggestions:${spaceId}`);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.includes(data.messageId)) dismissed = true;
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-      if (dismissed) return;
-      setTaskSuggestions((prev) => {
-        const next = new Map(prev);
-        next.set(data.messageId, data.suggestion);
-        return next;
-      });
-    };
-    socket.on('agent:task_suggestion', onTaskSuggestion);
-
     return () => {
       socket.emit('space:leave', spaceId);
       socket.off('message:new', onNew);
@@ -969,7 +959,6 @@ export function SpaceChat({
       socket.off('message:link_previews', onLinkPreviews);
       socket.off('message:pinned', onMessagePinned);
       socket.off('message:unpinned', onMessageUnpinned);
-      socket.off('agent:task_suggestion', onTaskSuggestion);
     };
   }, [spaceId, user?.id, scrollToBottom]);
 
@@ -1768,15 +1757,24 @@ export function SpaceChat({
                                 key={action.id}
                                 action={action}
                                 onApprove={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
+                                  return body;
                                 }}
                                 onReject={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
+                                  return body;
                                 }}
                               />
                             ))}
+                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1793,23 +1791,6 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
-                              const s = taskSuggestions.get(msg.id);
-                              return (
-                                <TaskSuggestionCard
-                                  messageId={msg.id}
-                                  taskTitle={s.title}
-                                  taskDescription={s.description}
-                                  projectId={s.project_id}
-                                  projectName={s.project_name}
-                                  priority={s.priority}
-                                  agentName={s.agent_name || 'Alex'}
-                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
-                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
-                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
-                                />
-                              );
-                            })()}
                           </>
                         )}
                       </div>
@@ -1920,15 +1901,24 @@ export function SpaceChat({
                                 key={action.id}
                                 action={action}
                                 onApprove={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
+                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
+                                  return body;
                                 }}
                                 onReject={async () => {
-                                  await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
+                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+                                  if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
+                                  return body;
                                 }}
                               />
                             ))}
+                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1945,23 +1935,6 @@ export function SpaceChat({
                               hasUnread={(msg as any).has_unread_thread_replies}
                               onClick={() => setThreadMessage(msg)}
                             />
-                            {taskSuggestions.has(msg.id) && !dismissedSuggestions.has(msg.id) && (() => {
-                              const s = taskSuggestions.get(msg.id);
-                              return (
-                                <TaskSuggestionCard
-                                  messageId={msg.id}
-                                  taskTitle={s.title}
-                                  taskDescription={s.description}
-                                  projectId={s.project_id}
-                                  projectName={s.project_name}
-                                  priority={s.priority}
-                                  agentName={s.agent_name || 'Alex'}
-                                  onCreate={() => handleCreateTaskSuggestion(msg.id)}
-                                  onEdit={() => handleEditTaskSuggestion(msg.id)}
-                                  onDismiss={() => handleDismissTaskSuggestion(msg.id, s.notification_id)}
-                                />
-                              );
-                            })()}
                           </>
                         )}
                       </div>

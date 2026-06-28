@@ -5,7 +5,7 @@
  *
  * Covers:
  *   1. scope: 'own'  → only employee-tagged pages returned
- *   2. scope: 'org'  → only org-wide pages (agent_employee_id IS NULL) returned
+ *   2. scope: 'org'  → only org-scoped pages returned, including audit-attributed pages
  *   3. scope: 'all'  → both tiers returned (default behaviour)
  *   4. empty query   → error result
  *   5. response shape preserves: slug, title, summary, type, confidence
@@ -22,6 +22,7 @@ const DATABASE_URL =
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const TEST_USER_ID = 'mcp-recall-test-user';
 const AGENT_EMPLOYEE_ID = `mcp-recall-test-emp-${Date.now()}`;
+const OTHER_AGENT_EMPLOYEE_ID = `mcp-recall-other-emp-${Date.now()}`;
 
 // Unique query term so only our seeded pages match — avoids interference with
 // other wiki_pages rows in the dev database.
@@ -78,6 +79,17 @@ before(async () => {
     );
     seededIds.push({ table: 'agent_employees', id: AGENT_EMPLOYEE_ID });
 
+    await c.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         is_byoa, is_active, created_by)
+       VALUES ($1, $2, $3, 'MCP Recall Other Emp', $4, 'custom', 'test', 'standard',
+         true, true, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [OTHER_AGENT_EMPLOYEE_ID, ORG_ID, TEST_USER_ID, `mcp-recall-other-${Date.now()}`],
+    );
+    seededIds.push({ table: 'agent_employees', id: OTHER_AGENT_EMPLOYEE_ID });
+
     // Employee-tagged wiki page (tier 1 — "own").
     const empPageId = `mcp-recall-emp-page-${Date.now()}`;
     await c.query(
@@ -106,7 +118,7 @@ before(async () => {
     );
     seededIds.push({ table: 'wiki_pages', id: empPageId });
 
-    // Org-wide wiki page (tier 2 — "org", agent_employee_id IS NULL).
+    // Org-wide wiki page (tier 2 — "org", legacy/no employee attribution).
     const orgPageId = `mcp-recall-org-page-${Date.now()}`;
     await c.query(
       `INSERT INTO wiki_pages
@@ -131,6 +143,35 @@ before(async () => {
       [orgPageId],
     );
     seededIds.push({ table: 'wiki_pages', id: orgPageId });
+
+    // Org-wide wiki page with employee attribution, matching Defty-approved
+    // knowledge captures. This must be visible as org knowledge to other
+    // employees even though agent_employee_id is not null.
+    const attributedOrgPageId = `mcp-recall-attributed-org-page-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, summary, content, confidence,
+          agent_employee_id, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'fact', 'org', $3, $4, $5, $6, 0.85, $7, false, NOW(), NOW())`,
+      [
+        attributedOrgPageId,
+        ORG_ID,
+        `Defty Org ${QUERY_TERM} Fact`,
+        `defty-org-fact-${Date.now()}`,
+        `Summary about ${QUERY_TERM} from Defty org knowledge.`,
+        `The ${QUERY_TERM} fact was saved by Defty as org knowledge with audit attribution.`,
+        OTHER_AGENT_EMPLOYEE_ID,
+      ],
+    );
+    await c.query(
+      `UPDATE wiki_pages SET search_vector =
+         setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+         setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+       WHERE id = $1`,
+      [attributedOrgPageId],
+    );
+    seededIds.push({ table: 'wiki_pages', id: attributedOrgPageId });
   });
 });
 
@@ -191,6 +232,11 @@ describe('memoryRecall', () => {
     // Employee-tagged page must not appear.
     const empPage = rows.find((r) => String(r.title).includes('Employee'));
     assert.strictEqual(empPage, undefined, 'Employee-tagged page must not appear in org scope');
+
+    assert.ok(
+      rows.some((r) => String(r.title).includes('Defty Org')),
+      'Org scope should include org pages that retain agent_employee_id for audit attribution',
+    );
   });
 
   test('3. scope: all (default) returns both tiers', async () => {

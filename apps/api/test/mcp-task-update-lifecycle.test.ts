@@ -227,3 +227,51 @@ test('task_update enqueues workflow and records activity on valid status change'
 
   assert.ok(job, 'workflow-execute job should be enqueued for MCP status change');
 });
+
+test('task_update supports due date and comment patches', async () => {
+  const taskId = await createTask('todo');
+
+  const result = await taskUpdate(
+    {
+      caller_employee_slug: employeeSlug,
+      task_id: taskId,
+      patch: {
+        due_date: '2026-07-15',
+        comment: 'Customer confirmed the target date.',
+      },
+    },
+    ctx(),
+  );
+
+  assert.ok(!result.isError, `due date/comment patch should succeed: ${result.content?.[0]?.text}`);
+  const parsed = parseResult(result);
+  assert.equal(parsed.comment_id !== null, true);
+
+  const [task] = await db
+    .select({ due_date: tasks.due_date })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  assert.equal(task?.due_date?.toISOString().slice(0, 10), '2026-07-15');
+
+  const [comment] = await db
+    .select({ content: taskComments.content, user_id: taskComments.user_id })
+    .from(taskComments)
+    .where(eq(taskComments.id, parsed.comment_id))
+    .limit(1);
+  assert.equal(comment?.content, 'Customer confirmed the target date.');
+  assert.equal(comment?.user_id, userId);
+
+  const activities = await db
+    .select({ action: taskActivity.action, field: taskActivity.field })
+    .from(taskActivity)
+    .where(eq(taskActivity.task_id, taskId));
+  assert.ok(
+    activities.some((entry) => entry.action === 'due_date_changed' && entry.field === 'due_date'),
+    'due date activity should be written',
+  );
+  assert.ok(
+    activities.some((entry) => entry.action === 'commented' && entry.field === 'comment'),
+    'comment activity should be written',
+  );
+});

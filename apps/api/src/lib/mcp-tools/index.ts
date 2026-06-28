@@ -21,6 +21,7 @@ import { taskQuery } from './tasks.js';
 import { memberList } from './members.js';
 import { threadFetch, fetchUnread } from './messages.js';
 import { taskCreate, taskUpdate, messagePost, sendMessage } from './writes.js';
+import { wikiCreate, wikiUpdate } from './wiki-create.js';
 import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
 import { eventsQuery } from './events.js';
@@ -67,6 +68,8 @@ export const TOOL_ALIASES: Record<string, string> = {
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
   memory_write: memoryWrite as ToolHandler,
   memory_update: memoryUpdate as ToolHandler,
+  wiki_create: wikiCreate as ToolHandler,
+  wiki_update: wikiUpdate as ToolHandler,
   task_create: taskCreate as ToolHandler,
   task_update: taskUpdate as ToolHandler,
   message_post: messagePost as ToolHandler,
@@ -340,6 +343,15 @@ export const toolSchemas: ToolSchema[] = [
         project_id: { type: 'string' },
         space_id: { type: 'string' },
         assignee_id: { type: 'string' },
+        assignee_name: {
+          type: 'string',
+          description:
+            'Optional assignee display name. Use when you know the person name but not the user id; Deft resolves it inside the caller org.',
+        },
+        source_message_id: {
+          type: 'string',
+          description: 'Optional source chat message id to link the created task back to the conversation.',
+        },
         priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
         size: { type: 'string' },
       },
@@ -461,6 +473,68 @@ export const toolSchemas: ToolSchema[] = [
         },
       },
       required: ['caller_employee_slug', 'slug', 'patch'],
+    },
+  },
+  {
+    name: 'wiki_create',
+    description:
+      'Create a governed wiki page with source attribution and approval gating. Prefer this over memory_write when capturing shared team knowledge from a chat/source message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        title: { type: 'string' },
+        content: { type: 'string' },
+        summary: { type: 'string' },
+        type: {
+          type: 'string',
+          enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'],
+        },
+        scope: { type: 'string', enum: ['org', 'space', 'user'] },
+        space_id: { type: ['string', 'null'] },
+        source_message_id: { type: ['string', 'null'] },
+        source_space_id: { type: ['string', 'null'] },
+        source_user_id: { type: ['string', 'null'] },
+        tags: { type: 'array', items: { type: 'string' } },
+        metadata: { type: ['object', 'null'], additionalProperties: true },
+      },
+      required: ['caller_employee_slug', 'title', 'content'],
+    },
+  },
+  {
+    name: 'wiki_update',
+    description:
+      'Update an existing wiki page through the governed approval path. Writes a page-version snapshot, operation log, optional source citation, and refreshes search.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        page_id: { type: 'string' },
+        slug: { type: 'string' },
+        patch: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            content: { type: 'string' },
+            summary: { type: ['string', 'null'] },
+            type: {
+              type: 'string',
+              enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'],
+            },
+            scope: { type: 'string', enum: ['org', 'space', 'user'] },
+            space_id: { type: ['string', 'null'] },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            tags: { type: 'array', items: { type: 'string' } },
+            metadata: { type: ['object', 'null'], additionalProperties: true },
+          },
+          additionalProperties: false,
+        },
+        source_message_id: { type: ['string', 'null'] },
+        source_space_id: { type: ['string', 'null'] },
+        source_user_id: { type: ['string', 'null'] },
+        capture_reason: { type: ['string', 'null'] },
+      },
+      required: ['caller_employee_slug', 'patch'],
     },
   },
   {

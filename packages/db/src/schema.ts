@@ -21,6 +21,21 @@ export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_prog
 export const trustLevelEnum = pgEnum('trust_level', ['conservative', 'standard', 'autonomous']);
 export const approvalTierEnum = pgEnum('approval_tier', ['auto', 'quick', 'full']);
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected', 'expired']);
+export const workIntentKindEnum = pgEnum('work_intent_kind', [
+  'task_candidate',
+  'blocker_candidate',
+  'decision_candidate',
+  'resource_candidate',
+  'note_candidate',
+  'question_candidate',
+]);
+export const workIntentStatusEnum = pgEnum('work_intent_status', [
+  'proposed',
+  'converted',
+  'dismissed',
+  'expired',
+  'failed',
+]);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
@@ -464,6 +479,43 @@ export const agentActions = pgTable('agent_actions', {
 }, (t) => [
   index('agent_action_org_idx').on(t.org_id),
   index('agent_action_user_idx').on(t.user_id),
+]);
+
+// ═══ WORK INTENTS ═══
+// Canonical ledger for "Defty noticed possible work" events. Existing
+// agent_actions rows remain the approval/execution surface; work_intents
+// carry the source evidence and lifecycle so chat classification does not
+// silently become task creation.
+export const workIntents = pgTable('work_intents', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  space_id: text('space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  source_message_id: text('source_message_id').references(() => messages.id, { onDelete: 'set null' }),
+  source_user_id: text('source_user_id').references(() => users.id, { onDelete: 'set null' }),
+  agent_employee_id: text('agent_employee_id').references(() => agentEmployees.id, { onDelete: 'set null' }),
+  kind: workIntentKindEnum('kind').notNull(),
+  status: workIntentStatusEnum('status').default('proposed').notNull(),
+  title: text('title').notNull(),
+  summary: text('summary'),
+  confidence: real('confidence'),
+  proposed_action: text('proposed_action').default('task_create').notNull(),
+  proposed_params: jsonb('proposed_params').$type<Record<string, unknown>>().notNull().default({}),
+  dedupe_key: text('dedupe_key').notNull(),
+  converted_action_id: text('converted_action_id'),
+  converted_task_id: text('converted_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  converted_by: text('converted_by').references(() => users.id, { onDelete: 'set null' }),
+  converted_at: timestamp('converted_at'),
+  dismissed_by: text('dismissed_by').references(() => users.id, { onDelete: 'set null' }),
+  dismissed_at: timestamp('dismissed_at'),
+  failure_reason: text('failure_reason'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('work_intent_dedupe_unique').on(t.org_id, t.dedupe_key),
+  index('work_intent_org_status_idx').on(t.org_id, t.status, t.created_at),
+  index('work_intent_source_message_idx').on(t.source_message_id),
+  index('work_intent_space_idx').on(t.space_id),
+  index('work_intent_converted_task_idx').on(t.converted_task_id),
 ]);
 
 // ═══ AGENT: SKILLS ═══
@@ -1466,6 +1518,122 @@ export const mcpTokens = pgTable('mcp_tokens', {
   index('mcp_tokens_user_idx').on(t.user_id),
   index('mcp_tokens_agent_idx').on(t.agent_employee_id),
   index('mcp_tokens_prefix_idx').on(t.token_prefix),
+]);
+
+// ═══ AGENT CHANNELS ══════════════════════════════════════════════════════════
+// Durable delivery plane for always-on BYOA runtimes such as Hermes/OpenClaw.
+// MCP remains the tool/action plane; these tables track live workspace events
+// that should wake a runtime, plus the runtime's delivery cursor and replies.
+export const agentChannelConnections = pgTable('agent_channel_connections', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  runtime_kind: text('runtime_kind').default('custom_mcp').notNull(),
+  status: text('status').default('disconnected').notNull(),
+  protocol_version: text('protocol_version').default('deft.agent_channel.v1').notNull(),
+  last_seen_at: timestamp('last_seen_at'),
+  last_event_id: text('last_event_id'),
+  last_error: text('last_error'),
+  paused_at: timestamp('paused_at'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_channel_connection_employee_unique').on(t.org_id, t.agent_employee_id),
+  index('agent_channel_connection_org_status_idx').on(t.org_id, t.status),
+  index('agent_channel_connection_seen_idx').on(t.agent_employee_id, t.last_seen_at),
+]);
+
+export const agentChannelTokens = pgTable('agent_channel_tokens', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  token_hash: text('token_hash').notNull(),
+  token_prefix: text('token_prefix').notNull(),
+  scopes: jsonb('scopes').$type<string[]>().notNull().default(['channel:read', 'channel:write']),
+  is_active: boolean('is_active').default(true).notNull(),
+  last_used_at: timestamp('last_used_at'),
+  revoked_at: timestamp('revoked_at'),
+  created_by: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  ...timestamps(),
+}, (t) => [
+  index('agent_channel_tokens_org_idx').on(t.org_id),
+  index('agent_channel_tokens_employee_idx').on(t.agent_employee_id),
+  index('agent_channel_tokens_prefix_idx').on(t.token_prefix),
+]);
+
+export const agentChannelEvents = pgTable('agent_channel_events', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  source_kind: text('source_kind'),
+  source_id: text('source_id'),
+  space_id: text('space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  thread_id: text('thread_id').references(() => messages.id, { onDelete: 'set null' }),
+  actor_user_id: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  idempotency_key: text('idempotency_key').notNull(),
+  status: text('status').default('pending').notNull(),
+  delivery_count: integer('delivery_count').default(0).notNull(),
+  delivered_at: timestamp('delivered_at'),
+  acked_at: timestamp('acked_at'),
+  completed_at: timestamp('completed_at'),
+  failed_at: timestamp('failed_at'),
+  error: text('error'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_channel_event_idempotency_unique').on(t.org_id, t.agent_employee_id, t.idempotency_key),
+  index('agent_channel_event_employee_status_idx').on(t.agent_employee_id, t.status, t.created_at),
+  index('agent_channel_event_org_kind_idx').on(t.org_id, t.kind, t.created_at),
+  index('agent_channel_event_space_idx').on(t.space_id),
+]);
+
+export const agentChannelCursors = pgTable('agent_channel_cursors', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  connection_id: text('connection_id').references(() => agentChannelConnections.id, { onDelete: 'set null' }),
+  last_delivered_event_id: text('last_delivered_event_id'),
+  last_acked_event_id: text('last_acked_event_id'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_channel_cursor_employee_unique').on(t.org_id, t.agent_employee_id),
+  index('agent_channel_cursor_connection_idx').on(t.connection_id),
+]);
+
+export const agentChannelSessions = pgTable('agent_channel_sessions', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  deft_scope: text('deft_scope').notNull(),
+  deft_scope_id: text('deft_scope_id').notNull(),
+  runtime_session_key: text('runtime_session_key').notNull(),
+  busy_mode: text('busy_mode').default('queue').notNull(),
+  last_active_at: timestamp('last_active_at'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_channel_session_scope_unique').on(t.org_id, t.agent_employee_id, t.deft_scope, t.deft_scope_id),
+  index('agent_channel_session_runtime_idx').on(t.agent_employee_id, t.runtime_session_key),
+]);
+
+export const agentChannelDeliveryAttempts = pgTable('agent_channel_delivery_attempts', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  event_id: text('event_id').references(() => agentChannelEvents.id, { onDelete: 'cascade' }),
+  direction: text('direction').notNull(),
+  idempotency_key: text('idempotency_key'),
+  status: text('status').notNull(),
+  request_json: jsonb('request_json').$type<Record<string, unknown>>(),
+  response_json: jsonb('response_json').$type<Record<string, unknown>>(),
+  error: text('error'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_channel_attempt_idempotency_unique').on(t.org_id, t.agent_employee_id, t.idempotency_key),
+  index('agent_channel_attempt_event_idx').on(t.event_id, t.created_at),
+  index('agent_channel_attempt_employee_idx').on(t.agent_employee_id, t.created_at),
 ]);
 
 export const oauthClients = pgTable('oauth_clients', {

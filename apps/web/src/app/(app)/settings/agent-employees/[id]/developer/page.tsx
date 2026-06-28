@@ -47,6 +47,9 @@ type DeveloperPayload = {
   runtime_setup: {
     runtime_kind: string;
     tool_server_name: string | null;
+    channel_protocol_version: string;
+    mcp_endpoint_url: string;
+    channel_endpoint_url: string;
     tool_name_style: 'bare' | 'server_prefixed';
     tool_call_names: string[];
     setup_steps: string[];
@@ -74,15 +77,58 @@ type DeveloperPayload = {
       summary: string;
       created_at: string;
     }>;
+    recent_channel_events: Array<{
+      id: string;
+      kind: string;
+      status: string;
+      source_kind?: string | null;
+      source_id?: string | null;
+      delivery_count: number;
+      error?: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
   };
   mcp_endpoint_url: string;
   mcp_token_masked: string | null;
   mcp_token: string | null;
+  channel_endpoint_url: string;
+  channel_token_masked: string | null;
+  channel_token: string | null;
+  channel: {
+    protocol_version: string;
+    connection: {
+      status: string;
+      runtime_kind: string;
+      protocol_version: string;
+      last_seen_at?: string | null;
+      last_event_id?: string | null;
+      last_error?: string | null;
+    } | null;
+    token: {
+      token_prefix: string;
+      last_used_at?: string | null;
+      created_at: string;
+    } | null;
+    queue: {
+      pending: number;
+      delivered: number;
+      completed: number;
+      failed: number;
+    };
+  };
 };
 
 type RegeneratePayload = {
   api_key: string;
   mcp_endpoint_url: string;
+  employee: { id: string; slug: string; name?: string };
+};
+
+type RegenerateChannelPayload = {
+  channel_key: string;
+  channel_endpoint_url: string;
+  channel_token_prefix: string;
   employee: { id: string; slug: string; name?: string };
 };
 
@@ -94,10 +140,13 @@ export default function DeveloperPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [newChannelToken, setNewChannelToken] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [regeneratingChannel, setRegeneratingChannel] = useState(false);
   const [copyHint, setCopyHint] = useState<string | null>(null);
   const [certBusy, setCertBusy] = useState(false);
   const [certResult, setCertResult] = useState<string | null>(null);
+  const [channelTestBusy, setChannelTestBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,6 +196,36 @@ export default function DeveloperPage() {
     }
   };
 
+  const regenerateChannelToken = async () => {
+    setRegeneratingChannel(true);
+    setError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employeeId}/regenerate-channel-token`);
+      if (!res.ok) {
+        if (res.status === 403) {
+          setError('Only org owners, admins, or the employee creator can regenerate this channel token.');
+          return;
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const payload = (await res.json()) as RegenerateChannelPayload;
+      setNewChannelToken(payload.channel_key);
+      setData((current) => current
+        ? {
+            ...current,
+            channel_endpoint_url: payload.channel_endpoint_url,
+            channel_token_masked: `${payload.channel_token_prefix}********`,
+          }
+        : current);
+      setCopyHint('New channel token generated. Copy it now.');
+      setTimeout(() => setCopyHint(null), 2500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRegeneratingChannel(false);
+    }
+  };
+
   const certificationAction = async (action: 'start' | 'check' | 'reset') => {
     setCertBusy(true);
     setCertResult(null);
@@ -169,6 +248,23 @@ export default function DeveloperPage() {
       setError((e as Error).message);
     } finally {
       setCertBusy(false);
+    }
+  };
+
+  const startChannelTest = async () => {
+    setChannelTestBusy(true);
+    setError(null);
+    setCertResult(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employeeId}/channel-test/start`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      setCertResult(`Channel test event queued. Nonce: ${payload.nonce}`);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setChannelTestBusy(false);
     }
   };
 
@@ -198,9 +294,15 @@ export default function DeveloperPage() {
   if (!data) return null;
 
   const tokenForConfig = newToken ?? '<bearer-token>';
+  const channelTokenForConfig = newChannelToken ?? '<channel-token>';
   const connectionLabel = data.employee.last_heartbeat_at
     ? `Last ping ${new Date(data.employee.last_heartbeat_at).toLocaleString()}`
     : 'Never connected';
+  const channelConnectionLabel = data.channel.connection?.last_seen_at
+    ? `${data.channel.connection.status} - last seen ${new Date(data.channel.connection.last_seen_at).toLocaleString()}`
+    : data.channel.token
+      ? 'Token issued, not connected yet'
+      : 'No channel token issued';
 
   const claudeDesktopConfig = JSON.stringify(
     {
@@ -301,6 +403,57 @@ export default function DeveloperPage() {
             </div>
           )}
         />
+        <Field
+          label="Channel endpoint URL"
+          value={data.channel_endpoint_url}
+          onCopy={() => copy('channel URL', data.channel_endpoint_url)}
+          mono
+        />
+        <Field
+          label="Channel token"
+          value={newChannelToken ?? (data.channel_token_masked ?? '(no channel token yet)')}
+          mono
+          trailing={(
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={regenerateChannelToken}
+                disabled={regeneratingChannel}
+                className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+              >
+                {regeneratingChannel ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                Regenerate
+              </button>
+              {newChannelToken && (
+                <button
+                  type="button"
+                  onClick={() => copy('channel token', newChannelToken)}
+                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                >
+                  <Copy className="size-3" /> Copy
+                </button>
+              )}
+            </div>
+          )}
+        />
+        <Field
+          label="Channel status"
+          value={`${channelConnectionLabel} - pending ${data.channel.queue.pending} - failed ${data.channel.queue.failed}`}
+        />
+        <div className="grid grid-cols-12 gap-2 items-center">
+          <div className="col-span-3 text-xs text-muted-foreground">Channel test</div>
+          <div className="col-span-9">
+            <button
+              type="button"
+              onClick={startChannelTest}
+              disabled={channelTestBusy}
+              className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+            >
+              {channelTestBusy ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
+              Send test event
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="mt-6">
@@ -369,6 +522,9 @@ export default function DeveloperPage() {
           <div className="mt-1 text-[11px] text-muted-foreground">
             Tool names: {data.runtime_setup.tool_call_names.join(', ')}
           </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Agent Channel: {data.runtime_setup.channel_protocol_version}
+          </div>
           <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs">
             {data.runtime_setup.setup_steps.map((step) => (
               <li key={step}>{step}</li>
@@ -421,6 +577,32 @@ export default function DeveloperPage() {
         </p>
       </section>
 
+      <section className="mt-6">
+        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Agent Channel quick config
+        </div>
+        <CodeBlock
+          value={[
+            `DEFT_CHANNEL_URL=${data.channel_endpoint_url}`,
+            `DEFT_CHANNEL_TOKEN=${channelTokenForConfig}`,
+            `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
+            `DEFT_MCP_TOKEN=${tokenForConfig}`,
+            `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
+          ].join('\n')}
+          onCopy={() => copy('channel env', [
+            `DEFT_CHANNEL_URL=${data.channel_endpoint_url}`,
+            `DEFT_CHANNEL_TOKEN=${channelTokenForConfig}`,
+            `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
+            `DEFT_MCP_TOKEN=${tokenForConfig}`,
+            `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
+          ].join('\n'))}
+        />
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          MCP is the tool surface. Agent Channel is the live inbox for DMs,
+          mentions, task assignments, task comments, and task status changes.
+        </p>
+      </section>
+
       <section className="mt-6 grid gap-4 md:grid-cols-2">
         <LogPanel
           title="Recent MCP calls"
@@ -438,6 +620,15 @@ export default function DeveloperPage() {
             id: row.id,
             main: row.kind,
             sub: `${new Date(row.created_at).toLocaleString()} - ${row.summary}`,
+          }))}
+        />
+        <LogPanel
+          title="Channel events"
+          empty="No channel events delivered yet."
+          rows={data.diagnostics.recent_channel_events.map((row) => ({
+            id: row.id,
+            main: `${row.status} ${row.kind}`,
+            sub: `${new Date(row.created_at).toLocaleString()} - delivery count ${row.delivery_count}${row.error ? ` - ${row.error}` : ''}`,
           }))}
         />
       </section>

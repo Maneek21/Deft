@@ -22,6 +22,7 @@ import { sql, eq, and } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   tasks,
+  taskComments,
   messages,
   agentActions,
   agentEmployees,
@@ -43,7 +44,9 @@ import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
 import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { isValidTransition } from '../task-status-machine.js';
+import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
+import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -192,6 +195,33 @@ async function verifyParentMessageMatches(
   return !!row;
 }
 
+/** Verifies a source message belongs to this org and is readable by the actor. */
+async function verifyMessageVisibleToUser(
+  messageId: string,
+  userId: string,
+  orgId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, messages.space_id),
+      eq(spaceMembers.user_id, userId),
+    ))
+    .innerJoin(spaces, and(
+      eq(spaces.id, messages.space_id),
+      eq(spaces.org_id, orgId),
+      eq(spaces.is_archived, false),
+    ))
+    .where(and(
+      eq(messages.id, messageId),
+      eq(messages.org_id, orgId),
+      eq(messages.is_deleted, false),
+    ))
+    .limit(1);
+  return !!row;
+}
+
 // ─── task_create ──────────────────────────────────────────────────────────
 
 const VALID_PRIORITY = new Set(['p0', 'p1', 'p2', 'p3']);
@@ -203,8 +233,10 @@ export type TaskCreateArgs = {
   project_id?: string;
   space_id?: string;
   assignee_id?: string;
+  assignee_name?: string;
   priority?: string;
   size?: string;
+  source_message_id?: string;
 };
 
 /**
@@ -215,7 +247,11 @@ export type TaskCreateArgs = {
 export async function executeTaskCreate(
   args: TaskCreateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean },
+  opts?: {
+    skipReceipt?: boolean;
+    actionId?: string | null;
+    sourceReaderUserId?: string | null;
+  },
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
@@ -251,16 +287,59 @@ export async function executeTaskCreate(
         ? (args.priority as 'p2')
         : ('p2' as const);
 
-    // Atomically bump the project's task_counter and use it as the task
-    // number. Counter UPDATE is also org-scoped as defence-in-depth.
-    const counterRow = await db.execute(
-      sql`UPDATE projects SET task_counter = task_counter + 1
-          WHERE id = ${projectId} AND org_id = ${ctx.org_id} RETURNING task_counter`,
-    );
-    const rawRows = (counterRow as { rows?: unknown[] }).rows ?? (counterRow as unknown as unknown[]);
-    const first = (rawRows as Array<Record<string, unknown>>)[0];
-    if (!first) return errorResult('task_create: project counter update failed');
-    const taskNumber = Number(first.task_counter);
+    if (args.source_message_id?.trim()) {
+      const sourceReaderIds = [
+        shadowUserId,
+        opts?.sourceReaderUserId ?? null,
+      ].filter((value, index, values): value is string =>
+        typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
+      );
+      let canReadSource = false;
+      for (const readerUserId of sourceReaderIds) {
+        canReadSource = await verifyMessageVisibleToUser(
+          args.source_message_id,
+          readerUserId,
+          ctx.org_id,
+        );
+        if (canReadSource) break;
+      }
+      if (!canReadSource) {
+        return errorResult(
+          `task_create: source_message_id ${args.source_message_id} is not readable in caller's org`,
+        );
+      }
+    }
+
+    let assigneeId: string | null = null;
+    if (args.assignee_id?.trim()) {
+      const resolved = await resolveAssigneeWithMatches(args.assignee_id, ctx.org_id);
+      if (!resolved.ok) {
+        return errorResult(
+          `task_create: assignee_id ${args.assignee_id} not found in caller's org`,
+        );
+      }
+      assigneeId = resolved.value.id;
+    } else if (args.assignee_name?.trim()) {
+      const resolved = await resolveAssigneeWithMatches(args.assignee_name, ctx.org_id);
+      if (!resolved.ok) {
+        if (resolved.ambiguous) {
+          return errorResult(
+            `task_create: ambiguous assignee "${args.assignee_name}". Matches: ${resolved.matches
+              .map((m) => m.name)
+              .join(', ')}`,
+          );
+        }
+        return errorResult(
+          `task_create: assignee "${args.assignee_name}" not found in caller's org`,
+        );
+      }
+      assigneeId = resolved.value.id;
+    }
+
+    const taskNumber = await reserveNextTaskNumber({
+      projectId,
+      orgId: ctx.org_id,
+    });
 
     const [task] = await db
       .insert(tasks)
@@ -271,8 +350,9 @@ export async function executeTaskCreate(
         title: args.title.trim(),
         description: args.description ?? null,
         priority,
-        assignee_id: args.assignee_id ?? null,
+        assignee_id: assigneeId,
         created_by: shadowUserId,
+        source_message_id: args.source_message_id ?? null,
       })
       .returning();
 
@@ -281,6 +361,8 @@ export async function executeTaskCreate(
       task_id: task!.id,
       user_id: shadowUserId,
       action: 'created',
+      agent_action_id: opts?.actionId ?? null,
+      acting_agent_employee_id: ctx.employee_id,
     });
 
     try {
@@ -323,6 +405,7 @@ export async function executeTaskCreate(
       status: task!.status,
       priority: task!.priority,
       assignee_id: task!.assignee_id,
+      source_message_id: task!.source_message_id,
       created_at: task!.created_at,
     };
 
@@ -392,14 +475,24 @@ export type TaskUpdateArgs = {
     status?: string;
     priority?: string;
     assignee_id?: string | null;
+    due_date?: string | null;
+    comment?: string;
   };
 };
+
+function parseDueDate(value: string | null | undefined): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value.trim() === '') return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed;
+}
 
 /** Inner executor for task_update. No trust-gating. */
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean },
+  opts?: { skipReceipt?: boolean; actionId?: string | null },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -409,6 +502,7 @@ export async function executeTaskUpdate(
   try {
     const patch = args.patch;
     const update: Record<string, unknown> = {};
+    let createdCommentId: string | null = null;
     const activityEntries: {
       action: string;
       field: string;
@@ -463,6 +557,14 @@ export async function executeTaskUpdate(
     }
     if (patch.assignee_id !== undefined) {
       const assigneeId = patch.assignee_id || null;
+      if (assigneeId) {
+        const resolved = await resolveAssigneeWithMatches(assigneeId, ctx.org_id);
+        if (!resolved.ok) {
+          return errorResult(
+            `task_update: assignee_id ${assigneeId} not found in caller's org`,
+          );
+        }
+      }
       if (assigneeId !== existingTask.assignee_id) {
         update.assignee_id = assigneeId;
         activityEntries.push({
@@ -470,6 +572,23 @@ export async function executeTaskUpdate(
           field: 'assignee_id',
           old_value: existingTask.assignee_id ?? null,
           new_value: assigneeId,
+        });
+      }
+    }
+    if (patch.due_date !== undefined) {
+      const dueDate = parseDueDate(patch.due_date);
+      if (dueDate === undefined) {
+        return errorResult(`task_update: invalid due_date ${patch.due_date}`);
+      }
+      const oldDue = existingTask.due_date?.toISOString() ?? null;
+      const newDue = dueDate?.toISOString() ?? null;
+      if (oldDue !== newDue) {
+        update.due_date = dueDate;
+        activityEntries.push({
+          action: 'due_date_changed',
+          field: 'due_date',
+          old_value: oldDue,
+          new_value: newDue,
         });
       }
     }
@@ -494,16 +613,41 @@ export async function executeTaskUpdate(
     }
 
     if (Object.keys(update).length === 0) {
-      return errorResult('task_update: no valid fields in patch');
+      const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
+      if (!comment) {
+        return errorResult('task_update: no valid fields in patch');
+      }
     }
 
-    const [row] = await db
-      .update(tasks)
-      .set(update)
-      .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
-      .returning();
+    const [row] = Object.keys(update).length > 0
+      ? await db
+        .update(tasks)
+        .set(update)
+        .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
+        .returning()
+      : [existingTask];
 
     if (!row) return errorResult(`task_update: task ${args.task_id} not found`);
+
+    const comment = typeof patch.comment === 'string' ? patch.comment.trim() : '';
+    if (comment) {
+      const [commentRow] = await db
+        .insert(taskComments)
+        .values({
+          org_id: ctx.org_id,
+          task_id: args.task_id,
+          user_id: shadowUserId,
+          content: comment,
+        })
+        .returning({ id: taskComments.id });
+      createdCommentId = commentRow?.id ?? null;
+      activityEntries.push({
+        action: 'commented',
+        field: 'comment',
+        old_value: null,
+        new_value: createdCommentId,
+      });
+    }
 
     if (activityEntries.length > 0) {
       await db.insert(taskActivity).values(
@@ -515,6 +659,8 @@ export async function executeTaskUpdate(
           field: entry.field,
           old_value: entry.old_value,
           new_value: entry.new_value,
+          agent_action_id: opts?.actionId ?? null,
+          acting_agent_employee_id: ctx.employee_id,
         })),
       );
     }
@@ -572,6 +718,8 @@ export async function executeTaskUpdate(
       status: row.status,
       priority: row.priority,
       assignee_id: row.assignee_id,
+      due_date: row.due_date,
+      comment_id: createdCommentId,
       updated_at: row.updated_at,
     };
 

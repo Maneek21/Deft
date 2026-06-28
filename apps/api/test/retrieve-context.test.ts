@@ -34,6 +34,7 @@ const USER_EMAIL = 'retrieve-ctx-test@test.local';
 // A fake agent_employee_id for the two-tier test. Must exist in agent_employees
 // or the FK will reject the insert — we create a throwaway row in before().
 const AGENT_EMPLOYEE_ID = `rctest-emp-${Date.now()}`;
+const OTHER_AGENT_EMPLOYEE_ID = `rctest-other-emp-${Date.now()}`;
 
 // IDs of rows we insert during setup — cleaned up in after().
 const seededIds: { table: string; id: string }[] = [];
@@ -114,6 +115,17 @@ before(async () => {
     );
     seededIds.push({ table: 'agent_employees', id: AGENT_EMPLOYEE_ID });
 
+    await c.query(
+      `INSERT INTO agent_employees
+        (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+         is_byoa, is_active, created_by)
+       VALUES ($1, $2, $3, 'RC Other Employee', $4, 'custom', 'test', 'standard',
+         true, true, $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [OTHER_AGENT_EMPLOYEE_ID, ORG_ID, USER_ID, `rctest-other-emp-slug-${Date.now()}`],
+    );
+    seededIds.push({ table: 'agent_employees', id: OTHER_AGENT_EMPLOYEE_ID });
+
     // Use a unique nonsense term so only our two seeded pages match this query.
     // This avoids interference from other wiki_pages rows that contain common
     // terms like "billing decision".
@@ -123,7 +135,7 @@ before(async () => {
     const empWikiId = `rctest-emp-wiki-${Date.now()}`;
     await c.query(
       `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, agent_employee_id, is_deleted, created_at, updated_at)
-       VALUES ($1, $2, 'concept', 'org', $3, $4, $5, 1.0, $6, false, NOW(), NOW())`,
+       VALUES ($1, $2, 'concept', 'user', $3, $4, $5, 1.0, $6, false, NOW(), NOW())`,
       [
         empWikiId,
         ORG_ID,
@@ -151,6 +163,21 @@ before(async () => {
       ],
     );
     seededIds.push({ table: 'wiki_pages', id: orgWikiId });
+
+    const attributedOrgWikiId = `rctest-attributed-org-wiki-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, agent_employee_id, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'concept', 'org', $3, $4, $5, 1.0, $6, false, NOW(), NOW())`,
+      [
+        attributedOrgWikiId,
+        ORG_ID,
+        `Defty Org ${TIER_QUERY_TERM} Receipt`,
+        `defty-org-tier-receipt-${Date.now()}`,
+        `The ${TIER_QUERY_TERM} receipt was saved by Defty as shared org knowledge.`,
+        OTHER_AGENT_EMPLOYEE_ID,
+      ],
+    );
+    seededIds.push({ table: 'wiki_pages', id: attributedOrgWikiId });
   });
 });
 
@@ -252,7 +279,11 @@ describe('retrieveContext', () => {
     const orgResults = results.filter((r) => r.metadata?.tier === 'org');
 
     assert.ok(empResults.length >= 1, 'Expected at least 1 employee-tier result');
-    assert.ok(orgResults.length >= 1, 'Expected at least 1 org-tier result');
+    assert.ok(orgResults.length >= 2, 'Expected org-tier results for both null-attributed and audit-attributed org pages');
+    assert.ok(
+      orgResults.some((r) => r.title.includes('Defty Org')),
+      'Defty-authored org page with agent_employee_id should be returned as org-tier knowledge',
+    );
 
     // The highest-scoring employee result must outrank the highest-scoring org result.
     const topEmpScore = Math.max(...empResults.map((r) => r.score));

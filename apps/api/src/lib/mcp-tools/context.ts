@@ -17,7 +17,7 @@
  * Phase 3 MVP the cache is write-through only.
  */
 import { createHash } from 'node:crypto';
-import { sql, and, eq, desc } from 'drizzle-orm';
+import { sql, and, eq, or, desc } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   orgs,
@@ -219,7 +219,13 @@ export async function platformContext(
             and(
               eq(wikiPages.org_id, ctx.org_id),
               eq(wikiPages.is_deleted, false),
-              sql`(${wikiPages.agent_employee_id} = ${ctx.employee_id} OR ${wikiPages.agent_employee_id} IS NULL)`,
+              or(
+                eq(wikiPages.scope, 'org'),
+                and(
+                  eq(wikiPages.agent_employee_id, ctx.employee_id),
+                  sql`${wikiPages.scope} != 'org'`,
+                ),
+              ),
             ),
           )
           .orderBy(desc(wikiPages.confidence), desc(wikiPages.updated_at))

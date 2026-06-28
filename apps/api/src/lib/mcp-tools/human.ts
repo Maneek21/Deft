@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   connectedAccounts,
@@ -21,6 +21,7 @@ import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
+import { reserveNextTaskNumber } from '../task-numbering.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -450,7 +451,6 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
         eq(wikiPages.org_id, ctx.org_id),
         eq(wikiPages.slug, rawId),
         eq(wikiPages.is_deleted, false),
-        isNull(wikiPages.agent_employee_id),
         visibleWikiPageCondition(ctx.user_id),
       ))
       .limit(1);
@@ -513,7 +513,6 @@ export async function humanMemoryRecall(args: { query?: string; limit?: number }
     .where(and(
       eq(wikiPages.org_id, ctx.org_id),
       eq(wikiPages.is_deleted, false),
-      isNull(wikiPages.agent_employee_id),
       visibleWikiPageCondition(ctx.user_id),
       ...terms.map((term) => {
         const pattern = `%${term}%`;
@@ -533,7 +532,7 @@ export async function humanMemoryList(args: { type?: string; limit?: number }, c
   const scopeError = requireScope(ctx, 'read:wiki');
   if (scopeError) return scopeError;
   const limit = Math.min(Math.max(1, args.limit ?? 25), 100);
-  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), isNull(wikiPages.agent_employee_id), visibleWikiPageCondition(ctx.user_id)];
+  const conditions = [eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(ctx.user_id)];
   if (args.type) conditions.push(eq(wikiPages.type, args.type as any));
   const rows = await db
     .select({ slug: wikiPages.slug, title: wikiPages.title, summary: wikiPages.summary, type: wikiPages.type, updated_at: wikiPages.updated_at })
@@ -781,13 +780,16 @@ export async function humanTaskCreate(args: { title?: string; description?: stri
         .limit(1);
       if (!member) return errorResult('task_create: assignee is not an active org member');
     }
-    const counterRow = await db.execute(sql`UPDATE projects SET task_counter = task_counter + 1 WHERE id = ${projectId} AND org_id = ${ctx.org_id} AND is_deleted = false RETURNING task_counter`);
-    const first = ((counterRow as any).rows ?? [])[0] as { task_counter?: number } | undefined;
-    if (!first) return errorResult('task_create: project not found');
+    let taskNumber: number;
+    try {
+      taskNumber = await reserveNextTaskNumber({ projectId, orgId: ctx.org_id });
+    } catch {
+      return errorResult('task_create: project not found');
+    }
     const [task] = await db.insert(tasks).values({
       org_id: ctx.org_id,
       project_id: projectId,
-      number: Number(first.task_counter),
+      number: taskNumber,
       title,
       description: args.description ?? null,
       priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',

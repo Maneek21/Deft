@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -12,6 +12,8 @@ import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
 import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
+import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
+import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 
 export const taskRoutes = new Hono();
 
@@ -140,6 +142,71 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
     )
     .limit(1);
   return task ?? null;
+}
+
+async function publishTaskChannelEventForAssignee(params: {
+  orgId: string;
+  task: NonNullable<Awaited<ReturnType<typeof getVisibleTaskForOrg>>>;
+  actorUserId: string;
+  kind: AgentChannelEventKind;
+  idempotencyKey: string;
+  projectPrefix?: string | null;
+  payload: Record<string, unknown>;
+}) {
+  if (!params.task.assignee_id || params.task.assignee_id === params.actorUserId) return;
+
+  try {
+    const [employee] = await db
+      .select({
+        id: agentEmployees.id,
+        user_id: agentEmployees.user_id,
+      })
+      .from(agentEmployees)
+      .where(
+        and(
+          eq(agentEmployees.org_id, params.orgId),
+          eq(agentEmployees.user_id, params.task.assignee_id),
+          eq(agentEmployees.is_active, true),
+          eq(agentEmployees.is_deleted, false),
+        ),
+      )
+      .limit(1);
+
+    if (!employee || employee.user_id === params.actorUserId) return;
+
+    let prefix = params.projectPrefix;
+    if (prefix === undefined) {
+      const [project] = await db
+        .select({ prefix: projects.prefix })
+        .from(projects)
+        .where(eq(projects.id, params.task.project_id))
+        .limit(1);
+      prefix = project?.prefix ?? null;
+    }
+
+    await publishAgentChannelEvent({
+      orgId: params.orgId,
+      employeeId: employee.id,
+      kind: params.kind,
+      sourceKind: 'task',
+      sourceId: params.task.id,
+      actorUserId: params.actorUserId,
+      idempotencyKey: `${params.kind}:${params.idempotencyKey}:employee:${employee.id}`,
+      payload: {
+        task_id: params.task.id,
+        task_key: prefix ? `${prefix}-${params.task.number}` : null,
+        project_id: params.task.project_id,
+        title: params.task.title,
+        description: params.task.description ?? null,
+        status: params.task.status,
+        priority: params.task.priority,
+        assignee_user_id: params.task.assignee_id,
+        ...params.payload,
+      },
+    });
+  } catch (err) {
+    console.error(`[tasks] failed to publish ${params.kind} channel event for task ${params.task.id}:`, err);
+  }
 }
 
 /**
@@ -281,6 +348,7 @@ taskRoutes.get('/my', async (c) => {
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
       parent_task_id: tasks.parent_task_id,
+      metadata: tasks.metadata,
       is_deleted: tasks.is_deleted,
       created_at: tasks.created_at,
       updated_at: tasks.updated_at,
@@ -975,11 +1043,28 @@ taskRoutes.get('/:id', async (c) => {
         id: messages.id,
         content: messages.content,
         space_id: messages.space_id,
+        space_name: spaces.name,
         user_id: messages.user_id,
+        author_name: users.name,
+        author_avatar: users.avatar_url,
         created_at: messages.created_at,
       })
         .from(messages)
-        .where(eq(messages.id, task.source_message_id))
+        .innerJoin(spaceMembers, and(
+          eq(spaceMembers.space_id, messages.space_id),
+          eq(spaceMembers.user_id, user.id),
+        ))
+        .innerJoin(spaces, and(
+          eq(spaces.id, messages.space_id),
+          eq(spaces.org_id, user.org_id),
+          eq(spaces.is_archived, false),
+        ))
+        .leftJoin(users, eq(users.id, messages.user_id))
+        .where(and(
+          eq(messages.id, task.source_message_id),
+          eq(messages.org_id, user.org_id),
+          eq(messages.is_deleted, false),
+        ))
         .limit(1);
       sourceMessage = msg ?? null;
     }
@@ -1002,6 +1087,10 @@ taskRoutes.get('/:id', async (c) => {
 
     return c.json({
       ...task,
+      assignee_name: assignee?.name ?? null,
+      assignee_avatar: assignee?.avatar_url ?? null,
+      creator_name: creator?.name ?? null,
+      creator_avatar: creator?.avatar_url ?? null,
       assignee,
       creator: creator ?? null,
       labels: labelsMap.get(task.id) ?? [],
@@ -1133,6 +1222,20 @@ taskRoutes.post('/:id/comments', async (c) => {
     } catch (err) {
       console.error('Comment notification error:', err);
     }
+
+    await publishTaskChannelEventForAssignee({
+      orgId: user.org_id,
+      task,
+      actorUserId: user.id,
+      kind: 'task.commented',
+      idempotencyKey: `comment:${comment!.id}`,
+      payload: {
+        comment_id: comment!.id,
+        commenter_id: user.id,
+        commenter_name: userData?.name ?? null,
+        content: parsed.data.content,
+      },
+    });
 
     return c.json({
       ...comment,
@@ -1439,13 +1542,7 @@ async function createTaskForProject(
     throw Object.assign(new Error('Project not found'), { code: 'NOT_FOUND' });
   }
 
-  // Atomically increment task_counter
-  const [updated] = await db.update(projects)
-    .set({ task_counter: sql`${projects.task_counter} + 1` })
-    .where(eq(projects.id, projectId))
-    .returning({ task_counter: projects.task_counter });
-
-  const taskNumber = updated!.task_counter;
+  const taskNumber = await reserveNextTaskNumber({ projectId, orgId });
 
   const [task] = await db.insert(tasks).values({
     org_id: orgId,
@@ -1746,9 +1843,11 @@ taskRoutes.patch('/:id', async (c) => {
       .where(eq(tasks.id, taskId))
       .returning();
 
+    let activityRows: { id: string; action: string; field: string | null }[] = [];
+
     // Create activity log entries for each changed field
     if (activityEntries.length > 0) {
-      await db.insert(taskActivity).values(
+      activityRows = await db.insert(taskActivity).values(
         activityEntries.map((entry) => ({
           org_id: user.org_id,
           task_id: taskId,
@@ -1758,7 +1857,7 @@ taskRoutes.patch('/:id', async (c) => {
           old_value: entry.old_value,
           new_value: entry.new_value,
         }))
-      );
+      ).returning({ id: taskActivity.id, action: taskActivity.action, field: taskActivity.field });
     }
 
     // Task 6.4 — dispatch mention notifications on description edits.
@@ -1798,10 +1897,10 @@ taskRoutes.patch('/:id', async (c) => {
           case 'monthly': nextDue.setMonth(nextDue.getMonth() + 1); break;
         }
 
-        // Get next task number
-        const [maxNum] = await db.select({ max: sql<number>`COALESCE(MAX(number), 0)` })
-          .from(tasks).where(eq(tasks.project_id, recurringTask.project_id));
-        const nextNumber = (maxNum?.max || 0) + 1;
+        const nextNumber = await reserveNextTaskNumber({
+          projectId: recurringTask.project_id,
+          orgId: recurringTask.org_id,
+        });
 
         // Task 4.12 — clone-gap fix. The previous implementation only
         // cloned scalar fields; we now also propagate parent_task_id and
@@ -1839,8 +1938,7 @@ taskRoutes.patch('/:id', async (c) => {
           }
         }
 
-        // Update project task counter
-        await db.execute(sql`UPDATE projects SET task_counter = ${nextNumber} WHERE id = ${recurringTask.project_id}`);
+        // reserveNextTaskNumber already advanced the project task counter.
       }
     }
 
@@ -1902,6 +2000,20 @@ taskRoutes.patch('/:id', async (c) => {
           emitToUser(assignee, 'notification:new', { type: 'task_updated', title: `${taskId_str} → ${statusLabel}` });
         } catch {}
       }
+
+      const statusActivity = activityRows.find((row) => row.action === 'status_changed');
+      await publishTaskChannelEventForAssignee({
+        orgId: user.org_id,
+        task: updatedTask!,
+        projectPrefix: project?.prefix ?? null,
+        actorUserId: user.id,
+        kind: 'task.status_changed',
+        idempotencyKey: `activity:${statusActivity?.id ?? `${taskId}:${existingTask.status}:${parsed.data.status}`}`,
+        payload: {
+          old_status: existingTask.status,
+          new_status: parsed.data.status,
+        },
+      });
     }
 
     const io = getIO();
@@ -2046,11 +2158,10 @@ taskRoutes.post('/:id/duplicate', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    // Increment task counter
-    const [updated] = await db.update(projects)
-      .set({ task_counter: sql`${projects.task_counter} + 1` })
-      .where(eq(projects.id, original.project_id))
-      .returning({ task_counter: projects.task_counter });
+    const taskNumber = await reserveNextTaskNumber({
+      projectId: original.project_id,
+      orgId: user.org_id,
+    });
 
     const [project] = await db.select({ prefix: projects.prefix, name: projects.name })
       .from(projects).where(eq(projects.id, original.project_id)).limit(1);
@@ -2058,7 +2169,7 @@ taskRoutes.post('/:id/duplicate', async (c) => {
     const [dup] = await db.insert(tasks).values({
       org_id: user.org_id,
       project_id: original.project_id,
-      number: updated!.task_counter,
+      number: taskNumber,
       title: original.title + ' (copy)',
       description: original.description,
       status: 'backlog',

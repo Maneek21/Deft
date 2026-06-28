@@ -108,6 +108,13 @@ function wikiSnippet(row: Pick<WikiRow, 'title' | 'slug' | 'summary' | 'content'
   return [row.title, row.slug, row.summary ?? '', row.content ?? ''].join(' ');
 }
 
+function employeeWikiCondition(agentEmployeeId: string) {
+  return and(
+    eq(wikiPages.agent_employee_id, agentEmployeeId),
+    sql`${wikiPages.scope} != 'org'`,
+  );
+}
+
 // ─── Hybrid vector helpers ────────────────────────────────────────────────────
 
 // Warn only once per process when the <=> operator is unavailable (BYTEA env).
@@ -202,7 +209,7 @@ async function runWikiQuery(
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
             ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
-            eq(wikiPages.agent_employee_id, agent_employee_id),
+            employeeWikiCondition(agent_employee_id),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
         )
@@ -229,7 +236,7 @@ async function runWikiQuery(
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
             ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
-            sql`${wikiPages.agent_employee_id} IS NULL`,
+            eq(wikiPages.scope, 'org'),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
         )
@@ -468,13 +475,13 @@ async function fetchWikiIlike(
       db
         .select(selectColumns)
         .from(wikiPages)
-        .where(and(...baseConditions, eq(wikiPages.agent_employee_id, agent_employee_id)))
+        .where(and(...baseConditions, employeeWikiCondition(agent_employee_id)))
         .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
         .limit(Math.min(2, limit)),
       db
         .select(selectColumns)
         .from(wikiPages)
-        .where(and(...baseConditions, sql`${wikiPages.agent_employee_id} IS NULL`))
+        .where(and(...baseConditions, eq(wikiPages.scope, 'org')))
         .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
         .limit(limit),
     ]);
@@ -494,9 +501,9 @@ async function fetchWikiIlike(
     if (excludeIds.has(row.id) || out.some((r) => r.source_id === row.id)) {
       continue;
     }
-    const tier = agent_employee_id && row.agent_employee_id === agent_employee_id
+    const tier = agent_employee_id && row.agent_employee_id === agent_employee_id && row.scope !== 'org'
       ? 'employee'
-      : agent_employee_id && !row.agent_employee_id
+      : agent_employee_id && row.scope === 'org'
         ? 'org'
         : undefined;
     out.push({

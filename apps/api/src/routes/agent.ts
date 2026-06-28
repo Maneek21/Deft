@@ -35,8 +35,139 @@ import {
   rejectAction as resolveRejectAction,
   MCP_ACTION_KINDS,
 } from '../lib/agent-approval-resolver.js';
+import { generateReceipt } from '../lib/receipts.js';
+import {
+  markWorkIntentConvertedForAction,
+  markWorkIntentDismissedForAction,
+  markWorkIntentFailedForAction,
+  markWorkIntentsExpiredForActions,
+} from '../lib/work-intents.js';
 
 export const agentRoutes = new Hono();
+
+function visibleCaptureActionSql(user: { id: string; org_id: string }) {
+  return sql`(
+    ${agentActions.source} IS DISTINCT FROM 'defty_capture'
+    OR (
+      (
+        COALESCE(
+          ${agentActions.params}->>'source_space_id',
+          ${agentActions.params}->>'origin_space_id',
+          ${agentActions.params}->>'space_id'
+        ) IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM space_members agent_capture_sm
+          INNER JOIN spaces agent_capture_s
+            ON agent_capture_s.id = agent_capture_sm.space_id
+          WHERE agent_capture_sm.space_id = COALESCE(
+              ${agentActions.params}->>'source_space_id',
+              ${agentActions.params}->>'origin_space_id',
+              ${agentActions.params}->>'space_id'
+            )
+            AND agent_capture_sm.user_id = ${user.id}
+            AND agent_capture_s.org_id = ${user.org_id}
+            AND agent_capture_s.is_archived = false
+        )
+      )
+      AND (
+        ${agentActions.params}->>'source_message_id' IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM messages agent_capture_m
+          INNER JOIN space_members agent_capture_msg_sm
+            ON agent_capture_msg_sm.space_id = agent_capture_m.space_id
+          INNER JOIN spaces agent_capture_msg_s
+            ON agent_capture_msg_s.id = agent_capture_m.space_id
+          WHERE agent_capture_m.id = ${agentActions.params}->>'source_message_id'
+            AND agent_capture_m.org_id = ${user.org_id}
+            AND agent_capture_m.is_deleted = false
+            AND agent_capture_msg_sm.user_id = ${user.id}
+            AND agent_capture_msg_s.org_id = ${user.org_id}
+            AND agent_capture_msg_s.is_archived = false
+            AND (
+              COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              ) IS NULL
+              OR agent_capture_m.space_id = COALESCE(
+                ${agentActions.params}->>'source_space_id',
+                ${agentActions.params}->>'origin_space_id',
+                ${agentActions.params}->>'space_id'
+              )
+            )
+        )
+      )
+    )
+  )`;
+}
+
+function actionParamString(params: unknown, key: string): string | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+async function attachSourceMessagePreviews<T extends { params: unknown }>(
+  user: { id: string; org_id: string },
+  rows: T[],
+): Promise<Array<T & { source_message_content: string | null; source_message_space_id: string | null }>> {
+  const sourceIds = Array.from(new Set(
+    rows
+      .map((row) => actionParamString(row.params, 'source_message_id'))
+      .filter((id): id is string => Boolean(id)),
+  ));
+  if (sourceIds.length === 0) {
+    return rows.map((row) => ({
+      ...row,
+      source_message_content: null,
+      source_message_space_id: null,
+    }));
+  }
+
+  const sourceRows = await db
+    .select({
+      id: messages.id,
+      content: messages.content,
+      space_id: messages.space_id,
+    })
+    .from(messages)
+    .innerJoin(spaces, and(
+      eq(spaces.id, messages.space_id),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.is_archived, false),
+    ))
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, messages.space_id),
+      eq(spaceMembers.user_id, user.id),
+    ))
+    .where(and(
+      eq(messages.org_id, user.org_id),
+      eq(messages.is_deleted, false),
+      inArray(messages.id, sourceIds),
+    ));
+  const byId = new Map(sourceRows.map((row) => [row.id, row]));
+
+  return rows.map((row) => {
+    const sourceId = actionParamString(row.params, 'source_message_id');
+    const source = sourceId ? byId.get(sourceId) : undefined;
+    const enrichedParams = row.params && typeof row.params === 'object' && !Array.isArray(row.params)
+      ? {
+          ...(row.params as Record<string, unknown>),
+          source_message_content: source?.content ?? null,
+          source_message_space_id: source?.space_id ?? null,
+        }
+      : row.params;
+
+    return {
+      ...row,
+      params: enrichedParams,
+      source_message_content: source?.content ?? null,
+      source_message_space_id: source?.space_id ?? null,
+    };
+  });
+}
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -481,14 +612,39 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
 
+  const [membership] = await db
+    .select({ space_id: spaceMembers.space_id })
+    .from(spaceMembers)
+    .innerJoin(spaces, and(
+      eq(spaces.id, spaceMembers.space_id),
+      eq(spaces.org_id, user.org_id),
+      eq(spaces.is_archived, false),
+    ))
+    .where(and(
+      eq(spaceMembers.space_id, id),
+      eq(spaceMembers.user_id, user.id),
+    ))
+    .limit(1);
+
+  if (!membership) {
+    return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
+  }
+
   // Expire stale pending actions (older than 1 hour)
-  await db.update(agentActions)
+  const expiredActions = await db.update(agentActions)
     .set({ approval_status: 'expired' })
     .where(and(
       eq(agentActions.conversation_id, id),
+      eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
-    ));
+      visibleCaptureActionSql(user),
+    ))
+    .returning({ id: agentActions.id, params: agentActions.params });
+  await markWorkIntentsExpiredForActions({
+    orgId: user.org_id,
+    actions: expiredActions,
+  });
 
   // P2-7: Read from unified messages table (space_id = conversation id).
   const rows = await db
@@ -695,13 +851,19 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
 agentRoutes.get('/actions/pending', async (c) => {
   const user = c.get('user');
   // Auto-expire stale pending actions so the list doesn't grow forever.
-  await db.update(agentActions)
+  const expiredActions = await db.update(agentActions)
     .set({ approval_status: 'expired' })
     .where(and(
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
-    ));
+      visibleCaptureActionSql(user),
+    ))
+    .returning({ id: agentActions.id, params: agentActions.params });
+  await markWorkIntentsExpiredForActions({
+    orgId: user.org_id,
+    actions: expiredActions,
+  });
 
   const rows = await db
     .select({
@@ -719,7 +881,10 @@ agentRoutes.get('/actions/pending', async (c) => {
     .from(agentActions)
     .leftJoin(
       agentEmployees,
-      eq(agentActions.agent_employee_id, agentEmployees.id),
+      and(
+        eq(agentActions.agent_employee_id, agentEmployees.id),
+        eq(agentEmployees.org_id, user.org_id),
+      ),
     )
     .where(
       and(
@@ -729,14 +894,16 @@ agentRoutes.get('/actions/pending', async (c) => {
         // trigger, task assignment) that BYOA runtimes pull via MCP. Not
         // user-actionable — exclude from approvals view.
         inArray(agentActions.approval_tier, ['quick', 'full']),
+        visibleCaptureActionSql(user),
       ),
     )
     .orderBy(desc(agentActions.created_at))
     .limit(50);
 
-  const actions = rows.map((r) => ({
+  const rowsWithSources = await attachSourceMessagePreviews(user, rows);
+  const actions = rowsWithSources.map((r) => ({
     ...r,
-    proposer: r.agent_employee_id ? 'employee' : 'defty',
+    proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
   }));
   return c.json({ actions });
 });
@@ -757,20 +924,50 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
   const [membership] = await db
     .select({ id: spaceMembers.id })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, user.id)))
+    .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+    .where(and(
+      eq(spaceMembers.space_id, spaceId),
+      eq(spaceMembers.user_id, user.id),
+      eq(spaces.org_id, user.org_id),
+    ))
     .limit(1);
   if (!membership) {
     return c.json([], 200);
   }
 
   const rows = await db.execute(sql`
-    SELECT a.*
+    SELECT
+      a.*,
+      msg.content AS source_message_content,
+      msg.space_id AS source_message_space_id
     FROM agent_actions a
     JOIN messages msg ON msg.id = a.message_id
     WHERE msg.space_id = ${spaceId}
       AND msg.org_id = ${user.org_id}
+      AND a.org_id = ${user.org_id}
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
+      AND (
+        a.source IS DISTINCT FROM 'defty_capture'
+        OR (
+          (
+            COALESCE(
+              a.params->>'source_space_id',
+              a.params->>'origin_space_id',
+              a.params->>'space_id'
+            ) IS NULL
+            OR COALESCE(
+              a.params->>'source_space_id',
+              a.params->>'origin_space_id',
+              a.params->>'space_id'
+            ) = ${spaceId}
+          )
+          AND (
+            a.params->>'source_message_id' IS NULL
+            OR a.params->>'source_message_id' = msg.id
+          )
+        )
+      )
     ORDER BY a.created_at DESC
     LIMIT 100
   `);
@@ -784,6 +981,14 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
     };
     return {
       ...row,
+      params: row.params && typeof row.params === 'object' && !Array.isArray(row.params)
+        ? {
+            ...row.params,
+            source_message_content: row.source_message_content ?? null,
+            source_message_space_id: row.source_message_space_id ?? null,
+          }
+        : row.params,
+      proposer: row.source === 'defty_capture' || !row.agent_employee_id ? 'defty' : 'employee',
       created_at: normalizeTimestamp(row.created_at),
       updated_at: normalizeTimestamp(row.updated_at),
       approved_at: normalizeTimestamp(row.approved_at),
@@ -876,7 +1081,10 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
       created_at: agentActions.created_at,
     })
     .from(agentActions)
-    .where(eq(agentActions.conversation_id, convoId))
+    .where(and(
+      eq(agentActions.conversation_id, convoId),
+      eq(agentActions.org_id, user.org_id),
+    ))
     .orderBy(agentActions.created_at);
 
   const trace = {
@@ -927,15 +1135,21 @@ agentRoutes.get('/actions/recent', async (c) => {
       employee_avatar: agentEmployees.avatar_url,
     })
     .from(agentActions)
-    .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
-    .where(eq(agentActions.org_id, user.org_id))
+    .leftJoin(agentEmployees, and(
+      eq(agentActions.agent_employee_id, agentEmployees.id),
+      eq(agentEmployees.org_id, user.org_id),
+    ))
+    .where(and(
+      eq(agentActions.org_id, user.org_id),
+      visibleCaptureActionSql(user),
+    ))
     .orderBy(desc(agentActions.created_at))
     .limit(limit);
 
   return c.json({
     actions: rows.map((r) => ({
       ...r,
-      proposer: r.agent_employee_id ? 'employee' : 'defty',
+      proposer: r.source === 'defty_capture' || !r.agent_employee_id ? 'defty' : 'employee',
     })),
   });
 });
@@ -947,7 +1161,11 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   const [action] = await db
     .select()
     .from(agentActions)
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      visibleCaptureActionSql(user),
+    ))
     .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 
@@ -976,8 +1194,55 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     });
   }
 
+  if (action.approval_status === 'approved') {
+    return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
+  }
+  if (action.approval_status === 'rejected') {
+    return c.json({ status: 'rejected', message: 'already rejected' });
+  }
+  if (action.approval_status === 'expired') {
+    return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+  }
   if (action.approval_status !== 'pending') {
-    return c.json({ error: 'Already processed', code: 'ALREADY_PROCESSED' }, 400);
+    return c.json({ error: 'Action is not pending', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [claimedAction] = await db
+    .update(agentActions)
+    .set({ approval_status: 'approved', approved_at: new Date() })
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+    ))
+    .returning({
+      id: agentActions.id,
+      approval_status: agentActions.approval_status,
+      result: agentActions.result,
+    });
+
+  if (!claimedAction) {
+    const [winner] = await db
+      .select({
+        approval_status: agentActions.approval_status,
+        result: agentActions.result,
+      })
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.org_id, user.org_id),
+      ))
+      .limit(1);
+    if (winner?.approval_status === 'approved') {
+      return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
+    }
+    if (winner?.approval_status === 'rejected') {
+      return c.json({ status: 'rejected', message: 'already rejected' });
+    }
+    if (winner?.approval_status === 'expired') {
+      return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+    }
+    return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
   }
 
   // Phase 6 invariant — the executor must receive the ORIGINAL proposer's
@@ -1007,11 +1272,42 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       .update(agentActions)
       .set({ approval_status: 'approved', approved_at: new Date() })
       .where(eq(agentActions.id, actionId));
+    if (action.source === 'defty_capture') {
+      await generateReceipt({
+        actionId,
+        orgId: action.org_id,
+        proposer: 'defty',
+        proposerId: action.user_id,
+        approverId: user.id,
+        decision: 'approved',
+        decisionReason: null,
+        actionName: action.action,
+        actionParams: action.params,
+        resultJson: execResult.result,
+      });
+      await markWorkIntentConvertedForAction({
+        actionId,
+        orgId: action.org_id,
+        actionParams: action.params,
+        result: execResult.result,
+        convertedBy: user.id,
+      });
+    }
   } else {
     await db
       .update(agentActions)
-      .set({ error: execResult.error ?? 'Action failed' })
+      .set({
+        approval_status: 'pending',
+        approved_at: null,
+        error: execResult.error ?? 'Action failed',
+      })
       .where(eq(agentActions.id, actionId));
+    await markWorkIntentFailedForAction({
+      actionId,
+      orgId: action.org_id,
+      actionParams: action.params,
+      reason: execResult.error ?? 'Action failed',
+    });
   }
 
   // Insert a hidden tool_result message into the unified messages table so
@@ -1070,7 +1366,11 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
   const [action] = await db
     .select()
     .from(agentActions)
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      visibleCaptureActionSql(user),
+    ))
     .limit(1);
 
   if (!action) {
@@ -1091,10 +1391,53 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     return c.json({ status: result.status });
   }
 
-  await db
+  if (action.approval_status === 'rejected') {
+    return c.json({ success: true, status: 'rejected', message: 'already rejected' });
+  }
+  if (action.approval_status === 'approved') {
+    return c.json({ success: true, status: 'approved', message: 'already approved - cannot reject after approval' });
+  }
+  if (action.approval_status === 'expired') {
+    return c.json({ error: 'Action has expired', code: 'NOT_FOUND' }, 404);
+  }
+  if (action.approval_status !== 'pending') {
+    return c.json({ error: 'Action is not pending', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [updatedAction] = await db
     .update(agentActions)
     .set({ approval_status: 'rejected', error: reason ?? null })
-    .where(eq(agentActions.id, actionId));
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      eq(agentActions.approval_status, 'pending'),
+    ))
+    .returning({ id: agentActions.id });
+  if (!updatedAction) {
+    return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
+  }
+
+  if (action.source === 'defty_capture') {
+    await generateReceipt({
+      actionId,
+      orgId: action.org_id,
+      proposer: 'defty',
+      proposerId: action.user_id,
+      approverId: user.id,
+      decision: 'rejected',
+      decisionReason: reason ?? null,
+      actionName: action.action,
+      actionParams: action.params,
+      resultJson: null,
+    });
+    await markWorkIntentDismissedForAction({
+      actionId,
+      orgId: action.org_id,
+      actionParams: action.params,
+      dismissedBy: user.id,
+      reason: reason ?? null,
+    });
+  }
   return c.json({ success: true });
 });
 
@@ -1240,24 +1583,31 @@ agentRoutes.get('/actions', async (c) => {
   const user = c.get('user');
 
   // Auto-expire stale pending actions (older than 1 hour)
-  await db.update(agentActions)
+  const expiredActions = await db.update(agentActions)
     .set({ approval_status: 'expired' })
     .where(and(
       eq(agentActions.org_id, user.org_id),
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
-    ));
+      visibleCaptureActionSql(user),
+    ))
+    .returning({ id: agentActions.id, params: agentActions.params });
+  await markWorkIntentsExpiredForActions({
+    orgId: user.org_id,
+    actions: expiredActions,
+  });
 
   // Phase 7 — LEFT JOIN action_receipts so the UI can show a "View receipt"
   // button only when there's something to show. We materialize has_receipt
   // via EXISTS rather than DISTINCT-on to keep one row per action regardless
   // of how many receipts are attached (future-proofing for re-execution).
   const rows = await db.execute(sql`
-    SELECT a.*,
-           EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = a.id) AS has_receipt
-    FROM agent_actions a
-    WHERE a.org_id = ${user.org_id}
-    ORDER BY a.created_at DESC
+    SELECT agent_actions.*,
+           EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = agent_actions.id) AS has_receipt
+    FROM agent_actions
+    WHERE agent_actions.org_id = ${user.org_id}
+      AND ${visibleCaptureActionSql(user)}
+    ORDER BY agent_actions.created_at DESC
     LIMIT 100
   `);
   const rawRows = (rows as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
@@ -1278,7 +1628,10 @@ agentRoutes.get('/actions/:id/receipt', async (c) => {
   const [action] = await db
     .select({ id: agentActions.id, org_id: agentActions.org_id })
     .from(agentActions)
-    .where(eq(agentActions.id, actionId))
+    .where(and(
+      eq(agentActions.id, actionId),
+      visibleCaptureActionSql(user),
+    ))
     .limit(1);
 
   if (!action) {

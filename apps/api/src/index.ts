@@ -44,6 +44,7 @@ import { wikiRoutes } from './routes/wiki.js';
 import { agentEmployeeRoutes } from './routes/agent-employees.js';
 import { mcpConnectionRoutes } from './routes/mcp-connections.js';
 import { mcpAccessRoutes } from './routes/mcp-access.js';
+import { agentChannelRoutes } from './routes/agent-channel.js';
 import { oauthProtectedRoutes, oauthPublicRoutes, oauthWellKnownRoutes } from './routes/oauth-mcp.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
@@ -52,6 +53,7 @@ import { agentPlanRoutes } from './routes/agent-plans.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
+import { workIntentRoutes } from './routes/work-intents.js';
 import { authMiddleware } from './middleware/auth.js';
 import { authLimiter, agentLimiter, uploadLimiter, defaultLimiter, webhookLimiter } from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
@@ -102,6 +104,8 @@ app.route('/mcp', mcpServerRoutes);
 
 // Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
 app.route('/api/mcp/v1', mcpServerV1Routes);
+app.use('/api/agent-channel/v1/*', agentLimiter);
+app.route('/api/agent-channel/v1', agentChannelRoutes);
 
 // Phase 10 — Prometheus metrics export, own bearer scheme, mounted before
 // authMiddleware so scrapers don't need a JWT.
@@ -184,6 +188,7 @@ app.route('/api/skills', skillsRoutes);
 app.route('/api/projects', taskTemplateRoutes);
 // Task 3 — /api/task-templates list + detail (read-only catalog)
 app.route('/api/task-templates', taskTemplateRoutes);
+app.route('/api/work-intents', workIntentRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
