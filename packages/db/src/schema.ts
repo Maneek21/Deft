@@ -36,6 +36,15 @@ export const workIntentStatusEnum = pgEnum('work_intent_status', [
   'expired',
   'failed',
 ]);
+export const messageObservationStatusEnum = pgEnum('message_observation_status', [
+  'queued',
+  'processing',
+  'ignored',
+  'no_capture',
+  'captured',
+  'retrying',
+  'failed',
+]);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
@@ -516,6 +525,31 @@ export const workIntents = pgTable('work_intents', {
   index('work_intent_source_message_idx').on(t.source_message_id),
   index('work_intent_space_idx').on(t.space_id),
   index('work_intent_converted_task_idx').on(t.converted_task_id),
+]);
+
+// Durable ledger for Defty's chat observation pipeline. A row here means a
+// chat message was seen by the observation system even when it is ignored.
+export const messageObservations = pgTable('message_observations', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  message_id: text('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
+  space_id: text('space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  user_id: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+  observation_version: integer('observation_version').default(1).notNull(),
+  status: messageObservationStatusEnum('status').default('queued').notNull(),
+  ignored_reason: text('ignored_reason'),
+  classifier_result: jsonb('classifier_result').$type<Record<string, unknown>>(),
+  downstream_jobs: jsonb('downstream_jobs').$type<Array<Record<string, unknown>>>().notNull().default([]),
+  capture_count: integer('capture_count').default(0).notNull(),
+  last_error: text('last_error'),
+  started_at: timestamp('started_at'),
+  completed_at: timestamp('completed_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('message_observation_message_version_unique').on(t.message_id, t.observation_version),
+  index('message_observation_org_status_idx').on(t.org_id, t.status, t.created_at),
+  index('message_observation_message_idx').on(t.message_id),
+  index('message_observation_space_idx').on(t.space_id),
 ]);
 
 // ═══ AGENT: SKILLS ═══

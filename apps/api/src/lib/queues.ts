@@ -2,6 +2,7 @@
 import { db } from './db.js';
 import { jobQueue } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
+import { OBSERVE_CHAT_MESSAGE_JOB, markObservationFailedFromJobData } from './chat-observation.js';
 
 export const QUEUE_NAMES = {
   AGENT_JOBS: 'agent-jobs',
@@ -89,7 +90,12 @@ export async function completeJob(jobId: string): Promise<void> {
 export async function failJob(jobId: string, error: string): Promise<void> {
   // Fetch current state
   const [job] = await db
-    .select({ attempts: jobQueue.attempts, max_attempts: jobQueue.max_attempts })
+    .select({
+      attempts: jobQueue.attempts,
+      max_attempts: jobQueue.max_attempts,
+      name: jobQueue.name,
+      data: jobQueue.data,
+    })
     .from(jobQueue)
     .where(eq(jobQueue.id, jobId))
     .limit(1);
@@ -97,6 +103,9 @@ export async function failJob(jobId: string, error: string): Promise<void> {
   if (!job) return;
 
   if (job.attempts < job.max_attempts) {
+    if (job.name === OBSERVE_CHAT_MESSAGE_JOB) {
+      await markObservationFailedFromJobData({ data: job.data, retrying: true, error });
+    }
     // Exponential backoff: 1s, 2s, 4s, 8s, ...
     const backoffMs = Math.min(1000 * Math.pow(2, job.attempts - 1), 60000);
     await db
@@ -108,6 +117,9 @@ export async function failJob(jobId: string, error: string): Promise<void> {
       })
       .where(eq(jobQueue.id, jobId));
   } else {
+    if (job.name === OBSERVE_CHAT_MESSAGE_JOB) {
+      await markObservationFailedFromJobData({ data: job.data, retrying: false, error });
+    }
     await db
       .update(jobQueue)
       .set({ status: 'failed', error })

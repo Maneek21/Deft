@@ -374,6 +374,101 @@ test('fresh task capture skips when the same active task already exists', async 
   assert.equal(rows.length, 0, 'duplicate task chatter should not create a work intent');
 });
 
+test('similar task capture with a different reference code still queues a fresh proposal', async () => {
+  await db.insert(tasks).values({
+    id: `defty-capture-task-${crypto.randomUUID()}`,
+    org_id: ORG_ID,
+    project_id: PROJECT_ID,
+    number: 22,
+    title: 'Print blue crate labels for TT-4101',
+    description: 'Print blue crate labels for wholesale batch TT-4101 before Saturday prep.',
+    status: 'todo',
+    priority: 'p2',
+    created_by: USER_ID,
+  });
+  const content = 'Please create task: Print blue crate labels for wholesale batch TT-4102';
+  const messageId = await seedMessage(content);
+
+  const queued = await queueDeftyCreateTaskCapture({
+    orgId: ORG_ID,
+    sourceUserId: USER_ID,
+    spaceId: SPACE_ID,
+    messageId,
+    content,
+    title: 'Print blue crate labels for TT-4102',
+    description: 'Print blue crate labels for wholesale batch TT-4102 before Saturday prep.',
+    captureKind: 'task_candidate',
+    extraction: 'deterministic',
+  });
+
+  assert.equal(queued.queued, true);
+  assert.ok(queued.actionId);
+
+  const [intent] = await db
+    .select({
+      proposed_action: workIntents.proposed_action,
+      proposed_params: workIntents.proposed_params,
+    })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ))
+    .limit(1);
+
+  assert.ok(intent, 'expected a fresh work intent for the second reference code');
+  assert.equal(intent.proposed_action, 'task_create');
+  assert.equal((intent.proposed_params as Record<string, any>).title, 'Print blue crate labels for TT-4102');
+});
+
+test('blocker capture still queues even when a similar active task exists', async () => {
+  await db.insert(tasks).values({
+    id: `defty-capture-task-${crypto.randomUUID()}`,
+    org_id: ORG_ID,
+    project_id: PROJECT_ID,
+    number: 23,
+    title: 'Resolve cooler label printer issue',
+    description: 'Printer issue for cooler labels.',
+    status: 'in_progress',
+    priority: 'p1',
+    created_by: USER_ID,
+  });
+  const content = 'I am blocked: cooler label printer issue is stopping the Saturday packing run.';
+  const messageId = await seedMessage(content);
+
+  const queued = await queueDeftyCreateTaskCapture({
+    orgId: ORG_ID,
+    sourceUserId: USER_ID,
+    spaceId: SPACE_ID,
+    messageId,
+    content,
+    title: 'Resolve cooler label printer issue',
+    description: 'Cooler label printer issue is stopping the Saturday packing run.',
+    captureKind: 'blocker_candidate',
+    captureReason: 'Test blocker should surface even if related work already exists.',
+    extraction: 'deterministic',
+  });
+
+  assert.equal(queued.queued, true);
+  assert.ok(queued.actionId);
+
+  const [intent] = await db
+    .select({
+      kind: workIntents.kind,
+      proposed_action: workIntents.proposed_action,
+    })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ))
+    .limit(1);
+
+  assert.ok(intent, 'expected a blocker work intent');
+  assert.equal(intent.kind, 'blocker_candidate');
+  assert.equal(intent.proposed_action, 'task_create');
+});
+
 test('fresh knowledge capture skips when equivalent wiki knowledge already exists', async () => {
   await db.insert(wikiPages).values({
     id: `defty-capture-wiki-${crypto.randomUUID()}`,
@@ -413,6 +508,52 @@ test('fresh knowledge capture skips when equivalent wiki knowledge already exist
       AND message_id = ${messageId}
   `);
   assert.equal(Number(actionCount.rows[0]?.count ?? 0), 0);
+});
+
+test('similar knowledge with a different reference code still queues a fresh proposal', async () => {
+  await db.insert(wikiPages).values({
+    id: `defty-capture-wiki-${crypto.randomUUID()}`,
+    org_id: ORG_ID,
+    scope: 'org',
+    type: 'decision',
+    title: 'Use TT-4101 for chef sample boxes',
+    slug: `chef-sample-tt-4101-${RUN_ID}`,
+    summary: 'Use batch TT-4101 for chef sample boxes.',
+    content: 'Decision: use batch TT-4101 for chef sample boxes.',
+    confidence: 0.9,
+  });
+  const content = 'Decision: use batch TT-4102 for chef sample boxes.';
+  const messageId = await seedMessage(content);
+
+  const queued = await queueDeftyKnowledgeCapture({
+    orgId: ORG_ID,
+    sourceUserId: USER_ID,
+    spaceId: SPACE_ID,
+    messageId,
+    content,
+    title: 'Use TT-4102 for chef sample boxes',
+    wikiType: 'decision',
+    captureKind: 'decision_candidate',
+    captureReason: 'Test similar decision with a different reference code.',
+    extraction: 'classifier',
+    tags: ['decision', 'defty-capture'],
+  });
+
+  assert.equal(queued.queued, true);
+  assert.ok(queued.actionId);
+
+  const [action] = await db
+    .select({ action: agentActions.action, params: agentActions.params })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, ORG_ID),
+      eq(agentActions.message_id, messageId),
+    ))
+    .limit(1);
+
+  assert.ok(action, 'expected a fresh pending approval for TT-4102');
+  assert.equal(action.action, 'wiki_create');
+  assert.equal((action.params as Record<string, any>).title, 'Use TT-4102 for chef sample boxes');
 });
 
 test('explicit correction to existing knowledge queues wiki_update instead of duplicate wiki_create', async () => {

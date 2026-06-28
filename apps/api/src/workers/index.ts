@@ -26,6 +26,7 @@ const CRON_DELAYS: Record<string, number> = {
   // due set from `last_synced_at + sync_interval_min`, so this is _scan_
   // cadence not _fire_ cadence.
   'ics-sync': 60_000,
+  'chat-observation-backfill': 5 * 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -42,9 +43,12 @@ const CRON_KEYS: Record<string, string> = {
   'heartbeat-native': 'cron:heartbeat-native',
   'trigger-dispatch': 'cron:trigger-dispatch',
   'ics-sync': 'cron:ics-sync',
+  'chat-observation-backfill': 'cron:chat-observation-backfill',
 };
 
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
+const WORKER_POLL_INTERVAL_MS = Number.parseInt(process.env.DEFT_WORKER_POLL_INTERVAL_MS ?? '1000', 10);
+const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.DEFT_WORKER_BATCH_SIZE ?? '5', 10));
 
 function runWithTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   if (!Number.isFinite(JOB_TIMEOUT_MS) || JOB_TIMEOUT_MS <= 0) return promise;
@@ -66,6 +70,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
     case 'agent-reply': {
       const mod = await import('./handlers/agent-reply.js');
       return mod.handleAgentReply;
+    }
+    case 'observe-chat-message': {
+      const mod = await import('./handlers/observe-chat-message.js');
+      return mod.handleObserveChatMessage;
     }
     case 'task-extract': {
       const mod = await import('./handlers/task-extract.js');
@@ -199,6 +207,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/ics-sync.js');
       return mod.handleIcsSync;
     }
+    case 'chat-observation-backfill': {
+      const mod = await import('./handlers/chat-observation-backfill.js');
+      return mod.handleChatObservationBackfill;
+    }
     default:
       return null;
   }
@@ -210,8 +222,55 @@ async function getHandler(queueName: string, jobName: string): Promise<JobHandle
   return null;
 }
 
+async function processDequeuedJob(
+  queueName: string,
+  job: { id: string; name: string; data: any },
+): Promise<void> {
+  const handler = await getHandler(queueName, job.name);
+  if (!handler) {
+    await completeJob(job.id);
+    return;
+  }
+
+  try {
+    await runWithTimeout(
+      handler({ id: job.id, name: job.name, data: job.data }),
+      `Job ${job.name} (${job.id.slice(0, 8)})`,
+    );
+    await completeJob(job.id);
+    console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
+
+    const cronKey = CRON_KEYS[job.name];
+    const cronDelay = CRON_DELAYS[job.name];
+    if (cronKey && cronDelay) {
+      await ensureCronJob(
+        queueName as any,
+        job.name,
+        cronKey,
+        {},
+        cronDelay,
+      );
+    }
+  } catch (err) {
+    await failJob(job.id, (err as Error).message);
+    console.error(`[worker] Job ${job.name} failed:`, (err as Error).message);
+  }
+}
+
+async function pollQueueBatch(queueName: string): Promise<void> {
+  const jobs: Array<{ id: string; name: string; data: any }> = [];
+  for (let i = 0; i < WORKER_BATCH_SIZE; i += 1) {
+    const job = await dequeueJob(queueName as any);
+    if (!job) break;
+    jobs.push(job);
+  }
+  if (jobs.length === 0) return;
+  await Promise.all(jobs.map((job) => processDequeuedJob(queueName, job)));
+}
+
 // ─── Public API ───
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
+let pollInFlight = false;
 
 export function startWorkers(): void {
   if (pollingInterval) return;
@@ -234,50 +293,23 @@ export function startWorkers(): void {
     }).catch(() => {});
   }, 60000);
 
-  // Poll every 3 seconds
   pollingInterval = setInterval(async () => {
-    for (const queueName of Object.values(QUEUE_NAMES)) {
-      try {
-        const job = await dequeueJob(queueName);
-        if (!job) continue;
-
-        const handler = await getHandler(queueName, job.name);
-        if (!handler) {
-          await completeJob(job.id);
-          continue;
-        }
-
-        try {
-          await runWithTimeout(
-            handler({ id: job.id, name: job.name, data: job.data }),
-            `Job ${job.name} (${job.id.slice(0, 8)})`,
-          );
-          await completeJob(job.id);
-          console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
-
-          // Re-enqueue cron jobs after completion
-          const cronKey = CRON_KEYS[job.name];
-          const cronDelay = CRON_DELAYS[job.name];
-          if (cronKey && cronDelay) {
-            await ensureCronJob(
-              queueName as any,
-              job.name,
-              cronKey,
-              {},
-              cronDelay,
-            );
-          }
-        } catch (err) {
-          await failJob(job.id, (err as Error).message);
-          console.error(`[worker] Job ${job.name} failed:`, (err as Error).message);
-        }
-      } catch (err) {
-        // Don't crash the poller on individual errors
-      }
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      await Promise.all(
+        Object.values(QUEUE_NAMES).map((queueName) => pollQueueBatch(queueName)),
+      );
+    } catch {
+      // Don't crash the poller on individual errors.
+    } finally {
+      pollInFlight = false;
     }
-  }, 3000);
+  }, WORKER_POLL_INTERVAL_MS);
 
-  console.log('[workers] Postgres job poller started (3s interval)');
+  console.log(
+    `[workers] Postgres job poller started (${WORKER_POLL_INTERVAL_MS}ms interval, batch ${WORKER_BATCH_SIZE})`,
+  );
 }
 
 export function stopWorkers(): void {

@@ -2,16 +2,15 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, messageClassifications } from '@deft/db/schema';
+import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { resolveReasonProvider } from '../lib/org-ai-config.js';
-import { classifyMessage } from '../lib/classifier.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
-import { toPlainText } from '../lib/plain-text.js';
+import { enqueueChatObservation } from '../lib/chat-observation.js';
 
 export const messageRoutes = new Hono();
 
@@ -19,42 +18,6 @@ const sendMessageSchema = z.object({
   content: z.string().min(1),
   parent_id: z.string().optional(),
 });
-
-function tokenOverlap(a: string, b: string): number {
-  const toTokens = (value: string) => new Set(
-    toPlainText(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((token) => token.length >= 3),
-  );
-  const left = toTokens(a);
-  const right = toTokens(b);
-  if (left.size === 0 || right.size === 0) return 0;
-  let intersection = 0;
-  for (const token of left) {
-    if (right.has(token)) intersection += 1;
-  }
-  const union = left.size + right.size - intersection;
-  return intersection / union;
-}
-
-function factsWithoutDecisionEcho(
-  facts: string[] | null | undefined,
-  decision: string | null | undefined,
-): string[] {
-  const cleanFacts = Array.isArray(facts) ? facts.filter((fact) => fact.trim().length > 0) : [];
-  if (!decision) return cleanFacts;
-  return cleanFacts.filter((fact) => tokenOverlap(fact, decision) < 0.5);
-}
-
-function looksLikeResourceCapture(content: string): boolean {
-  const plain = toPlainText(content).toLowerCase();
-  if (!/https?:\/\//i.test(plain) && !/\b(?:resource|reference|doc|docs|checklist|link)\s*:/i.test(plain)) {
-    return false;
-  }
-  return /\b(?:save|capture|remember|canonical|reference|resource|checklist|doc|docs|link|source)\b/i.test(plain);
-}
 
 // Helper: aggregate reactions for a set of message IDs
 async function getReactionsForMessages(messageIds: string[]) {
@@ -738,81 +701,18 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
     }
 
-    // Message classification + task extraction (fire-and-forget)
-    (async () => {
-      try {
-        const classification = await classifyMessage(parsed.data.content, user.org_id);
-
-        // Persist classifier output for observability (Task 5.6)
-        try {
-          await db.insert(messageClassifications).values({
-            org_id: user.org_id,
-            message_id: message!.id,
-            intent: classification.intent,
-            confidence: classification.confidence,
-            agent_mentioned: classification.agent_mentioned,
-            blocked: classification.blocked,
-            task_references: classification.task_refs,
-            entities: classification.entities,
-            memorable_facts: classification.memorable_facts,
-            decision: classification.decision,
-          });
-        } catch (err) {
-          console.warn('[classifier-persist] failed:', err);
-        }
-
-        if (
-          (classification.intent === 'task_create' || classification.intent === 'actionable') &&
-          classification.confidence > 0.7
-        ) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'task-extract', {
-            messageId: message!.id,
-            spaceId,
-            content: parsed.data.content,
-            orgId: user.org_id,
-            userId: user.id,
-            classification,
-          });
-        }
+    try {
+      await enqueueChatObservation({
+        orgId: user.org_id,
+        messageId: message!.id,
+        spaceId,
+        userId: user.id,
+      });
+    } catch (err) {
+      console.error('Failed to enqueue chat observation:', err);
+    }
 
         // Blocked detection — enqueue alert if someone is blocked
-        if (classification.blocked === true) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'blocked-alert', {
-            messageId: message!.id,
-            spaceId,
-            content: parsed.data.content,
-            orgId: user.org_id,
-            userId: user.id,
-          });
-        }
-
-        // Governed memory capture: durable knowledge writes should enter
-        // Defty's approval ledger instead of silently mutating wiki pages.
-        const factCandidates = factsWithoutDecisionEcho(
-          classification.memorable_facts,
-          classification.decision,
-        );
-
-        if (
-          classification.decision ||
-          factCandidates.length > 0 ||
-          looksLikeResourceCapture(parsed.data.content)
-        ) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'memory-capture', {
-            messageId: message!.id,
-            spaceId,
-            content: parsed.data.content,
-            orgId: user.org_id,
-            userId: user.id,
-            decision: classification.decision || null,
-            facts: factCandidates,
-          });
-        }
-      } catch (err) {
-        console.error('Failed to classify/enqueue task extraction:', err);
-      }
-    })();
-
     return c.json(messageWithUser, 201);
   } catch (err) {
     console.error('Failed to send message:', err);

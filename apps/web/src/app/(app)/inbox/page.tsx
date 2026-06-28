@@ -66,6 +66,25 @@ type WorkIntent = {
 
 type WorkIntentResponse = { intents: WorkIntent[] };
 
+type MessageObservation = {
+  id: string;
+  message_id: string;
+  status: 'queued' | 'processing' | 'ignored' | 'no_capture' | 'captured' | 'retrying' | 'failed';
+  ignored_reason: string | null;
+  classifier_result?: Record<string, unknown> | null;
+  downstream_jobs?: Array<Record<string, unknown>> | null;
+  capture_count: number;
+  last_error: string | null;
+  source_message_content: string | null;
+  source_user_name: string | null;
+  space_name: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MessageObservationResponse = { observations: MessageObservation[] };
+
 const INTENT_KIND_LABEL: Record<WorkIntent['kind'], string> = {
   task_candidate: 'Task candidate',
   blocker_candidate: 'Blocker candidate',
@@ -179,6 +198,15 @@ async function fetchWorkIntents(url: string): Promise<WorkIntentResponse> {
     throw new Error(body?.error ?? `Failed to load captures (${res.status})`);
   }
   return (await res.json()) as WorkIntentResponse;
+}
+
+async function fetchMessageObservations(url: string): Promise<MessageObservationResponse> {
+  const res = await api.get(url);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Failed to load observations (${res.status})`);
+  }
+  return (await res.json()) as MessageObservationResponse;
 }
 
 async function readApiError(res: Response, fallback: string): Promise<string> {
@@ -387,6 +415,81 @@ function WorkIntentRow({
   );
 }
 
+const OBSERVATION_STATUS_LABEL: Record<MessageObservation['status'], string> = {
+  queued: 'Queued',
+  processing: 'Processing',
+  ignored: 'Ignored',
+  no_capture: 'No capture',
+  captured: 'Captured',
+  retrying: 'Retrying',
+  failed: 'Failed',
+};
+
+function formatObservationReason(observation: MessageObservation) {
+  if (observation.status === 'ignored' && observation.ignored_reason) {
+    return observation.ignored_reason.replaceAll('_', ' ');
+  }
+  if (observation.status === 'no_capture') return 'No work intent found';
+  if (observation.status === 'captured') {
+    const jobs = observation.downstream_jobs
+      ?.map((job) => typeof job.name === 'string' ? job.name.replaceAll('-', ' ') : null)
+      .filter(Boolean)
+      .join(', ');
+    return jobs ? `Sent to ${jobs}` : `${observation.capture_count} capture job${observation.capture_count === 1 ? '' : 's'}`;
+  }
+  if (observation.status === 'failed' || observation.status === 'retrying') {
+    return observation.last_error || 'Observation failed';
+  }
+  return 'Waiting for Defty';
+}
+
+function MessageObservationRow({ observation }: { observation: MessageObservation }) {
+  const messagePreview = stripHtml(observation.source_message_content ?? '');
+  const age = formatIntentAge(observation.completed_at ?? observation.updated_at ?? observation.created_at);
+  const statusColor =
+    observation.status === 'failed' ? 'var(--status-red)'
+    : observation.status === 'retrying' ? 'var(--status-amber)'
+    : observation.status === 'ignored' || observation.status === 'no_capture' ? 'var(--muted)'
+    : observation.status === 'captured' ? 'var(--status-green)'
+    : 'var(--primary)';
+
+  return (
+    <div
+      className="rounded-lg border px-3 py-3"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-medium" style={{ color: statusColor }}>
+              {OBSERVATION_STATUS_LABEL[observation.status]}
+            </span>
+            {observation.space_name && (
+              <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                #{observation.space_name}
+              </span>
+            )}
+            {age && (
+              <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                {age}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-[13px]" style={{ color: 'var(--foreground)' }}>
+            {formatObservationReason(observation)}
+          </p>
+          {messagePreview && (
+            <p className="mt-1 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+              {observation.source_user_name ? `${observation.source_user_name}: ` : ''}
+              {compactText(messagePreview, 180)}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function InboxPage() {
   const params = useSearchParams();
   const initialTab = (params.get('tab') as Tab) ?? 'all';
@@ -404,6 +507,11 @@ export default function InboxPage() {
     fetchWorkIntents,
     { refreshInterval: 15_000, revalidateOnFocus: true },
   );
+  const { data: observationData, error: observationsError, isLoading: observationsLoading, mutate: refreshObservations } = useSWR(
+    shouldLoadWorkIntents ? '/api/work-intents/observations?limit=50' : null,
+    fetchMessageObservations,
+    { refreshInterval: 15_000, revalidateOnFocus: true },
+  );
 
   const filtered = useMemo(() => {
     if (tab === 'tasks') {
@@ -415,6 +523,10 @@ export default function InboxPage() {
     () => (workIntentData?.intents ?? []).filter((intent) => intent.status !== 'proposed'),
     [workIntentData?.intents],
   );
+  const observationTrail = useMemo(
+    () => (observationData?.observations ?? []).slice(0, 20),
+    [observationData?.observations],
+  );
   const convertedRetryByOriginal = useMemo(() => {
     const map = new Map<string, string>();
     for (const intent of workIntentData?.intents ?? []) {
@@ -425,11 +537,11 @@ export default function InboxPage() {
     return map;
   }, [workIntentData?.intents]);
   const loadError = shouldLoadWorkIntents
-    ? (inboxError ?? workIntentsError)
+    ? (inboxError ?? workIntentsError ?? observationsError)
     : inboxError;
   const refreshCaptureSurfaces = useCallback(async () => {
-    await Promise.allSettled([refresh(), refreshWorkIntents()]);
-  }, [refresh, refreshWorkIntents]);
+    await Promise.allSettled([refresh(), refreshWorkIntents(), refreshObservations()]);
+  }, [refresh, refreshWorkIntents, refreshObservations]);
 
   const handleApprove = useCallback(
     async (id: string) => {
@@ -534,7 +646,7 @@ export default function InboxPage() {
         </nav>
 
         {/* Body */}
-        {isLoading || (shouldLoadWorkIntents && workIntentsLoading) ? (
+        {isLoading || (shouldLoadWorkIntents && (workIntentsLoading || observationsLoading)) ? (
           <p className="text-[13px]" style={{ color: 'var(--muted)' }}>Loading...</p>
         ) : loadError ? (
           <div
@@ -551,7 +663,7 @@ export default function InboxPage() {
               Retry
             </button>
           </div>
-        ) : filtered.length === 0 && (!shouldLoadWorkIntents || historicWorkIntents.length === 0) ? (
+        ) : filtered.length === 0 && (!shouldLoadWorkIntents || (historicWorkIntents.length === 0 && observationTrail.length === 0)) ? (
           <div
             className="text-[13px] py-12 text-center rounded-lg"
             style={{ color: 'var(--muted)', border: '1px dashed var(--border)' }}
@@ -600,6 +712,21 @@ export default function InboxPage() {
                   convertedRetryId={convertedRetryByOriginal.get(intent.id) ?? null}
                 />
               ))}
+            {shouldLoadWorkIntents && observationTrail.length > 0 && (
+              <div className="mt-4 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>
+                    Observation trail
+                  </h2>
+                  <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                    Last {observationTrail.length}
+                  </span>
+                </div>
+                {observationTrail.map((observation) => (
+                  <MessageObservationRow key={observation.id} observation={observation} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
