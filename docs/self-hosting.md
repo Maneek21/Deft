@@ -97,11 +97,14 @@ call the wrong API URL. Fix the `NEXT_PUBLIC_*` values and rebuild.
 ### 2. Start the stack
 
 ```bash
-docker compose up -d --build
+docker compose build deft init doctor smoke
+docker compose up -d
 ```
 
-This builds Deft and starts Postgres with pgvector plus Redis. The first build
-can take a few minutes.
+This builds the app and one-shot tool images, then starts Postgres with pgvector
+plus Redis. The first build can take a few minutes. Building `init`, `doctor`,
+and `smoke` alongside `deft` matters on updates because those services run
+schema and verification code from the image.
 
 ### 3. Initialise the database
 
@@ -209,7 +212,8 @@ For production, use the overlay that does not publish Postgres or Redis to host
 ports:
 
 ```bash
-docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
+docker compose -f docker-compose.yml -f compose.prod.yml up -d
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
@@ -375,7 +379,8 @@ Deft is alpha and does not yet publish stable tagged releases. To roll forward:
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose build deft init doctor smoke
+docker compose up -d
 docker compose run --rm init
 docker compose run --rm doctor
 ```
