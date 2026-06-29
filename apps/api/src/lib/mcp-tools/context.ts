@@ -28,7 +28,7 @@ import {
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
-import { retrieveContext } from '../retrieve-context.js';
+import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -41,6 +41,188 @@ type PlatformContextArgs = {
   caller_employee_slug: string;
   trigger?: TriggerDescriptor;
 };
+
+type WikiSnippet = {
+  source_id?: string;
+  slug: string;
+  title: string;
+  summary: string | null;
+  type: string;
+  confidence: number;
+  scope?: string | null;
+  tier?: string | null;
+  space_id?: string | null;
+  origin_space_id?: string | null;
+  origin_message_id?: string | null;
+  created_via?: string | null;
+  matched_space_id?: string | null;
+  agent_employee_id?: string | null;
+};
+
+type ContextPacket = {
+  id: string;
+  scope: 'org' | 'space' | 'employee';
+  label: string;
+  description: string;
+  space_id?: string | null;
+  employee_id?: string | null;
+  retrieval_hint: {
+    tool: 'memory_recall';
+    args_template: Record<string, unknown>;
+  };
+  item_count: number;
+  items: WikiSnippet[];
+};
+
+function snippetFromContextResult(result: ContextResult): WikiSnippet {
+  return {
+    source_id: result.source_id,
+    slug: String(result.metadata?.slug ?? ''),
+    title: result.title,
+    summary: (result.metadata?.summary as string | null) ?? null,
+    type: String(result.metadata?.type ?? 'fact'),
+    confidence: result.confidence ?? 0,
+    scope: result.scope ?? null,
+    tier: (result.metadata?.tier as string | null) ?? null,
+    space_id: (result.metadata?.space_id as string | null) ?? null,
+    origin_space_id: (result.metadata?.origin_space_id as string | null) ?? null,
+    origin_message_id: (result.metadata?.origin_message_id as string | null) ?? null,
+    created_via: (result.metadata?.created_via as string | null) ?? null,
+    matched_space_id: (result.metadata?.matched_space_id as string | null) ?? null,
+    agent_employee_id: (result.metadata?.agent_employee_id as string | null) ?? null,
+  };
+}
+
+function isEmployeeSnippet(snippet: WikiSnippet, employeeId: string): boolean {
+  return (
+    snippet.tier === 'employee' ||
+    (snippet.agent_employee_id === employeeId && snippet.scope !== 'org')
+  );
+}
+
+function isChannelSnippet(snippet: WikiSnippet, spaceId: string | null | undefined): boolean {
+  if (!spaceId) return false;
+  return (
+    snippet.space_id === spaceId ||
+    snippet.origin_space_id === spaceId ||
+    snippet.matched_space_id === spaceId ||
+    (snippet.scope === 'space' && snippet.space_id === spaceId)
+  );
+}
+
+function buildContextPackets(
+  snippets: WikiSnippet[],
+  trigger: TriggerDescriptor | undefined,
+  ctx: ToolContext,
+): ContextPacket[] {
+  const spaceId = trigger?.space_id ?? null;
+  const channelItems = spaceId
+    ? snippets.filter((snippet) => isChannelSnippet(snippet, spaceId))
+    : [];
+  const employeeItems = snippets.filter((snippet) => isEmployeeSnippet(snippet, ctx.employee_id));
+  const companyItems = snippets.filter((snippet) => {
+    if (isEmployeeSnippet(snippet, ctx.employee_id)) return false;
+    if (isChannelSnippet(snippet, spaceId)) return false;
+    return snippet.scope === 'org' || snippet.tier === 'org' || !snippet.scope;
+  });
+
+  const packets: ContextPacket[] = [
+    {
+      id: 'company_memory',
+      scope: 'org',
+      label: 'Company memory',
+      description: 'Org-wide knowledge that is useful across channels and teams.',
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: {
+          caller_employee_slug: ctx.employee_slug,
+          query: '<query>',
+          scope: 'org',
+        },
+      },
+      item_count: companyItems.length,
+      items: companyItems,
+    },
+    {
+      id: 'employee_memory',
+      scope: 'employee',
+      label: 'Employee memory',
+      description: 'Memory owned by or scoped to the calling employee.',
+      employee_id: ctx.employee_id,
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: {
+          caller_employee_slug: ctx.employee_slug,
+          query: '<query>',
+          scope: 'own',
+        },
+      },
+      item_count: employeeItems.length,
+      items: employeeItems,
+    },
+  ];
+
+  if (spaceId) {
+    packets.splice(1, 0, {
+      id: `space:${spaceId}:memory`,
+      scope: 'space',
+      label: 'Channel memory',
+      description:
+        'Knowledge created in, scoped to, or cited from the current channel. Use this before broad company memory when answering channel-specific questions.',
+      space_id: spaceId,
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: {
+          caller_employee_slug: ctx.employee_slug,
+          query: '<query>',
+          space_id: spaceId,
+          include_org: false,
+          scope: 'all',
+        },
+      },
+      item_count: channelItems.length,
+      items: channelItems,
+    });
+  }
+
+  return packets;
+}
+
+function mergeWikiSnippets(existing: WikiSnippet[], additions: WikiSnippet[]): WikiSnippet[] {
+  const seen = new Set(existing.map((snippet) => snippet.source_id ?? snippet.slug));
+  const merged = [...existing];
+  for (const snippet of additions) {
+    const key = snippet.source_id ?? snippet.slug;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(snippet);
+  }
+  return merged;
+}
+
+function wikiPageMatchesSpaceExpr(orgId: string, spaceId: string) {
+  return sql<boolean>`(
+    ${wikiPages.space_id} = ${spaceId}
+    OR ${wikiPages.origin_space_id} = ${spaceId}
+    OR EXISTS (
+      SELECT 1
+      FROM wiki_citations wc
+      LEFT JOIN messages m
+        ON m.id = wc.source_id
+       AND wc.source_type = 'message'
+      WHERE wc.page_id = ${wikiPages.id}
+        AND (
+          wc.source_space_id = ${spaceId}
+          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+        )
+    )
+  )`;
+}
+
+function wikiMatchedSpaceIdExpr(orgId: string, spaceId: string | null | undefined) {
+  if (!spaceId) return sql<string | null>`NULL`;
+  return sql<string | null>`CASE WHEN ${wikiPageMatchesSpaceExpr(orgId, spaceId)} THEN ${spaceId} ELSE NULL END`;
+}
 
 // ─── 60s LRU cache ────────────────────────────────────────────────────────
 
@@ -182,30 +364,42 @@ export async function platformContext(
     // When there is no query text, fall back to top-confidence pages
     // (the gateway requires a non-empty query string, so we keep the
     // direct DB read for the no-query case).
-    let wikiSnippets: Array<{
-      slug: string;
-      title: string;
-      summary: string | null;
-      type: string;
-      confidence: number;
-    }> = [];
+    let wikiSnippets: WikiSnippet[] = [];
     try {
       if (queryText.trim().length > 0) {
         const results = await retrieveContext({
           query: queryText,
           org_id: ctx.org_id,
           agent_employee_id: ctx.employee_id,
+          space_id: trigger?.space_id ?? undefined,
+          include_org: true,
           types: ['wiki'],
           limit: 5,
         });
-        wikiSnippets = results.map((r) => ({
-          slug: String(r.metadata?.slug ?? ''),
-          title: r.title,
-          summary: (r.metadata?.summary as string | null) ?? null,
-          type: String(r.metadata?.type ?? 'fact'),
-          confidence: r.confidence ?? 0,
-        }));
+        wikiSnippets = results.map(snippetFromContextResult);
+        if (trigger?.space_id) {
+          const employeeResults = await retrieveContext({
+            query: queryText,
+            org_id: ctx.org_id,
+            agent_employee_id: ctx.employee_id,
+            types: ['wiki'],
+            limit: 2,
+          });
+          wikiSnippets = mergeWikiSnippets(
+            wikiSnippets,
+            employeeResults
+              .map(snippetFromContextResult)
+              .filter((snippet) => isEmployeeSnippet(snippet, ctx.employee_id)),
+          );
+        }
       } else {
+        const noQueryOrderBy = trigger?.space_id
+          ? [
+              desc(sql<number>`CASE WHEN ${wikiPageMatchesSpaceExpr(ctx.org_id, trigger.space_id)} THEN 1 ELSE 0 END`),
+              desc(wikiPages.confidence),
+              desc(wikiPages.updated_at),
+            ]
+          : [desc(wikiPages.confidence), desc(wikiPages.updated_at)];
         const rows = await db
           .select({
             slug: wikiPages.slug,
@@ -213,6 +407,13 @@ export async function platformContext(
             summary: wikiPages.summary,
             type: wikiPages.type,
             confidence: wikiPages.confidence,
+            scope: wikiPages.scope,
+            space_id: wikiPages.space_id,
+            origin_space_id: wikiPages.origin_space_id,
+            origin_message_id: wikiPages.origin_message_id,
+            created_via: wikiPages.created_via,
+            matched_space_id: wikiMatchedSpaceIdExpr(ctx.org_id, trigger?.space_id),
+            agent_employee_id: wikiPages.agent_employee_id,
           })
           .from(wikiPages)
           .where(
@@ -221,6 +422,15 @@ export async function platformContext(
               eq(wikiPages.is_deleted, false),
               or(
                 eq(wikiPages.scope, 'org'),
+                trigger?.space_id
+                  ? or(
+                      and(
+                        eq(wikiPages.scope, 'space'),
+                        eq(wikiPages.space_id, trigger.space_id),
+                      ),
+                      eq(wikiPages.origin_space_id, trigger.space_id),
+                    )
+                  : undefined,
                 and(
                   eq(wikiPages.agent_employee_id, ctx.employee_id),
                   sql`${wikiPages.scope} != 'org'`,
@@ -228,7 +438,7 @@ export async function platformContext(
               ),
             ),
           )
-          .orderBy(desc(wikiPages.confidence), desc(wikiPages.updated_at))
+          .orderBy(...noQueryOrderBy)
           .limit(5);
         wikiSnippets = rows.map((r) => ({
           slug: r.slug,
@@ -236,6 +446,14 @@ export async function platformContext(
           summary: r.summary,
           type: r.type as string,
           confidence: r.confidence,
+          scope: r.scope,
+          tier: r.scope === 'org' ? 'org' : r.agent_employee_id === ctx.employee_id ? 'employee' : null,
+          space_id: r.space_id,
+          origin_space_id: r.origin_space_id,
+          origin_message_id: r.origin_message_id,
+          created_via: r.created_via,
+          matched_space_id: r.matched_space_id,
+          agent_employee_id: r.agent_employee_id,
         }));
       }
     } catch {
@@ -265,6 +483,7 @@ export async function platformContext(
       })),
       active_projects: activeProjects,
       relevant_wiki_snippets: wikiSnippets,
+      context_packets: buildContextPackets(wikiSnippets, trigger, ctx),
       trigger_context: trigger ?? null,
       _cache_hit: false,
     };

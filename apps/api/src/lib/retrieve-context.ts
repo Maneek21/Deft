@@ -37,6 +37,8 @@ export interface RetrieveContextParams {
   user_id?: string;
   conversation_id?: string;
   agent_employee_id?: string;
+  space_id?: string;
+  include_org?: boolean;
   types?: Array<'wiki' | 'memory' | 'notes' | 'decisions' | 'tasks'>;
   limit?: number;
   /**
@@ -115,6 +117,37 @@ function employeeWikiCondition(agentEmployeeId: string) {
   );
 }
 
+function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string) {
+  return or(
+    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
+    eq(wikiPages.origin_space_id, spaceId),
+    sql`EXISTS (
+      SELECT 1
+      FROM wiki_citations wc
+      LEFT JOIN messages m
+        ON m.id = wc.source_id
+       AND wc.source_type = 'message'
+      WHERE wc.page_id = ${wikiPages.id}
+        AND (
+          wc.source_space_id = ${spaceId}
+          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+        )
+    )`,
+  );
+}
+
+function wikiRetrievalScopeCondition(orgId: string, spaceId: string | undefined, includeOrg: boolean) {
+  if (!spaceId) return undefined;
+  const spaceRelevant = wikiPageRelevantToSpaceCondition(spaceId, orgId);
+  return includeOrg ? or(eq(wikiPages.scope, 'org'), spaceRelevant) : spaceRelevant;
+}
+
+function wikiMatchedSpaceIdExpr(orgId: string, spaceId: string | undefined) {
+  if (!spaceId) return sql<string | null>`NULL`;
+  const spaceRelevant = wikiPageRelevantToSpaceCondition(spaceId, orgId) ?? sql`FALSE`;
+  return sql<string | null>`CASE WHEN ${spaceRelevant} THEN ${spaceId} ELSE NULL END`;
+}
+
 // ─── Hybrid vector helpers ────────────────────────────────────────────────────
 
 // Warn only once per process when the <=> operator is unavailable (BYTEA env).
@@ -183,10 +216,14 @@ async function runWikiQuery(
   user_id: string | undefined,
   forFTS: string,
   agent_employee_id: string | undefined,
+  space_id: string | undefined,
+  include_org: boolean,
   limit: number,
   scoreExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>,
   orderExpr: ReturnType<typeof hybridScoreExpr> | ReturnType<typeof ftsScoreExpr>,
 ) {
+  const retrievalScope = wikiRetrievalScopeCondition(org_id, space_id, include_org);
+
   if (agent_employee_id) {
     const [tier1Rows, tier2Rows] = await Promise.all([
       db
@@ -199,6 +236,11 @@ async function runWikiQuery(
           scope: wikiPages.scope,
           confidence: wikiPages.confidence,
           type: wikiPages.type,
+          space_id: wikiPages.space_id,
+          origin_space_id: wikiPages.origin_space_id,
+          origin_message_id: wikiPages.origin_message_id,
+          created_via: wikiPages.created_via,
+          matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
           agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
         })
@@ -210,6 +252,7 @@ async function runWikiQuery(
             sql`${wikiPages.type} != 'decision'`,
             ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
             employeeWikiCondition(agent_employee_id),
+            ...(retrievalScope ? [retrievalScope] : []),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
         )
@@ -226,6 +269,11 @@ async function runWikiQuery(
           scope: wikiPages.scope,
           confidence: wikiPages.confidence,
           type: wikiPages.type,
+          space_id: wikiPages.space_id,
+          origin_space_id: wikiPages.origin_space_id,
+          origin_message_id: wikiPages.origin_message_id,
+          created_via: wikiPages.created_via,
+          matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
           agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
         })
@@ -236,7 +284,7 @@ async function runWikiQuery(
             eq(wikiPages.is_deleted, false),
             sql`${wikiPages.type} != 'decision'`,
             ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
-            eq(wikiPages.scope, 'org'),
+            retrievalScope ?? eq(wikiPages.scope, 'org'),
             sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
           ),
         )
@@ -256,6 +304,11 @@ async function runWikiQuery(
       scope: wikiPages.scope,
       confidence: wikiPages.confidence,
       type: wikiPages.type,
+      space_id: wikiPages.space_id,
+      origin_space_id: wikiPages.origin_space_id,
+      origin_message_id: wikiPages.origin_message_id,
+      created_via: wikiPages.created_via,
+      matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
       agent_employee_id: wikiPages.agent_employee_id,
       rawScore: scoreExpr,
     })
@@ -266,6 +319,7 @@ async function runWikiQuery(
         eq(wikiPages.is_deleted, false),
         sql`${wikiPages.type} != 'decision'`,
         ...(user_id ? [visibleWikiPageCondition(user_id)] : []),
+        ...(retrievalScope ? [retrievalScope] : []),
         sql`search_vector @@ plainto_tsquery('english', ${forFTS})`,
       ),
     )
@@ -283,6 +337,11 @@ type WikiRow = {
   scope: string | null;
   confidence: number;
   type: string;
+  space_id: string | null;
+  origin_space_id: string | null;
+  origin_message_id: string | null;
+  created_via: string | null;
+  matched_space_id: string | null;
   agent_employee_id: string | null;
   rawScore: number;
 };
@@ -308,6 +367,11 @@ function mapWikiRows(
           tier: 'employee',
           slug: row.slug,
           summary: row.summary ?? null,
+          space_id: row.space_id ?? null,
+          origin_space_id: row.origin_space_id ?? null,
+          origin_message_id: row.origin_message_id ?? null,
+          created_via: row.created_via ?? null,
+          matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
       });
@@ -326,6 +390,11 @@ function mapWikiRows(
           tier: 'org',
           slug: row.slug,
           summary: row.summary ?? null,
+          space_id: row.space_id ?? null,
+          origin_space_id: row.origin_space_id ?? null,
+          origin_message_id: row.origin_message_id ?? null,
+          created_via: row.created_via ?? null,
+          matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
       });
@@ -344,6 +413,11 @@ function mapWikiRows(
           type: row.type,
           slug: row.slug,
           summary: row.summary ?? null,
+          space_id: row.space_id ?? null,
+          origin_space_id: row.origin_space_id ?? null,
+          origin_message_id: row.origin_message_id ?? null,
+          created_via: row.created_via ?? null,
+          matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
       });
@@ -359,6 +433,8 @@ async function fetchWiki(
   forIlike: string,
   words: string[],
   agent_employee_id: string | undefined,
+  space_id: string | undefined,
+  include_org: boolean,
   limit: number,
   queryEmbedding: number[] | null,
   hybrid: boolean,
@@ -372,19 +448,21 @@ async function fetchWiki(
 
   try {
     const { tier1Rows, tier2Rows, singleRows } = await runWikiQuery(
-      org_id, user_id, forFTS, agent_employee_id, limit, scoreExpr, orderExpr,
+      org_id, user_id, forFTS, agent_employee_id, space_id, include_org, limit, scoreExpr, orderExpr,
     );
     const mapped = mapWikiRows(tier1Rows, tier2Rows, singleRows);
     if (mapped.length >= limit) {
       return mapped;
     }
     const fallback = await fetchWikiIlike(
-      org_id,
-      user_id,
-      forIlike,
-      words,
-      agent_employee_id,
-      limit - mapped.length,
+        org_id,
+        user_id,
+        forIlike,
+        words,
+        agent_employee_id,
+        space_id,
+        include_org,
+        limit - mapped.length,
       new Set(mapped.map((r) => r.source_id)),
     );
     return [...mapped, ...fallback];
@@ -398,7 +476,7 @@ async function fetchWiki(
       try {
         const ftsSE = ftsScoreExpr(forFTS);
         const { tier1Rows: t1, tier2Rows: t2, singleRows: sr } = await runWikiQuery(
-          org_id, user_id, forFTS, agent_employee_id, limit, ftsSE, ftsSE,
+          org_id, user_id, forFTS, agent_employee_id, space_id, include_org, limit, ftsSE, ftsSE,
         );
         const mapped = mapWikiRows(t1, t2, sr);
         if (mapped.length >= limit) {
@@ -410,6 +488,8 @@ async function fetchWiki(
           forIlike,
           words,
           agent_employee_id,
+          space_id,
+          include_org,
           limit - mapped.length,
           new Set(mapped.map((r) => r.source_id)),
         );
@@ -431,6 +511,8 @@ async function fetchWikiIlike(
   forIlike: string,
   words: string[],
   agent_employee_id: string | undefined,
+  space_id: string | undefined,
+  include_org: boolean,
   limit: number,
   excludeIds = new Set<string>(),
 ): Promise<ContextResult[]> {
@@ -466,8 +548,14 @@ async function fetchWikiIlike(
     scope: wikiPages.scope,
     confidence: wikiPages.confidence,
     type: wikiPages.type,
+    space_id: wikiPages.space_id,
+    origin_space_id: wikiPages.origin_space_id,
+    origin_message_id: wikiPages.origin_message_id,
+    created_via: wikiPages.created_via,
+    matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
     agent_employee_id: wikiPages.agent_employee_id,
   };
+  const retrievalScope = wikiRetrievalScopeCondition(org_id, space_id, include_org);
 
   const rows: Array<Omit<WikiRow, 'rawScore'>> = [];
   if (agent_employee_id) {
@@ -475,13 +563,13 @@ async function fetchWikiIlike(
       db
         .select(selectColumns)
         .from(wikiPages)
-        .where(and(...baseConditions, employeeWikiCondition(agent_employee_id)))
+        .where(and(...baseConditions, employeeWikiCondition(agent_employee_id), ...(retrievalScope ? [retrievalScope] : [])))
         .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
         .limit(Math.min(2, limit)),
       db
         .select(selectColumns)
         .from(wikiPages)
-        .where(and(...baseConditions, eq(wikiPages.scope, 'org')))
+        .where(and(...baseConditions, retrievalScope ?? eq(wikiPages.scope, 'org')))
         .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
         .limit(limit),
     ]);
@@ -490,7 +578,7 @@ async function fetchWikiIlike(
     const singleRows = await db
       .select(selectColumns)
       .from(wikiPages)
-      .where(and(...baseConditions))
+      .where(and(...baseConditions, ...(retrievalScope ? [retrievalScope] : [])))
       .orderBy(sql`${wikiPages.confidence} DESC`, sql`${wikiPages.updated_at} DESC`)
       .limit(limit);
     rows.push(...singleRows);
@@ -519,6 +607,11 @@ async function fetchWikiIlike(
         ...(tier ? { tier } : {}),
         slug: row.slug,
         summary: row.summary ?? null,
+        space_id: row.space_id ?? null,
+        origin_space_id: row.origin_space_id ?? null,
+        origin_message_id: row.origin_message_id ?? null,
+        created_via: row.created_via ?? null,
+        matched_space_id: row.matched_space_id ?? null,
         agent_employee_id: row.agent_employee_id ?? null,
         retrieval: 'text_fallback',
       },
@@ -860,6 +953,8 @@ export async function retrieveContext(
     user_id,
     conversation_id,
     agent_employee_id,
+    space_id,
+    include_org = true,
     types = ['wiki', 'memory', 'notes', 'decisions', 'tasks'],
     limit = 10,
     hybrid = true,
@@ -886,7 +981,7 @@ export async function retrieveContext(
   // 4. Run all requested branches concurrently; each returns its own array.
   const [wikiRows, decisionRows, memRows, noteRows, taskRows] = await Promise.all([
     types.includes('wiki')
-      ? fetchWiki(org_id, user_id, forFTS, forIlike, words, agent_employee_id, limit, queryEmbedding, hybrid)
+      ? fetchWiki(org_id, user_id, forFTS, forIlike, words, agent_employee_id, space_id, include_org, limit, queryEmbedding, hybrid)
       : Promise.resolve([]),
 
     // 5. Decisions branch: queries wikiPages WHERE type='decision'. Forward-

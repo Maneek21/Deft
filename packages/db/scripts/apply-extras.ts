@@ -15,6 +15,7 @@ const databaseUrl = resolveDatabaseUrl();
 const files = [
   '0020_wiki_search_vector.sql',
   '0033_tasks_embedding.sql',
+  '0074_wiki_provenance_graph_scope.sql',
 ];
 
 async function main() {

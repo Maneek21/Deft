@@ -9,7 +9,7 @@
 import { sql, and, eq, or, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
-import { wikiPages } from '@deft/db/schema';
+import { agentEmployees, spaceMembers, spaces, wikiPages } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
@@ -49,6 +49,65 @@ function contextResultMatchesMemoryScope(
   return isOrgScope || isOwnScope;
 }
 
+function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string) {
+  return or(
+    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
+    eq(wikiPages.origin_space_id, spaceId),
+    sql`EXISTS (
+      SELECT 1
+      FROM wiki_citations wc
+      LEFT JOIN messages m
+        ON m.id = wc.source_id
+       AND wc.source_type = 'message'
+      WHERE wc.page_id = ${wikiPages.id}
+        AND (
+          wc.source_space_id = ${spaceId}
+          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+        )
+    )`,
+  );
+}
+
+function wikiRetrievalScopeCondition(orgId: string, spaceId: string | undefined, includeOrg: boolean) {
+  if (!spaceId) return undefined;
+  const spaceRelevant = wikiPageRelevantToSpaceCondition(spaceId, orgId);
+  return includeOrg ? or(eq(wikiPages.scope, 'org'), spaceRelevant) : spaceRelevant;
+}
+
+function wikiMatchedSpaceIdExpr(orgId: string, spaceId: string | undefined) {
+  if (!spaceId) return sql<string | null>`NULL`;
+  const spaceRelevant = wikiPageRelevantToSpaceCondition(spaceId, orgId) ?? sql`FALSE`;
+  return sql<string | null>`CASE WHEN ${spaceRelevant} THEN ${spaceId} ELSE NULL END`;
+}
+
+async function canEmployeeSeeSpace(
+  spaceId: string,
+  orgId: string,
+  employeeId: string,
+): Promise<boolean> {
+  const [space] = await db
+    .select({ id: spaces.id, type: spaces.type })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
+    .limit(1);
+  if (!space) return false;
+  if (space.type === 'public') return true;
+
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.id, employeeId), eq(agentEmployees.org_id, orgId)))
+    .limit(1);
+  if (!employee?.user_id) return false;
+
+  const [member] = await db
+    .select({ id: spaceMembers.id })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.space_id, spaceId), eq(spaceMembers.user_id, employee.user_id)))
+    .limit(1);
+  return !!member;
+}
+
 // ─── memory_recall ────────────────────────────────────────────────────────
 
 export type MemoryRecallArgs = {
@@ -56,6 +115,8 @@ export type MemoryRecallArgs = {
   query: string;
   limit?: number;
   scope?: 'own' | 'org' | 'all';
+  space_id?: string;
+  include_org?: boolean;
 };
 
 export async function memoryRecall(
@@ -68,8 +129,14 @@ export async function memoryRecall(
   }
   const limit = Math.min(Math.max(1, args.limit ?? 5), 25);
   const scope = args.scope ?? 'all';
+  const spaceId = args.space_id?.trim() || undefined;
+  const includeOrg = args.include_org !== false;
 
   try {
+    if (spaceId && !(await canEmployeeSeeSpace(spaceId, ctx.org_id, ctx.employee_id))) {
+      return errorResult(`memory_recall: employee cannot access space ${spaceId}`);
+    }
+    const retrievalScope = wikiRetrievalScopeCondition(ctx.org_id, spaceId, includeOrg);
     const terms = query
       .toLowerCase()
       .split(/[^a-z0-9]+/)
@@ -84,6 +151,11 @@ export async function memoryRecall(
             content: wikiPages.content,
             type: wikiPages.type,
             agent_employee_id: wikiPages.agent_employee_id,
+            space_id: wikiPages.space_id,
+            origin_space_id: wikiPages.origin_space_id,
+            origin_message_id: wikiPages.origin_message_id,
+            created_via: wikiPages.created_via,
+            matched_space_id: wikiMatchedSpaceIdExpr(ctx.org_id, spaceId),
             updated_at: wikiPages.updated_at,
           })
           .from(wikiPages)
@@ -91,6 +163,7 @@ export async function memoryRecall(
             eq(wikiPages.org_id, ctx.org_id),
             eq(wikiPages.is_deleted, false),
             wikiScopeCondition(scope, ctx.employee_id),
+            ...(retrievalScope ? [retrievalScope] : []),
             ...terms.map((term) => {
               const pattern = `%${term}%`;
               return sql`(
@@ -109,6 +182,8 @@ export async function memoryRecall(
       query,
       org_id: ctx.org_id,
       agent_employee_id: ctx.employee_id,
+      space_id: spaceId,
+      include_org: includeOrg,
       types: ['wiki'],
       limit,
       hybrid: false, // FTS-only; pgvector is a separate phase
@@ -140,6 +215,11 @@ export async function memoryRecall(
         truncated,
         type: row.type ?? '',
         confidence: 1.0,
+        space_id: row.space_id ?? null,
+        origin_space_id: row.origin_space_id ?? null,
+        origin_message_id: row.origin_message_id ?? null,
+        created_via: row.created_via ?? null,
+        matched_space_id: row.matched_space_id ?? null,
       };
     });
     const result = [...exactResults, ...filtered.filter((r) => {
@@ -158,6 +238,11 @@ export async function memoryRecall(
         truncated,
         type: (r.metadata?.type as string) ?? '',
         confidence: r.confidence ?? 1.0,
+        space_id: r.metadata?.space_id ?? null,
+        origin_space_id: r.metadata?.origin_space_id ?? null,
+        origin_message_id: r.metadata?.origin_message_id ?? null,
+        created_via: r.metadata?.created_via ?? null,
+        matched_space_id: r.metadata?.matched_space_id ?? null,
       };
     })].slice(0, limit);
 

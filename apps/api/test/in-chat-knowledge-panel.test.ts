@@ -122,13 +122,18 @@ async function insertWikiPage(overrides: Record<string, unknown> = {}): Promise<
   await withClient(async (c) => {
     await c.query(
       `INSERT INTO wiki_pages
-         (id, org_id, scope, space_id, type, title, slug, content, confidence, is_deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false)`,
+         (id, org_id, scope, space_id, origin_space_id, origin_message_id, origin_user_id, created_via,
+          type, title, slug, content, confidence, is_deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, false)`,
       [
         id,
         overrides.org_id ?? ORG_ID,
         overrides.scope ?? 'org',
         overrides.space_id ?? null,
+        overrides.origin_space_id ?? null,
+        overrides.origin_message_id ?? null,
+        overrides.origin_user_id ?? null,
+        overrides.created_via ?? null,
         overrides.type ?? 'fact',
         overrides.title ?? 'Test Page',
         overrides.slug ?? `test-page-${id}`,
@@ -241,6 +246,25 @@ test('2. GET returns org-scoped page that has a citation from a message in the s
   assert.ok(found, `Cited page ${pageId} should appear via citation join`);
   assert.equal(found.source_message_id, messageId);
   assert.equal(found.source_space_id, SPACE_ID);
+});
+
+test('2b. GET returns org-scoped page that originated in the space even without citation', async () => {
+  const pageId = await insertWikiPage({
+    scope: 'org',
+    space_id: null,
+    origin_space_id: SPACE_ID,
+    type: 'fact',
+    title: 'Origin Space Org Page',
+  });
+
+  const res = await callRoute('GET', `/${SPACE_ID}/knowledge`);
+  assert.equal(res.status, 200);
+
+  const data = await res.json() as any;
+  const found = data.entries.find((e: any) => e.id === pageId);
+  assert.ok(found, `Origin-space page ${pageId} should appear via origin_space_id`);
+  assert.equal(found.origin_space_id, SPACE_ID);
+  assert.equal(found.space_id, null);
 });
 
 // ─── Test 3: GET does NOT return page from a different space ─────────────────

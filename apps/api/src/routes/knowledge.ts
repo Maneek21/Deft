@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, and, desc, ilike, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { wikiPages, wikiCitations, messages, users, spaces } from '@deft/db/schema';
 import { getIO } from '../socket.js';
@@ -41,6 +41,10 @@ function toKnowledgeEntry(row: any) {
     metadata: row.metadata ?? null,
     source_message_id: row.source_message_id ?? null,
     source_space_id: row.source_space_id ?? null,
+    origin_space_id: row.origin_space_id ?? null,
+    origin_message_id: row.origin_message_id ?? null,
+    origin_user_id: row.origin_user_id ?? null,
+    created_via: row.created_via ?? null,
     space_id: row.space_id,
     created_by: row.user_id,
     created_at: row.created_at,
@@ -65,14 +69,33 @@ function sourceMessageIdSql() {
 
 function sourceSpaceIdSql() {
   return sql<string | null>`(
-    SELECT m.space_id
+    SELECT COALESCE(wc.source_space_id, m.space_id)
     FROM wiki_citations wc
-    JOIN messages m ON m.id = wc.source_id
+    LEFT JOIN messages m ON m.id = wc.source_id
     WHERE wc.page_id = ${wikiPages.id}
       AND wc.source_type = 'message'
     ORDER BY wc.created_at DESC
     LIMIT 1
   )`;
+}
+
+function pageRelevantToSpaceCondition(spaceId: string, orgId: string) {
+  return or(
+    eq(wikiPages.space_id, spaceId),
+    eq(wikiPages.origin_space_id, spaceId),
+    sql`EXISTS (
+      SELECT 1
+      FROM wiki_citations wc
+      LEFT JOIN messages m
+        ON m.id = wc.source_id
+       AND wc.source_type = 'message'
+      WHERE wc.page_id = ${wikiPages.id}
+        AND (
+          wc.source_space_id = ${spaceId}
+          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+        )
+    )`,
+  );
 }
 
 function cleanMetadata(value: unknown): Record<string, unknown> | null {
@@ -90,10 +113,10 @@ function stripHtml(value: string): string {
 async function latestMessageCitation(pageId: string): Promise<{ source_message_id: string | null; source_space_id: string | null }> {
   const [row] = await db.select({
     source_message_id: wikiCitations.source_id,
-    source_space_id: messages.space_id,
+    source_space_id: sql<string | null>`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`,
   })
     .from(wikiCitations)
-    .innerJoin(messages, and(
+    .leftJoin(messages, and(
       eq(wikiCitations.source_id, messages.id),
       eq(wikiCitations.source_type, 'message'),
     ))
@@ -136,6 +159,10 @@ knowledgeAggRoutes.get('/', async (c) => {
       title: wikiPages.title,
       content: wikiPages.content,
       space_id: wikiPages.space_id,
+      origin_space_id: wikiPages.origin_space_id,
+      origin_message_id: wikiPages.origin_message_id,
+      origin_user_id: wikiPages.origin_user_id,
+      created_via: wikiPages.created_via,
       user_id: wikiPages.user_id,
       slug: wikiPages.slug,
       scope: wikiPages.scope,
@@ -174,8 +201,9 @@ knowledgeAggRoutes.get('/', async (c) => {
 
 // GET /api/spaces/:spaceId/knowledge — list entries for a space
 // Returns wiki pages where:
-//   1. space_id matches exactly (org-scoped pages written from this space, or manually scoped)
-//   2. OR a wiki citation exists linking the page to a message sent in this space
+//   1. space_id matches exactly (space-scoped pages)
+//   2. OR origin_space_id matches (org memory that originated in this space)
+//   3. OR a wiki citation links the page to a message sent in this space
 knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
   try {
     const user = c.get('user');
@@ -188,30 +216,11 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
 
-    // Find page IDs that have a citation from a message in this space
-    const citedPageIds = await db.select({ page_id: wikiCitations.page_id })
-      .from(wikiCitations)
-      .innerJoin(messages, and(
-        eq(wikiCitations.source_id, messages.id),
-        eq(wikiCitations.source_type, 'message'),
-      ))
-      .where(and(
-        eq(messages.space_id, spaceId),
-        eq(messages.org_id, user.org_id),
-      ));
-
-    const citedIds = [...new Set(citedPageIds.map(r => r.page_id))];
-
-    // Build conditions: space_id match OR cited from this space
-    const spaceCondition = citedIds.length > 0
-      ? or(eq(wikiPages.space_id, spaceId), inArray(wikiPages.id, citedIds))
-      : eq(wikiPages.space_id, spaceId);
-
     const conditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
       visibleWikiPageCondition(user.id),
-      spaceCondition!,
+      pageRelevantToSpaceCondition(spaceId, user.org_id)!,
     ];
 
     if (typeFilter) {
@@ -228,6 +237,10 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
         title: wikiPages.title,
         content: wikiPages.content,
         space_id: wikiPages.space_id,
+        origin_space_id: wikiPages.origin_space_id,
+        origin_message_id: wikiPages.origin_message_id,
+        origin_user_id: wikiPages.origin_user_id,
+        created_via: wikiPages.created_via,
         user_id: wikiPages.user_id,
         slug: wikiPages.slug,
         scope: wikiPages.scope,
@@ -320,6 +333,10 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
     const [entry] = await db.insert(wikiPages).values({
       org_id: user.org_id,
       space_id: spaceId,
+      origin_space_id: sourceSpaceId ?? spaceId,
+      origin_message_id: sourceMessageId,
+      origin_user_id: user.id,
+      created_via: 'space_knowledge_panel',
       user_id: user.id,
       scope: 'space',
       type: wikiType,
@@ -336,9 +353,12 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
 
     if (sourceMessageId) {
       await db.insert(wikiCitations).values({
+        org_id: user.org_id,
         page_id: entry.id,
         source_type: 'message',
         source_id: sourceMessageId,
+        source_space_id: sourceSpaceId,
+        source_user_id: user.id,
         excerpt: sourceMessageExcerpt,
       });
     }
@@ -357,6 +377,10 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
       metadata,
       source_message_id: sourceMessageId,
       source_space_id: sourceSpaceId,
+      origin_space_id: entry.origin_space_id,
+      origin_message_id: entry.origin_message_id,
+      origin_user_id: entry.origin_user_id,
+      created_via: entry.created_via,
     });
 
     const io = getIO();
@@ -492,6 +516,7 @@ knowledgeRoutes.get('/knowledge/search', async (c) => {
     const conditions: any[] = [
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
       or(ilike(wikiPages.title, pattern), ilike(wikiPages.content, pattern)),
     ];
 
@@ -509,6 +534,10 @@ knowledgeRoutes.get('/knowledge/search', async (c) => {
         title: wikiPages.title,
         content: wikiPages.content,
         space_id: wikiPages.space_id,
+        origin_space_id: wikiPages.origin_space_id,
+        origin_message_id: wikiPages.origin_message_id,
+        origin_user_id: wikiPages.origin_user_id,
+        created_via: wikiPages.created_via,
         user_id: wikiPages.user_id,
         slug: wikiPages.slug,
         scope: wikiPages.scope,

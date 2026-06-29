@@ -48,6 +48,7 @@ function makeCtx(): ToolContext {
 }
 
 let triggeringMessageId: string;
+let triggeringSpaceId: string;
 
 before(async () => {
   await withClient(async (c) => {
@@ -88,6 +89,7 @@ before(async () => {
 
     // Seed a space for the message.
     const spaceId = `mcp-ctx-space-${Date.now()}`;
+    triggeringSpaceId = spaceId;
     await c.query(
       `INSERT INTO spaces (id, org_id, name, created_by)
        VALUES ($1, $2, 'MCP Ctx Test Space', $3)
@@ -163,6 +165,67 @@ before(async () => {
       [orgPageId],
     );
     seededIds.push({ table: 'wiki_pages', id: orgPageId });
+
+    // Org-visible memory that originated from the trigger channel. The
+    // context packet layer should route this to channel memory while the
+    // flat legacy snippet list remains backward-compatible.
+    const channelPageId = `mcp-ctx-channel-page-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, summary, content, confidence,
+          origin_space_id, created_via, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'procedure', 'org', $3, $4, $5, $6, 0.95, $7,
+          'test_channel_origin', false, NOW(), NOW())`,
+      [
+        channelPageId,
+        ORG_ID,
+        `Channel ${QUERY_TERM} Procedure`,
+        `mcp-ctx-channel-procedure-${Date.now()}`,
+        `Summary about ${QUERY_TERM} from the trigger channel.`,
+        `The ${QUERY_TERM} procedure was captured from the trigger channel.`,
+        spaceId,
+      ],
+    );
+    await c.query(
+      `UPDATE wiki_pages SET search_vector =
+         setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+         setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+       WHERE id = $1`,
+      [channelPageId],
+    );
+    seededIds.push({ table: 'wiki_pages', id: channelPageId });
+
+    const citedPageId = `mcp-ctx-cited-page-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, summary, content, confidence,
+          is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'fact', 'org', $3, $4, $5, $6, 0.92, false, NOW(), NOW())`,
+      [
+        citedPageId,
+        ORG_ID,
+        `Cited ${QUERY_TERM} Context`,
+        `mcp-ctx-cited-context-${Date.now()}`,
+        `Summary about ${QUERY_TERM} from a message citation.`,
+        `The ${QUERY_TERM} cited page is linked to the trigger channel only through citation provenance.`,
+      ],
+    );
+    await c.query(
+      `UPDATE wiki_pages SET search_vector =
+         setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+         setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+       WHERE id = $1`,
+      [citedPageId],
+    );
+    await c.query(
+      `INSERT INTO wiki_citations
+         (id, org_id, page_id, source_type, source_id, source_space_id, source_user_id, excerpt)
+       VALUES (gen_random_uuid()::text, $1, $2, 'message', $3, $4, $5, $6)`,
+      [ORG_ID, citedPageId, msgId, spaceId, TEST_USER_ID, `Citation excerpt for ${QUERY_TERM}`],
+    );
+    seededIds.push({ table: 'wiki_pages', id: citedPageId });
   });
 });
 
@@ -250,6 +313,59 @@ describe('platformContext', () => {
     assert.ok(employeePage !== undefined, 'Employee-tagged wiki page should appear in snippets');
   });
 
+  test('3b. context_packets separate company, channel, and employee memory', async () => {
+    _clearPlatformContextCache();
+    const result = await platformContext(
+      {
+        caller_employee_slug: 'mcp-ctx-test',
+        trigger: {
+          kind: 'message',
+          triggering_message_id: triggeringMessageId,
+          space_id: triggeringSpaceId,
+        },
+      },
+      makeCtx(),
+    );
+
+    assert.ok(!result.isError, `Unexpected error: ${result.content[0]?.text}`);
+
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    const packets = parsed.context_packets as Array<Record<string, unknown>>;
+    assert.ok(Array.isArray(packets), 'context_packets is an array');
+
+    const company = packets.find((packet) => packet.id === 'company_memory');
+    const channel = packets.find((packet) => packet.id === `space:${triggeringSpaceId}:memory`);
+    const employee = packets.find((packet) => packet.id === 'employee_memory');
+    assert.ok(company, 'company memory packet exists');
+    assert.ok(channel, 'channel memory packet exists');
+    assert.ok(employee, 'employee memory packet exists');
+
+    const companyItems = company.items as Array<Record<string, unknown>>;
+    const channelItems = channel.items as Array<Record<string, unknown>>;
+    const employeeItems = employee.items as Array<Record<string, unknown>>;
+
+    assert.ok(
+      companyItems.some((item) => String(item.title).includes('Org')),
+      'company packet should contain org-wide memory',
+    );
+    assert.ok(
+      channelItems.some((item) => String(item.title).includes('Channel')),
+      'channel packet should contain channel-origin memory',
+    );
+    assert.ok(
+      channelItems.some((item) => String(item.title).includes('Cited')),
+      'channel packet should contain citation-linked memory',
+    );
+    assert.ok(
+      employeeItems.some((item) => String(item.title).includes('Employee')),
+      'employee packet should contain employee memory',
+    );
+    assert.ok(
+      channel.retrieval_hint,
+      'channel packet should include a retrieval hint for follow-up recall',
+    );
+  });
+
   test('4. without trigger message, fallback returns top-confidence snippets', async () => {
     _clearPlatformContextCache();
     const result = await platformContext(
@@ -265,6 +381,34 @@ describe('platformContext', () => {
     assert.ok(parsed.org, 'org field present');
     assert.ok(parsed.employee, 'employee field present');
     assert.ok(Array.isArray(parsed.relevant_wiki_snippets), 'relevant_wiki_snippets is array');
+  });
+
+  test('4b. channel trigger without message still routes source-linked memory into channel packet', async () => {
+    _clearPlatformContextCache();
+    const result = await platformContext(
+      {
+        caller_employee_slug: 'mcp-ctx-test',
+        trigger: { kind: 'channel_wake', space_id: triggeringSpaceId },
+      },
+      makeCtx(),
+    );
+
+    assert.ok(!result.isError, `Unexpected error: ${result.content[0]?.text}`);
+
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    const packets = parsed.context_packets as Array<Record<string, unknown>>;
+    const channel = packets.find((packet) => packet.id === `space:${triggeringSpaceId}:memory`);
+    assert.ok(channel, 'channel memory packet exists');
+
+    const channelItems = channel.items as Array<Record<string, unknown>>;
+    assert.ok(
+      channelItems.some((item) => String(item.title).includes('Channel')),
+      'channel packet should contain origin-space memory in no-query fallback',
+    );
+    assert.ok(
+      channelItems.some((item) => String(item.title).includes('Cited')),
+      'channel packet should contain citation-linked memory in no-query fallback',
+    );
   });
 
   test('5. second call within 60s returns _cache_hit: true', async () => {

@@ -44,6 +44,28 @@ function slugify(title: string): string {
     .slice(0, 80);
 }
 
+function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string, includeOrg: boolean) {
+  const relevant = or(
+    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
+    ...(includeOrg ? [
+      eq(wikiPages.origin_space_id, spaceId),
+      sql`EXISTS (
+        SELECT 1
+        FROM wiki_citations wc
+        LEFT JOIN messages m
+          ON m.id = wc.source_id
+         AND wc.source_type = 'message'
+        WHERE wc.page_id = ${wikiPages.id}
+          AND (
+            wc.source_space_id = ${spaceId}
+            OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+          )
+      )`,
+    ] : []),
+  );
+  return relevant;
+}
+
 // GET /api/wiki — list/search wiki pages
 wikiRoutes.get('/', async (c) => {
   try {
@@ -84,29 +106,33 @@ wikiRoutes.get('/', async (c) => {
       : null;
 
     const fetchPageBatch = async (conditions: any[], useFullText: boolean) => db.select({
-        id: wikiPages.id,
-        type: wikiPages.type,
-        scope: wikiPages.scope,
-        title: wikiPages.title,
-        slug: wikiPages.slug,
-        summary: wikiPages.summary,
-        metadata: wikiPages.metadata,
-        confidence: wikiPages.confidence,
-        version: wikiPages.version,
-        space_id: wikiPages.space_id,
-        created_at: wikiPages.created_at,
-        updated_at: wikiPages.updated_at,
-        ...(useFullText && query ? { rank: sql<number>`ts_rank(search_vector, websearch_to_tsquery('english', ${query}))` } : {}),
-      })
-        .from(wikiPages)
-        .where(and(...conditions))
-        .orderBy(
-          ...(useFullText && query
-            ? [sql`ts_rank(search_vector, websearch_to_tsquery('english', ${query})) DESC`, desc(wikiPages.confidence)]
-            : [desc(wikiPages.confidence), desc(wikiPages.updated_at)])
-        )
-        .limit(limit)
-        .offset(offset);
+      id: wikiPages.id,
+      type: wikiPages.type,
+      scope: wikiPages.scope,
+      title: wikiPages.title,
+      slug: wikiPages.slug,
+      summary: wikiPages.summary,
+      metadata: wikiPages.metadata,
+      confidence: wikiPages.confidence,
+      version: wikiPages.version,
+      space_id: wikiPages.space_id,
+      origin_space_id: wikiPages.origin_space_id,
+      origin_message_id: wikiPages.origin_message_id,
+      origin_user_id: wikiPages.origin_user_id,
+      created_via: wikiPages.created_via,
+      created_at: wikiPages.created_at,
+      updated_at: wikiPages.updated_at,
+      ...(useFullText && query ? { rank: sql<number>`ts_rank(search_vector, websearch_to_tsquery('english', ${query}))` } : {}),
+    })
+      .from(wikiPages)
+      .where(and(...conditions))
+      .orderBy(
+        ...(useFullText && query
+          ? [sql`ts_rank(search_vector, websearch_to_tsquery('english', ${query})) DESC`, desc(wikiPages.confidence)]
+          : [desc(wikiPages.confidence), desc(wikiPages.updated_at)])
+      )
+      .limit(limit)
+      .offset(offset);
 
     let conditions = ftsCondition ? [...baseConditions, ftsCondition] : baseConditions;
     let pages = await fetchPageBatch(conditions, !!ftsCondition);
@@ -168,18 +194,62 @@ wikiRoutes.get('/', async (c) => {
 wikiRoutes.get('/graph', async (c) => {
   try {
     const user = c.get('user');
+    const mode = c.req.query('mode') === 'space' ? 'space' : 'org';
+    const spaceId = c.req.query('space_id') || c.req.query('spaceId') || null;
+    const includeOrg = c.req.query('include_org') !== 'false';
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '200'), 25), 500);
+
+    const conditions: any[] = [
+      eq(wikiPages.org_id, user.org_id),
+      eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
+    ];
+
+    let scopeLabel = 'Company';
+    if (mode === 'space') {
+      if (!spaceId) {
+        return c.json({ error: 'space_id is required for space graph mode', code: 'VALIDATION_ERROR' }, 400);
+      }
+      const isMember = await requireSpaceMembership(spaceId, user.id);
+      if (!isMember) {
+        return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+      }
+      const [space] = await db.select({ name: spaces.name })
+        .from(spaces)
+        .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
+        .limit(1);
+      if (!space) {
+        return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+      }
+      scopeLabel = space.name;
+      conditions.push(wikiPageRelevantToSpaceCondition(spaceId, user.org_id, includeOrg)!);
+    } else {
+      conditions.push(eq(wikiPages.scope, 'org'));
+    }
 
     const nodes = await db.select({
       id: wikiPages.id,
       slug: wikiPages.slug,
       title: wikiPages.title,
       type: wikiPages.type,
+      scope: wikiPages.scope,
+      space_id: wikiPages.space_id,
+      origin_space_id: wikiPages.origin_space_id,
+      origin_message_id: wikiPages.origin_message_id,
+      created_via: wikiPages.created_via,
       confidence: wikiPages.confidence,
+      origin_space_name: spaces.name,
+      citation_count: sql<number>`(
+        SELECT count(*)
+        FROM wiki_citations wc
+        WHERE wc.page_id = ${wikiPages.id}
+      )`,
     })
       .from(wikiPages)
-      .where(and(eq(wikiPages.org_id, user.org_id), eq(wikiPages.is_deleted, false), visibleWikiPageCondition(user.id)))
+      .leftJoin(spaces, eq(spaces.id, wikiPages.origin_space_id))
+      .where(and(...conditions))
       .orderBy(desc(wikiPages.confidence))
-      .limit(200);
+      .limit(limit);
 
     const nodeIds = nodes.map(n => n.id);
     let edges: { source: string; target: string; context: string | null }[] = [];
@@ -198,7 +268,14 @@ wikiRoutes.get('/graph', async (c) => {
         ));
     }
 
-    return c.json({ nodes, edges });
+    return c.json({
+      mode,
+      space_id: mode === 'space' ? spaceId : null,
+      scope_label: scopeLabel,
+      include_org: includeOrg,
+      nodes,
+      edges,
+    });
   } catch (err) {
     console.error('Failed to fetch wiki graph:', err);
     return c.json({ error: 'Failed to fetch graph', code: 'INTERNAL_ERROR' }, 500);
@@ -434,7 +511,8 @@ wikiRoutes.get('/:slug', async (c) => {
       source_id: wikiCitations.source_id,
       excerpt: wikiCitations.excerpt,
       created_at: wikiCitations.created_at,
-      source_space_id: messages.space_id,
+      source_space_id: sql<string | null>`COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})`,
+      source_user_id: sql<string | null>`COALESCE(${wikiCitations.source_user_id}, ${messages.user_id})`,
     })
       .from(wikiCitations)
       .leftJoin(messages, and(
@@ -516,6 +594,9 @@ wikiRoutes.post('/', async (c) => {
       org_id: user.org_id,
       scope,
       space_id: scope === 'space' ? space_id : null,
+      origin_space_id: scope === 'space' ? space_id : null,
+      origin_user_id: user.id,
+      created_via: 'manual',
       user_id: scope === 'user' ? user.id : null,
       type,
       title,

@@ -77,11 +77,12 @@ async function verifyMessageVisibleToUser(
   userId: string,
   orgId: string,
   expectedSpaceId?: string | null,
-): Promise<{ id: string; space_id: string; content: string } | null> {
+): Promise<{ id: string; space_id: string; user_id: string; content: string } | null> {
   const [row] = await db
     .select({
       id: messages.id,
       space_id: messages.space_id,
+      user_id: messages.user_id,
       content: messages.content,
     })
     .from(messages)
@@ -208,8 +209,12 @@ export async function executeWikiCreate(
 
     let sourceMessageExcerpt: string | null = null;
     let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
+    let sourceUserId: string | null = null;
     if (sourceSpaceId && !(await verifySpaceInOrg(sourceSpaceId, ctx.org_id))) {
       return errorResult(`wiki_create: source space ${sourceSpaceId} not found in caller's org`);
+    }
+    if (scope === 'space' && !sourceSpaceId) {
+      return errorResult('wiki_create: space_id or source_space_id is required when scope is space');
     }
     if (args.source_message_id?.trim()) {
       const readerIds = [
@@ -219,7 +224,7 @@ export async function executeWikiCreate(
       ].filter((value, index, values): value is string =>
         typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
       );
-      let source: { id: string; space_id: string; content: string } | null = null;
+      let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
       for (const readerId of readerIds) {
         source = await verifyMessageVisibleToUser(
           args.source_message_id,
@@ -235,8 +240,10 @@ export async function executeWikiCreate(
         );
       }
       sourceSpaceId = source.space_id;
+      sourceUserId = source.user_id;
       sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
     }
+    sourceUserId = sourceUserId ?? shadowUserId;
 
     const slug = await uniqueSlug(ctx.org_id, title);
     const tags = Array.isArray(args.tags)
@@ -247,6 +254,7 @@ export async function executeWikiCreate(
       created_via: 'wiki_create',
       source_message_id: args.source_message_id ?? null,
       source_space_id: sourceSpaceId,
+      source_user_id: sourceUserId,
       capture_kind: args.capture_kind ?? null,
       capture_reason: args.capture_reason ?? null,
     };
@@ -257,7 +265,11 @@ export async function executeWikiCreate(
         .values({
           org_id: ctx.org_id,
           scope,
-          space_id: sourceSpaceId,
+          space_id: scope === 'space' ? sourceSpaceId : null,
+          origin_space_id: sourceSpaceId,
+          origin_message_id: args.source_message_id ?? null,
+          origin_user_id: sourceUserId,
+          created_via: 'wiki_create',
           user_id: shadowUserId,
           agent_employee_id: ctx.employee_id,
           type: wikiType,
@@ -275,9 +287,12 @@ export async function executeWikiCreate(
 
       if (args.source_message_id) {
         await tx.insert(wikiCitations).values({
+          org_id: ctx.org_id,
           page_id: insertedPage.id,
           source_type: 'message',
           source_id: args.source_message_id,
+          source_space_id: sourceSpaceId,
+          source_user_id: sourceUserId,
           excerpt: sourceMessageExcerpt ?? stripHtml(content).slice(0, 200),
         });
       }
@@ -318,6 +333,10 @@ export async function executeWikiCreate(
           metadata: page.metadata ?? null,
           source_message_id: args.source_message_id ?? null,
           source_space_id: sourceSpaceId,
+          origin_space_id: page.origin_space_id ?? null,
+          origin_message_id: page.origin_message_id ?? null,
+          origin_user_id: page.origin_user_id ?? null,
+          created_via: page.created_via ?? null,
           space_id: page.space_id,
           created_by: page.user_id,
           created_at: page.created_at,
@@ -564,7 +583,8 @@ export async function executeWikiUpdate(
     }
 
     let sourceMessageExcerpt: string | null = null;
-    let sourceSpaceId = args.source_space_id ?? existingPage.space_id ?? null;
+    let sourceSpaceId = args.source_space_id ?? existingPage.origin_space_id ?? existingPage.space_id ?? null;
+    let sourceUserId: string | null = null;
     if (sourceSpaceId && !(await verifySpaceInOrg(sourceSpaceId, ctx.org_id))) {
       return errorResult(`wiki_update: source space ${sourceSpaceId} not found in caller's org`);
     }
@@ -576,7 +596,7 @@ export async function executeWikiUpdate(
       ].filter((value, index, values): value is string =>
         typeof value === 'string' && value.length > 0 && values.indexOf(value) === index,
       );
-      let source: { id: string; space_id: string; content: string } | null = null;
+      let source: { id: string; space_id: string; user_id: string; content: string } | null = null;
       for (const readerId of readerIds) {
         source = await verifyMessageVisibleToUser(
           args.source_message_id,
@@ -592,7 +612,22 @@ export async function executeWikiUpdate(
         );
       }
       sourceSpaceId = source.space_id;
+      sourceUserId = source.user_id;
       sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
+    }
+    sourceUserId = sourceUserId ?? shadowUserId;
+
+    if (!existingPage.origin_space_id && sourceSpaceId) {
+      update.origin_space_id = sourceSpaceId;
+      changedFields.push('origin_space_id');
+    }
+    if (!existingPage.origin_message_id && args.source_message_id) {
+      update.origin_message_id = args.source_message_id;
+      changedFields.push('origin_message_id');
+    }
+    if (!existingPage.origin_user_id && sourceUserId) {
+      update.origin_user_id = sourceUserId;
+      changedFields.push('origin_user_id');
     }
 
     const nextVersion = (existingPage.version ?? 1) + 1;
@@ -619,9 +654,12 @@ export async function executeWikiUpdate(
 
       if (args.source_message_id) {
         await tx.insert(wikiCitations).values({
+          org_id: ctx.org_id,
           page_id: updatedPage.id,
           source_type: 'message',
           source_id: args.source_message_id,
+          source_space_id: sourceSpaceId,
+          source_user_id: sourceUserId,
           excerpt: sourceMessageExcerpt ?? stripHtml(updatedPage.content).slice(0, 200),
         });
       }
