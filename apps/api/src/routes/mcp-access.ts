@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { mcpTokens } from '@deft/db/schema';
+import { mcpTokens, oauthAuditEvents } from '@deft/db/schema';
 import { issuePersonalMcpToken } from '../lib/mcp-token.js';
 
 export const mcpAccessRoutes = new Hono();
@@ -48,7 +48,26 @@ mcpAccessRoutes.get('/tokens', async (c) => {
     ))
     .orderBy(desc(mcpTokens.created_at));
 
-  return c.json({ tokens: rows, mcp_endpoint_url: endpointUrl(), allowed_scopes: ALLOWED_SCOPES });
+  const tokens = await Promise.all(rows.map(async (token) => {
+    const recentActions = await db
+      .select({
+        id: oauthAuditEvents.id,
+        event: oauthAuditEvents.event,
+        metadata: oauthAuditEvents.metadata,
+        created_at: oauthAuditEvents.created_at,
+      })
+      .from(oauthAuditEvents)
+      .where(and(
+        eq(oauthAuditEvents.org_id, user.org_id),
+        eq(oauthAuditEvents.user_id, user.id),
+        eq(oauthAuditEvents.client_id, `personal-token:${token.id}`),
+      ))
+      .orderBy(desc(oauthAuditEvents.created_at))
+      .limit(8);
+    return { ...token, recent_actions: recentActions };
+  }));
+
+  return c.json({ tokens, mcp_endpoint_url: endpointUrl(), allowed_scopes: ALLOWED_SCOPES });
 });
 
 mcpAccessRoutes.post('/tokens', async (c) => {
@@ -64,6 +83,19 @@ mcpAccessRoutes.post('/tokens', async (c) => {
     createdBy: user.id,
     name: parsed.data.name,
     scopes: parsed.data.scopes,
+  });
+  await db.insert(oauthAuditEvents).values({
+    org_id: user.org_id,
+    user_id: user.id,
+    client_id: `personal-token:${issued.tokenId}`,
+    event: 'token_issued',
+    metadata: {
+      principal_kind: 'human',
+      token_id: issued.tokenId,
+      token_name: parsed.data.name,
+      scopes: parsed.data.scopes,
+      surface: 'mcp-access',
+    },
   });
   return c.json({
     token: issued.raw,
@@ -89,5 +121,16 @@ mcpAccessRoutes.delete('/tokens/:id', async (c) => {
     ))
     .returning({ id: mcpTokens.id });
   if (!row) return c.json({ error: 'Token not found', code: 'NOT_FOUND' }, 404);
+  await db.insert(oauthAuditEvents).values({
+    org_id: user.org_id,
+    user_id: user.id,
+    client_id: `personal-token:${row.id}`,
+    event: 'token_revoked',
+    metadata: {
+      principal_kind: 'human',
+      token_id: row.id,
+      surface: 'mcp-access',
+    },
+  });
   return c.json({ ok: true });
 });
