@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   connectedAccounts,
@@ -331,9 +331,170 @@ function validTaskStatus(value: unknown): value is 'backlog' | 'todo' | 'in_prog
   return typeof value === 'string' && ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'].includes(value);
 }
 
-export async function humanPlatformContext(_args: {}, ctx: HumanToolContext): Promise<ToolResult> {
+type HumanTriggerDescriptor = {
+  kind?: string;
+  space_id?: string | null;
+  triggering_message_id?: string | null;
+  [key: string]: unknown;
+};
+
+type HumanWikiSnippet = {
+  source_id?: string;
+  slug: string;
+  title: string;
+  summary: string | null;
+  type: string;
+  confidence: number;
+  scope?: string | null;
+  tier?: string | null;
+  space_id?: string | null;
+  origin_space_id?: string | null;
+  origin_message_id?: string | null;
+  created_via?: string | null;
+  matched_space_id?: string | null;
+  agent_employee_id?: string | null;
+};
+
+function humanSnippetFromContextResult(result: ContextResult): HumanWikiSnippet {
+  return {
+    source_id: result.source_id,
+    slug: String(result.metadata?.slug ?? ''),
+    title: result.title,
+    summary: (result.metadata?.summary as string | null) ?? null,
+    type: String(result.metadata?.type ?? 'fact'),
+    confidence: result.confidence ?? 0,
+    scope: result.scope ?? null,
+    tier: (result.metadata?.tier as string | null) ?? null,
+    space_id: (result.metadata?.space_id as string | null) ?? null,
+    origin_space_id: (result.metadata?.origin_space_id as string | null) ?? null,
+    origin_message_id: (result.metadata?.origin_message_id as string | null) ?? null,
+    created_via: (result.metadata?.created_via as string | null) ?? null,
+    matched_space_id: (result.metadata?.matched_space_id as string | null) ?? null,
+    agent_employee_id: (result.metadata?.agent_employee_id as string | null) ?? null,
+  };
+}
+
+function humanIsChannelSnippet(snippet: HumanWikiSnippet, spaceId: string | null | undefined): boolean {
+  if (!spaceId) return false;
+  return (
+    snippet.space_id === spaceId ||
+    snippet.origin_space_id === spaceId ||
+    snippet.matched_space_id === spaceId ||
+    (snippet.scope === 'space' && snippet.space_id === spaceId)
+  );
+}
+
+function humanIsPersonalSnippet(snippet: HumanWikiSnippet): boolean {
+  return snippet.scope === 'user' && !snippet.agent_employee_id;
+}
+
+function humanWikiPageMatchesSpaceExpr(orgId: string, spaceId: string) {
+  return sql<boolean>`(
+    ${wikiPages.space_id} = ${spaceId}
+    OR ${wikiPages.origin_space_id} = ${spaceId}
+    OR EXISTS (
+      SELECT 1
+      FROM wiki_citations wc
+      LEFT JOIN messages m
+        ON m.id = wc.source_id
+       AND wc.source_type = 'message'
+      WHERE wc.page_id = ${wikiPages.id}
+        AND (
+          wc.source_space_id = ${spaceId}
+          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
+        )
+    )
+  )`;
+}
+
+function humanMatchedSpaceIdExpr(orgId: string, spaceId: string | null | undefined) {
+  if (!spaceId) return sql<string | null>`NULL`;
+  return sql<string | null>`CASE WHEN ${humanWikiPageMatchesSpaceExpr(orgId, spaceId)} THEN ${spaceId} ELSE NULL END`;
+}
+
+function buildHumanContextPackets(snippets: HumanWikiSnippet[], trigger?: HumanTriggerDescriptor) {
+  const spaceId = trigger?.space_id ?? null;
+  const channelItems = spaceId ? snippets.filter((snippet) => humanIsChannelSnippet(snippet, spaceId)) : [];
+  const personalItems = snippets.filter(humanIsPersonalSnippet);
+  const companyItems = snippets.filter((snippet) => {
+    if (humanIsPersonalSnippet(snippet)) return false;
+    if (humanIsChannelSnippet(snippet, spaceId)) return false;
+    return snippet.scope === 'org' || snippet.tier === 'org' || !snippet.scope;
+  });
+
+  const packets: Array<Record<string, unknown>> = [
+    {
+      id: 'company_memory',
+      scope: 'org',
+      label: 'Company memory',
+      description: 'Org-wide knowledge useful across channels and teams.',
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: { query: '<query>', scope: 'org' },
+      },
+      item_count: companyItems.length,
+      items: companyItems,
+    },
+  ];
+
+  if (spaceId) {
+    packets.push({
+      id: `space:${spaceId}:memory`,
+      scope: 'space',
+      label: 'Channel memory',
+      description: 'Knowledge created in, scoped to, or cited from the current channel.',
+      space_id: spaceId,
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: {
+          query: '<query>',
+          space_id: spaceId,
+          include_org: false,
+          scope: 'all',
+        },
+      },
+      item_count: channelItems.length,
+      items: channelItems,
+    });
+  }
+
+  packets.push({
+    id: 'personal_memory',
+    scope: 'user',
+    label: 'Personal memory',
+    description: 'Knowledge scoped to the connected human user.',
+    retrieval_hint: {
+      tool: 'memory_recall',
+      args_template: { query: '<query>', scope: 'own' },
+    },
+    item_count: personalItems.length,
+    items: personalItems,
+  });
+
+  return packets;
+}
+
+function mergeHumanWikiSnippets(existing: HumanWikiSnippet[], additions: HumanWikiSnippet[]): HumanWikiSnippet[] {
+  const seen = new Set(existing.map((snippet) => snippet.source_id ?? snippet.slug));
+  const merged = [...existing];
+  for (const snippet of additions) {
+    const key = snippet.source_id ?? snippet.slug;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(snippet);
+  }
+  return merged;
+}
+
+export async function humanPlatformContext(args: { trigger?: HumanTriggerDescriptor }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
+  const trigger = args.trigger;
+  const spaceId = trigger?.space_id?.trim() || undefined;
+  if (spaceId && !(await userCanSeeSpace(ctx, spaceId))) {
+    return errorResult(`platform_context: user cannot access space ${spaceId}`);
+  }
+
   const [org] = await db.select({ id: orgs.id, name: orgs.name }).from(orgs).where(eq(orgs.id, ctx.org_id)).limit(1);
   if (!org) return errorResult('Org not found');
   const [me] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
@@ -349,6 +510,118 @@ export async function humanPlatformContext(_args: {}, ctx: HumanToolContext): Pr
     .where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
     .orderBy(desc(projects.updated_at))
     .limit(25);
+
+  let queryText = '';
+  if (hasScope(ctx, 'read:wiki') && trigger?.triggering_message_id) {
+    const [msg] = await db
+      .select({ content: messages.content, space_id: messages.space_id })
+      .from(messages)
+      .where(and(eq(messages.id, trigger.triggering_message_id), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+      .limit(1);
+    if (msg && (await userCanSeeSpace(ctx, msg.space_id))) {
+      queryText = msg.content;
+    }
+  }
+
+  let wikiSnippets: HumanWikiSnippet[] = [];
+  if (hasScope(ctx, 'read:wiki')) {
+    try {
+      if (queryText.trim()) {
+        const results = await retrieveContext({
+          query: queryText,
+          org_id: ctx.org_id,
+          user_id: ctx.user_id,
+          space_id: spaceId,
+          include_org: true,
+          types: ['wiki'],
+          limit: 8,
+          hybrid: false,
+        });
+        wikiSnippets = results
+          .filter((row) => row.source_type === 'wiki_page')
+          .map(humanSnippetFromContextResult);
+        if (spaceId) {
+          const personalResults = await retrieveContext({
+            query: queryText,
+            org_id: ctx.org_id,
+            user_id: ctx.user_id,
+            types: ['wiki'],
+            limit: 3,
+            hybrid: false,
+          });
+          wikiSnippets = mergeHumanWikiSnippets(
+            wikiSnippets,
+            personalResults
+              .filter((row) => row.source_type === 'wiki_page')
+              .map(humanSnippetFromContextResult)
+              .filter(humanIsPersonalSnippet),
+          );
+        }
+      } else {
+        const orderBy = spaceId
+          ? [
+              desc(sql<number>`CASE WHEN ${humanWikiPageMatchesSpaceExpr(ctx.org_id, spaceId)} THEN 1 ELSE 0 END`),
+              desc(wikiPages.confidence),
+              desc(wikiPages.updated_at),
+            ]
+          : [desc(wikiPages.confidence), desc(wikiPages.updated_at)];
+        const rows = await db
+          .select({
+            id: wikiPages.id,
+            slug: wikiPages.slug,
+            title: wikiPages.title,
+            summary: wikiPages.summary,
+            type: wikiPages.type,
+            confidence: wikiPages.confidence,
+            scope: wikiPages.scope,
+            space_id: wikiPages.space_id,
+            origin_space_id: wikiPages.origin_space_id,
+            origin_message_id: wikiPages.origin_message_id,
+            created_via: wikiPages.created_via,
+            matched_space_id: humanMatchedSpaceIdExpr(ctx.org_id, spaceId),
+            agent_employee_id: wikiPages.agent_employee_id,
+          })
+          .from(wikiPages)
+          .where(and(
+            eq(wikiPages.org_id, ctx.org_id),
+            eq(wikiPages.is_deleted, false),
+            visibleWikiPageCondition(ctx.user_id),
+            or(
+              eq(wikiPages.scope, 'org'),
+              and(eq(wikiPages.scope, 'user'), eq(wikiPages.user_id, ctx.user_id)),
+              spaceId
+                ? or(
+                    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
+                    eq(wikiPages.origin_space_id, spaceId),
+                  )
+                : undefined,
+            ),
+          ))
+          .orderBy(...orderBy)
+          .limit(10);
+        wikiSnippets = rows.map((row) => ({
+          source_id: row.id,
+          slug: row.slug,
+          title: row.title,
+          summary: row.summary,
+          type: row.type,
+          confidence: row.confidence,
+          scope: row.scope,
+          tier: row.scope === 'org' ? 'org' : row.scope === 'user' ? 'user' : null,
+          space_id: row.space_id,
+          origin_space_id: row.origin_space_id,
+          origin_message_id: row.origin_message_id,
+          created_via: row.created_via,
+          matched_space_id: row.matched_space_id,
+          agent_employee_id: row.agent_employee_id,
+        }));
+      }
+    } catch (err) {
+      console.warn('[human-mcp] platform_context wiki packet build failed:', err);
+      wikiSnippets = [];
+    }
+  }
+
   return textResult({
     generated_at: new Date().toISOString(),
     date: new Date().toISOString().slice(0, 10),
@@ -356,6 +629,9 @@ export async function humanPlatformContext(_args: {}, ctx: HumanToolContext): Pr
     user: { ...me, role: ctx.role },
     teammates,
     active_projects: activeProjects,
+    relevant_wiki_snippets: wikiSnippets,
+    context_packets: hasScope(ctx, 'read:wiki') ? buildHumanContextPackets(wikiSnippets, trigger) : [],
+    trigger_context: trigger ?? null,
     mcp_principal: 'human',
   });
 }
@@ -493,7 +769,7 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
 }
 
 export async function humanMemoryRecall(
-  args: { query?: string; limit?: number; space_id?: string; include_org?: boolean },
+  args: { query?: string; limit?: number; space_id?: string; include_org?: boolean; scope?: 'own' | 'org' | 'all' },
   ctx: HumanToolContext,
 ): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:wiki');
@@ -517,9 +793,15 @@ export async function humanMemoryRecall(
     limit,
     hybrid: false,
   });
+  const scope = args.scope ?? 'all';
 
   return textResult(rows
     .filter((row) => row.source_type === 'wiki_page')
+    .filter((row) => {
+      if (scope === 'all') return true;
+      if (scope === 'org') return row.scope === 'org';
+      return row.scope === 'user';
+    })
     .map((row) => {
       const content = row.content ?? '';
       const truncated = content.length > 2000;
