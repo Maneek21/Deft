@@ -240,7 +240,7 @@ export async function issueTokensForGrant(
     rotated_from: rotatedFromRefreshTokenId,
     expires_at: refreshExpiresAt,
   });
-  await auditOAuth({ orgId, userId, clientId, event: 'token_issued', metadata: { scopes, resource } });
+  await auditOAuth({ orgId, userId, clientId, event: 'token_issued', metadata: { grant_id: grantId, scopes, resource } });
   return {
     access_token: accessToken,
     token_type: 'Bearer',

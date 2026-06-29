@@ -19,6 +19,7 @@ import {
   validateAuthorizeRequest,
 } from '../lib/oauth-mcp.js';
 import { isHttpsPublicUrl } from '../lib/public-url.js';
+import { enrichOAuthAuditActions } from '../lib/oauth-audit-receipts.js';
 
 export const oauthWellKnownRoutes = new Hono();
 export const oauthPublicRoutes = new Hono();
@@ -299,14 +300,15 @@ oauthProtectedRoutes.get('/grants', async (c) => {
         eq(oauthAuditEvents.org_id, user.org_id),
         eq(oauthAuditEvents.user_id, user.id),
         eq(oauthAuditEvents.client_id, grant.client_id),
-        sql`(${oauthAuditEvents.metadata}->>'grant_id' = ${grant.id} OR ${oauthAuditEvents.metadata}->>'grant_id' IS NULL)`,
+        sql`${oauthAuditEvents.metadata}->>'grant_id' = ${grant.id}`,
       ))
       .orderBy(desc(oauthAuditEvents.created_at))
       .limit(8);
+    const enrichedActions = await enrichOAuthAuditActions(user.org_id, recentActions);
     return {
       ...grant,
       last_used_at: lastUsed?.last_used_at ?? null,
-      recent_actions: recentActions,
+      recent_actions: enrichedActions,
     };
   }));
   return c.json({ grants: rows });

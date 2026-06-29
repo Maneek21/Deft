@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Activity, Bot, Check, Copy, FileText, Globe2, KeyRound, Loader2, Plug, Trash2 } from 'lucide-react';
+import { Activity, Bot, Check, ChevronDown, ChevronRight, Copy, FileText, Globe2, History, KeyRound, Loader2, Plug, Terminal, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { TabStrip } from '@/components/tab-strip';
@@ -74,7 +74,16 @@ type RemoteReadiness = {
   authorization_server_metadata: string;
   https_ready: boolean;
   scopes: string[];
-  profile: string;
+  profiles?: string[];
+};
+
+type AuditReceipt = {
+  title: string;
+  detail: string;
+  href?: string;
+  target_kind?: string;
+  target_id?: string;
+  preview?: string;
 };
 
 type OAuthAuditAction = {
@@ -82,6 +91,7 @@ type OAuthAuditAction = {
   event: string;
   metadata: Record<string, unknown> | null;
   created_at: string;
+  receipt?: AuditReceipt;
 };
 
 type OAuthGrant = {
@@ -96,11 +106,26 @@ type OAuthGrant = {
   recent_actions: OAuthAuditAction[];
 };
 
+type RevokedMcpToken = McpToken & {
+  revoked_at: string;
+  recent_actions: OAuthAuditAction[];
+};
+
+type RevokedOAuthGrant = OAuthGrant & {
+  revoked_at: string;
+};
+
+type McpAccessHistory = {
+  revoked_tokens: RevokedMcpToken[];
+  revoked_grants: RevokedOAuthGrant[];
+};
+
 function formatDate(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString() : 'never';
 }
 
 function actionTitle(action: OAuthAuditAction) {
+  if (action.receipt?.title) return action.receipt.title;
   const metadata = action.metadata ?? {};
   const toolName = typeof metadata.tool_name === 'string' ? metadata.tool_name : null;
   if (action.event === 'token_issued') return 'Token created';
@@ -135,6 +160,7 @@ function actionResult(action: OAuthAuditAction): Record<string, unknown> | null 
 }
 
 function actionDetail(action: OAuthAuditAction) {
+  if (action.receipt?.detail) return action.receipt.detail;
   const metadata = action.metadata ?? {};
   const toolName = typeof metadata.tool_name === 'string' ? metadata.tool_name : null;
   const result = actionResult(action);
@@ -164,6 +190,7 @@ function actionDetail(action: OAuthAuditAction) {
 }
 
 function actionHref(action: OAuthAuditAction) {
+  if (action.receipt?.href) return action.receipt.href;
   const toolName = typeof action.metadata?.tool_name === 'string' ? action.metadata.tool_name : null;
   const result = actionResult(action);
   if (!result) return null;
@@ -215,6 +242,8 @@ export default function McpAccessPage() {
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [remote, setRemote] = useState<RemoteReadiness | null>(null);
   const [grants, setGrants] = useState<OAuthGrant[]>([]);
+  const [history, setHistory] = useState<McpAccessHistory | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [endpoint, setEndpoint] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -238,14 +267,22 @@ export default function McpAccessPage() {
       const body = await res.json();
       setTokens(body.tokens ?? []);
       setEndpoint(body.mcp_endpoint_url ?? '');
-      const [readinessRes, grantsRes] = await Promise.all([
+      const [readinessRes, grantsRes, historyRes] = await Promise.all([
         api.get('/api/oauth/readiness'),
         api.get('/api/oauth/grants'),
+        api.get('/api/mcp-access/history'),
       ]);
       if (readinessRes.ok) setRemote(await readinessRes.json());
       if (grantsRes.ok) {
         const grantsBody = await grantsRes.json();
         setGrants(grantsBody.grants ?? []);
+      }
+      if (historyRes.ok) {
+        const historyBody = await historyRes.json();
+        setHistory({
+          revoked_tokens: historyBody.revoked_tokens ?? [],
+          revoked_grants: historyBody.revoked_grants ?? [],
+        });
       }
     } catch (err) {
       setError((err as Error).message);
@@ -313,15 +350,44 @@ export default function McpAccessPage() {
     }
   }
 
+  const endpointForConfig = endpoint || '<deft-api-url>/api/mcp/v1';
   const tokenForConfig = newToken ?? '<paste-token-here>';
-  const clientConfig = JSON.stringify({
-    mcpServers: {
-      deft: {
-        url: endpoint || '<deft-api-url>/api/mcp/v1',
-        headers: { Authorization: `Bearer ${tokenForConfig}` },
-      },
+  const configSnippets = useMemo(() => [
+    {
+      id: 'codex',
+      title: 'Codex config',
+      detail: 'Paste into Codex MCP server config when using streamable HTTP with a personal bearer token.',
+      value: [
+        '[mcp_servers.deft]',
+        `url = "${endpointForConfig}"`,
+        `http_headers = { Authorization = "Bearer ${tokenForConfig}" }`,
+      ].join('\n'),
     },
-  }, null, 2);
+    {
+      id: 'claude-desktop',
+      title: 'Claude Desktop / Claude Code JSON',
+      detail: 'Paste into a client that accepts mcpServers JSON with HTTP headers.',
+      value: JSON.stringify({
+        mcpServers: {
+          deft: {
+            type: 'http',
+            url: endpointForConfig,
+            headers: { Authorization: `Bearer ${tokenForConfig}` },
+          },
+        },
+      }, null, 2),
+    },
+    {
+      id: 'raw',
+      title: 'Raw endpoint and header',
+      detail: 'Use this when a client asks for the MCP URL and bearer header separately.',
+      value: [
+        `MCP URL: ${endpointForConfig}`,
+        `Authorization: Bearer ${tokenForConfig}`,
+      ].join('\n'),
+    },
+  ], [endpointForConfig, tokenForConfig]);
+  const historyCount = (history?.revoked_tokens.length ?? 0) + (history?.revoked_grants.length ?? 0);
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -459,16 +525,33 @@ export default function McpAccessPage() {
         )}
 
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Client config</h2>
-              <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>Use this shape in Claude Desktop, Claude Code, ChatGPT MCP apps, or any streamable HTTP MCP client.</p>
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+              <Terminal size={16} />
             </div>
-            <button type="button" onClick={() => copy('config', clientConfig)} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px]" style={{ border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
-              <Copy size={13} /> Copy
-            </button>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>One-click client config</h2>
+              <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+                Generate a token above, then copy the snippet that matches your AI client. Each config points at Deft's streamable HTTP MCP endpoint.
+              </p>
+              <div className="grid md:grid-cols-3 gap-3 mt-4">
+                {configSnippets.map((snippet) => (
+                  <div key={snippet.id} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{snippet.title}</div>
+                        <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{snippet.detail}</p>
+                      </div>
+                      <button type="button" onClick={() => copy(snippet.title.toLowerCase(), snippet.value)} className="p-1.5 rounded-md shrink-0" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${snippet.title}`}>
+                        <Copy size={13} />
+                      </button>
+                    </div>
+                    <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px] max-h-52" style={{ background: 'var(--surface-container-high, var(--surface-container-low))', color: 'var(--text-primary)' }}>{snippet.value}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>{clientConfig}</pre>
         </section>
 
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
@@ -604,6 +687,104 @@ export default function McpAccessPage() {
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((value) => !value)}
+            className="w-full flex items-center justify-between gap-3 text-left"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                <History size={16} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Connection history</h2>
+                <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                  Revoked personal tokens and AI app grants, with their last recorded actions.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] rounded-md px-2 py-1" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
+                {historyCount} archived
+              </span>
+              {historyOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </div>
+          </button>
+
+          {historyOpen && (
+            <div className="mt-4 space-y-4">
+              {!history || historyCount === 0 ? (
+                <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>No revoked connections yet.</p>
+              ) : (
+                <>
+                  {history.revoked_tokens.length > 0 && (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-tertiary)' }}>
+                        Personal tokens
+                      </div>
+                      <div className="space-y-2">
+                        {history.revoked_tokens.map((token) => (
+                          <div key={token.id} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
+                                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                                  {token.token_prefix}... / revoked {formatDate(token.revoked_at)} / last used {formatDate(token.last_used_at)}
+                                </div>
+                              </div>
+                              <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }}>
+                                revoked
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {token.scopes.map((scope) => (
+                                <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
+                              ))}
+                            </div>
+                            <RecentActionList actions={token.recent_actions} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {history.revoked_grants.length > 0 && (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-2" style={{ color: 'var(--text-tertiary)' }}>
+                        AI app connections
+                      </div>
+                      <div className="space-y-2">
+                        {history.revoked_grants.map((grant) => (
+                          <div key={grant.id} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{grant.app_name}</div>
+                                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                                  {grant.connector_profile} / revoked {formatDate(grant.revoked_at)} / last used {formatDate(grant.last_used_at)}
+                                </div>
+                              </div>
+                              <span className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }}>
+                                revoked
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {grant.scopes.map((scope) => (
+                                <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
+                              ))}
+                            </div>
+                            <RecentActionList actions={grant.recent_actions} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </section>

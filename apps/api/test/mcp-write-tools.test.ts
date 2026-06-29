@@ -209,6 +209,15 @@ async function teardownFixtures() {
       }
     }
     await c.query(
+      `DELETE FROM wiki_ops_log
+       WHERE page_id IN (
+         SELECT id FROM wiki_pages
+         WHERE agent_employee_id IN ($1,$2,$3,$4)
+            OR user_id = $5
+       )`,
+      [EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID, OTHER_HUMAN_USER_ID]
+    );
+    await c.query(
       `DELETE FROM wiki_pages WHERE agent_employee_id IN ($1,$2,$3,$4)`,
       [EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]
     );
@@ -225,6 +234,30 @@ async function teardownFixtures() {
       [[EMP_CONSERVATIVE_ID, EMP_STANDARD_ID, EMP_AUTONOMOUS_ID, OTHER_EMP_ID]]
     );
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [OTHER_HUMAN_USER_ID]);
+    const testUserIds = [TEST_USER_ID, OTHER_HUMAN_USER_ID];
+    await c.query(`DELETE FROM people_patterns WHERE user_id = ANY($1::text[])`, [testUserIds]);
+    await c.query(`DELETE FROM people_influence WHERE user_id = ANY($1::text[])`, [testUserIds]);
+    await c.query(`DELETE FROM people_expertise WHERE user_id = ANY($1::text[])`, [testUserIds]);
+    await c.query(
+      `DELETE FROM people_interactions
+       WHERE user_a_id = ANY($1::text[]) OR user_b_id = ANY($1::text[])`,
+      [testUserIds]
+    );
+    await c.query(
+      `DELETE FROM people_relationships
+       WHERE user_a_id = ANY($1::text[]) OR user_b_id = ANY($1::text[])`,
+      [testUserIds]
+    );
+    await c.query(
+      `DELETE FROM oneone_preps
+       WHERE manager_id = ANY($1::text[]) OR report_id = ANY($1::text[])`,
+      [testUserIds]
+    );
+    await c.query(
+      `DELETE FROM burnout_alerts
+       WHERE user_id = ANY($1::text[]) OR alerted_to = ANY($1::text[])`,
+      [testUserIds]
+    );
     await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [TEST_USER_ID, OTHER_HUMAN_USER_ID]);
     if (createdTestOrg) {
       await c.query(

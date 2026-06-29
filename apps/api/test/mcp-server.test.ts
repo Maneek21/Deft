@@ -86,6 +86,11 @@ async function seedTestEmployee(userId: string) {
 async function teardownTestEmployee() {
   await withClient(async (c) => {
     // Delete any wiki pages created by the test employee
+    await c.query(
+      `DELETE FROM wiki_ops_log
+       WHERE page_id IN (SELECT id FROM wiki_pages WHERE agent_employee_id = $1)`,
+      [TEST_EMPLOYEE_ID]
+    );
     await c.query(`DELETE FROM wiki_pages WHERE agent_employee_id = $1`, [TEST_EMPLOYEE_ID]);
     await c.query(`DELETE FROM agent_mcp_call_audit WHERE employee_id = $1`, [TEST_EMPLOYEE_ID]);
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [TEST_EMPLOYEE_ID]);
