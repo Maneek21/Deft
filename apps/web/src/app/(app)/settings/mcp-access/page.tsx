@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Check, Copy, Globe2, KeyRound, Loader2, Plug, Trash2 } from 'lucide-react';
+import { Activity, Bot, Check, Copy, FileText, Globe2, KeyRound, Loader2, Plug, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { TabStrip } from '@/components/tab-strip';
@@ -14,10 +14,55 @@ type McpToken = {
   scopes: string[];
   last_used_at: string | null;
   created_at: string;
+  recent_actions?: OAuthAuditAction[];
 };
 
 const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar'];
 const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki'];
+
+const SCOPE_LABELS: Record<string, string> = {
+  'read:workspace': 'Workspace map, teammates, projects, and activity context',
+  'read:wiki': 'Company, channel, and personal memory packets',
+  'read:tasks': 'Task lists, task detail, comments, and progress',
+  'read:messages': 'Visible spaces, threads, and chat search',
+  'read:calendar': 'Native and ICS calendar context',
+  'write:tasks': 'Create, update, transition, and comment on tasks',
+  'write:messages': 'Post messages into spaces you belong to',
+  'write:wiki': 'Save or update wiki knowledge as you',
+};
+
+const CLIENT_CARDS = [
+  {
+    name: 'Codex / Claude Code',
+    fit: 'Works now',
+    detail: 'Use the streamable HTTP endpoint with a bearer token. Best for task and workspace workflows.',
+  },
+  {
+    name: 'Claude Desktop',
+    fit: 'Works with HTTP MCP config',
+    detail: 'Add Deft as an HTTP MCP server and paste the bearer header from a personal token.',
+  },
+  {
+    name: 'ChatGPT / Claude web',
+    fit: 'Use OAuth connector path',
+    detail: 'Use the public OAuth metadata below when the client expects a remote connector flow.',
+  },
+];
+
+const CONTEXT_PACKET_CARDS = [
+  {
+    title: 'Company memory',
+    detail: 'Org-wide wiki knowledge the AI app can use across projects and channels.',
+  },
+  {
+    title: 'Channel memory',
+    detail: 'Knowledge created in, cited from, or scoped to the space where the work is happening.',
+  },
+  {
+    title: 'Personal memory',
+    detail: 'Private notes and memories scoped to the connected human user.',
+  },
+];
 
 type RemoteReadiness = {
   public_url: string;
@@ -58,11 +103,58 @@ function formatDate(value: string | null | undefined) {
 function actionTitle(action: OAuthAuditAction) {
   const metadata = action.metadata ?? {};
   const toolName = typeof metadata.tool_name === 'string' ? metadata.tool_name : null;
-  return toolName ?? action.event.replaceAll('_', ' ');
+  if (action.event === 'token_issued') return 'Token created';
+  if (action.event === 'token_revoked') return 'Token revoked';
+  if (action.event === 'grant_revoked') return 'App connection revoked';
+  if (action.event === 'mcp_tool_call') return toolName ? `Called ${toolName}` : 'Tool call';
+  if (action.event === 'mcp_idempotency_result') {
+    if (toolName === 'task_create') return 'Created task';
+    if (toolName === 'task_transition') return 'Changed task status';
+    if (toolName === 'task_update') return 'Updated task';
+    if (toolName === 'comment_on_task') return 'Commented on task';
+    if (toolName === 'message_post') return 'Posted message';
+    if (toolName === 'memory_write') return 'Saved memory';
+    return toolName ? `${toolName} completed` : 'Write completed';
+  }
+  return action.event.replaceAll('_', ' ');
+}
+
+function actionResult(action: OAuthAuditAction): Record<string, unknown> | null {
+  const metadata = action.metadata ?? {};
+  const result = metadata.result;
+  if (!result || typeof result !== 'object') return null;
+  const content = (result as { content?: Array<{ text?: string }> }).content;
+  const text = Array.isArray(content) ? content[0]?.text : null;
+  if (typeof text !== 'string') return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }
 
 function actionDetail(action: OAuthAuditAction) {
   const metadata = action.metadata ?? {};
+  const toolName = typeof metadata.tool_name === 'string' ? metadata.tool_name : null;
+  const result = actionResult(action);
+  if (action.event === 'token_issued') {
+    const scopes = Array.isArray(metadata.scopes) ? metadata.scopes.length : null;
+    return scopes ? `${scopes} scopes granted` : 'ready to use';
+  }
+  if (action.event === 'token_revoked' || action.event === 'grant_revoked') return 'access removed';
+  if (toolName === 'task_create' && result) {
+    const number = result.number ? `#${result.number}` : 'task';
+    return `${number}: ${String(result.title ?? '').slice(0, 80)}`;
+  }
+  if (toolName === 'task_transition' && result) {
+    const transition = result.transition as { from?: string; to?: string } | undefined;
+    const taskKey = result.task_key ?? result.number ?? 'task';
+    return `${taskKey}: ${transition?.from ?? 'previous'} -> ${transition?.to ?? result.status ?? 'updated'}`;
+  }
+  if (toolName === 'message_post' && result) {
+    return `message in ${String(result.space_id ?? 'space').slice(0, 8)}...`;
+  }
   const pieces = [
     typeof metadata.surface === 'string' ? metadata.surface : null,
     typeof metadata.target_id === 'string' ? metadata.target_id : null,
@@ -71,9 +163,52 @@ function actionDetail(action: OAuthAuditAction) {
   return pieces.length > 0 ? pieces.join(' / ') : 'recorded';
 }
 
+function actionHref(action: OAuthAuditAction) {
+  const toolName = typeof action.metadata?.tool_name === 'string' ? action.metadata.tool_name : null;
+  const result = actionResult(action);
+  if (!result) return null;
+  if ((toolName === 'task_create' || toolName === 'task_transition' || toolName === 'task_update' || toolName === 'comment_on_task') && typeof result.id === 'string') {
+    return `/tasks?task=${encodeURIComponent(result.id)}`;
+  }
+  if (toolName === 'message_post' && typeof result.id === 'string' && typeof result.space_id === 'string') {
+    return `/chat?space=${encodeURIComponent(result.space_id)}&message=${encodeURIComponent(result.id)}`;
+  }
+  return null;
+}
+
 function isStale(value: string | null | undefined) {
   if (!value) return true;
   return Date.now() - new Date(value).getTime() > 1000 * 60 * 60 * 24 * 14;
+}
+
+function RecentActionList({ actions }: { actions?: OAuthAuditAction[] }) {
+  if (!actions?.length) {
+    return <div className="mt-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No recent actions recorded.</div>;
+  }
+  return (
+    <div className="mt-2 space-y-1.5">
+      {actions.slice(0, 5).map((action) => {
+        const href = actionHref(action);
+        const content = (
+          <>
+            <span className="min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+              {actionTitle(action)} <span style={{ color: 'var(--text-tertiary)' }}>({actionDetail(action)})</span>
+            </span>
+            <span className="shrink-0" style={{ color: 'var(--text-tertiary)' }}>{formatDate(action.created_at)}</span>
+          </>
+        );
+        return href ? (
+          <Link key={action.id} href={href} className="grid grid-cols-[1fr_auto] gap-3 text-[11px] hover:underline">
+            {content}
+          </Link>
+        ) : (
+          <div key={action.id} className="grid grid-cols-[1fr_auto] gap-3 text-[11px]">
+            {content}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function McpAccessPage() {
@@ -220,6 +355,45 @@ export default function McpAccessPage() {
 
         <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+              <Bot size={16} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Connect an AI app to Deft</h2>
+              <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
+                Deft exposes your workspace as MCP tools. A connected app can read the same work record you use in Deft,
+                then write back tasks, messages, or wiki updates only inside the scopes you grant.
+              </p>
+              <div className="grid md:grid-cols-3 gap-3 mt-4">
+                {CLIENT_CARDS.map((card) => (
+                  <div key={card.name} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{card.name}</div>
+                      <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)' }}>{card.fit}</span>
+                    </div>
+                    <p className="text-[11px] mt-2 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{card.detail}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.08em] mt-4" style={{ color: 'var(--text-tertiary)' }}>
+                Context packets available to clients
+              </div>
+              <div className="grid md:grid-cols-3 gap-3 mt-3">
+                {CONTEXT_PACKET_CARDS.map((card) => (
+                  <div key={card.title} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                    <div className="flex items-center gap-2 text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                      <FileText size={13} /> {card.title}
+                    </div>
+                    <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{card.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <div className="flex items-start gap-3">
             <div className="w-8 h-8 rounded-md flex items-center justify-center" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
               <KeyRound size={16} />
             </div>
@@ -245,6 +419,14 @@ export default function McpAccessPage() {
                   <span key={scope} className="text-[11px] rounded-md px-2 py-1" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
                     {scope}
                   </span>
+                ))}
+              </div>
+              <div className="grid md:grid-cols-2 gap-2 mt-3">
+                {selectedScopes.map((scope) => (
+                  <div key={`${scope}-detail`} className="text-[11px] rounded-md px-2.5 py-2" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
+                    <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{scope}</span>
+                    <span> - {SCOPE_LABELS[scope] ?? 'Scoped MCP permission'}</span>
+                  </div>
                 ))}
               </div>
               <button
@@ -371,20 +553,7 @@ export default function McpAccessPage() {
                       </div>
                       <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
                         <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Recent actions</div>
-                        {grant.recent_actions?.length ? (
-                          <div className="mt-2 space-y-1.5">
-                            {grant.recent_actions.slice(0, 5).map((action) => (
-                              <div key={action.id} className="grid grid-cols-[1fr_auto] gap-3 text-[11px]">
-                                <span className="min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
-                                  {actionTitle(action)} <span style={{ color: 'var(--text-tertiary)' }}>({actionDetail(action)})</span>
-                                </span>
-                                <span style={{ color: 'var(--text-tertiary)' }}>{formatDate(action.created_at)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="mt-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>No recent actions recorded.</div>
-                        )}
+                        <RecentActionList actions={grant.recent_actions} />
                       </div>
                     </div>
                   ))}
@@ -404,15 +573,30 @@ export default function McpAccessPage() {
             <div className="space-y-2">
               {tokens.map((token) => (
                 <div key={token.id} className="flex items-start justify-between gap-3 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
-                      {token.token_prefix}... / created {formatDate(token.created_at)} / last used {formatDate(token.last_used_at)}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{token.name}</div>
+                        <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>
+                          {token.token_prefix}... / created {formatDate(token.created_at)} / last used {formatDate(token.last_used_at)}
+                        </div>
+                      </div>
+                      {isStale(token.last_used_at) && (
+                        <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: 'var(--warning, #f59e0b)', border: '1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent)' }}>
+                          {token.last_used_at ? 'stale' : 'unused'}
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-1 mt-2">
                       {token.scopes.map((scope) => (
                         <span key={scope} className="text-[10px] rounded px-1.5 py-0.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>{scope}</span>
                       ))}
+                    </div>
+                    <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-default)' }}>
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>
+                        <Activity size={12} /> Recent token activity
+                      </div>
+                      <RecentActionList actions={token.recent_actions} />
                     </div>
                   </div>
                   <button type="button" disabled={busy} onClick={() => revoke(token.id)} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] disabled:opacity-50 shrink-0" style={{ color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' }} aria-label={`Revoke ${token.name}`}>
