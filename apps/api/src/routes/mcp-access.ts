@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { mcpTokens, oauthAuditEvents } from '@deft/db/schema';
+import { mcpTokens, oauthAccessTokens, oauthAuditEvents, oauthGrants } from '@deft/db/schema';
 import { issuePersonalMcpToken } from '../lib/mcp-token.js';
+import { enrichOAuthAuditActions } from '../lib/oauth-audit-receipts.js';
 
 export const mcpAccessRoutes = new Hono();
 
@@ -28,6 +29,45 @@ function endpointUrl(): string {
   return `${base.replace(/\/$/, '')}/api/mcp/v1`;
 }
 
+async function recentActionsForPersonalToken(orgId: string, userId: string, tokenId: string, limit = 8) {
+  const actions = await db
+    .select({
+      id: oauthAuditEvents.id,
+      event: oauthAuditEvents.event,
+      metadata: oauthAuditEvents.metadata,
+      created_at: oauthAuditEvents.created_at,
+    })
+    .from(oauthAuditEvents)
+    .where(and(
+      eq(oauthAuditEvents.org_id, orgId),
+      eq(oauthAuditEvents.user_id, userId),
+      eq(oauthAuditEvents.client_id, `personal-token:${tokenId}`),
+    ))
+    .orderBy(desc(oauthAuditEvents.created_at))
+    .limit(limit);
+  return enrichOAuthAuditActions(orgId, actions);
+}
+
+async function recentActionsForGrant(orgId: string, userId: string, clientId: string, grantId: string, limit = 8) {
+  const actions = await db
+    .select({
+      id: oauthAuditEvents.id,
+      event: oauthAuditEvents.event,
+      metadata: oauthAuditEvents.metadata,
+      created_at: oauthAuditEvents.created_at,
+    })
+    .from(oauthAuditEvents)
+    .where(and(
+      eq(oauthAuditEvents.org_id, orgId),
+      eq(oauthAuditEvents.user_id, userId),
+      eq(oauthAuditEvents.client_id, clientId),
+      sql`${oauthAuditEvents.metadata}->>'grant_id' = ${grantId}`,
+    ))
+    .orderBy(desc(oauthAuditEvents.created_at))
+    .limit(limit);
+  return enrichOAuthAuditActions(orgId, actions);
+}
+
 mcpAccessRoutes.get('/tokens', async (c) => {
   const user = c.get('user');
   const rows = await db
@@ -49,25 +89,76 @@ mcpAccessRoutes.get('/tokens', async (c) => {
     .orderBy(desc(mcpTokens.created_at));
 
   const tokens = await Promise.all(rows.map(async (token) => {
-    const recentActions = await db
-      .select({
-        id: oauthAuditEvents.id,
-        event: oauthAuditEvents.event,
-        metadata: oauthAuditEvents.metadata,
-        created_at: oauthAuditEvents.created_at,
-      })
-      .from(oauthAuditEvents)
-      .where(and(
-        eq(oauthAuditEvents.org_id, user.org_id),
-        eq(oauthAuditEvents.user_id, user.id),
-        eq(oauthAuditEvents.client_id, `personal-token:${token.id}`),
-      ))
-      .orderBy(desc(oauthAuditEvents.created_at))
-      .limit(8);
+    const recentActions = await recentActionsForPersonalToken(user.org_id, user.id, token.id);
     return { ...token, recent_actions: recentActions };
   }));
 
   return c.json({ tokens, mcp_endpoint_url: endpointUrl(), allowed_scopes: ALLOWED_SCOPES });
+});
+
+mcpAccessRoutes.get('/history', async (c) => {
+  const user = c.get('user');
+  const [tokenRows, grantRows] = await Promise.all([
+    db
+      .select({
+        id: mcpTokens.id,
+        name: mcpTokens.name,
+        token_prefix: mcpTokens.token_prefix,
+        scopes: mcpTokens.scopes,
+        last_used_at: mcpTokens.last_used_at,
+        created_at: mcpTokens.created_at,
+        revoked_at: mcpTokens.revoked_at,
+      })
+      .from(mcpTokens)
+      .where(and(
+        eq(mcpTokens.org_id, user.org_id),
+        eq(mcpTokens.user_id, user.id),
+        eq(mcpTokens.principal_kind, 'human'),
+        isNotNull(mcpTokens.revoked_at),
+      ))
+      .orderBy(desc(mcpTokens.revoked_at))
+      .limit(20),
+    db
+      .select({
+        id: oauthGrants.id,
+        client_id: oauthGrants.client_id,
+        app_name: oauthGrants.app_name,
+        connector_profile: oauthGrants.connector_profile,
+        scopes: oauthGrants.scopes,
+        created_at: oauthGrants.created_at,
+        updated_at: oauthGrants.updated_at,
+        revoked_at: oauthGrants.revoked_at,
+      })
+      .from(oauthGrants)
+      .where(and(
+        eq(oauthGrants.org_id, user.org_id),
+        eq(oauthGrants.user_id, user.id),
+        isNotNull(oauthGrants.revoked_at),
+      ))
+      .orderBy(desc(oauthGrants.revoked_at))
+      .limit(20),
+  ]);
+
+  const revokedTokens = await Promise.all(tokenRows.map(async (token) => ({
+    ...token,
+    recent_actions: await recentActionsForPersonalToken(user.org_id, user.id, token.id, 10),
+  })));
+
+  const revokedGrants = await Promise.all(grantRows.map(async (grant) => {
+    const [lastUsed] = await db
+      .select({ last_used_at: oauthAccessTokens.last_used_at })
+      .from(oauthAccessTokens)
+      .where(and(eq(oauthAccessTokens.grant_id, grant.id), isNotNull(oauthAccessTokens.last_used_at)))
+      .orderBy(desc(oauthAccessTokens.last_used_at))
+      .limit(1);
+    return {
+      ...grant,
+      last_used_at: lastUsed?.last_used_at ?? null,
+      recent_actions: await recentActionsForGrant(user.org_id, user.id, grant.client_id, grant.id, 10),
+    };
+  }));
+
+  return c.json({ revoked_tokens: revokedTokens, revoked_grants: revokedGrants });
 });
 
 mcpAccessRoutes.post('/tokens', async (c) => {
