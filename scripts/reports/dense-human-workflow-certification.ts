@@ -1,19 +1,68 @@
+import 'dotenv/config';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import pg from 'pg';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 
 const WEB_URL = (process.env.DEFT_WEB_URL || 'http://localhost:3000').replace(/\/$/, '');
 const API_URL = (process.env.DEFT_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3301').replace(/\/$/, '');
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'tomato123';
+
+type RunOptions = {
+  rehearsal: boolean;
+  cleanupAfterRun: boolean;
+  cleanupOnlyMarker: string | null;
+  cleanupDryRun: boolean;
+  cleanupOnlyApply: boolean;
+  noCleanup: boolean;
+  help: boolean;
+};
+
+function readOptionValue(args: string[], name: string): string | null {
+  const exact = args.find((arg) => arg.startsWith(`${name}=`));
+  if (exact) return exact.slice(name.length + 1).trim() || null;
+  const index = args.indexOf(name);
+  if (index >= 0) return args[index + 1]?.trim() || null;
+  return null;
+}
+
+function parseOptions(args: string[]): RunOptions {
+  const set = new Set(args);
+  const cleanupOnlyMarker = readOptionValue(args, '--cleanup-only');
+  if (set.has('--cleanup-only') && !cleanupOnlyMarker) {
+    throw new Error('Usage: --cleanup-only <DENSE-...|REHEARSAL-...|DEMO-CERT-...>');
+  }
+  return {
+    rehearsal: set.has('--rehearsal'),
+    cleanupAfterRun: set.has('--cleanup') && !set.has('--no-cleanup'),
+    cleanupOnlyMarker,
+    cleanupDryRun: set.has('--dry-run'),
+    cleanupOnlyApply: set.has('--apply'),
+    noCleanup: set.has('--no-cleanup'),
+    help: set.has('--help') || set.has('-h'),
+  };
+}
+
+const RUN_OPTIONS = parseOptions(process.argv.slice(2));
 const RUN_ID = process.env.DEFT_DENSE_RUN_ID || new Date().toISOString().replace(/[:.]/g, '-');
-const RUN_MARKER = `DENSE-${RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
-const OUT_DIR = path.resolve('reports', 'dense-human-workflow-certification', RUN_ID);
-const HTML_REPORT = path.resolve('reports', `dense-human-workflow-certification-${RUN_ID}.html`);
-const JSON_REPORT = path.resolve('reports', `dense-human-workflow-certification-${RUN_ID}.json`);
+const RUN_PREFIX = RUN_OPTIONS.rehearsal ? 'REHEARSAL' : 'DENSE';
+const GENERATED_MARKER = `${RUN_PREFIX}-${RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
+const RUN_MARKER = RUN_OPTIONS.cleanupOnlyMarker || GENERATED_MARKER;
+const REPORT_SLUG = RUN_OPTIONS.cleanupOnlyMarker
+  ? 'certification-cleanup'
+  : RUN_OPTIONS.rehearsal
+    ? 'demo-rehearsal-certification'
+    : 'dense-human-workflow-certification';
+const OUT_DIR = path.resolve('reports', REPORT_SLUG, RUN_ID);
+const HTML_REPORT = path.resolve('reports', `${REPORT_SLUG}-${RUN_ID}.html`);
+const JSON_REPORT = path.resolve('reports', `${REPORT_SLUG}-${RUN_ID}.json`);
 
 type Auth = {
   accessToken: string;
-  user: { id: string; email: string; org_id: string; name?: string };
+  org_id?: string;
+  org?: { id?: string };
+  user: { id: string; email: string; org_id?: string; name?: string };
 };
 
 type Space = { id: string; name: string; type?: string };
@@ -44,6 +93,7 @@ type Persona = {
 type Artifact = {
   run_id: string;
   marker: string;
+  mode: 'dense' | 'rehearsal' | 'cleanup-only';
   web_url: string;
   api_url: string;
   started_at: string;
@@ -93,9 +143,14 @@ const personas: Persona[] = [
   },
 ];
 
+const activePersonas = RUN_OPTIONS.rehearsal
+  ? personas.filter((persona) => persona.email === 'diego@testers-tomatoes.com')
+  : personas;
+
 const artifact: Artifact = {
   run_id: RUN_ID,
   marker: RUN_MARKER,
+  mode: RUN_OPTIONS.cleanupOnlyMarker ? 'cleanup-only' : RUN_OPTIONS.rehearsal ? 'rehearsal' : 'dense',
   web_url: WEB_URL,
   api_url: API_URL,
   started_at: new Date().toISOString(),
@@ -138,6 +193,79 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function usage() {
+  return `Dense/Rehearsal Deft certification harness
+
+Usage:
+  pnpm exec tsx scripts/reports/dense-human-workflow-certification.ts
+  pnpm exec tsx scripts/reports/dense-human-workflow-certification.ts --rehearsal --cleanup
+  pnpm exec tsx scripts/reports/dense-human-workflow-certification.ts --cleanup-only REHEARSAL-abc123 --dry-run
+  pnpm exec tsx scripts/reports/dense-human-workflow-certification.ts --cleanup-only REHEARSAL-abc123 --apply
+
+Flags:
+  --rehearsal       Run a compact Diego-led demo rehearsal instead of the 100-message dense swarm.
+  --cleanup         After a run, apply marker-scoped DB cleanup for generated artifacts.
+  --no-cleanup      Explicitly leave generated artifacts behind.
+  --cleanup-only    Only inspect/clean artifacts for a marker. Dry-run unless --apply is present.
+  --dry-run         Never mutate during cleanup.
+  --apply           Apply cleanup-only mutations.
+
+Cleanup requires DATABASE_URL or DEFT_CLEANUP_DATABASE_URL. For localhost API URLs,
+the script may fall back to the local docker Postgres port used by the dev stack.`;
+}
+
+function assertSafeMarker(marker: string) {
+  if (!/^(DENSE|REHEARSAL|DEMO-CERT)-[A-Za-z0-9-]{6,64}$/.test(marker)) {
+    throw new Error(`Refusing unsafe cleanup marker: ${marker}`);
+  }
+}
+
+function isLocalUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function dockerDatabaseUrl(): string | null {
+  try {
+    const portOut = execFileSync('docker', ['port', 'deft-codex-pg', '5432/tcp'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const port = portOut.match(/(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)/)?.[1];
+    if (!port) return null;
+    const password = execFileSync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_PASSWORD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || 'postgres';
+    const dbName = execFileSync('docker', ['exec', 'deft-codex-pg', 'printenv', 'POSTGRES_DB'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || 'deft';
+    return `postgres://postgres:${encodeURIComponent(password)}@localhost:${port}/${dbName}`;
+  } catch {
+    return null;
+  }
+}
+
+function cleanupDatabaseUrl(): string | null {
+  if (process.env.DEFT_CLEANUP_DATABASE_URL) return process.env.DEFT_CLEANUP_DATABASE_URL;
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  if (!isLocalUrl(API_URL)) return null;
+  const dockerUrl = dockerDatabaseUrl();
+  if (dockerUrl) return dockerUrl;
+  const password = process.env.POSTGRES_PASSWORD || 'postgres';
+  const port = process.env.POSTGRES_PORT || '5432';
+  return `postgres://postgres:${encodeURIComponent(password)}@localhost:${port}/deft`;
+}
+
+function redactUrl(url: string): string {
+  return url.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:***@');
+}
+
 async function fetchJson<T = any>(url: string, init?: RequestInit): Promise<{ status: number; ok: boolean; body: T; text: string }> {
   const res = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
   const text = await res.text();
@@ -174,6 +302,180 @@ async function api<T = any>(auth: Auth, route: string, init?: RequestInit): Prom
   });
   if (!res.ok) throw new Error(`${route} returned ${res.status}: ${res.text.slice(0, 500)}`);
   return res.body;
+}
+
+type CleanupCounts = {
+  messages: number;
+  observations: number;
+  work_intents: number;
+  agent_actions: number;
+  receipts: number;
+  tasks: number;
+  wiki_pages: number;
+  notes: number;
+};
+
+type CleanupSummary = {
+  marker: string;
+  mode: 'skipped' | 'dry-run' | 'apply';
+  database?: string;
+  before?: CleanupCounts;
+  after?: CleanupCounts;
+  mutations?: Record<string, number>;
+  reason?: string;
+};
+
+function zeroCounts(): CleanupCounts {
+  return {
+    messages: 0,
+    observations: 0,
+    work_intents: 0,
+    agent_actions: 0,
+    receipts: 0,
+    tasks: 0,
+    wiki_pages: 0,
+    notes: 0,
+  };
+}
+
+async function createCleanupTempTables(client: pg.Client, auth: Auth, marker: string) {
+  const like = `%${marker}%`;
+  const orgId = auth.user.org_id ?? auth.org_id ?? auth.org?.id;
+  if (!orgId) throw new Error('Cannot resolve org_id for cleanup from auth response');
+  await client.query('create temp table cert_cleanup_messages on commit drop as select id from messages where org_id = $1 and content ilike $2', [orgId, like]);
+  await client.query(`
+    create temp table cert_cleanup_intents on commit drop as
+    select id
+    from work_intents
+    where org_id = $1
+      and (
+        source_message_id in (select id from cert_cleanup_messages)
+        or coalesce(title, '') ilike $2
+        or coalesce(summary, '') ilike $2
+        or coalesce(dedupe_key, '') ilike $2
+        or coalesce(proposed_params::text, '') ilike $2
+        or coalesce(metadata::text, '') ilike $2
+      )
+  `, [orgId, like]);
+  await client.query(`
+    create temp table cert_cleanup_actions on commit drop as
+    select id
+    from agent_actions
+    where org_id = $1
+      and (
+        message_id in (select id from cert_cleanup_messages)
+        or coalesce(params::text, '') ilike $2
+        or coalesce(result::text, '') ilike $2
+        or coalesce(before_state::text, '') ilike $2
+        or coalesce(after_state::text, '') ilike $2
+        or coalesce(error, '') ilike $2
+        or params->>'work_intent_id' in (select id from cert_cleanup_intents)
+      )
+  `, [orgId, like]);
+  await client.query(`
+    create temp table cert_cleanup_tasks on commit drop as
+    select id
+    from tasks
+    where org_id = $1
+      and (
+        source_message_id in (select id from cert_cleanup_messages)
+        or id in (select converted_task_id from work_intents where id in (select id from cert_cleanup_intents) and converted_task_id is not null)
+        or coalesce(title, '') ilike $2
+        or coalesce(description, '') ilike $2
+        or coalesce(metadata::text, '') ilike $2
+      )
+  `, [orgId, like]);
+  await client.query(`
+    create temp table cert_cleanup_wiki_pages on commit drop as
+    select id
+    from wiki_pages
+    where org_id = $1
+      and (
+        coalesce(title, '') ilike $2
+        or coalesce(slug, '') ilike $2
+        or coalesce(summary, '') ilike $2
+        or coalesce(content, '') ilike $2
+        or coalesce(metadata::text, '') ilike $2
+      )
+  `, [orgId, like]);
+  await client.query(`
+    create temp table cert_cleanup_notes on commit drop as
+    select id
+    from notes
+    where org_id = $1
+      and (
+        coalesce(title, '') ilike $2
+        or coalesce(content, '') ilike $2
+      )
+  `, [orgId, like]);
+}
+
+async function readCleanupCounts(client: pg.Client): Promise<CleanupCounts> {
+  const result = await client.query(`
+    select
+      (select count(*)::int from messages m join cert_cleanup_messages cm on cm.id = m.id where m.is_deleted = false) as messages,
+      (select count(*)::int from message_observations mo join cert_cleanup_messages cm on cm.id = mo.message_id) as observations,
+      (select count(*)::int from work_intents wi join cert_cleanup_intents ci on ci.id = wi.id) as work_intents,
+      (select count(*)::int from agent_actions aa join cert_cleanup_actions ca on ca.id = aa.id) as agent_actions,
+      (select count(*)::int from action_receipts ar join cert_cleanup_actions ca on ca.id = ar.action_id) as receipts,
+      (select count(*)::int from tasks t join cert_cleanup_tasks ct on ct.id = t.id where t.is_deleted = false) as tasks,
+      (select count(*)::int from wiki_pages wp join cert_cleanup_wiki_pages cw on cw.id = wp.id where wp.is_deleted = false) as wiki_pages,
+      (select count(*)::int from notes n join cert_cleanup_notes cn on cn.id = n.id where n.is_deleted = false) as notes
+  `);
+  return { ...zeroCounts(), ...(result.rows[0] ?? {}) };
+}
+
+async function cleanupRunArtifacts(auth: Auth, options: { marker: string; apply: boolean; reason: string }): Promise<CleanupSummary> {
+  assertSafeMarker(options.marker);
+  const dbUrl = cleanupDatabaseUrl();
+  if (!dbUrl) {
+    return {
+      marker: options.marker,
+      mode: 'skipped',
+      reason: 'No DATABASE_URL/DEFT_CLEANUP_DATABASE_URL is configured for this non-local API URL, so marker-scoped DB cleanup was skipped.',
+    };
+  }
+
+  const client = new pg.Client({ connectionString: dbUrl });
+  await client.connect();
+  try {
+    await client.query('begin');
+    await createCleanupTempTables(client, auth, options.marker);
+    const before = await readCleanupCounts(client);
+    const summary: CleanupSummary = {
+      marker: options.marker,
+      mode: options.apply ? 'apply' : 'dry-run',
+      database: redactUrl(dbUrl),
+      before,
+      mutations: {},
+      reason: options.reason,
+    };
+
+    if (!options.apply) {
+      await client.query('rollback');
+      summary.after = before;
+      return summary;
+    }
+
+    const mutations: Record<string, number> = {};
+    mutations.receipts_deleted = (await client.query('delete from action_receipts where action_id in (select id from cert_cleanup_actions)')).rowCount ?? 0;
+    mutations.observations_deleted = (await client.query('delete from message_observations where message_id in (select id from cert_cleanup_messages)')).rowCount ?? 0;
+    mutations.work_intents_deleted = (await client.query('delete from work_intents where id in (select id from cert_cleanup_intents)')).rowCount ?? 0;
+    mutations.agent_actions_deleted = (await client.query('delete from agent_actions where id in (select id from cert_cleanup_actions)')).rowCount ?? 0;
+    mutations.messages_soft_deleted = (await client.query('update messages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_messages) and is_deleted = false')).rowCount ?? 0;
+    mutations.tasks_soft_deleted = (await client.query('update tasks set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_tasks) and is_deleted = false')).rowCount ?? 0;
+    mutations.wiki_pages_soft_deleted = (await client.query('update wiki_pages set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_wiki_pages) and is_deleted = false')).rowCount ?? 0;
+    mutations.notes_soft_deleted = (await client.query('update notes set is_deleted = true, updated_at = now() where id in (select id from cert_cleanup_notes) and is_deleted = false')).rowCount ?? 0;
+    summary.mutations = mutations;
+    summary.after = await readCleanupCounts(client);
+    await client.query('commit');
+    return summary;
+  } catch (err) {
+    await client.query('rollback').catch(() => null);
+    throw err;
+  } finally {
+    await client.end().catch(() => null);
+  }
 }
 
 function asArray<T = any>(value: any, keys: string[] = []): T[] {
@@ -234,7 +536,63 @@ function makeMessage(persona: Persona, index: number): { expected: ExpectedKind;
   return { expected, content: contentByKind[expected], space, tag };
 }
 
+function makeRehearsalMessages(persona: Persona): Array<{ expected: ExpectedKind; content: string; space: string; tag: string }> {
+  const firstName = persona.name.split(' ')[0].toUpperCase();
+  const rows: Array<{ expected: ExpectedKind; space: string; body: string }> = [
+    {
+      expected: 'noise',
+      space: 'marketing',
+      body: 'Quick vibe check only. No task, no decision, no memory: the launch channel can keep the tomato puns contained today.',
+    },
+    {
+      expected: 'blocker',
+      space: 'field-ops',
+      body: 'Blocked: the buyer launch rehearsal cannot go green because cold-room staging says 42 sample boxes but the route board only has capacity for 36. Please track the blocker from this message.',
+    },
+    {
+      expected: 'task',
+      space: 'operations',
+      body: 'Please create a P1 task for Tomas to reconcile route capacity against cold-room staging before the Tuesday buyer promise gate. Attach this chat message as the source.',
+    },
+    {
+      expected: 'decision',
+      space: 'sales-and-buyers',
+      body: 'Decision made: Diego confirms we will not promise the buyer drop until cold-chain capacity and the sample-box count match. Save this as a launch decision in team knowledge.',
+    },
+    {
+      expected: 'resource',
+      space: 'buyer-updates',
+      body: 'Resource: the buyer launch update needs three bullets: harvest confidence, route-capacity status, and sample-box freshness. Link it back to the rehearsal work record.',
+    },
+    {
+      expected: 'note',
+      space: 'greenhouse',
+      body: 'Fact: Sun Gold eight-ounce sample boxes must stay below 38F until handoff, and Marigold wants any box above that threshold pulled from the buyer batch.',
+    },
+    {
+      expected: 'update',
+      space: 'operations',
+      body: 'Update: route capacity is now tentatively aligned after Tomas swapped the downtown stop order. Update existing launch context rather than creating a duplicate task if possible.',
+    },
+    {
+      expected: 'noise',
+      space: 'marketing',
+      body: 'Small aside only. No action, no task, no decision, no memory: the team is done with rehearsal chatter for now.',
+    },
+  ];
+  return rows.map((row, index) => {
+    const tag = `${RUN_MARKER}-${firstName}-${String(index + 1).padStart(2, '0')}-${row.expected.toUpperCase()}`;
+    return {
+      expected: row.expected,
+      space: row.space,
+      tag,
+      content: `${tag}: ${row.body}`,
+    };
+  });
+}
+
 function buildMessages(persona: Persona) {
+  if (RUN_OPTIONS.rehearsal) return makeRehearsalMessages(persona);
   return Array.from({ length: 20 }, (_, i) => makeMessage(persona, i));
 }
 
@@ -422,7 +780,7 @@ function expectedMatches(kind: ExpectedKind, intentKind: string) {
 
 function normalizedRepeatKey(message: SentMessage) {
   const body = message.content
-    .replace(/^DENSE-[^:]+:\s*/i, '')
+    .replace(/^(DENSE|REHEARSAL)-[^:]+:\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
@@ -710,13 +1068,23 @@ async function writeReport() {
   const coverage = artifact.evidence.coverage as any;
   const captureSummary = artifact.evidence.capture_summary as any;
   const observationSummary = artifact.evidence.observation_summary as any;
+  const reportTitle = RUN_OPTIONS.rehearsal
+    ? 'Demo Rehearsal Certification'
+    : RUN_OPTIONS.cleanupOnlyMarker
+      ? 'Certification Cleanup Report'
+      : 'Dense Deft Human Workflow Certification';
+  const reportKicker = RUN_OPTIONS.rehearsal
+    ? 'Compact UI-first demo rehearsal'
+    : RUN_OPTIONS.cleanupOnlyMarker
+      ? 'Marker-scoped cleanup'
+      : 'Dense multi-user UI-first dogfood';
 
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dense Deft Human Workflow Certification - ${escapeHtml(RUN_MARKER)}</title>
+  <title>${escapeHtml(reportTitle)} - ${escapeHtml(RUN_MARKER)}</title>
   <style>
     :root { color-scheme: light; --ink:#191714; --muted:#716a60; --line:#ddd5c8; --paper:#faf7ef; --card:#fffdf8; --green:#168a5b; --amber:#a86700; --red:#bf3b2f; --accent:#6f5fda; }
     body { margin:0; background:var(--paper); color:var(--ink); font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height:1.45; }
@@ -748,9 +1116,9 @@ async function writeReport() {
 <body>
 <main>
   <section class="hero">
-    <span class="pill">Dense multi-user UI-first dogfood</span>
-    <h1>Dense Deft Human Workflow Certification</h1>
-    <p>Run marker <code>${escapeHtml(RUN_MARKER)}</code>. Five seeded employees used real browser sessions against <code>${escapeHtml(WEB_URL)}</code>, posted a total of ${metrics?.attempted_messages ?? 0} tagged messages across several spaces, then Defty captures, approvals, receipts, notes, and wiki search were verified.</p>
+    <span class="pill">${escapeHtml(reportKicker)}</span>
+    <h1>${escapeHtml(reportTitle)}</h1>
+    <p>Run marker <code>${escapeHtml(RUN_MARKER)}</code>. Mode <code>${escapeHtml(artifact.mode)}</code>. Seeded employees used real browser sessions against <code>${escapeHtml(WEB_URL)}</code>, posted a total of ${metrics?.attempted_messages ?? 0} tagged messages across several spaces, then Defty captures, approvals, receipts, notes, and wiki search were verified where applicable.</p>
     <div class="grid">
       <div class="card"><div class="metric">${metrics?.sent_messages ?? 0}/${metrics?.attempted_messages ?? 0}</div><span>UI chat sends succeeded</span></div>
       <div class="card"><div class="metric">${metrics?.completed_observation_count ?? 0}/${metrics?.sent_messages ?? 0}</div><span>Messages durably observed</span></div>
@@ -775,7 +1143,12 @@ async function writeReport() {
   </table>
 
   <h2>Findings</h2>
-  ${artifact.findings.length === 0 ? '<p>No blocker findings from the dense run.</p>' : `<table><thead><tr><th>Severity</th><th>Issue</th><th>Detail</th></tr></thead><tbody>${artifact.findings.map((finding) => `<tr><td class="${finding.severity === 'P1' || finding.severity === 'P0' ? 'fail' : finding.severity === 'P2' ? 'warn' : ''}">${escapeHtml(finding.severity)}</td><td>${escapeHtml(finding.title)}</td><td>${escapeHtml(finding.detail)}</td></tr>`).join('')}</tbody></table>`}
+  ${artifact.findings.length === 0 ? '<p>No blocker findings from this run.</p>' : `<table><thead><tr><th>Severity</th><th>Issue</th><th>Detail</th></tr></thead><tbody>${artifact.findings.map((finding) => `<tr><td class="${finding.severity === 'P1' || finding.severity === 'P0' ? 'fail' : finding.severity === 'P2' ? 'warn' : ''}">${escapeHtml(finding.severity)}</td><td>${escapeHtml(finding.title)}</td><td>${escapeHtml(finding.detail)}</td></tr>`).join('')}</tbody></table>`}
+
+  <h2>Cleanup</h2>
+  <pre>${escapeHtml(JSON.stringify(artifact.evidence.cleanup ?? {
+    mode: RUN_OPTIONS.noCleanup ? 'disabled by --no-cleanup' : RUN_OPTIONS.cleanupAfterRun ? 'not run yet' : 'not requested',
+  }, null, 2))}</pre>
 
   <h2>Capture Summary</h2>
   <div class="grid">
@@ -815,19 +1188,48 @@ async function writeReport() {
   console.log(`JSON_REPORT=${JSON_REPORT}`);
 }
 
+let reportAlreadyWritten = false;
+
+async function writeReportOnce() {
+  if (reportAlreadyWritten) return;
+  await writeReport();
+  reportAlreadyWritten = true;
+}
+
 async function main() {
+  if (RUN_OPTIONS.help) {
+    console.log(usage());
+    return;
+  }
+
+  if (RUN_OPTIONS.cleanupOnlyMarker) {
+    assertSafeMarker(RUN_MARKER);
+    await fs.mkdir(OUT_DIR, { recursive: true });
+    const auth = await step('Manager API login works for cleanup', () => loginApi(process.env.DEFT_TEST_EMAIL || 'diego@testers-tomatoes.com')) as Auth;
+    const apply = RUN_OPTIONS.cleanupOnlyApply && !RUN_OPTIONS.cleanupDryRun;
+    const cleanup = await step(
+      apply ? `Apply marker-scoped cleanup for ${RUN_MARKER}` : `Dry-run marker-scoped cleanup for ${RUN_MARKER}`,
+      () => cleanupRunArtifacts(auth, { marker: RUN_MARKER, apply, reason: 'cleanup-only' }),
+    );
+    artifact.evidence.cleanup = cleanup;
+    await writeReportOnce();
+    return;
+  }
+
   await fs.mkdir(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   const contexts: BrowserContext[] = [];
+  let cleanupAuth: Auth | null = null;
   try {
     const managerAuth = await step('Manager API login works', () => loginApi('diego@testers-tomatoes.com')) as Auth;
+    cleanupAuth = managerAuth;
     const spaces = await step('Load workspace spaces', () => getSpaces(managerAuth)) as Space[];
     const spacesByName = new Map(spaces.map((space) => [space.name, space]));
-    artifact.evidence.spaces_used = Array.from(new Set(personas.flatMap((persona) => persona.spaces))).filter((name) => spacesByName.has(name));
+    artifact.evidence.spaces_used = Array.from(new Set(activePersonas.flatMap((persona) => persona.spaces))).filter((name) => spacesByName.has(name));
 
-    const sessions = await step('Log in five human browser sessions', async () => {
+    const sessions = await step(RUN_OPTIONS.rehearsal ? 'Log in Diego demo browser session' : 'Log in five human browser sessions', async () => {
       const logged: Array<{ persona: Persona; page: Page; consoleIssues: string[] }> = [];
-      for (const persona of personas) {
+      for (const persona of activePersonas) {
         const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: 1 });
         contexts.push(context);
         const page = await context.newPage();
@@ -842,7 +1244,7 @@ async function main() {
       return logged;
     }) as Array<{ persona: Persona; page: Page; consoleIssues: string[] }>;
 
-    await step('Run five concurrent human UI chat sessions', async () => {
+    await step(RUN_OPTIONS.rehearsal ? 'Run compact Diego demo rehearsal through UI chat' : 'Run five concurrent human UI chat sessions', async () => {
       await Promise.all(sessions.map(({ page, persona }) => sendLoggedPersonaMessages(page, persona, spacesByName)));
     });
 
@@ -852,7 +1254,7 @@ async function main() {
       attempted_messages: artifact.sent_messages.length,
       sent_messages: sentOk.length,
       failed_sends: failedSends.length,
-      personas: personas.length,
+      personas: activePersonas.length,
       spaces: artifact.evidence.spaces_used,
     };
 
@@ -862,7 +1264,10 @@ async function main() {
       const nonNoiseSent = sentOk.filter((message) => message.expected !== 'noise').length;
       const allObserved = observations.length >= sentOk.length &&
         observations.every((observation) => ['ignored', 'no_capture', 'captured'].includes(observation.status));
-      const enoughCaptures = intents.length >= Math.max(8, Math.floor(nonNoiseSent * 0.25));
+      const minCaptureCount = RUN_OPTIONS.rehearsal
+        ? Math.max(4, Math.floor(nonNoiseSent * 0.75))
+        : Math.max(8, Math.floor(nonNoiseSent * 0.25));
+      const enoughCaptures = intents.length >= minCaptureCount;
       return allObserved && enoughCaptures ? { intents, observations } : null;
     }, { timeoutMs: 180_000, intervalMs: 5_000 }), true) as any | null;
 
@@ -968,11 +1373,33 @@ async function main() {
     }, true);
 
     addFindings(finalCoverage, artifact.sent_messages.length, failedSends, finalIntents, finalActions, receipts, finalObservations);
-    mark(artifact.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1') ? 'warn' : 'pass', 'Dense certification completed with findings', artifact.findings.length);
+    mark(artifact.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1') ? 'warn' : 'pass', `${RUN_OPTIONS.rehearsal ? 'Demo rehearsal' : 'Dense certification'} completed with findings`, artifact.findings.length);
   } finally {
     for (const context of contexts) await context.close().catch(() => null);
     await browser.close();
-    await writeReport();
+    if (RUN_OPTIONS.cleanupAfterRun) {
+      if (!cleanupAuth) {
+        artifact.evidence.cleanup = { marker: RUN_MARKER, mode: 'skipped', reason: 'Manager API login never completed, so cleanup could not be scoped to an org.' };
+      } else {
+        const apply = !RUN_OPTIONS.cleanupDryRun;
+        const cleanup = await step(
+          apply ? `Apply marker-scoped cleanup for ${RUN_MARKER}` : `Dry-run marker-scoped cleanup for ${RUN_MARKER}`,
+          () => cleanupRunArtifacts(cleanupAuth!, { marker: RUN_MARKER, apply, reason: 'after-run' }),
+          true,
+        );
+        artifact.evidence.cleanup = cleanup;
+        const sentCount = artifact.sent_messages.filter((message) => message.ok).length;
+        const beforeMessages = (cleanup as CleanupSummary | null)?.before?.messages ?? null;
+        if (sentCount > 0 && beforeMessages === 0) {
+          artifact.findings.push({
+            severity: 'P2',
+            title: 'Cleanup DB target did not see run-created chat rows',
+            detail: `The UI/API run posted ${sentCount} message(s), but the configured cleanup database found 0 visible marker messages. This usually means DATABASE_URL does not match the API process database; set DEFT_CLEANUP_DATABASE_URL to the API database before relying on cleanup.`,
+          });
+        }
+      }
+    }
+    await writeReportOnce();
   }
 }
 
@@ -982,7 +1409,7 @@ main().catch(async (err) => {
     title: 'Dense certification stopped early',
     detail: err instanceof Error ? err.stack || err.message : String(err),
   });
-  await writeReport();
+  await writeReportOnce();
   console.error(err);
   process.exit(1);
 });
