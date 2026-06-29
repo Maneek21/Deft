@@ -110,7 +110,10 @@ async function main() {
   }
 
   const compose = ['compose', ...composeFiles];
-  await run('docker', [...compose, 'up', '-d', ...(skipBuild ? [] : ['--build'])]);
+  if (!skipBuild) {
+    await run('docker', [...compose, 'build', 'deft', 'init', 'doctor', 'smoke']);
+  }
+  await run('docker', [...compose, 'up', '-d']);
   if (seedPilotDemo) {
     await run('docker', [...compose, 'run', '--rm', 'init', 'sh', '-c', 'pnpm db:push-full && pnpm db:seed:pilot']);
   } else {

@@ -46,14 +46,16 @@ Open `.env` and set the three required values. AI keys are optional and can be a
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional | Configure one provider for AI features; can also be set per-org in Settings -> AI |
 
 ```bash
-# 2. Build and start the stack (Postgres + Redis + Deft)
-docker compose up -d --build
+# 2. Build app + tool images, then start the stack
+docker compose build deft init doctor smoke
+docker compose up -d
 
 # 3. Initialize the database from inside Docker (run once on first boot)
 docker compose run --rm init
 
 # Optional: verify the self-host stack
 docker compose run --rm doctor
+docker compose run --rm smoke
 ```
 
 > **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies supplemental SQL files for generated search columns, GIN/vector indexes, and safe metadata backfills that Drizzle's pushed schema can't fully express. Plain `pnpm db:push` skips those extras and leaves search/backfill behavior incomplete. Versioned `db:migrate` upgrade paths are not yet supported and will arrive post-alpha.

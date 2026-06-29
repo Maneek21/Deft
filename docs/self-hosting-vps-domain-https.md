@@ -108,7 +108,8 @@ pnpm selfhost:bootstrap --prod
 If you do not have host-side Node.js/pnpm, run the Docker-only sequence:
 
 ```bash
-docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
+docker compose -f docker-compose.yml -f compose.prod.yml up -d
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
@@ -217,7 +218,8 @@ Before upgrades, take a Postgres backup. Then:
 
 ```bash
 git pull
-docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
+docker compose -f docker-compose.yml -f compose.prod.yml up -d
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
 docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
