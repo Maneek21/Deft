@@ -295,6 +295,15 @@ async function teardownFixtures() {
       `DELETE FROM messages WHERE user_id = $1`,
       [SHADOW_USER_ID],
     );
+    await c.query(
+      `DELETE FROM messages
+       WHERE space_id IN (
+         SELECT id FROM spaces
+         WHERE org_id = $1
+           AND created_by IN ($2, $3, $4)
+       )`,
+      [ORG_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+    );
     if (TEST_SPACE_ID) {
       await c.query(
         `DELETE FROM space_members
@@ -303,12 +312,36 @@ async function teardownFixtures() {
         [TEST_SPACE_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
       );
     }
+    await c.query(
+      `DELETE FROM space_members
+       WHERE space_id IN (
+         SELECT id FROM spaces
+         WHERE org_id = $1
+           AND created_by IN ($2, $3, $4)
+       )`,
+      [ORG_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM space_memory
+       WHERE space_id IN (
+         SELECT id FROM spaces
+         WHERE org_id = $1
+           AND created_by IN ($2, $3, $4)
+       )`,
+      [ORG_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+    );
     if (CREATED_TEST_SPACE_ID) {
       await c.query(
         `DELETE FROM spaces WHERE id = $1`,
         [CREATED_TEST_SPACE_ID],
       );
     }
+    await c.query(
+      `DELETE FROM spaces
+       WHERE org_id = $1
+         AND created_by IN ($2, $3, $4)`,
+      [ORG_ID, APPROVER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+    );
     if (CREATED_TEST_PROJECT_ID) {
       await c.query(
         `DELETE FROM projects WHERE id = $1`,
@@ -804,19 +837,29 @@ test('1f. approving Defty wiki_create saves knowledge with source citation', asy
 
   await withClient(async (c) => {
     const page = await c.query(
-      `SELECT id, title, type, user_id, agent_employee_id, metadata
+      `SELECT id, title, type, scope, space_id, origin_space_id,
+              origin_message_id, origin_user_id, created_via,
+              user_id, agent_employee_id, metadata
        FROM wiki_pages
        WHERE title = $1 AND org_id = $2`,
       [title, ORG_ID],
     );
     assert.equal(page.rows.length, 1, 'wiki page should have been created');
     assert.equal(page.rows[0].type, 'decision');
+    assert.equal(page.rows[0].scope, 'org');
+    assert.equal(page.rows[0].space_id, null, 'approved org memory should not become space-private memory');
+    assert.equal(page.rows[0].origin_space_id, TEST_SPACE_ID);
+    assert.equal(page.rows[0].origin_message_id, sourceMessageId);
+    assert.equal(page.rows[0].origin_user_id, APPROVER_USER_ID);
+    assert.equal(page.rows[0].created_via, 'wiki_create');
     assert.equal(page.rows[0].user_id, DEFTY_USER_ID);
     assert.equal(page.rows[0].agent_employee_id, DEFTY_EMP_ID);
     assert.equal(page.rows[0].metadata.source_message_id, sourceMessageId);
+    assert.equal(page.rows[0].metadata.source_space_id, TEST_SPACE_ID);
+    assert.equal(page.rows[0].metadata.source_user_id, APPROVER_USER_ID);
 
     const citation = await c.query(
-      `SELECT source_type, source_id, excerpt
+      `SELECT source_type, source_id, source_space_id, source_user_id, excerpt
        FROM wiki_citations
        WHERE page_id = $1`,
       [page.rows[0].id],
@@ -824,6 +867,8 @@ test('1f. approving Defty wiki_create saves knowledge with source citation', asy
     assert.equal(citation.rows.length, 1, 'wiki page should cite the source message');
     assert.equal(citation.rows[0].source_type, 'message');
     assert.equal(citation.rows[0].source_id, sourceMessageId);
+    assert.equal(citation.rows[0].source_space_id, TEST_SPACE_ID);
+    assert.equal(citation.rows[0].source_user_id, APPROVER_USER_ID);
     assert.match(citation.rows[0].excerpt, /chef sample boxes/i);
 
     const op = await c.query(
@@ -895,7 +940,13 @@ test('1g. approving Defty wiki_update updates page with version history and ops 
   // @ts-expect-error narrow
   assert.equal(result.result?.page_id, pageId);
   // @ts-expect-error narrow
-  assert.deepEqual(result.result?.changed_fields, ['content', 'summary']);
+  assert.deepEqual(result.result?.changed_fields, [
+    'content',
+    'summary',
+    'origin_space_id',
+    'origin_message_id',
+    'origin_user_id',
+  ]);
 
   await withClient(async (c) => {
     const page = await c.query(
@@ -925,7 +976,13 @@ test('1g. approving Defty wiki_update updates page with version history and ops 
       [pageId],
     );
     assert.equal(op.rows.length, 1, 'wiki update should have an ops log row');
-    assert.deepEqual(op.rows[0].details.changed_fields, ['content', 'summary']);
+    assert.deepEqual(op.rows[0].details.changed_fields, [
+      'content',
+      'summary',
+      'origin_space_id',
+      'origin_message_id',
+      'origin_user_id',
+    ]);
     assert.equal(op.rows[0].performed_by, DEFTY_USER_ID);
 
     const citation = await c.query(

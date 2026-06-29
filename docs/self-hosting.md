@@ -115,9 +115,10 @@ The init service runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
 No host Node.js or pnpm install is required for the Docker self-host path.
 
 `db:push-full` enables the `vector` extension, syncs the schema, and applies the
-full-text-search extras Drizzle cannot express. `db:seed` seeds Defty, internal
-agent/tool bundles, task templates, and first-party employee templates. It is
-idempotent and does not insert demo users.
+supplemental SQL files for search indexes and safe metadata backfills that
+Drizzle cannot fully express. `db:seed` seeds Defty, internal agent/tool bundles,
+task templates, and first-party employee templates. It is idempotent and does not
+insert demo users.
 
 ### 4. Verify
 

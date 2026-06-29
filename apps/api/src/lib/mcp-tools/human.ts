@@ -492,40 +492,52 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
   return errorResult(`fetch: unsupported id type ${kind}`);
 }
 
-export async function humanMemoryRecall(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanMemoryRecall(
+  args: { query?: string; limit?: number; space_id?: string; include_org?: boolean },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:wiki');
   if (scopeError) return scopeError;
   const query = (args.query ?? '').trim();
   if (!query) return errorResult('memory_recall requires query');
-  const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3).slice(0, 8);
   const limit = Math.min(Math.max(1, args.limit ?? 10), 25);
-  const rows = await db
-    .select({
-      slug: wikiPages.slug,
-      title: wikiPages.title,
-      summary: wikiPages.summary,
-      content: wikiPages.content,
-      type: wikiPages.type,
-      confidence: wikiPages.confidence,
-      updated_at: wikiPages.updated_at,
-    })
-    .from(wikiPages)
-    .where(and(
-      eq(wikiPages.org_id, ctx.org_id),
-      eq(wikiPages.is_deleted, false),
-      visibleWikiPageCondition(ctx.user_id),
-      ...terms.map((term) => {
-        const pattern = `%${term}%`;
-        return sql`(lower(${wikiPages.title}) like ${pattern} or lower(${wikiPages.summary}) like ${pattern} or lower(${wikiPages.content}) like ${pattern})`;
-      }),
-    ))
-    .orderBy(desc(wikiPages.updated_at))
-    .limit(limit);
-  return textResult(rows.map((row) => ({
-    ...row,
-    content: row.content.length > 2000 ? row.content.slice(0, 2000) : row.content,
-    truncated: row.content.length > 2000,
-  })));
+  const spaceId = args.space_id?.trim() || undefined;
+  const includeOrg = args.include_org !== false;
+  if (spaceId && !(await userCanSeeSpace(ctx, spaceId))) {
+    return errorResult(`memory_recall: user cannot access space ${spaceId}`);
+  }
+
+  const rows = await retrieveContext({
+    query,
+    org_id: ctx.org_id,
+    user_id: ctx.user_id,
+    space_id: spaceId,
+    include_org: includeOrg,
+    types: ['wiki'],
+    limit,
+    hybrid: false,
+  });
+
+  return textResult(rows
+    .filter((row) => row.source_type === 'wiki_page')
+    .map((row) => {
+      const content = row.content ?? '';
+      const truncated = content.length > 2000;
+      return {
+        slug: row.metadata?.slug ?? '',
+        title: row.title,
+        summary: row.metadata?.summary ?? null,
+        content: truncated ? content.slice(0, 2000) : content,
+        truncated,
+        type: row.metadata?.type ?? '',
+        confidence: row.confidence ?? 1.0,
+        space_id: row.metadata?.space_id ?? null,
+        origin_space_id: row.metadata?.origin_space_id ?? null,
+        origin_message_id: row.metadata?.origin_message_id ?? null,
+        created_via: row.metadata?.created_via ?? null,
+        matched_space_id: row.metadata?.matched_space_id ?? null,
+      };
+    }));
 }
 
 export async function humanMemoryList(args: { type?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {

@@ -1298,6 +1298,10 @@ export const wikiPages = pgTable('wiki_pages', {
   ...orgId(),
   scope: wikiPageScopeEnum('scope').default('org').notNull(),
   space_id: text('space_id').references(() => spaces.id),
+  origin_space_id: text('origin_space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  origin_message_id: text('origin_message_id').references(() => messages.id, { onDelete: 'set null' }),
+  origin_user_id: text('origin_user_id').references(() => users.id, { onDelete: 'set null' }),
+  created_via: text('created_via'),
   user_id: text('user_id').references(() => users.id),
   agent_employee_id: text('agent_employee_id'),
   type: wikiPageTypeEnum('type').notNull(),
@@ -1318,6 +1322,9 @@ export const wikiPages = pgTable('wiki_pages', {
   uniqueIndex('wiki_pages_org_slug').on(t.org_id, t.slug),
   index('wiki_pages_org_type').on(t.org_id, t.type),
   index('wiki_pages_org_scope').on(t.org_id, t.scope),
+  index('wiki_pages_org_origin_space').on(t.org_id, t.origin_space_id),
+  index('wiki_pages_org_scope_space').on(t.org_id, t.scope, t.space_id),
+  index('wiki_pages_org_created_via').on(t.org_id, t.created_via),
   index('wiki_pages_tags_gin').on(t.tags),
   index('wiki_pages_ref_users_gin').on(t.referenced_user_ids),
 ]);
@@ -1337,13 +1344,18 @@ export const wikiLinks = pgTable('wiki_links', {
 
 export const wikiCitations = pgTable('wiki_citations', {
   ...id(),
+  org_id: text('org_id').references(() => orgs.id, { onDelete: 'cascade' }),
   page_id: text('page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
   source_type: text('source_type').notNull(),
   source_id: text('source_id').notNull(),
+  source_space_id: text('source_space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  source_user_id: text('source_user_id').references(() => users.id, { onDelete: 'set null' }),
   excerpt: text('excerpt'),
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   index('wiki_citations_page').on(t.page_id),
+  index('wiki_citations_org_source_space').on(t.org_id, t.source_space_id),
+  index('wiki_citations_source').on(t.source_type, t.source_id),
 ]);
 
 export const wikiOpsLog = pgTable('wiki_ops_log', {

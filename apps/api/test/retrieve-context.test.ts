@@ -51,6 +51,22 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 before(async () => {
   await withClient(async (c) => {
+    // Clean up any stale rows from interrupted local test runs.
+    await c.query(
+      `DELETE FROM wiki_pages
+       WHERE agent_employee_id IN (SELECT id FROM agent_employees WHERE user_id = $1)`,
+      [USER_ID],
+    );
+    await c.query(`DELETE FROM wiki_citations WHERE page_id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM wiki_pages WHERE id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM messages WHERE id LIKE 'rctest-space-message-%' OR user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM space_members WHERE space_id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM spaces WHERE id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM agent_memory WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM notes WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM agent_employees WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM org_members WHERE user_id = $1`, [USER_ID]);
+
     // Ensure test user exists.
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
@@ -187,6 +203,19 @@ after(async () => {
     for (const { table, id } of [...seededIds].reverse()) {
       await c.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
     }
+    await c.query(
+      `DELETE FROM wiki_pages
+       WHERE agent_employee_id IN (SELECT id FROM agent_employees WHERE user_id = $1)`,
+      [USER_ID],
+    );
+    await c.query(`DELETE FROM wiki_citations WHERE page_id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM wiki_pages WHERE id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM messages WHERE id LIKE 'rctest-space-message-%' OR user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM space_members WHERE space_id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM spaces WHERE id LIKE 'rctest-space-%'`);
+    await c.query(`DELETE FROM agent_memory WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM notes WHERE user_id = $1`, [USER_ID]);
+    await c.query(`DELETE FROM agent_employees WHERE user_id = $1`, [USER_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [USER_ID]);
     await c.query(`DELETE FROM users WHERE id = $1`, [USER_ID]);
   });
@@ -295,6 +324,118 @@ describe('retrieveContext', () => {
   });
 
   // ─── Task 1.2: Hybrid FTS + vector ranking ─────────────────────────────────
+
+  test('6b. space_id narrows wiki retrieval to company plus current channel context', async () => {
+    const TERM = `xyzspacecontext${Date.now()}`;
+    const SPACE_A_ID = `rctest-space-a-${Date.now()}`;
+    const SPACE_B_ID = `rctest-space-b-${Date.now()}`;
+    const orgPageId = `rctest-space-org-${Date.now()}`;
+    const spacePageId = `rctest-space-local-${Date.now()}`;
+    const otherSpacePageId = `rctest-space-other-${Date.now()}`;
+    const citationPageId = `rctest-space-citation-${Date.now()}`;
+    const citationMessageId = `rctest-space-message-${Date.now()}`;
+
+    await withClient(async (c) => {
+      for (const [spaceId, name] of [[SPACE_A_ID, 'Retrieve Space A'], [SPACE_B_ID, 'Retrieve Space B']] as const) {
+        await c.query(
+          `INSERT INTO spaces (id, org_id, name, type, is_archived)
+           VALUES ($1, $2, $3, 'public', false)
+           ON CONFLICT (id) DO NOTHING`,
+          [spaceId, ORG_ID, name],
+        );
+        await c.query(
+          `INSERT INTO space_members (id, space_id, user_id, is_muted, notification_level, joined_at)
+           VALUES (gen_random_uuid()::text, $1, $2, false, 'all', NOW())
+           ON CONFLICT (space_id, user_id) DO NOTHING`,
+          [spaceId, USER_ID],
+        );
+      }
+
+      const insertPage = async (
+        id: string,
+        scope: 'org' | 'space',
+        title: string,
+        slug: string,
+        spaceId: string | null,
+        originSpaceId: string | null,
+      ) => {
+        await c.query(
+          `INSERT INTO wiki_pages
+             (id, org_id, type, scope, space_id, origin_space_id, title, slug, content,
+              confidence, is_deleted, created_at, updated_at)
+           VALUES ($1, $2, 'fact', $3, $4, $5, $6, $7, $8, 1.0, false, NOW(), NOW())`,
+          [id, ORG_ID, scope, spaceId, originSpaceId, title, slug, `The ${TERM} marker belongs to ${title}.`],
+        );
+        await c.query(
+          `UPDATE wiki_pages SET search_vector =
+             setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+             setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+             setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+           WHERE id = $1`,
+          [id],
+        );
+      };
+
+      await insertPage(orgPageId, 'org', `Company ${TERM} Context`, `company-${TERM}`, null, null);
+      await insertPage(spacePageId, 'space', `Channel ${TERM} Context`, `channel-${TERM}`, SPACE_A_ID, SPACE_A_ID);
+      await insertPage(otherSpacePageId, 'space', `Other Channel ${TERM} Context`, `other-channel-${TERM}`, SPACE_B_ID, SPACE_B_ID);
+      await insertPage(citationPageId, 'org', `Cited ${TERM} Context`, `cited-${TERM}`, null, null);
+
+      await c.query(
+        `INSERT INTO messages (id, org_id, space_id, user_id, content, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+        [citationMessageId, ORG_ID, SPACE_A_ID, USER_ID, `Message source for ${TERM} cited memory.`],
+      );
+      await c.query(
+        `INSERT INTO wiki_citations
+           (id, org_id, page_id, source_type, source_id, source_space_id, source_user_id, excerpt)
+         VALUES (gen_random_uuid()::text, $1, $2, 'message', $3, $4, $5, $6)`,
+        [ORG_ID, citationPageId, citationMessageId, SPACE_A_ID, USER_ID, `Message source for ${TERM}`],
+      );
+    });
+
+    try {
+      const withCompany = await retrieveContext({
+        query: TERM,
+        org_id: ORG_ID,
+        user_id: USER_ID,
+        types: ['wiki'],
+        space_id: SPACE_A_ID,
+        include_org: true,
+        hybrid: false,
+        limit: 10,
+      });
+      const withCompanyIds = withCompany.map((r) => r.source_id);
+      assert.ok(withCompanyIds.includes(orgPageId), 'space retrieval with include_org should include company wiki');
+      assert.ok(withCompanyIds.includes(spacePageId), 'space retrieval should include current channel wiki');
+      assert.ok(withCompanyIds.includes(citationPageId), 'space retrieval should include wiki cited from current channel');
+      assert.ok(!withCompanyIds.includes(otherSpacePageId), 'space retrieval should exclude other channel wiki');
+
+      const channelOnly = await retrieveContext({
+        query: TERM,
+        org_id: ORG_ID,
+        user_id: USER_ID,
+        types: ['wiki'],
+        space_id: SPACE_A_ID,
+        include_org: false,
+        hybrid: false,
+        limit: 10,
+      });
+      const channelOnlyIds = channelOnly.map((r) => r.source_id);
+      assert.ok(!channelOnlyIds.includes(orgPageId), 'include_org:false should exclude general company wiki');
+      assert.ok(channelOnlyIds.includes(spacePageId), 'include_org:false should keep current channel wiki');
+      assert.ok(channelOnlyIds.includes(citationPageId), 'include_org:false should keep citation-linked channel wiki');
+      assert.ok(!channelOnlyIds.includes(otherSpacePageId), 'include_org:false should still exclude other channel wiki');
+    } finally {
+      await withClient(async (c) => {
+        await c.query(`DELETE FROM wiki_citations WHERE page_id = $1`, [citationPageId]);
+        await c.query(`DELETE FROM messages WHERE id = $1`, [citationMessageId]);
+        await c.query(`DELETE FROM wiki_pages WHERE id = ANY($1)`, [[orgPageId, spacePageId, otherSpacePageId, citationPageId]]);
+        await c.query(`DELETE FROM space_members WHERE space_id = ANY($1)`, [[SPACE_A_ID, SPACE_B_ID]]);
+        await c.query(`DELETE FROM spaces WHERE id = ANY($1)`, [[SPACE_A_ID, SPACE_B_ID]]);
+      });
+    }
+  });
 
   test('7. hybrid: false bypasses vector search and returns FTS-only results', async () => {
     // With hybrid:false the code must not call fetch (no embedding generated).

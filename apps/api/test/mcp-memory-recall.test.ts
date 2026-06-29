@@ -23,6 +23,8 @@ const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const TEST_USER_ID = 'mcp-recall-test-user';
 const AGENT_EMPLOYEE_ID = `mcp-recall-test-emp-${Date.now()}`;
 const OTHER_AGENT_EMPLOYEE_ID = `mcp-recall-other-emp-${Date.now()}`;
+const SPACE_ID = `mcp-recall-space-${Date.now()}`;
+const PRIVATE_SPACE_ID = `mcp-recall-private-space-${Date.now()}`;
 
 // Unique query term so only our seeded pages match — avoids interference with
 // other wiki_pages rows in the dev database.
@@ -89,6 +91,20 @@ before(async () => {
       [OTHER_AGENT_EMPLOYEE_ID, ORG_ID, TEST_USER_ID, `mcp-recall-other-${Date.now()}`],
     );
     seededIds.push({ table: 'agent_employees', id: OTHER_AGENT_EMPLOYEE_ID });
+
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, is_archived)
+       VALUES ($1, $2, 'MCP Recall Public Space', 'public', false)`,
+      [SPACE_ID, ORG_ID],
+    );
+    seededIds.push({ table: 'spaces', id: SPACE_ID });
+
+    await c.query(
+      `INSERT INTO spaces (id, org_id, name, type, is_archived)
+       VALUES ($1, $2, 'MCP Recall Private Space', 'private', false)`,
+      [PRIVATE_SPACE_ID, ORG_ID],
+    );
+    seededIds.push({ table: 'spaces', id: PRIVATE_SPACE_ID });
 
     // Employee-tagged wiki page (tier 1 — "own").
     const empPageId = `mcp-recall-emp-page-${Date.now()}`;
@@ -172,6 +188,35 @@ before(async () => {
       [attributedOrgPageId],
     );
     seededIds.push({ table: 'wiki_pages', id: attributedOrgPageId });
+
+    // Org-wide page that originated in one specific channel. Channel-only
+    // recall should include this page while excluding unrelated org memory.
+    const channelOriginPageId = `mcp-recall-channel-origin-page-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, summary, content, confidence,
+          origin_space_id, created_via, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'procedure', 'org', $3, $4, $5, $6, 0.95, $7, 'test_channel_origin',
+          false, NOW(), NOW())`,
+      [
+        channelOriginPageId,
+        ORG_ID,
+        `Channel ${QUERY_TERM} Procedure`,
+        `channel-procedure-${Date.now()}`,
+        `Summary about ${QUERY_TERM} from a specific channel.`,
+        `The ${QUERY_TERM} channel procedure belongs to the public test channel.`,
+        SPACE_ID,
+      ],
+    );
+    await c.query(
+      `UPDATE wiki_pages SET search_vector =
+         setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+         setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
+         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
+       WHERE id = $1`,
+      [channelOriginPageId],
+    );
+    seededIds.push({ table: 'wiki_pages', id: channelOriginPageId });
   });
 });
 
@@ -222,11 +267,12 @@ describe('memoryRecall', () => {
     const rows = JSON.parse(result.content[0].text) as Array<Record<string, unknown>>;
     assert.ok(rows.length >= 1, `Expected at least 1 org-scope result, got ${rows.length}`);
 
-    // All returned pages should be the org-wide one (title includes 'Org').
+    // Org scope returns company memory, including pages that originated from a
+    // channel but were promoted to org-level knowledge.
     for (const row of rows) {
       assert.ok(
-        String(row.title).includes('Org'),
-        `Expected only org-wide page in org scope, got title: ${row.title}`,
+        !String(row.title).includes('Employee'),
+        `Expected no employee-private page in org scope, got title: ${row.title}`,
       );
     }
     // Employee-tagged page must not appear.
@@ -236,6 +282,10 @@ describe('memoryRecall', () => {
     assert.ok(
       rows.some((r) => String(r.title).includes('Defty Org')),
       'Org scope should include org pages that retain agent_employee_id for audit attribution',
+    );
+    assert.ok(
+      rows.some((r) => String(r.title).includes('Channel')),
+      'Org scope should include promoted channel-origin company memory',
     );
   });
 
@@ -281,6 +331,56 @@ describe('memoryRecall', () => {
       assert.ok('summary' in row, 'Missing field: summary');
       assert.ok('type' in row, 'Missing field: type');
       assert.ok('confidence' in row, 'Missing field: confidence');
+      assert.ok('origin_space_id' in row, 'Missing field: origin_space_id');
+      assert.ok('created_via' in row, 'Missing field: created_via');
+      assert.ok('matched_space_id' in row, 'Missing field: matched_space_id');
     }
+  });
+
+  test('6. space_id with include_org=false returns channel-origin memory but excludes unrelated org memory', async () => {
+    const result = await memoryRecall(
+      {
+        caller_employee_slug: 'mcp-recall-test',
+        query: QUERY_TERM,
+        scope: 'all',
+        space_id: SPACE_ID,
+        include_org: false,
+        limit: 10,
+      },
+      makeCtx(),
+    );
+
+    assert.ok(!result.isError, `Unexpected error: ${result.content[0]?.text}`);
+
+    const rows = JSON.parse(result.content[0].text) as Array<Record<string, unknown>>;
+    assert.ok(rows.length >= 1, 'Expected channel-origin result');
+    assert.ok(
+      rows.some((row) => String(row.title).includes('Channel')),
+      `Expected channel-origin page in results, got ${rows.map((row) => row.title).join(', ')}`,
+    );
+    assert.ok(
+      rows.some((row) => row.matched_space_id === SPACE_ID),
+      `Expected at least one row to carry matched_space_id ${SPACE_ID}`,
+    );
+    assert.ok(
+      rows.every((row) => !String(row.title).startsWith('Org ')),
+      `Channel-only recall should exclude unrelated org pages, got ${rows.map((row) => row.title).join(', ')}`,
+    );
+  });
+
+  test('7. private space_id is rejected when employee shadow user is not a member', async () => {
+    const result = await memoryRecall(
+      {
+        caller_employee_slug: 'mcp-recall-test',
+        query: QUERY_TERM,
+        space_id: PRIVATE_SPACE_ID,
+        include_org: false,
+        limit: 10,
+      },
+      makeCtx(),
+    );
+
+    assert.strictEqual(result.isError, true, 'Private inaccessible space should produce an error result');
+    assert.match(result.content[0]?.text ?? '', /cannot access space/);
   });
 });

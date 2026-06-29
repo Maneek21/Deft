@@ -63,9 +63,19 @@ type WikiPage = {
   tags?: string[] | null;
   version: number;
   space_id: string | null;
+  origin_space_id?: string | null;
+  origin_message_id?: string | null;
+  origin_user_id?: string | null;
+  created_via?: string | null;
   created_at: string;
   updated_at: string;
   link_count: number;
+};
+
+type SpaceOption = {
+  id: string;
+  name: string;
+  type: string;
 };
 
 /** Returns true if a decision wiki page has been reversed. */
@@ -76,6 +86,64 @@ function isDecisionReversed(entry: Pick<WikiPage, 'confidence' | 'tags'>): boole
 function getMetadataString(metadata: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = metadata?.[key];
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+type MemoryRoutablePage = Pick<WikiPage, 'scope' | 'space_id' | 'origin_space_id' | 'origin_message_id' | 'created_via'>;
+
+function getMemoryRoute(page: MemoryRoutablePage): { label: string; color: string } {
+  if (page.scope === 'user') {
+    return { label: 'Personal memory', color: '#EC4899' };
+  }
+  if (page.scope === 'space' || page.space_id) {
+    return { label: 'Channel memory', color: '#7C9885' };
+  }
+  if (page.origin_space_id) {
+    return { label: 'Company memory from channel', color: '#D4A853' };
+  }
+  if (page.origin_message_id) {
+    return { label: 'Company memory from chat', color: '#D4A853' };
+  }
+  return { label: 'Company memory', color: '#5B8FA8' };
+}
+
+function getCreatedViaLabel(createdVia: string | null | undefined): string | null {
+  switch (createdVia) {
+    case 'memory_extract':
+      return 'Captured from chat';
+    case 'wiki_create':
+      return 'Saved by agent';
+    case 'space_knowledge_panel':
+      return 'Saved from channel notes';
+    case 'human_mcp':
+      return 'Saved through MCP';
+    case 'manual':
+      return 'Saved manually';
+    default:
+      return null;
+  }
+}
+
+function getMemoryProvenanceLabels(page: MemoryRoutablePage): string[] {
+  return [
+    getCreatedViaLabel(page.created_via),
+    page.origin_message_id ? 'source message linked' : null,
+    page.origin_space_id && page.scope !== 'space' ? 'channel-originated' : null,
+  ].filter((label): label is string => Boolean(label));
+}
+
+function getGraphScopeHint(mode: 'org' | 'space', includeOrg: boolean): string {
+  if (mode === 'org') return 'Company memory graph';
+  return includeOrg ? 'Channel context with company memory' : 'Channel-only context graph';
+}
+
+function MemoryRouteBadge({ page }: { page: MemoryRoutablePage }) {
+  const route = getMemoryRoute(page);
+  return (
+    <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
+      style={{ background: `${route.color}18`, color: route.color, border: `1px solid ${route.color}35` }}>
+      {route.label}
+    </span>
+  );
 }
 
 type WikiPageDetail = WikiPage & {
@@ -275,8 +343,13 @@ export default function KnowledgePage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<any>(null);
   const [showGraph, setShowGraph] = useState(false);
-  const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[] } | null>(null);
+  const [graphData, setGraphData] = useState<{ nodes: any[]; edges: any[]; mode?: string; scope_label?: string; space_id?: string | null } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [graphMode, setGraphMode] = useState<'org' | 'space'>('org');
+  const [graphSpaceId, setGraphSpaceId] = useState<string>('');
+  const [graphIncludeOrg, setGraphIncludeOrg] = useState(true);
+  const [spaces, setSpaces] = useState<SpaceOption[]>([]);
+  const [spacesLoading, setSpacesLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'pages' | 'activity' | 'stats'>('pages');
   const [activityLog, setActivityLog] = useState<any[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -368,6 +441,26 @@ export default function KnowledgePage() {
       pagesAbortRef.current?.abort();
     };
   }, [fetchPages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSpacesLoading(true);
+    api.get('/api/spaces').then(async res => {
+      if (!res.ok) return;
+      const data = await res.json();
+      if (cancelled) return;
+      const nextSpaces = (Array.isArray(data) ? data : [])
+        .filter((s: any) => s && s.type !== 'dm' && s.type !== 'group_dm')
+        .map((s: any) => ({ id: s.id, name: s.name, type: s.type }));
+      setSpaces(nextSpaces);
+      setGraphSpaceId(prev => prev || nextSpaces[0]?.id || '');
+    }).catch(() => {
+      if (!cancelled) setSpaces([]);
+    }).finally(() => {
+      if (!cancelled) setSpacesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Fetch page detail when selected
   useEffect(() => {
@@ -468,10 +561,23 @@ export default function KnowledgePage() {
     }
   };
 
-  const fetchGraph = async () => {
+  const fetchGraph = useCallback(async (
+    mode: 'org' | 'space' = graphMode,
+    spaceId: string = graphSpaceId,
+    includeOrg: boolean = graphIncludeOrg,
+  ) => {
+    if (mode === 'space' && !spaceId) {
+      setGraphData({ nodes: [], edges: [], mode, scope_label: 'Channel', space_id: null });
+      return;
+    }
     setGraphLoading(true);
     try {
-      const res = await api.get('/api/wiki/graph');
+      const params = new URLSearchParams({ mode });
+      if (mode === 'space') {
+        params.set('space_id', spaceId);
+        params.set('include_org', String(includeOrg));
+      }
+      const res = await api.get(`/api/wiki/graph?${params.toString()}`);
       if (res.ok) {
         setGraphData(await res.json());
       }
@@ -479,7 +585,12 @@ export default function KnowledgePage() {
     } finally {
       setGraphLoading(false);
     }
-  };
+  }, [graphIncludeOrg, graphMode, graphSpaceId]);
+
+  useEffect(() => {
+    if (!showGraph) return;
+    fetchGraph(graphMode, graphSpaceId, graphIncludeOrg);
+  }, [fetchGraph, showGraph, graphMode, graphSpaceId, graphIncludeOrg]);
 
   const reverseDecision = async (entry: WikiPage, targetReversed: boolean) => {
     const confirmMsg = targetReversed
@@ -678,10 +789,7 @@ export default function KnowledgePage() {
                       style={{ background: `${(TYPE_CONFIG[detail.type] || TYPE_CONFIG.fact!).color}20`, color: (TYPE_CONFIG[detail.type] || TYPE_CONFIG.fact!).color }}>
                       {WIKI_TYPE_LABELS[detail.type]?.singular ?? (TYPE_CONFIG[detail.type] || TYPE_CONFIG.fact!).label.replace(/s$/, '')}
                     </span>
-                    <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full capitalize"
-                      style={{ background: 'var(--surface-container-low)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
-                      {detail.scope}
-                    </span>
+                    <MemoryRouteBadge page={detail} />
                     <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>v{detail.version}</span>
                     <ConfidenceBar value={detail.confidence} />
                     <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -716,6 +824,11 @@ export default function KnowledgePage() {
                   <p className="text-[11px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
                     Updated {formatRelative(detail.updated_at)}
                   </p>
+                  {getMemoryProvenanceLabels(detail).length > 0 && (
+                    <p className="text-[11px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                      {getMemoryProvenanceLabels(detail).join(' / ')}
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -915,7 +1028,7 @@ export default function KnowledgePage() {
             </button>
             {/* Graph toggle */}
             <button
-              onClick={() => { if (!showGraph) fetchGraph(); setShowGraph(!showGraph); setViewMode('pages'); }}
+              onClick={() => { setShowGraph(prev => !prev); setViewMode('pages'); }}
               className="hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
               style={{
                 background: showGraph ? 'var(--surface-container-high)' : 'transparent',
@@ -960,7 +1073,7 @@ export default function KnowledgePage() {
                 },
                 {
                   label: 'Graph',
-                  onClick: () => { if (!showGraph) fetchGraph(); setShowGraph(true); setViewMode('pages'); },
+                  onClick: () => { setShowGraph(true); setViewMode('pages'); },
                 },
                 {
                   label: 'Export',
@@ -1036,14 +1149,80 @@ export default function KnowledgePage() {
       <div className="flex flex-col flex-1 overflow-hidden px-4 md:px-6 pb-4 md:pb-6">
       {/* Graph View — interactive force-directed graph */}
       {showGraph && (
-        <div className="flex-1 rounded-lg overflow-hidden"
+        <div className="flex-1 rounded-lg overflow-hidden flex flex-col"
           style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2 flex-shrink-0"
+            style={{ background: 'var(--surface-container)', borderBottom: '1px solid var(--border-default)' }}>
+            <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+              <button
+                onClick={() => setGraphMode('org')}
+                className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
+                style={{
+                  background: graphMode === 'org' ? 'var(--accent)' : 'transparent',
+                  color: graphMode === 'org' ? 'white' : 'var(--text-secondary)',
+                }}
+              >
+                Company
+              </button>
+              <button
+                onClick={() => setGraphMode('space')}
+                className="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
+                style={{
+                  background: graphMode === 'space' ? 'var(--accent)' : 'transparent',
+                  color: graphMode === 'space' ? 'white' : 'var(--text-secondary)',
+                }}
+              >
+                Channel
+              </button>
+            </div>
+            {graphMode === 'space' && (
+              <>
+                <select
+                  value={graphSpaceId}
+                  onChange={e => setGraphSpaceId(e.target.value)}
+                  disabled={spacesLoading || spaces.length === 0}
+                  className="px-2 py-1 rounded-lg text-[11px] outline-none"
+                  style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+                >
+                  {spaces.length === 0 ? (
+                    <option value="">{spacesLoading ? 'Loading channels...' : 'No channels'}</option>
+                  ) : spaces.map(space => (
+                    <option key={space.id} value={space.id}>{space.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setGraphIncludeOrg(v => !v)}
+                  className="px-2 py-1 rounded-lg text-[11px] font-medium transition-colors"
+                  style={{
+                    background: graphIncludeOrg ? 'var(--surface-container-high)' : 'transparent',
+                    border: '1px solid var(--border-default)',
+                    color: graphIncludeOrg ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                  }}
+                >
+                  Include company memory
+                </button>
+              </>
+            )}
+            <span className="text-[11px] px-2 py-1 rounded-lg"
+              style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-tertiary)' }}>
+              {getGraphScopeHint(graphMode, graphIncludeOrg)}
+            </span>
+            <button
+              onClick={() => fetchGraph(graphMode, graphSpaceId, graphIncludeOrg)}
+              className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors"
+              style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)' }}
+            >
+              <RefreshCw size={11} /> Refresh
+            </button>
+          </div>
           {graphLoading ? (
-            <div className="flex items-center justify-center py-12">
+            <div className="flex-1 flex items-center justify-center py-12">
               <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
             </div>
           ) : !graphData || graphData.nodes.length === 0 ? (
-            <p className="text-center py-8 text-[13px]" style={{ color: 'var(--text-tertiary)' }}>No graph data</p>
+            <p className="flex-1 flex items-center justify-center text-[13px]" style={{ color: 'var(--text-tertiary)' }}>
+              {graphMode === 'space' ? 'No channel graph data yet' : 'No graph data'}
+            </p>
           ) : (
             <div className="relative w-full h-full min-h-[450px]">
               {/* Legend */}
@@ -1059,7 +1238,7 @@ export default function KnowledgePage() {
               {/* Stats */}
               <div className="absolute top-3 right-3 z-10 text-[11px] px-2 py-1 rounded-lg"
                 style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)' }}>
-                {graphData.nodes.length} pages &middot; {graphData.edges.length} connections
+                {graphData.scope_label || (graphMode === 'space' ? 'Channel' : 'Company')} &middot; {graphData.nodes.length} pages &middot; {graphData.edges.length} connections
               </div>
               <Suspense fallback={<div className="flex items-center justify-center py-12"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} /></div>}>
                 <KnowledgeGraph
@@ -1291,6 +1470,7 @@ export default function KnowledgePage() {
                           style={{ background: `${config.color}20`, color: config.color }}>
                           {WIKI_TYPE_LABELS[entry.type]?.singular ?? config.label.replace(/s$/, '')}
                         </span>
+                        <MemoryRouteBadge page={entry} />
                         {isDecision && (
                           <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
                             style={{
@@ -1301,23 +1481,22 @@ export default function KnowledgePage() {
                             {reversed ? 'Reversed' : 'Active'}
                           </span>
                         )}
-                        {entry.scope !== 'org' && (
-                          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full capitalize flex-shrink-0"
-                            style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
-                            {entry.scope}
-                          </span>
-                        )}
                       </div>
                       {entry.summary && (
                         <p className="text-[12px] line-clamp-2 mb-1" style={{ color: 'var(--text-secondary)' }}>
                           {entry.summary}
                         </p>
                       )}
-                      <div className="flex items-center gap-3 mt-1.5">
+                      <div className="flex items-center gap-3 mt-1.5 flex-wrap">
                         <ConfidenceBar value={entry.confidence} />
                         {entry.link_count > 0 && (
                           <span className="text-[11px] flex items-center gap-0.5" style={{ color: 'var(--text-tertiary)' }}>
                             <Link2 size={10} /> {entry.link_count} links
+                          </span>
+                        )}
+                        {getMemoryProvenanceLabels(entry).length > 0 && (
+                          <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                            {getMemoryProvenanceLabels(entry).join(' / ')}
                           </span>
                         )}
                         <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>

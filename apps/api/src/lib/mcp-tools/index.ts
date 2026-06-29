@@ -116,7 +116,8 @@ export const toolSchemas: ToolSchema[] = [
       'Returns the dynamic platform context for the calling employee: today\'s ' +
       'date, org + role info, teammates, active projects, and relevant wiki ' +
       'snippets. Call this first on every turn — it is the source of truth for ' +
-      'who you are, what day it is, and what you know.',
+      'who you are, what day it is, and what you know. ' +
+      'The response also includes context_packets that separate company, channel, and employee memory.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -142,6 +143,16 @@ export const toolSchemas: ToolSchema[] = [
         ...CALLER_SLUG_PROP,
         query: { type: 'string', description: 'Natural language query text' },
         limit: { type: 'integer', minimum: 1, maximum: 25 },
+        space_id: {
+          type: 'string',
+          description:
+            'Optional channel/space id. When provided, recall is scoped to memory relevant to that space.',
+        },
+        include_org: {
+          type: 'boolean',
+          description:
+            'When space_id is provided, include org/company memory alongside channel-specific memory. Default true. Set false for channel-only recall.',
+        },
         scope: {
           type: 'string',
           enum: ['own', 'org', 'all'],
@@ -161,6 +172,16 @@ export const toolSchemas: ToolSchema[] = [
         ...CALLER_SLUG_PROP,
         query: { type: 'string', description: 'Natural language query text' },
         limit: { type: 'integer', minimum: 1, maximum: 25 },
+        space_id: {
+          type: 'string',
+          description:
+            'Optional channel/space id. When provided, recall is scoped to memory relevant to that space.',
+        },
+        include_org: {
+          type: 'boolean',
+          description:
+            'When space_id is provided, include org/company memory alongside channel-specific memory. Default true. Set false for channel-only recall.',
+        },
         scope: {
           type: 'string',
           enum: ['own', 'org', 'all'],

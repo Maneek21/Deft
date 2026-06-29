@@ -155,6 +155,19 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   assert.ok(names.has('task_query'), 'task_query in catalog');
   assert.ok(names.has('thread_fetch'), 'thread_fetch in catalog');
   assert.ok(names.has('member_list'), 'member_list in catalog');
+
+  const memoryRecall = body.tools.find((t: any) => t.name === 'memory_recall');
+  const wikiSearch = body.tools.find((t: any) => t.name === 'wiki_search');
+  const platformContext = body.tools.find((t: any) => t.name === 'platform_context');
+  assert.ok(memoryRecall?.inputSchema?.properties?.space_id, 'memory_recall exposes space_id');
+  assert.ok(memoryRecall?.inputSchema?.properties?.include_org, 'memory_recall exposes include_org');
+  assert.ok(wikiSearch?.inputSchema?.properties?.space_id, 'wiki_search exposes space_id');
+  assert.ok(wikiSearch?.inputSchema?.properties?.include_org, 'wiki_search exposes include_org');
+  assert.match(
+    String(platformContext?.description ?? ''),
+    /context_packets/,
+    'platform_context advertises context_packets',
+  );
 });
 
 test('4. POST /tools/call platform_context returns org, employee, date', async () => {
@@ -178,6 +191,15 @@ test('4. POST /tools/call platform_context returns org, employee, date', async (
   assert.equal(parsed.employee?.slug, TEST_EMPLOYEE_SLUG);
   assert.equal(parsed.employee?.trust_level, 'standard');
   assert.ok(Array.isArray(parsed.teammates), 'teammates is array');
+  assert.ok(Array.isArray(parsed.context_packets), 'context_packets is array');
+  assert.ok(
+    parsed.context_packets.some((packet: any) => packet.id === 'company_memory'),
+    'company_memory packet present',
+  );
+  assert.ok(
+    parsed.context_packets.some((packet: any) => packet.id === 'employee_memory'),
+    'employee_memory packet present',
+  );
 });
 
 test('5. POST /tools/call memory_recall returns at least one page for "BSL"', async () => {
