@@ -18,7 +18,7 @@ export function wikiPageRelevantToSpaceCondition(
   orgId: string,
   includeOriginAndCitations = true,
 ) {
-  const directSpacePage = and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId));
+  const directSpacePage = eq(wikiPages.space_id, spaceId);
   if (!includeOriginAndCitations) return directSpacePage;
 
   return or(

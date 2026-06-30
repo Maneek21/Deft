@@ -186,6 +186,12 @@ test('space graph includes channel-scoped and channel-origin pages, but not unre
     slug: `wiki-graph-origin-${suffix}`,
     originSpaceId: SPACE_A_ID,
   });
+  const orgWithSpaceId = await insertPage({
+    scope: 'org',
+    title: 'Direct Channel Company Page',
+    slug: `wiki-graph-direct-org-space-${suffix}`,
+    spaceId: SPACE_A_ID,
+  });
   const spaceAId = await insertPage({
     scope: 'space',
     title: 'Space A Local Page',
@@ -207,12 +213,14 @@ test('space graph includes channel-scoped and channel-origin pages, but not unre
   const orgIds = orgGraph.nodes.map((n: any) => n.id);
   assert.ok(orgIds.includes(orgGeneralId), 'org graph should include general org page');
   assert.ok(orgIds.includes(orgFromSpaceId), 'org graph should include org page that originated in a channel');
+  assert.ok(orgIds.includes(orgWithSpaceId), 'org graph should include org page directly attached to a channel');
   assert.ok(!orgIds.includes(spaceAId), 'org graph should not include space-scoped pages');
 
   const spaceRes = await callGraph(`/api/wiki/graph?mode=space&space_id=${SPACE_A_ID}&limit=500`);
   assert.equal(spaceRes.status, 200);
   const spaceGraph = await spaceRes.json() as any;
   const spaceIds = spaceGraph.nodes.map((n: any) => n.id);
+  assert.ok(spaceIds.includes(orgWithSpaceId), 'channel graph should include org page with matching space_id');
   assert.ok(spaceIds.includes(orgFromSpaceId), 'channel graph should include org page with origin_space_id');
   assert.ok(spaceIds.includes(spaceAId), 'channel graph should include space-scoped page');
   assert.ok(!spaceIds.includes(orgGeneralId), 'channel graph should not include unrelated org page');
@@ -222,6 +230,7 @@ test('space graph includes channel-scoped and channel-origin pages, but not unre
   assert.equal(strictRes.status, 200);
   const strictGraph = await strictRes.json() as any;
   const strictIds = strictGraph.nodes.map((n: any) => n.id);
+  assert.ok(strictIds.includes(orgWithSpaceId), 'strict channel graph should include directly attached org page');
   assert.ok(strictIds.includes(spaceAId), 'strict channel graph should include space-scoped page');
   assert.ok(!strictIds.includes(orgFromSpaceId), 'strict channel graph should exclude org-origin pages');
 });
