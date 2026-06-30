@@ -14,7 +14,7 @@ import { db } from './db.js';
 import { wikiPages, agentMemory, notes, tasks, spaceMembers, projects } from '@deft/db/schema';
 import { embedQuiet, EMBED_DIMS } from './embed.js';
 import { unrestrictedTaskCondition, visibleTaskCondition } from './task-visibility.js';
-import { visibleWikiPageCondition } from './wiki-visibility.js';
+import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from './wiki-visibility.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -114,25 +114,6 @@ function employeeWikiCondition(agentEmployeeId: string) {
   return and(
     eq(wikiPages.agent_employee_id, agentEmployeeId),
     sql`${wikiPages.scope} != 'org'`,
-  );
-}
-
-function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string) {
-  return or(
-    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
-    eq(wikiPages.origin_space_id, spaceId),
-    sql`EXISTS (
-      SELECT 1
-      FROM wiki_citations wc
-      LEFT JOIN messages m
-        ON m.id = wc.source_id
-       AND wc.source_type = 'message'
-      WHERE wc.page_id = ${wikiPages.id}
-        AND (
-          wc.source_space_id = ${spaceId}
-          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
-        )
-    )`,
   );
 }
 

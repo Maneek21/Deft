@@ -2,10 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, sql, or, ilike, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages } from '@deft/db/schema';
+import { wikiPages, wikiLinks, wikiCitations, wikiOpsLog, wikiPageVersions, spaces, notifications, orgMembers, messages, spaceMembers } from '@deft/db/schema';
 import { ne } from 'drizzle-orm';
 import { requireSpaceMembership } from '../lib/space-membership.js';
-import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
+import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
+import { retrieveContext } from '../lib/retrieve-context.js';
+import { llm } from '../lib/llm.js';
+import { getOrgAIConfig, hasUsableReasonProvider } from '../lib/org-ai-config.js';
 
 /** Notify all org members about a wiki change (except the actor) */
 async function notifyWikiChange(orgId: string, actorId: string, title: string, body: string, slug: string) {
@@ -44,26 +47,47 @@ function slugify(title: string): string {
     .slice(0, 80);
 }
 
-function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string, includeOrg: boolean) {
-  const relevant = or(
-    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
-    ...(includeOrg ? [
-      eq(wikiPages.origin_space_id, spaceId),
+function visibleWikiOpsLogCondition(userId: string) {
+  return or(
+    sql`${wikiOpsLog.page_id} IS NULL`,
+    and(
+      eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(userId),
+    ),
+  );
+}
+
+function visibleWikiCitationCondition(userId: string, orgId: string) {
+  return and(
+    or(eq(wikiCitations.org_id, orgId), sql`${wikiCitations.org_id} IS NULL`),
+    or(
+      sql`${wikiCitations.source_type} != 'message'`,
       sql`EXISTS (
         SELECT 1
-        FROM wiki_citations wc
-        LEFT JOIN messages m
-          ON m.id = wc.source_id
-         AND wc.source_type = 'message'
-        WHERE wc.page_id = ${wikiPages.id}
-          AND (
-            wc.source_space_id = ${spaceId}
-            OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
-          )
+        FROM ${spaceMembers}
+        WHERE ${spaceMembers.space_id} = COALESCE(${wikiCitations.source_space_id}, ${messages.space_id})
+          AND ${spaceMembers.user_id} = ${userId}
       )`,
-    ] : []),
+    ),
   );
-  return relevant;
+}
+
+function compactSourceText(value: string | null | undefined, max = 900) {
+  return (value ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+function askKnowledgeFallback(query: string, sourceCount: number, providerReady: boolean) {
+  if (sourceCount === 0) {
+    return `I could not find matching knowledge for "${query}" yet. Try a broader term, or save the relevant decision/resource into Knowledge first.`;
+  }
+  if (!providerReady) {
+    return 'A reasoning provider is not configured, so I can only return the most relevant knowledge sources right now.';
+  }
+  return 'I found relevant knowledge sources, but the reasoning call failed. Review the sources below and try again.';
 }
 
 // GET /api/wiki — list/search wiki pages
@@ -291,7 +315,10 @@ wikiRoutes.get('/log', async (c) => {
     const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
     const offset = (page - 1) * limit;
 
-    const conditions: any[] = [eq(wikiOpsLog.org_id, user.org_id)];
+    const conditions: any[] = [
+      eq(wikiOpsLog.org_id, user.org_id),
+      visibleWikiOpsLogCondition(user.id),
+    ];
     if (opFilter) conditions.push(eq(wikiOpsLog.operation, opFilter));
 
     const entries = await db.select({
@@ -313,6 +340,7 @@ wikiRoutes.get('/log', async (c) => {
 
     const [countResult] = await db.select({ count: sql<number>`count(*)` })
       .from(wikiOpsLog)
+      .leftJoin(wikiPages, eq(wikiOpsLog.page_id, wikiPages.id))
       .where(and(...conditions));
 
     return c.json({ entries, total: Number(countResult?.count || 0), page, limit });
@@ -354,7 +382,13 @@ wikiRoutes.get('/stats', async (c) => {
 
     const [linkCount] = await db.select({ count: sql<number>`count(*)` })
       .from(wikiLinks)
-      .where(eq(wikiLinks.org_id, orgId));
+      .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
+      .where(and(
+        eq(wikiLinks.org_id, orgId),
+        eq(wikiPages.org_id, orgId),
+        eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
+      ));
 
     // Pages needing review (low confidence)
     const needsReview = await db.select({
@@ -375,9 +409,11 @@ wikiRoutes.get('/stats', async (c) => {
       count: sql<number>`count(*)`,
     })
       .from(wikiOpsLog)
+      .leftJoin(wikiPages, eq(wikiOpsLog.page_id, wikiPages.id))
       .where(and(
         eq(wikiOpsLog.org_id, orgId),
         sql`${wikiOpsLog.created_at} > NOW() - INTERVAL '7 days'`,
+        visibleWikiOpsLogCondition(user.id),
       ))
       .groupBy(wikiOpsLog.operation);
 
@@ -405,9 +441,11 @@ wikiRoutes.get('/contradictions', async (c) => {
       created_at: wikiOpsLog.created_at,
     })
       .from(wikiOpsLog)
+      .leftJoin(wikiPages, eq(wikiOpsLog.page_id, wikiPages.id))
       .where(and(
         eq(wikiOpsLog.org_id, user.org_id),
         eq(wikiOpsLog.operation, 'contradiction'),
+        visibleWikiOpsLogCondition(user.id),
       ))
       .orderBy(desc(wikiOpsLog.created_at))
       .limit(50);
@@ -459,6 +497,260 @@ wikiRoutes.get('/export', async (c) => {
 });
 
 // GET /api/wiki/:slug — get single page with links and citations
+const askKnowledgeSchema = z.object({
+  query: z.string().min(2).max(1000),
+  space_id: z.string().nullable().optional(),
+  include_org: z.boolean().default(true),
+  limit: z.number().int().min(1).max(12).default(6),
+});
+
+// GET /api/wiki/doctor - read-only knowledge health checks
+wikiRoutes.get('/doctor', async (c) => {
+  try {
+    const user = c.get('user');
+    const visiblePageBase = and(
+      eq(wikiPages.org_id, user.org_id),
+      eq(wikiPages.is_deleted, false),
+      visibleWikiPageCondition(user.id),
+    );
+
+    const lowConfidence = await db.select({
+      id: wikiPages.id,
+      slug: wikiPages.slug,
+      title: wikiPages.title,
+      type: wikiPages.type,
+      scope: wikiPages.scope,
+      confidence: wikiPages.confidence,
+      updated_at: wikiPages.updated_at,
+    })
+      .from(wikiPages)
+      .where(and(visiblePageBase, sql`${wikiPages.confidence} < 0.5`))
+      .orderBy(wikiPages.confidence)
+      .limit(20);
+
+    const [lowConfidenceCount] = await db.select({ count: sql<number>`count(*)` })
+      .from(wikiPages)
+      .where(and(visiblePageBase, sql`${wikiPages.confidence} < 0.5`));
+
+    const stale = await db.select({
+      id: wikiPages.id,
+      slug: wikiPages.slug,
+      title: wikiPages.title,
+      type: wikiPages.type,
+      scope: wikiPages.scope,
+      confidence: wikiPages.confidence,
+      updated_at: wikiPages.updated_at,
+    })
+      .from(wikiPages)
+      .where(and(
+        visiblePageBase,
+        sql`${wikiPages.updated_at} < NOW() - INTERVAL '90 days'`,
+      ))
+      .orderBy(wikiPages.updated_at)
+      .limit(20);
+
+    const [staleCount] = await db.select({ count: sql<number>`count(*)` })
+      .from(wikiPages)
+      .where(and(
+        visiblePageBase,
+        sql`${wikiPages.updated_at} < NOW() - INTERVAL '90 days'`,
+      ));
+
+    const orphaned = await db.select({
+      id: wikiPages.id,
+      slug: wikiPages.slug,
+      title: wikiPages.title,
+      type: wikiPages.type,
+      scope: wikiPages.scope,
+      confidence: wikiPages.confidence,
+      updated_at: wikiPages.updated_at,
+    })
+      .from(wikiPages)
+      .where(and(
+        visiblePageBase,
+        sql`NOT EXISTS (
+          SELECT 1 FROM wiki_links wl
+          WHERE wl.source_page_id = ${wikiPages.id}
+             OR wl.target_page_id = ${wikiPages.id}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM wiki_citations wc
+          WHERE wc.page_id = ${wikiPages.id}
+        )`,
+      ))
+      .orderBy(desc(wikiPages.updated_at))
+      .limit(20);
+
+    const [orphanedCount] = await db.select({ count: sql<number>`count(*)` })
+      .from(wikiPages)
+      .where(and(
+        visiblePageBase,
+        sql`NOT EXISTS (
+          SELECT 1 FROM wiki_links wl
+          WHERE wl.source_page_id = ${wikiPages.id}
+             OR wl.target_page_id = ${wikiPages.id}
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM wiki_citations wc
+          WHERE wc.page_id = ${wikiPages.id}
+        )`,
+      ));
+
+    const contradictions = await db.select({
+      id: wikiOpsLog.id,
+      details: wikiOpsLog.details,
+      created_at: wikiOpsLog.created_at,
+      page_id: wikiOpsLog.page_id,
+      page_slug: wikiPages.slug,
+      page_title: wikiPages.title,
+    })
+      .from(wikiOpsLog)
+      .leftJoin(wikiPages, eq(wikiOpsLog.page_id, wikiPages.id))
+      .where(and(
+        eq(wikiOpsLog.org_id, user.org_id),
+        eq(wikiOpsLog.operation, 'contradiction'),
+        visibleWikiOpsLogCondition(user.id),
+      ))
+      .orderBy(desc(wikiOpsLog.created_at))
+      .limit(20);
+
+    const [contradictionsCount] = await db.select({ count: sql<number>`count(*)` })
+      .from(wikiOpsLog)
+      .leftJoin(wikiPages, eq(wikiOpsLog.page_id, wikiPages.id))
+      .where(and(
+        eq(wikiOpsLog.org_id, user.org_id),
+        eq(wikiOpsLog.operation, 'contradiction'),
+        visibleWikiOpsLogCondition(user.id),
+      ));
+
+    return c.json({
+      generated_at: new Date().toISOString(),
+      summary: {
+        low_confidence: Number(lowConfidenceCount?.count ?? lowConfidence.length),
+        stale: Number(staleCount?.count ?? stale.length),
+        orphaned: Number(orphanedCount?.count ?? orphaned.length),
+        contradictions: Number(contradictionsCount?.count ?? contradictions.length),
+      },
+      issues: {
+        low_confidence: lowConfidence,
+        stale,
+        orphaned,
+        contradictions,
+      },
+    });
+  } catch (err) {
+    console.error('Failed to run wiki doctor:', err);
+    return c.json({ error: 'Failed to run knowledge doctor', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// POST /api/wiki/ask - answer over visible knowledge using the shared retrieval gateway
+wikiRoutes.post('/ask', async (c) => {
+  try {
+    const user = c.get('user');
+    const body = await c.req.json().catch(() => null);
+    const parsed = askKnowledgeSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid request', code: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+    }
+
+    const { query, space_id, include_org, limit } = parsed.data;
+    if (space_id) {
+      const isMember = await requireSpaceMembership(space_id, user.id);
+      if (!isMember) {
+        return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+      }
+    }
+
+    const hits = await retrieveContext({
+      query,
+      org_id: user.org_id,
+      user_id: user.id,
+      space_id: space_id ?? undefined,
+      include_org,
+      types: ['wiki', 'decisions', 'notes'],
+      limit,
+    });
+
+    const sources = hits.map((hit, index) => ({
+      index: index + 1,
+      source_type: hit.source_type,
+      source_id: hit.source_id,
+      title: hit.title,
+      excerpt: compactSourceText(hit.content, 500),
+      score: hit.score,
+      scope: hit.scope ?? null,
+      confidence: hit.confidence ?? null,
+      slug: typeof hit.metadata?.slug === 'string' ? hit.metadata.slug : null,
+      type: typeof hit.metadata?.type === 'string' ? hit.metadata.type : hit.source_type,
+      summary: typeof hit.metadata?.summary === 'string' ? hit.metadata.summary : null,
+      space_id: typeof hit.metadata?.matched_space_id === 'string'
+        ? hit.metadata.matched_space_id
+        : typeof hit.metadata?.space_id === 'string'
+          ? hit.metadata.space_id
+          : null,
+      origin_space_id: typeof hit.metadata?.origin_space_id === 'string' ? hit.metadata.origin_space_id : null,
+      origin_message_id: typeof hit.metadata?.origin_message_id === 'string' ? hit.metadata.origin_message_id : null,
+      created_via: typeof hit.metadata?.created_via === 'string' ? hit.metadata.created_via : null,
+    }));
+
+    const providerReady = await hasUsableReasonProvider(user.org_id);
+    if (!providerReady || sources.length === 0) {
+      return c.json({
+        answer: askKnowledgeFallback(query, sources.length, providerReady),
+        mode: 'retrieval_only',
+        model: null,
+        sources,
+      });
+    }
+
+    const contextBlock = sources.map((source) => [
+      `[${source.index}] ${source.title}`,
+      `Type: ${source.type}; Scope: ${source.scope ?? 'unknown'}; Confidence: ${source.confidence ?? 'unknown'}; Score: ${source.score.toFixed(3)}`,
+      source.summary ? `Summary: ${source.summary}` : null,
+      `Excerpt: ${source.excerpt}`,
+    ].filter(Boolean).join('\n')).join('\n\n');
+
+    try {
+      const orgConfig = await getOrgAIConfig(user.org_id);
+      const result = await llm({
+        task: 'reason',
+        orgId: user.org_id,
+        orgConfig,
+        system: [
+          'You answer questions about a workspace knowledge base.',
+          'Use only the supplied sources.',
+          'If the sources do not answer the question, say what is missing.',
+          'Cite sources inline using [1], [2], etc. Keep the answer concise.',
+        ].join(' '),
+        messages: [{
+          role: 'user',
+          content: `Question: ${query}\n\nSources:\n${contextBlock}`,
+        }],
+        maxTokens: 900,
+      });
+
+      return c.json({
+        answer: result.text.trim(),
+        mode: 'answered',
+        model: result.model,
+        sources,
+      });
+    } catch (err) {
+      console.warn('[wiki/ask] reasoning call failed:', err);
+      return c.json({
+        answer: askKnowledgeFallback(query, sources.length, true),
+        mode: 'retrieval_only',
+        model: null,
+        sources,
+      });
+    }
+  } catch (err) {
+    console.error('Failed to ask wiki:', err);
+    return c.json({ error: 'Failed to ask knowledge', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 wikiRoutes.get('/:slug', async (c) => {
   try {
     const user = c.get('user');
@@ -489,7 +781,13 @@ wikiRoutes.get('/:slug', async (c) => {
     })
       .from(wikiLinks)
       .innerJoin(wikiPages, eq(wikiLinks.target_page_id, wikiPages.id))
-      .where(eq(wikiLinks.source_page_id, page.id));
+      .where(and(
+        eq(wikiLinks.source_page_id, page.id),
+        eq(wikiLinks.org_id, user.org_id),
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
+      ));
 
     // Get backlinks (inbound)
     const backlinks = await db.select({
@@ -501,7 +799,13 @@ wikiRoutes.get('/:slug', async (c) => {
     })
       .from(wikiLinks)
       .innerJoin(wikiPages, eq(wikiLinks.source_page_id, wikiPages.id))
-      .where(eq(wikiLinks.target_page_id, page.id));
+      .where(and(
+        eq(wikiLinks.target_page_id, page.id),
+        eq(wikiLinks.org_id, user.org_id),
+        eq(wikiPages.org_id, user.org_id),
+        eq(wikiPages.is_deleted, false),
+        visibleWikiPageCondition(user.id),
+      ));
 
     // Get citations
     const citations = await db.select({
@@ -519,7 +823,10 @@ wikiRoutes.get('/:slug', async (c) => {
         eq(wikiCitations.source_id, messages.id),
         eq(wikiCitations.source_type, 'message'),
       ))
-      .where(eq(wikiCitations.page_id, page.id))
+      .where(and(
+        eq(wikiCitations.page_id, page.id),
+        visibleWikiCitationCondition(user.id, user.org_id),
+      ))
       .orderBy(desc(wikiCitations.created_at));
 
     return c.json({
@@ -614,6 +921,8 @@ wikiRoutes.post('/', async (c) => {
         .from(wikiPages)
         .where(and(
           eq(wikiPages.org_id, user.org_id),
+          eq(wikiPages.is_deleted, false),
+          visibleWikiPageCondition(user.id),
           inArray(wikiPages.slug, related_slugs),
         ));
 
@@ -717,6 +1026,8 @@ wikiRoutes.patch('/:slug', async (c) => {
         .from(wikiPages)
         .where(and(
           eq(wikiPages.org_id, user.org_id),
+          eq(wikiPages.is_deleted, false),
+          visibleWikiPageCondition(user.id),
           inArray(wikiPages.slug, parsed.data.related_slugs),
         ));
 

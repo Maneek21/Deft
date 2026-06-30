@@ -14,6 +14,7 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { retrieveContext } from '../retrieve-context.js';
+import { wikiPageRelevantToSpaceCondition } from '../wiki-visibility.js';
 
 const VALID_TYPES = new Set([
   'concept',
@@ -47,25 +48,6 @@ function contextResultMatchesMemoryScope(
   if (scope === 'own') return isOwnScope;
   if (scope === 'org') return isOrgScope;
   return isOrgScope || isOwnScope;
-}
-
-function wikiPageRelevantToSpaceCondition(spaceId: string, orgId: string) {
-  return or(
-    and(eq(wikiPages.scope, 'space'), eq(wikiPages.space_id, spaceId)),
-    eq(wikiPages.origin_space_id, spaceId),
-    sql`EXISTS (
-      SELECT 1
-      FROM wiki_citations wc
-      LEFT JOIN messages m
-        ON m.id = wc.source_id
-       AND wc.source_type = 'message'
-      WHERE wc.page_id = ${wikiPages.id}
-        AND (
-          wc.source_space_id = ${spaceId}
-          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
-        )
-    )`,
-  );
 }
 
 function wikiRetrievalScopeCondition(orgId: string, spaceId: string | undefined, includeOrg: boolean) {

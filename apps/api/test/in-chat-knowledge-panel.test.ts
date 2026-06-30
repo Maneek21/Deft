@@ -119,6 +119,7 @@ after(async () => {
 
 async function insertWikiPage(overrides: Record<string, unknown> = {}): Promise<string> {
   const id = `ick-page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const spaceId = overrides.space_id ?? null;
   await withClient(async (c) => {
     await c.query(
       `INSERT INTO wiki_pages
@@ -128,8 +129,8 @@ async function insertWikiPage(overrides: Record<string, unknown> = {}): Promise<
       [
         id,
         overrides.org_id ?? ORG_ID,
-        overrides.scope ?? 'org',
-        overrides.space_id ?? null,
+        overrides.scope ?? (spaceId ? 'space' : 'org'),
+        spaceId,
         overrides.origin_space_id ?? null,
         overrides.origin_message_id ?? null,
         overrides.origin_user_id ?? null,

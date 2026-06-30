@@ -14,6 +14,7 @@ import {
   Brain, Users, Scale, LinkIcon, Cog, Heart, Lightbulb,
   Plus, Pencil, Trash2, X, Check, History, GitBranch,
   Activity, Download, BarChart3, AlertTriangle, RotateCcw, RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { OverflowMenu } from '@/components/overflow-menu';
@@ -151,6 +152,31 @@ type WikiPageDetail = WikiPage & {
   linked_pages: { slug: string; title: string; type: string; summary: string | null; confidence?: number; context?: string }[];
   backlinks: { slug: string; title: string; type: string; summary?: string | null; context?: string }[];
   citations: { id: string; source_type: string; source_id: string; excerpt: string | null; created_at: string; source_space_id?: string | null }[];
+};
+
+type AskKnowledgeSource = {
+  index: number;
+  source_type: string;
+  source_id: string;
+  title: string;
+  excerpt: string;
+  score: number;
+  scope: string | null;
+  confidence: number | null;
+  slug: string | null;
+  type: string;
+  summary: string | null;
+  space_id: string | null;
+  origin_space_id: string | null;
+  origin_message_id: string | null;
+  created_via: string | null;
+};
+
+type AskKnowledgeResponse = {
+  answer: string;
+  mode: 'answered' | 'retrieval_only';
+  model: string | null;
+  sources: AskKnowledgeSource[];
 };
 
 function ConfidenceBar({ value }: { value: number }) {
@@ -350,13 +376,20 @@ export default function KnowledgePage() {
   const [graphIncludeOrg, setGraphIncludeOrg] = useState(true);
   const [spaces, setSpaces] = useState<SpaceOption[]>([]);
   const [spacesLoading, setSpacesLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<'pages' | 'activity' | 'stats'>('pages');
+  const [viewMode, setViewMode] = useState<'pages' | 'activity' | 'stats' | 'doctor'>('pages');
   const [activityLog, setActivityLog] = useState<any[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [stats, setStats] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [doctor, setDoctor] = useState<any>(null);
+  const [doctorLoading, setDoctorLoading] = useState(false);
   const [reversingId, setReversingId] = useState<string | null>(null);
   const [reverseError, setReverseError] = useState<string | null>(null);
+  const [askQuery, setAskQuery] = useState('');
+  const [askScope, setAskScope] = useState<'company' | 'channel'>('company');
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
+  const [askResult, setAskResult] = useState<AskKnowledgeResponse | null>(null);
   const pagesAbortRef = useRef<AbortController | null>(null);
   const pagesRequestIdRef = useRef(0);
   const limit = 50;
@@ -640,6 +673,47 @@ export default function KnowledgePage() {
     }
   };
 
+  const fetchDoctor = async () => {
+    setDoctorLoading(true);
+    try {
+      const res = await api.get('/api/wiki/doctor');
+      if (res.ok) {
+        setDoctor(await res.json());
+      }
+    } catch {
+    } finally {
+      setDoctorLoading(false);
+    }
+  };
+
+  const askKnowledge = async () => {
+    const query = askQuery.trim();
+    if (!query) return;
+    setAskLoading(true);
+    setAskError(null);
+    try {
+      const body: Record<string, unknown> = {
+        query,
+        limit: 6,
+        include_org: askScope === 'channel' ? graphIncludeOrg : true,
+      };
+      if (askScope === 'channel' && graphSpaceId) {
+        body.space_id = graphSpaceId;
+      }
+      const res = await api.post('/api/wiki/ask', body);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setAskError(data?.error || 'Could not ask knowledge.');
+        return;
+      }
+      setAskResult(data);
+    } catch (err) {
+      setAskError(err instanceof Error ? err.message : 'Could not ask knowledge.');
+    } finally {
+      setAskLoading(false);
+    }
+  };
+
   const typeFilters = [
     { value: 'all', label: 'All' },
     { value: 'concept', label: 'Concepts' },
@@ -657,6 +731,19 @@ export default function KnowledgePage() {
     { value: 'space', label: 'Space' },
     { value: 'user', label: 'Personal' },
   ];
+
+  const openKnowledgeView = (next: 'pages' | 'activity' | 'stats' | 'doctor' | 'graph') => {
+    if (next === 'graph') {
+      setShowGraph(true);
+      setViewMode('pages');
+      return;
+    }
+    setShowGraph(false);
+    setViewMode(next);
+    if (next === 'activity' && activityLog.length === 0) fetchActivity();
+    if (next === 'stats' && !stats) fetchStats();
+    if (next === 'doctor' && !doctor) fetchDoctor();
+  };
 
   const detailResourceUrl = getMetadataString(detail?.metadata, 'url');
 
@@ -1072,6 +1159,14 @@ export default function KnowledgePage() {
                   },
                 },
                 {
+                  label: 'Doctor',
+                  onClick: () => {
+                    setViewMode('doctor');
+                    setShowGraph(false);
+                    if (!doctor) fetchDoctor();
+                  },
+                },
+                {
                   label: 'Graph',
                   onClick: () => { setShowGraph(true); setViewMode('pages'); },
                 },
@@ -1090,6 +1185,31 @@ export default function KnowledgePage() {
         }
         secondary={
           <div className="flex flex-col gap-1 px-1">
+            <div className="md:hidden flex gap-2">
+              <select
+                value={showGraph ? 'graph' : viewMode}
+                onChange={e => openKnowledgeView(e.target.value as 'pages' | 'activity' | 'stats' | 'doctor' | 'graph')}
+                className="flex-1 text-[0.8125rem] rounded-md px-2 py-1 outline-none"
+                style={{
+                  background: 'var(--surface-container-low)',
+                  border: '1px solid var(--border-default)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <option value="pages">Pages</option>
+                <option value="activity">Activity</option>
+                <option value="stats">Stats</option>
+                <option value="doctor">Doctor</option>
+                <option value="graph">Graph</option>
+              </select>
+              <button
+                onClick={() => setShowCreate(true)}
+                className="px-3 py-1 rounded-md text-[0.8125rem] font-medium"
+                style={{ background: 'var(--accent)', color: 'white' }}
+              >
+                New
+              </button>
+            </div>
             {/* Scope axis: <select> on mobile, inline tab strip on md+ */}
             <div className="flex gap-1">
               {/* Mobile: select */}
@@ -1147,6 +1267,151 @@ export default function KnowledgePage() {
 
       {/* Entries */}
       <div className="flex flex-col flex-1 overflow-hidden px-4 md:px-6 pb-4 md:pb-6">
+      {viewMode === 'pages' && !showGraph && (
+        <div className="mb-3 rounded-lg p-3 flex-shrink-0"
+          style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <div className="flex flex-col md:flex-row md:items-center gap-2">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                style={{ background: 'var(--accent-muted, rgba(91, 143, 168, 0.16))', color: 'var(--accent)' }}>
+                <Sparkles size={15} />
+              </span>
+              <input
+                value={askQuery}
+                onChange={e => setAskQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void askKnowledge();
+                  }
+                }}
+                placeholder="Ask what the workspace knows..."
+                className="flex-1 min-w-0 px-3 py-2 rounded-lg text-[13px] outline-none"
+                style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              />
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={askScope}
+                onChange={e => setAskScope(e.target.value as 'company' | 'channel')}
+                className="px-2 py-2 rounded-lg text-[12px] outline-none"
+                style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+              >
+                <option value="company">Company memory</option>
+                <option value="channel">Channel context</option>
+              </select>
+              {askScope === 'channel' && (
+                <>
+                  <select
+                    value={graphSpaceId}
+                    onChange={e => setGraphSpaceId(e.target.value)}
+                    disabled={spacesLoading || spaces.length === 0}
+                    className="px-2 py-2 rounded-lg text-[12px] outline-none max-w-[180px]"
+                    style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+                  >
+                    {spaces.length === 0 ? (
+                      <option value="">{spacesLoading ? 'Loading channels...' : 'No channels'}</option>
+                    ) : spaces.map(space => (
+                      <option key={space.id} value={space.id}>{space.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => setGraphIncludeOrg(v => !v)}
+                    className="px-2 py-2 rounded-lg text-[11px] font-medium"
+                    style={{
+                      background: graphIncludeOrg ? 'var(--surface-container-high)' : 'transparent',
+                      border: '1px solid var(--border-default)',
+                      color: graphIncludeOrg ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    }}
+                  >
+                    Include company
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => void askKnowledge()}
+                disabled={askLoading || !askQuery.trim() || (askScope === 'channel' && !graphSpaceId)}
+                className="px-3 py-2 rounded-lg text-[12px] font-medium disabled:opacity-40 flex items-center gap-1.5"
+                style={{ background: 'var(--accent)', color: 'white' }}
+              >
+                {askLoading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                Ask
+              </button>
+            </div>
+          </div>
+          {askError && (
+            <p className="mt-2 text-[12px]" style={{ color: '#EF4444' }}>{askError}</p>
+          )}
+          {askResult && (
+            <div className="mt-3 rounded-lg p-3"
+              style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                  style={{ background: askResult.mode === 'answered' ? '#22C55E20' : '#EAB30820', color: askResult.mode === 'answered' ? '#22C55E' : '#A16207' }}>
+                  {askResult.mode === 'answered' ? 'Answered from sources' : 'Sources only'}
+                </span>
+                {askResult.model && (
+                  <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{askResult.model}</span>
+                )}
+              </div>
+              <p className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>
+                {askResult.answer}
+              </p>
+              {askResult.sources.length > 0 && (
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {askResult.sources.map(source => (
+                    <div key={`${source.source_type}:${source.source_id}`} className="p-2 rounded-lg"
+                      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                      <div className="flex items-start gap-2">
+                        <span className="text-[10px] font-semibold w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                          style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)' }}>
+                          {source.index}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          {source.slug ? (
+                            <button onClick={() => setSelectedSlug(source.slug)}
+                              className="text-left text-[12px] font-medium hover:underline"
+                              style={{ color: 'var(--accent)' }}>
+                              {source.title}
+                            </button>
+                          ) : (
+                            <p className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>{source.title}</p>
+                          )}
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full"
+                              style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)' }}>
+                              {source.type}
+                            </span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full"
+                              style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)' }}>
+                              {source.scope || 'workspace'}
+                            </span>
+                            <span className="text-[9px]" style={{ color: 'var(--text-tertiary)' }}>
+                              {Math.round(source.score * 100)}% match
+                            </span>
+                          </div>
+                          {source.excerpt && (
+                            <p className="mt-1 text-[11px] line-clamp-2" style={{ color: 'var(--text-tertiary)' }}>
+                              {source.excerpt}
+                            </p>
+                          )}
+                          {source.origin_message_id && (source.space_id || source.origin_space_id) && (
+                            <a href={`/chat?space=${source.space_id || source.origin_space_id}&message=${source.origin_message_id}`}
+                              className="inline-flex items-center gap-1 mt-1 text-[10px] hover:underline"
+                              style={{ color: 'var(--accent)' }}>
+                              Open source message <ArrowUpRight size={10} />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* Graph View — interactive force-directed graph */}
       {showGraph && (
         <div className="flex-1 rounded-lg overflow-hidden flex flex-col"
@@ -1387,6 +1652,95 @@ export default function KnowledgePage() {
                   </div>
                 </div>
               )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Doctor View */}
+      {viewMode === 'doctor' && !showGraph && (
+        <div className="flex-1 overflow-y-auto space-y-4">
+          {doctorLoading || !doctor ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { key: 'low_confidence', label: 'Low confidence', color: '#EF4444' },
+                  { key: 'stale', label: 'Stale', color: '#EAB308' },
+                  { key: 'orphaned', label: 'Orphaned', color: '#5B8FA8' },
+                  { key: 'contradictions', label: 'Contradictions', color: '#C97B6B' },
+                ].map(item => (
+                  <div key={item.key} className="p-3 rounded-lg"
+                    style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                    <div className="text-[18px] font-bold" style={{ color: item.color }}>{doctor.summary?.[item.key] ?? 0}</div>
+                    <div className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{item.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {[
+                { key: 'low_confidence', label: 'Low confidence pages', hint: 'Review source evidence or confidence before agents rely on these.' },
+                { key: 'stale', label: 'Stale pages', hint: 'These have not changed in 90+ days; confirm they still match reality.' },
+                { key: 'orphaned', label: 'Orphaned pages', hint: 'These have no links or citations, so they are harder for people to trust.' },
+              ].map(section => {
+                const rows = doctor.issues?.[section.key] ?? [];
+                return (
+                  <div key={section.key} className="p-3 rounded-lg"
+                    style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <h3 className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{section.label}</h3>
+                      <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{rows.length}</span>
+                    </div>
+                    <p className="text-[11px] mb-2" style={{ color: 'var(--text-tertiary)' }}>{section.hint}</p>
+                    {rows.length === 0 ? (
+                      <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>No issues found.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {rows.map((row: any) => (
+                          <button key={row.id} onClick={() => { setViewMode('pages'); setSelectedSlug(row.slug); }}
+                            className="w-full text-left p-2 rounded-md"
+                            style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>
+                            <span className="text-[12px] font-medium">{row.title}</span>
+                            <span className="text-[10px] ml-2" style={{ color: 'var(--text-tertiary)' }}>
+                              {row.type} / {row.scope} / {Math.round((row.confidence ?? 0) * 100)}%
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="p-3 rounded-lg"
+                style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                <h3 className="text-[12px] font-semibold mb-1" style={{ color: 'var(--text-secondary)' }}>Contradictions</h3>
+                <p className="text-[11px] mb-2" style={{ color: 'var(--text-tertiary)' }}>
+                  These are lint findings only. Deft shows them for review; it does not rewrite memory automatically.
+                </p>
+                {(doctor.issues?.contradictions ?? []).length === 0 ? (
+                  <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>No visible contradictions found.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {doctor.issues.contradictions.map((row: any) => (
+                      <button key={row.id} onClick={() => { if (row.page_slug) { setViewMode('pages'); setSelectedSlug(row.page_slug); } }}
+                        className="w-full text-left p-2 rounded-md"
+                        style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>
+                        <span className="text-[12px] font-medium">{row.page_title || 'Knowledge contradiction'}</span>
+                        <span className="text-[10px] ml-2" style={{ color: 'var(--text-tertiary)' }}>
+                          {formatRelative(row.created_at)}
+                        </span>
+                        {row.details?.description && (
+                          <p className="text-[11px] mt-1 line-clamp-2" style={{ color: 'var(--text-tertiary)' }}>{row.details.description}</p>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>

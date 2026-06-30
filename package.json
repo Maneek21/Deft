@@ -35,6 +35,8 @@
     "pilot:clean-agent-queue": "tsx scripts/agent-demo-queue-cleanup.ts",
     "pilot:cracks:battery": "node scripts/pilot-cracks-clearance-battery.mjs",
     "pilot:hygiene": "tsx scripts/pilot-workspace-hygiene.ts",
+    "pilot:knowledge-eval": "tsx scripts/knowledge-retrieval-eval.ts",
+    "pilot:knowledge-scale": "tsx scripts/knowledge-scale-probe.ts",
     "pilot:preflight": "tsx scripts/pilot-preflight.ts",
     "pilot:preflight:strict": "tsx scripts/pilot-preflight.ts --strict",
     "pilot:reset": "pnpm db:push-full && pnpm db:seed:pilot && pnpm pilot:preflight",
