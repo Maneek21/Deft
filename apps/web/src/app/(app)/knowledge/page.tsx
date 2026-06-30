@@ -447,13 +447,42 @@ export default function KnowledgePage() {
     }
   }, [page, filter, scopeFilter, debouncedSearchQuery]);
 
-  // Sync filter from URL ?type= param, open detail from ?slug= param
+  // Sync deep-link state from URL params.
   useEffect(() => {
     const typeParam = searchParams.get('type');
     const validTypes = ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'];
     if (typeParam && validTypes.includes(typeParam)) {
       setFilter(typeParam);
     }
+
+    const viewParam = searchParams.get('view');
+    if (viewParam === 'graph') {
+      setShowGraph(true);
+      setViewMode('pages');
+    } else if (viewParam === 'activity' || viewParam === 'stats' || viewParam === 'doctor' || viewParam === 'pages') {
+      setShowGraph(false);
+      setViewMode(viewParam);
+    }
+
+    const graphModeParam = searchParams.get('graphMode') ?? searchParams.get('graph');
+    const spaceParam = searchParams.get('space_id') ?? searchParams.get('space') ?? searchParams.get('graph_space_id');
+    const includeOrgParam = searchParams.get('include_org') ?? searchParams.get('includeOrg');
+    if (viewParam === 'graph' || graphModeParam || spaceParam) {
+      setShowGraph(true);
+      setViewMode('pages');
+    }
+    if (graphModeParam === 'org' || graphModeParam === 'space') {
+      setGraphMode(graphModeParam);
+    } else if (spaceParam) {
+      setGraphMode('space');
+    }
+    if (spaceParam) {
+      setGraphSpaceId(spaceParam);
+    }
+    if (includeOrgParam !== null) {
+      setGraphIncludeOrg(!['0', 'false', 'no'].includes(includeOrgParam.toLowerCase()));
+    }
+
     const slugParam = searchParams.get('slug');
     if (slugParam) {
       setSelectedSlug(slugParam);
