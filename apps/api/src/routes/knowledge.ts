@@ -5,7 +5,7 @@ import { wikiPages, wikiCitations, messages, users, spaces } from '@deft/db/sche
 import { getIO } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
-import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
+import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
 
 export const knowledgeRoutes = new Hono();
 export const knowledgeAggRoutes = new Hono();
@@ -77,25 +77,6 @@ function sourceSpaceIdSql() {
     ORDER BY wc.created_at DESC
     LIMIT 1
   )`;
-}
-
-function pageRelevantToSpaceCondition(spaceId: string, orgId: string) {
-  return or(
-    eq(wikiPages.space_id, spaceId),
-    eq(wikiPages.origin_space_id, spaceId),
-    sql`EXISTS (
-      SELECT 1
-      FROM wiki_citations wc
-      LEFT JOIN messages m
-        ON m.id = wc.source_id
-       AND wc.source_type = 'message'
-      WHERE wc.page_id = ${wikiPages.id}
-        AND (
-          wc.source_space_id = ${spaceId}
-          OR (m.space_id = ${spaceId} AND m.org_id = ${orgId})
-        )
-    )`,
-  );
 }
 
 function cleanMetadata(value: unknown): Record<string, unknown> | null {
@@ -220,7 +201,7 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
       eq(wikiPages.org_id, user.org_id),
       eq(wikiPages.is_deleted, false),
       visibleWikiPageCondition(user.id),
-      pageRelevantToSpaceCondition(spaceId, user.org_id)!,
+      wikiPageRelevantToSpaceCondition(spaceId, user.org_id)!,
     ];
 
     if (typeFilter) {
