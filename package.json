@@ -42,6 +42,7 @@
     "pilot:preflight:strict": "tsx scripts/pilot-preflight.ts --strict",
     "pilot:reset": "pnpm db:push-full && pnpm db:seed:pilot && pnpm pilot:preflight",
     "pilot:swarm": "node scripts/pilot-multi-user-swarm.mjs",
+    "chat:certify": "tsx scripts/reports/chat-ui-certification.ts",
     "selfhost:backup": "tsx scripts/selfhost-backup.ts",
     "selfhost:bootstrap": "tsx scripts/selfhost-bootstrap.ts",
     "selfhost:doctor": "tsx scripts/selfhost-doctor.ts",
