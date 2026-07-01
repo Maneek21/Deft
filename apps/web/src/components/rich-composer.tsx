@@ -75,6 +75,8 @@ import {
   Clock,
   Mic,
   Plus,
+  CheckSquare,
+  Bot,
 } from 'lucide-react';
 import { EmojiPicker } from './emoji-picker';
 import { TaskAutocomplete } from './task-autocomplete';
@@ -107,6 +109,7 @@ type Props = {
   onViewScheduled?: () => void;
   onClipRecord?: () => void;
   onSlashCommand?: (command: string, args: string) => void;
+  onAskDefty?: () => void;
   spaceId?: string;
 };
 
@@ -135,6 +138,7 @@ export function RichComposer({
   onViewScheduled,
   onClipRecord,
   onSlashCommand,
+  onAskDefty,
   spaceId,
 }: Props) {
   const [focused, setFocused] = useState(false);
@@ -391,9 +395,13 @@ export function RichComposer({
   if (!editor) return null;
 
   const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
+  const runSheetAction = (action: () => void) => {
+    setFormatSheetOpen(false);
+    action();
+  };
 
   return (
-    <div className="px-6 py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
+    <div className="px-3 md:px-6 py-2 md:py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
       {showMentions && (
         <MentionAutocomplete
           query={mentionQuery}
@@ -410,15 +418,12 @@ export function RichComposer({
         />
       )}
       <div
-        className="overflow-hidden"
-        style={{
-          background: 'var(--surface-container-low)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: focused ? '0 0 0 2px rgba(144, 128, 250, 0.3)' : 'none',
-          transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
-        }}
+        className={[
+          'bg-transparent md:bg-[var(--surface-container-low)] rounded-none md:rounded-[var(--radius-lg)] overflow-visible md:overflow-hidden transition-[box-shadow] duration-150',
+          focused ? 'md:shadow-[0_0_0_2px_rgba(144,128,250,0.3)]' : '',
+        ].join(' ')}
       >
-        {/* Formatting toolbar — desktop only (hidden on < md) */}
+        {/* Formatting toolbar - desktop only (hidden on < md) */}
         <div
           className="hidden md:flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
         >
@@ -500,12 +505,40 @@ export function RichComposer({
           </ToolbarBtn>
         </div>
 
-        {/* Mobile composer action sheet — Insert (attach/emoji/voice) + Format (B/I/...) */}
+        {/* Mobile composer action sheet - Insert (attach/emoji/voice) + Format (B/I/...) */}
         <MobileActionSheet
           open={formatSheetOpen}
           onClose={() => setFormatSheetOpen(false)}
           title="Compose"
         >
+          <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Work</div>
+          <div className="grid grid-cols-1 gap-2 mb-4">
+            {onAskDefty && (
+              <SheetActionButton
+                icon={<Bot size={18} strokeWidth={1.6} />}
+                label="Ask Defty"
+                description="Open the built-in agent DM"
+                onClick={() => runSheetAction(onAskDefty)}
+              />
+            )}
+            {onSlashCommand && (
+              <>
+                <SheetActionButton
+                  icon={<CheckSquare size={18} strokeWidth={1.6} />}
+                  label="Create task"
+                  description="Start a task from chat"
+                  onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
+                />
+                <SheetActionButton
+                  icon={<FileText size={18} strokeWidth={1.6} />}
+                  label="New note"
+                  description="Capture a quick note"
+                  onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
+                />
+              </>
+            )}
+          </div>
+
           {/* Insert section */}
           <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Insert</div>
           <div className="grid grid-cols-4 gap-2 mb-3">
@@ -671,38 +704,49 @@ export function RichComposer({
           </div>
         </MobileActionSheet>
 
-        {/* Editor row — mobile uses single-row layout with [+] and [send] flanking the editor.
+        {/* Editor row - mobile uses single-row layout with [+] and [send] flanking the editor.
             Desktop renders only the editor (the +/send below are md:hidden) and uses the
             bottom toolbar for those actions instead. */}
-        <div className="flex items-end gap-1 md:block">
-          {/* Mobile-only "+" — opens unified compose sheet (Insert + Format) */}
+        <div className="flex items-end gap-2 md:block">
+          {/* Mobile-only "+" - opens unified compose sheet (Insert + Format) */}
           <button
             type="button"
             onClick={() => setFormatSheetOpen(true)}
-            aria-label="Add (format, attach, emoji, voice)"
-            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md hover:opacity-70 ml-1 mb-1"
-            style={{ color: 'var(--on-surface-variant)' }}
+            aria-label="Open composer actions"
+            className="md:hidden flex items-center justify-center w-10 h-10 flex-shrink-0 rounded-full border transition-colors"
+            style={{
+              color: 'var(--on-surface-variant)',
+              background: 'var(--surface-container-high)',
+              borderColor: 'var(--outline-variant)',
+            }}
           >
-            <Plus size={20} strokeWidth={1.5} />
+            <Plus size={20} strokeWidth={1.7} />
           </button>
 
           <div
-            className="flex-1 min-w-0 px-3 md:px-4 py-2 min-h-[40px] max-h-[200px] overflow-y-auto"
+            className={[
+              'flex-1 min-w-0 px-3 md:px-4 py-2 min-h-[42px] md:min-h-[40px] max-h-[150px] md:max-h-[200px] overflow-y-auto rounded-[22px] md:rounded-none border md:border-0 bg-[var(--surface-container-low)] md:bg-transparent transition-[border-color,box-shadow,background]',
+              focused ? 'shadow-[0_0_0_2px_rgba(144,128,250,0.22)] md:shadow-none border-[#9080fa]' : 'border-[var(--outline-variant)]',
+            ].join(' ')}
             onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
           >
             <EditorContent editor={editor} />
           </div>
 
-          {/* Mobile-only inline send — desktop uses the send button in the bottom toolbar instead */}
+          {/* Mobile-only inline send - desktop uses the send button in the bottom toolbar instead */}
           <button
             type="button"
-            onClick={handleSend}
-            disabled={!hasContent}
-            aria-label="Send message"
-            className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] flex-shrink-0 rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity mr-1 mb-1"
-            style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+            onClick={hasContent ? handleSend : onClipRecord}
+            disabled={!hasContent && !onClipRecord}
+            aria-label={hasContent ? 'Send message' : 'Record voice memo'}
+            className="md:hidden flex items-center justify-center w-10 h-10 flex-shrink-0 rounded-full text-white disabled:opacity-40 transition-transform active:scale-95"
+            style={{
+              background: hasContent ? 'var(--primary-container)' : 'var(--surface-container-high)',
+              color: hasContent ? 'white' : 'var(--on-surface-variant)',
+              border: hasContent ? '1px solid transparent' : '1px solid var(--outline-variant)',
+            }}
           >
-            <Send size={18} strokeWidth={2} />
+            {hasContent ? <Send size={17} strokeWidth={2.2} /> : <Mic size={17} strokeWidth={1.8} />}
           </button>
         </div>
 
@@ -737,7 +781,7 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Bottom toolbar: emoji, attach, send — desktop only.
+        {/* Bottom toolbar: emoji, attach, send - desktop only.
             Mobile consolidates these into the "+" sheet + inline send. */}
         <div className="hidden md:flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
           <div className="flex items-center gap-0.5">
@@ -903,7 +947,7 @@ export function RichComposer({
               type="button"
               onClick={handleSend}
               disabled={!hasContent}
-              aria-label="Send message"
+              aria-label="Send message from composer toolbar"
               className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
               style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
             >
@@ -955,6 +999,40 @@ function ToolbarBtn({ active, onClick, title, children }: { active: boolean; onC
       }}
     >
       {children}
+    </button>
+  );
+}
+
+function SheetActionButton({
+  icon,
+  label,
+  description,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center gap-3 min-h-[52px] px-3 py-2 rounded-xl text-left transition-colors"
+      style={{ background: 'var(--surface-container-low)', color: 'var(--on-surface)' }}
+    >
+      <span
+        className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
+        style={{ background: 'rgba(144,128,250,0.14)', color: 'var(--primary)' }}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[0.875rem] font-semibold leading-tight">{label}</span>
+        <span className="block text-[0.75rem] leading-snug mt-0.5" style={{ color: 'var(--on-surface-variant)' }}>
+          {description}
+        </span>
+      </span>
     </button>
   );
 }

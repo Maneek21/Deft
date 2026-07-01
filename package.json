@@ -56,12 +56,5 @@
     "playwright": "^1.60.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp",
-      "msgpackr-extract"
-    ]
   }
 }
