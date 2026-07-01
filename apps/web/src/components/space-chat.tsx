@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
@@ -36,6 +37,7 @@ import {
   BellOff,
   MailOpen,
   Forward,
+  Sparkles,
 } from 'lucide-react';
 import { formatMessageTime, formatDayLabel, isSameDay, formatTimeWithSenderZone } from '@/lib/time';
 import { TabStrip } from './tab-strip';
@@ -49,6 +51,7 @@ import { TaskQuickCreate } from './task-quick-create';
 import { PinnedBar } from './pinned-messages';
 import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
+import { MobileActionSheet } from './mobile-action-sheet';
 import { ClipCard } from './clip-card';
 import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
@@ -619,7 +622,7 @@ export function SpaceChat({
 }) {
   const { user } = useAuth();
   const router = useRouter();
-  const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, activeHuddles } = useChatContext();
+  const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, activeHuddles, openDmWith } = useChatContext();
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   // presence is provided by ChatContext — no local state needed
@@ -643,9 +646,11 @@ export function SpaceChat({
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [showMembers, setShowMembers] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
+  const [mobileActionMsg, setMobileActionMsg] = useState<Message | null>(null);
   const [reminderMenuId, setReminderMenuId] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const previousSpaceIdRef = useRef(spaceId);
   const [createTaskMsg, setCreateTaskMsg] = useState<{ title: string; description: string; messageId: string } | null>(null);
   const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   const [recapSummary, setRecapSummary] = useState<string | null>(null);
@@ -733,10 +738,79 @@ export function SpaceChat({
     }
   };
 
+  const plainMessageText = (content: string) => content.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+
+  const openTaskFromMessage = (msg: Message) => {
+    let title = msg.content
+      .replace(/<@[^>]+>/g, '')
+      .replace(/\[\[file:[^\]]+\]\]/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\*\*|__|~~|`|#/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const sentenceEnd = title.search(/[.!?](\s|$)/);
+    if (sentenceEnd > 0 && sentenceEnd < 80) {
+      title = title.slice(0, sentenceEnd + 1);
+    } else if (title.length > 80) {
+      title = (title.slice(0, title.lastIndexOf(' ', 80)) || title.slice(0, 80)) + '...';
+    }
+    const description = `<blockquote>${msg.content}</blockquote><p><em>Created from chat in #${spaceName}</em></p>`;
+    setCreateTaskMsg({ title: title || 'New task', description, messageId: msg.id });
+  };
+
+  const togglePinForMessage = async (msg: Message) => {
+    if (msg.is_pinned) {
+      const res = await api.delete(`/api/spaces/${spaceId}/pins/${msg.id}`);
+      if (res.ok) {
+        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, is_pinned: false } : m));
+      }
+    } else {
+      const res = await api.post(`/api/spaces/${spaceId}/pins`, { message_id: msg.id });
+      if (res.ok || res.status === 409) {
+        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, is_pinned: true } : m));
+      }
+    }
+  };
+
+  const saveMessageToKnowledge = async (msg: Message) => {
+    const title = plainMessageText(msg.content).split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
+    const res = await api.post(`/api/spaces/${spaceId}/knowledge`, {
+      type: 'decision',
+      title,
+      content: plainMessageText(msg.content),
+      source_message_id: msg.id,
+    });
+    setCmdToast(res.ok ? 'Saved to knowledge' : 'Failed to save knowledge');
+  };
+
+  const copyMessageLink = (msg: Message) => {
+    navigator.clipboard.writeText(`${window.location.origin}/chat?space=${spaceId}&message=${msg.id}`);
+    setCmdToast('Message link copied');
+  };
+
   // Auto-dismiss command toast
   useEffect(() => {
     if (cmdToast) { const t = setTimeout(() => setCmdToast(null), 3000); return () => clearTimeout(t); }
   }, [cmdToast]);
+
+  // Space-scoped surfaces should not visually follow the user into another channel or DM.
+  useEffect(() => {
+    if (previousSpaceIdRef.current === spaceId) return;
+    previousSpaceIdRef.current = spaceId;
+
+    setThreadMessage(null);
+    setRecapSummary(null);
+    setRecapLoading(false);
+    setShowKnowledge(false);
+    setShowMembers(false);
+    setShowScheduled(false);
+    setCreateTaskMsg(null);
+    setQuotedMessage(null);
+    setMoreMenuId(null);
+    setMobileActionMsg(null);
+    setEmojiPickerMsgId(null);
+    setReminderMenuId(null);
+  }, [spaceId, setThreadMessage]);
 
   // Sync mute status from spaces list
   useEffect(() => {
@@ -1236,18 +1310,25 @@ export function SpaceChat({
                 } catch { setRecapSummary('Failed to connect to the server.'); }
                 setRecapLoading(false);
               }}
-              className="flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
+              aria-label="Catch up on this space"
+              title="Catch Up"
+              className="flex items-center justify-center gap-1 min-w-[44px] min-h-[44px] md:min-h-0 md:min-w-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
               style={{ background: 'var(--accent-muted)', color: 'var(--primary)' }}
               disabled={recapLoading}
             >
-              {recapLoading ? 'Reading...' : 'Catch Up'}
+              <Sparkles size={14} strokeWidth={1.7} className={recapLoading ? 'animate-pulse' : ''} />
+              <span className="hidden md:inline">{recapLoading ? 'Reading...' : 'Catch Up'}</span>
             </button>
 
             {/* Knowledge */}
             <button
               onClick={() => setShowKnowledge(!showKnowledge)}
+              aria-label={showKnowledge ? 'Close knowledge panel' : 'Open knowledge panel'}
               className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
-              style={{ color: 'var(--outline)' }}
+              style={{
+                color: showKnowledge ? 'var(--primary)' : 'var(--outline)',
+                background: showKnowledge ? 'var(--accent-muted)' : 'transparent',
+              }}
               title="Knowledge"
             >
               <BookOpen size={14} strokeWidth={1.5} />
@@ -1377,22 +1458,25 @@ export function SpaceChat({
                     transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
                   }}
                   onMouseEnter={() => setHoveredId(msg.id)}
+                  onMouseMove={() => {
+                    if (hoveredId !== msg.id) setHoveredId(msg.id);
+                  }}
+                  onFocusCapture={() => setHoveredId(msg.id)}
                   onMouseLeave={() => { setHoveredId(null); setMoreMenuId(null); }}
                 >
                   {/* Mobile action button — always visible on touch */}
                   {!msg.is_deleted && editingId !== msg.id && (
                     <button
-                      className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-full absolute top-0 right-0 opacity-40 active:opacity-70"
+                      aria-label="Open message actions"
+                      className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-full absolute top-0 right-0 opacity-45 active:opacity-80"
                       style={{ color: 'var(--outline)' }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const spaceBelow = window.innerHeight - rect.bottom;
-                        setMenuDirection(spaceBelow < 200 ? 'up' : 'down');
-                        setMoreMenuId(moreMenuId === msg.id ? null : msg.id);
+                        setMoreMenuId(null);
+                        setMobileActionMsg(msg);
                       }}
                     >
-                      <MoreHorizontal size={14} />
+                      <MoreHorizontal size={16} strokeWidth={1.8} />
                     </button>
                   )}
 
@@ -1496,6 +1580,7 @@ export function SpaceChat({
                           className="p-1.5 rounded-full"
                           style={{ color: 'var(--muted)' }}
                           title="More"
+                          aria-label="More message actions"
                           onClick={() => {
                             if (moreMenuId === msg.id) {
                               setMoreMenuId(null);
@@ -1524,14 +1609,15 @@ export function SpaceChat({
                               </button>
                             )}
                             <button onClick={() => {
-                              navigator.clipboard.writeText(`${window.location.origin}/chat?space=${spaceId}&message=${msg.id}`);
+                              copyMessageLink(msg);
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <Copy size={13} strokeWidth={1.5} /> Copy link
                             </button>
                             <button onClick={async () => {
-                              await api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: msg.id });
+                              const res = await api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: msg.id });
+                              setCmdToast(res.ok ? 'Marked unread' : 'Failed to mark unread');
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
                               style={{ color: 'var(--on-surface-variant)' }}>
@@ -1552,14 +1638,8 @@ export function SpaceChat({
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <Forward size={13} strokeWidth={1.5} /> Forward
                             </button>
-                            <button onClick={async () => {
-                              const title = msg.content.replace(/<[^>]+>/g, '').split(/[.!?\n]/)[0]?.trim().slice(0, 100) || 'Decision';
-                              await api.post(`/api/spaces/${spaceId}/knowledge`, {
-                                type: 'decision',
-                                title,
-                                content: msg.content.replace(/<[^>]+>/g, ''),
-                                source_message_id: msg.id,
-                              });
+                            <button onClick={() => {
+                              void saveMessageToKnowledge(msg);
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                               style={{ color: 'var(--on-surface-variant)' }}>
@@ -2050,6 +2130,7 @@ export function SpaceChat({
           uploadProgress={progress}
           onViewScheduled={() => setShowScheduled(true)}
           onClipRecord={() => setClipRecording(true)}
+          onAskDefty={() => { void openDeftyDm(api, openDmWith); }}
           spaceId={spaceId}
           onSlashCommand={async (command, args) => {
             switch (command) {
@@ -2147,6 +2228,103 @@ export function SpaceChat({
         )}
       </div>
       {showKnowledge && <KnowledgePanel spaceId={spaceId} onClose={() => setShowKnowledge(false)} />}
+      <MobileActionSheet
+        open={!!mobileActionMsg}
+        onClose={() => setMobileActionMsg(null)}
+        title={mobileActionMsg ? `${mobileActionMsg.user_name}'s message` : 'Message actions'}
+      >
+        {mobileActionMsg && (
+          <div className="space-y-1">
+            <MobileMessageAction
+              icon={<MessageSquare size={18} strokeWidth={1.7} />}
+              label="Reply in thread"
+              onClick={() => {
+                setThreadMessage(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<Smile size={18} strokeWidth={1.7} />}
+              label="React"
+              onClick={() => {
+                setEmojiPickerMsgId(`reactions-${mobileActionMsg.id}`);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<CheckSquare size={18} strokeWidth={1.7} />}
+              label="Create task"
+              onClick={() => {
+                openTaskFromMessage(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<Bookmark size={18} strokeWidth={1.7} fill={savedMessageIds.has(mobileActionMsg.id) ? 'currentColor' : 'none'} />}
+              label={savedMessageIds.has(mobileActionMsg.id) ? 'Remove from saved' : 'Save for later'}
+              onClick={() => {
+                void toggleBookmark(mobileActionMsg.id);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<BookOpen size={18} strokeWidth={1.7} />}
+              label="Save to Knowledge"
+              onClick={() => {
+                void saveMessageToKnowledge(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<Pin size={18} strokeWidth={1.7} />}
+              label={mobileActionMsg.is_pinned ? 'Unpin message' : 'Pin message'}
+              onClick={() => {
+                void togglePinForMessage(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<Copy size={18} strokeWidth={1.7} />}
+              label="Copy link"
+              onClick={() => {
+                copyMessageLink(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<MailOpen size={18} strokeWidth={1.7} />}
+              label="Mark unread"
+              onClick={() => {
+                void api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: mobileActionMsg.id });
+                setMobileActionMsg(null);
+              }}
+            />
+            {mobileActionMsg.user_id === user?.id && (
+              <>
+                <div className="h-px my-1" style={{ background: 'var(--outline-variant)' }} />
+                <MobileMessageAction
+                  icon={<Pencil size={18} strokeWidth={1.7} />}
+                  label="Edit"
+                  onClick={() => {
+                    setEditingId(mobileActionMsg.id);
+                    setEditContent(mobileActionMsg.content);
+                    setMobileActionMsg(null);
+                  }}
+                />
+                <MobileMessageAction
+                  icon={<Trash2 size={18} strokeWidth={1.7} />}
+                  label="Delete"
+                  danger
+                  onClick={() => {
+                    setDeleteConfirmId(mobileActionMsg.id);
+                    setMobileActionMsg(null);
+                  }}
+                />
+              </>
+            )}
+          </div>
+        )}
+      </MobileActionSheet>
       {/* Command toast */}
       {cmdToast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg text-[12px] font-medium"
@@ -2448,6 +2626,41 @@ function LinkPreviewCard({ preview }: { preview: LinkPreview }) {
         )}
       </div>
     </a>
+  );
+}
+
+function MobileMessageAction({
+  icon,
+  label,
+  onClick,
+  danger = false,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center gap-3 min-h-[48px] px-3 py-2 rounded-xl text-left"
+      style={{
+        background: 'var(--surface-container-low)',
+        color: danger ? 'var(--danger)' : 'var(--on-surface)',
+      }}
+    >
+      <span
+        className="flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
+        style={{
+          background: danger ? 'rgba(239, 68, 68, 0.12)' : 'rgba(144,128,250,0.14)',
+          color: danger ? 'var(--danger)' : 'var(--primary)',
+        }}
+      >
+        {icon}
+      </span>
+      <span className="text-[0.875rem] font-semibold">{label}</span>
+    </button>
   );
 }
 
