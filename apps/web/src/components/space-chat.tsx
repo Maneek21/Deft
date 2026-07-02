@@ -17,8 +17,6 @@ import {
   X,
   Smile,
   MessageSquare,
-  AlertTriangle,
-  ExternalLink,
   Pin,
   MoreHorizontal,
   Copy,
@@ -111,6 +109,7 @@ type WorkIntentReceipt = {
   status: 'proposed' | 'converted' | 'dismissed' | 'expired' | 'failed';
   title: string | null;
   source_message_id: string | null;
+  proposed_action: string | null;
   converted_task_id: string | null;
   failure_reason: string | null;
   metadata: Record<string, unknown> | null;
@@ -240,67 +239,38 @@ function compactReceiptTitle(title: string) {
 }
 
 function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) {
-  if (!intents?.length) return null;
+  const knowledgeReceipts = (intents ?? []).filter((intent) => {
+    const metadata = intent.metadata ?? {};
+    return intent.status === 'converted' && typeof metadata.converted_wiki_slug === 'string';
+  });
+  if (knowledgeReceipts.length === 0) return null;
 
   return (
-    <div className="mt-2 flex flex-wrap gap-1.5">
-      {intents.map((intent) => {
+    <div className="mt-1 flex items-center gap-1.5" aria-label="Knowledge receipts">
+      {knowledgeReceipts.slice(0, 3).map((intent) => {
         const metadata = intent.metadata ?? {};
         const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
         const title = intent.title ?? 'Work capture';
-        const isTask = Boolean(intent.converted_task_id);
-        const isKnowledge = Boolean(wikiSlug);
-        const href = isTask
-          ? `/tasks?task=${encodeURIComponent(intent.converted_task_id!)}`
-          : isKnowledge
-            ? `/knowledge?slug=${encodeURIComponent(wikiSlug!)}`
-            : null;
-        const label = intent.status === 'converted'
-          ? isTask
-            ? `Task: ${compactReceiptTitle(title)}`
-            : isKnowledge
-              ? `Knowledge: ${compactReceiptTitle(title)}`
-              : 'Capture converted'
-          : intent.status === 'dismissed'
-            ? 'Capture dismissed'
-            : intent.status === 'failed'
-              ? 'Capture failed'
-              : 'Capture expired';
-        const Icon = isTask
-          ? CheckSquare
-          : isKnowledge
-            ? BookOpen
-            : intent.status === 'failed'
-              ? AlertTriangle
-              : intent.status === 'dismissed'
-                ? X
-                : Clock;
-        const color = intent.status === 'converted'
-          ? 'var(--success)'
-          : intent.status === 'failed'
-            ? 'var(--status-red)'
-            : 'var(--muted)';
-
-        const chip = (
-          <span
-            className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium"
-            style={{ background: 'var(--surface-container-highest)', border: '1px solid var(--border)', color }}
-            title={intent.failure_reason ? `${title}: ${intent.failure_reason}` : title}
+        const isWikiUpdate = intent.proposed_action === 'wiki_update' || metadata.update_kind === 'wiki_content';
+        const label = `${isWikiUpdate ? 'Knowledge updated' : 'Added to knowledge'}: ${compactReceiptTitle(title)}`;
+        return (
+          <a
+            key={intent.id}
+            href={`/knowledge?slug=${encodeURIComponent(wikiSlug!)}`}
+            className="inline-flex h-4 w-4 items-center justify-center rounded-full opacity-65 transition hover:opacity-100"
+            style={{ color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 11%, transparent)' }}
+            title={label}
+            aria-label={label}
           >
-            <Icon size={12} strokeWidth={1.7} />
-            <span className="min-w-0 truncate">{label}</span>
-            {href && <ExternalLink size={11} strokeWidth={1.7} className="flex-shrink-0" />}
-          </span>
-        );
-
-        return href ? (
-          <a key={intent.id} href={href} className="min-w-0 max-w-full no-underline hover:opacity-80">
-            {chip}
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
           </a>
-        ) : (
-          <span key={intent.id} className="min-w-0 max-w-full">{chip}</span>
         );
       })}
+      {knowledgeReceipts.length > 3 && (
+        <span className="text-[10px]" style={{ color: 'var(--muted)' }} title={`${knowledgeReceipts.length - 3} more knowledge receipts`}>
+          +{knowledgeReceipts.length - 3}
+        </span>
+      )}
     </div>
   );
 }
@@ -668,6 +638,7 @@ export function SpaceChat({
   // label + dispatched action match what the user actually expects.
   useEffect(() => { setCurrentSpaceMuted(isMuted); }, [isMuted]);
   const [cmdToast, setCmdToast] = useState<string | null>(null);
+  const [capturingDiscussion, setCapturingDiscussion] = useState(false);
 
   // P4-4 — pending agent_actions keyed by message_id for this space.
   // Polled every 5s so inline approval cards appear promptly.
@@ -781,6 +752,19 @@ export function SpaceChat({
       source_message_id: msg.id,
     });
     setCmdToast(res.ok ? 'Saved to knowledge' : 'Failed to save knowledge');
+  };
+
+  const captureRecentDiscussion = async () => {
+    if (capturingDiscussion) return;
+    setCapturingDiscussion(true);
+    try {
+      const res = await api.post(`/api/spaces/${spaceId}/knowledge/capture-discussion`, {
+        lookback_minutes: 120,
+      });
+      setCmdToast(res.ok ? 'Discussion capture queued' : 'Failed to queue discussion capture');
+    } finally {
+      setCapturingDiscussion(false);
+    }
   };
 
   const copyMessageLink = (msg: Message) => {
@@ -1645,6 +1629,17 @@ export function SpaceChat({
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <BookOpen size={13} strokeWidth={1.5} /> Save to Knowledge
                             </button>
+                            <button
+                              onClick={() => {
+                                void captureRecentDiscussion();
+                                setMoreMenuId(null);
+                              }}
+                              disabled={capturingDiscussion}
+                              className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 disabled:opacity-50"
+                              style={{ color: 'var(--on-surface-variant)' }}
+                            >
+                              <Sparkles size={13} strokeWidth={1.5} /> Capture recent discussion
+                            </button>
                             <div className="relative">
                               <button className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
                                 style={{ color: 'var(--on-surface-variant)' }}
@@ -2272,6 +2267,14 @@ export function SpaceChat({
               label="Save to Knowledge"
               onClick={() => {
                 void saveMessageToKnowledge(mobileActionMsg);
+                setMobileActionMsg(null);
+              }}
+            />
+            <MobileMessageAction
+              icon={<Sparkles size={18} strokeWidth={1.7} />}
+              label={capturingDiscussion ? 'Capture queued...' : 'Capture recent discussion'}
+              onClick={() => {
+                void captureRecentDiscussion();
                 setMobileActionMsg(null);
               }}
             />

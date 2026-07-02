@@ -270,9 +270,9 @@ function WorkIntentRow({
   const OutcomeIcon = outcomeIcon;
   const statusLabel = intent.status === 'converted'
     ? isConvertedToTask
-      ? 'Converted to task'
+      ? intent.proposed_action === 'task_update' ? 'Task updated' : 'Task created'
       : isConvertedToKnowledge
-        ? 'Saved to knowledge'
+        ? intent.proposed_action === 'wiki_update' ? 'Knowledge updated' : 'Knowledge saved'
         : 'Converted'
     : INTENT_STATUS_LABEL[intent.status];
 

@@ -16,7 +16,10 @@ import {
   workIntents,
 } from '@deft/db';
 import { queueDeftyCreateTaskCapture } from '../src/lib/defty-capture.js';
-import { handleMemoryCapture } from '../src/workers/handlers/memory-capture.js';
+import {
+  extractResourceCandidate,
+  handleMemoryCapture,
+} from '../src/workers/handlers/memory-capture.js';
 
 const ORG_ID = `memory-capture-org-${crypto.randomUUID()}`;
 const USER_ID = `memory-capture-user-${crypto.randomUUID()}`;
@@ -55,6 +58,34 @@ async function runMemoryCapture(
       decision,
     },
   } as any);
+}
+
+async function intentsForMessage(messageId: string) {
+  return db
+    .select()
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ));
+}
+
+async function actionsForMessage(messageId: string) {
+  return db
+    .select()
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, ORG_ID),
+      eq(agentActions.message_id, messageId),
+      eq(agentActions.source, 'defty_capture'),
+    ));
+}
+
+async function assertNoMemoryWork(messageId: string) {
+  const intents = await intentsForMessage(messageId);
+  assert.equal(intents.length, 0, 'immediate memory capture should be quiet by default');
+  const actions = await actionsForMessage(messageId);
+  assert.equal(actions.length, 0, 'immediate memory capture should not queue approvals by default');
 }
 
 before(async () => {
@@ -128,169 +159,50 @@ after(async () => {
   await db.delete(orgs).where(eq(orgs.id, ORG_ID));
 });
 
-test('memory-capture routes explicit facts through a Defty wiki_create approval', async () => {
+test('memory-capture skips explicit facts by default', async () => {
   const content = 'Preference: use concise buyer updates. Policy: never promise same-day delivery after 2pm.';
   const messageId = await seedMessage(content);
 
   await runMemoryCapture(messageId, content, [
     'use concise buyer updates',
     'never promise same-day delivery after 2pm',
-    'never promise same-day delivery after 2pm',
-    'Never promise same day delivery after 2 pm',
   ]);
 
-  const [intent] = await db
-    .select({
-      id: workIntents.id,
-      kind: workIntents.kind,
-      status: workIntents.status,
-      proposed_action: workIntents.proposed_action,
-      proposed_params: workIntents.proposed_params,
-      metadata: workIntents.metadata,
-    })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, messageId),
-    ))
-    .limit(1);
-
-  assert.ok(intent, 'expected a proposed work intent');
-  assert.equal(intent.kind, 'note_candidate');
-  assert.equal(intent.status, 'proposed');
-  assert.equal(intent.proposed_action, 'wiki_create');
-
-  const params = intent.proposed_params as Record<string, any>;
-  assert.equal(params.source_message_id, messageId);
-  assert.equal(params.capture_kind, 'note_candidate');
-  assert.equal(params.type, 'fact');
-
-  const metadata = intent.metadata as Record<string, any>;
-  assert.deepEqual(metadata.classifier_facts, [
-    'use concise buyer updates',
-    'never promise same-day delivery after 2pm',
-  ]);
-
-  const [action] = await db
-    .select({
-      id: agentActions.id,
-      action: agentActions.action,
-      approval_status: agentActions.approval_status,
-    })
-    .from(agentActions)
-    .where(and(
-      eq(agentActions.org_id, ORG_ID),
-      eq(agentActions.source, 'defty_capture'),
-      sql`${agentActions.params}->>'work_intent_id' = ${intent.id}`,
-    ))
-    .limit(1);
-
-  assert.ok(action, 'expected a pending approval action');
-  assert.equal(action.action, 'wiki_create');
-  assert.equal(action.approval_status, 'pending');
+  await assertNoMemoryWork(messageId);
 });
 
-test('memory-capture routes explicit decisions through a Defty wiki_create approval', async () => {
+test('memory-capture skips explicit decisions by default', async () => {
   const content = 'Decision: ship the chef-sample bundles in blue crates on Friday.';
   const messageId = await seedMessage(content);
 
   await runMemoryCapture(messageId, content, [], SPACE_ID, 'ship the chef-sample bundles in blue crates on Friday');
 
-  const [intent] = await db
-    .select({
-      kind: workIntents.kind,
-      title: workIntents.title,
-      proposed_action: workIntents.proposed_action,
-      proposed_params: workIntents.proposed_params,
-      metadata: workIntents.metadata,
-    })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, messageId),
-    ))
-    .limit(1);
-
-  assert.ok(intent, 'expected a decision work intent');
-  assert.equal(intent.kind, 'decision_candidate');
-  assert.equal(intent.proposed_action, 'wiki_create');
-  assert.match(intent.title, /chef-sample bundles/i);
-  const params = intent.proposed_params as Record<string, any>;
-  assert.equal(params.type, 'decision');
-  assert.equal(params.scope, 'org');
-  assert.equal(params.capture_kind, 'decision_candidate');
-  const metadata = intent.metadata as Record<string, any>;
-  assert.equal(metadata.classifier_decision, 'ship the chef-sample bundles in blue crates on Friday');
+  await assertNoMemoryWork(messageId);
 });
 
-test('memory-capture routes explicit resources but ignores bare links', async () => {
+test('memory-capture resource extraction is strict, but immediate resource writes stay off by default', async () => {
   const resourceContent =
     'Resource: buyer launch checklist https://example.com/testers-tomatoes/buyer-launch';
-  const resourceMessageId = await seedMessage(resourceContent);
-
-  await runMemoryCapture(resourceMessageId, resourceContent);
-
-  const [resourceIntent] = await db
-    .select({
-      kind: workIntents.kind,
-      title: workIntents.title,
-      proposed_action: workIntents.proposed_action,
-      proposed_params: workIntents.proposed_params,
-    })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, resourceMessageId),
-    ))
-    .limit(1);
-
-  assert.ok(resourceIntent, 'expected an explicit resource work intent');
-  assert.equal(resourceIntent.kind, 'resource_candidate');
-  assert.equal(resourceIntent.proposed_action, 'wiki_create');
-  const params = resourceIntent.proposed_params as Record<string, any>;
-  assert.equal(params.type, 'resource');
-  assert.equal(params.capture_kind, 'resource_candidate');
-  assert.equal(params.metadata?.url, 'https://example.com/testers-tomatoes/buyer-launch');
+  const resource = extractResourceCandidate(resourceContent);
+  assert.ok(resource, 'explicit resource language should still parse as a resource candidate');
+  assert.equal(resource.url, 'https://example.com/testers-tomatoes/buyer-launch');
 
   const bareLinkContent = 'Saw this pricing deck: https://example.com/random-thread';
-  const bareLinkMessageId = await seedMessage(bareLinkContent);
+  assert.equal(extractResourceCandidate(bareLinkContent), null, 'bare links should not parse as durable resources');
 
-  await runMemoryCapture(bareLinkMessageId, bareLinkContent);
+  const resourceMessageId = await seedMessage(resourceContent);
+  await runMemoryCapture(resourceMessageId, resourceContent);
 
-  const bareLinkRows = await db
-    .select({ id: workIntents.id })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, bareLinkMessageId),
-    ));
-
-  assert.equal(bareLinkRows.length, 0, 'bare links should not become durable resources');
+  await assertNoMemoryWork(resourceMessageId);
 });
 
-test('memory-capture keeps private-space knowledge proposals space-scoped', async () => {
+test('memory-capture keeps private-space immediate writes off by default', async () => {
   const content = 'Decision: keep the wholesale pricing rescue plan inside this private launch channel.';
   const messageId = await seedMessage(content, PRIVATE_SPACE_ID);
 
   await runMemoryCapture(messageId, content, [], PRIVATE_SPACE_ID, content);
 
-  const [intent] = await db
-    .select({
-      id: workIntents.id,
-      proposed_params: workIntents.proposed_params,
-    })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, messageId),
-    ))
-    .limit(1);
-
-  assert.ok(intent, 'expected a proposed private-space work intent');
-  const params = intent.proposed_params as Record<string, any>;
-  assert.equal(params.scope, 'space');
-  assert.equal(params.space_id, PRIVATE_SPACE_ID);
-  assert.equal(params.source_space_id, PRIVATE_SPACE_ID);
+  await assertNoMemoryWork(messageId);
 });
 
 test('memory-capture does not create approvals for ordinary chatter', async () => {
@@ -299,32 +211,16 @@ test('memory-capture does not create approvals for ordinary chatter', async () =
 
   await runMemoryCapture(messageId, content);
 
-  const rows = await db
-    .select({ id: workIntents.id })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, messageId),
-    ));
-
-  assert.equal(rows.length, 0);
+  await assertNoMemoryWork(messageId);
 });
 
-test('memory-capture ignores ambiguous planning chatter unless classifier data is explicit', async () => {
+test('memory-capture ignores ambiguous planning chatter and classifier facts by default', async () => {
   const ambiguousContent =
     'Maybe we should discuss whether the chef sample crates need new labels next week.';
   const ambiguousMessageId = await seedMessage(ambiguousContent);
 
   await runMemoryCapture(ambiguousMessageId, ambiguousContent);
-
-  const ambiguousRows = await db
-    .select({ id: workIntents.id })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, ambiguousMessageId),
-    ));
-  assert.equal(ambiguousRows.length, 0);
+  await assertNoMemoryWork(ambiguousMessageId);
 
   const explicitClassifierMessageId = await seedMessage(ambiguousContent);
   await runMemoryCapture(
@@ -333,16 +229,7 @@ test('memory-capture ignores ambiguous planning chatter unless classifier data i
     ['Chef sample crates need new labels next week'],
   );
 
-  const [explicitIntent] = await db
-    .select({ kind: workIntents.kind })
-    .from(workIntents)
-    .where(and(
-      eq(workIntents.org_id, ORG_ID),
-      eq(workIntents.source_message_id, explicitClassifierMessageId),
-    ))
-    .limit(1);
-  assert.ok(explicitIntent, 'explicit classifier facts should still create a reviewable proposal');
-  assert.equal(explicitIntent.kind, 'note_candidate');
+  await assertNoMemoryWork(explicitClassifierMessageId);
 });
 
 test('defty task capture turns explicit action requests into task_create work intents', async () => {

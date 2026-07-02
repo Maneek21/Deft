@@ -13,8 +13,10 @@ import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { queueDeftyCreateTaskCapture } from '../../lib/defty-capture.js';
+import { hasNoTaskDirective } from '../../lib/chat-observation.js';
 
 const TASK_EXTRACT_TRIGGER_KIND = 'event:task-extract';
+const ENABLE_BACKGROUND_TASK_CAPTURE = process.env.DEFT_ENABLE_BACKGROUND_TASK_CAPTURE === '1';
 
 async function findTaskExtractEmployee(orgId: string) {
   const [row] = await db
@@ -62,7 +64,7 @@ export function buildDeterministicTaskTitle(content: string): string {
     .replace(/^[A-Z0-9][A-Z0-9_-]{2,80}:\s*/i, '')
     .trim();
   const explicit = plainContent.match(
-    /\b(?:create|add|make|open|track)\b.{0,60}?\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
+    /\b(?:create|add|make|open|track)\b.{0,60}?\b(?:tasks?|todos?|tickets?)\b\s*:?\s*(.+)$/i,
   );
   const candidate = (explicit?.[1]?.trim() || plainContent).replace(/[.!?]+$/g, '');
   return truncatePlainText(candidate.replace(/^please\s+/i, ''), 80) || 'Follow up from chat';
@@ -70,8 +72,8 @@ export function buildDeterministicTaskTitle(content: string): string {
 
 function hasExplicitTaskRequest(content: string): boolean {
   const plainContent = toPlainText(content);
-  return /\b(?:create|add|make|open|track)\b.{0,50}\b(?:task|todo|ticket)\b/i.test(plainContent) ||
-    /\b(?:task|todo|ticket)\s*:\s*\S+/i.test(plainContent);
+  return /\b(?:create|add|make|open|track)\b.{0,50}\b(?:tasks?|todos?|tickets?)\b/i.test(plainContent) ||
+    /\b(?:tasks?|todos?|tickets?)\s*:\s*\S+/i.test(plainContent);
 }
 
 function normalizePriority(priority?: string | null): 'p0' | 'p1' | 'p2' | 'p3' {
@@ -109,9 +111,10 @@ async function queueTaskCreateApproval(params: {
   } = params;
   const plainContent = toPlainText(content);
   if (!plainContent) return false;
+  const explicitTaskRequest = hasExplicitTaskRequest(content);
 
   const deterministicTitle = buildDeterministicTaskTitle(content);
-  const titleSeed = hasExplicitTaskRequest(content)
+  const titleSeed = explicitTaskRequest
     ? deterministicTitle
     : providedTitle || deterministicTitle;
   const title = truncatePlainText(titleSeed, 80);
@@ -129,6 +132,7 @@ async function queueTaskCreateApproval(params: {
     captureKind: 'task_candidate',
     captureReason: 'A chat message looked actionable enough to capture as possible work.',
     extraction,
+    approvalMode: explicitTaskRequest ? 'approval' : 'passive',
   });
 
   if (!queued.queued && queued.skippedReason === 'project_missing') {
@@ -179,6 +183,16 @@ Rules:
 
 export async function handleTaskExtract(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId, classification } = job.data as TaskExtractJobData;
+
+  if (!ENABLE_BACKGROUND_TASK_CAPTURE) {
+    console.log(`[task-extract] Background chat-to-task capture disabled; skipping ${messageId}`);
+    return;
+  }
+
+  if (hasNoTaskDirective(content)) {
+    console.log(`[task-extract] Skipped message ${messageId} due to explicit no-task directive`);
+    return;
+  }
 
   // Only process task_create or actionable intents
   if (classification.intent !== 'task_create' && classification.intent !== 'actionable') {

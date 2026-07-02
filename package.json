@@ -19,6 +19,7 @@
     "audit:byoa-a": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-a.audit.ts",
     "audit:byoa-b": "tsx docs/superpowers/audits/agent-byoa/agent-byoa-layer-b.audit.ts",
     "build": "pnpm -r build",
+    "chat:mini-batches": "tsx scripts/reports/chat-episode-mini-batches.ts",
     "db:generate": "pnpm --filter @deft/db generate",
     "db:migrate": "pnpm --filter @deft/db migrate",
     "db:push": "pnpm --filter @deft/db push",

@@ -3,6 +3,7 @@ import {
   messageClassifications,
   messageObservations,
   messages,
+  users,
 } from '@deft/db/schema';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -11,6 +12,8 @@ import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import {
   CHAT_OBSERVATION_VERSION,
   explicitObservationIgnoreReason,
+  hasNoKnowledgeDirective,
+  hasNoTaskDirective,
 } from '../../lib/chat-observation.js';
 import { toPlainText } from '../../lib/plain-text.js';
 
@@ -21,6 +24,8 @@ type ObserveChatMessageJobData = {
   userId: string;
   observationVersion?: number;
 };
+
+const EXPLICIT_KNOWLEDGE_UPDATE_CAPTURE_DELAY_MS = 30_000;
 
 function tokenOverlap(a: string, b: string): number {
   const toTokens = (value: string) => new Set(
@@ -60,13 +65,16 @@ function looksLikeResourceCapture(content: string): boolean {
 
 function hasExplicitTaskSignal(content: string): boolean {
   const plain = toPlainText(content).toLowerCase();
-  return /\b(?:create|add|make|open|track)\b.{0,50}\b(?:task|todo|ticket)\b/i.test(plain) ||
-    /\b(?:task|todo|ticket)\s*:\s*\S+/i.test(plain);
+  return /\b(?:create|add|make|open|track)\b.{0,50}\b(?:tasks?|todos?|tickets?)\b/i.test(plain) ||
+    /\b(?:tasks?|todos?|tickets?)\s*:\s*\S+/i.test(plain);
 }
 
-function hasGeneralActionSignal(content: string): boolean {
+function hasConcreteBlockedSignal(content: string): boolean {
   const plain = toPlainText(content).toLowerCase();
-  return /\b(?:need to|should|please|can someone|follow up|assign|owner)\b/i.test(plain);
+  if (hasNoTaskDirective(content)) return false;
+  return /\b(?:i am|i'm|im|we are|we're|were|team is|team's)\s+(?:blocked|stuck|waiting|held up)\b/i.test(plain) ||
+    /\b(?:blocked|stuck|held up)\s+(?:on|by|because|until)\b/i.test(plain) ||
+    /\b(?:can't|cannot|unable to)\s+(?:ship|finish|complete|start|move|continue|proceed)\b/i.test(plain);
 }
 
 function hasExplicitKnowledgeSignal(content: string): boolean {
@@ -75,9 +83,15 @@ function hasExplicitKnowledgeSignal(content: string): boolean {
     /\b(?:we decided|we agreed|going forward)\b/i.test(plain);
 }
 
+function hasExplicitKnowledgeUpdateSignal(content: string): boolean {
+  const plain = toPlainText(content).trim();
+  return /^(?:(?:decision|fact|resource|note|knowledge|wiki|memory)\s*:\s*)?(?:update|correct|correction|amend|revise|change|replace)\b(?:\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory))?\b/i.test(plain)
+    || /\b(?:update|correct|correction|amend|revise|change|replace)\b\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory)\b/i.test(plain);
+}
+
 export function extractExplicitDecision(content: string): string | null {
   const plain = toPlainText(content)
-    .replace(/^[A-Z0-9][A-Z0-9_-]{2,80}:\s*/i, '')
+    .replace(/^[A-Z0-9][A-Z0-9_-]{2,80}:\s*/, '')
     .replace(/\s+/g, ' ')
     .trim();
   const explicit = plain.match(/\bdecision\s*:\s*(.+?)(?:\s+(?:save|keep|capture|remember)\b|$)/i);
@@ -99,6 +113,35 @@ function hasExplicitStatusContextSignal(content: string): boolean {
     /\b(?:keep|save|capture|remember)\b.{0,60}\b(?:context|status|memory|note)\b/i.test(plain);
 }
 
+function looksLikeSocialChatter(content: string): boolean {
+  const plain = toPlainText(content)
+    .toLowerCase()
+    .replace(/\b(?:human|chat|dense|edge)[a-z0-9_-]*-[a-z0-9_-]{6,}\b/g, '');
+  const socialTopic =
+    /\b(?:pizza|deep dish|thin crust|pineapple|jalapeno|mushroom|cheese|lunch|breakfast|dinner|snack|coffee|tea|cake|eat|eating|birthday|party|weekend|movie|music|sports)\b/i.test(plain);
+  if (!socialTopic) return false;
+
+  const explicitCapture =
+    hasExplicitKnowledgeSignal(content) ||
+    hasExplicitKnowledgeUpdateSignal(content) ||
+    hasExplicitTaskSignal(content) ||
+    looksLikeResourceCapture(content);
+  if (explicitCapture) return false;
+
+  const jokingOrPreferenceLanguage =
+    /\b(?:discourse|drama|counterpoint|civilized|absolutely not|fine|deal|move on|unbothered|option|prefer|preference|want|wants|only|never|chaos|democracy)\b/i.test(plain);
+  return jokingOrPreferenceLanguage || plain.length < 220;
+}
+
+function looksLikeSocialTaskJoke(content: string): boolean {
+  const plain = toPlainText(content)
+    .toLowerCase()
+    .replace(/\b(?:human|chat|dense|edge)[a-z0-9_-]*-[a-z0-9_-]{6,}\b/g, '');
+  return hasExplicitTaskSignal(content) &&
+    /\b(?:pizza|pineapple|lunch|coffee|snack|cake|weekend|movie|music|sports)\b/i.test(plain) &&
+    /\b(?:joke|joking|kidding|mostly|ban|constitution|debate|debates|drama)\b/i.test(plain);
+}
+
 function statusContextFact(content: string): string | null {
   const plain = toPlainText(content)
     .replace(/^DENSE-[^:]+:\s*/i, '')
@@ -113,14 +156,13 @@ function shouldQueueTaskExtraction(params: {
   confidence: number;
   blocked: boolean;
   hasMemoryCapture: boolean;
+  agentMentioned: boolean;
 }): boolean {
-  if (params.blocked) return false;
-  const explicitTask = hasExplicitTaskSignal(params.content);
-  if (explicitTask) return params.confidence > 0.7;
-  if (params.hasMemoryCapture && hasExplicitKnowledgeSignal(params.content)) return false;
-  return params.intent === 'actionable' &&
-    params.confidence > 0.78 &&
-    hasGeneralActionSignal(params.content);
+  // Chat-to-task is now intentionally Defty-led. Normal chat can still be
+  // observed and later used as context, but it should not create/update tasks
+  // mechanically in the background.
+  void params;
+  return false;
 }
 
 async function markObservation(params: {
@@ -213,6 +255,29 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
     return;
   }
 
+  const [author] = await db
+    .select({ is_agent: users.is_agent })
+    .from(users)
+    .where(eq(users.id, message.user_id))
+    .limit(1);
+  if (author?.is_agent) {
+    await markObservation({
+      orgId,
+      messageId,
+      observationVersion,
+      status: 'ignored',
+      ignoredReason: 'agent_authored_message',
+      classifierResult: {
+        intent: 'none',
+        confidence: 1,
+        ignored_reason: 'agent_authored_message',
+        source: 'deterministic_guardrail',
+      },
+      completed: true,
+    });
+    return;
+  }
+
   await markObservation({
     orgId,
     messageId,
@@ -267,20 +332,34 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
 
   const downstreamJobs: Array<Record<string, unknown>> = [];
   const resourceCapture = looksLikeResourceCapture(message.content);
+  const explicitKnowledgeUpdate = hasExplicitKnowledgeUpdateSignal(message.content);
   const explicitDecision = extractExplicitDecision(message.content) || classification.decision;
-  const factCandidates = resourceCapture && !hasExplicitFactSignal(message.content)
+  const classifierFactCandidates = explicitKnowledgeUpdate
+    ? []
+    : resourceCapture && !hasExplicitFactSignal(message.content)
     ? []
     : factsWithoutDecisionEcho(
       classification.memorable_facts,
       explicitDecision,
     );
+  const factCandidates = (looksLikeSocialChatter(message.content) || looksLikeSocialTaskJoke(message.content)) && !hasExplicitFactSignal(message.content)
+    ? []
+    : classifierFactCandidates;
   const deterministicStatusFact = hasExplicitStatusContextSignal(message.content)
     ? statusContextFact(message.content)
     : null;
   if (factCandidates.length === 0 && deterministicStatusFact) {
     factCandidates.push(deterministicStatusFact);
   }
-  const hasMemoryCapture = Boolean(explicitDecision) || factCandidates.length > 0 || resourceCapture;
+  const knowledgeSuppressed =
+    classification.agent_mentioned ||
+    hasNoKnowledgeDirective(message.content) ||
+    looksLikeSocialChatter(message.content) ||
+    looksLikeSocialTaskJoke(message.content);
+  const hasImmediateMemoryCapture = false;
+  const hasMemoryCapture = !knowledgeSuppressed && (
+    Boolean(explicitDecision) || factCandidates.length > 0 || resourceCapture
+  );
 
   if (shouldQueueTaskExtraction({
     content: message.content,
@@ -288,6 +367,7 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
     confidence: classification.confidence,
     blocked: classification.blocked,
     hasMemoryCapture,
+    agentMentioned: classification.agent_mentioned,
   })) {
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'task-extract', {
       messageId,
@@ -300,7 +380,13 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
     downstreamJobs.push({ name: 'task-extract', reason: classification.intent });
   }
 
-  if (classification.blocked === true) {
+  if (
+    classification.blocked === true &&
+    !classification.agent_mentioned &&
+    !looksLikeSocialChatter(message.content) &&
+    !looksLikeSocialTaskJoke(message.content) &&
+    hasConcreteBlockedSignal(message.content)
+  ) {
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'blocked-alert', {
       messageId,
       spaceId: message.space_id,
@@ -311,7 +397,10 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
     downstreamJobs.push({ name: 'blocked-alert', reason: 'blocked' });
   }
 
-  if (hasMemoryCapture) {
+  if (hasImmediateMemoryCapture && hasMemoryCapture) {
+    const memoryCaptureOptions = explicitKnowledgeUpdate
+      ? { delay: EXPLICIT_KNOWLEDGE_UPDATE_CAPTURE_DELAY_MS, maxAttempts: 5 }
+      : undefined;
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'memory-capture', {
       messageId,
       spaceId: message.space_id,
@@ -320,7 +409,7 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
       userId,
       decision: explicitDecision || null,
       facts: factCandidates,
-    });
+    }, memoryCaptureOptions);
     downstreamJobs.push({
       name: 'memory-capture',
       reason: explicitDecision
@@ -328,6 +417,9 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
         : factCandidates.length > 0
           ? 'facts'
           : 'resource',
+      ...(explicitKnowledgeUpdate
+        ? { delay_ms: EXPLICIT_KNOWLEDGE_UPDATE_CAPTURE_DELAY_MS }
+        : {}),
     });
   }
 

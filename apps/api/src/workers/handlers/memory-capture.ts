@@ -4,6 +4,8 @@ import type { JobData } from '../types.js';
 import { queueDeftyKnowledgeCapture } from '../../lib/defty-capture.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 
+const ENABLE_IMMEDIATE_MEMORY_CAPTURE = process.env.DEFT_ENABLE_IMMEDIATE_MEMORY_CAPTURE === '1';
+
 interface MemoryCaptureJobData {
   messageId: string;
   spaceId: string;
@@ -88,6 +90,12 @@ function dedupeSimilarFacts(facts: string[]): string[] {
 }
 
 export async function handleMemoryCapture(job: JobData) {
+  if (!ENABLE_IMMEDIATE_MEMORY_CAPTURE) {
+    const data = job.data as MemoryCaptureJobData;
+    console.log(`[memory-capture] Immediate chat-to-knowledge capture disabled; skipping ${data.messageId}`);
+    return;
+  }
+
   const data = job.data as MemoryCaptureJobData;
   const {
     messageId,
@@ -106,6 +114,7 @@ export async function handleMemoryCapture(job: JobData) {
       spaceId,
       messageId,
       content: decision,
+      rawContent: content,
       title: decisionTitle(decision, content),
       summary: decision,
       wikiType: 'decision',
@@ -139,6 +148,7 @@ export async function handleMemoryCapture(job: JobData) {
       spaceId,
       messageId,
       content: noteContent,
+      rawContent: content,
       title: factCandidates.length === 1 ? noteTitle(firstFact) : 'Facts and preferences from chat',
       summary: noteContent,
       wikiType: 'fact',
@@ -166,6 +176,7 @@ export async function handleMemoryCapture(job: JobData) {
       spaceId,
       messageId,
       content: resource.content,
+      rawContent: content,
       title: resource.title,
       summary: resource.content,
       wikiType: 'resource',

@@ -4,6 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   agentActions,
   agentEmployees,
+  actionReceipts,
   db,
   messages,
   orgMembers,
@@ -14,6 +15,7 @@ import {
   spaces,
   tasks,
   users,
+  wikiOpsLog,
   wikiPages,
   workIntents,
 } from '@deft/db';
@@ -86,9 +88,11 @@ before(async () => {
 });
 
 after(async () => {
+  await db.delete(actionReceipts).where(eq(actionReceipts.org_id, ORG_ID));
   await db.delete(agentActions).where(eq(agentActions.org_id, ORG_ID));
   await db.delete(workIntents).where(eq(workIntents.org_id, ORG_ID));
   await db.delete(agentEmployees).where(eq(agentEmployees.org_id, ORG_ID));
+  await db.delete(wikiOpsLog).where(eq(wikiOpsLog.org_id, ORG_ID));
   await db.delete(wikiPages).where(eq(wikiPages.org_id, ORG_ID));
   await db.delete(tasks).where(eq(tasks.org_id, ORG_ID));
   await db.delete(messages).where(eq(messages.org_id, ORG_ID));
@@ -554,6 +558,71 @@ test('similar knowledge with a different reference code still queues a fresh pro
   assert.ok(action, 'expected a fresh pending approval for TT-4102');
   assert.equal(action.action, 'wiki_create');
   assert.equal((action.params as Record<string, any>).title, 'Use TT-4102 for chef sample boxes');
+});
+
+test('preferUpdate queues wiki_update for related existing knowledge instead of duplicate create', async () => {
+  const slug = `brightmart-delivery-window-${RUN_ID}`;
+  await db.insert(wikiPages).values({
+    id: `defty-capture-wiki-${crypto.randomUUID()}`,
+    org_id: ORG_ID,
+    scope: 'org',
+    type: 'decision',
+    title: 'BrightMart delivery window stays Friday',
+    slug,
+    summary: 'BrightMart delivery window stays Friday.',
+    content: 'Decision: BrightMart delivery window stays Friday.',
+    confidence: 0.9,
+  });
+  const content = 'Decision: BrightMart delivery window stays Friday, and Maya owns buyer confirmation before the route sheet is sent.';
+  const messageId = await seedMessage(content);
+
+  const queued = await queueDeftyKnowledgeCapture({
+    orgId: ORG_ID,
+    sourceUserId: USER_ID,
+    spaceId: SPACE_ID,
+    messageId,
+    content,
+    title: 'BrightMart delivery window stays Friday',
+    wikiType: 'decision',
+    captureKind: 'decision_candidate',
+    captureReason: 'Test related decision update.',
+    extraction: 'classifier',
+    tags: ['decision', 'defty-capture'],
+    preferUpdate: true,
+  });
+
+  assert.equal(queued.queued, true);
+
+  const [intent] = await db
+    .select({
+      proposed_action: workIntents.proposed_action,
+      proposed_params: workIntents.proposed_params,
+      metadata: workIntents.metadata,
+    })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ))
+    .limit(1);
+
+  assert.ok(intent, 'expected a related knowledge update intent');
+  assert.equal(intent.proposed_action, 'wiki_update');
+  assert.equal((intent.proposed_params as Record<string, any>).slug, slug);
+  assert.equal((intent.metadata as Record<string, any>).related_wiki_update, true);
+
+  const [action] = await db
+    .select({ action: agentActions.action, params: agentActions.params })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, ORG_ID),
+      eq(agentActions.message_id, messageId),
+    ))
+    .limit(1);
+
+  assert.ok(action, 'expected a pending wiki_update approval');
+  assert.equal(action.action, 'wiki_update');
+  assert.equal((action.params as Record<string, any>).slug, slug);
 });
 
 test('explicit correction to existing knowledge queues wiki_update instead of duplicate wiki_create', async () => {

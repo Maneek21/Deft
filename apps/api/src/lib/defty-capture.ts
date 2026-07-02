@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { agentActions, messages, projects, projectSpaces, spaces, tasks, wikiPages, workIntents } from '@deft/db/schema';
 import { db } from './db.js';
+import { approveAction } from './agent-approval-resolver.js';
 import { ensureDeftyEmployee } from './ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from './plain-text.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
@@ -25,6 +26,7 @@ type TaskUpdatePatch = {
   comment?: string;
   description?: string;
 };
+type TaskCaptureApprovalMode = 'approval' | 'passive';
 
 async function resolveProjectForCapture(
   orgId: string,
@@ -76,13 +78,37 @@ async function resolveProjectForCapture(
 function buildFallbackTitle(content: string): string {
   const plainContent = toPlainText(content);
   const explicit = plainContent.match(
-    /\b(?:create|add|make|open|track)\b.{0,40}\b(?:task|todo|ticket)\b\s*:?\s*(.+)$/i,
+    /\b(?:create|add|make|open|track)\b.{0,40}\b(?:tasks?|todos?|tickets?)\b\s*:?\s*(.+)$/i,
   );
   const candidate = (explicit?.[1]?.trim() || plainContent).replace(/[.!?]+$/g, '');
   return truncatePlainText(candidate.replace(/^please\s+/i, ''), 80) || 'Follow up from chat';
 }
 
 type DeftyKnowledgeWikiType = 'decision' | 'resource' | 'concept' | 'entity' | 'procedure' | 'preference' | 'fact';
+
+function shouldAutoApproveKnowledgeCapture(params: {
+  captureKind: 'decision_candidate' | 'resource_candidate' | 'note_candidate';
+  targetScope: 'org' | 'space';
+}): boolean {
+  // Public decisions/resources are the durable work record. Auto-approve them
+  // quietly so chat stays clean while receipts still preserve governance.
+  return params.targetScope === 'org' &&
+    (params.captureKind === 'decision_candidate' || params.captureKind === 'resource_candidate');
+}
+
+async function autoApproveDeftyCapture(params: {
+  actionId?: string;
+  deftyUserId: string;
+  label: string;
+}): Promise<void> {
+  if (!params.actionId) return;
+  const result = await approveAction(params.actionId, params.deftyUserId);
+  if (result.status === 'error') {
+    console.warn(
+      `[defty-capture] Auto-approval failed for ${params.label} (${params.actionId}): ${result.code} ${result.message}`,
+    );
+  }
+}
 
 function normalizeComparable(value: string): string {
   return toPlainText(value)
@@ -161,13 +187,24 @@ function equivalentKnowledgeCapture(params: {
 }
 
 function isKnowledgeUpdateRequest(content: string): boolean {
-  return /\b(?:update|correct|correction|amend|revise|change|replace)\b/i.test(content);
+  const plain = toPlainText(content).trim();
+  return /^(?:(?:decision|fact|resource|note|knowledge|wiki|memory)\s*:\s*)?(?:update|correct|correction|amend|revise|change|replace)\b(?:\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory))?\b/i.test(plain)
+    || /\b(?:update|correct|correction|amend|revise|change|replace)\b\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory)\b/i.test(plain);
 }
 
 function stripKnowledgeUpdatePrefix(content: string): string {
   const plain = toPlainText(content);
-  const explicit = plain.match(/\b(?:update|correct|correction|amend|revise|change|replace)\b(?:\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory))?\s*:?\s*(.+)$/i);
+  const explicit = plain.match(/^(?:(?:decision|fact|resource|note|knowledge|wiki|memory)\s*:\s*)?(?:update|correct|correction|amend|revise|change|replace)\b(?:\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory))?\s*:?\s*(.+)$/i)
+    ?? plain.match(/\b(?:update|correct|correction|amend|revise|change|replace)\b\s+(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory)\s*:?\s*(.+)$/i);
   return explicit?.[1]?.trim() || plain;
+}
+
+function extractKnowledgeUpdateTarget(content: string): string {
+  const stripped = stripKnowledgeUpdatePrefix(content)
+    .replace(/^(?:the\s+)?(?:decision|fact|resource|note|knowledge|wiki|memory)\s+/i, '')
+    .trim();
+  const target = stripped.split(/\b(?:to|should|with|so that|because|and)\b/i)[0]?.trim() ?? '';
+  return target || stripped;
 }
 
 async function findWikiPageForExplicitUpdate(params: {
@@ -197,11 +234,33 @@ async function findWikiPageForExplicitUpdate(params: {
     .limit(250);
 
   const normalizedContent = normalizeComparable(params.content);
+  const updateTarget = extractKnowledgeUpdateTarget(params.content);
+  const normalizedTarget = normalizeComparable(updateTarget);
+  const targetRefs = distinctiveReferenceTokens(updateTarget);
   const matches = rows.filter((row) => {
+    const rowReferenceText = `${row.title}\n${row.summary ?? ''}\n${row.content}`;
+    const rowRefs = distinctiveReferenceTokens(rowReferenceText);
+    if (targetRefs.size > 0) {
+      for (const ref of targetRefs) {
+        if (!rowRefs.has(ref)) return false;
+      }
+    }
+
     const normalizedTitle = normalizeComparable(row.title);
     if (normalizedTitle && normalizedContent.includes(normalizedTitle)) return true;
+    if (normalizedTarget && normalizedTarget.length >= 12) {
+      if (targetRefs.size > 0 && tokenOverlap(updateTarget, row.title) >= 0.25) {
+        return true;
+      }
+      if (normalizedTitle.includes(normalizedTarget) || normalizedTarget.includes(normalizedTitle)) {
+        return true;
+      }
+      if (tokenOverlap(updateTarget, row.title) >= 0.4) {
+        return true;
+      }
+    }
     const titleOverlap = tokenOverlap(params.title, row.title);
-    const bodyOverlap = tokenOverlap(params.content, `${row.title}\n${row.summary ?? ''}\n${row.content}`);
+    const bodyOverlap = tokenOverlap(params.content, rowReferenceText);
     return titleOverlap >= 0.85 || bodyOverlap >= 0.82;
   });
 
@@ -489,6 +548,58 @@ async function findSimilarWikiPage(params: {
   return null;
 }
 
+async function findRelatedWikiPage(params: {
+  orgId: string;
+  spaceId: string;
+  title: string;
+  content: string;
+  wikiType: DeftyKnowledgeWikiType;
+  scope: 'org' | 'space';
+}): Promise<{ id: string; title: string; slug: string } | null> {
+  const rows = await db
+    .select({
+      id: wikiPages.id,
+      title: wikiPages.title,
+      slug: wikiPages.slug,
+      content: wikiPages.content,
+      summary: wikiPages.summary,
+    })
+    .from(wikiPages)
+    .where(and(
+      eq(wikiPages.org_id, params.orgId),
+      eq(wikiPages.is_deleted, false),
+      eq(wikiPages.type, params.wikiType),
+      eq(wikiPages.scope, params.scope),
+      params.scope === 'space' ? eq(wikiPages.space_id, params.spaceId) : sql`TRUE`,
+    ))
+    .limit(250);
+
+  let best: { id: string; title: string; slug: string; score: number } | null = null;
+  for (const row of rows) {
+    const existingComparable = `${row.title}\n${row.summary ?? ''}\n${row.content ?? ''}`;
+    if (hasMissingDistinctiveReference(`${params.title}\n${params.content}`, existingComparable)) {
+      continue;
+    }
+    const candidateTitle = normalizeComparable(params.title);
+    const existingTitle = normalizeComparable(row.title);
+    const titleContains = existingTitle.length >= 12 &&
+      (candidateTitle.includes(existingTitle) || existingTitle.includes(candidateTitle));
+    const titleOverlap = tokenOverlap(params.title, row.title);
+    const bodyOverlap = tokenOverlap(params.content, existingComparable);
+    const score = titleContains ? 1 : (titleOverlap * 0.55) + (bodyOverlap * 0.45);
+    const related =
+      titleContains ||
+      (titleOverlap >= 0.55 && bodyOverlap >= 0.24) ||
+      bodyOverlap >= 0.48 ||
+      (titleOverlap >= 0.72 && bodyOverlap >= 0.16);
+    if (!related) continue;
+    if (!best || score > best.score) {
+      best = { id: row.id, title: row.title, slug: row.slug, score };
+    }
+  }
+  return best ? { id: best.id, title: best.title, slug: best.slug } : null;
+}
+
 function buildKnowledgeTitle(content: string, type: DeftyKnowledgeWikiType): string {
   const plainContent = toPlainText(content);
   const prefix = type === 'decision'
@@ -517,6 +628,8 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   captureReason?: string | null;
   extraction: 'llm' | 'deterministic' | 'classifier';
   metadata?: Record<string, unknown>;
+  autoApprove?: boolean;
+  preferUpdate?: boolean;
 }): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
   const {
     orgId,
@@ -529,6 +642,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
     captureReason,
     extraction,
     metadata = {},
+    autoApprove = false,
   } = params;
   const defty = await ensureDeftyEmployee(orgId);
   const updatedBody = stripKnowledgeUpdatePrefix(content);
@@ -538,7 +652,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   const title = `Update knowledge: ${targetPage.title}`;
   const summary = truncatePlainText(updatedBody, 240);
 
-  return db.transaction(async (tx) => {
+  const queued = await db.transaction(async (tx) => {
     const proposedParams = {
       caller_employee_slug: defty.slug,
       page_id: targetPage.id,
@@ -642,6 +756,16 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
     if (!queuedAction) throw new Error('Failed to create Defty knowledge-update approval');
     return { queued: true, actionId: queuedAction.id };
   });
+
+  if (queued.queued && autoApprove) {
+    await autoApproveDeftyCapture({
+      actionId: queued.actionId,
+      deftyUserId: defty.userId,
+      label: `knowledge update ${targetPage.slug}`,
+    });
+  }
+
+  return queued;
 }
 
 export async function queueDeftyKnowledgeCapture(params: {
@@ -650,6 +774,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   spaceId: string;
   messageId: string;
   content: string;
+  rawContent?: string | null;
   title?: string | null;
   summary?: string | null;
   wikiType: DeftyKnowledgeWikiType;
@@ -658,6 +783,8 @@ export async function queueDeftyKnowledgeCapture(params: {
   extraction?: 'llm' | 'deterministic' | 'classifier';
   tags?: string[];
   metadata?: Record<string, unknown>;
+  autoApprove?: boolean;
+  preferUpdate?: boolean;
 }): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
   const {
     orgId,
@@ -665,6 +792,7 @@ export async function queueDeftyKnowledgeCapture(params: {
     spaceId,
     messageId,
     content,
+    rawContent,
     title,
     summary,
     wikiType,
@@ -673,10 +801,13 @@ export async function queueDeftyKnowledgeCapture(params: {
     extraction = 'classifier',
     tags = [],
     metadata = {},
+    autoApprove: forceAutoApprove,
+    preferUpdate = false,
   } = params;
 
   const plainContent = toPlainText(content);
   if (!plainContent) return { queued: false, skippedReason: 'empty_content' };
+  const rawPlainContent = toPlainText(rawContent || content);
 
   const [sourceMessage] = await db
     .select({ id: messages.id, spaceType: spaces.type })
@@ -699,12 +830,13 @@ export async function queueDeftyKnowledgeCapture(params: {
   const finalTitle = truncatePlainText(title || buildKnowledgeTitle(content, wikiType), 120);
   const finalSummary = truncatePlainText(summary || plainContent, 240);
 
-  if (isKnowledgeUpdateRequest(plainContent)) {
+  const explicitKnowledgeUpdate = isKnowledgeUpdateRequest(rawPlainContent);
+  if (explicitKnowledgeUpdate) {
     const targetPage = await findWikiPageForExplicitUpdate({
       orgId,
       spaceId,
       title: finalTitle,
-      content: plainContent,
+      content: rawPlainContent,
       wikiType,
       scope: targetScope,
     });
@@ -714,7 +846,7 @@ export async function queueDeftyKnowledgeCapture(params: {
         sourceUserId,
         spaceId,
         messageId,
-        content: plainContent,
+        content: rawPlainContent,
         targetPage,
         captureKind,
         captureReason,
@@ -722,8 +854,13 @@ export async function queueDeftyKnowledgeCapture(params: {
         metadata: {
           ...metadata,
           update_request: true,
+          extracted_content: plainContent,
         },
+        autoApprove: forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope }),
       });
+    }
+    if (metadata.batch_capture !== true) {
+      return { queued: false, skippedReason: 'knowledge_update_target_missing' };
     }
   }
 
@@ -737,6 +874,37 @@ export async function queueDeftyKnowledgeCapture(params: {
   });
   if (similarPage) {
     return { queued: false, skippedReason: 'knowledge_already_captured' };
+  }
+
+  if (preferUpdate) {
+    const relatedPage = await findRelatedWikiPage({
+      orgId,
+      spaceId,
+      title: finalTitle,
+      content: plainContent,
+      wikiType,
+      scope: targetScope,
+    });
+    if (relatedPage) {
+      return queueDeftyKnowledgeUpdateCapture({
+        orgId,
+        sourceUserId,
+        spaceId,
+        messageId,
+        content: plainContent,
+        targetPage: relatedPage,
+        captureKind,
+        captureReason: captureReason || 'A settled discussion refined existing durable knowledge.',
+        extraction,
+        metadata: {
+          ...metadata,
+          related_wiki_update: true,
+          extracted_title: finalTitle,
+          extracted_summary: finalSummary,
+        },
+        autoApprove: forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope }),
+      });
+    }
   }
 
   const dedupeKey = `defty_capture:${captureKind}:wiki_create:${messageId}`;
@@ -786,7 +954,8 @@ export async function queueDeftyKnowledgeCapture(params: {
     ...metadata,
   };
 
-  return db.transaction(async (tx) => {
+  const autoApprove = forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope });
+  const queued = await db.transaction(async (tx) => {
     const proposedParams = {
       caller_employee_slug: defty.slug,
       title: finalTitle,
@@ -893,6 +1062,16 @@ export async function queueDeftyKnowledgeCapture(params: {
 
     return { queued: true, actionId: queuedAction.id };
   });
+
+  if (queued.queued && autoApprove) {
+    await autoApproveDeftyCapture({
+      actionId: queued.actionId,
+      deftyUserId: defty.userId,
+      label: `knowledge create ${dedupeKey}`,
+    });
+  }
+
+  return queued;
 }
 
 async function queueDeftyTaskUpdateCapture(params: {
@@ -908,6 +1087,7 @@ async function queueDeftyTaskUpdateCapture(params: {
   captureKind: 'task_candidate' | 'blocker_candidate';
   captureReason?: string | null;
   extraction: 'llm' | 'deterministic' | 'classifier';
+  approvalMode?: TaskCaptureApprovalMode;
 }): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
   const {
     orgId,
@@ -922,6 +1102,7 @@ async function queueDeftyTaskUpdateCapture(params: {
     captureKind,
     captureReason,
     extraction,
+    approvalMode = 'approval',
   } = params;
   const defty = await ensureDeftyEmployee(orgId);
   const taskRef = `${targetTask.project_prefix}-${targetTask.number}`;
@@ -964,6 +1145,7 @@ async function queueDeftyTaskUpdateCapture(params: {
           extraction,
           proposed_by: 'defty',
           target_task_ref: taskRef,
+          approval_mode: approvalMode,
         },
         dedupe_key: dedupeKey,
         metadata: {
@@ -972,6 +1154,7 @@ async function queueDeftyTaskUpdateCapture(params: {
           update_fields: Object.keys(patch).sort(),
           target_task_id: targetTask.id,
           target_task_ref: taskRef,
+          approval_mode: approvalMode,
           ...updateMetadata,
         },
       })
@@ -994,6 +1177,10 @@ async function queueDeftyTaskUpdateCapture(params: {
     }
 
     if (!intentId) throw new Error('Failed to create or recover Defty task-update intent');
+
+    if (approvalMode === 'passive') {
+      return { queued: true, skippedReason: 'passive_intent' };
+    }
 
     const [existingAction] = await tx
       .select({ id: agentActions.id })
@@ -1038,6 +1225,7 @@ async function queueDeftyTaskUpdateCapture(params: {
           extraction,
           proposed_by: 'defty',
           target_task_ref: taskRef,
+          approval_mode: approvalMode,
         } as any,
         approval_tier: 'quick',
         approval_status: 'pending',
@@ -1064,6 +1252,7 @@ export async function queueDeftyCreateTaskCapture(params: {
   captureKind: 'task_candidate' | 'blocker_candidate';
   captureReason?: string | null;
   extraction?: 'llm' | 'deterministic' | 'classifier';
+  approvalMode?: TaskCaptureApprovalMode;
 }): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
   const {
     orgId,
@@ -1079,6 +1268,7 @@ export async function queueDeftyCreateTaskCapture(params: {
     captureKind,
     captureReason,
     extraction = 'classifier',
+    approvalMode = 'approval',
   } = params;
 
   const plainContent = toPlainText(content);
@@ -1157,6 +1347,7 @@ export async function queueDeftyCreateTaskCapture(params: {
       captureKind,
       captureReason,
       extraction,
+      approvalMode,
     });
   }
 
@@ -1217,11 +1408,13 @@ export async function queueDeftyCreateTaskCapture(params: {
           capture_kind: captureKind,
           capture_reason: captureReason || null,
           extraction,
+          approval_mode: approvalMode,
         },
         dedupe_key: dedupeKey,
         metadata: {
           extraction,
           legacy_dedupe_key: legacyDedupeKey,
+          approval_mode: approvalMode,
         },
       })
       .onConflictDoNothing({
@@ -1244,6 +1437,10 @@ export async function queueDeftyCreateTaskCapture(params: {
 
     if (!intentId) {
       throw new Error('Failed to create or recover Defty work intent');
+    }
+
+    if (approvalMode === 'passive') {
+      return { queued: true, skippedReason: 'passive_intent' };
     }
 
     await tx.execute(sql`
@@ -1300,6 +1497,7 @@ export async function queueDeftyCreateTaskCapture(params: {
           work_intent_status: 'proposed',
           extraction,
           proposed_by: 'defty',
+          approval_mode: approvalMode,
         } as any,
         approval_tier: 'quick',
         approval_status: 'pending',
