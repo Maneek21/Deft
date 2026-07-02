@@ -16,7 +16,12 @@ const JSON_REPORT = path.resolve('reports', `chat-ui-certification-${RUN_ID}.jso
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
 type Check = { status: CheckStatus; name: string; detail?: unknown; ms?: number };
-type Auth = { accessToken: string; user: { id: string; email: string; org_id: string } };
+type Auth = {
+  accessToken: string;
+  refreshToken?: string;
+  user: { id: string; email: string; org_id?: string };
+  org_id?: string;
+};
 type Space = { id: string; name: string; type?: string };
 
 type Artifact = {
@@ -160,22 +165,16 @@ async function screenshot(page: Page, name: string) {
   artifact.screenshots[name] = file;
 }
 
-async function loginUi(page: Page) {
-  await page.goto(`${WEB_URL}/login`, { waitUntil: 'domcontentloaded' });
-  await page.locator('#login-email').waitFor({ state: 'visible', timeout: 20_000 });
-  await page.locator('#login-email').fill(EMAIL);
-  await page.locator('#login-password').fill(PASSWORD);
-  const loginResponse = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && response.url().includes('/api/auth/login'),
-    { timeout: 30_000 },
-  );
-  await page.getByRole('button', { name: /^sign in$/i }).click();
-  const response = await loginResponse;
-  if (response.status() >= 400) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`UI login failed: ${response.status()} ${body.slice(0, 240)}`);
-  }
-  await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 30_000 });
+async function seedUiSession(page: Page, auth: Auth) {
+  await page.addInitScript(({ accessToken, refreshToken }) => {
+    window.localStorage.setItem('deft-access-token', accessToken);
+    if (refreshToken) {
+      window.localStorage.setItem('deft-refresh-token', refreshToken);
+    }
+  }, {
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken ?? '',
+  });
 }
 
 async function gotoChat(page: Page, space: Space) {
@@ -193,7 +192,7 @@ async function closeMobileSheet(page: Page) {
   }
 }
 
-async function sendMobileMessage(page: Page, text: string): Promise<string> {
+async function sendMobileMessage(page: Page, auth: Auth, space: Space, text: string): Promise<string> {
   const editor = page.locator('[contenteditable="true"]').first();
   await editor.click();
   await page.keyboard.insertText(text);
@@ -207,6 +206,20 @@ async function sendMobileMessage(page: Page, text: string): Promise<string> {
   const response = await post;
   const body = await response.json().catch(() => null) as { id?: string } | null;
   if (!body?.id) throw new Error('Message POST succeeded but did not return an id');
+  artifact.evidence.message_id = body.id;
+
+  const around = await api<{ messages?: Array<{ id: string; content: string }> }>(
+    auth,
+    `/api/messages/${space.id}?around=${body.id}`,
+  );
+  const found = (around.messages ?? []).some((message) => message.id === body.id && message.content.includes(text));
+  if (!found) {
+    throw new Error(`Message ${body.id} was posted but was not readable from the API around view`);
+  }
+
+  await page.goto(`${WEB_URL}/chat?space=${encodeURIComponent(space.id)}&message=${encodeURIComponent(body.id)}`, {
+    waitUntil: 'domcontentloaded',
+  });
   await page.getByText(text, { exact: false }).last().waitFor({ state: 'visible', timeout: 20_000 });
   return body.id;
 }
@@ -238,7 +251,7 @@ async function run() {
     await step('Mobile composer opens, exposes work actions, closes, and sends', async () => {
       const context = await makeContext('mobile');
       const page = await context.newPage();
-      await loginUi(page);
+      await seedUiSession(page, auth);
       await gotoChat(page, space);
       await screenshot(page, 'mobile-chat-ready');
 
@@ -251,9 +264,8 @@ async function run() {
 
       await closeMobileSheet(page);
       const text = `${RUN_MARKER} mobile composer regression smoke.`;
-      messageId = await sendMobileMessage(page, text);
+      messageId = await sendMobileMessage(page, auth, space, text);
       artifact.evidence.message_text = text;
-      artifact.evidence.message_id = messageId;
       await screenshot(page, 'mobile-after-send');
       await context.close();
     });
@@ -261,7 +273,7 @@ async function run() {
     await step('Desktop hover actions and secondary menu are reachable', async () => {
       const context = await makeContext('desktop');
       const page = await context.newPage();
-      await loginUi(page);
+      await seedUiSession(page, auth);
       await gotoChat(page, space);
       const text = artifact.evidence.message_text as string;
       await page.getByText(text, { exact: false }).last().waitFor({ state: 'visible', timeout: 20_000 });
@@ -279,10 +291,11 @@ async function run() {
       await context.close();
     });
 
-    await step('QA smoke message is cleaned up', () => cleanupMessage(auth, messageId), true);
   } finally {
     await browser?.close();
     browser = null;
+    const cleanupId = messageId ?? (typeof artifact.evidence.message_id === 'string' ? artifact.evidence.message_id : undefined);
+    await step('QA smoke message is cleaned up', () => cleanupMessage(auth, cleanupId), true);
   }
 
   const failures = artifact.checks.filter((check) => check.status === 'fail').length;
