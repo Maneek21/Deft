@@ -21,7 +21,7 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.21.0"
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
