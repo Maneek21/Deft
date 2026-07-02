@@ -247,6 +247,41 @@ knowledgeRoutes.get('/:spaceId/knowledge', async (c) => {
 });
 
 // POST /api/spaces/:spaceId/knowledge — create entry (writes to wiki_pages)
+knowledgeRoutes.post('/:spaceId/knowledge/capture-discussion', async (c) => {
+  try {
+    const user = c.get('user');
+    const spaceId = c.req.param('spaceId');
+    const body = await c.req.json().catch(() => ({}));
+    const lookbackMinutes = Math.min(
+      Math.max(Number(body?.lookback_minutes ?? 120), 15),
+      8 * 60,
+    );
+
+    const isMember = await requireSpaceMembership(spaceId, user.id);
+    if (!isMember) {
+      return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+    }
+
+    await enqueue(QUEUE_NAMES.AGENT_JOBS, 'chat-knowledge-batch', {
+      orgId: user.org_id,
+      spaceId,
+      lookbackMs: lookbackMinutes * 60 * 1000,
+      quietMs: 0,
+      requestedByUserId: user.id,
+      source: 'manual_capture_discussion',
+    }, { maxAttempts: 2 });
+
+    return c.json({
+      queued: true,
+      lookback_minutes: lookbackMinutes,
+      message: 'Recent discussion capture queued',
+    });
+  } catch (err) {
+    console.error('Failed to queue discussion capture:', err);
+    return c.json({ error: 'Failed to queue discussion capture', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
   try {
     const user = c.get('user');

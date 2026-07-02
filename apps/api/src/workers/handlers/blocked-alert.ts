@@ -13,7 +13,6 @@ import {
 import { eq, and, gte } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
-import { queueDeftyCreateTaskCapture } from '../../lib/defty-capture.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId } = job.data;
@@ -82,32 +81,8 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
     // one-click approve "Yes, track this as a task" from the approval
     // inbox. Independent of the lead-notification path below so it
     // still fires for users with no in-progress tasks.
-    try {
-      const plainContent = toPlainText(content);
-      const draftSnippet = truncatePlainText(plainContent, 80);
-      const queued = await queueDeftyCreateTaskCapture({
-        orgId,
-        sourceUserId: userId,
-        spaceId,
-        messageId,
-        content,
-        title: `Blocker: ${draftSnippet}`,
-        description: plainContent,
-        projectName: userTasks[0]?.project_name ?? null,
-        captureKind: 'blocker_candidate',
-        captureReason: 'A chat message looked like a blocker and may need follow-up work.',
-        extraction: 'classifier',
-      });
-      if (queued.queued) {
-        console.log(`[blocked-alert] Queued Defty blocker capture for ${userId}`);
-      } else if (queued.skippedReason === 'duplicate') {
-        console.log(`[blocked-alert] Skipped duplicate blocker capture for message ${messageId}`);
-      } else {
-        console.warn(`[blocked-alert] skipped blocker capture: ${queued.skippedReason ?? 'unknown'}`);
-      }
-    } catch (err) {
-      console.warn('[blocked-alert] failed to queue blocker capture:', err);
-    }
+    // Chat-to-task is Defty-led. This worker may notify a project lead about
+    // a real blocker, but it must not create task proposals on its own.
 
     if (shouldSkipLeadAlert) {
       console.log('[blocked-alert] Skipped lead alert: already alerted for this user within 4h');

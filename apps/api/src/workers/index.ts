@@ -27,6 +27,7 @@ const CRON_DELAYS: Record<string, number> = {
   // cadence not _fire_ cadence.
   'ics-sync': 60_000,
   'chat-observation-backfill': 5 * 60_000,
+  'chat-knowledge-batch': 30 * 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -44,6 +45,7 @@ const CRON_KEYS: Record<string, string> = {
   'trigger-dispatch': 'cron:trigger-dispatch',
   'ics-sync': 'cron:ics-sync',
   'chat-observation-backfill': 'cron:chat-observation-backfill',
+  'chat-knowledge-batch': 'cron:chat-knowledge-batch',
 };
 
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
@@ -94,6 +96,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
     case 'memory-capture': {
       const mod = await import('./handlers/memory-capture.js');
       return mod.handleMemoryCapture;
+    }
+    case 'chat-knowledge-batch': {
+      const mod = await import('./handlers/chat-knowledge-batch.js');
+      return mod.handleChatKnowledgeBatch;
     }
     case 'blocked-alert': {
       const mod = await import('./handlers/blocked-alert.js');

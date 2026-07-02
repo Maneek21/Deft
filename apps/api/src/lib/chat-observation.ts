@@ -6,14 +6,29 @@ import { toPlainText } from './plain-text.js';
 export const CHAT_OBSERVATION_VERSION = 1;
 export const OBSERVE_CHAT_MESSAGE_JOB = 'observe-chat-message';
 
+export function hasNoTaskDirective(content: string): boolean {
+  const plain = toPlainText(content).toLowerCase().replace(/\s+/g, ' ').trim();
+  return /\b(no task|no tasks|not a task|no actual task|not tasks?|do not create (?:a |any |individual )?(?:tasks?|todos?|tickets?)|don't create (?:a |any |individual )?(?:tasks?|todos?|tickets?)|dont create (?:a |any |individual )?(?:tasks?|todos?|tickets?))\b/.test(plain) ||
+    /\b(?:hold off|wait|not yet|later|after this is settled|once this is settled)\b.{0,80}\b(?:tasks?|todos?|tickets?)\b/.test(plain) ||
+    /\b(?:tasks?|todos?|tickets?)\b.{0,80}\b(?:not yet|later|after this is settled|once this is settled|hold off)\b/.test(plain);
+}
+
+export function hasNoKnowledgeDirective(content: string): boolean {
+  const plain = toPlainText(content).toLowerCase().replace(/\s+/g, ' ').trim();
+  return /\b(don't save|dont save|do not save|no one should save|no memory|no company memory|don't remember|dont remember|do not remember|nothing to capture|nothing to save|do not capture|don't capture|dont capture)\b/.test(plain) ||
+    /\b(?:keep|leave)\s+(?:this|that|it)?\s*(?:only\s+)?in\s+chat\b/.test(plain) ||
+    /\bignore\s+(?:this|that|the)\s+(?:for\s+)?(?:knowledge|memory|wiki|context)\b/.test(plain);
+}
+
 export function explicitObservationIgnoreReason(content: string): string | null {
   const plain = toPlainText(content).toLowerCase().replace(/\s+/g, ' ').trim();
   if (!plain) return 'empty_content';
 
   if (
     /\b(no action needed|no action required|no follow up needed|nothing to do)\b/.test(plain) ||
-    /\b(no task|no tasks|not a task|don't create (?:a )?task|dont create (?:a )?task|do not create (?:a )?task)\b/.test(plain) ||
-    /\b(don't save|dont save|do not save|no memory|don't remember|dont remember|do not remember|nothing to capture|nothing to save)\b/.test(plain) ||
+    /\b(joke only|not the task)\b/.test(plain) ||
+    hasNoTaskDirective(content) ||
+    hasNoKnowledgeDirective(content) ||
     /\b(ignore this|just thinking aloud|thinking out loud|fyi only|for visibility only)\b/.test(plain)
   ) {
     return 'explicit_no_action';

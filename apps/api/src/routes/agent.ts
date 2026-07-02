@@ -947,27 +947,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.org_id = ${user.org_id}
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
-      AND (
-        a.source IS DISTINCT FROM 'defty_capture'
-        OR (
-          (
-            COALESCE(
-              a.params->>'source_space_id',
-              a.params->>'origin_space_id',
-              a.params->>'space_id'
-            ) IS NULL
-            OR COALESCE(
-              a.params->>'source_space_id',
-              a.params->>'origin_space_id',
-              a.params->>'space_id'
-            ) = ${spaceId}
-          )
-          AND (
-            a.params->>'source_message_id' IS NULL
-            OR a.params->>'source_message_id' = msg.id
-          )
-        )
-      )
+      AND a.source IS DISTINCT FROM 'defty_capture'
     ORDER BY a.created_at DESC
     LIMIT 100
   `);
