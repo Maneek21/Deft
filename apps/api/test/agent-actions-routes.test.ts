@@ -671,10 +671,11 @@ test('GET /api/agent action surfaces hide Defty captures from private spaces', a
   );
   assert.equal(inlineRes.status, 200);
   const inlineBody = await inlineRes.json();
-  const inlineMatch = inlineBody.find((action: any) => action.id === visible.actionId);
-  assert.ok(inlineMatch, 'visible capture action should appear in inline space approvals');
-  assert.equal(inlineMatch.proposer, 'defty');
-  assert.equal(inlineMatch.params.source_message_content, 'visible capture action source');
+  assert.equal(
+    inlineBody.some((action: any) => action.id === visible.actionId),
+    false,
+    'Defty capture actions should not appear as inline chat approval cards',
+  );
 
   const recentRes = await app().request('/api/agent/actions/recent?limit=50', { method: 'GET' });
   assert.equal(recentRes.status, 200);
