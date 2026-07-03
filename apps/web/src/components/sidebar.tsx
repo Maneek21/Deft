@@ -31,7 +31,6 @@ import {
   Bell,
   Bookmark,
   FileText,
-  CalendarDays,
   Headphones,
   BookOpen,
   Smile,
@@ -77,10 +76,9 @@ type Project = {
 };
 
 const navItems = [
-  { name: 'Notes', href: '/notes', icon: FileText },
-  { name: 'Calendar', href: '/calendar', icon: CalendarDays },
   { name: 'Chat', href: '/chat', icon: MessageSquare },
   { name: 'Tasks', href: '/tasks', icon: CheckSquare },
+  { name: 'Notes', href: '/notes', icon: FileText },
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { name: 'Inbox', href: '/inbox', icon: Inbox },
 ];
