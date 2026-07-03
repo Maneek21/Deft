@@ -150,6 +150,10 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
 
 async function getScheduledJobHandler(jobName: string): Promise<JobHandler | null> {
   switch (jobName) {
+    case 'chat-knowledge-batch': {
+      const mod = await import('./handlers/chat-knowledge-batch.js');
+      return mod.handleChatKnowledgeBatch;
+    }
     case 'standup-generate': {
       const mod = await import('./handlers/standup-generate.js');
       return mod.handleStandupGenerate;
@@ -220,6 +224,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
     default:
       return null;
   }
+}
+
+export async function _getScheduledJobHandlerForTest(jobName: string): Promise<JobHandler | null> {
+  return getScheduledJobHandler(jobName);
 }
 
 async function getHandler(queueName: string, jobName: string): Promise<JobHandler | null> {
