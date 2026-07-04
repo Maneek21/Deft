@@ -79,25 +79,25 @@ const CLIENT_OPTIONS: ClientOption[] = [
     id: 'claude-code',
     name: 'Claude Code',
     fit: 'Token setup',
-    detail: 'Use Deft as the work-record MCP server while Claude Code handles local development and repo work.',
+    detail: 'Use the Claude Code CLI with Deft as a remote HTTP MCP server and a bearer header.',
     setupKind: 'token',
     defaultPreset: 'work',
     tokenName: 'Claude Code',
   },
   {
     id: 'claude-desktop',
-    name: 'Claude Desktop',
-    fit: 'Desktop assistant',
-    detail: 'Good for workspace Q&A and light task work from a local desktop app that accepts MCP server JSON.',
-    setupKind: 'token',
+    name: 'Claude / Claude Desktop',
+    fit: 'Remote OAuth connector',
+    detail: 'Add Deft from Claude settings, not inside a chat. Claude connects from Anthropic cloud and authenticates through OAuth.',
+    setupKind: 'oauth',
     defaultPreset: 'read',
-    tokenName: 'Claude Desktop',
+    tokenName: 'Claude connector',
   },
   {
     id: 'remote-web',
-    name: 'ChatGPT / Claude Web',
+    name: 'ChatGPT / other web apps',
     fit: 'Remote connector path',
-    detail: 'Use OAuth metadata only when the hosted app supports remote MCP connectors for self-hosted servers.',
+    detail: 'Use this when a hosted AI app asks for a public MCP URL, OAuth metadata, or a custom connector.',
     setupKind: 'oauth',
     defaultPreset: 'read',
     tokenName: 'Remote AI app',
@@ -315,8 +315,7 @@ function clientById(id: ClientId) {
 
 function clientIcon(id: ClientId) {
   if (id === 'codex' || id === 'claude-code') return <Code2 size={16} />;
-  if (id === 'claude-desktop') return <Bot size={16} />;
-  if (id === 'remote-web') return <Globe2 size={16} />;
+  if (id === 'claude-desktop' || id === 'remote-web') return <Globe2 size={16} />;
   if (id === 'custom') return <Wrench size={16} />;
   return <Bot size={16} />;
 }
@@ -508,10 +507,10 @@ export default function McpAccessPage() {
         ].join('\n'),
       };
     }
-    if (selectedClient === 'claude-code' || selectedClient === 'claude-desktop') {
+    if (selectedClient === 'claude-code') {
       return {
-        title: selectedClient === 'claude-code' ? 'Claude Code MCP JSON' : 'Claude Desktop MCP JSON',
-        detail: 'Paste this into a client that accepts mcpServers JSON with HTTP headers.',
+        title: 'Claude Code MCP JSON',
+        detail: 'Use this with Claude Code config or add-json. Do not paste bearer tokens into a Claude chat.',
         value: JSON.stringify({
           mcpServers: {
             deft: {
@@ -543,6 +542,19 @@ export default function McpAccessPage() {
     ['Token endpoint', remote?.token_endpoint],
     ['Registration endpoint', remote?.registration_endpoint],
   ];
+  const isClaudeConnector = selectedClient === 'claude-desktop';
+  const remoteSteps = isClaudeConnector
+    ? [
+        'In Claude, open Settings or Customize -> Connectors. Do not paste MCP JSON or tokens into a chat.',
+        'Add a custom connector and use the Connector URL below.',
+        'Click Connect in Claude. Deft will handle OAuth and scope approval.',
+        'Enable the connector for the chat where Claude should use Deft tools.',
+      ]
+    : [
+        'Open the AI app settings area for custom or remote MCP connectors.',
+        'Add the Connector URL below, then follow the app\'s OAuth sign-in flow.',
+        'Use the metadata links only if the app asks for discovery or OAuth details.',
+      ];
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -752,14 +764,34 @@ export default function McpAccessPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Remote connector setup</h2>
+                        <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                          {isClaudeConnector ? 'Claude connector setup' : 'Remote connector setup'}
+                        </h2>
                         <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                          Use this path only when the hosted AI app asks for a remote MCP connector or OAuth metadata. For Codex and local clients, token setup is more reliable.
+                          {isClaudeConnector
+                            ? 'Claude connectors are added from Claude settings at the account level. The URL/token cannot be pasted into an active chat and expected to work.'
+                            : 'Use this path only when the hosted AI app asks for a remote MCP connector or OAuth metadata. For Codex and Claude Code, token setup is more direct.'}
                         </p>
                       </div>
                       <span className="text-[11px] rounded-md px-2 py-1 shrink-0" style={{ background: remote?.https_ready ? 'var(--accent-muted)' : 'var(--surface-container)', color: remote?.https_ready ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>
                         {remote?.https_ready ? 'HTTPS ready' : 'Needs public HTTPS'}
                       </span>
+                    </div>
+                    <div className="mt-4 rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 7%, var(--surface-container))', border: '1px solid var(--border-default)' }}>
+                      <div className="flex items-start gap-2">
+                        <ShieldCheck size={14} className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
+                        <div>
+                          <div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                            {isClaudeConnector ? 'Use Claude settings, not chat' : 'Use the app connector settings'}
+                          </div>
+                          <ol className="mt-2 space-y-1.5 text-[11px] leading-relaxed list-decimal pl-4" style={{ color: 'var(--text-secondary)' }}>
+                            {remoteSteps.map((step) => <li key={step}>{step}</li>)}
+                          </ol>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 rounded-md p-3 text-[11px] leading-relaxed" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
+                      <strong style={{ color: 'var(--text-primary)' }}>Security note:</strong> never paste a live bearer token into Claude, ChatGPT, or any AI chat. If you already did, revoke that personal token below and generate a fresh one. Remote Claude connectors should authenticate through Deft OAuth.
                     </div>
                     <div className="grid md:grid-cols-2 gap-3 mt-4">
                       {remoteRows.slice(0, 3).map(([label, value]) => (
