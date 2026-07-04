@@ -44,6 +44,7 @@ const RESTRICTED_TASK_ID = `oauth-mcp-restricted-task-${TEST_ID}`;
 const PRIVATE_EVENT_ID = `oauth-mcp-private-event-${TEST_ID}`;
 const SPACE_ID = `oauth-mcp-space-${TEST_ID}`;
 const MESSAGE_ID = `oauth-mcp-message-${TEST_ID}`;
+const UNREAD_MESSAGE_ID = `oauth-mcp-unread-message-${TEST_ID}`;
 const PUBLIC_NONMEMBER_SPACE_ID = `oauth-mcp-public-nonmember-space-${TEST_ID}`;
 const PRIVATE_SPACE_ID = `oauth-mcp-private-space-${TEST_ID}`;
 const PRIVATE_MESSAGE_ID = `oauth-mcp-private-message-${TEST_ID}`;
@@ -75,13 +76,17 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_audit_events WHERE user_id = $1 OR org_id = $2`, [USER_ID, ORG_ID]);
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`UPDATE tasks SET source_message_id = NULL WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
-    await client.query(`DELETE FROM space_members WHERE space_id IN ($1, $2, $3)`, [SPACE_ID, PRIVATE_SPACE_ID, PUBLIC_NONMEMBER_SPACE_ID]);
+    await client.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM spaces WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM projects WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM wiki_citations WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM wiki_ops_log WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM wiki_page_versions WHERE page_id IN (SELECT id FROM wiki_pages WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_pages WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM agent_employees WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM org_members WHERE org_id = $1`, [ORG_ID]);
@@ -199,9 +204,31 @@ async function seedWorkspace() {
       [`oauth-mcp-public-space-member-${TEST_ID}`, SPACE_ID, USER_ID],
     );
     await client.query(
+      `UPDATE space_members
+       SET last_read_at = now() - interval '2 days'
+       WHERE space_id = $1 AND user_id = $2`,
+      [SPACE_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO space_members (id, space_id, user_id)
+       VALUES ($1, $2, $3)`,
+      [`oauth-mcp-public-other-space-member-${TEST_ID}`, SPACE_ID, OTHER_USER_ID],
+    );
+    await client.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content)
        VALUES ($1, $2, $3, $4, 'Salsa tasting thread for OAuth MCP contract tests')`,
       [MESSAGE_ID, ORG_ID, SPACE_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        UNREAD_MESSAGE_ID,
+        ORG_ID,
+        SPACE_ID,
+        OTHER_USER_ID,
+        'OAuth MCP Other User asks OAuth MCP User to review heirloom tomato notes',
+      ],
     );
     await client.query(
       `INSERT INTO spaces (id, org_id, name, type, created_by)
@@ -418,7 +445,50 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.ok(names.has('task_transition'));
   assert.ok(names.has('comment_on_task'));
   assert.ok(names.has('message_post'));
+  assert.ok(names.has('send_message'));
+  assert.ok(names.has('attention_digest'));
+  assert.ok(names.has('messages_recent'));
   assert.ok(names.has('activity_query'));
+
+  const attentionRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 281,
+    method: 'tools/call',
+    params: {
+      name: 'attention_digest',
+      arguments: { limit: 10 },
+    },
+  }, token.access_token);
+  assert.equal(attentionRes.status, 200);
+  const attentionBody = (await attentionRes.json()) as any;
+  assert.equal(attentionBody.result.isError, false, JSON.stringify(attentionBody));
+  const attention = JSON.parse(attentionBody.result.content[0].text);
+  assert.ok(
+    attention.unread_messages.some((message: any) => message.id === UNREAD_MESSAGE_ID),
+    'attention_digest should surface unread messages without keyword search',
+  );
+  assert.ok(
+    attention.assigned_tasks.some((task: any) => task.id === TASK_ID),
+    'attention_digest should surface assigned open tasks',
+  );
+
+  const recentMessagesRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 282,
+    method: 'tools/call',
+    params: {
+      name: 'messages_recent',
+      arguments: { space_name: 'oauth-mcp-public', limit: 10 },
+    },
+  }, token.access_token);
+  assert.equal(recentMessagesRes.status, 200);
+  const recentMessagesBody = (await recentMessagesRes.json()) as any;
+  assert.equal(recentMessagesBody.result.isError, false, JSON.stringify(recentMessagesBody));
+  const recentMessages = JSON.parse(recentMessagesBody.result.content[0].text);
+  assert.ok(
+    recentMessages.messages.some((message: any) => message.id === UNREAD_MESSAGE_ID),
+    'messages_recent should fetch recent visible chat without requiring a query',
+  );
 
   const createArgs = {
     title: `Retry-safe OAuth follow-up ${TEST_ID}`,
@@ -515,6 +585,36 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
     );
     assert.equal(count.rows[0].count, 1, 'fallback duplicate detection must not create duplicate task rows');
   });
+
+  const richCreateArgs = {
+    title: `Rich OAuth MCP task create ${TEST_ID}`,
+    project_name: 'OAuth MCP Demo Project',
+    assignee_email: `oauth-mcp-other-${TEST_ID}@test.local`,
+    priority: 'p1',
+    due_date: '2026-07-10T10:00:00.000Z',
+    start_date: '2026-07-09T09:00:00.000Z',
+    estimation: '2h',
+    source_message_id: MESSAGE_ID,
+    idempotency_key: `rich-create-${TEST_ID}`,
+  };
+  const richCreateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 294,
+    method: 'tools/call',
+    params: {
+      name: 'task_create',
+      arguments: richCreateArgs,
+    },
+  }, token.access_token);
+  assert.equal(richCreateRes.status, 200);
+  const richCreateBody = (await richCreateRes.json()) as any;
+  assert.equal(richCreateBody.result.isError, false, JSON.stringify(richCreateBody));
+  const richTask = JSON.parse(richCreateBody.result.content[0].text);
+  assert.equal(richTask.project_id, PROJECT_ID);
+  assert.equal(richTask.assignee_id, OTHER_USER_ID);
+  assert.equal(richTask.source_message_id, MESSAGE_ID);
+  assert.equal(richTask.estimation, '2h');
+  assert.match(String(richTask.due_date), /^2026-07-10/);
 
   const commentRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
@@ -653,6 +753,46 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.equal(nonmemberMessageBody.result.isError, true, JSON.stringify(nonmemberMessageBody));
   assert.match(nonmemberMessageBody.result.content[0].text, /not a member/i);
 
+  const sendMessageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 344,
+    method: 'tools/call',
+    params: {
+      name: 'send_message',
+      arguments: {
+        email: `oauth-mcp-other-${TEST_ID}@test.local`,
+        content: 'Codex human-facing send_message contract test DM',
+        idempotency_key: `send-message-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(sendMessageRes.status, 200);
+  const sendMessageBody = (await sendMessageRes.json()) as any;
+  assert.equal(sendMessageBody.result.isError, false, JSON.stringify(sendMessageBody));
+  const sentMessage = JSON.parse(sendMessageBody.result.content[0].text);
+  assert.equal(sentMessage.target_kind, 'dm');
+  assert.equal(sentMessage.target_user_id, OTHER_USER_ID);
+  assert.equal(sentMessage.user_id, USER_ID);
+
+  const duplicateSendMessageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 345,
+    method: 'tools/call',
+    params: {
+      name: 'send_message',
+      arguments: {
+        email: `oauth-mcp-other-${TEST_ID}@test.local`,
+        content: 'Codex human-facing send_message contract test DM',
+        idempotency_key: `send-message-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(duplicateSendMessageRes.status, 200);
+  const duplicateSendMessageBody = (await duplicateSendMessageRes.json()) as any;
+  assert.equal(duplicateSendMessageBody.result.isError, false, JSON.stringify(duplicateSendMessageBody));
+  const duplicateSentMessage = JSON.parse(duplicateSendMessageBody.result.content[0].text);
+  assert.equal(duplicateSentMessage.id, sentMessage.id, 'send_message should replay with the same idempotency key');
+
   const activityRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
     id: 342,
@@ -690,6 +830,89 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const blockedBody = (await blockedRes.json()) as any;
   assert.equal(blockedBody.result.isError, true, JSON.stringify(blockedBody));
   assert.match(blockedBody.result.content[0].text, /task not found/);
+});
+
+test('OAuth wiki_upsert creates or updates durable knowledge instead of duplicating pages', async () => {
+  const client = await registerClient();
+  const token = await issueOAuthToken(client.client_id, ['read:workspace', 'read:wiki', 'read:messages', 'write:wiki']);
+
+  const listRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 370,
+    method: 'tools/list',
+    params: {},
+  }, token.access_token);
+  assert.equal(listRes.status, 200);
+  const listBody = (await listRes.json()) as any;
+  const names = new Set<string>(listBody.result.tools.map((tool: any) => tool.name));
+  assert.ok(names.has('wiki_upsert'));
+
+  const slug = `oauth-mcp-heirloom-${TEST_ID.slice(0, 8)}`;
+  const createRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 371,
+    method: 'tools/call',
+    params: {
+      name: 'wiki_upsert',
+      arguments: {
+        title: `OAuth MCP Heirloom Tomato Notes ${TEST_ID}`,
+        slug,
+        content: 'Initial heirloom tomato field notes from MCP contract tests.',
+        type: 'resource',
+        source_message_id: MESSAGE_ID,
+        idempotency_key: `wiki-create-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(createRes.status, 200);
+  const createBody = (await createRes.json()) as any;
+  assert.equal(createBody.result.isError, false, JSON.stringify(createBody));
+  const created = JSON.parse(createBody.result.content[0].text);
+  assert.equal(created.operation, 'created');
+  assert.equal(created.slug, slug);
+
+  const updateRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 372,
+    method: 'tools/call',
+    params: {
+      name: 'wiki_upsert',
+      arguments: {
+        title: `OAuth MCP Heirloom Tomato Notes ${TEST_ID}`,
+        slug,
+        content: 'Updated heirloom tomato field notes from MCP contract tests.',
+        type: 'resource',
+        source_message_id: MESSAGE_ID,
+        idempotency_key: `wiki-update-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(updateRes.status, 200);
+  const updateBody = (await updateRes.json()) as any;
+  assert.equal(updateBody.result.isError, false, JSON.stringify(updateBody));
+  const updated = JSON.parse(updateBody.result.content[0].text);
+  assert.equal(updated.operation, 'updated');
+  assert.equal(updated.id, created.id);
+
+  await withClient(async (pgClient) => {
+    const pages = await pgClient.query(
+      `SELECT id, content, version
+       FROM wiki_pages
+       WHERE org_id = $1 AND slug = $2`,
+      [ORG_ID, slug],
+    );
+    assert.equal(pages.rowCount, 1, 'wiki_upsert must keep one page per slug');
+    assert.match(pages.rows[0].content, /Updated heirloom/);
+    assert.ok(Number(pages.rows[0].version) >= 2, 'wiki_upsert update should increment page version');
+
+    const citations = await pgClient.query(
+      `SELECT count(*)::int AS count
+       FROM wiki_citations
+       WHERE org_id = $1 AND page_id = $2 AND source_id = $3`,
+      [ORG_ID, created.id, MESSAGE_ID],
+    );
+    assert.ok(citations.rows[0].count >= 1, 'wiki_upsert should cite the source message when provided');
+  });
 });
 
 test('OAuth human MCP read tools match user-scoped wiki task and calendar visibility', async () => {
@@ -804,6 +1027,7 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     search: { query: 'salsa tasting', limit: 5 },
     fetch: { id: `wiki:${WIKI_SLUG}` },
     platform_context: {},
+    attention_digest: { limit: 5 },
     memory_recall: { query: 'salsa tasting', limit: 5 },
     wiki_search: { query: 'salsa tasting', limit: 5 },
     memory_list: { limit: 5 },
@@ -819,6 +1043,7 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     member_get: { user_id: USER_ID },
     activity_query: { limit: 5 },
     events_query: { limit: 5 },
+    messages_recent: { space_id: SPACE_ID, limit: 5 },
     messages_search: { query: 'salsa', limit: 5 },
     project_progress: { project_id: PROJECT_ID },
     team_workload: { days: 7 },

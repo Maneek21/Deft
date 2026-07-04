@@ -83,7 +83,9 @@ function fallbackTitle(action: AuditActionRow): string {
     if (tool === 'task_update') return 'Updated task';
     if (tool === 'comment_on_task') return 'Commented on task';
     if (tool === 'message_post') return 'Posted message';
+    if (tool === 'send_message') return 'Sent message';
     if (tool === 'memory_write') return 'Saved memory';
+    if (tool === 'wiki_upsert') return 'Saved knowledge';
     return tool ? `${tool} completed` : 'Write completed';
   }
   return action.event.replaceAll('_', ' ');
@@ -155,7 +157,7 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         : asString(result.id) ?? asString(result.task_id);
       if (id) taskIds.add(id);
     }
-    if (tool === 'message_post') {
+    if (tool === 'message_post' || tool === 'send_message') {
       const spaceId = asString(result.space_id);
       if (spaceId) spaceIds.add(spaceId);
     }
@@ -224,24 +226,29 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
           target_id: taskId ?? undefined,
           preview: title,
         };
-      } else if (tool === 'message_post') {
+      } else if (tool === 'message_post' || tool === 'send_message') {
         const messageId = asString(result.id);
         const spaceId = asString(result.space_id);
-        const spaceName = spaceId ? spaceMap.get(spaceId) : null;
+        const spaceName = asString(result.space_name) ?? (spaceId ? spaceMap.get(spaceId) : null);
         const preview = cleanPreview(result.content);
+        const targetUser = asString(result.target_user_name) ?? asString(result.target_user_email);
+        const targetKind = asString(result.target_kind);
         receipt = {
-          title: 'Posted message',
-          detail: `${spaceName ? `#${spaceName}` : 'space'}${preview ? `: ${preview}` : ''}`,
+          title: tool === 'send_message' ? 'Sent message' : 'Posted message',
+          detail: `${targetKind === 'dm' && targetUser ? targetUser : spaceName ? `#${spaceName}` : 'space'}${preview ? `: ${preview}` : ''}`,
           href: messageId && spaceId ? `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(messageId)}` : undefined,
           target_kind: 'message',
           target_id: messageId ?? undefined,
           preview: preview ?? undefined,
         };
-      } else if (tool === 'memory_write') {
+      } else if (tool === 'memory_write' || tool === 'wiki_upsert') {
         const title = asString(result.title) ?? asString(metadata.title) ?? 'memory';
         const slug = asString(result.slug);
+        const operation = asString(result.operation);
         receipt = {
-          title: 'Saved memory',
+          title: tool === 'wiki_upsert'
+            ? operation === 'updated' ? 'Updated knowledge' : 'Saved knowledge'
+            : 'Saved memory',
           detail: title,
           href: slug ? `/knowledge?slug=${encodeURIComponent(slug)}` : undefined,
           target_kind: 'wiki',
