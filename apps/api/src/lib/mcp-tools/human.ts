@@ -15,7 +15,10 @@ import {
   taskComments,
   tasks,
   users,
+  wikiCitations,
+  wikiOpsLog,
   wikiPages,
+  wikiPageVersions,
 } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { visibleTaskCondition } from '../task-visibility.js';
@@ -146,6 +149,7 @@ export const HUMAN_READ_TOOLS = new Set([
   'search',
   'fetch',
   'platform_context',
+  'attention_digest',
   'memory_recall',
   'wiki_search',
   'memory_list',
@@ -161,6 +165,7 @@ export const HUMAN_READ_TOOLS = new Set([
   'member_get',
   'activity_query',
   'events_query',
+  'messages_recent',
   'messages_search',
   'project_progress',
   'team_workload',
@@ -168,17 +173,20 @@ export const HUMAN_READ_TOOLS = new Set([
 
 export const HUMAN_WRITE_TOOLS = new Set([
   'memory_write',
+  'wiki_upsert',
   'task_create',
   'task_update',
   'task_transition',
   'comment_on_task',
   'message_post',
+  'send_message',
 ]);
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   search: humanSearch,
   fetch: humanFetch,
   platform_context: humanPlatformContext,
+  attention_digest: humanAttentionDigest,
   memory_recall: humanMemoryRecall,
   wiki_search: humanMemoryRecall,
   memory_list: humanMemoryList,
@@ -199,10 +207,13 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   member_list: humanMemberList,
   member_get: humanMemberGet,
   activity_query: humanActivityQuery,
+  messages_recent: humanMessagesRecent,
   messages_search: humanMessagesSearch,
   project_progress: humanProjectProgress,
   team_workload: humanTeamWorkload,
   events_query: humanEventsQuery,
+  wiki_upsert: humanWikiUpsert,
+  send_message: humanSendMessage,
 };
 
 function hasAnyScope(ctx: HumanToolContext, scopes: string[]): boolean {
@@ -249,8 +260,25 @@ function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): R
       return {
         title: normalizedText(args.title),
         project_id: args.project_id ?? null,
+        project_name: normalizedText(args.project_name),
+        project_identifier: normalizedText(args.project_identifier),
         assignee_id: args.assignee_id ?? null,
+        assignee_name: normalizedText(args.assignee_name),
+        assignee_email: normalizedText(args.assignee_email),
         priority: args.priority ?? null,
+        due_date: args.due_date ?? null,
+        start_date: args.start_date ?? null,
+        estimation: normalizedText(args.estimation),
+        source_message_id: args.source_message_id ?? null,
+      };
+    case 'wiki_upsert':
+      return {
+        title: normalizedText(args.title),
+        slug: normalizedText(args.slug),
+        content: normalizedText(args.content ?? args.body),
+        scope: args.scope ?? null,
+        space_id: args.space_id ?? null,
+        space_name: normalizedText(args.space_name),
       };
     case 'task_update':
       return { task_id: args.task_id ?? null, patch: args.patch ?? null };
@@ -260,6 +288,8 @@ function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): R
       return { task_id: args.task_id ?? null, content: normalizedText(args.content) };
     case 'message_post':
       return { space_id: args.space_id ?? null, parent_id: args.parent_id ?? null, content: normalizedText(args.content) };
+    case 'send_message':
+      return { target: args.target ?? null, space_id: args.space_id ?? null, space_name: normalizedText(args.space_name), thread_id: args.thread_id ?? null, user_id: args.user_id ?? null, email: normalizedText(args.email), person_name: normalizedText(args.person_name), content: normalizedText(args.content) };
     default:
       return null;
   }
@@ -329,6 +359,223 @@ function taskReference(projectPrefix: string | null, number: number | null): str
 
 function validTaskStatus(value: unknown): value is 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled' {
   return typeof value === 'string' && ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'].includes(value);
+}
+
+function validWikiType(value: unknown): value is 'concept' | 'entity' | 'decision' | 'resource' | 'procedure' | 'preference' | 'fact' {
+  return typeof value === 'string' && ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'].includes(value);
+}
+
+function validWikiScope(value: unknown): value is 'org' | 'space' | 'user' {
+  return typeof value === 'string' && ['org', 'space', 'user'].includes(value);
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+}
+
+function parseOptionalDate(value: unknown, field: string): Date | null | ToolResult {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' && !(value instanceof Date)) return errorResult(`${field} must be an ISO date string`);
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return errorResult(`${field} must be a valid ISO date string`);
+  return parsed;
+}
+
+function cleanSnippet(value: unknown, max = 240): string {
+  const text = String(value ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+async function resolveActiveMember(
+  ctx: HumanToolContext,
+  params: { user_id?: unknown; email?: unknown; name?: unknown; label: string },
+): Promise<{ user: { id: string; name: string | null; email: string | null } | null; error?: ToolResult }> {
+  const userId = typeof params.user_id === 'string' ? params.user_id.trim() : '';
+  const email = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
+  const name = typeof params.name === 'string' ? params.name.trim().toLowerCase() : '';
+  if (!userId && !email && !name) return { user: null };
+
+  const rows = await db.execute(sql`
+    SELECT u.id, u.name, u.email
+    FROM org_members om
+    JOIN users u ON u.id = om.user_id
+    WHERE om.org_id = ${ctx.org_id}
+      AND om.is_active = true
+      AND (
+        ${userId ? sql`u.id = ${userId}` : sql`false`}
+        OR ${email ? sql`lower(u.email) = ${email}` : sql`false`}
+        OR ${name ? sql`lower(u.name) = ${name}` : sql`false`}
+      )
+    ORDER BY u.is_agent ASC, u.name ASC
+    LIMIT 5
+  `);
+  let matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
+  if (matches.length === 0 && name) {
+    const fuzzy = await db.execute(sql`
+      SELECT u.id, u.name, u.email
+      FROM org_members om
+      JOIN users u ON u.id = om.user_id
+      WHERE om.org_id = ${ctx.org_id}
+        AND om.is_active = true
+        AND lower(u.name) LIKE ${`%${name}%`}
+      ORDER BY u.is_agent ASC, u.name ASC
+      LIMIT 5
+    `);
+    matches = ((fuzzy as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
+  }
+  if (matches.length === 0) return { user: null, error: errorResult(`${params.label}: member not found`) };
+  if (matches.length > 1 && name && !matches.some((row) => row.name?.toLowerCase() === name)) {
+    return {
+      user: null,
+      error: errorResult(`${params.label}: ambiguous member "${params.name}". Matches: ${matches.map((row) => row.name ?? row.email ?? row.id).join(', ')}`),
+    };
+  }
+  return { user: matches[0] ?? null };
+}
+
+async function resolveProjectForHumanTask(
+  ctx: HumanToolContext,
+  args: { project_id?: unknown; project_name?: unknown; project_identifier?: unknown },
+): Promise<{ project: { id: string; name: string; prefix: string | null } | null; error?: ToolResult }> {
+  const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+  const projectName = typeof args.project_name === 'string' ? args.project_name.trim().toLowerCase() : '';
+  const projectIdentifier = typeof args.project_identifier === 'string' ? args.project_identifier.trim().toLowerCase() : '';
+  if (projectId) {
+    if (!(await userCanSeeProject(ctx, projectId))) return { project: null, error: errorResult('task_create: project not found') };
+    const [project] = await db
+      .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.org_id, ctx.org_id), eq(projects.is_deleted, false)))
+      .limit(1);
+    return { project: project ?? null };
+  }
+
+  const query = projectIdentifier || projectName;
+  if (query) {
+    const prefix = query.includes('-') ? query.split('-')[0] : query;
+    const rows = await db.execute(sql`
+      SELECT id, name, prefix
+      FROM projects
+      WHERE org_id = ${ctx.org_id}
+        AND is_archived = false
+        AND is_deleted = false
+        AND (
+          lower(name) = ${query}
+          OR lower(prefix) = ${prefix}
+          OR lower(name) LIKE ${`%${query}%`}
+        )
+      ORDER BY
+        CASE WHEN lower(name) = ${query} OR lower(prefix) = ${prefix} THEN 0 ELSE 1 END,
+        updated_at DESC
+      LIMIT 5
+    `);
+    const matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string; prefix: string | null }>;
+    if (matches.length === 0) return { project: null, error: errorResult('task_create: project not found') };
+    const exactMatches = matches.filter((row) => row.name.toLowerCase() === query || row.prefix?.toLowerCase() === prefix);
+    if (exactMatches.length > 1) {
+      return { project: null, error: errorResult(`task_create: ambiguous project "${query}". Matches: ${exactMatches.map((row) => row.name).join(', ')}`) };
+    }
+    return { project: exactMatches[0] ?? matches[0] ?? null };
+  }
+
+  const [fallback] = await db
+    .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
+    .from(projects)
+    .where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false)))
+    .orderBy(desc(projects.updated_at))
+    .limit(1);
+  return fallback ? { project: fallback } : { project: null, error: errorResult('task_create: no project available') };
+}
+
+async function resolveVisibleSpace(
+  ctx: HumanToolContext,
+  args: { space_id?: unknown; space_name?: unknown },
+): Promise<{ space: { id: string; name: string; type: string } | null; error?: ToolResult }> {
+  const spaceId = typeof args.space_id === 'string' ? args.space_id.trim() : '';
+  const spaceName = typeof args.space_name === 'string' ? args.space_name.trim().toLowerCase().replace(/^#/, '') : '';
+  if (spaceId) {
+    if (!(await userCanSeeSpace(ctx, spaceId))) return { space: null, error: errorResult('space not found or not visible to user') };
+    const [space] = await db
+      .select({ id: spaces.id, name: spaces.name, type: spaces.type })
+      .from(spaces)
+      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, ctx.org_id), eq(spaces.is_archived, false)))
+      .limit(1);
+    return { space: space ?? null };
+  }
+  if (!spaceName) return { space: null };
+  const rows = await db.execute(sql`
+    SELECT s.id, s.name, s.type
+    FROM spaces s
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+    WHERE s.org_id = ${ctx.org_id}
+      AND s.is_archived = false
+      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (lower(s.name) = ${spaceName} OR lower(s.name) LIKE ${`%${spaceName}%`})
+    ORDER BY CASE WHEN lower(s.name) = ${spaceName} THEN 0 ELSE 1 END, s.name ASC
+    LIMIT 5
+  `);
+  const matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string; type: string }>;
+  if (matches.length === 0) return { space: null, error: errorResult(`space "${args.space_name}" not found`) };
+  const exactMatches = matches.filter((row) => row.name.toLowerCase() === spaceName);
+  if (exactMatches.length > 1) return { space: null, error: errorResult(`ambiguous space "${args.space_name}"`) };
+  return { space: exactMatches[0] ?? matches[0] ?? null };
+}
+
+async function verifyReadableSourceMessage(ctx: HumanToolContext, messageId: string): Promise<ToolResult | null> {
+  const [message] = await db
+    .select({ id: messages.id, space_id: messages.space_id, user_id: messages.user_id, content: messages.content })
+    .from(messages)
+    .where(and(eq(messages.id, messageId), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+    .limit(1);
+  if (!message) return errorResult(`source_message_id ${messageId} not found`);
+  if (!(await userCanSeeSpace(ctx, message.space_id))) return errorResult(`source_message_id ${messageId} is not visible to user`);
+  return null;
+}
+
+async function findOrCreateHumanDmSpace(ctx: HumanToolContext, otherUserId: string): Promise<string> {
+  const existing = await db.execute(sql`
+    SELECT s.id
+    FROM spaces s
+    WHERE s.org_id = ${ctx.org_id}
+      AND s.type = 'dm'
+      AND s.is_archived = false
+      AND EXISTS (SELECT 1 FROM space_members WHERE space_id = s.id AND user_id = ${ctx.user_id})
+      AND EXISTS (SELECT 1 FROM space_members WHERE space_id = s.id AND user_id = ${otherUserId})
+      AND (SELECT count(*) FROM space_members WHERE space_id = s.id) = 2
+    LIMIT 1
+  `);
+  const existingId = ((existing as any).rows ?? [])[0]?.id;
+  if (existingId) return existingId;
+
+  const [other] = await db.select({ name: users.name }).from(users).where(eq(users.id, otherUserId)).limit(1);
+  const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+  const [space] = await db
+    .insert(spaces)
+    .values({
+      org_id: ctx.org_id,
+      name: [me?.name ?? 'Me', other?.name ?? 'Member'].sort().join(', '),
+      type: 'dm',
+      created_by: ctx.user_id,
+    })
+    .returning();
+  await db
+    .insert(spaceMembers)
+    .values([
+      { space_id: space!.id, user_id: ctx.user_id },
+      { space_id: space!.id, user_id: otherUserId },
+    ])
+    .onConflictDoNothing();
+  return space!.id;
 }
 
 type HumanTriggerDescriptor = {
@@ -855,6 +1102,207 @@ export async function humanMemoryWrite(args: { title?: string; body?: string; ty
   return textResult({ slug, created_at: new Date().toISOString() });
 }
 
+type HumanWikiUpsertArgs = {
+  title?: string;
+  slug?: string;
+  content?: string;
+  body?: string;
+  summary?: string;
+  type?: string;
+  confidence?: number;
+  scope?: string;
+  space_id?: string;
+  space_name?: string;
+  source_message_id?: string;
+  tags?: string[];
+  idempotency_key?: string;
+};
+
+export async function humanWikiUpsert(args: HumanWikiUpsertArgs, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:wiki');
+  if (scopeError) return scopeError;
+  const title = args.title?.trim();
+  const content = (args.content ?? args.body ?? '').trim();
+  if (!title) return errorResult('wiki_upsert requires title');
+  if (!content) return errorResult('wiki_upsert requires content');
+  const type = validWikiType(args.type) ? args.type : 'fact';
+  const scope = validWikiScope(args.scope) ? args.scope : 'org';
+  const confidence = typeof args.confidence === 'number' && Number.isFinite(args.confidence)
+    ? Math.max(0, Math.min(1, args.confidence))
+    : 0.85;
+
+  return withIdempotency('wiki_upsert', args, ctx, async () => {
+    let spaceId: string | null = null;
+    if (scope === 'space' || args.space_id || args.space_name) {
+      const spaceResult = await resolveVisibleSpace(ctx, args);
+      if (spaceResult.error) return spaceResult.error;
+      if (!spaceResult.space) return errorResult('wiki_upsert: space scope requires space_id or space_name');
+      spaceId = spaceResult.space.id;
+    }
+
+    let sourceMessage: { id: string; space_id: string; user_id: string; content: string } | null = null;
+    const sourceMessageId = args.source_message_id?.trim() || null;
+    if (sourceMessageId) {
+      const sourceError = await verifyReadableSourceMessage(ctx, sourceMessageId);
+      if (sourceError) return sourceError;
+      const [row] = await db
+        .select({ id: messages.id, space_id: messages.space_id, user_id: messages.user_id, content: messages.content })
+        .from(messages)
+        .where(and(eq(messages.id, sourceMessageId), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+        .limit(1);
+      sourceMessage = row ?? null;
+      if (!spaceId && scope === 'space') spaceId = sourceMessage?.space_id ?? null;
+    }
+
+    const requestedSlug = args.slug?.trim() ? slugify(args.slug.trim()) : null;
+    const titleKey = title.toLowerCase();
+    const existingRows = await db.execute(sql`
+      SELECT *
+      FROM wiki_pages
+      WHERE org_id = ${ctx.org_id}
+        AND is_deleted = false
+        AND ${visibleWikiPageCondition(ctx.user_id)}
+        AND (${requestedSlug ? sql`slug = ${requestedSlug}` : sql`lower(title) = ${titleKey}`})
+        AND (${scope === 'space' ? sql`scope = 'space' AND space_id = ${spaceId}` : sql`scope = ${scope}`})
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `);
+    const existing = (((existingRows as any).rows ?? []) as Array<Record<string, any>>)[0];
+    const tags = Array.isArray(args.tags)
+      ? args.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20)
+      : [];
+    const summary = args.summary?.trim() || content.slice(0, 240);
+    const nowMetadata = {
+      updated_via: 'human_mcp_upsert',
+      user_id: ctx.user_id,
+      source_message_id: sourceMessage?.id ?? null,
+    };
+
+    if (existing?.id) {
+      await db.insert(wikiPageVersions).values({
+        page_id: String(existing.id),
+        version: Number(existing.version ?? 1),
+        title: String(existing.title),
+        content: String(existing.content ?? ''),
+        summary: existing.summary ?? null,
+        edited_by: ctx.user_id,
+      }).onConflictDoNothing();
+
+      const [page] = await db.update(wikiPages)
+        .set({
+          title,
+          content,
+          summary,
+          type,
+          confidence,
+          scope: scope as any,
+          space_id: scope === 'space' ? spaceId : null,
+          user_id: scope === 'user' ? ctx.user_id : null,
+          origin_space_id: sourceMessage?.space_id ?? existing.origin_space_id ?? null,
+          origin_message_id: sourceMessage?.id ?? existing.origin_message_id ?? null,
+          origin_user_id: sourceMessage?.user_id ?? existing.origin_user_id ?? null,
+          created_via: existing.created_via ?? 'human_mcp_upsert',
+          previous_content: String(existing.content ?? ''),
+          metadata: { ...(existing.metadata ?? {}), ...nowMetadata } as any,
+          tags,
+          version: sql`${wikiPages.version} + 1` as any,
+          updated_at: new Date(),
+        })
+        .where(and(eq(wikiPages.id, String(existing.id)), eq(wikiPages.org_id, ctx.org_id)))
+        .returning();
+
+      if (sourceMessage?.id && page?.id) {
+        await db.insert(wikiCitations).values({
+          org_id: ctx.org_id,
+          page_id: page.id,
+          source_type: 'message',
+          source_id: sourceMessage.id,
+          source_space_id: sourceMessage.space_id,
+          source_user_id: sourceMessage.user_id,
+          excerpt: cleanSnippet(sourceMessage.content, 500),
+        });
+      }
+      if (page?.id) {
+        await db.insert(wikiOpsLog).values({
+          org_id: ctx.org_id,
+          operation: 'human_mcp_upsert_update',
+          page_id: page.id,
+          performed_by: ctx.user_id,
+          details: { title, slug: page.slug, scope, source_message_id: sourceMessage?.id ?? null },
+        });
+      }
+      return textResult({
+        operation: 'updated',
+        id: page?.id,
+        slug: page?.slug,
+        title: page?.title,
+        version: page?.version,
+        url: page?.slug ? `/knowledge?slug=${encodeURIComponent(page.slug)}` : undefined,
+      });
+    }
+
+    let slug = requestedSlug || slugify(title) || 'knowledge';
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const [conflict] = await db
+        .select({ id: wikiPages.id })
+        .from(wikiPages)
+        .where(and(eq(wikiPages.org_id, ctx.org_id), eq(wikiPages.slug, slug)))
+        .limit(1);
+      if (!conflict) break;
+      slug = `${requestedSlug || slugify(title) || 'knowledge'}-${randomUUID().replace(/-/g, '').slice(0, 6)}`;
+    }
+
+    const [page] = await db.insert(wikiPages).values({
+      org_id: ctx.org_id,
+      scope: scope as any,
+      space_id: scope === 'space' ? spaceId : null,
+      origin_space_id: sourceMessage?.space_id ?? spaceId,
+      origin_message_id: sourceMessage?.id ?? null,
+      origin_user_id: sourceMessage?.user_id ?? null,
+      created_via: 'human_mcp_upsert',
+      user_id: scope === 'user' ? ctx.user_id : null,
+      type,
+      title,
+      slug,
+      summary,
+      content,
+      confidence,
+      metadata: nowMetadata,
+      tags,
+    }).returning();
+
+    if (sourceMessage?.id && page?.id) {
+      await db.insert(wikiCitations).values({
+        org_id: ctx.org_id,
+        page_id: page.id,
+        source_type: 'message',
+        source_id: sourceMessage.id,
+        source_space_id: sourceMessage.space_id,
+        source_user_id: sourceMessage.user_id,
+        excerpt: cleanSnippet(sourceMessage.content, 500),
+      });
+    }
+    if (page?.id) {
+      await db.insert(wikiOpsLog).values({
+        org_id: ctx.org_id,
+        operation: 'human_mcp_upsert_create',
+        page_id: page.id,
+        performed_by: ctx.user_id,
+        details: { title, slug: page.slug, scope, source_message_id: sourceMessage?.id ?? null },
+      });
+    }
+
+    return textResult({
+      operation: 'created',
+      id: page?.id,
+      slug: page?.slug,
+      title: page?.title,
+      version: page?.version,
+      url: page?.slug ? `/knowledge?slug=${encodeURIComponent(page.slug)}` : undefined,
+    });
+  });
+}
+
 export async function humanListMyTasks(args: { status?: string; include_completed?: boolean; filter?: { status?: string; project_id?: string }; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:tasks');
   if (scopeError) return scopeError;
@@ -1053,47 +1501,83 @@ export async function humanSpaceGet(args: { space_id?: string }, ctx: HumanToolC
   return textResult({ space, members: (members as any).rows ?? [] });
 }
 
-export async function humanTaskCreate(args: { title?: string; description?: string; project_id?: string; assignee_id?: string; priority?: string; idempotency_key?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+type HumanTaskCreateArgs = {
+  title?: string;
+  description?: string;
+  project_id?: string;
+  project_name?: string;
+  project_identifier?: string;
+  assignee_id?: string;
+  assignee_name?: string;
+  assignee_email?: string;
+  priority?: string;
+  due_date?: string;
+  start_date?: string;
+  estimation?: string;
+  source_message_id?: string;
+  idempotency_key?: string;
+};
+
+export async function humanTaskCreate(args: HumanTaskCreateArgs, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'write:tasks');
   if (scopeError) return scopeError;
   const title = args.title?.trim();
   if (!title) return errorResult('task_create requires title');
   return withIdempotency('task_create', args, ctx, async () => {
-    let projectId = args.project_id ?? null;
-    if (!projectId) {
-      const [p] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false), eq(projects.is_deleted, false))).limit(1);
-      projectId = p?.id ?? null;
+    const projectResult = await resolveProjectForHumanTask(ctx, args);
+    if (projectResult.error) return projectResult.error;
+    const project = projectResult.project;
+    if (!project) return errorResult('task_create: no project available');
+
+    const assigneeResult = await resolveActiveMember(ctx, {
+      user_id: args.assignee_id,
+      email: args.assignee_email,
+      name: args.assignee_name,
+      label: 'task_create assignee',
+    });
+    if (assigneeResult.error) return assigneeResult.error;
+
+    const dueDate = parseOptionalDate(args.due_date, 'due_date');
+    if (dueDate && 'content' in dueDate) return dueDate;
+    const startDate = parseOptionalDate(args.start_date, 'start_date');
+    if (startDate && 'content' in startDate) return startDate;
+
+    const sourceMessageId = args.source_message_id?.trim() || null;
+    if (sourceMessageId) {
+      const messageError = await verifyReadableSourceMessage(ctx, sourceMessageId);
+      if (messageError) return messageError;
     }
-    if (!projectId) return errorResult('task_create: no project available');
-    if (!(await userCanSeeProject(ctx, projectId))) return errorResult('task_create: project not found');
-    if (args.assignee_id) {
-      const [member] = await db
-        .select({ id: orgMembers.id })
-        .from(orgMembers)
-        .where(and(eq(orgMembers.org_id, ctx.org_id), eq(orgMembers.user_id, args.assignee_id), eq(orgMembers.is_active, true)))
-        .limit(1);
-      if (!member) return errorResult('task_create: assignee is not an active org member');
-    }
+
     let taskNumber: number;
     try {
-      taskNumber = await reserveNextTaskNumber({ projectId, orgId: ctx.org_id });
+      taskNumber = await reserveNextTaskNumber({ projectId: project.id, orgId: ctx.org_id });
     } catch {
       return errorResult('task_create: project not found');
     }
     const [task] = await db.insert(tasks).values({
       org_id: ctx.org_id,
-      project_id: projectId,
+      project_id: project.id,
       number: taskNumber,
       title,
       description: args.description ?? null,
       priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',
-      assignee_id: args.assignee_id ?? null,
+      assignee_id: assigneeResult.user?.id ?? null,
       created_by: ctx.user_id,
+      due_date: dueDate as Date | null,
+      start_date: startDate as Date | null,
+      estimation: typeof args.estimation === 'string' && args.estimation.trim() ? args.estimation.trim() : null,
+      source_message_id: sourceMessageId,
     }).returning();
     if (task) {
       await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'created' });
     }
-    return textResult(task);
+    return textResult({
+      ...task,
+      task_key: taskReference(project.prefix, task?.number ?? null),
+      project_name: project.name,
+      assignee_name: assigneeResult.user?.name ?? null,
+      assignee_email: assigneeResult.user?.email ?? null,
+    });
   });
 }
 
@@ -1255,6 +1739,98 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
   });
 }
 
+type HumanSendMessageArgs = {
+  target?: Record<string, unknown>;
+  space_id?: string;
+  space_name?: string;
+  thread_id?: string;
+  parent_id?: string;
+  user_id?: string;
+  email?: string;
+  person_name?: string;
+  content?: string;
+  idempotency_key?: string;
+};
+
+export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:messages');
+  if (scopeError) return scopeError;
+  const content = args.content?.trim();
+  if (!content) return errorResult('send_message requires content');
+
+  return withIdempotency('send_message', args, ctx, async () => {
+    const target = args.target && typeof args.target === 'object' && !Array.isArray(args.target)
+      ? args.target
+      : {};
+    const directSpace = {
+      space_id: args.space_id ?? (typeof target.space_id === 'string' ? target.space_id : undefined),
+      space_name: args.space_name ?? (typeof target.space_name === 'string' ? target.space_name : undefined),
+    };
+    const threadId = args.thread_id ?? args.parent_id ?? (typeof target.thread_id === 'string' ? target.thread_id : undefined) ?? (typeof target.parent_id === 'string' ? target.parent_id : undefined);
+
+    let spaceId: string | null = null;
+    let spaceName: string | null = null;
+    let parentId: string | null = null;
+    let targetKind: 'space' | 'thread' | 'dm' = 'space';
+    let targetUser: { id: string; name: string | null; email: string | null } | null = null;
+
+    if (threadId) {
+      const [parent] = await db
+        .select({ id: messages.id, space_id: messages.space_id })
+        .from(messages)
+        .where(and(eq(messages.id, threadId), eq(messages.org_id, ctx.org_id), eq(messages.is_deleted, false)))
+        .limit(1);
+      if (!parent || !(await userCanSeeSpace(ctx, parent.space_id))) return errorResult('send_message: thread not found or not visible to user');
+      if (!(await userIsSpaceMember(ctx, parent.space_id))) return errorResult('send_message: user is not a member of the thread space');
+      const [space] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, parent.space_id)).limit(1);
+      spaceId = parent.space_id;
+      spaceName = space?.name ?? null;
+      parentId = parent.id;
+      targetKind = 'thread';
+    } else if (directSpace.space_id || directSpace.space_name) {
+      const spaceResult = await resolveVisibleSpace(ctx, directSpace);
+      if (spaceResult.error) return spaceResult.error;
+      if (!spaceResult.space) return errorResult('send_message: space not found');
+      if (!(await userIsSpaceMember(ctx, spaceResult.space.id))) return errorResult('send_message: user is not a member of this space');
+      spaceId = spaceResult.space.id;
+      spaceName = spaceResult.space.name;
+      targetKind = 'space';
+    } else {
+      const memberResult = await resolveActiveMember(ctx, {
+        user_id: args.user_id ?? (typeof target.user_id === 'string' ? target.user_id : undefined),
+        email: args.email ?? (typeof target.email === 'string' ? target.email : undefined),
+        name: args.person_name ?? (typeof target.person_name === 'string' ? target.person_name : undefined) ?? (typeof target.name === 'string' ? target.name : undefined),
+        label: 'send_message target',
+      });
+      if (memberResult.error) return memberResult.error;
+      targetUser = memberResult.user;
+      if (!targetUser) return errorResult('send_message requires a space, thread, or person target');
+      spaceId = await findOrCreateHumanDmSpace(ctx, targetUser.id);
+      const [space] = await db.select({ name: spaces.name }).from(spaces).where(eq(spaces.id, spaceId)).limit(1);
+      spaceName = space?.name ?? null;
+      targetKind = 'dm';
+    }
+
+    const [row] = await db.insert(messages).values({
+      org_id: ctx.org_id,
+      space_id: spaceId!,
+      user_id: ctx.user_id,
+      content,
+      parent_id: parentId,
+    }).returning();
+
+    return textResult({
+      ...row,
+      target_kind: targetKind,
+      target_user_id: targetUser?.id ?? null,
+      target_user_name: targetUser?.name ?? null,
+      target_user_email: targetUser?.email ?? null,
+      space_name: spaceName,
+      url: `/chat?space=${encodeURIComponent(spaceId!)}&message=${encodeURIComponent(row!.id)}`,
+    });
+  });
+}
+
 export async function humanThreadFetch(args: { parent_message_id?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:messages');
   if (scopeError) return scopeError;
@@ -1298,6 +1874,267 @@ export async function humanMemberGet(args: { user_id?: string; email?: string },
   `);
   const member = ((rows as any).rows ?? [])[0];
   return member ? textResult(member) : errorResult('member_get: member not found');
+}
+
+type HumanMessagesRecentArgs = {
+  space_id?: string;
+  space_name?: string;
+  author_user_id?: string;
+  author_name?: string;
+  mentions_me?: boolean;
+  since?: string;
+  until?: string;
+  limit?: number;
+};
+
+export async function humanMessagesRecent(args: HumanMessagesRecentArgs, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:messages');
+  if (scopeError) return scopeError;
+
+  const spaceResult = await resolveVisibleSpace(ctx, args);
+  if (spaceResult.error) return spaceResult.error;
+
+  const authorResult = await resolveActiveMember(ctx, {
+    user_id: args.author_user_id,
+    name: args.author_name,
+    label: 'messages_recent author',
+  });
+  if (authorResult.error) return authorResult.error;
+
+  const since = parseOptionalDate(args.since, 'since');
+  if (since && 'content' in since) return since;
+  const until = parseOptionalDate(args.until, 'until');
+  if (until && 'content' in until) return until;
+
+  const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+  const mentionPattern = me?.name ? `%${me.name.toLowerCase()}%` : null;
+  const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
+
+  const rows = await db.execute(sql`
+    SELECT
+      m.id,
+      m.space_id,
+      s.name AS space_name,
+      s.type AS space_type,
+      m.user_id,
+      u.name AS user_name,
+      u.email AS user_email,
+      m.content,
+      m.parent_id,
+      m.created_at,
+      m.updated_at
+    FROM messages m
+    JOIN spaces s ON s.id = m.space_id AND s.org_id = ${ctx.org_id}
+    JOIN users u ON u.id = m.user_id
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+    WHERE m.org_id = ${ctx.org_id}
+      AND m.is_deleted = false
+      AND s.is_archived = false
+      AND (s.type = 'public' OR sm.id IS NOT NULL)
+      AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
+      AND (${authorResult.user ? sql`m.user_id = ${authorResult.user.id}` : sql`true`})
+      AND (${since instanceof Date ? sql`m.created_at >= ${since}` : sql`true`})
+      AND (${until instanceof Date ? sql`m.created_at <= ${until}` : sql`true`})
+      AND (${args.mentions_me === true
+        ? sql`(m.content ILIKE ${`%${ctx.user_id}%`} OR lower(m.content) LIKE ${mentionPattern ?? `%${ctx.user_id.toLowerCase()}%`})`
+        : sql`true`})
+    ORDER BY m.created_at DESC
+    LIMIT ${limit}
+  `);
+
+  const messagesRows = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  return textResult({
+    count: messagesRows.length,
+    messages: messagesRows.map((row) => ({
+      ...row,
+      snippet: cleanSnippet(row.content),
+      url: `/chat?space=${encodeURIComponent(String(row.space_id))}&message=${encodeURIComponent(String(row.id))}`,
+    })),
+  });
+}
+
+type HumanAttentionDigestArgs = {
+  limit?: number;
+  since?: string;
+  space_id?: string;
+  space_name?: string;
+  include_recent?: boolean;
+  include_calendar?: boolean;
+};
+
+export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireAnyScope(ctx, ['read:workspace', 'read:messages', 'read:tasks', 'read:calendar']);
+  if (scopeError) return scopeError;
+
+  const limit = Math.min(Math.max(1, args.limit ?? 20), 50);
+  const since = parseOptionalDate(args.since, 'since');
+  if (since && 'content' in since) return since;
+  const spaceResult = await resolveVisibleSpace(ctx, args);
+  if (spaceResult.error) return spaceResult.error;
+
+  const digest: Record<string, unknown> = {
+    generated_at: new Date().toISOString(),
+    scopes_used: ctx.scopes.filter((scope) => ['read:workspace', 'read:messages', 'read:tasks', 'read:calendar'].includes(scope)),
+    workspace: {},
+    unread_messages: [],
+    mentions: [],
+    assigned_tasks: [],
+    overdue_tasks: [],
+    upcoming_events: [],
+    pending_approvals: [],
+    recommended_next_actions: [],
+  };
+
+  if (hasScope(ctx, 'read:workspace')) {
+    const [org] = await db.select({ id: orgs.id, name: orgs.name }).from(orgs).where(eq(orgs.id, ctx.org_id)).limit(1);
+    const [me] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+    digest.workspace = { org, user: me };
+
+    const approvals = await db.execute(sql`
+      SELECT id, action, params, approval_tier, approval_status, created_at
+      FROM agent_actions
+      WHERE org_id = ${ctx.org_id}
+        AND user_id = ${ctx.user_id}
+        AND approval_status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `);
+    digest.pending_approvals = (approvals as any).rows ?? [];
+  }
+
+  if (hasScope(ctx, 'read:messages')) {
+    const unreadRows = await db.execute(sql`
+      SELECT
+        m.id,
+        m.space_id,
+        s.name AS space_name,
+        s.type AS space_type,
+        m.user_id,
+        u.name AS user_name,
+        m.content,
+        m.parent_id,
+        m.created_at,
+        sm.last_read_at
+      FROM space_members sm
+      JOIN spaces s ON s.id = sm.space_id AND s.org_id = ${ctx.org_id}
+      JOIN messages m ON m.space_id = s.id AND m.org_id = ${ctx.org_id}
+      JOIN users u ON u.id = m.user_id
+      WHERE sm.user_id = ${ctx.user_id}
+        AND s.is_archived = false
+        AND m.is_deleted = false
+        AND m.user_id != ${ctx.user_id}
+        AND m.created_at > coalesce(sm.last_read_at, timestamp '1970-01-01')
+        AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
+        AND (${since instanceof Date ? sql`m.created_at >= ${since}` : sql`true`})
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+    `);
+    const unread = (((unreadRows as any).rows ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      snippet: cleanSnippet(row.content),
+      url: `/chat?space=${encodeURIComponent(String(row.space_id))}&message=${encodeURIComponent(String(row.id))}`,
+    }));
+    digest.unread_messages = unread;
+
+    const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+    const mentionPattern = me?.name ? `%${me.name.toLowerCase()}%` : `%${ctx.user_id.toLowerCase()}%`;
+    const mentionsRows = await db.execute(sql`
+      SELECT
+        m.id,
+        m.space_id,
+        s.name AS space_name,
+        m.user_id,
+        u.name AS user_name,
+        m.content,
+        m.created_at
+      FROM messages m
+      JOIN spaces s ON s.id = m.space_id AND s.org_id = ${ctx.org_id}
+      JOIN users u ON u.id = m.user_id
+      LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+      WHERE m.org_id = ${ctx.org_id}
+        AND m.is_deleted = false
+        AND s.is_archived = false
+        AND (s.type = 'public' OR sm.id IS NOT NULL)
+        AND m.user_id != ${ctx.user_id}
+        AND (m.content ILIKE ${`%${ctx.user_id}%`} OR lower(m.content) LIKE ${mentionPattern})
+        AND (${spaceResult.space ? sql`m.space_id = ${spaceResult.space.id}` : sql`true`})
+        AND (${since instanceof Date ? sql`m.created_at >= ${since}` : sql`m.created_at >= now() - interval '14 days'`})
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+    `);
+    digest.mentions = (((mentionsRows as any).rows ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      snippet: cleanSnippet(row.content),
+      url: `/chat?space=${encodeURIComponent(String(row.space_id))}&message=${encodeURIComponent(String(row.id))}`,
+    }));
+
+    if (args.include_recent !== false && unread.length === 0) {
+      const recent = await humanMessagesRecent({ space_id: spaceResult.space?.id, limit: Math.min(limit, 10) }, ctx);
+      if (!recent.isError) digest.recent_messages = JSON.parse(recent.content[0]?.text ?? '{}');
+    }
+  }
+
+  if (hasScope(ctx, 'read:tasks')) {
+    const taskRows = await db.execute(sql`
+      SELECT
+        t.id,
+        t.title,
+        t.status,
+        t.priority,
+        t.due_date,
+        p.name AS project_name,
+        p.prefix AS project_prefix,
+        (p.prefix || '-' || t.number) AS task_key
+      FROM tasks t
+      JOIN projects p ON p.id = t.project_id AND p.org_id = ${ctx.org_id}
+      WHERE t.org_id = ${ctx.org_id}
+        AND t.is_deleted = false
+        AND t.assignee_id = ${ctx.user_id}
+        AND t.status NOT IN ('done', 'cancelled')
+      ORDER BY
+        CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END,
+        t.due_date ASC,
+        t.priority ASC,
+        t.updated_at DESC
+      LIMIT ${limit}
+    `);
+    const assigned = ((taskRows as any).rows ?? []) as Array<Record<string, unknown>>;
+    digest.assigned_tasks = assigned.map((row) => ({
+      ...row,
+      url: `/tasks?task=${encodeURIComponent(String(row.id))}`,
+    }));
+    digest.overdue_tasks = assigned
+      .filter((row) => row.due_date && new Date(String(row.due_date)).getTime() < Date.now())
+      .map((row) => ({ ...row, url: `/tasks?task=${encodeURIComponent(String(row.id))}` }));
+  }
+
+  if ((args.include_calendar ?? true) && hasScope(ctx, 'read:calendar')) {
+    const eventRows = await db.execute(sql`
+      SELECT e.id, e.title, e.body, e.source, e.event_type, e.timestamp, e.url, e.metadata
+      FROM events e
+      LEFT JOIN connected_accounts ca ON ca.id = e.connected_account_id
+      WHERE e.org_id = ${ctx.org_id}
+        AND (e.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+        AND e.timestamp >= now() - interval '2 hours'
+        AND e.timestamp <= now() + interval '7 days'
+      ORDER BY e.timestamp ASC
+      LIMIT ${Math.min(limit, 20)}
+    `);
+    digest.upcoming_events = (eventRows as any).rows ?? [];
+  }
+
+  const unreadCount = Array.isArray(digest.unread_messages) ? digest.unread_messages.length : 0;
+  const mentionsCount = Array.isArray(digest.mentions) ? digest.mentions.length : 0;
+  const taskCount = Array.isArray(digest.assigned_tasks) ? digest.assigned_tasks.length : 0;
+  const approvalCount = Array.isArray(digest.pending_approvals) ? digest.pending_approvals.length : 0;
+  digest.recommended_next_actions = [
+    unreadCount > 0 ? `Review ${unreadCount} unread message${unreadCount === 1 ? '' : 's'}` : null,
+    mentionsCount > 0 ? `Reply to ${mentionsCount} mention${mentionsCount === 1 ? '' : 's'}` : null,
+    taskCount > 0 ? `Work through ${taskCount} assigned open task${taskCount === 1 ? '' : 's'}` : null,
+    approvalCount > 0 ? `Resolve ${approvalCount} pending approval${approvalCount === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
+
+  return textResult(digest);
 }
 
 export async function humanMessagesSearch(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -1527,6 +2364,42 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
     {
+      name: 'attention_digest',
+      title: 'Get My Deft Attention Digest',
+      description: 'Single-call triage for a connected human: unread messages, mentions, assigned tasks, overdue work, upcoming calendar items, and pending approvals. Use this first for "what needs my attention?" Human personal-MCP read: uses whichever read scopes are granted.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          space_id: { type: 'string', description: 'Optional space id to focus the digest.' },
+          space_name: { type: 'string', description: 'Optional space name to focus the digest, such as marketing-launch.' },
+          since: { type: 'string', description: 'Optional ISO timestamp lower bound.' },
+          include_recent: { type: 'boolean', description: 'Include recent messages when there are no unread messages. Defaults to true.' },
+          include_calendar: { type: 'boolean', description: 'Include upcoming calendar events when read:calendar is granted. Defaults to true.' },
+          limit: { type: 'integer', minimum: 1, maximum: 50 },
+        },
+      },
+    },
+    {
+      name: 'messages_recent',
+      title: 'Get Recent Deft Messages',
+      description: 'Fetch recent visible chat messages without requiring a keyword. Use this when search is too narrow or the user asks for recent/unread context. Human personal-MCP read: requires read:messages.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          space_id: { type: 'string' },
+          space_name: { type: 'string' },
+          author_user_id: { type: 'string' },
+          author_name: { type: 'string' },
+          mentions_me: { type: 'boolean' },
+          since: { type: 'string' },
+          until: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+    {
       name: 'list_my_tasks',
       title: 'List My Deft Tasks',
       description: 'List tasks assigned to the connected human user. Human personal-MCP read: scoped to the token owner and requires read:tasks.',
@@ -1667,6 +2540,30 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
         required: ['task_id', 'content'],
       },
     },
+    {
+      name: 'wiki_upsert',
+      title: 'Create Or Update Deft Knowledge',
+      description: 'Create or update a wiki page as the connected human. Prefer this over memory_write when adding durable knowledge because it updates an existing matching slug/title instead of creating duplicates. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:wiki.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          slug: { type: 'string', description: 'Optional stable slug. If it exists, the page is updated.' },
+          content: { type: 'string' },
+          summary: { type: 'string' },
+          type: { type: 'string', enum: ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact'] },
+          scope: { type: 'string', enum: ['org', 'space', 'user'] },
+          space_id: { type: 'string' },
+          space_name: { type: 'string' },
+          source_message_id: { type: 'string', description: 'Optional visible message id to cite as the source.' },
+          tags: { type: 'array', items: { type: 'string' } },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          idempotency_key: { type: 'string', description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.' },
+        },
+        required: ['title', 'content'],
+      },
+    },
   ];
   const existing = agentSchemas
     .filter((schema) => {
@@ -1684,6 +2581,42 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
             type: 'string',
             description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.',
           };
+        }
+        if (String(next.name) === 'task_create' && inputSchema?.properties) {
+          inputSchema.properties.project_name = {
+            type: 'string',
+            description: 'Optional project name. Use this when the user names the project but you do not know project_id.',
+          };
+          inputSchema.properties.project_identifier = {
+            type: 'string',
+            description: 'Optional project prefix/key such as MKT or MKT-18. Deft resolves the project inside the user org.',
+          };
+          inputSchema.properties.assignee_email = {
+            type: 'string',
+            description: 'Optional assignee email. Use this when you know the person email but not the user id.',
+          };
+          inputSchema.properties.due_date = {
+            type: 'string',
+            description: 'Optional ISO date/timestamp for the task due date.',
+          };
+          inputSchema.properties.start_date = {
+            type: 'string',
+            description: 'Optional ISO date/timestamp for the task start date.',
+          };
+          inputSchema.properties.estimation = {
+            type: 'string',
+            description: 'Optional human estimation such as 30m, 2h, or 1d.',
+          };
+        }
+        if (String(next.name) === 'send_message' && inputSchema?.properties) {
+          next.description = 'Send a Deft chat message as the connected human. Target can be a space, thread, or person; person targets may use user_id, email, or person_name. Prefer this over message_post for human-facing workflows. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:messages.';
+          inputSchema.properties.space_id = { type: 'string', description: 'Optional target space id.' };
+          inputSchema.properties.space_name = { type: 'string', description: 'Optional target space name such as marketing-launch.' };
+          inputSchema.properties.thread_id = { type: 'string', description: 'Optional parent message id; sends as a thread reply.' };
+          inputSchema.properties.user_id = { type: 'string', description: 'Optional DM target user id.' };
+          inputSchema.properties.email = { type: 'string', description: 'Optional DM target email.' };
+          inputSchema.properties.person_name = { type: 'string', description: 'Optional DM target person name.' };
+          (next.inputSchema as Record<string, unknown>).additionalProperties = true;
         }
       } else {
         next.description = `${next.description ?? ''} Human personal-MCP read: scoped to the token owner's Deft permissions.`;

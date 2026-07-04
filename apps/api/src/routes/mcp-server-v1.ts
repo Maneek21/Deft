@@ -219,13 +219,16 @@ const HUMAN_TOOL_SCOPE: Record<string, string> = {
   project_progress: 'read:tasks',
   team_workload: 'read:tasks',
   thread_fetch: 'read:messages',
+  messages_recent: 'read:messages',
   messages_search: 'read:messages',
   memory_write: 'write:wiki',
+  wiki_upsert: 'write:wiki',
   task_create: 'write:tasks',
   task_update: 'write:tasks',
   task_transition: 'write:tasks',
   comment_on_task: 'write:tasks',
   message_post: 'write:messages',
+  send_message: 'write:messages',
 };
 
 function humanCatalog(scopes: string[]) {
