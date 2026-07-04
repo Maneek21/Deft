@@ -838,6 +838,13 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
     activity.some((event: any) => event.event === 'mcp_tool_call' && event.metadata?.tool_name === 'task_create'),
     'activity_query should expose recent task_create audit activity',
   );
+  const taskCreateReceipt = activity.find(
+    (event: any) => event.event === 'mcp_idempotency_result' && event.metadata?.tool_name === 'task_create' && event.receipt?.title === 'Created task',
+  )?.receipt;
+  assert.ok(taskCreateReceipt, 'activity_query should return enriched task_create receipts for MCP clients');
+  assert.equal(taskCreateReceipt.target_kind, 'task');
+  assert.match(taskCreateReceipt.detail, /OMCP-\d+: /);
+  assert.match(taskCreateReceipt.href, /^\/tasks\?task=/);
 
   const blockedRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
