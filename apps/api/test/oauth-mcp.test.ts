@@ -448,6 +448,10 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.ok(names.has('send_message'));
   assert.ok(names.has('attention_digest'));
   assert.ok(names.has('messages_recent'));
+  assert.ok(names.has('resolve_space'));
+  assert.ok(names.has('resolve_project'));
+  assert.ok(names.has('resolve_member'));
+  assert.ok(names.has('resolve_targets'));
   assert.ok(names.has('activity_query'));
 
   const attentionRes = await jsonPost('/api/mcp/v1', {
@@ -478,7 +482,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
     method: 'tools/call',
     params: {
       name: 'messages_recent',
-      arguments: { space_name: 'oauth-mcp-public', limit: 10 },
+      arguments: { space_name: 'oauth mcp public', limit: 10 },
     },
   }, token.access_token);
   assert.equal(recentMessagesRes.status, 200);
@@ -487,7 +491,7 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   const recentMessages = JSON.parse(recentMessagesBody.result.content[0].text);
   assert.ok(
     recentMessages.messages.some((message: any) => message.id === UNREAD_MESSAGE_ID),
-    'messages_recent should fetch recent visible chat without requiring a query',
+    'messages_recent should resolve hyphenated space names from human wording',
   );
 
   const createArgs = {
@@ -774,6 +778,27 @@ test('OAuth task-helper profile can comment on and update visible tasks', async 
   assert.equal(sentMessage.target_user_id, OTHER_USER_ID);
   assert.equal(sentMessage.user_id, USER_ID);
 
+  const sendSpaceMessageRes = await jsonPost('/api/mcp/v1', {
+    jsonrpc: '2.0',
+    id: 3441,
+    method: 'tools/call',
+    params: {
+      name: 'send_message',
+      arguments: {
+        space_name: 'oauth mcp public',
+        content: 'Codex human-facing send_message contract test to a resolved space',
+        idempotency_key: `send-space-message-${TEST_ID}`,
+      },
+    },
+  }, token.access_token);
+  assert.equal(sendSpaceMessageRes.status, 200);
+  const sendSpaceMessageBody = (await sendSpaceMessageRes.json()) as any;
+  assert.equal(sendSpaceMessageBody.result.isError, false, JSON.stringify(sendSpaceMessageBody));
+  const sentSpaceMessage = JSON.parse(sendSpaceMessageBody.result.content[0].text);
+  assert.equal(sentSpaceMessage.target_kind, 'space');
+  assert.equal(sentSpaceMessage.space_id, SPACE_ID);
+  assert.equal(sentSpaceMessage.space_name, 'oauth-mcp-public');
+
   const duplicateSendMessageRes = await jsonPost('/api/mcp/v1', {
     jsonrpc: '2.0',
     id: 345,
@@ -979,6 +1004,37 @@ test('OAuth human MCP read tools match user-scoped wiki task and calendar visibi
   const primarySpaces = await callTool(primaryToken.access_token, 131, 'space_list', { limit: 50 });
   assert.ok(!primarySpaces.some((space: any) => space.id === PRIVATE_SPACE_ID));
 
+  const resolvedSpace = await callTool(primaryToken.access_token, 1311, 'resolve_space', { query: 'oauth mcp public', limit: 5 });
+  assert.equal(resolvedSpace.status, 'resolved');
+  assert.equal(resolvedSpace.selected.id, SPACE_ID);
+  assert.equal(resolvedSpace.needs_confirmation, false);
+  assert.ok(!resolvedSpace.candidates.some((space: any) => space.id === PRIVATE_SPACE_ID));
+
+  const resolvedMember = await callTool(primaryToken.access_token, 1312, 'resolve_member', { query: 'OAuth MCP Other', limit: 5 });
+  assert.equal(resolvedMember.status, 'resolved');
+  assert.equal(resolvedMember.selected.id, OTHER_USER_ID);
+
+  const ambiguousMember = await callTool(primaryToken.access_token, 1313, 'resolve_member', { query: 'OAuth MCP', limit: 5 });
+  assert.equal(ambiguousMember.status, 'ambiguous');
+  assert.equal(ambiguousMember.needs_confirmation, true);
+  assert.ok(ambiguousMember.candidates.some((member: any) => member.id === USER_ID));
+  assert.ok(ambiguousMember.candidates.some((member: any) => member.id === OTHER_USER_ID));
+
+  const resolvedProject = await callTool(primaryToken.access_token, 1314, 'resolve_project', { query: 'OAuth MCP Demo', limit: 5 });
+  assert.equal(resolvedProject.status, 'resolved');
+  assert.equal(resolvedProject.selected.id, PROJECT_ID);
+
+  const resolvedTargets = await callTool(primaryToken.access_token, 1315, 'resolve_targets', {
+    spaces: ['oauth mcp public'],
+    members: ['OAuth MCP Other'],
+    projects: ['OAuth MCP Demo'],
+    limit: 5,
+  });
+  assert.equal(resolvedTargets.spaces['oauth mcp public'].status, 'resolved');
+  assert.equal(resolvedTargets.spaces['oauth mcp public'].selected.id, SPACE_ID);
+  assert.equal(resolvedTargets.members['OAuth MCP Other'].selected.id, OTHER_USER_ID);
+  assert.equal(resolvedTargets.projects['OAuth MCP Demo'].selected.id, PROJECT_ID);
+
   const projectProgress = await callTool(primaryToken.access_token, 132, 'project_progress', { project_identifier: 'OMCP' });
   assert.equal(projectProgress.project.id, PROJECT_ID);
   assert.equal(projectProgress.project.prefix, 'OMCP');
@@ -1035,11 +1091,15 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     task_get: { task_id: TASK_ID },
     task_query: { limit: 5 },
     project_list: { limit: 5 },
+    resolve_project: { query: 'OAuth MCP Demo', limit: 5 },
     project_get: { project_id: PROJECT_ID },
     space_list: { limit: 5 },
+    resolve_space: { query: 'oauth mcp public', limit: 5 },
     space_get: { space_id: SPACE_ID },
     thread_fetch: { parent_message_id: MESSAGE_ID, limit: 5 },
     member_list: { limit: 5 },
+    resolve_member: { query: 'OAuth MCP Other', limit: 5 },
+    resolve_targets: { spaces: ['oauth mcp public'], members: ['OAuth MCP Other'], projects: ['OAuth MCP Demo'], limit: 5 },
     member_get: { user_id: USER_ID },
     activity_query: { limit: 5 },
     events_query: { limit: 5 },

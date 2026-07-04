@@ -157,11 +157,15 @@ export const HUMAN_READ_TOOLS = new Set([
   'task_get',
   'task_query',
   'project_list',
+  'resolve_project',
   'project_get',
   'space_list',
+  'resolve_space',
   'space_get',
   'thread_fetch',
   'member_list',
+  'resolve_member',
+  'resolve_targets',
   'member_get',
   'activity_query',
   'events_query',
@@ -195,8 +199,10 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   memory_write: humanMemoryWrite,
   task_query: humanTaskQuery,
   project_list: humanProjectList,
+  resolve_project: humanResolveProject,
   project_get: humanProjectGet,
   space_list: humanSpaceList,
+  resolve_space: humanResolveSpace,
   space_get: humanSpaceGet,
   task_create: humanTaskCreate,
   task_update: humanTaskUpdate,
@@ -205,6 +211,8 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   message_post: humanMessagePost,
   thread_fetch: humanThreadFetch,
   member_list: humanMemberList,
+  resolve_member: humanResolveMember,
+  resolve_targets: humanResolveTargets,
   member_get: humanMemberGet,
   activity_query: humanActivityQuery,
   messages_recent: humanMessagesRecent,
@@ -396,14 +404,166 @@ function cleanSnippet(value: unknown, max = 240): string {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
+type ResolverStatus = 'resolved' | 'ambiguous' | 'not_found';
+
+type ResolverPart = {
+  value: unknown;
+  reason: string;
+  weight?: number;
+};
+
+type RankedResolverCandidate<T extends Record<string, unknown>> = T & {
+  confidence: number;
+  match_reason: string;
+};
+
+function normalizeResolverText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^[@#]/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactResolverText(value: unknown): string {
+  return normalizeResolverText(value).replace(/\s+/g, '');
+}
+
+function resolverTokens(value: unknown): string[] {
+  return normalizeResolverText(value).split(' ').filter(Boolean);
+}
+
+function scoreResolverPart(query: string, part: ResolverPart): { score: number; reason: string } {
+  const normalizedQuery = normalizeResolverText(query);
+  const compactQuery = compactResolverText(query);
+  const normalizedPart = normalizeResolverText(part.value);
+  const compactPart = compactResolverText(part.value);
+  if (!normalizedQuery || !normalizedPart) return { score: 0, reason: part.reason };
+
+  let score = 0;
+  let reason = part.reason;
+  if (normalizedPart === normalizedQuery || compactPart === compactQuery) {
+    score = 1;
+    reason = `${part.reason}: exact`;
+  } else if (normalizedPart.startsWith(normalizedQuery) || compactPart.startsWith(compactQuery)) {
+    score = 0.92;
+    reason = `${part.reason}: prefix`;
+  } else if (compactQuery && compactPart.includes(compactQuery)) {
+    score = 0.84;
+    reason = `${part.reason}: compact contains`;
+  } else {
+    const queryTokens = resolverTokens(query);
+    const partTokens = new Set(resolverTokens(part.value));
+    const matched = queryTokens.filter((token) => partTokens.has(token)).length;
+    if (queryTokens.length > 0 && matched === queryTokens.length) {
+      score = 0.8;
+      reason = `${part.reason}: all words`;
+    } else if (queryTokens.length > 0 && matched > 0) {
+      score = 0.48 + (matched / queryTokens.length) * 0.24;
+      reason = `${part.reason}: partial words`;
+    }
+  }
+
+  return { score: Math.min(1, score * (part.weight ?? 1)), reason };
+}
+
+function rankResolverCandidates<T extends Record<string, unknown>>(
+  query: string,
+  candidates: T[],
+  getParts: (candidate: T) => ResolverPart[],
+): Array<RankedResolverCandidate<T>> {
+  return candidates
+    .map((candidate) => {
+      const scored = getParts(candidate)
+        .map((part) => scoreResolverPart(query, part))
+        .sort((a, b) => b.score - a.score)[0] ?? { score: 0, reason: 'no match' };
+      return {
+        ...candidate,
+        confidence: Number(scored.score.toFixed(2)),
+        match_reason: scored.reason,
+      };
+    })
+    .filter((candidate) => candidate.confidence > 0)
+    .sort((a, b) => {
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      return String(a.name ?? a.email ?? a.id ?? '').localeCompare(String(b.name ?? b.email ?? b.id ?? ''));
+    });
+}
+
+function buildResolverResponse<T extends Record<string, unknown>>(
+  query: string,
+  ranked: Array<RankedResolverCandidate<T>>,
+  options: { limit?: number; resolvedThreshold?: number; ambiguityDelta?: number } = {},
+): {
+  query: string;
+  status: ResolverStatus;
+  selected: RankedResolverCandidate<T> | null;
+  candidates: Array<RankedResolverCandidate<T>>;
+  needs_confirmation: boolean;
+  confidence: number;
+} {
+  const limit = Math.min(Math.max(1, options.limit ?? 5), 20);
+  const candidates = ranked.slice(0, limit);
+  const top = candidates[0] ?? null;
+  const second = candidates[1] ?? null;
+  const resolvedThreshold = options.resolvedThreshold ?? 0.78;
+  const ambiguityDelta = options.ambiguityDelta ?? 0.12;
+
+  let status: ResolverStatus = 'not_found';
+  if (top) {
+    const tooWeak = top.confidence < resolvedThreshold;
+    const exactTop = top.confidence >= 0.99;
+    const exactTie = Boolean(second && second.confidence >= 0.99);
+    const tooClose = exactTop ? exactTie : Boolean(second && top.confidence - second.confidence < ambiguityDelta);
+    status = tooWeak || tooClose ? 'ambiguous' : 'resolved';
+  }
+
+  return {
+    query,
+    status,
+    selected: status === 'resolved' ? top : null,
+    candidates,
+    needs_confirmation: status !== 'resolved',
+    confidence: top?.confidence ?? 0,
+  };
+}
+
+function resolverError(label: string, query: string, response: { status: ResolverStatus; candidates: Array<Record<string, unknown>> }): ToolResult {
+  if (response.status === 'not_found' || response.candidates.length === 0) {
+    return errorResult(`${label}: "${query}" not found. Use an id or call the matching resolve_* tool first.`);
+  }
+  const matches = response.candidates
+    .map((row) => String(row.name ?? row.email ?? row.id ?? 'unknown'))
+    .join(', ');
+  return errorResult(`${label}: ambiguous "${query}". Confirm one of: ${matches}. Use the matching resolve_* tool and retry with the selected id.`);
+}
+
 async function resolveActiveMember(
   ctx: HumanToolContext,
   params: { user_id?: unknown; email?: unknown; name?: unknown; label: string },
 ): Promise<{ user: { id: string; name: string | null; email: string | null } | null; error?: ToolResult }> {
   const userId = typeof params.user_id === 'string' ? params.user_id.trim() : '';
   const email = typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
-  const name = typeof params.name === 'string' ? params.name.trim().toLowerCase() : '';
+  const name = typeof params.name === 'string' ? params.name.trim() : '';
   if (!userId && !email && !name) return { user: null };
+
+  if (userId || email) {
+    const rows = await db.execute(sql`
+      SELECT u.id, u.name, u.email
+      FROM org_members om
+      JOIN users u ON u.id = om.user_id
+      WHERE om.org_id = ${ctx.org_id}
+        AND om.is_active = true
+        AND (${userId ? sql`u.id = ${userId}` : sql`lower(u.email) = ${email}`})
+      ORDER BY u.is_agent ASC, u.name ASC
+      LIMIT 1
+    `);
+    const match = (((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>)[0] ?? null;
+    return match ? { user: match } : { user: null, error: errorResult(`${params.label}: member not found`) };
+  }
 
   const rows = await db.execute(sql`
     SELECT u.id, u.name, u.email
@@ -411,36 +571,17 @@ async function resolveActiveMember(
     JOIN users u ON u.id = om.user_id
     WHERE om.org_id = ${ctx.org_id}
       AND om.is_active = true
-      AND (
-        ${userId ? sql`u.id = ${userId}` : sql`false`}
-        OR ${email ? sql`lower(u.email) = ${email}` : sql`false`}
-        OR ${name ? sql`lower(u.name) = ${name}` : sql`false`}
-      )
     ORDER BY u.is_agent ASC, u.name ASC
-    LIMIT 5
+    LIMIT 200
   `);
-  let matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
-  if (matches.length === 0 && name) {
-    const fuzzy = await db.execute(sql`
-      SELECT u.id, u.name, u.email
-      FROM org_members om
-      JOIN users u ON u.id = om.user_id
-      WHERE om.org_id = ${ctx.org_id}
-        AND om.is_active = true
-        AND lower(u.name) LIKE ${`%${name}%`}
-      ORDER BY u.is_agent ASC, u.name ASC
-      LIMIT 5
-    `);
-    matches = ((fuzzy as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
-  }
-  if (matches.length === 0) return { user: null, error: errorResult(`${params.label}: member not found`) };
-  if (matches.length > 1 && name && !matches.some((row) => row.name?.toLowerCase() === name)) {
-    return {
-      user: null,
-      error: errorResult(`${params.label}: ambiguous member "${params.name}". Matches: ${matches.map((row) => row.name ?? row.email ?? row.id).join(', ')}`),
-    };
-  }
-  return { user: matches[0] ?? null };
+  const members = ((rows as any).rows ?? []) as Array<{ id: string; name: string | null; email: string | null }>;
+  const ranked = rankResolverCandidates(name, members, (row) => [
+    { value: row.name, reason: 'name' },
+    { value: row.email, reason: 'email', weight: 0.96 },
+  ]);
+  const response = buildResolverResponse(name, ranked, { limit: 5, resolvedThreshold: 0.76 });
+  if (!response.selected) return { user: null, error: resolverError(params.label, name, response) };
+  return { user: response.selected };
 }
 
 async function resolveProjectForHumanTask(
@@ -448,8 +589,8 @@ async function resolveProjectForHumanTask(
   args: { project_id?: unknown; project_name?: unknown; project_identifier?: unknown },
 ): Promise<{ project: { id: string; name: string; prefix: string | null } | null; error?: ToolResult }> {
   const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
-  const projectName = typeof args.project_name === 'string' ? args.project_name.trim().toLowerCase() : '';
-  const projectIdentifier = typeof args.project_identifier === 'string' ? args.project_identifier.trim().toLowerCase() : '';
+  const projectName = typeof args.project_name === 'string' ? args.project_name.trim() : '';
+  const projectIdentifier = typeof args.project_identifier === 'string' ? args.project_identifier.trim() : '';
   if (projectId) {
     if (!(await userCanSeeProject(ctx, projectId))) return { project: null, error: errorResult('task_create: project not found') };
     const [project] = await db
@@ -462,30 +603,24 @@ async function resolveProjectForHumanTask(
 
   const query = projectIdentifier || projectName;
   if (query) {
-    const prefix = query.includes('-') ? query.split('-')[0] : query;
+    const lookupQuery = projectIdentifier && projectIdentifier.includes('-') ? (projectIdentifier.split('-')[0] ?? query) : query;
     const rows = await db.execute(sql`
       SELECT id, name, prefix
       FROM projects
       WHERE org_id = ${ctx.org_id}
         AND is_archived = false
         AND is_deleted = false
-        AND (
-          lower(name) = ${query}
-          OR lower(prefix) = ${prefix}
-          OR lower(name) LIKE ${`%${query}%`}
-        )
-      ORDER BY
-        CASE WHEN lower(name) = ${query} OR lower(prefix) = ${prefix} THEN 0 ELSE 1 END,
-        updated_at DESC
-      LIMIT 5
+      ORDER BY updated_at DESC
+      LIMIT 200
     `);
-    const matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string; prefix: string | null }>;
-    if (matches.length === 0) return { project: null, error: errorResult('task_create: project not found') };
-    const exactMatches = matches.filter((row) => row.name.toLowerCase() === query || row.prefix?.toLowerCase() === prefix);
-    if (exactMatches.length > 1) {
-      return { project: null, error: errorResult(`task_create: ambiguous project "${query}". Matches: ${exactMatches.map((row) => row.name).join(', ')}`) };
-    }
-    return { project: exactMatches[0] ?? matches[0] ?? null };
+    const projectsRows = ((rows as any).rows ?? []) as Array<{ id: string; name: string; prefix: string | null }>;
+    const ranked = rankResolverCandidates(lookupQuery, projectsRows, (row) => [
+      { value: row.name, reason: 'name' },
+      { value: row.prefix, reason: 'prefix', weight: 0.98 },
+    ]);
+    const response = buildResolverResponse(lookupQuery, ranked, { limit: 5, resolvedThreshold: 0.76 });
+    if (!response.selected) return { project: null, error: resolverError('task_create project', query, response) };
+    return { project: response.selected };
   }
 
   const [fallback] = await db
@@ -502,7 +637,7 @@ async function resolveVisibleSpace(
   args: { space_id?: unknown; space_name?: unknown },
 ): Promise<{ space: { id: string; name: string; type: string } | null; error?: ToolResult }> {
   const spaceId = typeof args.space_id === 'string' ? args.space_id.trim() : '';
-  const spaceName = typeof args.space_name === 'string' ? args.space_name.trim().toLowerCase().replace(/^#/, '') : '';
+  const spaceName = typeof args.space_name === 'string' ? args.space_name.trim().replace(/^#/, '') : '';
   if (spaceId) {
     if (!(await userCanSeeSpace(ctx, spaceId))) return { space: null, error: errorResult('space not found or not visible to user') };
     const [space] = await db
@@ -514,21 +649,23 @@ async function resolveVisibleSpace(
   }
   if (!spaceName) return { space: null };
   const rows = await db.execute(sql`
-    SELECT s.id, s.name, s.type
+    SELECT s.id, s.name, s.type, s.description
     FROM spaces s
     LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
     WHERE s.org_id = ${ctx.org_id}
       AND s.is_archived = false
       AND (s.type = 'public' OR sm.id IS NOT NULL)
-      AND (lower(s.name) = ${spaceName} OR lower(s.name) LIKE ${`%${spaceName}%`})
-    ORDER BY CASE WHEN lower(s.name) = ${spaceName} THEN 0 ELSE 1 END, s.name ASC
-    LIMIT 5
+    ORDER BY s.is_default DESC, s.name ASC
+    LIMIT 200
   `);
-  const matches = ((rows as any).rows ?? []) as Array<{ id: string; name: string; type: string }>;
-  if (matches.length === 0) return { space: null, error: errorResult(`space "${args.space_name}" not found`) };
-  const exactMatches = matches.filter((row) => row.name.toLowerCase() === spaceName);
-  if (exactMatches.length > 1) return { space: null, error: errorResult(`ambiguous space "${args.space_name}"`) };
-  return { space: exactMatches[0] ?? matches[0] ?? null };
+  const spacesRows = ((rows as any).rows ?? []) as Array<{ id: string; name: string; type: string; description: string | null }>;
+  const ranked = rankResolverCandidates(spaceName, spacesRows, (row) => [
+    { value: row.name, reason: 'name' },
+    { value: row.description, reason: 'description', weight: 0.68 },
+  ]);
+  const response = buildResolverResponse(spaceName, ranked, { limit: 5, resolvedThreshold: 0.76 });
+  if (!response.selected) return { space: null, error: resolverError('space', spaceName, response) };
+  return { space: response.selected };
 }
 
 async function verifyReadableSourceMessage(ctx: HumanToolContext, messageId: string): Promise<ToolResult | null> {
@@ -878,6 +1015,28 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
     active_projects: activeProjects,
     relevant_wiki_snippets: wikiSnippets,
     context_packets: hasScope(ctx, 'read:wiki') ? buildHumanContextPackets(wikiSnippets, trigger) : [],
+    recommended_tool_paths: [
+      {
+        intent: 'triage unread work or "what needs my attention?"',
+        first_tool: 'attention_digest',
+        why: 'one call returns unread/recent messages, mentions, tasks, calendar, approvals, and next-action hints',
+      },
+      {
+        intent: 'multi-step owner/operator workflow with named spaces, projects, or people',
+        first_tool: 'resolve_targets',
+        why: 'resolve human names once, then pass confirmed ids to task_create, wiki_upsert, and send_message',
+      },
+      {
+        intent: 'save durable workspace knowledge',
+        preferred_tool: 'wiki_upsert',
+        why: 'updates matching pages by slug/title instead of creating duplicate memory pages',
+      },
+      {
+        intent: 'post to chat or DM a teammate',
+        preferred_tool: 'send_message',
+        why: 'accepts spaces, threads, emails, and person names while enforcing membership and idempotency',
+      },
+    ],
     trigger_context: trigger ?? null,
     mcp_principal: 'human',
   });
@@ -1418,6 +1577,30 @@ export async function humanProjectList(args: { query?: string; include_archived?
   return textResult((rows as any).rows ?? []);
 }
 
+export async function humanResolveProject(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const query = args.query?.trim();
+  if (!query) return errorResult('resolve_project requires query');
+  const lookupQuery = query.includes('-') ? (query.split('-')[0] ?? query) : query;
+  const rows = await db.execute(sql`
+    SELECT p.id, p.name, p.prefix, p.lead_id, lead.name AS lead_name, p.is_archived, p.updated_at
+    FROM projects p
+    LEFT JOIN users lead ON lead.id = p.lead_id
+    WHERE p.org_id = ${ctx.org_id}
+      AND p.is_deleted = false
+      AND p.is_archived = false
+    ORDER BY p.updated_at DESC
+    LIMIT 200
+  `);
+  const projectsRows = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  const ranked = rankResolverCandidates(lookupQuery, projectsRows, (row) => [
+    { value: row.name, reason: 'name' },
+    { value: row.prefix, reason: 'prefix', weight: 0.98 },
+  ]);
+  return textResult(buildResolverResponse(query, ranked, { limit: args.limit, resolvedThreshold: 0.76 }));
+}
+
 export async function humanProjectGet(args: { project_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
@@ -1473,6 +1656,29 @@ export async function humanSpaceList(args: { query?: string; type?: string; limi
     LIMIT ${limit}
   `);
   return textResult((rows as any).rows ?? []);
+}
+
+export async function humanResolveSpace(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:messages');
+  if (scopeError) return scopeError;
+  const query = args.query?.trim().replace(/^#/, '');
+  if (!query) return errorResult('resolve_space requires query');
+  const rows = await db.execute(sql`
+    SELECT s.id, s.name, s.type, s.description, s.is_default, s.updated_at
+    FROM spaces s
+    LEFT JOIN space_members sm ON sm.space_id = s.id AND sm.user_id = ${ctx.user_id}
+    WHERE s.org_id = ${ctx.org_id}
+      AND s.is_archived = false
+      AND (s.type = 'public' OR sm.id IS NOT NULL)
+    ORDER BY s.is_default DESC, s.name ASC
+    LIMIT 200
+  `);
+  const spacesRows = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  const ranked = rankResolverCandidates(query, spacesRows, (row) => [
+    { value: row.name, reason: 'name' },
+    { value: row.description, reason: 'description', weight: 0.68 },
+  ]);
+  return textResult(buildResolverResponse(query, ranked, { limit: args.limit, resolvedThreshold: 0.76 }));
 }
 
 export async function humanSpaceGet(args: { space_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -1857,6 +2063,93 @@ export async function humanMemberList(args: { query?: string; include_agents?: b
     LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
   `);
   return textResult((rows as any).rows ?? []);
+}
+
+export async function humanResolveMember(args: { query?: string; include_agents?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const query = args.query?.trim();
+  if (!query) return errorResult('resolve_member requires query');
+  const rows = await db.execute(sql`
+    SELECT u.id, u.name, u.email, om.role, u.is_agent, om.is_active
+    FROM org_members om
+    JOIN users u ON u.id = om.user_id
+    WHERE om.org_id = ${ctx.org_id}
+      AND om.is_active = true
+      AND (${args.include_agents === false ? sql`u.is_agent = false` : sql`true`})
+    ORDER BY u.is_agent ASC, u.name ASC
+    LIMIT 200
+  `);
+  const members = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
+  const ranked = rankResolverCandidates(query, members, (row) => [
+    { value: row.name, reason: 'name' },
+    { value: row.email, reason: 'email', weight: 0.96 },
+  ]);
+  return textResult(buildResolverResponse(query, ranked, { limit: args.limit, resolvedThreshold: 0.76 }));
+}
+
+async function parseResolverToolResult(result: ToolResult): Promise<Record<string, unknown>> {
+  if (result.isError) {
+    return {
+      status: 'error',
+      needs_confirmation: true,
+      error: result.content.map((item) => item.text).join('\n'),
+    };
+  }
+  try {
+    return JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  } catch {
+    return {
+      status: 'error',
+      needs_confirmation: true,
+      error: result.content[0]?.text ?? 'resolver returned invalid JSON',
+    };
+  }
+}
+
+function normalizeResolverBatch(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+export async function humanResolveTargets(
+  args: { spaces?: string[]; members?: string[]; projects?: string[]; include_agents?: boolean; limit?: number },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const spacesToResolve = normalizeResolverBatch(args.spaces);
+  const membersToResolve = normalizeResolverBatch(args.members);
+  const projectsToResolve = normalizeResolverBatch(args.projects);
+  if (spacesToResolve.length === 0 && membersToResolve.length === 0 && projectsToResolve.length === 0) {
+    return errorResult('resolve_targets requires at least one spaces, members, or projects query');
+  }
+
+  const resolved: Record<string, unknown> = {
+    spaces: {},
+    members: {},
+    projects: {},
+  };
+
+  for (const query of spacesToResolve) {
+    (resolved.spaces as Record<string, unknown>)[query] = await parseResolverToolResult(
+      await humanResolveSpace({ query, limit: args.limit }, ctx),
+    );
+  }
+  for (const query of membersToResolve) {
+    (resolved.members as Record<string, unknown>)[query] = await parseResolverToolResult(
+      await humanResolveMember({ query, include_agents: args.include_agents, limit: args.limit }, ctx),
+    );
+  }
+  for (const query of projectsToResolve) {
+    (resolved.projects as Record<string, unknown>)[query] = await parseResolverToolResult(
+      await humanResolveProject({ query, limit: args.limit }, ctx),
+    );
+  }
+
+  return textResult(resolved);
 }
 
 export async function humanMemberGet(args: { user_id?: string; email?: string }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -2447,6 +2740,20 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
     {
+      name: 'resolve_project',
+      title: 'Resolve Deft Project',
+      description: 'Resolve a human project name, prefix, or task key fragment to a Deft project id before creating tasks. Returns resolved/ambiguous/not_found plus candidates and confidence. Use this when a user says a project name in natural language. Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Project name, prefix, or task key fragment such as Marketing Launch, MKT, or MKT-18.' },
+          limit: { type: 'integer', minimum: 1, maximum: 20 },
+        },
+        required: ['query'],
+      },
+    },
+    {
       name: 'project_get',
       title: 'Get Deft Project',
       description: 'Fetch one project by id, including task counts and linked visible spaces. Human personal-MCP read: requires read:workspace.',
@@ -2472,6 +2779,20 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
       },
     },
     {
+      name: 'resolve_space',
+      title: 'Resolve Deft Space',
+      description: 'Resolve a human channel/space name to a visible Deft space id before reading or posting messages. Handles #names and hyphen/space differences such as buyer updates -> buyer-updates. Returns resolved/ambiguous/not_found plus candidates and confidence. Human personal-MCP read: requires read:messages.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Space or channel name, with or without #.' },
+          limit: { type: 'integer', minimum: 1, maximum: 20 },
+        },
+        required: ['query'],
+      },
+    },
+    {
       name: 'space_get',
       title: 'Get Deft Space',
       description: 'Fetch one visible space by id, including members. Human personal-MCP read: requires read:messages.',
@@ -2480,6 +2801,37 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
         type: 'object',
         properties: { space_id: { type: 'string' } },
         required: ['space_id'],
+      },
+    },
+    {
+      name: 'resolve_member',
+      title: 'Resolve Deft Member',
+      description: 'Resolve a human person name or email to an active Deft member id before assigning work or sending a DM. Returns resolved/ambiguous/not_found plus candidates and confidence. Human personal-MCP read: requires read:workspace.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Person name or email.' },
+          include_agents: { type: 'boolean', description: 'Include agent/system users. Defaults to true.' },
+          limit: { type: 'integer', minimum: 1, maximum: 20 },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'resolve_targets',
+      title: 'Resolve Multiple Deft Targets',
+      description: 'Resolve several natural-language Deft targets in one call: spaces, members, and projects. Use this before multi-step owner/operator workflows so later task_create, wiki_upsert, and send_message calls can use confirmed ids instead of guessing. Returns per-query resolved/ambiguous/not_found results. Human personal-MCP read: requires read:workspace and uses read:messages for spaces.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          spaces: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+          members: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+          projects: { type: 'array', items: { type: 'string' }, maxItems: 10 },
+          include_agents: { type: 'boolean', description: 'Include agent/system users in member resolution. Defaults to true.' },
+          limit: { type: 'integer', minimum: 1, maximum: 20 },
+        },
       },
     },
     {
@@ -2582,10 +2934,14 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
             description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.',
           };
         }
+        if (String(next.name) === 'memory_write') {
+          next.description = `${next.description ?? ''} Prefer wiki_upsert for durable company knowledge because wiki_upsert can update an existing page by slug/title and keeps better receipts.`;
+        }
         if (String(next.name) === 'task_create' && inputSchema?.properties) {
+          next.description = `${next.description ?? ''} If the user gives project or assignee names instead of ids, call resolve_targets or resolve_project/resolve_member first when there is any ambiguity.`;
           inputSchema.properties.project_name = {
             type: 'string',
-            description: 'Optional project name. Use this when the user names the project but you do not know project_id.',
+            description: 'Optional project name. Prefer project_id from resolve_project/resolve_targets when the name is fuzzy.',
           };
           inputSchema.properties.project_identifier = {
             type: 'string',
@@ -2609,13 +2965,13 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
           };
         }
         if (String(next.name) === 'send_message' && inputSchema?.properties) {
-          next.description = 'Send a Deft chat message as the connected human. Target can be a space, thread, or person; person targets may use user_id, email, or person_name. Prefer this over message_post for human-facing workflows. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:messages.';
-          inputSchema.properties.space_id = { type: 'string', description: 'Optional target space id.' };
-          inputSchema.properties.space_name = { type: 'string', description: 'Optional target space name such as marketing-launch.' };
+          next.description = 'Send a Deft chat message as the connected human. Target can be a space, thread, or person; person targets may use user_id, email, or person_name. Prefer this over message_post for human-facing workflows. Use resolve_targets/resolve_space/resolve_member first when a target name is fuzzy. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:messages.';
+          inputSchema.properties.space_id = { type: 'string', description: 'Optional target space id. Prefer this after resolve_space/resolve_targets.' };
+          inputSchema.properties.space_name = { type: 'string', description: 'Optional target space name such as marketing-launch. Exact and high-confidence human wording is accepted; otherwise resolve first.' };
           inputSchema.properties.thread_id = { type: 'string', description: 'Optional parent message id; sends as a thread reply.' };
           inputSchema.properties.user_id = { type: 'string', description: 'Optional DM target user id.' };
           inputSchema.properties.email = { type: 'string', description: 'Optional DM target email.' };
-          inputSchema.properties.person_name = { type: 'string', description: 'Optional DM target person name.' };
+          inputSchema.properties.person_name = { type: 'string', description: 'Optional DM target person name. Prefer user_id from resolve_member/resolve_targets when the name is fuzzy.' };
           (next.inputSchema as Record<string, unknown>).additionalProperties = true;
         }
       } else {
