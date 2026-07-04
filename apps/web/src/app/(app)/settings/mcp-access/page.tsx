@@ -555,6 +555,30 @@ export default function McpAccessPage() {
         'Add the Connector URL below, then follow the app\'s OAuth sign-in flow.',
         'Use the metadata links only if the app asks for discovery or OAuth details.',
       ];
+  const claudeConnectorFields = [
+    {
+      label: 'Name',
+      value: 'Deft',
+      copyValue: 'Deft',
+      help: 'This is the display name Claude will show in its connector list.',
+    },
+    {
+      label: 'Remote MCP server URL',
+      value: remote?.mcp_endpoint_url ?? 'Loading connector URL...',
+      copyValue: remote?.mcp_endpoint_url,
+      help: 'Paste this into Claude\'s required URL field.',
+    },
+    {
+      label: 'OAuth Client ID (optional)',
+      value: 'Leave blank',
+      help: 'Deft supports dynamic client registration, so Claude should create its own client during Connect.',
+    },
+    {
+      label: 'OAuth Client Secret (optional)',
+      value: 'Leave blank',
+      help: 'Deft uses public-client OAuth with PKCE and token_endpoint_auth_method=none. No shared secret is needed.',
+    },
+  ];
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -793,6 +817,29 @@ export default function McpAccessPage() {
                     <div className="mt-3 rounded-md p-3 text-[11px] leading-relaxed" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
                       <strong style={{ color: 'var(--text-primary)' }}>Security note:</strong> never paste a live bearer token into Claude, ChatGPT, or any AI chat. If you already did, revoke that personal token below and generate a fresh one. Remote Claude connectors should authenticate through Deft OAuth.
                     </div>
+                    {isClaudeConnector && (
+                      <div className="mt-4 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                        <div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>Fill Claude's four fields like this</div>
+                        <div className="mt-3 grid gap-2">
+                          {claudeConnectorFields.map((field) => (
+                            <div key={field.label} className="rounded-md p-3" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{field.label}</div>
+                                  <div className="mt-1 text-[12px] font-medium break-all" style={{ color: field.value === 'Leave blank' ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>{field.value}</div>
+                                </div>
+                                {field.copyValue && (
+                                  <button type="button" onClick={() => copy(field.label.toLowerCase(), field.copyValue ?? '')} className="p-1.5 rounded-md shrink-0" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${field.label}`}>
+                                    <Copy size={13} />
+                                  </button>
+                                )}
+                              </div>
+                              <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{field.help}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="grid md:grid-cols-2 gap-3 mt-4">
                       {remoteRows.slice(0, 3).map(([label, value]) => (
                         <div key={label} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
