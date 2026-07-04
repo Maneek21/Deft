@@ -25,6 +25,7 @@ import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
 import { reserveNextTaskNumber } from '../task-numbering.js';
+import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -2569,7 +2570,15 @@ export async function humanActivityQuery(args: { limit?: number; tool_name?: str
     ORDER BY created_at DESC
     LIMIT ${limit}
   `);
-  return textResult((rows as any).rows ?? []);
+  const actions = ((rows as any).rows ?? []) as Array<{
+    id: string;
+    client_id: string;
+    event: string;
+    metadata: Record<string, unknown> | null;
+    created_at: Date;
+  }>;
+  const enriched = await enrichOAuthAuditActions(ctx.org_id, actions);
+  return textResult(enriched);
 }
 
 export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolContext): Promise<ToolResult> {
