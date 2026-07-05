@@ -29,6 +29,7 @@ import {
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
+import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -461,6 +462,36 @@ export async function platformContext(
     }
 
     // ─── assemble JSON payload ───────────────────────────────────
+    let teamSummaries: Array<Record<string, unknown>> = [];
+    try {
+      const access = await teamAccessForEmployee(ctx);
+      teamSummaries = (await listTeamSummaries(access, { limit: 20 })).map((team) => ({
+        id: team.id,
+        name: team.name,
+        handle: team.handle,
+        description: team.description,
+        type: team.type,
+        visibility: team.visibility,
+        lead_user_id: team.lead_user_id,
+        lead_name: team.lead_name,
+        default_space_id: team.default_space_id,
+        member_count: team.member_count,
+        agent_count: team.agent_count,
+        resource_count: team.resource_count,
+        resources_by_type: team.resources_by_type,
+        current_user_role: team.current_user_role,
+        retrieval_hint: {
+          tool: 'team_context',
+          args_template: {
+            caller_employee_slug: ctx.employee_slug,
+            team_id: team.id,
+          },
+        },
+      }));
+    } catch {
+      teamSummaries = [];
+    }
+
     const now = new Date();
     const payload = {
       generated_at: now.toISOString(),
@@ -482,6 +513,7 @@ export async function platformContext(
         is_agent: t.is_agent,
       })),
       active_projects: activeProjects,
+      teams: teamSummaries,
       relevant_wiki_snippets: wikiSnippets,
       context_packets: buildContextPackets(wikiSnippets, trigger, ctx),
       trigger_context: trigger ?? null,

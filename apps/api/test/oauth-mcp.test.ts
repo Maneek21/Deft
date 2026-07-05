@@ -49,6 +49,8 @@ const PUBLIC_NONMEMBER_SPACE_ID = `oauth-mcp-public-nonmember-space-${TEST_ID}`;
 const PRIVATE_SPACE_ID = `oauth-mcp-private-space-${TEST_ID}`;
 const PRIVATE_MESSAGE_ID = `oauth-mcp-private-message-${TEST_ID}`;
 const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
+const TEAM_ID = `oauth-mcp-team-${TEST_ID}`;
+const TEAM_HANDLE = `oauth-mcp-salsa-ops-${TEST_ID.slice(0, 8)}`;
 
 let testApp: Hono;
 let helpers: typeof import('../src/lib/oauth-mcp.js');
@@ -76,6 +78,10 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_audit_events WHERE user_id = $1 OR org_id = $2`, [USER_ID, ORG_ID]);
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM team_dashboard_snapshots WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM team_resources WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM team_members WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM teams WHERE org_id = $1`, [ORG_ID]);
     await client.query(`UPDATE tasks SET source_message_id = NULL WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM space_members WHERE space_id IN (SELECT id FROM spaces WHERE org_id = $1)`, [ORG_ID]);
@@ -228,6 +234,46 @@ async function seedWorkspace() {
         SPACE_ID,
         OTHER_USER_ID,
         'OAuth MCP Other User asks OAuth MCP User to review heirloom tomato notes',
+      ],
+    );
+    await client.query(
+      `INSERT INTO teams
+        (id, org_id, name, handle, description, type, visibility, lead_user_id, default_space_id, created_by)
+       VALUES
+        ($1, $2, 'Salsa Ops', $3, 'Team context fixture for OAuth MCP contract tests.',
+         'functional', 'org', $4, $5, $4)`,
+      [TEAM_ID, ORG_ID, TEAM_HANDLE, USER_ID, SPACE_ID],
+    );
+    await client.query(
+      `INSERT INTO team_members (id, org_id, team_id, user_id, role)
+       VALUES
+        ($1, $2, $3, $4, 'lead'),
+        ($5, $2, $3, $6, 'member')`,
+      [
+        `oauth-mcp-team-lead-${TEST_ID}`,
+        ORG_ID,
+        TEAM_ID,
+        USER_ID,
+        `oauth-mcp-team-member-${TEST_ID}`,
+        OTHER_USER_ID,
+      ],
+    );
+    await client.query(
+      `INSERT INTO team_resources (id, org_id, team_id, resource_type, resource_id, label, created_by)
+       VALUES
+        ($1, $2, $3, 'project', $4, 'Demo project', $8),
+        ($5, $2, $3, 'space', $6, 'Public discussion space', $8),
+        ($7, $2, $3, 'wiki_page', $9, 'Salsa decision wiki', $8)`,
+      [
+        `oauth-mcp-team-project-${TEST_ID}`,
+        ORG_ID,
+        TEAM_ID,
+        PROJECT_ID,
+        `oauth-mcp-team-space-${TEST_ID}`,
+        SPACE_ID,
+        `oauth-mcp-team-wiki-${TEST_ID}`,
+        USER_ID,
+        WIKI_ID,
       ],
     );
     await client.query(
@@ -1112,6 +1158,9 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     project_list: { limit: 5 },
     resolve_project: { query: 'OAuth MCP Demo', limit: 5 },
     project_get: { project_id: PROJECT_ID },
+    team_list: { query: 'Salsa Ops', limit: 5 },
+    team_get: { handle: TEAM_HANDLE },
+    team_context: { handle: TEAM_HANDLE, limit: 5 },
     space_list: { limit: 5 },
     resolve_space: { query: 'oauth mcp public', limit: 5 },
     space_get: { space_id: SPACE_ID },

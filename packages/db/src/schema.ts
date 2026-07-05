@@ -15,6 +15,17 @@ const timestamps = () => ({
 // ═══ ENUMS ═══
 export const orgRoleEnum = pgEnum('org_role', ['owner', 'admin', 'member', 'guest']);
 export const userKindEnum = pgEnum('user_kind', ['human', 'agent', 'system']);
+export const teamRoleEnum = pgEnum('team_role', ['lead', 'member', 'viewer']);
+export const teamVisibilityEnum = pgEnum('team_visibility', ['private', 'org']);
+export const teamResourceTypeEnum = pgEnum('team_resource_type', [
+  'space',
+  'project',
+  'wiki_page',
+  'note',
+  'calendar_feed',
+  'task_template',
+  'agent_employee',
+]);
 export const spaceTypeEnum = pgEnum('space_type', ['public', 'private', 'dm', 'group_dm', 'agent_conversation']);
 export const taskPriorityEnum = pgEnum('task_priority', ['p0', 'p1', 'p2', 'p3']);
 export const taskStatusEnum = pgEnum('task_status', ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']);
@@ -846,6 +857,74 @@ export const userGroupMembers = pgTable('user_group_members', {
   user_id: text('user_id').notNull().references(() => users.id),
 }, (t) => [
   uniqueIndex('user_group_member_unique').on(t.group_id, t.user_id),
+]);
+
+// Teams are first-class work units. They intentionally do not replace
+// user_groups, which remain lightweight @mention/access lists.
+export const teams = pgTable('teams', {
+  ...id(),
+  ...orgId(),
+  name: text('name').notNull(),
+  handle: text('handle').notNull(),
+  description: text('description'),
+  type: text('type').default('functional').notNull(),
+  visibility: teamVisibilityEnum('visibility').default('org').notNull(),
+  avatar_url: text('avatar_url'),
+  color: text('color'),
+  lead_user_id: text('lead_user_id').references(() => users.id, { onDelete: 'set null' }),
+  default_space_id: text('default_space_id').references(() => spaces.id, { onDelete: 'set null' }),
+  is_archived: boolean('is_archived').default(false).notNull(),
+  created_by: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('teams_org_handle_unique').on(t.org_id, t.handle),
+  index('teams_org_idx').on(t.org_id),
+  index('teams_org_archived_idx').on(t.org_id, t.is_archived),
+  index('teams_lead_idx').on(t.lead_user_id),
+]);
+
+export const teamMembers = pgTable('team_members', {
+  ...id(),
+  ...orgId(),
+  team_id: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  role: teamRoleEnum('role').default('member').notNull(),
+  joined_at: timestamp('joined_at').defaultNow().notNull(),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('team_members_unique').on(t.team_id, t.user_id),
+  index('team_members_org_idx').on(t.org_id),
+  index('team_members_team_idx').on(t.team_id),
+  index('team_members_user_idx').on(t.user_id),
+]);
+
+export const teamResources = pgTable('team_resources', {
+  ...id(),
+  ...orgId(),
+  team_id: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  resource_type: teamResourceTypeEnum('resource_type').notNull(),
+  resource_id: text('resource_id').notNull(),
+  label: text('label'),
+  created_by: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('team_resources_unique').on(t.team_id, t.resource_type, t.resource_id),
+  index('team_resources_org_idx').on(t.org_id),
+  index('team_resources_team_idx').on(t.team_id),
+  index('team_resources_resource_idx').on(t.resource_type, t.resource_id),
+]);
+
+export const teamDashboardSnapshots = pgTable('team_dashboard_snapshots', {
+  ...id(),
+  ...orgId(),
+  team_id: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  snapshot_type: text('snapshot_type').notNull(),
+  payload_json: jsonb('payload_json').notNull(),
+  generated_at: timestamp('generated_at').defaultNow().notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('team_snapshots_org_idx').on(t.org_id),
+  index('team_snapshots_team_type_idx').on(t.team_id, t.snapshot_type, t.generated_at),
 ]);
 
 // ═══ CUSTOM EMOJI ═══
