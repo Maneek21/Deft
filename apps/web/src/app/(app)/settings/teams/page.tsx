@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   Bot,
   Briefcase,
   CalendarDays,
@@ -523,6 +525,38 @@ export default function TeamsSettingsPage() {
     }
   }
 
+  async function handleArchiveSelectedTeam(isArchived: boolean) {
+    if (!selectedId || !detail) return;
+    const verb = isArchived ? 'archive' : 'restore';
+    const confirmed = window.confirm(
+      isArchived
+        ? `Archive ${detail.team.name}? It will be hidden from the default teams view, but its members and linked context will remain intact.`
+        : `Restore ${detail.team.name}? It will return to the active teams view.`,
+    );
+    if (!confirmed) return;
+
+    setActionError('');
+    setWorkingKey(`${verb}-team`);
+    try {
+      const res = await api.patch(`/api/teams/${selectedId}`, { is_archived: isArchived });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to ${verb} team`);
+
+      if (isArchived && !showArchived) {
+        setDetail(null);
+        setDashboard(null);
+        await loadTeams(null);
+        return;
+      }
+
+      await Promise.all([loadTeams(selectedId), loadTeamDetail(selectedId)]);
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setWorkingKey(null);
+    }
+  }
+
   const leadName = detail?.lead?.name ?? (detail?.team.lead_user_id ? 'Assigned lead' : 'No lead yet');
 
   return (
@@ -704,6 +738,7 @@ export default function TeamsSettingsPage() {
                           {detail.team.name}
                         </h3>
                         {detail.team.visibility === 'private' ? <Pill><Lock size={11} />Private</Pill> : <Pill tone="success"><Shield size={11} />Org-visible</Pill>}
+                        {detail.team.is_archived && <Pill tone="warning">Archived</Pill>}
                       </div>
                       <p className="mt-1 text-[13px]" style={{ color: 'var(--muted)' }}>
                         #{detail.team.handle} - Lead: {leadName}
@@ -714,10 +749,29 @@ export default function TeamsSettingsPage() {
                         </p>
                       )}
                     </div>
-                    <div className="grid grid-cols-3 gap-2 sm:w-[320px]">
-                      <MetricCard icon={Users} label="People" value={detail.summary.member_count} />
-                      <MetricCard icon={Bot} label="Agents" value={detail.summary.agent_count} />
-                      <MetricCard icon={Link2} label="Links" value={detail.resources.length} />
+                    <div className="flex flex-col gap-2 sm:w-[320px]">
+                      {canManageSelectedTeam && (
+                        <button
+                          data-testid={detail.team.is_archived ? 'team-restore-button' : 'team-archive-button'}
+                          type="button"
+                          onClick={() => handleArchiveSelectedTeam(!detail.team.is_archived)}
+                          disabled={workingKey === 'archive-team' || workingKey === 'restore-team'}
+                          className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-[12px] font-semibold disabled:opacity-50"
+                          style={{
+                            color: detail.team.is_archived ? 'white' : 'var(--muted)',
+                            background: detail.team.is_archived ? 'var(--accent)' : 'transparent',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {detail.team.is_archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                          {detail.team.is_archived ? 'Restore team' : 'Archive team'}
+                        </button>
+                      )}
+                      <div className="grid grid-cols-3 gap-2">
+                        <MetricCard icon={Users} label="People" value={detail.summary.member_count} />
+                        <MetricCard icon={Bot} label="Agents" value={detail.summary.agent_count} />
+                        <MetricCard icon={Link2} label="Links" value={detail.resources.length} />
+                      </div>
                     </div>
                   </div>
                 </div>
