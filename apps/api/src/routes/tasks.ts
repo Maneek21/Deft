@@ -14,6 +14,7 @@ import { detectBlocksCycle } from '../lib/task-dependency.js';
 import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
 import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
+import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 
 export const taskRoutes = new Hono();
 
@@ -57,6 +58,15 @@ const updateTaskSchema = z.object({
   // Task 4.11 — partial-update of skill-defined custom fields.
   metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
+
+async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
+  if (assigneeId === undefined) return undefined;
+  if (assigneeId === null || assigneeId === '') return null;
+  if (typeof assigneeId !== 'string' || assigneeId.trim().length === 0) return null;
+  const trimmed = assigneeId.trim();
+  const resolved = await resolveAssignableAssigneeId(trimmed, orgId);
+  return resolved ? resolved.id : undefined;
+}
 
 const createDependencySchema = z.object({
   target_task_id: z.string().min(1),
@@ -524,9 +534,14 @@ taskRoutes.patch('/bulk', async (c) => {
       return c.json({ error: 'updates required', code: 'VALIDATION_ERROR' }, 400);
     }
 
+    const nextAssigneeId = await validateAssignableAssigneeId(updates.assignee_id, user.org_id);
+    if (updates.assignee_id !== undefined && nextAssigneeId === undefined) {
+      return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+    }
+
     const updateData: Record<string, any> = { updated_at: new Date() };
     if (updates.status) updateData.status = updates.status;
-    if (updates.assignee_id !== undefined) updateData.assignee_id = updates.assignee_id || null;
+    if (updates.assignee_id !== undefined) updateData.assignee_id = nextAssigneeId;
     if (updates.priority) updateData.priority = updates.priority;
 
     await db.update(tasks)
@@ -556,7 +571,7 @@ taskRoutes.patch('/bulk', async (c) => {
           user_id: user.id,
           action: 'assigned',
           field: 'assignee_id',
-          new_value: updates.assignee_id || null,
+          new_value: nextAssigneeId,
         });
       }
       if (updates.priority) {
@@ -576,18 +591,18 @@ taskRoutes.patch('/bulk', async (c) => {
     // actor), write one notification (type=task_assigned) with
     // metadata.task_ids so the client can render a grouped chip +
     // deep-link to the filtered list.
-    if (updates.assignee_id && updates.assignee_id !== user.id && task_ids.length >= 3) {
+    if (nextAssigneeId && nextAssigneeId !== user.id && task_ids.length >= 3) {
       try {
         await db.insert(notifications).values({
           org_id: user.org_id,
-          user_id: updates.assignee_id,
+          user_id: nextAssigneeId,
           type: 'task_assigned',
           title: `You were assigned ${task_ids.length} tasks`,
           body: null,
           link: `/tasks?mine=1`,
           metadata: { task_ids, grouped: true, kind: 'bulk_assign' },
         });
-        emitToUser(updates.assignee_id, 'notification:new', {
+        emitToUser(nextAssigneeId, 'notification:new', {
           type: 'task_assigned',
           title: `You were assigned ${task_ids.length} tasks`,
         });
@@ -796,13 +811,15 @@ taskRoutes.post('/:id/assignees', async (c) => {
     const { user_id } = await c.req.json();
     if (!user_id) return c.json({ error: 'user_id required', code: 'VALIDATION_ERROR' }, 400);
 
+    const assigneeId = await validateAssignableAssigneeId(user_id, user.org_id);
+    if (!assigneeId) {
+      return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+    }
+
     // Look up the task's primary assignee to enforce "no duplication" invariant.
-    const [taskRow] = await db.select({ assignee_id: tasks.assignee_id })
-      .from(tasks)
-      .where(eq(tasks.id, taskId))
-      .limit(1);
+    const taskRow = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!taskRow) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
-    if (taskRow.assignee_id && taskRow.assignee_id === user_id) {
+    if (taskRow.assignee_id && taskRow.assignee_id === assigneeId) {
       return c.json({
         error: 'User is already the primary assignee for this task',
         code: 'ALREADY_PRIMARY_ASSIGNEE',
@@ -811,7 +828,7 @@ taskRoutes.post('/:id/assignees', async (c) => {
 
     await db.insert(taskAssignees).values({
       task_id: taskId,
-      user_id,
+      user_id: assigneeId,
     }).onConflictDoNothing();
     return c.json({ success: true });
   } catch (err) {
@@ -825,8 +842,12 @@ taskRoutes.post('/:id/assignees', async (c) => {
 // tasks.assignee_id and cannot be removed via this endpoint — see Phase 0.3 plan.
 taskRoutes.delete('/:id/assignees/:userId', async (c) => {
   try {
+    const user = c.get('user');
     const taskId = c.req.param('id');
     const userId = c.req.param('userId');
+    const taskRow = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+    if (!taskRow) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+
     const deleted = await db.delete(taskAssignees)
       .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, userId)))
       .returning({ id: taskAssignees.id });
@@ -1542,6 +1563,11 @@ async function createTaskForProject(
     throw Object.assign(new Error('Project not found'), { code: 'NOT_FOUND' });
   }
 
+  const assigneeId = await validateAssignableAssigneeId(data.assignee_id, orgId);
+  if (data.assignee_id !== undefined && assigneeId === undefined) {
+    throw Object.assign(new Error('Invalid assignee'), { code: 'INVALID_ASSIGNEE' });
+  }
+
   const taskNumber = await reserveNextTaskNumber({ projectId, orgId });
 
   const [task] = await db.insert(tasks).values({
@@ -1552,7 +1578,7 @@ async function createTaskForProject(
     description: data.description || undefined,
     status: (data.status || 'backlog') as any,
     priority: (data.priority || 'p2') as any,
-    assignee_id: data.assignee_id || undefined,
+    assignee_id: assigneeId ?? undefined,
     created_by: userId,
     due_date: data.due_date ? new Date(data.due_date) : undefined,
     sort_order: data.sort_order ?? 0,
@@ -1657,6 +1683,9 @@ taskRoutes.post('/', async (c) => {
       if (err?.code === 'NOT_FOUND') {
         return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
       }
+      if (err?.code === 'INVALID_ASSIGNEE') {
+        return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+      }
       throw err;
     }
   } catch (err) {
@@ -1760,7 +1789,10 @@ taskRoutes.patch('/:id', async (c) => {
     }
 
     if (parsed.data.assignee_id !== undefined) {
-      const newAssignee = parsed.data.assignee_id || null; // Convert empty string to null
+      const newAssignee = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id);
+      if (newAssignee === undefined) {
+        return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+      }
       if (newAssignee !== existingTask.assignee_id) {
         updateData.assignee_id = newAssignee;
         activityEntries.push({ action: 'assigned', field: 'assignee_id', old_value: existingTask.assignee_id ?? null, new_value: newAssignee });

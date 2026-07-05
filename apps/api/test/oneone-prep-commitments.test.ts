@@ -48,6 +48,15 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 
 let originalFetch: typeof globalThis.fetch;
 
+const MOCK_PREP_JSON = JSON.stringify({
+  summary: 'Test summary.',
+  wins: [],
+  currentFocus: [],
+  concerns: [],
+  talkingPoints: ['How are things going?'],
+  commitments: [COMMITMENT_SUMMARY],
+});
+
 function makeFakeAnthropicResponse(jsonPayload: string) {
   const body = JSON.stringify({
     id: 'msg_test_mock_oneone',
@@ -68,6 +77,28 @@ function makeFakeAnthropicResponse(jsonPayload: string) {
   };
 }
 
+function makeFakeOpenAIResponse(jsonPayload: string) {
+  const body = JSON.stringify({
+    id: 'chatcmpl_test_mock_oneone',
+    object: 'chat.completion',
+    choices: [
+      {
+        index: 0,
+        message: { role: 'assistant', content: jsonPayload },
+        finish_reason: 'stop',
+      },
+    ],
+    usage: { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 },
+  });
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    text: async () => body,
+    json: async () => JSON.parse(body),
+  };
+}
+
 before(() => {
   originalFetch = globalThis.fetch;
   globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
@@ -75,16 +106,10 @@ before(() => {
       typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
     if (urlStr.includes('anthropic.com')) {
       // Return a minimal valid prep JSON so generateOneOnePrep doesn't throw.
-      return makeFakeAnthropicResponse(
-        JSON.stringify({
-          summary: 'Test summary.',
-          wins: [],
-          currentFocus: [],
-          concerns: [],
-          talkingPoints: ['How are things going?'],
-          commitments: [COMMITMENT_SUMMARY],
-        }),
-      ) as unknown as Response;
+      return makeFakeAnthropicResponse(MOCK_PREP_JSON) as unknown as Response;
+    }
+    if (urlStr.includes('api.openai.com') || urlStr.includes('openrouter.ai')) {
+      return makeFakeOpenAIResponse(MOCK_PREP_JSON) as unknown as Response;
     }
     return originalFetch(url as any, opts);
   };

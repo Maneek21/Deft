@@ -9,6 +9,7 @@ import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revoked
 import { env } from '../lib/env.js';
 import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
+import { OrgMembershipError, requireActiveOrgMembership } from '../lib/org-membership.js';
 
 export const authRoutes = new Hono();
 
@@ -170,9 +171,13 @@ authRoutes.post('/login', async (c) => {
   }
 
   // Get user's org
-  const [membership] = await db.select().from(orgMembers).where(eq(orgMembers.user_id, user.id)).limit(1);
+  const [membership] = await db
+    .select()
+    .from(orgMembers)
+    .where(and(eq(orgMembers.user_id, user.id), eq(orgMembers.is_active, true)))
+    .limit(1);
   if (!membership) {
-    return c.json({ error: 'No organization found', code: 'NO_ORG' }, 404);
+    return c.json({ error: 'No active organization membership found', code: 'ORG_MEMBERSHIP_INACTIVE' }, 403);
   }
 
   const tokens = generateTokens({ id: user.id, email: user.email!, org_id: membership.org_id });
@@ -202,9 +207,13 @@ authRoutes.post('/refresh', async (c) => {
 
   try {
     const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { id: string; email: string; org_id: string };
+    await requireActiveOrgMembership(payload.org_id, payload.id);
     const tokens = generateTokens({ id: payload.id, email: payload.email, org_id: payload.org_id });
     return c.json(tokens);
-  } catch {
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid refresh token', code: 'INVALID_TOKEN' }, 401);
   }
 });
@@ -255,21 +264,19 @@ authRoutes.get('/me', async (c) => {
       return c.json({ error: 'User not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
+
     const [org] = await db.select({
       id: orgs.id,
       name: orgs.name,
       slug: orgs.slug,
     }).from(orgs).where(eq(orgs.id, payload.org_id)).limit(1);
 
-    // Get user's role in the org
-    const [membership] = await db.select({
-      role: orgMembers.role,
-    }).from(orgMembers).where(
-      and(eq(orgMembers.user_id, payload.id), eq(orgMembers.org_id, payload.org_id)),
-    ).limit(1);
-
-    return c.json({ user: { ...user, role: membership?.role ?? 'member' }, org });
-  } catch {
+    return c.json({ user: { ...user, role: membership.role }, org });
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
@@ -331,14 +338,18 @@ authRoutes.get('/onboarding', async (c) => {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string };
+    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; org_id: string };
+    await requireActiveOrgMembership(payload.org_id, payload.id);
     let [state] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
     if (!state) {
       const [created] = await db.insert(onboardingState).values({ user_id: payload.id }).returning();
       state = created!;
     }
     return c.json(state);
-  } catch {
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
@@ -361,7 +372,8 @@ authRoutes.patch('/onboarding', async (c) => {
   }
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string };
+    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; org_id: string };
+    await requireActiveOrgMembership(payload.org_id, payload.id);
     const body = await c.req.json().catch(() => ({}));
     const parsed = onboardingUpdateSchema.safeParse(body);
     if (!parsed.success) {
@@ -378,7 +390,10 @@ authRoutes.patch('/onboarding', async (c) => {
 
     const [refreshed] = await db.select().from(onboardingState).where(eq(onboardingState.user_id, payload.id)).limit(1);
     return c.json(refreshed);
-  } catch {
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });
@@ -392,6 +407,7 @@ authRoutes.patch('/me', async (c) => {
   const token = authHeader.slice(7);
   try {
     const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+    await requireActiveOrgMembership(payload.org_id, payload.id);
     const body = await c.req.json();
     const parsed = profileUpdateSchema.safeParse(body);
     if (!parsed.success) {
@@ -410,7 +426,10 @@ authRoutes.patch('/me', async (c) => {
     await db.update(users).set(updates).where(eq(users.id, payload.id));
 
     return c.json({ success: true });
-  } catch {
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
   }
 });

@@ -49,8 +49,9 @@ export async function resolveAssignee(
       or(
         // Human member of this org
         sql`EXISTS (SELECT 1 FROM ${orgMembers} WHERE ${orgMembers.user_id} = ${users.id} AND ${orgMembers.org_id} = ${orgId} AND ${orgMembers.is_active} = true)`,
-        // Agent employee of this org
-        sql`EXISTS (SELECT 1 FROM ${agentEmployees} WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId} AND ${agentEmployees.is_active} = true)`,
+        // Agent employee of this org. Paused, deleted, or unhealthy
+        // employees are not assignable until an admin clears the state.
+        sql`EXISTS (SELECT 1 FROM ${agentEmployees} WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId} AND ${agentEmployees.is_active} = true AND ${agentEmployees.is_deleted} = false AND ${agentEmployees.unhealthy} = false)`,
       ),
     );
 
@@ -117,7 +118,7 @@ export async function resolveAssigneeWithMatches(
     .where(
       or(
         sql`EXISTS (SELECT 1 FROM ${orgMembers} WHERE ${orgMembers.user_id} = ${users.id} AND ${orgMembers.org_id} = ${orgId} AND ${orgMembers.is_active} = true)`,
-        sql`EXISTS (SELECT 1 FROM ${agentEmployees} WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId} AND ${agentEmployees.is_active} = true)`,
+        sql`EXISTS (SELECT 1 FROM ${agentEmployees} WHERE ${agentEmployees.user_id} = ${users.id} AND ${agentEmployees.org_id} = ${orgId} AND ${agentEmployees.is_active} = true AND ${agentEmployees.is_deleted} = false AND ${agentEmployees.unhealthy} = false)`,
       ),
     );
 
@@ -144,6 +145,14 @@ export async function resolveAssigneeWithMatches(
   }
 
   return { ok: false, ambiguous: false, matches: [] };
+}
+
+export async function resolveAssignableAssigneeId(
+  userId: string,
+  orgId: string,
+): Promise<ResolvedAssignee | null> {
+  const resolved = await resolveAssignee(userId, orgId);
+  return resolved?.id === userId ? resolved : null;
 }
 
 function toResolved(row: { id: string; name: string; is_agent: boolean }): ResolvedAssignee {

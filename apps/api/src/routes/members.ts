@@ -1,11 +1,25 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
 import { db } from '../lib/db.js';
-import { users, orgMembers, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
+import {
+  users,
+  orgMembers,
+  spaces,
+  spaceMembers,
+  agentEmployees,
+  mcpTokens,
+  invites,
+  apiKeys,
+  oauthGrants,
+  oauthAccessTokens,
+  oauthRefreshTokens,
+} from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
+import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -19,6 +33,13 @@ function buildRecoveryUrl(token: string): string {
 }
 
 export const memberRoutes = new Hono();
+
+function adminForbidden(c: Context, err: unknown) {
+  if (err instanceof OrgMembershipError) {
+    return c.json({ error: err.message, code: err.code }, err.status as 403);
+  }
+  return c.json({ error: 'Only admins can perform this action', code: 'FORBIDDEN' }, 403);
+}
 
 function visibleLiveMemberForOrg(orgIdRef: unknown) {
   return sql`
@@ -132,14 +153,10 @@ memberRoutes.post('/invite', async (c) => {
   try {
     const currentUser = c.get('user');
 
-    // Only owner/admin can invite
-    const [membership] = await db.select({ role: orgMembers.role })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, currentUser.id)))
-      .limit(1);
-
-    if (!membership || !['owner', 'admin'].includes(membership.role)) {
-      return c.json({ error: 'Only admins can invite members', code: 'FORBIDDEN' }, 403);
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
     }
 
     const body = await c.req.json();
@@ -153,6 +170,7 @@ memberRoutes.post('/invite', async (c) => {
     // Check if user already exists
     let [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
 
+    let membershipExists = false;
     if (existingUser) {
       const [existingMembership] = await db.select()
         .from(orgMembers)
@@ -160,13 +178,13 @@ memberRoutes.post('/invite', async (c) => {
         .limit(1);
 
       if (existingMembership) {
-        if (!existingMembership.is_active) {
-          await db.update(orgMembers)
-            .set({ is_active: true, role })
-            .where(eq(orgMembers.id, existingMembership.id));
-          return c.json({ success: true, message: 'Member reactivated', user_id: existingUser.id });
+        membershipExists = true;
+        if (existingMembership.is_active) {
+          return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
         }
-        return c.json({ error: 'User is already a member', code: 'ALREADY_MEMBER' }, 409);
+        await db.update(orgMembers)
+          .set({ is_active: true, role })
+          .where(eq(orgMembers.id, existingMembership.id));
       }
     } else {
       // Create the user with no password — they'll set one when accepting.
@@ -179,11 +197,13 @@ memberRoutes.post('/invite', async (c) => {
     }
 
     // Add to org
-    await db.insert(orgMembers).values({
-      org_id: currentUser.org_id,
-      user_id: existingUser.id,
-      role,
-    });
+    if (!membershipExists) {
+      await db.insert(orgMembers).values({
+        org_id: currentUser.org_id,
+        user_id: existingUser.id,
+        role,
+      });
+    }
 
     // Add to all default (public) spaces
     const defaultSpaces = await db.select({ id: spaces.id })
@@ -214,7 +234,17 @@ memberRoutes.post('/invite', async (c) => {
     );
 
     const decoded = jwt.decode(inviteToken) as { exp?: number } | null;
-    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null;
+    const expiresAtDate = decoded?.exp ? new Date(decoded.exp * 1000) : null;
+    const expiresAt = expiresAtDate?.toISOString() ?? null;
+
+    await db.insert(invites).values({
+      org_id: currentUser.org_id,
+      email,
+      token: inviteToken,
+      type: 'email',
+      invited_by: currentUser.id,
+      expires_at: expiresAtDate ?? undefined,
+    });
 
     return c.json(
       {
@@ -240,13 +270,10 @@ memberRoutes.post('/:id/recovery-url', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
-    const [currentMembership] = await db.select({ role: orgMembers.role })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, currentUser.id)))
-      .limit(1);
-
-    if (!currentMembership || !['owner', 'admin'].includes(currentMembership.role)) {
-      return c.json({ error: 'Only admins can generate recovery links', code: 'FORBIDDEN' }, 403);
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
     }
 
     const [target] = await db
@@ -289,20 +316,16 @@ memberRoutes.patch('/:id', async (c) => {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
 
-    // Only owner/admin can change roles
-    const [currentMembership] = await db.select({ role: orgMembers.role })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, currentUser.id)))
-      .limit(1);
-
-    if (!currentMembership || !['owner', 'admin'].includes(currentMembership.role)) {
-      return c.json({ error: 'Only admins can change roles', code: 'FORBIDDEN' }, 403);
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
     }
 
     // Can't change owner role
     const [targetMembership] = await db.select({ role: orgMembers.role, id: orgMembers.id })
       .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId)))
+      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId), eq(orgMembers.is_active, true)))
       .limit(1);
 
     if (!targetMembership) {
@@ -341,20 +364,16 @@ memberRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Cannot remove yourself', code: 'FORBIDDEN' }, 403);
     }
 
-    // Only owner/admin can remove
-    const [currentMembership] = await db.select({ role: orgMembers.role })
-      .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, currentUser.id)))
-      .limit(1);
-
-    if (!currentMembership || !['owner', 'admin'].includes(currentMembership.role)) {
-      return c.json({ error: 'Only admins can remove members', code: 'FORBIDDEN' }, 403);
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
     }
 
     // Can't remove owner
     const [targetMembership] = await db.select({ role: orgMembers.role })
       .from(orgMembers)
-      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId)))
+      .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId), eq(orgMembers.is_active, true)))
       .limit(1);
 
     if (!targetMembership) {
@@ -369,6 +388,63 @@ memberRoutes.delete('/:id', async (c) => {
     await db.update(orgMembers)
       .set({ is_active: false })
       .where(and(eq(orgMembers.org_id, currentUser.org_id), eq(orgMembers.user_id, memberId)));
+
+    // Remove chat access in this org and revoke personal MCP tokens. Access
+    // tokens are short-lived; the active-membership auth guard blocks them
+    // immediately on the next request/refresh/socket auth.
+    await db.execute(sql`
+      DELETE FROM ${spaceMembers}
+      WHERE ${spaceMembers.user_id} = ${memberId}
+        AND ${spaceMembers.space_id} IN (
+          SELECT ${spaces.id}
+          FROM ${spaces}
+          WHERE ${spaces.org_id} = ${currentUser.org_id}
+        )
+    `);
+
+    const revokedAt = new Date();
+
+    await db.update(mcpTokens)
+      .set({ revoked_at: new Date() })
+      .where(and(
+        eq(mcpTokens.org_id, currentUser.org_id),
+        eq(mcpTokens.user_id, memberId),
+        sql`${mcpTokens.revoked_at} IS NULL`,
+      ));
+
+    await db.update(apiKeys)
+      .set({ is_active: false, updated_at: revokedAt })
+      .where(and(
+        eq(apiKeys.org_id, currentUser.org_id),
+        eq(apiKeys.created_by, memberId),
+        eq(apiKeys.is_active, true),
+      ));
+
+    await db.update(oauthGrants)
+      .set({ revoked_at: revokedAt, updated_at: revokedAt })
+      .where(and(
+        eq(oauthGrants.org_id, currentUser.org_id),
+        eq(oauthGrants.user_id, memberId),
+        sql`${oauthGrants.revoked_at} IS NULL`,
+      ));
+    await db.update(oauthAccessTokens)
+      .set({ revoked_at: revokedAt, updated_at: revokedAt })
+      .where(and(
+        eq(oauthAccessTokens.org_id, currentUser.org_id),
+        eq(oauthAccessTokens.user_id, memberId),
+        sql`${oauthAccessTokens.revoked_at} IS NULL`,
+      ));
+    await db.execute(sql`
+      UPDATE ${oauthRefreshTokens}
+      SET revoked_at = ${revokedAt}, updated_at = ${revokedAt}
+      WHERE revoked_at IS NULL
+        AND grant_id IN (
+          SELECT id
+          FROM ${oauthGrants}
+          WHERE org_id = ${currentUser.org_id}
+            AND user_id = ${memberId}
+        )
+    `);
 
     return c.json({ success: true });
   } catch (err) {

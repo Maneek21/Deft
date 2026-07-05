@@ -6,6 +6,7 @@ import { db } from './lib/db.js';
 import { users, spaceMembers, spaces, notifications } from '@deft/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
 import * as huddle from './huddle-rooms.js';
+import { requireActiveOrgMembership } from './lib/org-membership.js';
 
 function updateLastSeen(userId: string) {
   db.update(users).set({ last_seen_at: new Date() }).where(eq(users.id, userId)).catch(() => {});
@@ -53,14 +54,15 @@ export function setupSocket(server: HTTPServer) {
   });
 
   // Auth middleware
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
       return next(new Error('Authentication required'));
     }
     try {
       const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
-      (socket as any).user = payload;
+      const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
+      (socket as any).user = { ...payload, role: membership.role };
       next();
     } catch {
       next(new Error('Invalid token'));

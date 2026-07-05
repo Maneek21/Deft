@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import { db } from '../lib/db.js';
 import { apiKeys } from '@deft/db/schema';
+import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 
 export const apiKeyRoutes = new Hono();
 
@@ -23,6 +24,19 @@ const updateKeySchema = z.object({
   rate_limit_per_day: z.number().int().positive().optional(),
   is_active: z.boolean().optional(),
   expires_at: z.string().nullable().optional(),
+});
+
+apiKeyRoutes.use('*', async (c, next) => {
+  const user = c.get('user');
+  try {
+    await requireOrgAdminOrOwner(user.org_id, user.id);
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
+    return c.json({ error: 'Forbidden', code: 'FORBIDDEN' }, 403);
+  }
+  return next();
 });
 
 // GET / — List org's API keys (excluding key_hash)

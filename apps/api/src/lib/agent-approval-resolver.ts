@@ -102,7 +102,11 @@ async function assertUserInOrg(
     .select({ id: orgMembers.id })
     .from(orgMembers)
     .where(
-      and(eq(orgMembers.user_id, userId), eq(orgMembers.org_id, orgId)),
+      and(
+        eq(orgMembers.user_id, userId),
+        eq(orgMembers.org_id, orgId),
+        eq(orgMembers.is_active, true),
+      ),
     )
     .limit(1);
   return !!row;

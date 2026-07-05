@@ -119,6 +119,12 @@ async function teardownFixture(c: pg.Client, f: Fixture): Promise<void> {
   await c.query(`DELETE FROM agent_nudges WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM notifications WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM job_queue WHERE data->>'employee_id' = $1`, [f.employeeId]);
+  await c.query(
+    `DELETE FROM action_receipts
+     WHERE action_id IN (SELECT id FROM agent_actions WHERE org_id = $1)`,
+    [f.orgId],
+  );
+  await c.query(`DELETE FROM agent_actions WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM tasks WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM projects WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM agent_employees WHERE org_id = $1`, [f.orgId]);

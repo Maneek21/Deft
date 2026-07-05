@@ -1,7 +1,6 @@
 /**
  * Shape test for the new list/get endpoints. Exercises route wiring
- * against an in-process Hono app. Uses the seeded dev user
- * (maneek@test.com / test1234) per repo convention.
+ * against an in-process Hono app. Uses the seeded pilot user.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +9,7 @@ import { app } from '../src/index.js';
 async function authHeaders(): Promise<Record<string, string>> {
   const res = await app.request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'maneek@test.com', password: 'test1234' }),
+    body: JSON.stringify({ email: 'diego@testers-tomatoes.com', password: 'tomato123' }),
     headers: { 'content-type': 'application/json' },
   });
   const body = (await res.json()) as { accessToken: string };

@@ -10,7 +10,7 @@ import { app } from '../src/index.js';
 async function authHeaders() {
   const res = await app.request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'maneek@test.com', password: 'test1234' }),
+    body: JSON.stringify({ email: 'diego@testers-tomatoes.com', password: 'tomato123' }),
     headers: { 'content-type': 'application/json' },
   });
   const body = (await res.json()) as { accessToken: string };

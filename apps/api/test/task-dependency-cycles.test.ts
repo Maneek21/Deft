@@ -86,17 +86,58 @@ async function seedFixtures() {
 
 async function teardownFixtures() {
   await withClient(async (c) => {
-    if (projectId) {
-      await c.query(
-        `DELETE FROM task_relationships
-         WHERE source_task_id IN (SELECT id FROM tasks WHERE project_id = $1)
-            OR target_task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [projectId],
-      );
-      await c.query(`DELETE FROM task_activity WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`, [projectId]);
-      await c.query(`DELETE FROM tasks WHERE project_id = $1`, [projectId]);
-      await c.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
-    }
+    const fixtureProjectFilter = `
+      SELECT id FROM projects
+      WHERE lead_id = $1 AND name LIKE 'Dep Cycles %'
+    `;
+    const fixtureTaskFilter = `
+      SELECT id FROM tasks WHERE project_id IN (${fixtureProjectFilter})
+    `;
+
+    await c.query(
+      `DELETE FROM task_relationships
+       WHERE source_task_id IN (${fixtureTaskFilter})
+          OR target_task_id IN (${fixtureTaskFilter})`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(`DELETE FROM task_reactions WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM task_labels WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM task_comments WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM task_activity WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM task_watchers WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM task_assignees WHERE task_id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM tasks WHERE id IN (${fixtureTaskFilter})`, [MEMBER_USER_ID]);
+    await c.query(`DELETE FROM projects WHERE id IN (${fixtureProjectFilter})`, [MEMBER_USER_ID]);
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE action_id IN (
+         SELECT id FROM agent_actions WHERE user_id = $1
+       )`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(`DELETE FROM agent_actions WHERE user_id = $1`, [MEMBER_USER_ID]);
+    await c.query(
+      `DELETE FROM people_expertise WHERE user_id = $1`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM people_influence WHERE user_id = $1`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM people_patterns WHERE user_id = $1`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM people_relationships
+       WHERE user_a_id = $1 OR user_b_id = $1`,
+      [MEMBER_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM people_interactions
+       WHERE user_a_id = $1 OR user_b_id = $1`,
+      [MEMBER_USER_ID],
+    );
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [MEMBER_USER_ID]);
     await c.query(`DELETE FROM users WHERE id = $1`, [MEMBER_USER_ID]);
   });

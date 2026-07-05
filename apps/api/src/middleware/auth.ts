@@ -1,11 +1,13 @@
 import { createMiddleware } from 'hono/factory';
 import jwt from 'jsonwebtoken';
 import { env } from '../lib/env.js';
+import { OrgMembershipError, requireActiveOrgMembership, type OrgRole } from '../lib/org-membership.js';
 
 export type AuthUser = {
   id: string;
   email: string;
   org_id: string;
+  role?: OrgRole;
 };
 
 declare module 'hono' {
@@ -29,9 +31,13 @@ export const authMiddleware = createMiddleware(async (c, next) => {
   const token = authHeader.slice(7);
   try {
     const payload = jwt.verify(token, env.JWT_SECRET) as AuthUser;
-    c.set('user', payload);
+    const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
+    c.set('user', { ...payload, role: membership.role });
     return next();
-  } catch {
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
     return c.json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' }, 401);
   }
 });
