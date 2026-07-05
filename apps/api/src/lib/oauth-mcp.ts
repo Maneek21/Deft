@@ -23,6 +23,7 @@ export const REMOTE_MCP_READ_SCOPES = [
 export const REMOTE_MCP_WRITE_SCOPES = [
   'write:tasks',
   'write:messages',
+  'write:wiki',
 ] as const;
 
 export const REMOTE_MCP_SCOPES = [
