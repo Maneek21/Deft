@@ -106,7 +106,8 @@ function OAuthAuthorizeContent() {
 
   const canWriteTasks = preview?.scopes.includes('write:tasks') ?? false;
   const canWriteMessages = preview?.scopes.includes('write:messages') ?? false;
-  const hasWriteAccess = canWriteTasks || canWriteMessages;
+  const canWriteWiki = preview?.scopes.includes('write:wiki') ?? false;
+  const hasWriteAccess = canWriteTasks || canWriteMessages || canWriteWiki;
   const accessLabel = hasWriteAccess ? 'Workspace helper access' : 'Knowledge access';
 
   return (
@@ -175,7 +176,11 @@ function OAuthAuthorizeContent() {
                     ) : (
                       <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Post chat messages</li>
                     )}
-                    <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
+                    {canWriteWiki ? (
+                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create and update wiki knowledge pages</li>
+                    ) : (
+                      <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
+                    )}
                   </>
                 ) : (
                   <>

@@ -331,16 +331,28 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   const protectedBody = (await protectedResource.json()) as any;
   assert.equal(protectedBody.resource, 'http://localhost:3301/api/mcp/v1');
   assert.ok(protectedBody.authorization_servers.includes('http://localhost:3301'));
+  assert.ok(protectedBody.scopes_supported.includes('write:wiki'));
 
   const authServer = await testApp.request('/.well-known/oauth-authorization-server');
   assert.equal(authServer.status, 200);
   const authBody = (await authServer.json()) as any;
   assert.equal(authBody.registration_endpoint, 'http://localhost:3301/oauth/register');
   assert.equal(authBody.authorization_endpoint, 'http://localhost:3012/oauth/authorize');
+  assert.ok(authBody.scopes_supported.includes('write:wiki'));
 
   const client = await registerClient();
   assert.ok(client.client_id.startsWith('deft_dcr_'));
   assert.equal(client.scope, 'read:workspace read:wiki write:tasks');
+
+  const wikiClientRes = await jsonPost('/oauth/register', {
+    client_name: `OAuth MCP Wiki Writer ${TEST_ID}`,
+    redirect_uris: ['http://localhost:3999/callback'],
+    scope: 'read:workspace read:wiki write:wiki',
+  });
+  assert.equal(wikiClientRes.status, 201);
+  const wikiClient = (await wikiClientRes.json()) as { client_id: string; scope: string };
+  assert.ok(wikiClient.client_id.startsWith('deft_dcr_'));
+  assert.equal(wikiClient.scope, 'read:workspace read:wiki write:wiki');
 });
 
 test('OAuth PKCE token exchange resolves to a scoped human MCP principal', async () => {
