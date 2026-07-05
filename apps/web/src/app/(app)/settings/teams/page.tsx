@@ -268,6 +268,7 @@ export default function TeamsSettingsPage() {
   const [creating, setCreating] = useState(false);
   const [actionError, setActionError] = useState('');
   const [workingKey, setWorkingKey] = useState<string | null>(null);
+  const [archiveConfirm, setArchiveConfirm] = useState<'archive' | 'restore' | null>(null);
   const [resourceOptions, setResourceOptions] = useState<Record<string, ResourceOption[]>>({});
   const [memberForm, setMemberForm] = useState<{ user_id: string; role: (typeof TEAM_ROLES)[number] }>({ user_id: '', role: 'member' });
   const [resourceForm, setResourceForm] = useState<{ resource_type: (typeof LINKABLE_RESOURCE_TYPES)[number]; resource_id: string; label: string }>({
@@ -369,6 +370,10 @@ export default function TeamsSettingsPage() {
   useEffect(() => {
     loadTeamDetail(selectedId);
   }, [selectedId]);
+
+  useEffect(() => {
+    setArchiveConfirm(null);
+  }, [selectedId, detail?.team.is_archived]);
 
   const filteredTeams = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -528,12 +533,6 @@ export default function TeamsSettingsPage() {
   async function handleArchiveSelectedTeam(isArchived: boolean) {
     if (!selectedId || !detail) return;
     const verb = isArchived ? 'archive' : 'restore';
-    const confirmed = window.confirm(
-      isArchived
-        ? `Archive ${detail.team.name}? It will be hidden from the default teams view, but its members and linked context will remain intact.`
-        : `Restore ${detail.team.name}? It will return to the active teams view.`,
-    );
-    if (!confirmed) return;
 
     setActionError('');
     setWorkingKey(`${verb}-team`);
@@ -550,6 +549,7 @@ export default function TeamsSettingsPage() {
       }
 
       await Promise.all([loadTeams(selectedId), loadTeamDetail(selectedId)]);
+      setArchiveConfirm(null);
     } catch (err: any) {
       setActionError(err.message);
     } finally {
@@ -751,21 +751,56 @@ export default function TeamsSettingsPage() {
                     </div>
                     <div className="flex flex-col gap-2 sm:w-[320px]">
                       {canManageSelectedTeam && (
-                        <button
-                          data-testid={detail.team.is_archived ? 'team-restore-button' : 'team-archive-button'}
-                          type="button"
-                          onClick={() => handleArchiveSelectedTeam(!detail.team.is_archived)}
-                          disabled={workingKey === 'archive-team' || workingKey === 'restore-team'}
-                          className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-[12px] font-semibold disabled:opacity-50"
-                          style={{
-                            color: detail.team.is_archived ? 'white' : 'var(--muted)',
-                            background: detail.team.is_archived ? 'var(--accent)' : 'transparent',
-                            border: '1px solid var(--border)',
-                          }}
-                        >
-                          {detail.team.is_archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-                          {detail.team.is_archived ? 'Restore team' : 'Archive team'}
-                        </button>
+                        archiveConfirm === (detail.team.is_archived ? 'restore' : 'archive') ? (
+                          <div
+                            className="rounded-md p-2"
+                            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                          >
+                            <p className="text-[11px] leading-snug" style={{ color: 'var(--muted)' }}>
+                              {detail.team.is_archived
+                                ? 'Restore this team to the active teams view?'
+                                : 'Archive this team? Members and links stay intact.'}
+                            </p>
+                            <div className="mt-2 grid grid-cols-2 gap-2">
+                              <button
+                                data-testid="team-archive-cancel-button"
+                                type="button"
+                                onClick={() => setArchiveConfirm(null)}
+                                className="inline-flex h-8 items-center justify-center rounded-md px-2 text-[12px] font-semibold"
+                                style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                data-testid={detail.team.is_archived ? 'team-restore-confirm-button' : 'team-archive-confirm-button'}
+                                type="button"
+                                onClick={() => handleArchiveSelectedTeam(!detail.team.is_archived)}
+                                disabled={workingKey === 'archive-team' || workingKey === 'restore-team'}
+                                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-semibold disabled:opacity-50"
+                                style={{ background: detail.team.is_archived ? 'var(--accent)' : 'rgba(147,0,10,0.18)', color: detail.team.is_archived ? 'white' : 'var(--error)' }}
+                              >
+                                {detail.team.is_archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+                                {detail.team.is_archived ? 'Restore' : 'Archive'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            data-testid={detail.team.is_archived ? 'team-restore-button' : 'team-archive-button'}
+                            type="button"
+                            onClick={() => setArchiveConfirm(detail.team.is_archived ? 'restore' : 'archive')}
+                            disabled={workingKey === 'archive-team' || workingKey === 'restore-team'}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-[12px] font-semibold disabled:opacity-50"
+                            style={{
+                              color: detail.team.is_archived ? 'white' : 'var(--muted)',
+                              background: detail.team.is_archived ? 'var(--accent)' : 'transparent',
+                              border: '1px solid var(--border)',
+                            }}
+                          >
+                            {detail.team.is_archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+                            {detail.team.is_archived ? 'Restore team' : 'Archive team'}
+                          </button>
+                        )
                       )}
                       <div className="grid grid-cols-3 gap-2">
                         <MetricCard icon={Users} label="People" value={detail.summary.member_count} />
