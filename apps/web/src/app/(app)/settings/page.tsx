@@ -9,6 +9,7 @@ import { TabStrip } from '@/components/tab-strip';
 
 const settingsSections = [
   { name: 'General', href: '/settings' },
+  { name: 'Profile', href: '/settings/profile' },
   { name: 'Members', href: '/settings/members' },
   { name: 'Groups', href: '/settings/groups' },
   { name: 'Projects', href: '/settings/projects' },
@@ -85,6 +86,13 @@ export default function SettingsPage() {
                 <p className="text-[13px] mt-0.5" style={{ color: 'var(--muted)' }}>
                   {user?.email || 'No email'}
                 </p>
+                <Link
+                  href="/settings/profile"
+                  className="inline-flex mt-2 text-[12px] font-medium"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Edit profile
+                </Link>
               </div>
             </div>
           </div>

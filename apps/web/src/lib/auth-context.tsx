@@ -5,15 +5,32 @@ import { api } from './api';
 import { setUserTimezone } from './time';
 import { useRouter } from 'next/navigation';
 
+type NotificationPreferences = {
+  keywords: string[];
+  channels: {
+    chat: boolean;
+    tasks: boolean;
+    approvals: boolean;
+    calendar: boolean;
+    agents: boolean;
+  };
+};
+
 type User = {
   id: string;
   name: string;
   email: string;
   avatar_url: string | null;
   title: string | null;
+  profile_summary: string | null;
+  expertise_tags: string[] | null;
   status_emoji: string | null;
   status_text: string | null;
+  status_expires_at: string | null;
   timezone: string | null;
+  notification_keywords: string[] | null;
+  notification_preferences: NotificationPreferences | null;
+  show_read_receipts: boolean;
   role: 'owner' | 'admin' | 'member' | 'guest';
 };
 
@@ -30,6 +47,7 @@ type AuthContextType = {
   login: (email: string, password: string) => Promise<void>;
   signup: (name: string, email: string, password: string, orgName: string) => Promise<void>;
   logout: () => void;
+  replaceUser: (nextUser: User) => void;
   refreshUser: () => Promise<void>;
 };
 
@@ -128,8 +146,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     router.push('/login');
   };
 
+  const replaceUser = useCallback((nextUser: User) => {
+    setUser(nextUser);
+    const storedTz = nextUser.timezone;
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    setUserTimezone(storedTz && storedTz !== 'UTC' ? storedTz : browserTz);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, org, loading, login, signup, logout, refreshUser: fetchMe }}>
+    <AuthContext.Provider value={{ user, org, loading, login, signup, logout, replaceUser, refreshUser: fetchMe }}>
       {children}
     </AuthContext.Provider>
   );

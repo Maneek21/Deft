@@ -1873,16 +1873,28 @@ export function SpaceChat({
                   ) : (
                     <div className="flex gap-3 py-1.5">
                       <div className="relative flex-shrink-0">
-                        <div
-                          className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white cursor-pointer hover:opacity-80"
-                          style={{ background: color }}
-                          onClick={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            setProfileCard({ userId: msg.user_id, rect: { top: rect.top, left: rect.left, bottom: rect.bottom } });
-                          }}
-                        >
-                          {msg.user_name?.charAt(0).toUpperCase()}
-                        </div>
+                        {msg.user_avatar ? (
+                          <img
+                            src={msg.user_avatar}
+                            alt=""
+                            className="w-9 h-9 rounded-full object-cover cursor-pointer hover:opacity-80"
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setProfileCard({ userId: msg.user_id, rect: { top: rect.top, left: rect.left, bottom: rect.bottom } });
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white cursor-pointer hover:opacity-80"
+                            style={{ background: color }}
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setProfileCard({ userId: msg.user_id, rect: { top: rect.top, left: rect.left, bottom: rect.bottom } });
+                            }}
+                          >
+                            {msg.user_name?.charAt(0).toUpperCase()}
+                          </div>
+                        )}
                         {(presence.get(msg.user_id) === 'online' || presence.get(msg.user_id) === 'idle') && (
                           <div
                             className="absolute bottom-0 right-0 w-[8px] h-[8px] rounded-full"
