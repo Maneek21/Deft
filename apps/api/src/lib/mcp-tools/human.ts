@@ -26,6 +26,7 @@ import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
 import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
+import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-context.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -174,6 +175,9 @@ export const HUMAN_READ_TOOLS = new Set([
   'messages_search',
   'project_progress',
   'team_workload',
+  'team_list',
+  'team_get',
+  'team_context',
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
@@ -220,6 +224,9 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   messages_search: humanMessagesSearch,
   project_progress: humanProjectProgress,
   team_workload: humanTeamWorkload,
+  team_list: humanTeamList,
+  team_get: humanTeamGet,
+  team_context: humanTeamContext,
   events_query: humanEventsQuery,
   wiki_upsert: humanWikiUpsert,
   send_message: humanSendMessage,
@@ -1007,6 +1014,32 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
     }
   }
 
+  let teamSummaries: Array<Record<string, unknown>> = [];
+  try {
+    teamSummaries = (await listTeamSummaries(ctx, { limit: 20 })).map((team) => ({
+      id: team.id,
+      name: team.name,
+      handle: team.handle,
+      description: team.description,
+      type: team.type,
+      visibility: team.visibility,
+      lead_user_id: team.lead_user_id,
+      lead_name: team.lead_name,
+      default_space_id: team.default_space_id,
+      member_count: team.member_count,
+      agent_count: team.agent_count,
+      resource_count: team.resource_count,
+      resources_by_type: team.resources_by_type,
+      current_user_role: team.current_user_role,
+      retrieval_hint: {
+        tool: 'team_context',
+        args_template: { team_id: team.id },
+      },
+    }));
+  } catch {
+    teamSummaries = [];
+  }
+
   return textResult({
     generated_at: new Date().toISOString(),
     date: new Date().toISOString().slice(0, 10),
@@ -1014,6 +1047,7 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
     user: { ...me, role: ctx.role },
     teammates,
     active_projects: activeProjects,
+    teams: teamSummaries,
     relevant_wiki_snippets: wikiSnippets,
     context_packets: hasScope(ctx, 'read:wiki') ? buildHumanContextPackets(wikiSnippets, trigger) : [],
     recommended_tool_paths: [
@@ -2610,6 +2644,43 @@ export async function humanTeamWorkload(args: { days?: number }, ctx: HumanToolC
     LIMIT 50
   `);
   return textResult({ days, workload: (rows as any).rows ?? [] });
+}
+
+export async function humanTeamList(
+  args: { query?: string; include_archived?: boolean; limit?: number },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const teams = await listTeamSummaries(ctx, args);
+  return textResult({ teams, count: teams.length });
+}
+
+function teamAccessFromHuman(ctx: HumanToolContext) {
+  return {
+    ...ctx,
+    can_read_tasks: hasScope(ctx, 'read:tasks'),
+    can_read_messages: hasScope(ctx, 'read:messages'),
+    can_read_wiki: hasScope(ctx, 'read:wiki'),
+  };
+}
+
+export async function humanTeamGet(
+  args: { team_id?: string; handle?: string; query?: string; include_archived?: boolean },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  return textResult(await getTeamProfile(teamAccessFromHuman(ctx), args));
+}
+
+export async function humanTeamContext(
+  args: { team_id?: string; handle?: string; query?: string; include_archived?: boolean; limit?: number },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  return textResult(await getTeamContext(teamAccessFromHuman(ctx), args));
 }
 
 export async function humanEventsQuery(args: { limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {

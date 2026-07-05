@@ -26,6 +26,7 @@ import { spaceMemoryGet, spaceMemorySet } from './space-memory.js';
 import { delegationSelfReport } from './delegation.js';
 import { eventsQuery } from './events.js';
 import { taskDetail, messagesSearch, projectProgress, teamWorkload } from './reports.js';
+import { teamList, teamGet, teamContext } from './team-context.js';
 import {
   recordConversationTurn,
   recordDecision,
@@ -53,6 +54,9 @@ export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
   messages_search: messagesSearch as ToolHandler,
   project_progress: projectProgress as ToolHandler,
   team_workload: teamWorkload as ToolHandler,
+  team_list: teamList as ToolHandler,
+  team_get: teamGet as ToolHandler,
+  team_context: teamContext as ToolHandler,
   // Self-hosted v1 — control surface. Read-only from Deft's perspective
   // (they query pending work or bump a timestamp) so they live with the
   // always-available reads.
@@ -668,6 +672,54 @@ export const toolSchemas: ToolSchema[] = [
     },
   },
   // ─── Self-hosted v1 — cooperative knowledge + control tools ──────────
+  {
+    name: 'team_list',
+    description:
+      'List first-class Deft teams the caller can see, including leads, member counts, agent member counts, and linked resource counts. Use this before team_get/team_context when the user names a team loosely.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        query: { type: 'string', description: 'Optional search across team name, handle, and description.' },
+        include_archived: { type: 'boolean', description: 'Include archived teams. Defaults to false.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
+      },
+      required: ['caller_employee_slug'],
+    },
+  },
+  {
+    name: 'team_get',
+    description:
+      'Fetch one visible Deft team by id, handle, or query. Returns team profile, normalized human/agent members, linked spaces/projects/wiki/notes/calendar feeds/templates/agents, and next tool hints.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        team_id: { type: 'string', description: 'Exact team id when known.' },
+        handle: { type: 'string', description: 'Team handle such as marketing or field-ops.' },
+        query: { type: 'string', description: 'Natural-language team name when id/handle is unknown.' },
+        include_archived: { type: 'boolean', description: 'Allow archived team resolution. Defaults to false.' },
+      },
+      required: ['caller_employee_slug'],
+    },
+  },
+  {
+    name: 'team_context',
+    description:
+      'Retrieve a team-specific context packet for work execution: team profile, members, linked resources, open tasks from linked projects, workload by owner/status, and recent messages from accessible linked spaces. Use this to ground Codex/Claude/agent workflows in a team rather than broad org context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        team_id: { type: 'string', description: 'Exact team id when known.' },
+        handle: { type: 'string', description: 'Team handle such as marketing or field-ops.' },
+        query: { type: 'string', description: 'Natural-language team name when id/handle is unknown.' },
+        include_archived: { type: 'boolean', description: 'Allow archived team resolution. Defaults to false.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max open tasks/recent messages to return.' },
+      },
+      required: ['caller_employee_slug'],
+    },
+  },
   {
     name: 'record_conversation_turn',
     description:
