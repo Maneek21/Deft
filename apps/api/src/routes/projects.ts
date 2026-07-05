@@ -10,6 +10,7 @@ import {
   getProjectResolvedConfig,
 } from '../lib/project-resolved-config.js';
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
+import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 
 export const projectRoutes = new Hono();
 
@@ -454,6 +455,15 @@ const createTaskSchema = z.object({
   parent_task_id: z.string().nullable().optional(),
 });
 
+async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
+  if (assigneeId === undefined) return undefined;
+  if (assigneeId === null || assigneeId === '') return null;
+  if (typeof assigneeId !== 'string' || assigneeId.trim().length === 0) return null;
+  const trimmed = assigneeId.trim();
+  const resolved = await resolveAssignableAssigneeId(trimmed, orgId);
+  return resolved ? resolved.id : undefined;
+}
+
 // GET /api/projects/:id/tasks — list all tasks for a project
 async function listProjectTasks(c: any) {
   try {
@@ -594,6 +604,11 @@ projectRoutes.post('/:id/tasks', async (c) => {
       return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const assigneeId = await validateAssignableAssigneeId(parsed.data.assignee_id, user.org_id);
+    if (parsed.data.assignee_id !== undefined && assigneeId === undefined) {
+      return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
+    }
+
     const taskNumber = await reserveNextTaskNumber({
       projectId,
       orgId: user.org_id,
@@ -607,7 +622,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
       description: parsed.data.description || undefined,
       status: (parsed.data.status || 'backlog') as any,
       priority: (parsed.data.priority || 'p2') as any,
-      assignee_id: parsed.data.assignee_id || undefined,
+      assignee_id: assigneeId ?? undefined,
       created_by: user.id,
       due_date: parsed.data.due_date ? new Date(parsed.data.due_date) : undefined,
       sort_order: parsed.data.sort_order ?? 0,

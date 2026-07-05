@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { users, orgs, orgMembers } from '@deft/db/schema';
+import { users, orgs, orgMembers, invites } from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
 
@@ -51,6 +51,23 @@ inviteRoutes.get('/preview/:token', async (c) => {
     return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
   }
 
+  const [invite] = await db
+    .select({
+      id: invites.id,
+      accepted_at: invites.accepted_at,
+      expires_at: invites.expires_at,
+    })
+    .from(invites)
+    .where(and(eq(invites.token, token), eq(invites.org_id, payload.org_id)))
+    .limit(1);
+
+  if (!invite) {
+    return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
+  }
+  if (invite.expires_at && invite.expires_at < new Date()) {
+    return c.json({ error: 'expired', code: 'INVITE_EXPIRED' }, 400);
+  }
+
   const [user] = await db
     .select({ id: users.id, email: users.email, name: users.name, password_hash: users.password_hash })
     .from(users)
@@ -79,8 +96,8 @@ inviteRoutes.get('/preview/:token', async (c) => {
     inviter_name: inviter?.name ?? 'an admin',
     email: payload.email,
     role: payload.role,
-    already_accepted: Boolean(user.password_hash),
-    expires_at: payload.exp ? new Date(payload.exp * 1000).toISOString() : null,
+    already_accepted: Boolean(invite.accepted_at ?? user.password_hash),
+    expires_at: invite.expires_at?.toISOString() ?? (payload.exp ? new Date(payload.exp * 1000).toISOString() : null),
   });
 });
 
@@ -110,6 +127,26 @@ inviteRoutes.post('/accept', async (c) => {
     return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
   }
 
+  const [invite] = await db
+    .select({
+      id: invites.id,
+      accepted_at: invites.accepted_at,
+      expires_at: invites.expires_at,
+    })
+    .from(invites)
+    .where(and(eq(invites.token, parsed.data.token), eq(invites.org_id, payload.org_id)))
+    .limit(1);
+
+  if (!invite) {
+    return c.json({ error: 'invalid', code: 'INVITE_INVALID' }, 400);
+  }
+  if (invite.accepted_at) {
+    return c.json({ error: 'already accepted', code: 'INVITE_ALREADY_ACCEPTED' }, 400);
+  }
+  if (invite.expires_at && invite.expires_at < new Date()) {
+    return c.json({ error: 'expired', code: 'INVITE_EXPIRED' }, 400);
+  }
+
   // Verify user + membership still exist (admin may have removed them)
   const [user] = await db
     .select()
@@ -137,6 +174,10 @@ inviteRoutes.post('/accept', async (c) => {
   if (parsed.data.name) updates.name = parsed.data.name;
 
   await db.update(users).set(updates).where(eq(users.id, payload.user_id));
+  await db
+    .update(invites)
+    .set({ accepted_by: payload.user_id, accepted_at: new Date() })
+    .where(eq(invites.id, invite.id));
 
   // Ensure Defty is in the org and materialize the 1:1 DM so the new
   // member sees it in their sidebar immediately. Both are idempotent;

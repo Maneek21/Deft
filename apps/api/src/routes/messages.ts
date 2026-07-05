@@ -431,6 +431,12 @@ messageRoutes.post('/:spaceId', async (c) => {
       if (mentionedUserId === user.id) continue;
 
       try {
+        const [mentionedUser] = await db.select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, mentionedUserId))
+          .limit(1);
+        if (!mentionedUser) continue;
+
         const [notification] = await db.insert(notifications).values({
           org_id: user.org_id,
           user_id: mentionedUserId,

@@ -61,12 +61,14 @@ async function seedFixtures() {
         [id, email, name],
       );
     }
-    await c.query(
-      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
-       ON CONFLICT (org_id, user_id) DO NOTHING`,
-      [ORG_ID, MEMBER_USER_ID],
-    );
+    for (const id of [MEMBER_USER_ID, PRIMARY_USER_ID, EXTRA_USER_ID, PROMOTE_USER_ID]) {
+      await c.query(
+        `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+         ON CONFLICT (org_id, user_id) DO NOTHING`,
+        [ORG_ID, id],
+      );
+    }
 
     const proj = await c.query(
       `SELECT id FROM projects WHERE org_id = $1 ORDER BY created_at ASC LIMIT 1`,

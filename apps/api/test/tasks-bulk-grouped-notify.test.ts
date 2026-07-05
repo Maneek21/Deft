@@ -98,17 +98,64 @@ before(async () => {
 
 after(async () => {
   await withClient(async (c) => {
-    if (taskIds.length) {
-      await c.query(`DELETE FROM task_comments WHERE task_id = ANY($1)`, [taskIds]);
-      await c.query(`DELETE FROM task_activity WHERE task_id = ANY($1)`, [taskIds]);
-      await c.query(`DELETE FROM tasks WHERE id = ANY($1)`, [taskIds]);
-    }
-    if (projectId) {
-      await c.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
-    }
+    const fixtureProjectFilter = `
+      SELECT id FROM projects
+      WHERE lead_id = $1 AND name LIKE 'Bulk Notify %'
+    `;
+    const fixtureTaskFilter = `
+      SELECT id FROM tasks WHERE project_id IN (${fixtureProjectFilter})
+    `;
+
+    await c.query(
+      `DELETE FROM task_relationships
+       WHERE source_task_id IN (${fixtureTaskFilter})
+          OR target_task_id IN (${fixtureTaskFilter})`,
+      [ACTOR_ID],
+    );
+    await c.query(`DELETE FROM task_reactions WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM task_labels WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM task_comments WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM task_activity WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM task_watchers WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM task_assignees WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM tasks WHERE id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
+    await c.query(`DELETE FROM projects WHERE id IN (${fixtureProjectFilter})`, [ACTOR_ID]);
     await c.query(
       `DELETE FROM notifications WHERE user_id IN ($1, $2)`,
       [ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM action_receipts
+       WHERE action_id IN (
+         SELECT id FROM agent_actions WHERE org_id = $1 AND user_id IN ($2, $3)
+       )`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM agent_actions WHERE org_id = $1 AND user_id IN ($2, $3)`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM people_expertise WHERE org_id = $1 AND user_id IN ($2, $3)`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM people_influence WHERE org_id = $1 AND user_id IN ($2, $3)`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM people_patterns WHERE org_id = $1 AND user_id IN ($2, $3)`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM people_relationships
+       WHERE org_id = $1 AND (user_a_id IN ($2, $3) OR user_b_id IN ($2, $3))`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
+    );
+    await c.query(
+      `DELETE FROM people_interactions
+       WHERE org_id = $1 AND (user_a_id IN ($2, $3) OR user_b_id IN ($2, $3))`,
+      [ORG_ID, ACTOR_ID, ASSIGNEE_ID],
     );
     await c.query(
       `DELETE FROM org_members WHERE user_id IN ($1, $2)`,

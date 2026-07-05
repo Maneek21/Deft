@@ -115,37 +115,70 @@ before(async () => {
 
 after(async () => {
   await withClient(async (c) => {
-    if (PROJECT_ID) {
+    const projectRows = await c.query<{ id: string }>(
+      `SELECT id
+       FROM projects
+       WHERE org_id = $1
+         AND (
+           id = $2
+           OR lead_id IN ($3, $4)
+           OR name LIKE 'Mutation Tools %'
+           OR prefix LIKE 'MUT%'
+         )`,
+      [ORG_ID, PROJECT_ID ?? '', CALLER_USER_ID, EMP_SHADOW_USER_ID],
+    );
+    const projectIds = projectRows.rows.map((row) => row.id);
+
+    if (projectIds.length > 0) {
       await c.query(
         `DELETE FROM task_relationships
-         WHERE source_task_id IN (SELECT id FROM tasks WHERE project_id = $1)
-            OR target_task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [PROJECT_ID],
+         WHERE source_task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))
+            OR target_task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
       );
       await c.query(
         `DELETE FROM task_labels
-         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [PROJECT_ID],
+         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
       );
       await c.query(
         `DELETE FROM labels WHERE org_id = $1 AND name LIKE 'mut-%'`,
         [ORG_ID],
       );
       await c.query(
-        `DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [PROJECT_ID],
+        `DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
       );
       await c.query(
-        `DELETE FROM task_activity WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [PROJECT_ID],
+        `DELETE FROM task_activity WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
       );
       await c.query(
-        `DELETE FROM task_assignees WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)`,
-        [PROJECT_ID],
+        `DELETE FROM task_assignees WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
       );
-      await c.query(`DELETE FROM tasks WHERE project_id = $1`, [PROJECT_ID]);
-      await c.query(`DELETE FROM projects WHERE id = $1`, [PROJECT_ID]);
+      await c.query(
+        `DELETE FROM agent_nudges WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ANY($1::text[]))`,
+        [projectIds],
+      );
+      await c.query(`DELETE FROM tasks WHERE project_id = ANY($1::text[])`, [projectIds]);
+      await c.query(`DELETE FROM projects WHERE id = ANY($1::text[])`, [projectIds]);
     }
+    await c.query(`DELETE FROM notifications WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
+    await c.query(`DELETE FROM people_expertise WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
+    await c.query(`DELETE FROM people_influence WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
+    await c.query(`DELETE FROM people_patterns WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
+    await c.query(
+      `DELETE FROM people_relationships
+       WHERE org_id = $1 AND (user_a_id IN ($2, $3) OR user_b_id IN ($2, $3))`,
+      [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID],
+    );
+    await c.query(
+      `DELETE FROM people_interactions
+       WHERE org_id = $1 AND (user_a_id IN ($2, $3) OR user_b_id IN ($2, $3))`,
+      [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID],
+    );
+    await c.query(`DELETE FROM agent_nudges WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
     await c.query(`DELETE FROM agent_actions WHERE org_id = $1 AND user_id IN ($2, $3)`, [ORG_ID, CALLER_USER_ID, EMP_SHADOW_USER_ID]);
     await c.query(`DELETE FROM agent_employees WHERE id = $1`, [EMP_ID]);
     await c.query(`DELETE FROM org_members WHERE user_id = $1`, [CALLER_USER_ID]);
