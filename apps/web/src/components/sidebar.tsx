@@ -286,20 +286,36 @@ function ChatSidebarContent({
                   {isGroup ? (
                     <div className="relative w-6 h-6">
                       {others.slice(0, 2).map((m, i) => (
-                        <div
-                          key={m.id}
-                          className="absolute w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-medium text-white"
-                          style={{
-                            background: 'var(--primary-container)',
-                            border: '1.5px solid var(--surface-container-low)',
-                            top: i === 0 ? 0 : 'auto',
-                            bottom: i === 1 ? 0 : 'auto',
-                            left: i === 0 ? 0 : 'auto',
-                            right: i === 1 ? 0 : 'auto',
-                          }}
-                        >
-                          {m.name?.charAt(0).toUpperCase() ?? '?'}
-                        </div>
+                        m.avatar_url ? (
+                          <img
+                            key={m.id}
+                            src={m.avatar_url}
+                            alt=""
+                            className="absolute w-[14px] h-[14px] rounded-full object-cover"
+                            style={{
+                              border: '1.5px solid var(--surface-container-low)',
+                              top: i === 0 ? 0 : 'auto',
+                              bottom: i === 1 ? 0 : 'auto',
+                              left: i === 0 ? 0 : 'auto',
+                              right: i === 1 ? 0 : 'auto',
+                            }}
+                          />
+                        ) : (
+                          <div
+                            key={m.id}
+                            className="absolute w-[14px] h-[14px] rounded-full flex items-center justify-center text-[8px] font-medium text-white"
+                            style={{
+                              background: 'var(--primary-container)',
+                              border: '1.5px solid var(--surface-container-low)',
+                              top: i === 0 ? 0 : 'auto',
+                              bottom: i === 1 ? 0 : 'auto',
+                              left: i === 0 ? 0 : 'auto',
+                              right: i === 1 ? 0 : 'auto',
+                            }}
+                          >
+                            {m.name?.charAt(0).toUpperCase() ?? '?'}
+                          </div>
+                        )
                       ))}
                       {others.length > 2 && (
                         <div
@@ -312,12 +328,16 @@ function ChatSidebarContent({
                     </div>
                   ) : (
                     <>
-                      <div
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                        style={{ background: 'var(--primary-container)' }}
-                      >
-                        {initial}
-                      </div>
+                      {primary?.avatar_url ? (
+                        <img src={primary.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover" />
+                      ) : (
+                        <div
+                          className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                          style={{ background: 'var(--primary-container)' }}
+                        >
+                          {initial}
+                        </div>
+                      )}
                       {!isAgent && memberStatus !== 'offline' && (
                         <div
                           className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
@@ -386,12 +406,16 @@ function ChatSidebarContent({
                 }}
               >
                 <div className="relative flex-shrink-0">
-                  <div
-                    className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                    style={{ background: 'var(--primary-container)' }}
-                  >
-                    {initial}
-                  </div>
+                  {employee.avatar_url ? (
+                    <img src={employee.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover" />
+                  ) : (
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
+                      style={{ background: 'var(--primary-container)' }}
+                    >
+                      {initial}
+                    </div>
+                  )}
                   <div
                     className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
                     style={{
@@ -548,6 +572,7 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
 
   const sections = [
     { name: 'General', href: '/settings' },
+    { name: 'Profile', href: '/settings/profile' },
     { name: 'Members', href: '/settings/members' },
     { name: 'Groups', href: '/settings/groups' },
     { name: 'Projects', href: '/settings/projects' },
@@ -795,12 +820,16 @@ export function Sidebar({
         }}
       >
         <div className="relative flex-shrink-0">
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-medium text-white"
-            style={{ background: 'var(--primary-container)' }}
-          >
-            {user?.name?.charAt(0).toUpperCase()}
-          </div>
+          {user?.avatar_url ? (
+            <img src={user.avatar_url} alt="" className="w-8 h-8 rounded-full object-cover" />
+          ) : (
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-medium text-white"
+              style={{ background: 'var(--primary-container)' }}
+            >
+              {user?.name?.charAt(0).toUpperCase()}
+            </div>
+          )}
           <div
             className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
             style={{ background: 'var(--status-green)', border: '2px solid var(--surface-container-low)' }}
@@ -934,10 +963,14 @@ export function Sidebar({
       </button>
 
       {/* User avatar */}
-      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-medium text-white"
-        style={{ background: 'var(--primary-container)' }}>
-        {user?.name?.charAt(0).toUpperCase()}
-      </div>
+      {user?.avatar_url ? (
+        <img src={user.avatar_url} alt="" className="w-8 h-8 rounded-full object-cover" />
+      ) : (
+        <div className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-medium text-white"
+          style={{ background: 'var(--primary-container)' }}>
+          {user?.name?.charAt(0).toUpperCase()}
+        </div>
+      )}
     </div>
   );
 

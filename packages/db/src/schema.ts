@@ -65,6 +65,27 @@ export const agentEmployeeRoleEnum = pgEnum('agent_employee_role', [
 export const planStatusEnum = pgEnum('plan_status', ['draft', 'approved', 'executing', 'paused', 'completed', 'failed']);
 export const planStepStatusEnum = pgEnum('plan_step_status', ['pending', 'running', 'completed', 'failed', 'skipped', 'waiting_approval']);
 export const taskRelationshipTypeEnum = pgEnum('task_relationship_type', ['blocks', 'blocked_by', 'relates_to', 'duplicates']);
+export type UserNotificationPreferences = {
+  keywords: string[];
+  channels: {
+    chat: boolean;
+    tasks: boolean;
+    approvals: boolean;
+    calendar: boolean;
+    agents: boolean;
+  };
+};
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: UserNotificationPreferences = {
+  keywords: [],
+  channels: {
+    chat: true,
+    tasks: true,
+    approvals: true,
+    calendar: true,
+    agents: true,
+  },
+};
 export const notificationTypeEnum = pgEnum('notification_type', [
   'task',
   'task_assigned',
@@ -111,6 +132,8 @@ export const users = pgTable('users', {
   agent_employee_id: text('agent_employee_id'),
   avatar_url: text('avatar_url'),
   title: text('title'),
+  profile_summary: text('profile_summary'),
+  expertise_tags: text('expertise_tags').array(),
   timezone: text('timezone').default('UTC'),
   status_emoji: text('status_emoji'),
   status_text: text('status_text'),
@@ -119,6 +142,10 @@ export const users = pgTable('users', {
   email_verified: boolean('email_verified').default(false).notNull(),
   last_seen_at: timestamp('last_seen_at'),
   notification_keywords: text('notification_keywords').array(),
+  notification_preferences: jsonb('notification_preferences')
+    .$type<UserNotificationPreferences>()
+    .notNull()
+    .default(DEFAULT_NOTIFICATION_PREFERENCES),
   show_read_receipts: boolean('show_read_receipts').default(true).notNull(),
   // Per-user secret token for the outbound ICS feed. Lazily generated when
   // the user first opens Settings → Calendar. See migration 0062.

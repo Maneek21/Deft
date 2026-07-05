@@ -5,7 +5,17 @@ import jwt from 'jsonwebtoken';
 import { eq, and } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { db } from '../lib/db.js';
-import { users, orgs, orgMembers, spaces, spaceMembers, onboardingState, revokedTokens } from '@deft/db/schema';
+import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  users,
+  orgs,
+  orgMembers,
+  spaces,
+  spaceMembers,
+  onboardingState,
+  revokedTokens,
+  type UserNotificationPreferences,
+} from '@deft/db/schema';
 import { env } from '../lib/env.js';
 import { countOrgs, SINGLE_ORG_ERROR } from '../lib/single-org-guard.js';
 import { ensureDeftyMembership, ensureDeftyDm } from '../lib/ensure-defty-membership.js';
@@ -255,9 +265,15 @@ authRoutes.get('/me', async (c) => {
       email: users.email,
       avatar_url: users.avatar_url,
       title: users.title,
+      profile_summary: users.profile_summary,
+      expertise_tags: users.expertise_tags,
       timezone: users.timezone,
       status_emoji: users.status_emoji,
       status_text: users.status_text,
+      status_expires_at: users.status_expires_at,
+      notification_keywords: users.notification_keywords,
+      notification_preferences: users.notification_preferences,
+      show_read_receipts: users.show_read_receipts,
     }).from(users).where(eq(users.id, payload.id)).limit(1);
 
     if (!user) {
@@ -281,12 +297,59 @@ authRoutes.get('/me', async (c) => {
   }
 });
 
+const avatarValueSchema = z.string().trim().max(2_100_000).refine((value) => {
+  if (value.startsWith('/avatars/')) return true;
+  if (/^https:\/\/.+/i.test(value)) return true;
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[a-z0-9+/=]+$/i.test(value)) return true;
+  return false;
+}, 'Avatar must be a preset, HTTPS image URL, or image upload.');
+
 // PATCH /api/auth/me — update user profile (name, timezone, avatar_url)
-const profileUpdateSchema = z.object({
-  name: z.string().min(1).optional(),
-  timezone: z.string().min(1).optional(),
-  avatar_url: z.string().url().nullable().optional(),
+const notificationPreferencesSchema = z.object({
+  keywords: z.array(z.string().trim().min(1).max(48)).max(30).optional(),
+  channels: z.object({
+    chat: z.boolean().optional(),
+    tasks: z.boolean().optional(),
+    approvals: z.boolean().optional(),
+    calendar: z.boolean().optional(),
+    agents: z.boolean().optional(),
+  }).optional(),
 });
+
+const profileUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  title: z.string().trim().max(160).nullable().optional(),
+  profile_summary: z.string().trim().max(1200).nullable().optional(),
+  expertise_tags: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
+  timezone: z.string().trim().min(1).max(120).optional(),
+  avatar_url: avatarValueSchema.nullable().optional(),
+  notification_keywords: z.array(z.string().trim().min(1).max(48)).max(30).optional(),
+  notification_preferences: notificationPreferencesSchema.optional(),
+  show_read_receipts: z.boolean().optional(),
+});
+
+const passwordChangeSchema = z.object({
+  current_password: z.string().min(1),
+  new_password: z.string().min(8).max(128),
+});
+
+function normalizeNotificationPreferences(
+  input?: z.infer<typeof notificationPreferencesSchema>,
+  fallbackKeywords?: string[],
+): UserNotificationPreferences {
+  return {
+    keywords: cleanStringArray(input?.keywords ?? fallbackKeywords) ?? [],
+    channels: {
+      ...DEFAULT_NOTIFICATION_PREFERENCES.channels,
+      ...(input?.channels ?? {}),
+    },
+  };
+}
+
+function cleanStringArray(values: string[] | undefined): string[] | undefined {
+  if (!values) return undefined;
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
 
 // POST /api/auth/forgot-password — self-hosted Deft has no outbound email.
 // Returns a generic 200 so the public surface keeps the same shape, but no
@@ -331,6 +394,49 @@ authRoutes.post('/reset-password', async (c) => {
 });
 
 // GET /api/auth/onboarding — fetch the caller's onboarding state, creating it lazily
+// PATCH /api/auth/password - change own password
+authRoutes.patch('/password', async (c) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'Unauthorized', code: 'NO_TOKEN' }, 401);
+  }
+
+  const token = authHeader.slice(7);
+  try {
+    const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
+    await requireActiveOrgMembership(payload.org_id, payload.id);
+    const body = await c.req.json();
+    const parsed = passwordChangeSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const [user] = await db.select({
+      id: users.id,
+      password_hash: users.password_hash,
+    }).from(users).where(eq(users.id, payload.id)).limit(1);
+
+    if (!user?.password_hash) {
+      return c.json({ error: 'Password sign-in is not configured for this account', code: 'PASSWORD_UNAVAILABLE' }, 400);
+    }
+
+    const valid = await bcrypt.compare(parsed.data.current_password, user.password_hash);
+    if (!valid) {
+      return c.json({ error: 'Current password is incorrect', code: 'INVALID_PASSWORD' }, 403);
+    }
+
+    const passwordHash = await bcrypt.hash(parsed.data.new_password, 12);
+    await db.update(users).set({ password_hash: passwordHash }).where(eq(users.id, payload.id));
+
+    return c.json({ success: true });
+  } catch (err) {
+    if (err instanceof OrgMembershipError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 403);
+    }
+    return c.json({ error: 'Invalid token', code: 'INVALID_TOKEN' }, 401);
+  }
+});
+
 authRoutes.get('/onboarding', async (c) => {
   const authHeader = c.req.header('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
@@ -407,25 +513,53 @@ authRoutes.patch('/me', async (c) => {
   const token = authHeader.slice(7);
   try {
     const payload = jwt.verify(token, env.JWT_SECRET) as { id: string; email: string; org_id: string };
-    await requireActiveOrgMembership(payload.org_id, payload.id);
+    const membership = await requireActiveOrgMembership(payload.org_id, payload.id);
     const body = await c.req.json();
     const parsed = profileUpdateSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const updates: Record<string, string | null> = {};
+    const updates: Record<string, string | string[] | boolean | null | UserNotificationPreferences> = {};
     if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+    if (parsed.data.title !== undefined) updates.title = parsed.data.title || null;
+    if (parsed.data.profile_summary !== undefined) updates.profile_summary = parsed.data.profile_summary || null;
+    if (parsed.data.expertise_tags !== undefined) updates.expertise_tags = cleanStringArray(parsed.data.expertise_tags) ?? [];
     if (parsed.data.timezone !== undefined) updates.timezone = parsed.data.timezone;
     if (parsed.data.avatar_url !== undefined) updates.avatar_url = parsed.data.avatar_url;
+    if (parsed.data.notification_preferences !== undefined) {
+      const normalized = normalizeNotificationPreferences(parsed.data.notification_preferences, parsed.data.notification_keywords);
+      updates.notification_preferences = normalized;
+      updates.notification_keywords = normalized.keywords;
+    } else if (parsed.data.notification_keywords !== undefined) {
+      const keywords = cleanStringArray(parsed.data.notification_keywords) ?? [];
+      updates.notification_keywords = keywords;
+      updates.notification_preferences = normalizeNotificationPreferences(undefined, keywords);
+    }
+    if (parsed.data.show_read_receipts !== undefined) updates.show_read_receipts = parsed.data.show_read_receipts;
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No fields to update', code: 'EMPTY_UPDATE' }, 400);
     }
 
-    await db.update(users).set(updates).where(eq(users.id, payload.id));
+    const [updated] = await db.update(users).set(updates).where(eq(users.id, payload.id)).returning({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatar_url: users.avatar_url,
+      title: users.title,
+      profile_summary: users.profile_summary,
+      expertise_tags: users.expertise_tags,
+      timezone: users.timezone,
+      status_emoji: users.status_emoji,
+      status_text: users.status_text,
+      status_expires_at: users.status_expires_at,
+      notification_keywords: users.notification_keywords,
+      notification_preferences: users.notification_preferences,
+      show_read_receipts: users.show_read_receipts,
+    });
 
-    return c.json({ success: true });
+    return c.json({ success: true, user: { ...updated, role: membership.role } });
   } catch (err) {
     if (err instanceof OrgMembershipError) {
       return c.json({ error: err.message, code: err.code }, err.status as 403);

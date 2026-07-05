@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
+import Link from 'next/link';
+import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { formatRelative } from '@/lib/time';
-import { X, MessageSquare, Clock, MapPin } from 'lucide-react';
+import { X, MessageSquare, Clock, MapPin, Pencil } from 'lucide-react';
 
 type ProfileData = {
   id: string;
@@ -12,6 +14,8 @@ type ProfileData = {
   email: string;
   avatar_url: string | null;
   title: string | null;
+  profile_summary: string | null;
+  expertise_tags: string[] | null;
   timezone: string | null;
   status_emoji: string | null;
   status_text: string | null;
@@ -47,9 +51,11 @@ export function UserProfileCard({
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const { presence, openDmWith } = useChatContext();
+  const { user } = useAuth();
   const cardRef = useRef<HTMLDivElement>(null);
 
   const status = presence.get(userId) || 'offline';
+  const isSelf = user?.id === userId;
 
   useEffect(() => {
     api.get(`/api/members/${userId}`).then(async (res) => {
@@ -157,16 +163,46 @@ export function UserProfileCard({
                     profile.last_seen_at ? `Last seen ${formatRelative(profile.last_seen_at)}` : 'Offline'}
               </span>
             </div>
+            {profile.profile_summary && (
+              <p className="text-[11px] leading-relaxed pt-1" style={{ color: 'var(--text-secondary)' }}>
+                {profile.profile_summary}
+              </p>
+            )}
+            {profile.expertise_tags && profile.expertise_tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-1">
+                {profile.expertise_tags.slice(0, 4).map((tag) => (
+                  <span
+                    key={tag}
+                    className="px-1.5 py-0.5 rounded text-[10px]"
+                    style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)' }}
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Message button */}
           <div className="px-4 pb-4">
-            <button onClick={handleMessage}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[12px] font-medium transition-colors hover:opacity-90"
-              style={{ background: 'var(--accent)', color: 'white' }}>
-              <MessageSquare size={14} />
-              Message
-            </button>
+            {isSelf ? (
+              <Link
+                href="/settings/profile"
+                onClick={onClose}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[12px] font-medium transition-colors hover:opacity-90"
+                style={{ background: 'var(--accent)', color: 'white' }}
+              >
+                <Pencil size={14} />
+                Edit profile
+              </Link>
+            ) : (
+              <button onClick={handleMessage}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[12px] font-medium transition-colors hover:opacity-90"
+                style={{ background: 'var(--accent)', color: 'white' }}>
+                <MessageSquare size={14} />
+                Message
+              </button>
+            )}
           </div>
         </>
       ) : (

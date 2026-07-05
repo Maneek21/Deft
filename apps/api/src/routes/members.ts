@@ -116,6 +116,8 @@ memberRoutes.get('/:id', async (c) => {
       kind: users.kind,
       avatar_url: users.avatar_url,
       title: users.title,
+      profile_summary: users.profile_summary,
+      expertise_tags: users.expertise_tags,
       timezone: users.timezone,
       status_emoji: users.status_emoji,
       status_text: users.status_text,
