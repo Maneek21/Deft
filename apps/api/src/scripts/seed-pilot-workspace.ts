@@ -42,9 +42,15 @@ import {
   taskReactions,
   taskRelationships,
   taskWatchers,
+  teamDashboardSnapshots,
+  teamHealthSnapshots,
+  teamMembers,
+  teamResources,
+  teams,
   threadReads,
   tasks,
-  teamHealthSnapshots,
+  userGroupMembers,
+  userGroups,
   users,
   workIntents,
   wikiCitations,
@@ -80,6 +86,15 @@ type SeedTaskInput = {
   estimation?: string | null;
   metadata?: Record<string, unknown>;
 };
+type PilotNotificationChannels = {
+  chat: boolean;
+  tasks: boolean;
+  approvals: boolean;
+  calendar: boolean;
+  agents: boolean;
+};
+type PilotTeamRole = 'lead' | 'member' | 'viewer';
+type PilotTeamResourceType = 'space' | 'project' | 'wiki_page' | 'note' | 'calendar_feed' | 'task_template' | 'agent_employee';
 
 function expectOne<T>(rows: T[], label: string): T {
   const [row] = rows;
@@ -2488,6 +2503,509 @@ async function seedTeamHealth(params: {
   });
 }
 
+function pilotNotificationPreferences(
+  keywords: string[],
+  channels: Partial<PilotNotificationChannels> = {},
+): { keywords: string[]; channels: PilotNotificationChannels } {
+  return {
+    keywords,
+    channels: {
+      chat: true,
+      tasks: true,
+      approvals: true,
+      calendar: true,
+      agents: true,
+      ...channels,
+    },
+  };
+}
+
+async function seedPeopleAndTeamManagement(params: {
+  orgId: string;
+  createdBy: string;
+  diego: SeedUser;
+  marigold: SeedUser;
+  cesar: SeedUser;
+  lina: SeedUser;
+  tomas: SeedUser;
+  sage: SeedUser;
+  tom: SeedUser;
+  maya: SeedUser;
+}) {
+  const expiresAt = plusDays(2);
+  const profileSeeds: Array<{
+    user: SeedUser;
+    avatarUrl: string;
+    title: string;
+    summary: string;
+    tags: string[];
+    timezone: string;
+    statusEmoji: string;
+    statusText: string;
+    keywords: string[];
+    channels?: Partial<PilotNotificationChannels>;
+  }> = [
+    {
+      user: params.diego,
+      avatarUrl: '/avatars/avatar-01-human-purple.png',
+      title: 'Founder & Farm Manager',
+      summary:
+        'Runs the Testers Tomatoes launch room, route decisions, buyer follow-up, and agent approvals.',
+      tags: ['operations', 'launch', 'buyers', 'agents'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '🍅',
+      statusText: 'Watching launch readiness and buyer promises',
+      keywords: ['launch', 'buyer', 'route', 'Defty', 'Tom', 'Maya'],
+    },
+    {
+      user: params.marigold,
+      avatarUrl: '/avatars/avatar-02-human-coral.png',
+      title: 'Head Grower',
+      summary:
+        'Owns greenhouse health, harvest quality, seed selection, and field-to-packhouse handoff.',
+      tags: ['greenhouse', 'crop-health', 'harvest', 'quality'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '🌱',
+      statusText: 'In greenhouse checks before noon',
+      keywords: ['greenhouse', 'seed', 'quality', 'harvest'],
+    },
+    {
+      user: params.cesar,
+      avatarUrl: '/avatars/avatar-03-elder-cyan.png',
+      title: 'Field Supervisor',
+      summary:
+        'Coordinates crews, field forecasts, irrigation windows, and late-day harvest risk.',
+      tags: ['field-ops', 'irrigation', 'crew', 'forecast'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '🌤️',
+      statusText: 'Checking irrigation and crew load',
+      keywords: ['field', 'crew', 'irrigation', 'forecast'],
+    },
+    {
+      user: params.lina,
+      avatarUrl: '/avatars/avatar-04-elder-gold.png',
+      title: 'Wholesale Lead',
+      summary:
+        'Owns buyer messaging, chef samples, wholesale commitments, and launch copy review.',
+      tags: ['sales', 'buyers', 'samples', 'messaging'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '📞',
+      statusText: 'Buyer calls and launch copy review',
+      keywords: ['Chef Amara', 'buyer', 'sample', 'wholesale'],
+    },
+    {
+      user: params.tomas,
+      avatarUrl: '/avatars/avatar-05-alien-teal.png',
+      title: 'Packhouse & Routes Lead',
+      summary:
+        'Keeps packing capacity, cold-room handoff, route timing, and box readiness honest.',
+      tags: ['packhouse', 'routes', 'cold-room', 'capacity'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '🚚',
+      statusText: 'Route capacity check in progress',
+      keywords: ['route', 'packhouse', 'cold-room', 'capacity'],
+    },
+    {
+      user: params.sage,
+      avatarUrl: '/avatars/avatar-06-mascot-purple.png',
+      title: 'Food Safety & Ops Analyst',
+      summary:
+        'Reviews claims language, SOP changes, launch risks, and operational receipts.',
+      tags: ['food-safety', 'sop', 'claims', 'risk'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '🛡️',
+      statusText: 'Reviewing launch claims and SOP receipts',
+      keywords: ['claims', 'SOP', 'food safety', 'approval'],
+    },
+    {
+      user: params.tom,
+      avatarUrl: '/avatars/avatar-07-wizard.png',
+      title: 'Marketing Agent',
+      summary:
+        'OpenClaw BYOA employee for buyer research, launch messaging, and marketing task execution.',
+      tags: ['agent', 'openclaw', 'marketing', 'mcp'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '✨',
+      statusText: 'Available through MCP for marketing work',
+      keywords: ['Tom', 'marketing', 'buyer', 'MCP'],
+      channels: { calendar: false },
+    },
+    {
+      user: params.maya,
+      avatarUrl: '/avatars/avatar-09-fairy.png',
+      title: 'Communications Agent',
+      summary:
+        'Hermes BYOA employee for internal updates, stakeholder summaries, and launch communications.',
+      tags: ['agent', 'hermes', 'communications', 'mcp'],
+      timezone: 'America/Los_Angeles',
+      statusEmoji: '✨',
+      statusText: 'Available through MCP for comms work',
+      keywords: ['Maya', 'communications', 'summary', 'MCP'],
+      channels: { calendar: false },
+    },
+  ];
+
+  for (const profile of profileSeeds) {
+    await db
+      .update(users)
+      .set({
+        avatar_url: profile.avatarUrl,
+        title: profile.title,
+        profile_summary: profile.summary,
+        expertise_tags: profile.tags,
+        timezone: profile.timezone,
+        status_emoji: profile.statusEmoji,
+        status_text: profile.statusText,
+        status_expires_at: expiresAt,
+        notification_keywords: profile.keywords,
+        notification_preferences: pilotNotificationPreferences(profile.keywords, profile.channels),
+        show_read_receipts: true,
+        updated_at: new Date(),
+      })
+      .where(eq(users.id, profile.user.id));
+  }
+
+  const groupSeeds = [
+    {
+      name: 'Leadership',
+      handle: 'leadership',
+      description: 'Diego, Marigold, and Lina for launch calls and final tradeoffs.',
+      memberIds: [params.diego.id, params.marigold.id, params.lina.id],
+    },
+    {
+      name: 'Launch Review',
+      handle: 'launch-review',
+      description: 'People and agents reviewing buyer copy, route promises, and approval receipts.',
+      memberIds: [
+        params.diego.id,
+        params.lina.id,
+        params.sage.id,
+        params.tomas.id,
+        params.tom.id,
+        params.maya.id,
+      ],
+    },
+    {
+      name: 'Field Crew',
+      handle: 'field-crew',
+      description: 'Crop, crew, route, and physical readiness updates.',
+      memberIds: [params.marigold.id, params.cesar.id, params.tomas.id, params.sage.id],
+    },
+    {
+      name: 'Agent Coworkers',
+      handle: 'agent-coworkers',
+      description: 'BYOA employees plus Diego for quick MCP and behavior checks.',
+      memberIds: [params.diego.id, params.tom.id, params.maya.id],
+    },
+  ];
+
+  const upsertedGroups: Array<{ id: string; memberIds: string[] }> = [];
+  for (const group of groupSeeds) {
+    const row = expectOne(await db
+      .insert(userGroups)
+      .values({
+        org_id: params.orgId,
+        name: group.name,
+        handle: group.handle,
+        description: group.description,
+        created_by: params.createdBy,
+      })
+      .onConflictDoUpdate({
+        target: [userGroups.org_id, userGroups.handle],
+        set: {
+          name: group.name,
+          description: group.description,
+          updated_at: new Date(),
+        },
+      })
+      .returning(), `group ${group.handle}`);
+    upsertedGroups.push({ id: row.id, memberIds: group.memberIds });
+  }
+
+  if (upsertedGroups.length > 0) {
+    await db
+      .delete(userGroupMembers)
+      .where(inArray(userGroupMembers.group_id, upsertedGroups.map((group) => group.id)));
+
+    await db
+      .insert(userGroupMembers)
+      .values(upsertedGroups.flatMap((group) => group.memberIds.map((userId) => ({
+        group_id: group.id,
+        user_id: userId,
+      }))))
+      .onConflictDoNothing();
+  }
+
+  const spaceRows = await db
+    .select({ id: spaces.id, name: spaces.name })
+    .from(spaces)
+    .where(and(
+      eq(spaces.org_id, params.orgId),
+      inArray(spaces.name, ['general', 'marketing', 'operations', 'buyer-updates', 'field-ops']),
+    ));
+  const projectRows = await db
+    .select({ id: projects.id, prefix: projects.prefix, name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.org_id, params.orgId), inArray(projects.prefix, ['MKT', 'OPS', 'BUY', 'SAFE'])));
+  const wikiRows = await db
+    .select({ id: wikiPages.id, slug: wikiPages.slug, title: wikiPages.title })
+    .from(wikiPages)
+    .where(and(eq(wikiPages.org_id, params.orgId), inArray(wikiPages.slug, [
+      'ruby-sunrise-2026-proof-marker',
+      'byoa-employee-operating-model',
+      'sun-gold-trial-launch-decision',
+      'buyer-launch-review-loop',
+      'chef-amara-buyer-profile',
+      'cold-room-handoff-sop',
+      'sun-gold-buyer-personas',
+      'agent-approval-rails-for-launch-work',
+      'demo-video-recording-map',
+    ])));
+  const noteRows = await db
+    .select({ id: notes.id, title: notes.title })
+    .from(notes)
+    .where(and(eq(notes.org_id, params.orgId), inArray(notes.title, [
+      'Manual demo notes - Sun Gold launch',
+      'Diego scratchpad - launch blockers',
+      'Chef Amara call prep',
+      'Agent receipt moments to show',
+    ])));
+  const employeeRows = await db
+    .select({ id: agentEmployees.id, slug: agentEmployees.slug, name: agentEmployees.name })
+    .from(agentEmployees)
+    .where(and(eq(agentEmployees.org_id, params.orgId), inArray(agentEmployees.slug, ['tom', 'maya'])));
+
+  const spaceByName = new Map(spaceRows.map((space) => [space.name, space.id]));
+  const projectByPrefix = new Map(projectRows.map((project) => [project.prefix, project.id]));
+  const wikiBySlug = new Map(wikiRows.map((page) => [page.slug, page.id]));
+  const noteByTitle = new Map(noteRows.map((note) => [note.title, note.id]));
+  const employeeBySlug = new Map(employeeRows.map((employee) => [employee.slug, employee.id]));
+
+  const resource = (
+    resourceType: PilotTeamResourceType,
+    resourceId: string | undefined,
+    label: string,
+  ) => resourceId ? {
+    resource_type: resourceType,
+    resource_id: resourceId,
+    label,
+  } : null;
+
+  const teamSeeds: Array<{
+    name: string;
+    handle: string;
+    description: string;
+    type: string;
+    color: string;
+    avatarUrl: string;
+    leadUserId: string;
+    defaultSpaceId?: string;
+    members: Array<{ userId: string; role: PilotTeamRole }>;
+    resources: Array<ReturnType<typeof resource>>;
+    snapshot: Record<string, unknown>;
+  }> = [
+    {
+      name: 'Farm Operations',
+      handle: 'farm-ops',
+      description: 'Greenhouse, field, packhouse, route, and food-safety execution for the launch.',
+      type: 'functional',
+      color: '#10b981',
+      avatarUrl: '/avatars/avatar-19-cactus.png',
+      leadUserId: params.marigold.id,
+      defaultSpaceId: spaceByName.get('field-ops'),
+      members: [
+        { userId: params.marigold.id, role: 'lead' },
+        { userId: params.cesar.id, role: 'member' },
+        { userId: params.tomas.id, role: 'member' },
+        { userId: params.sage.id, role: 'member' },
+        { userId: params.diego.id, role: 'viewer' },
+      ],
+      resources: [
+        resource('space', spaceByName.get('field-ops'), '#field-ops'),
+        resource('space', spaceByName.get('operations'), '#operations'),
+        resource('project', projectByPrefix.get('OPS'), 'Route + Packing Reliability'),
+        resource('project', projectByPrefix.get('SAFE'), 'Food Safety Claims Review'),
+        resource('wiki_page', wikiBySlug.get('cold-room-handoff-sop'), 'Cold-room handoff SOP'),
+        resource('note', noteByTitle.get('Diego scratchpad - launch blockers'), 'Launch blocker scratchpad'),
+      ],
+      snapshot: {
+        headline: 'Farm Operations is steady, but route and cold-room promises need close review.',
+        health: 'watch',
+        activeProjects: ['OPS', 'SAFE'],
+        risks: [
+          'Cold-room handoff language still needs owner confirmation before buyer copy goes final.',
+          'Route capacity is tight during the Tuesday sample window.',
+        ],
+        nextActions: [
+          'Confirm route promise with Tomas.',
+          'Close the food-safety claims review before the buyer update.',
+        ],
+      },
+    },
+    {
+      name: 'Go-to-Market',
+      handle: 'go-to-market',
+      description: 'Buyer messaging, launch tasks, market story, and agent-assisted follow-up.',
+      type: 'functional',
+      color: '#8b5cf6',
+      avatarUrl: '/avatars/avatar-21-mascot-blue.png',
+      leadUserId: params.lina.id,
+      defaultSpaceId: spaceByName.get('marketing'),
+      members: [
+        { userId: params.lina.id, role: 'lead' },
+        { userId: params.diego.id, role: 'member' },
+        { userId: params.sage.id, role: 'member' },
+        { userId: params.tom.id, role: 'member' },
+        { userId: params.maya.id, role: 'member' },
+      ],
+      resources: [
+        resource('space', spaceByName.get('marketing'), '#marketing'),
+        resource('space', spaceByName.get('buyer-updates'), '#buyer-updates'),
+        resource('project', projectByPrefix.get('MKT'), 'Pilot Marketing Launch'),
+        resource('project', projectByPrefix.get('BUY'), 'Chef Sample Program'),
+        resource('wiki_page', wikiBySlug.get('sun-gold-trial-launch-decision'), 'Sun Gold launch decision'),
+        resource('wiki_page', wikiBySlug.get('sun-gold-buyer-personas'), 'Buyer personas'),
+        resource('note', noteByTitle.get('Chef Amara call prep'), 'Chef Amara call prep'),
+        resource('agent_employee', employeeBySlug.get('tom'), 'Tom marketing agent'),
+        resource('agent_employee', employeeBySlug.get('maya'), 'Maya communications agent'),
+      ],
+      snapshot: {
+        headline: 'Go-to-Market has the richest demo surface: humans, BYOA agents, tasks, memory, and approvals.',
+        health: 'good',
+        activeProjects: ['MKT', 'BUY'],
+        risks: [
+          'Buyer-facing language should avoid over-promising Tuesday delivery windows.',
+          'Agent work should keep receipt trails visible for the demo.',
+        ],
+        nextActions: [
+          'Use Codex or Claude over MCP to summarize unread launch blockers.',
+          'Have Tom draft buyer-specific talking points from wiki context.',
+        ],
+      },
+    },
+    {
+      name: 'Leadership',
+      handle: 'leadership',
+      description: 'Founder, grower, and sales leads tracking readiness, decisions, and escalation points.',
+      type: 'leadership',
+      color: '#f59e0b',
+      avatarUrl: '/avatars/avatar-13-genie.png',
+      leadUserId: params.diego.id,
+      defaultSpaceId: spaceByName.get('general') ?? spaceByName.get('marketing'),
+      members: [
+        { userId: params.diego.id, role: 'lead' },
+        { userId: params.marigold.id, role: 'member' },
+        { userId: params.lina.id, role: 'member' },
+        { userId: params.tomas.id, role: 'viewer' },
+        { userId: params.maya.id, role: 'viewer' },
+      ],
+      resources: [
+        resource('space', spaceByName.get('general'), '#general'),
+        resource('space', spaceByName.get('marketing'), '#marketing'),
+        resource('space', spaceByName.get('operations'), '#operations'),
+        resource('project', projectByPrefix.get('MKT'), 'Pilot Marketing Launch'),
+        resource('project', projectByPrefix.get('OPS'), 'Route + Packing Reliability'),
+        resource('wiki_page', wikiBySlug.get('byoa-employee-operating-model'), 'BYOA operating model'),
+        resource('wiki_page', wikiBySlug.get('agent-approval-rails-for-launch-work'), 'Agent approval rails'),
+        resource('wiki_page', wikiBySlug.get('demo-video-recording-map'), 'Demo recording map'),
+        resource('note', noteByTitle.get('Agent receipt moments to show'), 'Agent receipt moments'),
+      ],
+      snapshot: {
+        headline: 'Leadership has one place to see launch narrative, operational risk, and agent governance.',
+        health: 'good',
+        activeProjects: ['MKT', 'OPS', 'SAFE'],
+        risks: [
+          'Demo should explain that agents propose and receipt important writes.',
+          'Founder should keep the workspace clean before recording.',
+        ],
+        nextActions: [
+          'Open dashboard, teams, chat, tasks, knowledge, calendar, and MCP access in the demo path.',
+          'Show a subtle knowledge receipt rather than a noisy approval-card stream.',
+        ],
+      },
+    },
+  ];
+
+  const upsertedTeams: Array<{ id: string; spec: (typeof teamSeeds)[number] }> = [];
+  for (const team of teamSeeds) {
+    const row = expectOne(await db
+      .insert(teams)
+      .values({
+        org_id: params.orgId,
+        name: team.name,
+        handle: team.handle,
+        description: team.description,
+        type: team.type,
+        visibility: 'org',
+        avatar_url: team.avatarUrl,
+        color: team.color,
+        lead_user_id: team.leadUserId,
+        default_space_id: team.defaultSpaceId ?? null,
+        is_archived: false,
+        created_by: params.createdBy,
+      })
+      .onConflictDoUpdate({
+        target: [teams.org_id, teams.handle],
+        set: {
+          name: team.name,
+          description: team.description,
+          type: team.type,
+          visibility: 'org',
+          avatar_url: team.avatarUrl,
+          color: team.color,
+          lead_user_id: team.leadUserId,
+          default_space_id: team.defaultSpaceId ?? null,
+          is_archived: false,
+          updated_at: new Date(),
+        },
+      })
+      .returning(), `team ${team.handle}`);
+    upsertedTeams.push({ id: row.id, spec: team });
+  }
+
+  const teamIds = upsertedTeams.map((team) => team.id);
+  if (teamIds.length > 0) {
+    await db.delete(teamMembers).where(inArray(teamMembers.team_id, teamIds));
+    await db.delete(teamResources).where(inArray(teamResources.team_id, teamIds));
+    await db.delete(teamDashboardSnapshots).where(inArray(teamDashboardSnapshots.team_id, teamIds));
+
+    await db.insert(teamMembers).values(upsertedTeams.flatMap((team) => (
+      team.spec.members.map((member) => ({
+        org_id: params.orgId,
+        team_id: team.id,
+        user_id: member.userId,
+        role: member.role,
+      }))
+    ))).onConflictDoNothing();
+
+    const resourceValues = upsertedTeams.flatMap((team) => (
+      team.spec.resources.filter((item): item is NonNullable<typeof item> => Boolean(item)).map((item) => ({
+        org_id: params.orgId,
+        team_id: team.id,
+        resource_type: item.resource_type,
+        resource_id: item.resource_id,
+        label: item.label,
+        created_by: params.createdBy,
+      }))
+    ));
+    if (resourceValues.length > 0) {
+      await db.insert(teamResources).values(resourceValues).onConflictDoNothing();
+    }
+
+    await db.insert(teamDashboardSnapshots).values(upsertedTeams.map((team) => ({
+      org_id: params.orgId,
+      team_id: team.id,
+      snapshot_type: 'pilot_seed_v2',
+      payload_json: {
+        ...team.spec.snapshot,
+        generatedFor: 'standard-pilot-seed',
+        seededAt: new Date().toISOString(),
+      },
+      generated_at: new Date(),
+    })));
+  }
+}
+
 async function seedAgentAndInboxActivity(params: {
   orgId: string;
   diegoId: string;
@@ -2935,6 +3453,18 @@ export async function seedPilotWorkspace(): Promise<{
     orgId: org.id,
     generatedBy: diego.id,
     humans: [diego, marigold, cesar, lina, tomas, sage],
+    tom,
+    maya,
+  });
+  await seedPeopleAndTeamManagement({
+    orgId: org.id,
+    createdBy: diego.id,
+    diego,
+    marigold,
+    cesar,
+    lina,
+    tomas,
+    sage,
     tom,
     maya,
   });
