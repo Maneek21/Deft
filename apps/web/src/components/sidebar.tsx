@@ -980,7 +980,7 @@ export function Sidebar({
       {/* Mobile overlay */}
       {mobileOpen && (
         <div
-          className="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+          className="md:hidden fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm"
           onClick={() => setMobileOpen(false)}
         />
       )}
@@ -991,7 +991,7 @@ export function Sidebar({
         aria-modal={mobileOpen ? 'true' : undefined}
         aria-label={mobileOpen ? 'Navigation' : undefined}
         className={`
-          fixed md:relative z-50 md:z-auto
+          fixed md:relative z-[70] md:z-auto
           h-full flex flex-col
           md:translate-x-0
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
