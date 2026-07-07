@@ -114,7 +114,7 @@ export default function AISettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="p-6 max-w-[720px]">
+      <div className="p-6 max-w-[860px]">
         <div className="mb-6">
           <h2
             className="text-[18px] font-semibold"
@@ -135,6 +135,24 @@ export default function AISettingsPage() {
               features wake up after you configure any supported provider.
             </div>
           )}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3 mb-8">
+          <AIContractNote
+            icon={Sparkles}
+            title="Optional by design"
+            body="Chat, tasks, calendar, notes, and wiki stay usable without provider keys."
+          />
+          <AIContractNote
+            icon={Server}
+            title="Self-hostable path"
+            body="Use Ollama or OpenAI-compatible local endpoints where possible."
+          />
+          <AIContractNote
+            icon={Database}
+            title="Workspace-scoped"
+            body="Keys and routing choices belong to this org, not every Deft install."
+          />
         </div>
 
         <section className="mb-8">
@@ -396,6 +414,27 @@ function ProviderCard({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AIContractNote({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Sparkles;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
+    >
+      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
+      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
+      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
     </div>
   );
 }

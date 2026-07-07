@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { eq, and, count, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { orgMembers, userGroups, userGroupMembers } from '@deft/db/schema';
+import { orgMembers, userGroups, userGroupMembers, users } from '@deft/db/schema';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
 import type { AuthUser } from '../middleware/auth.js';
 
@@ -51,7 +51,7 @@ async function validateActiveOrgUserIds(orgId: string, userIds: unknown): Promis
   return missing.length === 0 ? (unique as string[]) : null;
 }
 
-// GET /api/groups — list all groups for org (with member count)
+// GET /api/groups - list all groups for org (with member count)
 groupRoutes.get('/', async (c) => {
   const user = c.get('user');
 
@@ -64,17 +64,69 @@ groupRoutes.get('/', async (c) => {
     created_by: userGroups.created_by,
     created_at: userGroups.created_at,
     updated_at: userGroups.updated_at,
-    member_count: count(userGroupMembers.id),
+    member_count: count(orgMembers.user_id),
   })
     .from(userGroups)
     .leftJoin(userGroupMembers, eq(userGroups.id, userGroupMembers.group_id))
+    .leftJoin(orgMembers, and(
+      eq(orgMembers.user_id, userGroupMembers.user_id),
+      eq(orgMembers.org_id, userGroups.org_id),
+      eq(orgMembers.is_active, true),
+    ))
     .where(eq(userGroups.org_id, user.org_id))
     .groupBy(userGroups.id);
 
   return c.json(groups);
 });
 
-// POST /api/groups — create group
+// GET /api/groups/:id - fetch a group with member details
+groupRoutes.get('/:id', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+
+  const [group] = await db
+    .select({
+      id: userGroups.id,
+      org_id: userGroups.org_id,
+      name: userGroups.name,
+      handle: userGroups.handle,
+      description: userGroups.description,
+      created_by: userGroups.created_by,
+      created_at: userGroups.created_at,
+      updated_at: userGroups.updated_at,
+    })
+    .from(userGroups)
+    .where(and(eq(userGroups.id, id), eq(userGroups.org_id, user.org_id)))
+    .limit(1);
+
+  if (!group) {
+    return c.json({ error: 'Group not found', code: 'NOT_FOUND' }, 404);
+  }
+
+  const members = await db
+    .select({
+      user_id: userGroupMembers.user_id,
+      name: users.name,
+      email: users.email,
+      avatar_url: users.avatar_url,
+    })
+    .from(userGroupMembers)
+    .innerJoin(users, eq(users.id, userGroupMembers.user_id))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.user_id, userGroupMembers.user_id),
+      eq(orgMembers.org_id, group.org_id),
+      eq(orgMembers.is_active, true),
+    ))
+    .where(eq(userGroupMembers.group_id, id));
+
+  return c.json({
+    ...group,
+    member_count: members.length,
+    members,
+  });
+});
+
+// POST /api/groups - create group
 groupRoutes.post('/', async (c) => {
   const user = c.get('user');
   try {
@@ -131,7 +183,7 @@ groupRoutes.post('/', async (c) => {
   return c.json(group, 201);
 });
 
-// PATCH /api/groups/:id — update group
+// PATCH /api/groups/:id - update group
 groupRoutes.patch('/:id', async (c) => {
   const user = c.get('user');
   try {
@@ -195,7 +247,7 @@ groupRoutes.patch('/:id', async (c) => {
   return c.json(updated);
 });
 
-// DELETE /api/groups/:id — delete group + members
+// DELETE /api/groups/:id - delete group + members
 groupRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   try {
@@ -223,7 +275,7 @@ groupRoutes.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/groups/:id/members — add members
+// POST /api/groups/:id/members - add members
 groupRoutes.post('/:id/members', async (c) => {
   const user = c.get('user');
   try {
@@ -261,7 +313,7 @@ groupRoutes.post('/:id/members', async (c) => {
   return c.json(members, 201);
 });
 
-// DELETE /api/groups/:id/members/:userId — remove member
+// DELETE /api/groups/:id/members/:userId - remove member
 groupRoutes.delete('/:id/members/:userId', async (c) => {
   const user = c.get('user');
   try {

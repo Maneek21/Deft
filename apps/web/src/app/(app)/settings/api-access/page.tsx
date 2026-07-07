@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
-import { Trash2, X, Plus, Copy, Check, Key } from 'lucide-react';
+import Link from 'next/link';
+import { Trash2, X, Plus, Copy, Check, Key, Bot, Server, ShieldCheck } from 'lucide-react';
 
 type ApiKey = {
   id: string;
@@ -129,7 +130,7 @@ export default function ApiAccessPage() {
 
   if (loading) {
     return (
-      <div className="p-6 max-w-[700px]">
+      <div className="p-6 max-w-[820px]">
         <p className="text-[13px]" style={{ color: 'var(--muted)' }}>Loading...</p>
       </div>
     );
@@ -137,14 +138,19 @@ export default function ApiAccessPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-    <div className="p-6 max-w-[700px]">
+    <div className="p-6 max-w-[820px]">
       <div className="flex items-center justify-between mb-4">
-        <h2
-          className="text-[18px] font-semibold"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-        >
-          API Access
-        </h2>
+        <div>
+          <h2
+            className="text-[18px] font-semibold"
+            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+          >
+            API Access
+          </h2>
+          <p className="text-[12px] mt-1 max-w-[560px]" style={{ color: 'var(--muted)' }}>
+            Create service keys for API and MCP runtimes. Personal AI apps are usually easier from MCP Access.
+          </p>
+        </div>
         <button
           onClick={() => setShowCreate(!showCreate)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
@@ -157,6 +163,26 @@ export default function ApiAccessPage() {
           <Plus size={13} />
           Create API Key
         </button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3 mb-5">
+        <AccessNote
+          icon={Bot}
+          title="Personal AI apps"
+          body="Use MCP Access for Claude, Codex, ChatGPT, and human-owned tokens."
+          href="/settings/mcp-access"
+          cta="Open MCP Access"
+        />
+        <AccessNote
+          icon={Server}
+          title="Service runtimes"
+          body="Use API keys for background services, custom runtimes, or automation bridges."
+        />
+        <AccessNote
+          icon={ShieldCheck}
+          title="Rotate on exposure"
+          body="Keys are only shown once. Delete and recreate anything pasted into an unsafe place."
+        />
       </div>
 
       {/* One-time key display modal */}
@@ -323,10 +349,10 @@ export default function ApiAccessPage() {
         >
           <Key size={32} style={{ color: 'var(--muted)', margin: '0 auto 12px' }} />
           <p className="text-[14px] font-medium mb-1" style={{ color: 'var(--foreground)' }}>
-            No API keys yet
+            No service keys yet
           </p>
           <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
-            Create a key to let external agents connect.
+            Create one when a service or agent runtime needs long-lived access.
           </p>
         </div>
       ) : (
@@ -433,4 +459,35 @@ export default function ApiAccessPage() {
     </div>
     </div>
   );
+}
+
+function AccessNote({
+  icon: Icon,
+  title,
+  body,
+  href,
+  cta,
+}: {
+  icon: typeof Bot;
+  title: string;
+  body: string;
+  href?: string;
+  cta?: string;
+}) {
+  const content = (
+    <>
+      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
+      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
+      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
+      {cta && (
+        <p className="text-[11px] font-medium mt-3" style={{ color: 'var(--accent)' }}>{cta}</p>
+      )}
+    </>
+  );
+  const className = "rounded-xl p-4 text-left";
+  const style = { background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' };
+  if (href) {
+    return <Link href={href} className={className} style={style}>{content}</Link>;
+  }
+  return <div className={className} style={style}>{content}</div>;
 }

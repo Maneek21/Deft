@@ -117,6 +117,35 @@ type ShareLink = {
   context: string;
 };
 
+type OffboardingPreview = {
+  revoke_now: {
+    spaces: Array<{ id: string; name: string; type: string }>;
+    teams: Array<{ id: string; name: string; handle: string; role: string }>;
+    groups: Array<{ id: string; name: string; handle: string }>;
+    secondary_task_assignments: number;
+    active_mcp_tokens: number;
+    active_api_keys: number;
+    active_oauth_grants: number;
+  };
+  needs_reassignment: {
+    primary_open_tasks: Array<{ id: string; title: string; status: string; priority: string; project_id: string | null }>;
+    led_projects: Array<{ id: string; name: string; prefix: string }>;
+    led_teams: Array<{ id: string; name: string; handle: string }>;
+  };
+  counts: {
+    spaces: number;
+    teams: number;
+    groups: number;
+    primary_open_tasks: number;
+    secondary_task_assignments: number;
+    led_projects: number;
+    led_teams: number;
+    active_mcp_tokens: number;
+    active_api_keys: number;
+    active_oauth_grants: number;
+  };
+};
+
 function formatExpiry(iso: string | null): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -229,6 +258,11 @@ export default function MembersPage() {
   const [copied, setCopied] = useState(false);
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [offboardingPreview, setOffboardingPreview] = useState<OffboardingPreview | null>(null);
+  const [offboardingReplacementId, setOffboardingReplacementId] = useState('');
+  const [offboardingLoading, setOffboardingLoading] = useState(false);
+  const [offboardingError, setOffboardingError] = useState('');
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [workingInviteId, setWorkingInviteId] = useState<string | null>(null);
   const [recoveringId, setRecoveringId] = useState<string | null>(null);
 
@@ -287,6 +321,17 @@ export default function MembersPage() {
   }, [members, filter, search]);
 
   const pendingInvites = invites.filter((invite) => invite.status === 'pending');
+  const offboardingReplacementOptions = useMemo(() => {
+    const removedId = detail?.member.id ?? confirmRemove;
+    return members.filter((member) => (
+      member.id !== removedId &&
+      member.lifecycle_status === 'active'
+    ));
+  }, [members, detail?.member.id, confirmRemove]);
+
+  const offboardingHandoffCount = offboardingPreview
+    ? offboardingPreview.counts.primary_open_tasks + offboardingPreview.counts.led_projects + offboardingPreview.counts.led_teams
+    : 0;
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -322,13 +367,53 @@ export default function MembersPage() {
     setRoleDropdown(null);
   };
 
+  const openRemovePreview = async (memberId: string) => {
+    setConfirmRemove(memberId);
+    setOffboardingPreview(null);
+    const defaultReplacement = members.find((member) => (
+      member.id !== memberId &&
+      member.lifecycle_status === 'active'
+    ));
+    setOffboardingReplacementId(defaultReplacement?.id ?? '');
+    setOffboardingError('');
+    setOffboardingLoading(true);
+    try {
+      const res = await api.get(`/api/members/${memberId}/offboarding-preview`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to load offboarding preview');
+      setOffboardingPreview(data);
+    } catch (err: any) {
+      setOffboardingError(err.message);
+    } finally {
+      setOffboardingLoading(false);
+    }
+  };
+
+  const closeRemovePreview = () => {
+    setConfirmRemove(null);
+    setOffboardingPreview(null);
+    setOffboardingReplacementId('');
+    setOffboardingError('');
+  };
+
   const handleRemove = async (memberId: string) => {
-    const res = await api.delete(`/api/members/${memberId}`);
-    if (res.ok) {
+    setRemovingId(memberId);
+    setOffboardingError('');
+    try {
+      const res = await api.delete(`/api/members/${memberId}`, {
+        replacement_user_id: offboardingReplacementId || null,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setOffboardingError(data.error || 'Failed to remove member');
+        return;
+      }
       await fetchDirectory(null);
       setDetail(null);
+      closeRemovePreview();
+    } finally {
+      setRemovingId(null);
     }
-    setConfirmRemove(null);
   };
 
   const handleRecoveryLink = async (m: DirectoryMember) => {
@@ -509,7 +594,7 @@ export default function MembersPage() {
 
         <div className="grid gap-4 lg:grid-cols-[minmax(360px,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_390px]">
           <section className="min-w-0 overflow-hidden rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
-            <div className="border-b p-3" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+            <div className="border-b p-3" style={{ borderColor: 'var(--border-default)' }}>
               <div className="space-y-2">
                 <div className="relative min-w-0">
                   <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--muted)' }} />
@@ -551,8 +636,8 @@ export default function MembersPage() {
                   <button
                     key={m.id}
                     onClick={() => setSelectedId(m.id)}
-                    className="group flex w-full min-w-0 items-start gap-3 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-white/[0.025]"
-                    style={{ background: selected ? 'var(--hover-tint)' : 'transparent', borderColor: 'rgba(255,255,255,0.08)' }}
+                    className="group flex w-full min-w-0 items-start gap-3 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-[var(--bg-hover)]"
+                    style={{ background: selected ? 'var(--hover-tint)' : 'transparent', borderColor: 'var(--border-default)' }}
                   >
                     <Avatar member={m} />
                     <div className="min-w-0 flex-1">
@@ -740,21 +825,84 @@ export default function MembersPage() {
 
                       {detail.member.role !== 'owner' && detail.member.id !== user?.id && detail.member.is_active && (
                         confirmRemove === detail.member.id ? (
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handleRemove(detail.member.id)}
-                              className="h-8 rounded-md px-2 text-[11px] font-semibold"
-                              style={{ background: 'var(--error)', color: 'white' }}
-                            >
-                              Confirm remove
-                            </button>
-                            <button onClick={() => setConfirmRemove(null)} style={{ color: 'var(--muted)' }}>
-                              <X size={14} />
-                            </button>
+                          <div
+                            className="w-full rounded-lg p-3 sm:w-[420px]"
+                            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[12px] font-semibold" style={{ color: 'var(--foreground)' }}>Remove {detail.member.name}?</p>
+                                <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+                                  Deft will revoke workspace access, tokens, app grants, team memberships, group mentions, and secondary task assignments.
+                                </p>
+                              </div>
+                              <button onClick={closeRemovePreview} style={{ color: 'var(--muted)' }} aria-label="Cancel removal">
+                                <X size={14} />
+                              </button>
+                            </div>
+
+                            {offboardingLoading ? (
+                              <p className="mt-3 text-[12px]" style={{ color: 'var(--muted)' }}>Loading offboarding preview...</p>
+                            ) : offboardingError ? (
+                              <p className="mt-3 rounded px-2 py-1.5 text-[12px]" style={{ color: 'var(--error)', background: 'rgba(147,0,10,0.16)' }}>{offboardingError}</p>
+                            ) : offboardingPreview && (
+                              <div className="mt-3 grid gap-2">
+                                <div className="grid grid-cols-3 gap-2">
+                                  <StatCard icon={Users} label="Spaces" value={offboardingPreview.counts.spaces} />
+                                  <StatCard icon={Briefcase} label="Teams" value={offboardingPreview.counts.teams} />
+                                  <StatCard icon={Activity} label="Groups" value={offboardingPreview.counts.groups} />
+                                </div>
+                                <div className="rounded-md px-2 py-2 text-[11px]" style={{ background: 'var(--card-bg)', color: 'var(--muted)' }}>
+                                  Also revokes {offboardingPreview.counts.active_mcp_tokens} MCP token(s), {offboardingPreview.counts.active_api_keys} API key(s), {offboardingPreview.counts.active_oauth_grants} app grant(s), and {offboardingPreview.counts.secondary_task_assignments} secondary task assignment(s).
+                                </div>
+                                {offboardingHandoffCount > 0 && (
+                                  <div className="grid gap-2 rounded-md px-2 py-2 text-[11px]" style={{ background: 'rgba(234,179,8,0.12)', color: 'var(--warning)' }}>
+                                    <p>
+                                      Transfer ownership for {offboardingPreview.counts.primary_open_tasks} open primary task(s), {offboardingPreview.counts.led_projects} led project(s), and {offboardingPreview.counts.led_teams} team lead role(s).
+                                    </p>
+                                    <select
+                                      data-testid="offboarding-replacement-select"
+                                      value={offboardingReplacementId}
+                                      onChange={(e) => setOffboardingReplacementId(e.target.value)}
+                                      className="h-8 rounded-md px-2 text-[12px] outline-none"
+                                      style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                                      disabled={offboardingReplacementOptions.length === 0}
+                                    >
+                                      {offboardingReplacementOptions.length === 0 ? (
+                                        <option value="">No active replacement available</option>
+                                      ) : offboardingReplacementOptions.map((member) => (
+                                        <option key={member.id} value={member.id}>
+                                          {member.name}{member.title ? ` - ${member.title}` : ''}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={closeRemovePreview}
+                                className="h-8 rounded-md px-2 text-[11px] font-semibold"
+                                style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleRemove(detail.member.id)}
+                                disabled={offboardingLoading || removingId === detail.member.id || (offboardingHandoffCount > 0 && !offboardingReplacementId)}
+                                className="h-8 rounded-md px-2 text-[11px] font-semibold disabled:opacity-50"
+                                style={{ background: 'var(--error)', color: 'white' }}
+                              >
+                                {removingId === detail.member.id ? 'Removing...' : offboardingHandoffCount > 0 ? 'Transfer and remove' : 'Confirm remove'}
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <button
-                            onClick={() => setConfirmRemove(detail.member.id)}
+                            onClick={() => openRemovePreview(detail.member.id)}
                             className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
                             style={{ color: 'var(--error)', border: '1px solid var(--border)' }}
                           >

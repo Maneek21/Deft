@@ -69,6 +69,8 @@ type TeamResource = {
   resource_type: string;
   resource_id: string;
   label: string | null;
+  access?: 'visible' | 'restricted';
+  restricted_reason?: string | null;
   created_at: string;
 };
 
@@ -95,6 +97,13 @@ type TeamDetail = {
 
 type TeamDashboard = {
   generated_at: string;
+  data_quality: {
+    mode: 'live_summary';
+    history_available: boolean;
+    snapshot_status: 'snapshot_available' | 'no_snapshot_worker_data';
+    source_scope: 'linked_team_resources';
+    notes: string[];
+  };
   summary: TeamSummary;
   attention: {
     overdue_tasks: number;
@@ -207,7 +216,7 @@ function Avatar({ name, avatarUrl, kind, size = 'md' }: { name: string; avatarUr
 function Pill({ children, tone = 'neutral' }: { children: React.ReactNode; tone?: 'neutral' | 'accent' | 'warning' | 'success' }) {
   const styles = {
     neutral: { color: 'var(--foreground-secondary)', background: 'var(--surface)' },
-    accent: { color: 'var(--accent)', background: 'var(--accent-light, rgba(124,107,79,0.12))' },
+    accent: { color: 'white', background: 'var(--accent)' },
     warning: { color: 'var(--warning)', background: 'rgba(234,179,8,0.12)' },
     success: { color: 'var(--success)', background: 'rgba(34,197,94,0.12)' },
   }[tone];
@@ -663,7 +672,7 @@ export default function TeamsSettingsPage() {
 
         <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
           <section className="min-w-0 overflow-hidden rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
-            <div className="border-b p-3" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+            <div className="border-b p-3" style={{ borderColor: 'var(--border-default)' }}>
               <div className="relative">
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--muted)' }} />
                 <input
@@ -691,8 +700,8 @@ export default function TeamsSettingsPage() {
                   <button
                     key={team.id}
                     onClick={() => setSelectedId(team.id)}
-                    className="flex w-full min-w-0 items-start gap-3 border-b px-3 py-3 text-left transition last:border-b-0 hover:bg-white/[0.025]"
-                    style={{ background: selected ? 'var(--hover-tint)' : 'transparent', borderColor: 'rgba(255,255,255,0.08)' }}
+                    className="flex w-full min-w-0 items-start gap-3 border-b px-3 py-3 text-left transition last:border-b-0 hover:bg-[var(--bg-hover)]"
+                    style={{ background: selected ? 'var(--hover-tint)' : 'transparent', borderColor: 'var(--border-default)' }}
                   >
                     <div
                       className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold text-white"
@@ -817,6 +826,31 @@ export default function TeamsSettingsPage() {
                   <MetricCard icon={CheckCircle2} label="In review" value={dashboard?.attention.in_review_tasks ?? 0} />
                   <MetricCard icon={Sparkles} label="Approvals" value={dashboard?.attention.pending_agent_actions ?? 0} />
                 </div>
+
+                {dashboard?.data_quality && (
+                  <div
+                    data-testid="team-dashboard-truth-label"
+                    className="rounded-lg p-3"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                  >
+                    <div className="flex flex-wrap items-start gap-3">
+                      <div className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: 'rgba(139, 92, 246, 0.16)', color: 'var(--accent)' }}>
+                        <Shield size={15} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>Live team summary</p>
+                          <Pill tone={dashboard.data_quality.history_available ? 'success' : 'neutral'}>
+                            {dashboard.data_quality.history_available ? 'Snapshot available' : 'No trend snapshot'}
+                          </Pill>
+                        </div>
+                        <p className="mt-1 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+                          These numbers are computed from linked team resources right now. Historical trends are shown only after snapshot data exists.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {actionError && (
                   <div className="rounded-lg px-3 py-2 text-[12px]" style={{ background: 'rgba(147,0,10,0.2)', color: 'var(--error)', border: '1px solid rgba(147,0,10,0.25)' }}>
@@ -960,11 +994,15 @@ export default function TeamsSettingsPage() {
                       </div>
                       <p className="mt-3 text-[12px]" style={{ color: 'var(--muted)' }}>
                         Snapshot freshness: {relativeTime(dashboard?.context.latest_snapshot?.generated_at)}
+                        {dashboard?.data_quality.snapshot_status === 'no_snapshot_worker_data' ? ' - live summary only' : ''}
                       </p>
                     </div>
 
                     <div className="rounded-lg p-4" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
                       <SectionTitle icon={Link2} title="Linked Resources" eyebrow="Operating map" />
+                      <p className="mb-3 text-[12px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+                        Teams organize context. They do not grant private space access; restricted links stay hidden until you are a member of that space.
+                      </p>
                       {canManageSelectedTeam && (
                         <form onSubmit={handleLinkResource} className="mb-3 grid gap-2 rounded-lg p-2" style={{ background: 'var(--surface)' }}>
                           <div className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)]">
@@ -1019,28 +1057,40 @@ export default function TeamsSettingsPage() {
                       <div className="flex flex-wrap gap-1.5">
                         {detail.resources.length === 0 ? (
                           <p className="text-[13px]" style={{ color: 'var(--muted)' }}>No linked resources yet.</p>
-                        ) : detail.resources.map((resource) => (
-                          <span
-                            key={resource.id}
-                            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
-                            style={{ color: 'var(--accent)', background: 'var(--accent-light, rgba(124,107,79,0.12))' }}
-                          >
-                            {resourceSingularLabel(resource.resource_type)}: {resource.label || resource.resource_id.slice(0, 8)}
-                            {canManageSelectedTeam && (
-                              <button
-                                data-testid={`team-resource-detach-${resource.resource_type}-${resource.resource_id}`}
-                                type="button"
-                                onClick={() => handleDetachResource(resource)}
-                                disabled={workingKey === `detach-${resource.id}`}
-                                aria-label={`Detach ${resource.label || resource.resource_type}`}
-                                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full disabled:opacity-50"
-                                style={{ color: 'var(--muted)' }}
-                              >
-                                <Trash2 size={10} />
-                              </button>
-                            )}
-                          </span>
-                        ))}
+                        ) : detail.resources.map((resource) => {
+                          const restricted = resource.access === 'restricted';
+                          const label = restricted
+                            ? 'Restricted private space'
+                            : (resource.label || resource.resource_id.slice(0, 8));
+                          return (
+                            <span
+                              key={resource.id}
+                              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+                              title={restricted ? 'You need to be a member of this private space to see its name and messages.' : undefined}
+                              style={{
+                                color: restricted ? 'var(--muted)' : 'white',
+                                background: restricted ? 'var(--surface)' : 'var(--accent)',
+                                border: restricted ? '1px solid var(--border)' : '1px solid transparent',
+                              }}
+                            >
+                              {restricted && <Lock size={10} />}
+                              {resourceSingularLabel(resource.resource_type)}: {label}
+                              {canManageSelectedTeam && (
+                                <button
+                                  data-testid={`team-resource-detach-${resource.resource_type}-${resource.resource_id}`}
+                                  type="button"
+                                  onClick={() => handleDetachResource(resource)}
+                                  disabled={workingKey === `detach-${resource.id}`}
+                                  aria-label={`Detach ${label}`}
+                                  className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full disabled:opacity-50"
+                                  style={{ color: restricted ? 'var(--muted)' : 'rgba(255,255,255,0.72)' }}
+                                >
+                                  <Trash2 size={10} />
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>

@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
 import {
   users,
@@ -18,6 +19,11 @@ import {
   oauthRefreshTokens,
   projects,
   tasks,
+  taskAssignees,
+  teamMembers,
+  teams,
+  userGroupMembers,
+  userGroups,
   wikiPages,
 } from '@deft/db/schema';
 import { env } from '../lib/env.js';
@@ -26,6 +32,10 @@ import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membershi
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
+
+const offboardingPayloadSchema = z.object({
+  replacement_user_id: z.string().min(1).optional().nullable(),
+});
 
 function buildInviteUrl(token: string): string {
   return `${env.NEXT_PUBLIC_APP_URL}/invite/${token}`;
@@ -115,6 +125,29 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
       )
   `);
 
+  await db.delete(teamMembers)
+    .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId)));
+
+  await db.execute(sql`
+    DELETE FROM ${userGroupMembers}
+    WHERE ${userGroupMembers.user_id} = ${memberId}
+      AND ${userGroupMembers.group_id} IN (
+        SELECT ${userGroups.id}
+        FROM ${userGroups}
+        WHERE ${userGroups.org_id} = ${orgId}
+      )
+  `);
+
+  await db.execute(sql`
+    DELETE FROM ${taskAssignees}
+    WHERE ${taskAssignees.user_id} = ${memberId}
+      AND ${taskAssignees.task_id} IN (
+        SELECT ${tasks.id}
+        FROM ${tasks}
+        WHERE ${tasks.org_id} = ${orgId}
+      )
+  `);
+
   await db.update(mcpTokens)
     .set({ revoked_at: revokedAt, updated_at: revokedAt })
     .where(and(
@@ -156,6 +189,243 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
           AND user_id = ${memberId}
       )
   `);
+}
+
+async function reassignMemberOwnership(orgId: string, memberId: string, replacementUserId: string) {
+  if (memberId === replacementUserId) {
+    throw new Error('Replacement cannot be the member being removed');
+  }
+
+  const replacement = await getCurrentMembership(orgId, replacementUserId);
+  if (!replacement) {
+    throw new Error('Replacement must be an active member of this organization');
+  }
+
+  const reassignedAt = new Date();
+  const ledTeamRows = await db
+    .select({ id: teams.id })
+    .from(teams)
+    .where(and(
+      eq(teams.org_id, orgId),
+      eq(teams.lead_user_id, memberId),
+      eq(teams.is_archived, false),
+    ));
+
+  const reassignedTasks = await db
+    .update(tasks)
+    .set({ assignee_id: replacementUserId, updated_at: reassignedAt })
+    .where(and(
+      eq(tasks.org_id, orgId),
+      eq(tasks.assignee_id, memberId),
+      eq(tasks.is_deleted, false),
+      sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+    ))
+    .returning({ id: tasks.id });
+
+  const reassignedProjects = await db
+    .update(projects)
+    .set({ lead_id: replacementUserId, updated_at: reassignedAt })
+    .where(and(
+      eq(projects.org_id, orgId),
+      eq(projects.lead_id, memberId),
+      eq(projects.is_deleted, false),
+    ))
+    .returning({ id: projects.id });
+
+  const reassignedTeams = await db
+    .update(teams)
+    .set({ lead_user_id: replacementUserId, updated_at: reassignedAt })
+    .where(and(
+      eq(teams.org_id, orgId),
+      eq(teams.lead_user_id, memberId),
+      eq(teams.is_archived, false),
+    ))
+    .returning({ id: teams.id });
+
+  for (const team of ledTeamRows) {
+    await db
+      .insert(teamMembers)
+      .values({
+        id: crypto.randomUUID(),
+        org_id: orgId,
+        team_id: team.id,
+        user_id: replacementUserId,
+        role: 'lead',
+      })
+      .onConflictDoUpdate({
+        target: [teamMembers.team_id, teamMembers.user_id],
+        set: { role: 'lead', updated_at: reassignedAt },
+      });
+  }
+
+  return {
+    replacement_user_id: replacementUserId,
+    primary_open_tasks: reassignedTasks.length,
+    led_projects: reassignedProjects.length,
+    led_teams: reassignedTeams.length,
+  };
+}
+
+async function buildOffboardingPreview(orgId: string, memberId: string) {
+  const [
+    spaceRows,
+    teamRows,
+    groupRows,
+    primaryTasks,
+    secondaryTaskRows,
+    ledProjects,
+    ledTeams,
+    mcpRows,
+    apiRows,
+    oauthRows,
+    spaceCountRows,
+    teamCountRows,
+    groupCountRows,
+    primaryTaskCountRows,
+    ledProjectCountRows,
+    ledTeamCountRows,
+  ] = await Promise.all([
+    db.select({
+      id: spaces.id,
+      name: spaces.name,
+      type: spaces.type,
+    })
+      .from(spaceMembers)
+      .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+      .where(and(eq(spaces.org_id, orgId), eq(spaceMembers.user_id, memberId)))
+      .orderBy(spaces.name)
+      .limit(12),
+    db.select({
+      id: teams.id,
+      name: teams.name,
+      handle: teams.handle,
+      role: teamMembers.role,
+    })
+      .from(teamMembers)
+      .innerJoin(teams, eq(teams.id, teamMembers.team_id))
+      .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId)))
+      .orderBy(teams.name)
+      .limit(12),
+    db.select({
+      id: userGroups.id,
+      name: userGroups.name,
+      handle: userGroups.handle,
+    })
+      .from(userGroupMembers)
+      .innerJoin(userGroups, eq(userGroups.id, userGroupMembers.group_id))
+      .where(and(eq(userGroups.org_id, orgId), eq(userGroupMembers.user_id, memberId)))
+      .orderBy(userGroups.name)
+      .limit(12),
+    db.select({
+      id: tasks.id,
+      title: tasks.title,
+      status: tasks.status,
+      priority: tasks.priority,
+      project_id: tasks.project_id,
+    })
+      .from(tasks)
+      .where(and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.assignee_id, memberId),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      ))
+      .orderBy(desc(tasks.updated_at))
+      .limit(12),
+    db.select({
+      count: sql<number>`count(*)::int`,
+    })
+      .from(taskAssignees)
+      .innerJoin(tasks, eq(tasks.id, taskAssignees.task_id))
+      .where(and(
+        eq(tasks.org_id, orgId),
+        eq(taskAssignees.user_id, memberId),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      )),
+    db.select({
+      id: projects.id,
+      name: projects.name,
+      prefix: projects.prefix,
+    })
+      .from(projects)
+      .where(and(eq(projects.org_id, orgId), eq(projects.lead_id, memberId), eq(projects.is_deleted, false)))
+      .orderBy(projects.name)
+      .limit(12),
+    db.select({
+      id: teams.id,
+      name: teams.name,
+      handle: teams.handle,
+    })
+      .from(teams)
+      .where(and(eq(teams.org_id, orgId), eq(teams.lead_user_id, memberId), eq(teams.is_archived, false)))
+      .orderBy(teams.name)
+      .limit(12),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(mcpTokens)
+      .where(and(eq(mcpTokens.org_id, orgId), eq(mcpTokens.user_id, memberId), sql`${mcpTokens.revoked_at} IS NULL`)),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(apiKeys)
+      .where(and(eq(apiKeys.org_id, orgId), eq(apiKeys.created_by, memberId), eq(apiKeys.is_active, true))),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(oauthGrants)
+      .where(and(eq(oauthGrants.org_id, orgId), eq(oauthGrants.user_id, memberId), sql`${oauthGrants.revoked_at} IS NULL`)),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(spaceMembers)
+      .innerJoin(spaces, eq(spaces.id, spaceMembers.space_id))
+      .where(and(eq(spaces.org_id, orgId), eq(spaceMembers.user_id, memberId))),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(teamMembers)
+      .innerJoin(teams, eq(teams.id, teamMembers.team_id))
+      .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId))),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(userGroupMembers)
+      .innerJoin(userGroups, eq(userGroups.id, userGroupMembers.group_id))
+      .where(and(eq(userGroups.org_id, orgId), eq(userGroupMembers.user_id, memberId))),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(tasks)
+      .where(and(
+        eq(tasks.org_id, orgId),
+        eq(tasks.assignee_id, memberId),
+        eq(tasks.is_deleted, false),
+        sql`${tasks.status} NOT IN ('done', 'cancelled')`,
+      )),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(projects)
+      .where(and(eq(projects.org_id, orgId), eq(projects.lead_id, memberId), eq(projects.is_deleted, false))),
+    db.select({ count: sql<number>`count(*)::int` })
+      .from(teams)
+      .where(and(eq(teams.org_id, orgId), eq(teams.lead_user_id, memberId), eq(teams.is_archived, false))),
+  ]);
+
+  return {
+    revoke_now: {
+      spaces: spaceRows,
+      teams: teamRows,
+      groups: groupRows,
+      secondary_task_assignments: Number(secondaryTaskRows[0]?.count ?? 0),
+      active_mcp_tokens: Number(mcpRows[0]?.count ?? 0),
+      active_api_keys: Number(apiRows[0]?.count ?? 0),
+      active_oauth_grants: Number(oauthRows[0]?.count ?? 0),
+    },
+    needs_reassignment: {
+      primary_open_tasks: primaryTasks,
+      led_projects: ledProjects,
+      led_teams: ledTeams,
+    },
+    counts: {
+      spaces: Number(spaceCountRows[0]?.count ?? 0),
+      teams: Number(teamCountRows[0]?.count ?? 0),
+      groups: Number(groupCountRows[0]?.count ?? 0),
+      primary_open_tasks: Number(primaryTaskCountRows[0]?.count ?? 0),
+      secondary_task_assignments: Number(secondaryTaskRows[0]?.count ?? 0),
+      led_projects: Number(ledProjectCountRows[0]?.count ?? 0),
+      led_teams: Number(ledTeamCountRows[0]?.count ?? 0),
+      active_mcp_tokens: Number(mcpRows[0]?.count ?? 0),
+      active_api_keys: Number(apiRows[0]?.count ?? 0),
+      active_oauth_grants: Number(oauthRows[0]?.count ?? 0),
+    },
+  };
 }
 
 async function listOrgInvites(orgId: string) {
@@ -704,6 +974,41 @@ memberRoutes.get('/:id/detail', async (c) => {
   }
 });
 
+memberRoutes.get('/:id/offboarding-preview', async (c) => {
+  try {
+    const currentUser = c.get('user');
+    const memberId = c.req.param('id');
+
+    try {
+      await requireOrgAdminOrOwner(currentUser.org_id, currentUser.id);
+    } catch (err) {
+      return adminForbidden(c, err);
+    }
+
+    const [targetMembership] = await db.select({ role: orgMembers.role })
+      .from(orgMembers)
+      .where(and(
+        eq(orgMembers.org_id, currentUser.org_id),
+        eq(orgMembers.user_id, memberId),
+        eq(orgMembers.is_active, true),
+      ))
+      .limit(1);
+
+    if (!targetMembership) {
+      return c.json({ error: 'Member not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    if (targetMembership.role === 'owner') {
+      return c.json({ error: 'Cannot remove the org owner', code: 'FORBIDDEN' }, 403);
+    }
+
+    return c.json(await buildOffboardingPreview(currentUser.org_id, memberId));
+  } catch (err) {
+    console.error('Failed to build offboarding preview:', err);
+    return c.json({ error: 'Failed to build offboarding preview', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 memberRoutes.get('/:id', async (c) => {
   try {
     const user = c.get('user');
@@ -830,6 +1135,7 @@ memberRoutes.post('/invite', async (c) => {
         email,
         inviter_id: currentUser.id,
         role,
+        nonce: crypto.randomUUID(),
       },
       env.JWT_SECRET,
       { expiresIn: INVITE_TTL },
@@ -921,6 +1227,7 @@ memberRoutes.post('/invites/:id/reissue', async (c) => {
         email,
         inviter_id: currentUser.id,
         role: role ?? 'member',
+        nonce: crypto.randomUUID(),
       },
       env.JWT_SECRET,
       { expiresIn: INVITE_TTL },
@@ -1103,10 +1410,20 @@ memberRoutes.delete('/:id', async (c) => {
   try {
     const currentUser = c.get('user');
     const memberId = c.req.param('id');
+    const rawBody = await c.req.json().catch(() => ({}));
+    const parsedBody = offboardingPayloadSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid offboarding payload', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const replacementUserId = parsedBody.data.replacement_user_id?.trim() || null;
 
     // Can't remove yourself
     if (memberId === currentUser.id) {
       return c.json({ error: 'Cannot remove yourself', code: 'FORBIDDEN' }, 403);
+    }
+
+    if (replacementUserId === memberId) {
+      return c.json({ error: 'Replacement cannot be the removed member', code: 'VALIDATION_ERROR' }, 400);
     }
 
     try {
@@ -1129,9 +1446,40 @@ memberRoutes.delete('/:id', async (c) => {
       return c.json({ error: 'Cannot remove the org owner', code: 'FORBIDDEN' }, 403);
     }
 
+    const preview = await buildOffboardingPreview(currentUser.org_id, memberId);
+    let reassigned = {
+      replacement_user_id: replacementUserId,
+      primary_open_tasks: 0,
+      led_projects: 0,
+      led_teams: 0,
+    };
+    if (replacementUserId) {
+      try {
+        reassigned = await reassignMemberOwnership(currentUser.org_id, memberId, replacementUserId);
+      } catch (error) {
+        return c.json({
+          error: error instanceof Error ? error.message : 'Failed to reassign member ownership',
+          code: 'VALIDATION_ERROR',
+        }, 400);
+      }
+    }
     await revokeMemberWorkspaceAccess(currentUser.org_id, memberId, true);
+    const remaining = await buildOffboardingPreview(currentUser.org_id, memberId);
 
-    return c.json({ success: true });
+    return c.json({
+      success: true,
+      receipt: {
+        revoked_at: new Date().toISOString(),
+        revoked: preview.revoke_now,
+        reassigned,
+        remaining_reassignment: remaining.needs_reassignment,
+        remaining_counts: {
+          primary_open_tasks: remaining.counts.primary_open_tasks,
+          led_projects: remaining.counts.led_projects,
+          led_teams: remaining.counts.led_teams,
+        },
+      },
+    });
   } catch (err) {
     console.error('Failed to remove member:', err);
     return c.json({ error: 'Failed to remove member', code: 'INTERNAL_ERROR' }, 500);

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
-import { Archive, RotateCcw, Loader2, FolderX } from 'lucide-react';
+import { Archive, RotateCcw, Loader2, FolderX, Clock3, ShieldCheck } from 'lucide-react';
 import { formatRelative } from '@/lib/time';
 
 type DeletedProject = {
@@ -64,14 +64,26 @@ export default function ProjectsRecoveryPage() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
-    <div className="max-w-3xl">
-      <div className="mb-6">
-        <h1 className="text-[20px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+    <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="mb-5">
+        <span
+          className="text-[10px] font-semibold uppercase tracking-[0.16em]"
+          style={{ color: 'var(--muted)' }}
+        >
+          Recovery
+        </span>
+        <h1 className="text-[22px] font-semibold mt-2" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
           Deleted projects
         </h1>
-        <p className="text-[13px] mt-1" style={{ color: 'var(--muted)' }}>
-          Soft-deleted projects within the last 7 days. After 7 days they&apos;re purged and can no longer be restored.
+        <p className="text-[13px] mt-1 max-w-[620px]" style={{ color: 'var(--muted)' }}>
+          Restore recently deleted projects without losing tasks, comments, or audit history. After 7 days, deleted projects are purged permanently.
         </p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3 mb-6">
+        <RecoveryNote icon={Clock3} title="7-day window" body="Soft-deleted projects remain recoverable for one week." />
+        <RecoveryNote icon={RotateCcw} title="Restore in place" body="Tasks, project metadata, and history come back together." />
+        <RecoveryNote icon={ShieldCheck} title="Audit-safe" body="Deletion and restore events stay visible for review." />
       </div>
 
       {error && (
@@ -90,9 +102,9 @@ export default function ProjectsRecoveryPage() {
           style={{ background: 'var(--surface-container-low)', border: '1px dashed var(--border-default, var(--outline-variant))' }}
         >
           <FolderX size={32} strokeWidth={1.25} style={{ color: 'var(--muted)' }} />
-          <p className="text-[13px] mt-3" style={{ color: 'var(--foreground)' }}>No recently deleted projects.</p>
+          <p className="text-[13px] mt-3 font-medium" style={{ color: 'var(--foreground)' }}>Nothing is in recovery.</p>
           <p className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>
-            Anything deleted in the last 7 days shows up here.
+            Projects deleted in the last 7 days will appear here with a restore button.
           </p>
         </div>
       ) : (
@@ -131,6 +143,27 @@ export default function ProjectsRecoveryPage() {
         </div>
       )}
     </div>
+    </div>
+  );
+}
+
+function RecoveryNote({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Clock3;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
+    >
+      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
+      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
+      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
     </div>
   );
 }

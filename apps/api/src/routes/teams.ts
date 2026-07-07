@@ -9,6 +9,7 @@ import {
   notes,
   orgMembers,
   projects,
+  spaceMembers,
   spaces,
   taskTemplates,
   teamDashboardSnapshots,
@@ -216,6 +217,48 @@ async function resourceBelongsToOrg(orgId: string, type: ResourceType, id: strin
   }
 }
 
+async function decorateResourcesForUser(
+  orgId: string,
+  userId: string,
+  resources: Array<typeof teamResources.$inferSelect>,
+) {
+  const spaceIds = resources
+    .filter((resource) => resource.resource_type === 'space')
+    .map((resource) => resource.resource_id);
+
+  if (spaceIds.length === 0) {
+    return resources.map((resource) => ({ ...resource, access: 'visible' as const }));
+  }
+
+  const visibleSpaces = await db
+    .select({ id: spaces.id })
+    .from(spaces)
+    .leftJoin(
+      spaceMembers,
+      and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, userId)),
+    )
+    .where(
+      and(
+        eq(spaces.org_id, orgId),
+        inArray(spaces.id, Array.from(new Set(spaceIds))),
+        or(eq(spaces.type, 'public'), sql`${spaceMembers.id} is not null`),
+      ),
+    );
+  const visibleSpaceIds = new Set(visibleSpaces.map((space) => space.id));
+
+  return resources.map((resource) => {
+    if (resource.resource_type !== 'space' || visibleSpaceIds.has(resource.resource_id)) {
+      return { ...resource, access: 'visible' as const };
+    }
+    return {
+      ...resource,
+      label: null,
+      access: 'restricted' as const,
+      restricted_reason: 'space_membership_required',
+    };
+  });
+}
+
 async function buildTeamSummary(orgId: string, teamId: string) {
   const [memberCount] = await db
     .select({ count: count(teamMembers.id) })
@@ -371,6 +414,19 @@ async function buildTeamDashboard(orgId: string, teamId: string) {
 
   return {
     generated_at: now.toISOString(),
+    data_quality: {
+      mode: 'live_summary' as const,
+      history_available: Boolean(summary.latest_snapshot),
+      snapshot_status: summary.latest_snapshot ? 'snapshot_available' as const : 'no_snapshot_worker_data' as const,
+      source_scope: 'linked_team_resources' as const,
+      notes: [
+        'Open task counts are computed live from linked projects.',
+        'Context counts are computed from linked team resources.',
+        summary.latest_snapshot
+          ? 'A dashboard snapshot is available, but trend rendering is still intentionally limited.'
+          : 'No historical dashboard snapshot exists yet; treat this as a current-state summary, not trend analytics.',
+      ],
+    },
     summary,
     attention: {
       overdue_tasks: overdueTaskCount[0]?.count ?? 0,
@@ -565,6 +621,8 @@ teamRoutes.get('/:id', async (c) => {
     .where(and(eq(teamResources.org_id, user.org_id), eq(teamResources.team_id, visible.team.id)))
     .orderBy(teamResources.resource_type, teamResources.created_at);
 
+  const decoratedResources = await decorateResourcesForUser(user.org_id, user.id, resources);
+
   return c.json({
     team: visible.team,
     lead,
@@ -572,7 +630,7 @@ teamRoutes.get('/:id', async (c) => {
       ...member,
       kind: member.kind === 'agent' || member.agent_employee_id ? 'agent' : member.kind,
     })),
-    resources,
+    resources: decoratedResources,
     summary: await buildTeamSummary(user.org_id, visible.team.id),
   });
 });
