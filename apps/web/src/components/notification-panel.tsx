@@ -17,6 +17,7 @@ export function NotificationPanel({ onClose }: Props) {
   const router = useRouter();
   const { items, isLoading, markRead, markAllRead, refresh } = useInbox();
   const ref = useRef<HTMLDivElement>(null);
+  const unreadCount = items.filter((item) => !item.read).length;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -70,6 +71,8 @@ export function NotificationPanel({ onClose }: Props) {
   return (
     <div
       ref={ref}
+      role="dialog"
+      aria-label="Notifications"
       className="fixed bottom-0 left-0 right-0 z-[9999] max-h-[70vh] flex flex-col overflow-hidden rounded-t-2xl md:rounded-xl md:absolute md:bottom-auto md:left-auto md:right-0 md:top-full md:mt-2 md:w-[360px] md:max-h-[520px]"
       style={{
         background: 'var(--surface-container-highest)',
@@ -91,7 +94,8 @@ export function NotificationPanel({ onClose }: Props) {
         </span>
         <button
           onClick={() => void markAllRead()}
-          className="text-[11px] font-medium px-2 py-2 md:py-1 rounded-md min-h-[36px] flex items-center"
+          disabled={isLoading || unreadCount === 0}
+          className="text-[11px] font-medium px-2 py-2 md:py-1 rounded-md min-h-[36px] flex items-center disabled:cursor-not-allowed disabled:opacity-45"
           style={{ color: 'var(--accent)', fontFamily: 'var(--font-body)' }}
         >
           Mark all read

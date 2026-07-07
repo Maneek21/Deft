@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
+import { isSettingsItemActive, settingsNavGroups } from '@/lib/settings-navigation';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { api } from '@/lib/api';
@@ -42,6 +43,7 @@ import { CreateDmModal } from './create-dm-modal';
 import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
 import { useInboxCount } from '@/hooks/use-inbox-count';
+import { AppMenu, type AppMenuItem } from './overlay-primitives';
 
 type AgentEmployee = {
   id: string;
@@ -169,7 +171,7 @@ function ChatSidebarContent({
                   color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                   fontWeight: active ? 500 : hasUnread ? 600 : 500,
                   fontSize: '0.8125rem',
-                  borderRadius: 'var(--radius-lg)',
+                  borderRadius: '999px',
                   paddingRight: activeHuddles.has(space.id) ? '3rem' : undefined,
                 }}
               >
@@ -279,7 +281,7 @@ function ChatSidebarContent({
                   color: active ? 'var(--on-surface)' : hasUnread ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                   fontWeight: active ? 500 : hasUnread ? 600 : 500,
                   fontSize: '0.8125rem',
-                  borderRadius: 'var(--radius-lg)',
+                  borderRadius: '999px',
                 }}
               >
                 <div className="relative flex-shrink-0 w-6 h-6">
@@ -402,7 +404,7 @@ function ChatSidebarContent({
                   color: 'var(--on-surface-variant)',
                   fontWeight: 500,
                   fontSize: '0.8125rem',
-                  borderRadius: 'var(--radius-lg)',
+                  borderRadius: '999px',
                 }}
               >
                 <div className="relative flex-shrink-0">
@@ -495,7 +497,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
             color: isMyTasksActive ? 'var(--on-surface)' : 'var(--on-surface-variant)',
             fontWeight: isMyTasksActive ? 500 : 500,
             fontSize: '0.8125rem',
-            borderRadius: 'var(--radius-lg)',
+            borderRadius: '999px',
           }}
         >
           <User size={18} strokeWidth={1.5} className="flex-shrink-0" style={{ opacity: isMyTasksActive ? 0.7 : 0.4 }} />
@@ -533,7 +535,7 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
                 color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
                 fontWeight: active ? 500 : 500,
                 fontSize: '0.8125rem',
-                borderRadius: 'var(--radius-lg)',
+                borderRadius: '999px',
               }}
             >
               <div
@@ -570,24 +572,8 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
 function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
   const pathname = usePathname();
 
-  const sections = [
-    { name: 'General', href: '/settings' },
-    { name: 'Profile', href: '/settings/profile' },
-    { name: 'Members', href: '/settings/members' },
-    { name: 'Teams', href: '/settings/teams' },
-    { name: 'Groups', href: '/settings/groups' },
-    { name: 'Projects', href: '/settings/projects' },
-    { name: 'Tags', href: '/settings/tags' },
-    { name: 'Integrations', href: '/settings/integrations' },
-    { name: 'AI Providers', href: '/settings/ai' },
-    { name: 'Agent', href: '/settings/agent' },
-    { name: 'Agent Employees', href: '/settings/agent-employees' },
-    { name: 'MCP Access', href: '/settings/mcp-access' },
-    { name: 'API Access', href: '/settings/api-access' },
-  ];
-
   return (
-    <div className="px-3 pt-5 pb-1">
+    <div className="px-3 pt-5 pb-6 overflow-y-auto">
       <div className="flex items-center px-2 mb-2">
         <span
           className="text-[0.6875rem] font-semibold uppercase tracking-[0.05em]"
@@ -596,27 +582,38 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
           Settings
         </span>
       </div>
-      {sections.map((section) => {
-        const active = pathname === section.href;
-        return (
-          <Link
-            key={section.href}
-            href={section.href}
-            onClick={onNav}
-            className="w-full text-left px-2 flex items-center gap-2 block"
-            style={{
-              height: '36px',
-              background: active ? 'var(--bg-active)' : 'transparent',
-              color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
-              fontWeight: active ? 500 : 500,
-              fontSize: '0.8125rem',
-              borderRadius: 'var(--radius-lg)',
-            }}
-          >
-            <span className="truncate">{section.name}</span>
-          </Link>
-        );
-      })}
+      <div className="space-y-4">
+        {settingsNavGroups.map((group) => (
+          <div key={group.label}>
+            <div className="px-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--outline)' }}>
+              {group.label}
+            </div>
+            <div className="space-y-0.5">
+              {group.items.map((section) => {
+                const active = isSettingsItemActive(pathname, section.href);
+                return (
+                  <Link
+                    key={section.href}
+                    href={section.href}
+                    onClick={onNav}
+                    className="w-full text-left px-2 flex items-center gap-2 block"
+                    style={{
+                      height: '34px',
+                      background: active ? 'var(--bg-active)' : 'transparent',
+                      color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+                      fontWeight: 500,
+                      fontSize: '0.8125rem',
+                      borderRadius: '999px',
+                    }}
+                  >
+                    <span className="truncate">{section.name}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -641,6 +638,7 @@ export function Sidebar({
   const { theme, toggleTheme } = useTheme();
   const { unreadCounts } = useChatContext();
   const pathname = usePathname();
+  const router = useRouter();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   // Create-space modal lifted from ChatSidebarContent — the parent Sidebar
@@ -651,20 +649,7 @@ export function Sidebar({
   useEffect(() => registerOpenCreateSpace(() => setCreateSpaceOpen(true)), []);
   const [savedOpen, setSavedOpen] = useState(false);
   const [dnd, setDnd] = useState(() => user?.status_text === 'Do Not Disturb');
-  const userMenuRef = useRef<HTMLDivElement>(null);
   const userMenuBtnRef = useRef<HTMLButtonElement>(null);
-
-  // Click-outside handler for three-dot menu
-  useEffect(() => {
-    if (!userMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
-        setUserMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [userMenuOpen]);
 
   // Escape-key handler for mobile drawer
   useEffect(() => {
@@ -681,6 +666,40 @@ export function Sidebar({
     setDnd(next);
     await api.patch('/api/users/dnd', { enabled: next });
   };
+
+  const userMenuItems: AppMenuItem[] = [
+    {
+      label: 'Set status',
+      icon: <Smile size={14} strokeWidth={1.5} />,
+      onSelect: () => setStatusModalOpen(true),
+    },
+    {
+      label: 'Saved messages',
+      icon: <Bookmark size={14} strokeWidth={1.5} />,
+      onSelect: () => setSavedOpen(true),
+    },
+    {
+      label: dnd ? 'Disable Do Not Disturb' : 'Do Not Disturb',
+      icon: dnd ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />,
+      onSelect: toggleDnd,
+    },
+    {
+      label: theme === 'dark' ? 'Light mode' : 'Dark mode',
+      icon: theme === 'dark' ? <Sun size={14} strokeWidth={1.5} /> : <Moon size={14} strokeWidth={1.5} />,
+      onSelect: toggleTheme,
+    },
+    {
+      label: 'Settings',
+      icon: <Settings size={14} strokeWidth={1.5} />,
+      onSelect: () => router.push('/settings'),
+    },
+    {
+      label: 'Log out',
+      icon: <LogOut size={14} strokeWidth={1.5} />,
+      danger: true,
+      onSelect: logout,
+    },
+  ];
 
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window !== 'undefined') return localStorage.getItem('deft-sidebar-collapsed') === 'true';
@@ -778,7 +797,7 @@ export function Sidebar({
                 height: '36px',
                 color: active ? 'var(--primary)' : 'var(--on-surface-variant)',
                 background: active ? 'var(--bg-active)' : 'transparent',
-                borderRadius: 'var(--radius-lg)',
+                borderRadius: '999px',
                 fontSize: '0.8125rem',
                 fontWeight: active ? 500 : 400,
               }}
@@ -854,76 +873,42 @@ export function Sidebar({
           </span>
         </button>
 
-        <div ref={userMenuRef}>
+        <div>
           <button
             ref={userMenuBtnRef}
             className="p-1.5 rounded-md"
             style={{ color: 'var(--outline)' }}
             title="More options"
             onClick={(e) => { e.stopPropagation(); setUserMenuOpen(!userMenuOpen); }}
+            aria-haspopup="menu"
+            aria-expanded={userMenuOpen}
           >
             <MoreHorizontal size={15} strokeWidth={1.5} />
           </button>
-          {userMenuOpen && typeof document !== 'undefined' && createPortal(
-            <div
-              className="fixed w-48 py-1 rounded-lg z-[100]"
-              onMouseDown={(e) => e.stopPropagation()}
-              style={{
-                background: 'var(--surface-container-highest)',
-                boxShadow: 'var(--glass-shadow)',
-                bottom: `${window.innerHeight - (userMenuBtnRef.current?.getBoundingClientRect().top ?? 0) + 8}px`,
-                left: `${(userMenuBtnRef.current?.getBoundingClientRect().right ?? 0) + 8}px`,
-              }}
-            >
-              {/* Status display / set */}
-              {user?.status_emoji ? (
-                <div className="px-3 py-1.5 flex items-center gap-2 text-[12px]"
-                  style={{ color: 'var(--on-surface-variant)' }}>
-                  <span>{user.status_emoji}</span>
-                  <span className="flex-1 truncate">{user.status_text || ''}</span>
-                  <button onClick={async () => {
+          <AppMenu
+            open={userMenuOpen}
+            onClose={() => setUserMenuOpen(false)}
+            anchorRef={userMenuBtnRef}
+            items={userMenuItems}
+            ariaLabel="User menu"
+            width={230}
+            header={user?.status_emoji ? (
+              <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--on-surface-variant)' }}>
+                <span>{user.status_emoji}</span>
+                <span className="min-w-0 flex-1 truncate">{user.status_text || ''}</span>
+                <button
+                  onClick={async () => {
                     await api.delete('/api/users/status');
                     setUserMenuOpen(false);
-                  }} className="text-[10px] px-1.5 py-0.5 rounded hover:opacity-70"
-                    style={{ color: 'var(--text-tertiary)' }}>Clear</button>
-                </div>
-              ) : null}
-              <button onClick={() => { setUserMenuOpen(false); setStatusModalOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: 'var(--on-surface-variant)' }}>
-                <Smile size={14} strokeWidth={1.5} /> Set status
-              </button>
-              <button onClick={() => { setUserMenuOpen(false); setSavedOpen(true); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: 'var(--on-surface-variant)' }}>
-                <Bookmark size={14} strokeWidth={1.5} /> Saved messages
-              </button>
-              <button onClick={() => { toggleDnd(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: dnd ? 'var(--status-amber)' : 'var(--on-surface-variant)' }}>
-                {dnd ? <BellOff size={14} strokeWidth={1.5} /> : <Bell size={14} strokeWidth={1.5} />}
-                {dnd ? 'Disable Do Not Disturb' : 'Do Not Disturb'}
-              </button>
-              <button onClick={() => { toggleTheme(); setUserMenuOpen(false); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: 'var(--on-surface-variant)' }}>
-                {theme === 'dark' ? <Sun size={14} strokeWidth={1.5} /> : <Moon size={14} strokeWidth={1.5} />}
-                {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-              </button>
-              <div className="my-1" style={{ borderTop: '1px solid var(--ghost-border)' }} />
-              <Link href="/settings" onClick={() => setUserMenuOpen(false)}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: 'var(--on-surface-variant)' }}>
-                <Settings size={14} strokeWidth={1.5} /> Settings
-              </Link>
-              <button onClick={() => { setUserMenuOpen(false); logout(); }}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] w-full text-left rounded-md hover:opacity-80"
-                style={{ color: 'var(--status-red)' }}>
-                <LogOut size={14} strokeWidth={1.5} /> Log out
-              </button>
-            </div>,
-            document.body
-          )}
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[10px] hover:opacity-70"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : undefined}
+          />
         </div>
       </div>
       {statusModalOpen && <StatusModal onClose={() => setStatusModalOpen(false)} />}
@@ -944,7 +929,7 @@ export function Sidebar({
         const active = pathname.startsWith(item.href);
         return (
           <Link key={item.href} href={item.href} title={item.name}
-            className="w-9 h-9 flex items-center justify-center rounded-lg"
+            className="w-9 h-9 flex items-center justify-center rounded-full"
             style={{
               background: active ? 'var(--bg-active)' : 'transparent',
               color: active ? 'var(--primary)' : 'var(--outline)',

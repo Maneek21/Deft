@@ -128,7 +128,7 @@ export function TagPicker({ entityType, entityId, appliedTags, onTagsChange, com
           <div className="max-h-40 overflow-y-auto">
             {filtered.map(tag => (
               <button key={tag.id} onClick={() => { applyTag(tag); setQuery(''); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-white/5"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-[var(--bg-hover)]"
                 style={{ color: 'var(--foreground-secondary)' }}>
                 <div className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                   style={{ background: tag.color || '#6b7280' }} />
@@ -138,7 +138,7 @@ export function TagPicker({ entityType, entityId, appliedTags, onTagsChange, com
 
             {canCreate && (
               <button onClick={createAndApply}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-white/5"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-[var(--bg-hover)]"
                 style={{ color: 'var(--accent)' }}>
                 <Plus size={12} />
                 Create "#{query.trim().toLowerCase().replace(/\s+/g, '-')}"

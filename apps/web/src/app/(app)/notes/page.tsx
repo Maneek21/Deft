@@ -38,6 +38,7 @@ import { EmojiPicker } from '@/components/emoji-picker';
 import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
 import { OverflowMenu } from '@/components/overflow-menu';
+import { AppBottomSheet } from '@/components/overlay-primitives';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -151,6 +152,14 @@ function timeAgo(dateStr: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function isCompactDisplayIcon(icon?: string | null) {
+  if (!icon) return false;
+  const trimmed = icon.trim();
+  if (!trimmed) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9_-]{2,}$/.test(trimmed)) return false;
+  return trimmed.length <= 8;
+}
+
 // ── Toolbar button ─────────────────────────────────────────
 // onMouseDown + preventDefault keeps editor focus before the TipTap command runs.
 // Using onClick caused a focus race where the editor lost focus before toggleX fired.
@@ -161,7 +170,7 @@ function TBtn({ active, onClick, children, title }: { active?: boolean; onClick:
       aria-label={title}
       title={title}
       onMouseDown={(e) => { e.preventDefault(); onClick(); }}
-      className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1.5 rounded transition-colors"
+      className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full transition-colors md:min-h-0 md:min-w-0 md:p-1.5"
       style={{ color: active ? 'var(--accent)' : 'var(--muted)', background: active ? 'var(--accent-subtle)' : 'transparent' }}>
       {children}
     </button>
@@ -172,17 +181,22 @@ function TBtn({ active, onClick, children, title }: { active?: boolean; onClick:
 function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
   const preview = getNotePreview(note.content);
   return (
-    <div onClick={onClick}
-      className="group p-4 rounded-lg cursor-pointer transition-all hover:shadow-sm"
-      style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
+    <button type="button" onClick={onClick}
+      className="group deft-soft-card w-full cursor-pointer p-3.5 text-left transition-all hover:shadow-sm md:p-4">
       <div className="flex items-start gap-2 mb-2">
-        {note.icon && <span className="text-[18px] flex-shrink-0">{note.icon}</span>}
+        {isCompactDisplayIcon(note.icon) ? (
+          <span className="text-[18px] flex-shrink-0">{note.icon}</span>
+        ) : (
+          <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md" style={{ background: 'var(--surface-container-high)', color: 'var(--muted)' }}>
+            <FileText size={13} />
+          </span>
+        )}
         <div className="flex-1 min-w-0">
-          <h3 className="text-[14px] font-semibold line-clamp-2 md:truncate"
+          <h3 className="text-[14px] font-semibold leading-snug line-clamp-2 md:truncate"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
             {note.title || 'Untitled'}
           </h3>
-          <p className="text-[12px] mt-1 line-clamp-2" style={{ color: 'var(--muted)', lineHeight: '1.5' }}>
+          <p className="text-[12px] mt-1 line-clamp-2" style={{ color: 'var(--muted)', lineHeight: '1.45' }}>
             {preview || 'Empty note'}
           </p>
         </div>
@@ -191,7 +205,7 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
         <span className="text-[11px]" style={{ color: 'var(--muted)' }}>{timeAgo(note.updated_at)}</span>
         {note.is_pinned && <Pin size={11} style={{ color: 'var(--accent)' }} />}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -543,7 +557,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           <button
             type="button"
             onClick={handleUndoDelete}
-            className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-auto md:min-w-auto md:px-2.5 md:py-1 text-[13px] font-semibold rounded-lg"
+            className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:px-2.5 md:py-1 text-[13px] font-semibold rounded-lg"
             style={{ background: 'var(--accent)', color: 'white' }}>
             Undo
           </button>
@@ -551,7 +565,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
       )}
 
       <div
-        className={`max-w-[700px] mx-auto px-6 py-6 ${pendingDelete ? 'opacity-40 pointer-events-none select-none' : ''}`}
+        className={`max-w-[700px] mx-auto px-4 py-4 md:px-6 md:py-6 ${pendingDelete ? 'opacity-40 pointer-events-none select-none' : ''}`}
         aria-hidden={pendingDelete}
       >
         {/* Top bar */}
@@ -747,10 +761,10 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
         </div>
 
         {/* Icon + Title */}
-        <div className="flex items-start gap-2 mb-4">
+        <div className="flex items-start gap-2.5 mb-4 md:gap-3">
           <div className="relative">
             <button ref={iconBtnRef} onClick={() => setIconPickerOpen(!iconPickerOpen)}
-              className="text-[28px] p-1 rounded-lg hover:bg-white/5 transition-colors leading-none"
+              className="text-[25px] md:text-[28px] p-1 rounded-lg hover:bg-[var(--bg-hover)] transition-colors leading-none"
               aria-label="Change icon"
               title="Change icon">
               {icon || '\uD83D\uDCC4'}
@@ -775,15 +789,15 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
           <input value={title} onChange={e => isOwner && handleTitleChange(e.target.value)}
             readOnly={!isOwner}
             placeholder="Untitled"
-            className="flex-1 text-[24px] font-bold bg-transparent outline-none mt-0.5"
-            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: '-0.02em', cursor: isOwner ? 'text' : 'default' }} />
+            className="min-w-0 flex-1 bg-transparent text-[22px] font-bold outline-none md:text-[24px]"
+            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', letterSpacing: 0, cursor: isOwner ? 'text' : 'default' }} />
         </div>
 
         {/* Editor with toolbar */}
-        <div className="rounded-lg overflow-hidden" style={{ background: 'var(--surface-container)' }}>
+        <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface-container)' }}>
           {editor && (
-            <div className="flex items-center gap-0.5 px-2 py-1.5 overflow-x-auto flex-nowrap"
-              style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="flex items-center gap-0.5 overflow-x-auto flex-nowrap px-1.5 py-1 md:px-2 md:py-1.5"
+              style={{ borderBottom: '1px solid var(--border)', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' } as React.CSSProperties}>
               <TBtn active={editor.isActive('heading', { level: 1 })}
                 onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="Heading 1">
                 <Heading1 size={15} />
@@ -853,7 +867,7 @@ function NoteEditor({ noteId, onBack, onDeleted }: { noteId: string; onBack: () 
               </TBtn>
             </div>
           )}
-          <div className="px-4 py-3 min-h-[calc(100vh-350px)]">
+          <div className="min-h-[calc(100vh-350px)] px-3.5 py-3 md:px-4">
             <EditorContent editor={editor} />
           </div>
           {/* Word count footer */}
@@ -1062,7 +1076,7 @@ export default function NotesPage() {
   // Inject mobile-only search input into AppHeader (hidden on desktop via md:hidden)
   useSetPageContext(
     activeId ? null : (
-      <div className="md:hidden flex items-center gap-2 flex-1 h-8 px-2 rounded-md"
+      <div className="md:hidden flex items-center gap-2 flex-1 h-8 px-3 rounded-full"
         style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
         <Search size={13} style={{ color: 'var(--muted)', flexShrink: 0 }} />
         <input
@@ -1132,7 +1146,7 @@ export default function NotesPage() {
   const newNoteButton = (
     <div className="relative">
       <button onClick={() => setShowTemplates(!showTemplates)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white"
+        className="deft-pill deft-pill-active min-h-[34px]"
         style={{ background: 'var(--accent)' }}>
         <Plus size={14} /> New Note
       </button>
@@ -1176,7 +1190,7 @@ export default function NotesPage() {
           // Mobile: hidden — search is in AppHeader; folder/icon live in ••• overflow menu
           <div className="hidden md:flex flex-col gap-2">
             {/* Search */}
-            <div className="flex items-center gap-2 px-3 h-9 rounded-lg"
+            <div className="flex items-center gap-2 px-3 h-9 rounded-full"
               style={{ background: 'var(--surface-container)', border: '1px solid var(--border)' }}>
               <Search size={14} style={{ color: 'var(--muted)' }} />
               <input value={search} onChange={e => setSearch(e.target.value)}
@@ -1187,19 +1201,19 @@ export default function NotesPage() {
             {/* Folder bar */}
             <div className="flex items-center gap-1 overflow-x-auto">
               <button onClick={() => setActiveFolderId(null)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+                className="deft-pill flex-shrink-0"
+                data-active={!activeFolderId}
                 style={{
                   background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
-                  color: !activeFolderId ? 'white' : 'var(--muted)',
                 }}>
                 All Notes
               </button>
               {folders.map(f => (
                 <button key={f.id} onClick={() => setActiveFolderId(f.id)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0 transition-colors"
+                  className="deft-pill flex-shrink-0"
+                  data-active={activeFolderId === f.id}
                   style={{
                     background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
-                    color: activeFolderId === f.id ? 'white' : 'var(--muted)',
                   }}>
                   <Folder size={11} /> {f.name}
                 </button>
@@ -1217,7 +1231,7 @@ export default function NotesPage() {
                 <button onClick={() => setShowNewFolder(true)}
                   aria-label="New folder"
                   title="New folder"
-                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] flex-shrink-0"
+                  className="deft-pill deft-pill-icon min-h-[30px] flex-shrink-0"
                   style={{ color: 'var(--muted)' }}>
                   <FolderPlus size={11} />
                 </button>
@@ -1226,7 +1240,7 @@ export default function NotesPage() {
               <div className="relative ml-auto">
                 <button ref={defaultIconBtnRef}
                   onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
-                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px]"
+                  className="deft-pill"
                   style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
                   title="Default icon for new notes">
                   <span className="text-[14px]">{currentDefault}</span>
@@ -1255,19 +1269,19 @@ export default function NotesPage() {
           {/* Compact folder chips — show first 2 + overflow */}
           <div className="flex items-center gap-1 flex-1 overflow-x-auto">
             <button onClick={() => setActiveFolderId(null)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0"
+              className="deft-pill flex-shrink-0"
+              data-active={!activeFolderId}
               style={{
                 background: !activeFolderId ? 'var(--accent)' : 'var(--surface-container)',
-                color: !activeFolderId ? 'white' : 'var(--muted)',
               }}>
               All Notes
             </button>
             {folders.map(f => (
               <button key={f.id} onClick={() => setActiveFolderId(f.id)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium flex-shrink-0"
+                className="deft-pill flex-shrink-0"
+                data-active={activeFolderId === f.id}
                 style={{
                   background: activeFolderId === f.id ? 'var(--accent)' : 'var(--surface-container)',
-                  color: activeFolderId === f.id ? 'white' : 'var(--muted)',
                 }}>
                 <Folder size={11} /> {f.name}
               </button>
@@ -1279,60 +1293,56 @@ export default function NotesPage() {
               onClick={() => setShowOverflow(!showOverflow)}
               aria-label="More options"
               title="More options"
-              className="flex items-center justify-center w-8 h-8 rounded-lg"
+              className="deft-pill deft-pill-icon min-h-[32px]"
               style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}>
               <MoreHorizontal size={16} />
             </button>
-            {showOverflow && (
-              <>
-                {/* Backdrop to close */}
-                <div className="fixed inset-0 z-40" onClick={() => setShowOverflow(false)} />
-                <div className="absolute right-0 top-full mt-1 w-52 py-1 rounded-lg z-50"
-                  style={{ background: 'var(--surface-container-highest)', boxShadow: 'var(--glass-shadow)', border: '1px solid var(--border)' }}>
-                  <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Folders</div>
-                  {showNewFolder ? (
-                    <div className="px-3 py-1.5">
-                      <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') { handleCreateFolder(); setShowOverflow(false); } if (e.key === 'Escape') setShowNewFolder(false); }}
-                        placeholder="Folder name..."
-                        autoFocus
-                        className="w-full px-2 py-1 rounded-md text-[11px] outline-none"
-                        style={{ background: 'var(--surface-container)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
-                    </div>
-                  ) : (
-                    <button onClick={() => setShowNewFolder(true)}
-                      className="flex items-center gap-2 px-3 py-2 text-[12px] w-full text-left"
-                      style={{ color: 'var(--foreground)' }}>
-                      <FolderPlus size={13} /> New folder
-                    </button>
-                  )}
-                  <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
-                  <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Default note icon</div>
-                  <div className="px-3 py-1.5 relative">
-                    <button ref={defaultIconBtnRef}
-                      onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
-                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[12px]"
-                      style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
-                      title="Default icon for new notes">
-                      <span className="text-[14px]">{currentDefault}</span>
-                      <Settings2 size={12} />
-                    </button>
-                    {defaultIconPickerOpen && (
-                      <EmojiPicker
-                        anchorRef={defaultIconBtnRef}
-                        onSelect={(emoji) => {
-                          setDefaultIcon(emoji);
-                          setCurrentDefault(emoji);
-                          setDefaultIconPickerOpen(false);
-                          setShowOverflow(false);
-                        }}
-                        onClose={() => setDefaultIconPickerOpen(false)}
-                      />
-                    )}
+            <AppBottomSheet open={showOverflow} onClose={() => setShowOverflow(false)} title="Notes options" mobileOnly>
+              <div className="px-2 pb-1">
+                <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Folders</div>
+                {showNewFolder ? (
+                  <div className="px-2 py-1.5">
+                    <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { handleCreateFolder(); setShowOverflow(false); } if (e.key === 'Escape') setShowNewFolder(false); }}
+                      placeholder="Folder name..."
+                      autoFocus
+                      className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
+                      style={{ background: 'var(--surface-container-high)', border: '1px solid var(--accent)', color: 'var(--foreground)' }} />
                   </div>
+                ) : (
+                  <button onClick={() => setShowNewFolder(true)}
+                    className="flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px]"
+                    style={{ color: 'var(--foreground)' }}>
+                    <FolderPlus size={15} /> New folder
+                  </button>
+                )}
+                <div className="my-1" style={{ borderTop: '1px solid var(--outline-variant)' }} />
+                <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>Default note icon</div>
+                <div className="px-2 py-1.5 relative">
+                  <button ref={defaultIconBtnRef}
+                    onClick={() => setDefaultIconPickerOpen(!defaultIconPickerOpen)}
+                    className="flex min-h-[44px] items-center gap-2 rounded-lg px-3 py-2 text-[13px]"
+                    style={{ color: 'var(--muted)', border: '1px solid var(--outline-variant)' }}
+                    title="Default icon for new notes">
+                    <span className="text-[16px]">{currentDefault}</span>
+                    <Settings2 size={14} />
+                    <span>Choose default icon</span>
+                  </button>
+                  {defaultIconPickerOpen && (
+                    <EmojiPicker
+                      anchorRef={defaultIconBtnRef}
+                      onSelect={(emoji) => {
+                        setDefaultIcon(emoji);
+                        setCurrentDefault(emoji);
+                        setDefaultIconPickerOpen(false);
+                        setShowOverflow(false);
+                      }}
+                      onClose={() => setDefaultIconPickerOpen(false)}
+                    />
+                  )}
                 </div>
-              </>
-            )}
+              </div>
+            </AppBottomSheet>
           </div>
         </div>
       </div>
@@ -1351,7 +1361,7 @@ export default function NotesPage() {
               Create your first note to start capturing ideas.
             </p>
             <button onClick={() => handleCreate()}
-              className="px-4 py-2 rounded-lg text-[13px] font-medium text-white"
+              className="deft-pill deft-pill-active min-h-[36px]"
               style={{ background: 'var(--accent)' }}>
               <Plus size={14} className="inline mr-1" /> Create Note
             </button>

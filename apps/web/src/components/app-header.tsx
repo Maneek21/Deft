@@ -35,13 +35,19 @@ export function AppHeader({
     setNotifOpen(!notifOpen);
   };
 
+  const notificationLabel = unreadNotifCount > 0
+    ? `Notifications, ${unreadNotifCount} unread`
+    : 'Notifications';
+
   return (
     <div className="h-12 flex items-center gap-3 px-4 flex-shrink-0" style={{ background: 'transparent' }}>
       {/* Mobile menu button */}
       {onMenuClick && (
         <button
           onClick={onMenuClick}
-          className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] -ml-1 rounded-lg"
+          aria-label="Open navigation"
+          title="Open navigation"
+          className="deft-icon-button -ml-1 md:hidden"
           style={{ color: 'var(--on-surface-variant)' }}
         >
           <Menu size={18} strokeWidth={1.5} />
@@ -55,7 +61,9 @@ export function AppHeader({
       {/* Search — full bar on desktop, icon-only on mobile */}
       <button
         onClick={handleSearchClick}
-        className="hidden md:flex items-center gap-2 px-3 h-8 rounded-lg cursor-pointer"
+        aria-label={placeholder.replace('... ⌘K', '')}
+        title={placeholder}
+        className="hidden md:flex items-center gap-2 px-3 h-8 rounded-full cursor-pointer"
         style={{ background: 'var(--surface-container-low)', minWidth: '200px' }}
       >
         <Search size={14} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
@@ -63,7 +71,9 @@ export function AppHeader({
       </button>
       <button
         onClick={handleSearchClick}
-        className="md:hidden flex items-center justify-center min-w-[44px] min-h-[44px] rounded-lg cursor-pointer"
+        aria-label={placeholder.replace('... ⌘K', '')}
+        title={placeholder}
+        className="deft-icon-button md:hidden cursor-pointer"
         style={{ color: 'var(--outline)' }}
       >
         <Search size={18} strokeWidth={1.5} />
@@ -84,9 +94,11 @@ export function AppHeader({
         <button
           ref={bellRef}
           onClick={handleNotifOpen}
-          aria-label="Notifications"
+          aria-label={notificationLabel}
+          aria-expanded={notifOpen}
+          aria-haspopup="dialog"
           title="Notifications"
-          className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md relative"
+          className="deft-icon-button relative md:min-h-8 md:min-w-8 md:rounded-lg"
           style={{ color: 'var(--outline)' }}
         >
           <Bell size={16} strokeWidth={1.5} />
