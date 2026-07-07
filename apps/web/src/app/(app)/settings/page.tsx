@@ -1,151 +1,136 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { useTheme } from '@/components/theme-provider';
 import { useAuth } from '@/lib/auth-context';
-import { Sun, Moon } from 'lucide-react';
-import { TabStrip } from '@/components/tab-strip';
+import { settingsNavGroups } from '@/lib/settings-navigation';
+import { Bot, CalendarDays, Code2, Moon, Settings2, Sun, User, Users, Workflow } from 'lucide-react';
 
-const settingsSections = [
-  { name: 'General', href: '/settings' },
-  { name: 'Profile', href: '/settings/profile' },
-  { name: 'Members', href: '/settings/members' },
-  { name: 'Teams', href: '/settings/teams' },
-  { name: 'Groups', href: '/settings/groups' },
-  { name: 'Projects', href: '/settings/projects' },
-  { name: 'Tags', href: '/settings/tags' },
-  { name: 'Integrations', href: '/settings/integrations' },
-  { name: 'AI', href: '/settings/ai' },
-  { name: 'Calendar', href: '/settings/calendar' },
-  { name: 'Agent', href: '/settings/agent' },
-  { name: 'Agent Employees', href: '/settings/agent-employees' },
-  { name: 'MCP Access', href: '/settings/mcp-access' },
-  { name: 'API Access', href: '/settings/api-access' },
-];
+const groupIcons = {
+  Personal: User,
+  Workspace: Users,
+  'Work System': Workflow,
+  'Agents & AI': Bot,
+  Developer: Code2,
+} as const;
 
 export default function SettingsPage() {
   const { theme, toggleTheme } = useTheme();
-  const { user } = useAuth();
-  const pathname = usePathname();
+  const { user, org } = useAuth();
 
-  const themes: { value: 'light' | 'dark'; label: string; icon: React.ReactNode }[] = [
-    { value: 'light', label: 'Light', icon: <Sun size={18} strokeWidth={1.5} /> },
-    { value: 'dark', label: 'Dark', icon: <Moon size={18} strokeWidth={1.5} /> },
-  ];
-
-  const currentTheme = theme; // 'light' or 'dark' from the provider
+  const currentTheme = theme;
 
   return (
     <div className="h-full overflow-y-auto">
-      {/* Mobile sub-navigation — only visible below md breakpoint */}
-      <div className="md:hidden px-4 pt-4 pb-0">
-        <TabStrip>
-          {settingsSections.map((section) => {
-            const active = pathname === section.href;
+      <div className="mx-auto max-w-6xl px-5 py-8 md:px-8 md:py-10">
+        <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.06em]" style={{ background: 'var(--surface-container-low)', color: 'var(--text-secondary)' }}>
+              <Settings2 size={13} />
+              Workspace controls
+            </div>
+            <h1 className="text-[30px] font-semibold tracking-tight md:text-[36px]" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+              Settings
+            </h1>
+            <p className="mt-2 max-w-2xl text-[15px] leading-6" style={{ color: 'var(--text-secondary)' }}>
+              Manage your profile, people, teams, agents, calendar feeds, templates, and developer access from one place.
+            </p>
+          </div>
+
+          <div className="deft-soft-card p-4 lg:min-w-[280px]">
+            <div className="flex items-center gap-3">
+              {user?.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={user.avatar_url} alt="" className="h-11 w-11 rounded-full object-cover" />
+              ) : (
+                <div className="flex h-11 w-11 items-center justify-center rounded-full text-[15px] font-semibold text-white" style={{ background: 'var(--accent)' }}>
+                  {user?.name?.charAt(0).toUpperCase() || '?'}
+                </div>
+              )}
+              <div className="min-w-0">
+                <div className="truncate text-[14px] font-semibold" style={{ color: 'var(--foreground)' }}>{user?.name || 'Unknown user'}</div>
+                <div className="truncate text-[12px]" style={{ color: 'var(--text-tertiary)' }}>{org?.name || user?.email || 'Workspace'}</div>
+              </div>
+            </div>
+            <Link href="/settings/profile" className="deft-pill mt-3" style={{ color: 'var(--accent)' }}>
+              Edit profile
+            </Link>
+          </div>
+        </header>
+
+        <section className="mb-8 grid gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (currentTheme !== 'light') toggleTheme();
+            }}
+            className="deft-soft-card flex items-center gap-3 p-4 text-left transition-colors"
+            style={{
+              background: currentTheme === 'light' ? 'var(--accent-subtle)' : 'var(--card-bg)',
+              border: `1px solid ${currentTheme === 'light' ? 'var(--accent)' : 'var(--border)'}`,
+            }}
+          >
+            <Sun size={18} style={{ color: currentTheme === 'light' ? 'var(--accent)' : 'var(--text-secondary)' }} />
+            <div>
+              <div className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>Light mode</div>
+              <div className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Use a brighter interface.</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (currentTheme !== 'dark') toggleTheme();
+            }}
+            className="deft-soft-card flex items-center gap-3 p-4 text-left transition-colors"
+            style={{
+              background: currentTheme === 'dark' ? 'var(--accent-subtle)' : 'var(--card-bg)',
+              border: `1px solid ${currentTheme === 'dark' ? 'var(--accent)' : 'var(--border)'}`,
+            }}
+          >
+            <Moon size={18} style={{ color: currentTheme === 'dark' ? 'var(--accent)' : 'var(--text-secondary)' }} />
+            <div>
+              <div className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>Dark mode</div>
+              <div className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Use the focused workspace theme.</div>
+            </div>
+          </button>
+        </section>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          {settingsNavGroups.map((group) => {
+            const Icon = groupIcons[group.label as keyof typeof groupIcons] || CalendarDays;
             return (
-              <Link
-                key={section.href}
-                href={section.href}
-                className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
-                style={{
-                  background: active ? 'var(--accent)' : 'var(--surface-container-low)',
-                  color: active ? 'white' : 'var(--text-secondary)',
-                }}
-              >
-                {section.name}
-              </Link>
+              <section key={group.label} className="deft-soft-card p-5">
+                <div className="mb-4 flex items-start gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: 'var(--surface-container-low)', color: 'var(--accent)' }}>
+                    <Icon size={17} />
+                  </div>
+                  <div>
+                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>{group.label}</h2>
+                    <p className="mt-1 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{group.description}</p>
+                  </div>
+                </div>
+                <div>
+                  {group.items.map((item, index) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className="group flex items-center justify-between gap-4 py-3"
+                      style={{ borderTop: index === 0 ? 'none' : '1px solid var(--outline-variant)' }}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>{item.name}</div>
+                        <div className="mt-0.5 text-[12px] leading-5" style={{ color: 'var(--text-tertiary)' }}>{item.description}</div>
+                      </div>
+                      <span className="text-[12px] transition-transform group-hover:translate-x-0.5" style={{ color: 'var(--accent)' }}>
+                        Open
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              </section>
             );
           })}
-        </TabStrip>
-      </div>
-
-      <div className="max-w-2xl mx-auto px-6 py-10">
-        {/* Profile Section */}
-        <section className="mb-10">
-          <h2 className="eyebrow mb-4" style={{ fontFamily: 'var(--font-heading)' }}>
-            Profile
-          </h2>
-          <div
-            className="rounded-xl p-5"
-            style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
-          >
-            <div className="flex items-center gap-4">
-              <div
-                className="w-12 h-12 rounded-full flex items-center justify-center text-lg font-medium text-white"
-                style={{ background: 'var(--accent)' }}
-              >
-                {user?.name?.charAt(0).toUpperCase() || '?'}
-              </div>
-              <div>
-                <p
-                  className="text-[15px] font-medium"
-                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-                >
-                  {user?.name || 'Unknown'}
-                </p>
-                <p className="text-[13px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                  {user?.email || 'No email'}
-                </p>
-                <Link
-                  href="/settings/profile"
-                  className="inline-flex mt-2 text-[12px] font-medium"
-                  style={{ color: 'var(--accent)' }}
-                >
-                  Edit profile
-                </Link>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Appearance Section */}
-        <section className="mb-10">
-          <h2 className="eyebrow mb-4" style={{ fontFamily: 'var(--font-heading)' }}>
-            Appearance
-          </h2>
-          <div
-            className="rounded-xl p-5"
-            style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
-          >
-            <p className="text-[14px] mb-4" style={{ color: 'var(--foreground-secondary)' }}>
-              Choose your preferred theme
-            </p>
-            <div className="flex gap-3">
-              {themes.map((t) => {
-                const isActive = t.value === currentTheme;
-
-                return (
-                  <button
-                    key={t.value}
-                    onClick={() => {
-                      if (currentTheme !== t.value) {
-                        toggleTheme();
-                      }
-                    }}
-                    className="flex flex-col items-center gap-2 px-5 py-4 rounded-xl transition-colors"
-                    style={{
-                      background: isActive ? 'var(--accent-light, rgba(124,107,79,0.12))' : 'var(--surface)',
-                      border: `1.5px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,
-                      color: isActive ? 'var(--accent)' : 'var(--muted)',
-                    }}
-                  >
-                    {t.icon}
-                    <span
-                      className="text-[13px] font-medium"
-                      style={{
-                        color: isActive ? 'var(--accent)' : 'var(--foreground-secondary)',
-                        fontFamily: 'var(--font-heading)',
-                      }}
-                    >
-                      {t.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </section>
+        </div>
       </div>
     </div>
   );

@@ -64,6 +64,8 @@ export default function TagsPage() {
   const [selectedTag, setSelectedTag] = useState<Tag | null>(null);
   const [entities, setEntities] = useState<ResolvedEntity[]>([]);
   const [loadingEntities, setLoadingEntities] = useState(false);
+  const totalTaggedItems = tags.reduce((sum, tag) => sum + tag.count, 0);
+  const activeTags = tags.filter((tag) => tag.count > 0).length;
 
   const loadTags = useCallback(async () => {
     const res = await api.get('/api/tags');
@@ -133,7 +135,7 @@ export default function TagsPage() {
               Tags
             </h1>
             <p className="text-[13px] mt-0.5" style={{ color: 'var(--muted)' }}>
-              {tags.length} tag{tags.length !== 1 ? 's' : ''} across your workspace
+              Keep cross-surface labels consistent across tasks, messages, and notes.
             </p>
           </div>
           {!creating && (
@@ -143,6 +145,12 @@ export default function TagsPage() {
               <Plus size={14} /> New Tag
             </button>
           )}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 mb-6">
+          <TagStat label="Tags" value={tags.length} />
+          <TagStat label="Tagged items" value={totalTaggedItems} />
+          <TagStat label="In use" value={activeTags} />
         </div>
 
         {/* Create tag */}
@@ -180,7 +188,7 @@ export default function TagsPage() {
             <TagIcon size={36} style={{ color: 'var(--muted)', opacity: 0.3 }} className="mx-auto mb-3" />
             <p className="text-[14px] mb-1" style={{ color: 'var(--muted)' }}>No tags yet</p>
             <p className="text-[12px]" style={{ color: 'var(--muted)', opacity: 0.7 }}>
-              Create tags to organize tasks, messages, and notes across your workspace.
+              Start with a few durable labels like launch, customer, blocked, or urgent.
             </p>
           </div>
         ) : (
@@ -202,10 +210,11 @@ export default function TagsPage() {
                       <span className="text-[13px] font-medium block truncate"
                         style={{ color: 'var(--foreground)' }}>#{tag.name}</span>
                     </div>
-                    <span className="text-[11px] tabular-nums flex-shrink-0 group-hover:hidden"
+                    <span className="text-[11px] tabular-nums flex-shrink-0"
                       style={{ color: 'var(--muted)' }}>{tag.count}</span>
                     <button onClick={(e) => handleDelete(tag.id, e)}
-                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      aria-label={`Delete tag ${tag.name}`}
+                      className="p-0.5 rounded opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
                       style={{ color: 'var(--muted)' }}>
                       <X size={13} />
                     </button>
@@ -251,7 +260,7 @@ export default function TagsPage() {
                       return (
                         <div key={entity.id}
                           onClick={() => navigateToEntity(entity)}
-                          className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-white/[0.03] transition-colors"
+                          className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
                           style={{ borderBottom: '1px solid var(--border)' }}>
                           {entity.entity_type === 'task' && entity.status ? (
                             entity.status === 'done' ? (
@@ -286,6 +295,20 @@ export default function TagsPage() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function TagStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div
+      className="rounded-xl px-3 py-3"
+      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
+    >
+      <p className="text-[20px] font-semibold tabular-nums" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}>
+        {value}
+      </p>
+      <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>{label}</p>
     </div>
   );
 }

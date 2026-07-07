@@ -293,8 +293,36 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
       topic: spaces.topic,
       type: spaces.type,
       is_archived: spaces.is_archived,
-    }).from(spaces).where(and(eq(spaces.org_id, access.org_id), inArray(spaces.id, spaceIds)));
-    rows.forEach((row) => put('space', row.id, row));
+      membership_id: spaceMembers.id,
+    })
+      .from(spaces)
+      .leftJoin(
+        spaceMembers,
+        and(eq(spaceMembers.space_id, spaces.id), eq(spaceMembers.user_id, access.user_id ?? '__no_user__')),
+      )
+      .where(and(eq(spaces.org_id, access.org_id), inArray(spaces.id, spaceIds)));
+    rows.forEach((row) => {
+      const canRead = row.type === 'public' || Boolean(row.membership_id);
+      if (canRead) {
+        put('space', row.id, {
+          id: row.id,
+          name: row.name,
+          description: row.description,
+          topic: row.topic,
+          type: row.type,
+          is_archived: row.is_archived,
+          access: 'visible',
+        });
+        return;
+      }
+      put('space', row.id, {
+        id: row.id,
+        type: row.type,
+        is_archived: row.is_archived,
+        access: 'restricted',
+        restricted_reason: 'space_membership_required',
+      });
+    });
   }
 
   const projectIds = idsByType.get('project') ?? [];
@@ -384,14 +412,20 @@ async function enrichResources(access: TeamAccessContext, teamId: string) {
     rows.forEach((row) => put('agent_employee', row.id, row));
   }
 
-  return resources.map((row) => ({
-    id: row.id,
-    type: row.resource_type,
-    resource_id: row.resource_id,
-    label: row.label,
-    created_at: row.created_at,
-    metadata: metadata.get(`${row.resource_type}:${row.resource_id}`) ?? null,
-  }));
+  return resources.map((row) => {
+    const rowMetadata = metadata.get(`${row.resource_type}:${row.resource_id}`) ?? null;
+    const restricted = row.resource_type === 'space' && rowMetadata?.access === 'restricted';
+    return {
+      id: row.id,
+      type: row.resource_type,
+      resource_id: row.resource_id,
+      label: restricted ? null : row.label,
+      access: restricted ? 'restricted' : 'visible',
+      restricted_reason: restricted ? 'space_membership_required' : null,
+      created_at: row.created_at,
+      metadata: rowMetadata,
+    };
+  });
 }
 
 async function allowedSpaceIds(access: TeamAccessContext, spaceIds: string[]): Promise<string[]> {

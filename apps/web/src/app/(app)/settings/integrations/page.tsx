@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Link from 'next/link';
-import { CalendarDays, ChevronDown, ChevronRight, Globe, RefreshCw, Trash2, Zap, Plug } from 'lucide-react';
+import { Bot, CalendarDays, ChevronDown, ChevronRight, Globe, RefreshCw, Trash2, Zap, Plug, Users } from 'lucide-react';
 import McpConnectionForm from '@/components/mcp-connection-form';
 
 
@@ -175,6 +175,12 @@ export default function IntegrationsPage() {
       <p className="text-[0.8125rem] mb-6" style={{ color: 'var(--outline)' }}>
         Connect calendar feeds and MCP-compatible tool servers. Agent employees can bring their own external tools through MCP.
       </p>
+
+      <div className="grid gap-3 md:grid-cols-3 mb-6">
+        <IntegrationRoute icon={CalendarDays} title="Calendar feeds" body="Subscribe to ICS calendars and publish your Deft task feed." href="/settings/calendar" />
+        <IntegrationRoute icon={Bot} title="Personal AI apps" body="Connect Claude, Codex, and other MCP clients as yourself." href="/settings/mcp-access" />
+        <IntegrationRoute icon={Users} title="Shared agents" body="Onboard agent employees for the whole workspace." href="/settings/agent-employees" />
+      </div>
 
       {/* Calendar feeds */}
       <div className="mb-6 p-4 rounded-lg"
@@ -500,5 +506,29 @@ export default function IntegrationsPage() {
       )}
     </div>
     </div>
+  );
+}
+
+function IntegrationRoute({
+  icon: Icon,
+  title,
+  body,
+  href,
+}: {
+  icon: typeof CalendarDays;
+  title: string;
+  body: string;
+  href: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="rounded-xl p-4"
+      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
+    >
+      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
+      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
+      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
+    </Link>
   );
 }

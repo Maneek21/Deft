@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import useSWR from 'swr';
-import { Loader2, Layers, FileStack, X, ChevronRight, CheckCircle2 } from 'lucide-react';
+import { Loader2, Layers, FileStack, X, ChevronRight, CheckCircle2, Sparkles } from 'lucide-react';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
-import { TabStrip } from '@/components/tab-strip';
 
 const fetcher = async (url: string) => {
   const res = await api.get(url);
@@ -601,8 +600,8 @@ export default function LibraryPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <PageHeader
-        title="Task Templates"
-        description="Browse repeatable task templates and apply them to projects."
+        title="Templates"
+        description="Turn repeatable work into ready-made task sets that can be applied to any project."
         compact
       />
 
@@ -692,6 +691,22 @@ export default function LibraryPage() {
       {/* Templates tab */}
       {tab === 'templates' && (
         <div className="flex-1 overflow-y-auto space-y-2 px-4 md:px-6 pb-4">
+          <div
+            className="rounded-xl p-4 mb-3"
+            style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}
+          >
+            <div className="flex items-start gap-3">
+              <Sparkles size={16} strokeWidth={1.75} className="mt-0.5" style={{ color: 'var(--accent)' }} />
+              <div>
+                <p className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>
+                  Templates create normal tasks
+                </p>
+                <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--text-secondary)' }}>
+                  Apply a template to a project, then manage the created tasks through the regular board, list, and workflow surfaces.
+                </p>
+              </div>
+            </div>
+          </div>
           {templatesErr && (
             <p className="text-[13px]" style={{ color: '#EF4444' }}>
               Failed to load templates.

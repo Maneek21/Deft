@@ -5,7 +5,7 @@
 // and action checkboxes (add_comment / assign_to / add_label / notify).
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { Loader2, Plus, Trash2, Zap, X } from 'lucide-react';
+import { Bell, CheckSquare, Loader2, MessageSquare, Plus, Tags, Trash2, Zap, X } from 'lucide-react';
 
 type WorkflowRule = {
   id: string;
@@ -146,7 +146,7 @@ export default function WorkflowsPage() {
               Workflows
             </h1>
             <p className="lede mt-0.5">
-              Automate simple rules like "when a task moves to Done, add the <em>shipped</em> label."
+              Run deterministic task automations for simple, repeatable handoffs.
             </p>
           </div>
           {!creating && (
@@ -156,6 +156,12 @@ export default function WorkflowsPage() {
               <Plus size={14} /> New workflow
             </button>
           )}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3 mb-6">
+          <WorkflowNote icon={CheckSquare} title="Task-triggered" body="Rules run when task status changes to a selected state." />
+          <WorkflowNote icon={MessageSquare} title="Native actions" body="Add comments, labels, assignees, or notifications without leaving Deft." />
+          <WorkflowNote icon={Bell} title="Quiet automation" body="Best for small operational nudges, not complex agent plans." />
         </div>
 
         {creating && (
@@ -258,8 +264,15 @@ export default function WorkflowsPage() {
             <Loader2 size={22} className="animate-spin" style={{ color: 'var(--muted)' }} />
           </div>
         ) : rules.length === 0 ? (
-          <div className="py-16 text-center text-[13px]" style={{ color: 'var(--muted)' }}>
-            No workflows yet. Create one to automate simple status-change actions.
+          <div
+            className="py-14 px-6 text-center rounded-xl"
+            style={{ background: 'var(--surface-container-low)', border: '1px dashed var(--border-default, var(--outline-variant))' }}
+          >
+            <Zap size={28} className="mx-auto mb-3" style={{ color: 'var(--muted)' }} />
+            <p className="text-[13px] font-medium" style={{ color: 'var(--foreground)' }}>No workflows yet.</p>
+            <p className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>
+              Start with a small rule like adding a label or notifying a lead when work moves to review.
+            </p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -301,6 +314,27 @@ export default function WorkflowsPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function WorkflowNote({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Tags;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default, var(--outline-variant))' }}
+    >
+      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
+      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--foreground)' }}>{title}</p>
+      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--muted)' }}>{body}</p>
     </div>
   );
 }

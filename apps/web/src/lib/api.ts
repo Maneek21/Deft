@@ -153,8 +153,11 @@ class ApiClient {
     });
   }
 
-  async delete(path: string) {
-    return this.fetch(path, { method: 'DELETE' });
+  async delete(path: string, body?: unknown) {
+    return this.fetch(path, {
+      method: 'DELETE',
+      body: body ? JSON.stringify(body) : undefined,
+    });
   }
 
   async upload(path: string, file: File): Promise<Response> {

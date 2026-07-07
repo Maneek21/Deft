@@ -298,12 +298,17 @@ export default function AgentSettingsPage() {
   return (
     <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[900px]">
-      <h2
-        className="text-[18px] font-semibold mb-6"
-        style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-      >
-        Agent Settings
-      </h2>
+      <div className="mb-6">
+        <h2
+          className="text-[18px] font-semibold"
+          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+        >
+          Agent governance
+        </h2>
+        <p className="text-[12px] mt-1 max-w-[640px]" style={{ color: 'var(--muted)' }}>
+          Set global trust rails for Defty and shared agent employees, then review approvals, receipts, and agent health from one place.
+        </p>
+      </div>
 
       {/* Approvals moved banner */}
       <div
