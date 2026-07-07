@@ -294,6 +294,7 @@ input:focus, textarea:focus {
 
 .deft-pill {
   display: inline-flex;
+  flex: 0 0 auto;
   min-height: 30px;
   align-items: center;
   justify-content: center;
@@ -308,6 +309,10 @@ input:focus, textarea:focus {
   line-height: 1;
   white-space: nowrap;
   transition: opacity 150ms cubic-bezier(0.16, 1, 0.3, 1), background-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.deft-pill > svg {
+  flex-shrink: 0;
 }
 
 .deft-pill:hover { opacity: 0.88; }
