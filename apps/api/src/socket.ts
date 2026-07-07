@@ -3,10 +3,11 @@ import type { Server as HTTPServer } from 'node:http';
 import jwt from 'jsonwebtoken';
 import { env } from './lib/env.js';
 import { db } from './lib/db.js';
-import { users, spaceMembers, spaces, notifications } from '@deft/db/schema';
+import { users, spaceMembers, spaces } from '@deft/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
 import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
+import { createNotificationIfAllowed } from './lib/notification-policy.js';
 
 function updateLastSeen(userId: string) {
   db.update(users).set({ last_seen_at: new Date() }).where(eq(users.id, userId)).catch(() => {});
@@ -202,21 +203,14 @@ export function setupSocket(server: HTTPServer) {
           // Get all space members except creator
           const members = await db.select({
             user_id: spaceMembers.user_id,
-            is_muted: spaceMembers.is_muted,
-            status_text: users.status_text,
           }).from(spaceMembers)
-            .innerJoin(users, eq(spaceMembers.user_id, users.id))
             .where(and(
               eq(spaceMembers.space_id, data.space_id),
               ne(spaceMembers.user_id, user.id),
             ));
 
           for (const member of members) {
-            if (member.is_muted) continue;
-            if (member.status_text === 'Do Not Disturb') continue;
-
-            // Create notification record
-            await db.insert(notifications).values({
+            const notification = await createNotificationIfAllowed({
               org_id: user.org_id,
               user_id: member.user_id,
               type: 'huddle_started',
@@ -224,7 +218,13 @@ export function setupSocket(server: HTTPServer) {
               body: `#${spaceName}`,
               link: `/chat?space=${data.space_id}`,
               metadata: { huddle_id: id, space_id: data.space_id },
-            }).catch(() => {});
+            }, {
+              channel: 'chat',
+              spaceId: data.space_id,
+              isMention: false,
+              respectDnd: true,
+            }).catch(() => null);
+            if (!notification) continue;
 
             // Emit ring event
             emitToUser(member.user_id, 'huddle:ring', {
@@ -237,11 +237,7 @@ export function setupSocket(server: HTTPServer) {
             });
 
             // Also emit notification:new for badge count
-            emitToUser(member.user_id, 'notification:new', {
-              type: 'huddle_started',
-              title: `${creatorName} started a huddle`,
-              body: `#${spaceName}`,
-            });
+            emitToUser(member.user_id, 'notification:new', notification);
           }
         } catch (err) {
           console.error('Failed to send huddle rings:', err);

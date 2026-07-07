@@ -120,9 +120,22 @@ function buildDiscussionTaskFallbackAction(params: {
   };
 }
 
-function isDiscussionTaskCommand(content: string): boolean {
-  return /\b(?:create|make|draft|turn|convert|summari[sz]e)\b.{0,80}\b(?:tasks?|todos?|tickets?)\b/i.test(content) &&
-    /\b(?:discussion|thread|chat|conversation|above|this)\b/i.test(content);
+export function isDiscussionTaskCommand(content: string): boolean {
+  const plain = toPlainText(content);
+  const positiveMatch =
+    /\b(?:create|make|draft|turn|convert)\b.{0,80}\b(?:tasks?|todos?|tickets?)\b/i.exec(plain) ??
+    /\bsummari[sz]e\b.{0,80}\b(?:into|as)\b.{0,30}\b(?:tasks?|todos?|tickets?)\b/i.exec(plain);
+  if (!positiveMatch) return false;
+
+  // A lot of real user prompts ask Defty to summarize a discussion while
+  // explicitly saying "do not create tasks yet". The old detector saw the
+  // words "create tasks" and queued a fallback action anyway. Only suppress
+  // the command when the negation owns the first task-creation phrase; still
+  // allow prompts like "create one task, but don't create duplicates".
+  const negatedCreationMatch = /\b(?:do\s+not|don't|dont|never|without|avoid|no\s+need\s+to)\s+(?:\S+\s+){0,6}?(?:create|creating|make|making|add|adding|open|opening|turn|turning|convert|converting|draft|drafting)\s+(?:\S+\s+){0,6}?(?:tasks?|todos?|tickets?)\b/i.exec(plain);
+  if (negatedCreationMatch && negatedCreationMatch.index <= positiveMatch.index) return false;
+
+  return /\b(?:discussion|thread|chat|conversation|above|this)\b/i.test(plain);
 }
 
 function isDiscussionBoundaryMessage(content: string): boolean {

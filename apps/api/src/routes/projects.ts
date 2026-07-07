@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, gt, sql, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskLabels, labels, users, taskActivity, notifications } from '@deft/db/schema';
+import { projects, tasks, taskLabels, labels, users, taskActivity } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
@@ -11,6 +11,7 @@ import {
 } from '../lib/project-resolved-config.js';
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
+import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 
 export const projectRoutes = new Hono();
 
@@ -653,15 +654,17 @@ projectRoutes.post('/:id/tasks', async (c) => {
       try {
         const [creatorUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)).limit(1);
         const taskId_str = `${project!.prefix}-${taskNumber}`;
-        await db.insert(notifications).values({
+        const notification = await createNotificationIfAllowed({
           org_id: user.org_id,
           user_id: task!.assignee_id,
           type: 'task_assigned',
           title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
           body: task!.title,
           link: `/tasks?task=${taskId_str}`,
-        });
-        emitToUser(task!.assignee_id, 'notification:new', { type: 'task_assigned', title: `New task: ${taskId_str}` });
+        }, { channel: 'tasks' });
+        if (notification) {
+          emitToUser(task!.assignee_id, 'notification:new', notification);
+        }
       } catch {}
     }
 

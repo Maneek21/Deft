@@ -4,11 +4,11 @@ import { db } from '../../lib/db.js';
 import {
   tasks,
   projects,
-  notifications,
   duplicateFlags,
 } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 /** Split a title into normalized words for comparison */
 function tokenize(title: string): Set<string> {
@@ -126,23 +126,20 @@ export async function handleDuplicateDetect(job: JobData): Promise<void> {
         const message = `Possible duplicate: ${newIdentifier} '${title}' may overlap with ${existingIdentifier} '${existing.title}'`;
 
         // Notify the creator of the new task
-        const [notification] = await db
-          .insert(notifications)
-          .values({
-            org_id: orgId,
-            user_id: newTask.created_by,
-            type: 'agent_suggestion',
-            title: 'Possible Duplicate Task',
-            body: message,
-            link: `/tasks?task=${newIdentifier}`,
-            metadata: {
-              nudge_type: 'duplicate_detected',
-              new_task_id: taskId,
-              existing_task_id: existing.id,
-              similarity: Math.round(similarity * 100),
-            },
-          })
-          .returning();
+        const notification = await createNotificationIfAllowed({
+          org_id: orgId,
+          user_id: newTask.created_by,
+          type: 'agent_suggestion',
+          title: 'Possible Duplicate Task',
+          body: message,
+          link: `/tasks?task=${newIdentifier}`,
+          metadata: {
+            nudge_type: 'duplicate_detected',
+            new_task_id: taskId,
+            existing_task_id: existing.id,
+            similarity: Math.round(similarity * 100),
+          },
+        }, { channel: 'tasks' });
 
         if (notification) {
           emitToUser(newTask.created_by, 'notification:new', notification);

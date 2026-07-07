@@ -11,10 +11,11 @@
  */
 import { and, eq, isNull, or, gt, sql } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
-import { reminders, notifications } from '@deft/db/schema';
+import { reminders } from '@deft/db/schema';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { JobData } from '../types.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 export type ReminderFirePayload = { reminderId: string };
 
@@ -37,19 +38,16 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
   }
 
   // Insert the notification.
-  const [notif] = await db
-    .insert(notifications)
-    .values({
-      org_id: reminder.org_id,
-      user_id: reminder.user_id,
-      type: 'reminder',
-      title: reminder.message.slice(0, 200),
-      link: reminder.source_message_id
-        ? `/chat?message=${reminder.source_message_id}`
-        : undefined,
-      metadata: { reminder_id: reminder.id },
-    })
-    .returning();
+  const notif = await createNotificationIfAllowed({
+    org_id: reminder.org_id,
+    user_id: reminder.user_id,
+    type: 'reminder',
+    title: reminder.message.slice(0, 200),
+    link: reminder.source_message_id
+      ? `/chat?message=${reminder.source_message_id}`
+      : undefined,
+    metadata: { reminder_id: reminder.id },
+  }, { channel: 'calendar' });
 
   // Mark the reminder fired.
   await db

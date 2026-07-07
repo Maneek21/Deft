@@ -6,13 +6,13 @@ import {
   projects,
   users,
   spaces,
-  notifications,
   agentNudges,
   taskRelationships,
 } from '@deft/db/schema';
 import { eq, and, gte } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 export async function handleBlockedAlert(job: JobData): Promise<void> {
   const { messageId, spaceId, content, orgId, userId } = job.data;
@@ -123,22 +123,19 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
       const message = `${userName} may be blocked — '${contentSnippet}' (in #${spaceName})`;
 
       // Create notification
-      const [notification] = await db
-        .insert(notifications)
-        .values({
-          org_id: orgId,
-          user_id: targetUserId,
-          type: 'agent_suggestion',
-          title: 'Blocked Team Member',
-          body: message,
-          link: `/spaces/${spaceId}?message=${messageId}`,
-          metadata: {
-            task_id: task.id,
-            nudge_type: 'blocked',
-            blocking_deps: blockingDeps.map((d) => d.source_task_id),
-          },
-        })
-        .returning();
+      const notification = await createNotificationIfAllowed({
+        org_id: orgId,
+        user_id: targetUserId,
+        type: 'agent_suggestion',
+        title: 'Blocked Team Member',
+        body: message,
+        link: `/spaces/${spaceId}?message=${messageId}`,
+        metadata: {
+          task_id: task.id,
+          nudge_type: 'blocked',
+          blocking_deps: blockingDeps.map((d) => d.source_task_id),
+        },
+      }, { channel: 'agents', spaceId, isMention: false });
 
       // Insert nudge record for deduplication
       await db.insert(agentNudges).values({

@@ -6,7 +6,6 @@ import {
   agentEmployees,
   events,
   meetingBriefs,
-  notifications,
   tasks,
   messages,
   spaces,
@@ -17,6 +16,7 @@ import { eq, and, gte, lt, sql, desc, inArray } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 const MEETING_PREP_TRIGGER_KIND = 'cron:meeting-prep';
 
@@ -292,18 +292,15 @@ export async function handleMeetingPrepCheck(_job: JobData): Promise<void> {
       });
 
       // 2g. Create notification
-      const [notification] = await db
-        .insert(notifications)
-        .values({
-          org_id: meeting.org_id,
-          user_id: meeting.user_id,
-          type: 'system',
-          title: `Meeting prep: ${meeting.title}`,
-          body: briefText,
-          link: `/dashboard`,
-          metadata: { event_id: meeting.id },
-        })
-        .returning();
+      const notification = await createNotificationIfAllowed({
+        org_id: meeting.org_id,
+        user_id: meeting.user_id,
+        type: 'system',
+        title: `Meeting prep: ${meeting.title}`,
+        body: briefText,
+        link: `/dashboard`,
+        metadata: { event_id: meeting.id },
+      }, { channel: 'calendar' });
 
       // 2h. Emit via socket
       if (notification) {

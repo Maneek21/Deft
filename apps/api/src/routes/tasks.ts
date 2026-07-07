@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, notifications, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -15,6 +15,7 @@ import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
 import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
+import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 
 export const taskRoutes = new Hono();
 
@@ -305,7 +306,7 @@ async function dispatchMentionNotifications(params: {
 
   for (const userId of mentionedIds) {
     try {
-      await db.insert(notifications).values({
+      const notification = await createNotificationIfAllowed({
         org_id: orgId,
         user_id: userId,
         type: 'mention',
@@ -313,8 +314,10 @@ async function dispatchMentionNotifications(params: {
         body: snippet,
         link,
         metadata: { task_id: taskId, surface },
-      });
-      emitToUser(userId, 'notification:new', { type: 'mention', title: `Mention on ${taskRef}` });
+      }, { channel: 'tasks', isMention: true });
+      if (notification) {
+        emitToUser(userId, 'notification:new', notification);
+      }
     } catch (err) {
       console.error('Failed to create mention notification:', err);
     }
@@ -593,7 +596,7 @@ taskRoutes.patch('/bulk', async (c) => {
     // deep-link to the filtered list.
     if (nextAssigneeId && nextAssigneeId !== user.id && task_ids.length >= 3) {
       try {
-        await db.insert(notifications).values({
+        const notification = await createNotificationIfAllowed({
           org_id: user.org_id,
           user_id: nextAssigneeId,
           type: 'task_assigned',
@@ -601,11 +604,10 @@ taskRoutes.patch('/bulk', async (c) => {
           body: null,
           link: `/tasks?mine=1`,
           metadata: { task_ids, grouped: true, kind: 'bulk_assign' },
-        });
-        emitToUser(nextAssigneeId, 'notification:new', {
-          type: 'task_assigned',
-          title: `You were assigned ${task_ids.length} tasks`,
-        });
+        }, { channel: 'tasks' });
+        if (notification) {
+          emitToUser(nextAssigneeId, 'notification:new', notification);
+        }
       } catch (err) {
         console.error('Failed to write grouped bulk-assign notification:', err);
       }
@@ -1216,15 +1218,17 @@ taskRoutes.post('/:id/comments', async (c) => {
       const taskId_str = `${prefix}-${number}`;
 
       if (commentedTask?.assignee_id && commentedTask.assignee_id !== user.id) {
-        await db.insert(notifications).values({
+        const notification = await createNotificationIfAllowed({
           org_id: user.org_id,
           user_id: commentedTask.assignee_id,
           type: 'task_updated',
           title: `${userData?.name || 'Someone'} commented on ${taskId_str}`,
           body: parsed.data.content.slice(0, 200),
           link: `/tasks?task=${taskId_str}`,
-        });
-        emitToUser(commentedTask.assignee_id, 'notification:new', { type: 'task_updated', title: `Comment on ${taskId_str}` });
+        }, { channel: 'tasks' });
+        if (notification) {
+          emitToUser(commentedTask.assignee_id, 'notification:new', notification);
+        }
       }
 
       // Task 6.4 — mention notifications for this comment.
@@ -1611,15 +1615,17 @@ async function createTaskForProject(
     try {
       const [creatorUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1);
       const taskId_str = `${project.prefix}-${taskNumber}`;
-      await db.insert(notifications).values({
+      const notification = await createNotificationIfAllowed({
         org_id: orgId,
         user_id: task!.assignee_id,
         type: 'task_assigned',
         title: `${creatorUser?.name || 'Someone'} assigned you ${taskId_str}`,
         body: task!.title,
         link: `/tasks?task=${taskId_str}`,
-      });
-      emitToUser(task!.assignee_id, 'notification:new', { type: 'task_assigned', title: `New task: ${taskId_str}` });
+      }, { channel: 'tasks' });
+      if (notification) {
+        emitToUser(task!.assignee_id, 'notification:new', notification);
+      }
     } catch {}
   }
 
@@ -1990,15 +1996,17 @@ taskRoutes.patch('/:id', async (c) => {
         try {
           const [assignerUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)).limit(1);
           const taskId_str = `${project?.prefix || ''}-${updatedTask!.number}`;
-          await db.insert(notifications).values({
+          const notification = await createNotificationIfAllowed({
             org_id: user.org_id,
             user_id: newAssignee,
             type: 'task_assigned',
             title: `${assignerUser?.name || 'Someone'} assigned you ${taskId_str}`,
             body: updatedTask!.title,
             link: `/tasks?task=${taskId_str}`,
-          });
-          emitToUser(newAssignee, 'notification:new', { type: 'task_assigned', title: `Assigned ${taskId_str}` });
+          }, { channel: 'tasks' });
+          if (notification) {
+            emitToUser(newAssignee, 'notification:new', notification);
+          }
         } catch {}
       }
 
@@ -2021,15 +2029,17 @@ taskRoutes.patch('/:id', async (c) => {
           const [changerUser] = await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)).limit(1);
           const taskId_str = `${project?.prefix || ''}-${updatedTask!.number}`;
           const statusLabel = { backlog:'Backlog', todo:'To Do', in_progress:'In Progress', in_review:'In Review', done:'Done', cancelled:'Cancelled' }[parsed.data.status] || parsed.data.status;
-          await db.insert(notifications).values({
+          const notification = await createNotificationIfAllowed({
             org_id: user.org_id,
             user_id: assignee,
             type: 'task_updated',
             title: `${changerUser?.name || 'Someone'} moved ${taskId_str} to ${statusLabel}`,
             body: updatedTask!.title,
             link: `/tasks?task=${taskId_str}`,
-          });
-          emitToUser(assignee, 'notification:new', { type: 'task_updated', title: `${taskId_str} → ${statusLabel}` });
+          }, { channel: 'tasks' });
+          if (notification) {
+            emitToUser(assignee, 'notification:new', notification);
+          }
         } catch {}
       }
 
