@@ -143,7 +143,7 @@ export function LabelPicker({ taskId, appliedLabels, onLabelsChange }: Props) {
               <button
                 key={label.id}
                 onClick={() => { void applyLabel(label); setQuery(''); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-white/5"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-[var(--bg-hover)]"
                 style={{ color: 'var(--foreground-secondary)' }}
               >
                 <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: label.color }} />
@@ -154,7 +154,7 @@ export function LabelPicker({ taskId, appliedLabels, onLabelsChange }: Props) {
             {canCreate && (
               <button
                 onClick={createAndApply}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-white/5"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-[var(--bg-hover)]"
                 style={{ color: 'var(--accent)' }}
               >
                 <Plus size={12} />

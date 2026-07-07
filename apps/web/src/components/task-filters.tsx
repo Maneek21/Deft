@@ -7,6 +7,7 @@ import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Sa
 import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 import type { PriorityVocab, ResolvedStatus, CanonicalPriority } from '@/hooks/use-project-resolved-config';
 import { priorityFullLabel } from '@/hooks/use-project-resolved-config';
+import { AppBottomSheet } from '@/components/overlay-primitives';
 
 export type Filters = {
   assigneeIds: string[];
@@ -190,7 +191,6 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
   // Mobile: single "Filters" button with stacked dropdown
   const mobileFilterBar = (
     <>
-      {openDropdown && <div className="fixed inset-0 z-10" onClick={() => { setOpenDropdown(null); setMemberSearch(''); setLabelSearch(''); setShowSaveInput(false); }} />}
       <div
         className="flex items-center gap-2 px-4 py-2 flex-shrink-0"
         style={{ borderBottom: '1px solid var(--border)' }}
@@ -198,7 +198,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'mobile-filters' ? null : 'mobile-filters')}
-            className="flex items-center gap-1.5 px-2.5 py-2 min-h-[44px] rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px]"
             style={{
               background: activeFilterCount > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: activeFilterCount > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -211,11 +211,12 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
             {activeFilterCount > 0 ? `Filters (${activeFilterCount})` : 'Filters'}
             <ChevronDown size={11} />
           </button>
-          {openDropdown === 'mobile-filters' && (
-            <div
-              className="absolute top-full left-0 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg py-1 z-20"
-              style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
-            >
+          <AppBottomSheet
+            open={openDropdown === 'mobile-filters'}
+            onClose={() => { setOpenDropdown(null); setMemberSearch(''); setLabelSearch(''); setShowSaveInput(false); }}
+            title={`Task filters${activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}`}
+          >
+            <div className="pb-2">
               {/* Assignee section */}
               <div className="px-3 py-1.5">
                 <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Assignee</p>
@@ -476,7 +477,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                 )}
               </div>
             </div>
-          )}
+          </AppBottomSheet>
         </div>
 
         {activeFilterCount > 0 && (
@@ -511,7 +512,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'assignee' ? null : 'assignee')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: filters.assigneeIds.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.assigneeIds.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -600,7 +601,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'priority' ? null : 'priority')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: filters.priorities.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.priorities.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -660,7 +661,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'status' ? null : 'status')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: filters.status.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.status.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -719,7 +720,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'labels' ? null : 'labels')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: filters.labels.length > 0 ? 'var(--accent-subtle)' : 'transparent',
               color: filters.labels.length > 0 ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -806,7 +807,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
           <div className="relative">
             <button
               onClick={() => setOpenDropdown(openDropdown === 'project' ? null : 'project')}
-              className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+              className="deft-pill min-h-[38px] md:min-h-[30px]"
               style={{
                 background: filters.projectId ? 'var(--accent-subtle)' : 'transparent',
                 color: filters.projectId ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -858,7 +859,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'dueDate' ? null : 'dueDate')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: (filters.dueDate || filters.dateFrom) ? 'var(--accent-subtle)' : 'transparent',
               color: (filters.dueDate || filters.dateFrom) ? 'var(--accent)' : 'var(--foreground-secondary)',
@@ -1022,7 +1023,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
         <div className="relative ml-auto">
           <button
             onClick={() => setOpenDropdown(openDropdown === 'views' ? null : 'views')}
-            className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-[12px] font-medium"
+            className="deft-pill min-h-[38px] md:min-h-[30px]"
             style={{
               background: 'transparent',
               color: 'var(--foreground-secondary)',

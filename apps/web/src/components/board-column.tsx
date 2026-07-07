@@ -95,6 +95,8 @@ export function BoardColumn({
         </button>
         <button
           onClick={onAdd}
+          aria-label={`Add task to ${label}`}
+          title={`Add task to ${label}`}
           className="p-1 rounded-md"
           style={{ color: 'var(--muted)', transition: 'color 150ms' }}
           onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}

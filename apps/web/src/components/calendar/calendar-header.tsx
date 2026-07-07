@@ -24,36 +24,37 @@ export function CalendarHeader({
   const title = getTitle(view, anchor);
 
   return (
-    <div className="flex items-center justify-between px-1 pb-4 gap-3 flex-wrap">
+    <div className="flex flex-col gap-3 px-1 pb-4 md:flex-row md:items-center md:justify-between">
       {/* Left: navigation */}
-      <div className="flex items-center gap-2">
-        <button onClick={onPrev} className="p-1.5 rounded-md hover:opacity-70 transition-colors"
+      <div className="flex w-full min-w-0 items-center gap-2 md:w-auto">
+        <button onClick={onPrev} aria-label="Previous calendar period" title="Previous calendar period" className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-colors hover:opacity-80"
           style={{ color: 'var(--text-secondary)', background: 'var(--surface-container-low)' }}>
           <ChevronLeft size={16} />
         </button>
-        <button onClick={onNext} className="p-1.5 rounded-md hover:opacity-70 transition-colors"
+        <button onClick={onNext} aria-label="Next calendar period" title="Next calendar period" className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-colors hover:opacity-80"
           style={{ color: 'var(--text-secondary)', background: 'var(--surface-container-low)' }}>
           <ChevronRight size={16} />
         </button>
-        <h1 className="text-[16px] font-semibold ml-1" style={{ color: 'var(--text-primary)' }}>
+        <h1 className="ml-1 min-w-0 flex-1 truncate text-[15px] font-semibold md:flex-none md:text-[16px]" style={{ color: 'var(--text-primary)' }}>
           {title}
         </h1>
         <button onClick={onToday}
-          className="text-[11px] font-medium px-2.5 py-1 rounded-md transition-colors hover:opacity-80"
+          className="h-9 flex-shrink-0 rounded-full px-3 text-[12px] font-semibold transition-colors hover:opacity-80 md:h-8"
           style={{ background: 'var(--accent)', color: 'white' }}>
           Today
         </button>
       </div>
 
       {/* Right: actions + view toggle + connection */}
-      <div className="flex items-center gap-3">
+      <div className="flex w-full items-center gap-2 overflow-x-auto pb-0.5 md:w-auto md:justify-start md:gap-2 md:overflow-visible md:pb-0">
         {/* New event button */}
         {onNewEvent && (
           <button onClick={onNewEvent}
-            className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors hover:opacity-80"
+            className="flex h-9 flex-shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition-colors hover:opacity-80 md:h-8"
             style={{ background: 'var(--accent)', color: 'white' }}>
             <Plus size={13} />
-            New event
+            <span className="hidden sm:inline">New event</span>
+            <span className="sm:hidden">New</span>
           </button>
         )}
 
@@ -63,11 +64,10 @@ export function CalendarHeader({
           Calendar feeds
         </Link>
 
-        <div className="flex rounded-lg overflow-hidden"
-          style={{ border: '1px solid var(--border-default)' }}>
+        <div className="flex flex-shrink-0 items-center gap-1">
           {VIEW_LABELS.map(({ value, label }) => (
             <button key={value} onClick={() => onViewChange(value)}
-              className="px-3 py-1.5 text-[11px] font-medium transition-colors"
+              className="h-9 rounded-full px-4 text-[12px] font-semibold transition-colors hover:opacity-80 md:h-8 md:px-3.5"
               style={{
                 background: view === value ? 'var(--accent)' : 'var(--surface-container-low)',
                 color: view === value ? 'white' : 'var(--text-secondary)',

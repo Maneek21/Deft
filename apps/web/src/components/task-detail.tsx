@@ -2512,7 +2512,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                           router.push(sourceMessageHref);
                         }
                       }}
-                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors min-w-0"
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors min-w-0"
                       style={{ background: 'var(--surface-container)' }}
                     >
                       <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
@@ -2556,7 +2556,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                           router.push(`/chat?space=${ref.message_space_id}&message=${ref.source_id}`);
                         }
                       }}
-                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
                       style={{ background: 'var(--surface-container)' }}>
                       <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
                         style={{ background: 'var(--primary-container)' }}>

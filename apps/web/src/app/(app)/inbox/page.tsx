@@ -616,8 +616,7 @@ export default function InboxPage() {
           {unreadCount > 0 && (
             <button
               onClick={() => void markAllRead()}
-              className="text-[12px] px-3 py-1.5 rounded-md"
-              style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+              className="deft-pill min-h-[32px]"
             >
               Mark all read
             </button>
@@ -626,19 +625,18 @@ export default function InboxPage() {
 
         {/* Tab strip */}
         <nav
-          className="flex gap-1 mb-5 border-b overflow-x-auto whitespace-nowrap"
-          style={{ borderColor: 'var(--border)' }}
+          className="mb-5 flex gap-1.5 overflow-x-auto whitespace-nowrap"
+          role="tablist"
+          aria-label="Inbox sections"
         >
           {TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className="text-[13px] px-3 py-2 -mb-px"
-              style={{
-                color: tab === t.id ? 'var(--primary)' : 'var(--muted)',
-                borderBottom: tab === t.id ? '2px solid var(--primary)' : '2px solid transparent',
-                fontWeight: tab === t.id ? 600 : 400,
-              }}
+              className="deft-pill"
+              data-active={tab === t.id}
+              role="tab"
+              aria-selected={tab === t.id}
             >
               {t.label}
             </button>
@@ -657,8 +655,7 @@ export default function InboxPage() {
             <button
               type="button"
               onClick={() => { void refreshCaptureSurfaces(); }}
-              className="mt-3 text-[12px] px-3 py-1.5 rounded-md"
-              style={{ color: 'var(--primary)', background: 'var(--bg-active)' }}
+              className="deft-pill mt-3"
             >
               Retry
             </button>

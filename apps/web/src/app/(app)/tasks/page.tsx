@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -33,6 +33,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { TabStrip } from '@/components/tab-strip';
+import { AppMenu } from '@/components/overlay-primitives';
 
 const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
@@ -151,12 +152,25 @@ export default function TasksPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [velocity, setVelocity] = useState<{ average: number } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const viewMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  const viewOptions = useMemo(() => [
+    { value: 'board' as View, label: 'Board', icon: <LayoutGrid size={14} /> },
+    { value: 'list' as View, label: 'List', icon: <List size={14} /> },
+    { value: 'timeline' as View, label: 'Timeline', icon: <GanttChartSquare size={14} /> },
+    { value: 'calendar' as View, label: 'Calendar', icon: <CalendarDays size={14} /> },
+    { value: 'pipeline' as View, label: 'Pipeline', icon: <GitBranch size={14} /> },
+  ], []);
+
+  const activeViewOption = viewOptions.find((option) => option.value === view) ?? viewOptions[0]!;
+  const mobileViewOptions = viewOptions.filter((option) => option.value !== 'calendar');
 
   // Mobile-spillover P2-2: calendar cells (~55px wide) can't fit task content
   // on mobile. Auto-redirect to list view when width < 768 and calendar is active.
@@ -746,13 +760,13 @@ export default function TasksPage() {
               <div className="relative z-50">
                 <button
                   onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md"
+                  className="deft-pill min-h-[33px] min-w-0 max-w-[48vw] justify-start px-3 md:max-w-none"
                   style={{
                     color: 'var(--foreground)',
                     fontFamily: 'var(--font-heading)',
                     fontSize: '14px',
                     fontWeight: 600,
-                    background: projectDropdownOpen ? 'var(--hover-tint)' : 'transparent',
+                    background: projectDropdownOpen ? 'var(--accent-subtle)' : 'var(--surface-container-low)',
                     transition: 'background 150ms',
                   }}
                 >
@@ -762,7 +776,7 @@ export default function TasksPage() {
                       style={{ background: selectedProject.color }}
                     />
                   )}
-                  {selectedProject?.name || 'Select project'}
+                  <span className="min-w-0 truncate">{selectedProject?.name || 'Select project'}</span>
                   <ChevronDown size={14} style={{ color: 'var(--muted)' }} />
                 </button>
                 {!isMobile && velocity && velocity.average > 0 && (
@@ -819,14 +833,46 @@ export default function TasksPage() {
             )}
 
             {/* View toggle */}
+            <div className="md:hidden">
+              <button
+                ref={viewMenuButtonRef}
+                onClick={() => setViewMenuOpen((open) => !open)}
+                className="deft-pill min-h-[36px] px-3"
+                style={{
+                  color: 'var(--foreground-secondary)',
+                  fontFamily: 'var(--font-heading)',
+                }}
+                aria-haspopup="menu"
+                aria-expanded={viewMenuOpen}
+              >
+                {activeViewOption.icon}
+                <span>{activeViewOption.label}</span>
+                <ChevronDown size={12} style={{ color: 'var(--muted)' }} />
+              </button>
+              <AppMenu
+                open={viewMenuOpen}
+                onClose={() => setViewMenuOpen(false)}
+                anchorRef={viewMenuButtonRef}
+                ariaLabel="Task view"
+                items={mobileViewOptions.map((option) => ({
+                  label: option.label,
+                  icon: option.icon,
+                  onSelect: () => {
+                    setQuery({ view: option.value });
+                    setUserSelectedView(true);
+                  },
+                }))}
+              />
+            </div>
             <TabStrip
-              className="items-center rounded-md p-0.5"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+              className="hidden md:flex items-center"
+              style={{}}
             >
               <button
                 aria-label="Board view"
                 onClick={() => { setQuery({ view: 'board' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
+                className="deft-pill"
+                data-active={view === 'board'}
                 style={{
                   background: view === 'board' ? 'var(--accent)' : 'transparent',
                   color: view === 'board' ? 'white' : 'var(--muted)',
@@ -839,7 +885,8 @@ export default function TasksPage() {
               <button
                 aria-label="List view"
                 onClick={() => { setQuery({ view: 'list' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
+                className="deft-pill"
+                data-active={view === 'list'}
                 style={{
                   background: view === 'list' ? 'var(--accent)' : 'transparent',
                   color: view === 'list' ? 'white' : 'var(--muted)',
@@ -852,7 +899,8 @@ export default function TasksPage() {
               <button
                 aria-label="Timeline view"
                 onClick={() => { setQuery({ view: 'timeline' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
+                className="deft-pill"
+                data-active={view === 'timeline'}
                 style={{
                   background: view === 'timeline' ? 'var(--accent)' : 'transparent',
                   color: view === 'timeline' ? 'white' : 'var(--muted)',
@@ -865,7 +913,8 @@ export default function TasksPage() {
               <button
                 aria-label="Calendar view"
                 onClick={() => { setQuery({ view: 'calendar' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
+                className="deft-pill"
+                data-active={view === 'calendar'}
                 style={{
                   background: view === 'calendar' ? 'var(--accent)' : 'transparent',
                   color: view === 'calendar' ? 'white' : 'var(--muted)',
@@ -878,7 +927,8 @@ export default function TasksPage() {
               <button
                 aria-label="Pipeline view"
                 onClick={() => { setQuery({ view: 'pipeline' }); setUserSelectedView(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-2 md:py-1 min-h-[44px] md:min-h-0 rounded text-[12px] font-medium transition-colors"
+                className="deft-pill"
+                data-active={view === 'pipeline'}
                 style={{
                   background: view === 'pipeline' ? 'var(--accent)' : 'transparent',
                   color: view === 'pipeline' ? 'white' : 'var(--muted)',
@@ -894,7 +944,8 @@ export default function TasksPage() {
             {!isMobile && (
               <button
                 onClick={() => setSelectionMode(!selectionMode)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium"
+                className="deft-pill"
+                data-active={selectionMode}
                 style={{
                   background: selectionMode ? 'var(--accent-subtle)' : 'transparent',
                   color: selectionMode ? 'var(--accent)' : 'var(--muted)',
@@ -972,7 +1023,7 @@ export default function TasksPage() {
                   setQuickCreateStatus(undefined);
                   setQuickCreateOpen(true);
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium text-white"
+                className="deft-pill deft-pill-active min-h-[36px] px-4 text-[13px]"
                 style={{
                   background: 'var(--accent)',
                   fontFamily: 'var(--font-heading)',
@@ -1220,6 +1271,8 @@ export default function TasksPage() {
       {isMobile && !isMyTasksView && !selectedTask && (
         <button
           onClick={() => { setQuickCreateStatus(undefined); setQuickCreateOpen(true); }}
+          aria-label="Create task"
+          title="Create task"
           className="fixed z-30 w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg"
           style={{
             background: 'var(--accent)',

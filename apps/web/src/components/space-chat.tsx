@@ -1212,7 +1212,7 @@ export function SpaceChat({
 
             {/* Pin count */}
             {pinCount > 0 && (
-              <button className="hidden md:flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px]"
+              <button className="deft-pill hidden min-h-[30px] items-center gap-1 md:flex"
                 style={{ color: 'var(--on-surface-variant)' }}
                 title={`${pinCount} pinned messages`}>
                 <Pin size={12} strokeWidth={1.5} />
@@ -1223,7 +1223,7 @@ export function SpaceChat({
             {/* Member count */}
             <button
               onClick={() => setShowMembers(true)}
-              className="hidden md:flex items-center gap-1 px-3 min-h-[44px] md:min-h-0 md:px-2 h-auto md:h-7 rounded-md text-[11px] hover:opacity-70"
+              className="deft-pill hidden min-h-[30px] items-center gap-1 md:flex"
               style={{ color: 'var(--on-surface-variant)' }}
               title="View members"
             >
@@ -1238,7 +1238,7 @@ export function SpaceChat({
                 setIsMuted(newMuted);
                 await api.patch(`/api/spaces/${spaceId}/mute`, { muted: newMuted });
               }}
-              className="hidden md:flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
+              className="deft-pill deft-pill-icon hidden min-h-[30px] items-center justify-center md:flex"
               style={{ color: isMuted ? 'var(--status-red)' : 'var(--on-surface-variant)' }}
               title={isMuted ? 'Unmute channel' : 'Mute channel'}
             >
@@ -1253,7 +1253,7 @@ export function SpaceChat({
 
               if (inThisHuddle) {
                 return (
-                  <button className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
+                  <button className="deft-pill min-h-[38px] md:min-h-[30px]"
                     style={{ background: '#22c55e', color: 'white' }} title="You're in this huddle">
                     <Mic size={13} strokeWidth={1.5} />
                     <span className="hidden md:inline">In Huddle</span>
@@ -1263,7 +1263,7 @@ export function SpaceChat({
               if (othersInHuddle) {
                 return (
                   <button onClick={() => joinHuddleBySpace?.(spaceId)}
-                    className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80 animate-pulse"
+                    className="deft-pill min-h-[38px] animate-pulse md:min-h-[30px]"
                     style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                     title={`${huddleHere!.participants.length} in huddle — click to join`}>
                     <Mic size={13} strokeWidth={1.5} />
@@ -1273,8 +1273,8 @@ export function SpaceChat({
               }
               return (
                 <button onClick={() => startHuddle?.(spaceId)}
-                  className="flex items-center gap-1.5 px-3 min-h-[44px] md:min-h-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium hover:opacity-80"
-                  style={{ color: 'var(--on-surface-variant)', background: 'var(--surface-container-high, var(--accent-muted))' }}
+                  className="deft-pill min-h-[38px] md:min-h-[30px]"
+                  style={{ color: 'var(--on-surface-variant)' }}
                   title="Start a huddle">
                   <Mic size={13} strokeWidth={1.5} />
                   <span className="hidden md:inline">Huddle</span>
@@ -1296,7 +1296,7 @@ export function SpaceChat({
               }}
               aria-label="Catch up on this space"
               title="Catch Up"
-              className="flex items-center justify-center gap-1 min-w-[44px] min-h-[44px] md:min-h-0 md:min-w-0 md:px-2.5 h-auto md:h-7 rounded-md text-[11px] font-medium"
+              className="deft-pill min-h-[38px] md:min-h-[30px]"
               style={{ background: 'var(--accent-muted)', color: 'var(--primary)' }}
               disabled={recapLoading}
             >
@@ -1308,10 +1308,10 @@ export function SpaceChat({
             <button
               onClick={() => setShowKnowledge(!showKnowledge)}
               aria-label={showKnowledge ? 'Close knowledge panel' : 'Open knowledge panel'}
-              className="flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 p-3 rounded-md hover:opacity-70"
+              className="deft-pill deft-pill-icon min-h-[38px] md:min-h-[30px]"
               style={{
-                color: showKnowledge ? 'var(--primary)' : 'var(--outline)',
-                background: showKnowledge ? 'var(--accent-muted)' : 'transparent',
+                color: showKnowledge ? 'var(--primary)' : 'var(--on-surface-variant)',
+                background: showKnowledge ? 'var(--accent-muted)' : undefined,
               }}
               title="Knowledge"
             >
@@ -1603,7 +1603,7 @@ export function SpaceChat({
                               const res = await api.post(`/api/spaces/${spaceId}/mark-unread`, { message_id: msg.id });
                               setCmdToast(res.ok ? 'Marked unread' : 'Failed to mark unread');
                               setMoreMenuId(null);
-                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-[var(--bg-hover)]"
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <MailOpen size={13} strokeWidth={1.5} /> Mark unread
                             </button>
@@ -1618,7 +1618,7 @@ export function SpaceChat({
                             <button onClick={() => {
                               setForwardMsgId(msg.id);
                               setMoreMenuId(null);
-                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-white/5"
+                            }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5 hover:bg-[var(--bg-hover)]"
                               style={{ color: 'var(--on-surface-variant)' }}>
                               <Forward size={13} strokeWidth={1.5} /> Forward
                             </button>
@@ -2378,7 +2378,7 @@ export function SpaceChat({
                 <button key={s.id} onClick={async () => {
                   await api.post('/api/messages/forward', { message_id: forwardMsgId, target_space_id: s.id });
                   setForwardMsgId(null);
-                }} className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2 hover:bg-white/5"
+                }} className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2 hover:bg-[var(--bg-hover)]"
                   style={{ color: 'var(--foreground)' }}>
                   # {s.name}
                 </button>

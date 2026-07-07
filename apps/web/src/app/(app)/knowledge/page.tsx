@@ -761,6 +761,14 @@ export default function KnowledgePage() {
     { value: 'user', label: 'Personal' },
   ];
 
+  const mobileViewFilters: Array<{ value: 'pages' | 'activity' | 'stats' | 'doctor' | 'graph'; label: string }> = [
+    { value: 'pages', label: 'Pages' },
+    { value: 'graph', label: 'Graph' },
+    { value: 'activity', label: 'Activity' },
+    { value: 'stats', label: 'Stats' },
+    { value: 'doctor', label: 'Doctor' },
+  ];
+
   const openKnowledgeView = (next: 'pages' | 'activity' | 'stats' | 'doctor' | 'graph') => {
     if (next === 'graph') {
       setShowGraph(true);
@@ -1126,7 +1134,7 @@ export default function KnowledgePage() {
             {/* + New */}
             <button
               onClick={() => setShowCreate(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors"
+              className="hidden md:flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors"
               style={{ background: 'var(--accent)', color: 'white' }}
             >
               <Plus size={12} /> New
@@ -1134,7 +1142,7 @@ export default function KnowledgePage() {
             {/* Pages (primary view toggle — always visible) */}
             <button
               onClick={() => { setViewMode('pages'); setShowGraph(false); }}
-              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+              className="hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
               style={{
                 background: viewMode === 'pages' && !showGraph ? 'var(--surface-container-high)' : 'transparent',
                 color: viewMode === 'pages' && !showGraph ? 'var(--text-primary)' : 'var(--text-tertiary)',
@@ -1165,7 +1173,7 @@ export default function KnowledgePage() {
               }}
               placeholder="Search wiki..."
               title="Search returns results across all types — clear the search to refine by type."
-              className="w-28 md:w-36 px-3 py-1.5 rounded-lg text-[12px] outline-none"
+              className="hidden md:block md:w-44 px-3 py-1.5 rounded-lg text-[12px] outline-none"
               style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
             />
             {/* Overflow menu — Activity, Stats, Graph (mobile), Export */}
@@ -1213,27 +1221,40 @@ export default function KnowledgePage() {
           </>
         }
         secondary={
-          <div className="flex flex-col gap-1 px-1">
-            <div className="md:hidden flex gap-2">
-              <select
-                value={showGraph ? 'graph' : viewMode}
-                onChange={e => openKnowledgeView(e.target.value as 'pages' | 'activity' | 'stats' | 'doctor' | 'graph')}
-                className="flex-1 text-[0.8125rem] rounded-md px-2 py-1 outline-none"
-                style={{
-                  background: 'var(--surface-container-low)',
-                  border: '1px solid var(--border-default)',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <option value="pages">Pages</option>
-                <option value="activity">Activity</option>
-                <option value="stats">Stats</option>
-                <option value="doctor">Doctor</option>
-                <option value="graph">Graph</option>
-              </select>
+          <div className="flex flex-col gap-1.5 px-1">
+            <input
+              value={searchQuery}
+              onChange={e => {
+                const val = e.target.value;
+                if (val && !searchQuery) setFilter('all');
+                setSearchQuery(val);
+                setPage(1);
+              }}
+              placeholder="Search wiki..."
+              title="Search returns results across all types — clear the search to refine by type."
+              className="md:hidden w-full px-3 py-2 rounded-xl text-[13px] outline-none"
+              style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
+            />
+            <div className="md:hidden flex items-center gap-1 overflow-x-auto pb-0.5" style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' } as React.CSSProperties}>
+              {mobileViewFilters.map(f => {
+                const active = f.value === 'graph' ? showGraph : !showGraph && viewMode === f.value;
+                return (
+                  <button
+                    key={f.value}
+                    onClick={() => openKnowledgeView(f.value)}
+                    className="flex-shrink-0 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors"
+                    style={{
+                      background: active ? 'var(--accent)' : 'var(--surface-container-low)',
+                      color: active ? 'white' : 'var(--text-secondary)',
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
               <button
                 onClick={() => setShowCreate(true)}
-                className="px-3 py-1 rounded-md text-[0.8125rem] font-medium"
+                className="flex-shrink-0 rounded-full px-3 py-1.5 text-[12px] font-medium"
                 style={{ background: 'var(--accent)', color: 'white' }}
               >
                 New
@@ -1241,21 +1262,22 @@ export default function KnowledgePage() {
             </div>
             {/* Scope axis: <select> on mobile, inline tab strip on md+ */}
             <div className="flex gap-1">
-              {/* Mobile: select */}
-              <select
-                value={scopeFilter}
-                onChange={e => { setScopeFilter(e.target.value); setPage(1); }}
-                className="md:hidden text-[0.8125rem] rounded-md px-2 py-1 outline-none"
-                style={{
-                  background: 'var(--surface-container-low)',
-                  border: '1px solid var(--border-default)',
-                  color: 'var(--text-primary)',
-                }}
-              >
+              {/* Mobile: pill strip */}
+              <div className="md:hidden flex min-w-0 gap-1 overflow-x-auto pb-0.5" style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' } as React.CSSProperties}>
                 {scopeFilters.map(f => (
-                  <option key={f.value} value={f.value}>{f.label}</option>
+                  <button
+                    key={f.value}
+                    onClick={() => { setScopeFilter(f.value); setPage(1); }}
+                    className="flex-shrink-0 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors"
+                    style={{
+                      background: scopeFilter === f.value ? 'var(--accent)' : 'var(--surface-container-low)',
+                      color: scopeFilter === f.value ? 'white' : 'var(--text-secondary)',
+                    }}
+                  >
+                    {f.label}
+                  </button>
                 ))}
-              </select>
+              </div>
               {/* Desktop: inline pill buttons */}
               <div className="hidden md:flex gap-1">
                 {scopeFilters.map(f => (
@@ -1275,12 +1297,12 @@ export default function KnowledgePage() {
             </div>
 
             {/* Type axis: scrollable tab strip on both mobile + desktop */}
-            <div className="flex flex-nowrap gap-1 overflow-x-auto">
+            <div className="flex flex-nowrap gap-1 overflow-x-auto pb-1" style={{ WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none' } as React.CSSProperties}>
               {typeFilters.map(f => (
                 <button
                   key={f.value}
                   onClick={() => { setFilter(f.value); setPage(1); }}
-                  className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors flex-shrink-0"
+                  className="px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors flex-shrink-0"
                   style={{
                     background: filter === f.value ? 'var(--accent)' : 'var(--surface-container-low)',
                     color: filter === f.value ? 'white' : 'var(--text-secondary)',
@@ -1297,13 +1319,13 @@ export default function KnowledgePage() {
       {/* Entries */}
       <div className="flex flex-col flex-1 overflow-hidden px-4 md:px-6 pb-4 md:pb-6">
       {viewMode === 'pages' && !showGraph && (
-        <div className="mb-3 rounded-lg p-3 flex-shrink-0"
+        <div className="mb-2 rounded-xl p-2 flex-shrink-0 md:mb-3 md:rounded-lg md:p-3"
           style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
+          <div className="flex flex-col md:flex-row md:items-center gap-1.5 md:gap-2">
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+              <span className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 md:h-8 md:w-8"
                 style={{ background: 'var(--accent-muted, rgba(91, 143, 168, 0.16))', color: 'var(--accent)' }}>
-                <Sparkles size={15} />
+                <Sparkles size={14} />
               </span>
               <input
                 value={askQuery}
@@ -1315,15 +1337,15 @@ export default function KnowledgePage() {
                   }
                 }}
                 placeholder="Ask what the workspace knows..."
-                className="flex-1 min-w-0 px-3 py-2 rounded-lg text-[13px] outline-none"
+                className="flex-1 min-w-0 px-3 py-1.5 rounded-lg text-[12px] outline-none md:py-2 md:text-[13px]"
                 style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
               />
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-nowrap md:gap-2 md:flex-wrap">
               <select
                 value={askScope}
                 onChange={e => setAskScope(e.target.value as 'company' | 'channel')}
-                className="px-2 py-2 rounded-lg text-[12px] outline-none"
+                className="min-w-0 flex-1 px-2 py-1.5 rounded-lg text-[12px] outline-none md:flex-none md:py-2"
                 style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}
               >
                 <option value="company">Company memory</option>
@@ -1360,7 +1382,7 @@ export default function KnowledgePage() {
               <button
                 onClick={() => void askKnowledge()}
                 disabled={askLoading || !askQuery.trim() || (askScope === 'channel' && !graphSpaceId)}
-                className="px-3 py-2 rounded-lg text-[12px] font-medium disabled:opacity-40 flex items-center gap-1.5"
+                className="px-3 py-1.5 rounded-lg text-[12px] font-medium disabled:opacity-40 flex items-center gap-1.5 md:py-2"
                 style={{ background: 'var(--accent)', color: 'white' }}
               >
                 {askLoading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}

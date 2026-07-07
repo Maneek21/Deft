@@ -144,8 +144,11 @@ export function RichComposer({
   const [focused, setFocused] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const [customScheduleTime, setCustomScheduleTime] = useState('');
   const scheduleBtnRef = useRef<HTMLButtonElement>(null);
+  const desktopActionBtnRef = useRef<HTMLButtonElement>(null);
+  const desktopActionMenuRef = useRef<HTMLDivElement>(null);
   const [schedulePos, setSchedulePos] = useState<{ top: number; right: number } | null>(null);
   useEffect(() => {
     if (!scheduleOpen) return;
@@ -163,6 +166,17 @@ export function RichComposer({
       window.removeEventListener('scroll', update, true);
     };
   }, [scheduleOpen]);
+  useEffect(() => {
+    if (!desktopActionsOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof globalThis.Node)) return;
+      if (desktopActionBtnRef.current?.contains(target) || desktopActionMenuRef.current?.contains(target)) return;
+      setDesktopActionsOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [desktopActionsOpen]);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [formatSheetOpen, setFormatSheetOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
@@ -399,6 +413,10 @@ export function RichComposer({
     setFormatSheetOpen(false);
     action();
   };
+  const runDesktopAction = (action: () => void) => {
+    setDesktopActionsOpen(false);
+    action();
+  };
 
   return (
     <div className="px-3 md:px-6 py-2 md:py-3 flex-shrink-0 relative" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }} ref={composerRef}>
@@ -419,13 +437,16 @@ export function RichComposer({
       )}
       <div
         className={[
-          'bg-transparent md:bg-[var(--surface-container-low)] rounded-none md:rounded-[var(--radius-lg)] overflow-visible md:overflow-hidden transition-[box-shadow] duration-150',
-          focused ? 'md:shadow-[0_0_0_2px_rgba(144,128,250,0.3)]' : '',
+          'bg-transparent md:bg-[var(--surface-container-low)] rounded-none md:rounded-[28px] overflow-visible transition-[border-color,box-shadow,background] duration-150 md:border md:p-1.5',
+          focused
+            ? 'md:shadow-[0_0_0_2px_rgba(144,128,250,0.22)]'
+            : 'md:shadow-[0_10px_30px_rgba(0,0,0,0.08)]',
         ].join(' ')}
+        style={{ borderColor: focused ? '#9080fa' : 'var(--outline-variant)' }}
       >
-        {/* Formatting toolbar - desktop only (hidden on < md) */}
+        {/* Legacy desktop formatting strip is intentionally hidden; desktop now uses the bottom work dock rail. */}
         <div
-          className="hidden md:flex items-center gap-0.5 px-2 pt-1.5 pb-0.5"
+          className="hidden"
         >
           <ToolbarBtn
             active={editor.isActive('bold')}
@@ -505,11 +526,11 @@ export function RichComposer({
           </ToolbarBtn>
         </div>
 
-        {/* Mobile composer action sheet - Insert (attach/emoji/voice) + Format (B/I/...) */}
+        {/* Mobile composer action sheet - work actions first, then insert + format. */}
         <MobileActionSheet
           open={formatSheetOpen}
           onClose={() => setFormatSheetOpen(false)}
-          title="Compose"
+          title="Compose actions"
         >
           <div className="px-1 pb-2 text-[0.6875rem] font-semibold uppercase tracking-wider opacity-50">Work</div>
           <div className="grid grid-cols-1 gap-2 mb-4">
@@ -517,7 +538,7 @@ export function RichComposer({
               <SheetActionButton
                 icon={<Bot size={18} strokeWidth={1.6} />}
                 label="Ask Defty"
-                description="Open the built-in agent DM"
+                description="Pull an agent into the current work context"
                 onClick={() => runSheetAction(onAskDefty)}
               />
             )}
@@ -525,14 +546,14 @@ export function RichComposer({
               <>
                 <SheetActionButton
                   icon={<CheckSquare size={18} strokeWidth={1.6} />}
-                  label="Create task"
-                  description="Start a task from chat"
+                  label="Create task draft"
+                  description="Turn the current discussion into assigned work"
                   onClick={() => runSheetAction(() => onSlashCommand('task', 'New task'))}
                 />
                 <SheetActionButton
                   icon={<FileText size={18} strokeWidth={1.6} />}
                   label="New note"
-                  description="Capture a quick note"
+                  description="Save a structured note from this conversation"
                   onClick={() => runSheetAction(() => onSlashCommand('note', 'Chat note'))}
                 />
               </>
@@ -704,29 +725,44 @@ export function RichComposer({
           </div>
         </MobileActionSheet>
 
-        {/* Editor row - mobile uses single-row layout with [+] and [send] flanking the editor.
+        {emojiOpen && (
+          <EmojiPicker
+            anchorRef={emojiBtnRef}
+            onSelect={handleEmoji}
+            onClose={() => setEmojiOpen(false)}
+          />
+        )}
+
+        {/* Editor row - mobile uses a compact work dock with [+] and [send] flanking the editor.
             Desktop renders only the editor (the +/send below are md:hidden) and uses the
             bottom toolbar for those actions instead. */}
-        <div className="flex items-end gap-2 md:block">
-          {/* Mobile-only "+" - opens unified compose sheet (Insert + Format) */}
+        <div
+          className={[
+            'flex items-center gap-1.5 rounded-[28px] border p-1.5 bg-[var(--surface-container-low)] transition-[border-color,box-shadow,background] md:block md:rounded-none md:border-0 md:bg-transparent md:p-0 md:shadow-none',
+            focused
+              ? 'border-[#9080fa] shadow-[0_0_0_2px_rgba(144,128,250,0.2)]'
+              : 'border-[var(--outline-variant)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]',
+          ].join(' ')}
+        >
+          {/* Mobile-only "+" - opens unified compose sheet (work + insert + format) */}
           <button
             type="button"
             onClick={() => setFormatSheetOpen(true)}
             aria-label="Open composer actions"
-            className="md:hidden flex items-center justify-center w-10 h-10 flex-shrink-0 rounded-full border transition-colors"
+            className="md:hidden flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-full transition-colors active:scale-95 self-center"
             style={{
               color: 'var(--on-surface-variant)',
               background: 'var(--surface-container-high)',
-              borderColor: 'var(--outline-variant)',
+              border: '1px solid var(--outline-variant)',
             }}
           >
-            <Plus size={20} strokeWidth={1.7} />
+            <Plus size={18} strokeWidth={1.8} />
           </button>
 
           <div
             className={[
-              'flex-1 min-w-0 px-3 md:px-4 py-2 min-h-[42px] md:min-h-[40px] max-h-[150px] md:max-h-[200px] overflow-y-auto rounded-[22px] md:rounded-none border md:border-0 bg-[var(--surface-container-low)] md:bg-transparent transition-[border-color,box-shadow,background]',
-              focused ? 'shadow-[0_0_0_2px_rgba(144,128,250,0.22)] md:shadow-none border-[#9080fa]' : 'border-[var(--outline-variant)]',
+              'flex-1 min-w-0 px-2.5 md:px-3 py-2 md:py-2.5 min-h-[38px] md:min-h-[50px] max-h-[150px] md:max-h-[220px] overflow-y-auto rounded-[20px] md:rounded-[20px] border-0 bg-transparent transition-[background]',
+              focused ? 'bg-[var(--surface-container)] md:bg-transparent' : '',
             ].join(' ')}
             onPaste={onPaste as unknown as React.ClipboardEventHandler<HTMLDivElement>}
           >
@@ -739,7 +775,7 @@ export function RichComposer({
             onClick={hasContent ? handleSend : onClipRecord}
             disabled={!hasContent && !onClipRecord}
             aria-label={hasContent ? 'Send message' : 'Record voice memo'}
-            className="md:hidden flex items-center justify-center w-10 h-10 flex-shrink-0 rounded-full text-white disabled:opacity-40 transition-transform active:scale-95"
+            className="md:hidden flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-full text-white disabled:opacity-40 transition-transform active:scale-95 self-center"
             style={{
               background: hasContent ? 'var(--primary-container)' : 'var(--surface-container-high)',
               color: hasContent ? 'white' : 'var(--on-surface-variant)',
@@ -781,10 +817,146 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Bottom toolbar: emoji, attach, send - desktop only.
+        {/* Bottom toolbar: work actions, format, insert, schedule, send - desktop only.
             Mobile consolidates these into the "+" sheet + inline send. */}
-        <div className="hidden md:flex items-center justify-between px-2.5 pb-1.5 pt-0.5">
-          <div className="flex items-center gap-0.5">
+        <div className="hidden md:flex items-center justify-between gap-3 px-2.5 pb-1.5 pt-0.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="relative">
+              <button
+                ref={desktopActionBtnRef}
+                type="button"
+                onClick={() => setDesktopActionsOpen((open) => !open)}
+                aria-label="Open compose actions"
+                className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+                style={{
+                  color: 'var(--on-surface-variant)',
+                  background: desktopActionsOpen ? 'var(--primary-container)' : 'var(--surface-container-high)',
+                  border: '1px solid var(--outline-variant)',
+                }}
+                title="Compose actions"
+              >
+                <Plus size={15} strokeWidth={1.8} />
+              </button>
+              {desktopActionsOpen && (
+                <div
+                  ref={desktopActionMenuRef}
+                  className="absolute bottom-full left-0 z-50 mb-2 w-72 rounded-2xl p-2"
+                  style={{
+                    background: 'var(--surface-container-high)',
+                    border: '1px solid var(--outline-variant)',
+                    boxShadow: 'var(--glass-shadow)',
+                  }}
+                >
+                  <div
+                    className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wide"
+                    style={{ color: 'var(--outline)', fontFamily: 'var(--font-heading)' }}
+                  >
+                    Work actions
+                  </div>
+                  <div className="space-y-1">
+                    {onAskDefty && (
+                      <DesktopActionButton
+                        icon={<Bot size={16} strokeWidth={1.6} />}
+                        label="Ask Defty"
+                        description="Pull an agent into this context"
+                        onClick={() => runDesktopAction(onAskDefty)}
+                      />
+                    )}
+                    {onSlashCommand && (
+                      <>
+                        <DesktopActionButton
+                          icon={<CheckSquare size={16} strokeWidth={1.6} />}
+                          label="Create task draft"
+                          description="Turn this discussion into work"
+                          onClick={() => runDesktopAction(() => onSlashCommand('task', 'New task'))}
+                        />
+                        <DesktopActionButton
+                          icon={<FileText size={16} strokeWidth={1.6} />}
+                          label="New note"
+                          description="Capture a structured note"
+                          onClick={() => runDesktopAction(() => onSlashCommand('note', 'Chat note'))}
+                        />
+                      </>
+                    )}
+                    <DesktopActionButton
+                      icon={<Paperclip size={16} strokeWidth={1.6} />}
+                      label="Attach file"
+                      description="Add an image, document, or context file"
+                      onClick={() => runDesktopAction(onFileSelect)}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="h-5 w-px" style={{ background: 'var(--outline-variant)', opacity: 0.55 }} />
+
+            <div className="flex items-center gap-0.5">
+              <ToolbarBtn
+                active={editor.isActive('bold')}
+                onClick={() => editor.chain().focus().toggleBold().run()}
+                title="Bold (Cmd+B)"
+              >
+                <Bold size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('italic')}
+                onClick={() => editor.chain().focus().toggleItalic().run()}
+                title="Italic (Cmd+I)"
+              >
+                <Italic size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('strike')}
+                onClick={() => editor.chain().focus().toggleStrike().run()}
+                title="Strikethrough (Cmd+Shift+X)"
+              >
+                <Strikethrough size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('code')}
+                onClick={() => editor.chain().focus().toggleCode().run()}
+                title="Inline code (Cmd+E)"
+              >
+                <Code size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('bulletList')}
+                onClick={() => editor.chain().focus().toggleBulletList().run()}
+                title="Bullet list"
+              >
+                <List size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('orderedList')}
+                onClick={() => editor.chain().focus().toggleOrderedList().run()}
+                title="Numbered list"
+              >
+                <ListOrdered size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('blockquote')}
+                onClick={() => editor.chain().focus().toggleBlockquote().run()}
+                title="Blockquote"
+              >
+                <Quote size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+              <ToolbarBtn
+                active={editor.isActive('link')}
+                onClick={() => {
+                  const existing = editor.getAttributes('link').href;
+                  setLinkUrl(existing || '');
+                  setLinkDialogOpen(true);
+                }}
+                title="Link (Cmd+K)"
+              >
+                <LinkIcon size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+            </div>
+
+            <div className="h-5 w-px" style={{ background: 'var(--outline-variant)', opacity: 0.55 }} />
+
+            <div className="flex items-center gap-0.5">
             <button
               className="p-1.5 rounded-md"
               style={{ color: 'var(--muted)' }}
@@ -803,13 +975,6 @@ export function RichComposer({
               >
                 <Smile size={15} strokeWidth={1.5} />
               </button>
-              {emojiOpen && (
-                <EmojiPicker
-                  anchorRef={emojiBtnRef}
-                  onSelect={handleEmoji}
-                  onClose={() => setEmojiOpen(false)}
-                />
-              )}
             </div>
             {onClipRecord && (
               <button
@@ -822,11 +987,12 @@ export function RichComposer({
               </button>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          </div>
+          <div className="flex items-center gap-1.5">
             {hasContent && (
               <div className="relative">
                 <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)}
-                  className="p-1.5 rounded-md" style={{ color: 'var(--outline)' }} title="Schedule send">
+                  className="flex h-8 w-8 items-center justify-center rounded-full" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }} title="Schedule send">
                   <Clock size={14} strokeWidth={1.5} />
                 </button>
                 {scheduleOpen && schedulePos && createPortal(
@@ -948,8 +1114,8 @@ export function RichComposer({
               onClick={handleSend}
               disabled={!hasContent}
               aria-label="Send message from composer toolbar"
-              className="flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
-              style={{ background: 'var(--primary-container)', borderRadius: 'var(--radius-md)' }}
+              className="flex h-9 min-w-12 items-center justify-center rounded-full text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
+              style={{ background: 'var(--primary-container)' }}
             >
               <Send size={16} strokeWidth={2} />
             </button>
@@ -1030,6 +1196,40 @@ function SheetActionButton({
       <span className="min-w-0">
         <span className="block text-[0.875rem] font-semibold leading-tight">{label}</span>
         <span className="block text-[0.75rem] leading-snug mt-0.5" style={{ color: 'var(--on-surface-variant)' }}>
+          {description}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function DesktopActionButton({
+  icon,
+  label,
+  description,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-container)]"
+      style={{ color: 'var(--on-surface)' }}
+    >
+      <span
+        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full"
+        style={{ background: 'rgba(144,128,250,0.14)', color: 'var(--primary)' }}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[0.8125rem] font-semibold leading-tight">{label}</span>
+        <span className="mt-0.5 block truncate text-[0.72rem] leading-snug" style={{ color: 'var(--on-surface-variant)' }}>
           {description}
         </span>
       </span>
