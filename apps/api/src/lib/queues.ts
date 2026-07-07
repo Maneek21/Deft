@@ -1,4 +1,4 @@
-// Postgres-based job queue for Deft background jobs — replaces BullMQ/Redis
+// Postgres-based job queue for Deft background jobs - replaces BullMQ/Redis
 import { db } from './db.js';
 import { jobQueue } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
@@ -10,6 +10,14 @@ export const QUEUE_NAMES = {
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
+
+export function jobPriorityRank(queueName: QueueName | string, jobName: string): number {
+  if (queueName !== QUEUE_NAMES.AGENT_JOBS) return 3;
+  if (['agent-reply', 'agent-employee-message', 'agent-employee-task'].includes(jobName)) return 0;
+  if (['employee-trigger', 'agent-employee-trigger', 'plan-executor'].includes(jobName)) return 1;
+  if (jobName === OBSERVE_CHAT_MESSAGE_JOB) return 5;
+  return 3;
+}
 
 /**
  * Enqueue a job onto a named queue.
@@ -56,7 +64,14 @@ export async function dequeueJob(
       WHERE status = 'pending'
         AND queue = ${queueName}
         AND run_at <= now()
-      ORDER BY created_at ASC
+      ORDER BY
+        CASE
+          WHEN queue = ${QUEUE_NAMES.AGENT_JOBS} AND name IN ('agent-reply', 'agent-employee-message', 'agent-employee-task') THEN 0
+          WHEN queue = ${QUEUE_NAMES.AGENT_JOBS} AND name IN ('employee-trigger', 'agent-employee-trigger', 'plan-executor') THEN 1
+          WHEN queue = ${QUEUE_NAMES.AGENT_JOBS} AND name = ${OBSERVE_CHAT_MESSAGE_JOB} THEN 5
+          ELSE 3
+        END,
+        created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )

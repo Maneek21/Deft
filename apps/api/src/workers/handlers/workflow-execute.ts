@@ -11,11 +11,12 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
   workflowRules, workflowRuns,
-  tasks, taskComments, taskLabels, labels, notifications,
+  tasks, taskComments, taskLabels, labels,
   taskRelationships,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { emitToUser } from '../../socket.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 interface WorkflowExecuteJobData {
   workflow_id: string;
@@ -96,7 +97,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
         case 'notify': {
           if (!action.user_id) { results.push({ kind: 'notify', ok: false, error: 'missing user_id' }); break; }
           const title = action.title || `Workflow: ${rule.name}`;
-          const [notif] = await db.insert(notifications).values({
+          const notif = await createNotificationIfAllowed({
             org_id: rule.org_id,
             user_id: action.user_id,
             type: 'system',
@@ -104,7 +105,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
             body: task.title,
             link: `/tasks`,
             metadata: { workflow_id, task_id: task.id },
-          }).returning();
+          }, { channel: 'tasks' });
           if (notif) emitToUser(action.user_id, 'notification:new', notif);
           results.push({ kind: 'notify', ok: true });
           break;
@@ -139,7 +140,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
               .limit(1);
             if (!dep || !dep.assignee_id) continue;
             if (dep.status === 'done' || dep.status === 'cancelled') continue;
-            const [notif] = await db.insert(notifications).values({
+            const notif = await createNotificationIfAllowed({
               org_id: rule.org_id,
               user_id: dep.assignee_id,
               type: 'system',
@@ -152,7 +153,7 @@ export async function handleWorkflowExecute(job: JobData): Promise<void> {
                 unblocker_task_id: task.id,
                 subtype: 'unblocked',
               },
-            }).returning();
+            }, { channel: 'tasks' });
             if (notif) {
               emitToUser(dep.assignee_id, 'notification:new', notif);
               notified++;

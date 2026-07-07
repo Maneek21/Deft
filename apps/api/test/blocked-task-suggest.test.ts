@@ -17,6 +17,7 @@ import {
   orgs,
   projects,
   projectSpaces,
+  spaceMembers,
   spaces,
   tasks,
   users,
@@ -94,6 +95,10 @@ before(async () => {
     type: 'public',
     created_by: leadUserId,
   });
+  await db.insert(spaceMembers).values([
+    { id: crypto.randomUUID(), space_id: spaceId, user_id: blockedUserId },
+    { id: crypto.randomUUID(), space_id: spaceId, user_id: leadUserId },
+  ]);
 
   projectId = crypto.randomUUID();
   await db.insert(projects).values({
@@ -168,6 +173,7 @@ after(async () => {
   if (taskId) await db.delete(tasks).where(eq(tasks.id, taskId));
   if (projectId) await db.delete(projectSpaces).where(eq(projectSpaces.project_id, projectId));
   if (projectId) await db.delete(projects).where(eq(projects.id, projectId));
+  if (spaceId) await db.delete(spaceMembers).where(eq(spaceMembers.space_id, spaceId));
   if (spaceId) await db.delete(spaces).where(eq(spaces.id, spaceId));
   if (testOrgId) await db.delete(orgMembers).where(eq(orgMembers.org_id, testOrgId));
   if (testOrgId) await db.delete(orgs).where(eq(orgs.id, testOrgId));

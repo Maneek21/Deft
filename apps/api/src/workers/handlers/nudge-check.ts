@@ -16,6 +16,7 @@ import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
 import { getOrgTimezone, isOverdue, isDueWithinDays } from '../../lib/task-dates.js';
+import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
 
 // Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
 // separate kinds so an employee can subscribe to just one. If the org has
@@ -363,18 +364,15 @@ async function processNudge(params: NudgeParams): Promise<void> {
     }
 
     // Create notification
-    const [notification] = await db
-      .insert(notifications)
-      .values({
-        org_id: orgId,
-        user_id: targetUserId,
-        type: 'agent_suggestion',
-        title: nudgeType === 'stalled' ? 'Stalled Task' : nudgeType === 'overdue' ? 'Overdue Task' : nudgeType === 'upcoming_due' ? 'Due Soon' : 'Overdue Task',
-        body: message,
-        link: `/tasks?task=${taskIdentifier}`,
-        metadata: { task_id: taskId, nudge_type: nudgeType },
-      })
-      .returning();
+    const notification = await createNotificationIfAllowed({
+      org_id: orgId,
+      user_id: targetUserId,
+      type: 'agent_suggestion',
+      title: nudgeType === 'stalled' ? 'Stalled Task' : nudgeType === 'overdue' ? 'Overdue Task' : nudgeType === 'upcoming_due' ? 'Due Soon' : 'Overdue Task',
+      body: message,
+      link: `/tasks?task=${taskIdentifier}`,
+      metadata: { task_id: taskId, nudge_type: nudgeType },
+    }, { channel: 'tasks' });
 
     // Insert nudge record
     await db.insert(agentNudges).values({
@@ -521,24 +519,21 @@ export async function checkWorkloadImbalance(): Promise<void> {
           const message = `Workload imbalance: ${person.assignee_name} has ${person.count} open tasks while the team average is ${Math.round(avg)}. Consider redistributing.`;
 
           // Create notification — one per (admin, overloaded user) pair.
-          const [notification] = await db
-            .insert(notifications)
-            .values({
-              org_id: orgId,
-              user_id: admin.user_id,
-              type: 'agent_suggestion',
-              title: 'Workload Imbalance',
-              body: message,
-              link: '/tasks',
-              metadata: {
-                nudge_type: 'workload_imbalance',
-                overloaded_user_id: person.assignee_id,
-                admin_user_id: admin.user_id,
-                task_count: person.count,
-                team_average: Math.round(avg),
-              },
-            })
-            .returning();
+          const notification = await createNotificationIfAllowed({
+            org_id: orgId,
+            user_id: admin.user_id,
+            type: 'agent_suggestion',
+            title: 'Workload Imbalance',
+            body: message,
+            link: '/tasks',
+            metadata: {
+              nudge_type: 'workload_imbalance',
+              overloaded_user_id: person.assignee_id,
+              admin_user_id: admin.user_id,
+              task_count: person.count,
+              team_average: Math.round(avg),
+            },
+          }, { channel: 'tasks' });
 
           if (notification) {
             emitToUser(admin.user_id, 'notification:new', notification);

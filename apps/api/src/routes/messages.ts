@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, notifications, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees } from '@deft/db/schema';
+import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -11,6 +11,7 @@ import { resolveReasonProvider } from '../lib/org-ai-config.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
+import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 
 export const messageRoutes = new Hono();
 
@@ -80,6 +81,33 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     .limit(1);
 
   return msg ?? null;
+}
+
+async function resolveGroupMentionUserIds(content: string, orgId: string): Promise<string[]> {
+  const handles = Array.from(
+    new Set(
+      Array.from(content.matchAll(/(^|[\s(>])@([a-z0-9][a-z0-9-]*[a-z0-9]|[a-z0-9])\b/g))
+        .map((match) => match[2]?.toLowerCase())
+        .filter((handle): handle is string => !!handle),
+    ),
+  );
+  if (handles.length === 0) return [];
+
+  const rows = await db
+    .select({ user_id: userGroupMembers.user_id })
+    .from(userGroups)
+    .innerJoin(userGroupMembers, eq(userGroupMembers.group_id, userGroups.id))
+    .innerJoin(orgMembers, and(
+      eq(orgMembers.user_id, userGroupMembers.user_id),
+      eq(orgMembers.org_id, userGroups.org_id),
+      eq(orgMembers.is_active, true),
+    ))
+    .where(and(
+      eq(userGroups.org_id, orgId),
+      inArray(userGroups.handle, handles),
+    ));
+
+  return Array.from(new Set(rows.map((row) => row.user_id)));
 }
 
 // Helper: get reply counts and latest_reply_at for a set of message IDs
@@ -424,7 +452,12 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
 
     // Parse mentions and create notifications
-    const { userIds: mentionedUserIds } = parseMentions(parsed.data.content);
+    const { userIds: directMentionedUserIds } = parseMentions(parsed.data.content);
+    const groupMentionedUserIds = await resolveGroupMentionUserIds(parsed.data.content, user.org_id);
+    const mentionedUserIds = Array.from(new Set([
+      ...directMentionedUserIds,
+      ...groupMentionedUserIds,
+    ]));
 
     for (const mentionedUserId of mentionedUserIds) {
       // Don't notify the sender
@@ -437,16 +470,18 @@ messageRoutes.post('/:spaceId', async (c) => {
           .limit(1);
         if (!mentionedUser) continue;
 
-        const [notification] = await db.insert(notifications).values({
+        const notification = await createNotificationIfAllowed({
           org_id: user.org_id,
           user_id: mentionedUserId,
           type: 'mention',
           title: `${userData?.name ?? 'Someone'} mentioned you`,
           body: parsed.data.content.slice(0, 200),
           link: `/spaces/${spaceId}?message=${message!.id}`,
-        }).returning();
+        }, { channel: 'chat', spaceId, isMention: true });
 
-        emitToUser(mentionedUserId, 'notification:new', notification);
+        if (notification) {
+          emitToUser(mentionedUserId, 'notification:new', notification);
+        }
       } catch (err) {
         console.error(`Failed to create mention notification for ${mentionedUserId}:`, err);
       }
@@ -463,16 +498,18 @@ messageRoutes.post('/:spaceId', async (c) => {
           .limit(1);
 
         if (parentMessage && parentMessage.user_id !== user.id && !mentionedUserIds.includes(parentMessage.user_id)) {
-          const [notification] = await db.insert(notifications).values({
+          const notification = await createNotificationIfAllowed({
             org_id: user.org_id,
             user_id: parentMessage.user_id,
             type: 'mention',
             title: `${userData?.name ?? 'Someone'} replied to your message`,
             body: parsed.data.content.slice(0, 200),
             link: `/spaces/${spaceId}?message=${parsed.data.parent_id}`,
-          }).returning();
+          }, { channel: 'chat', spaceId, isMention: true });
 
-          emitToUser(parentMessage.user_id, 'notification:new', notification);
+          if (notification) {
+            emitToUser(parentMessage.user_id, 'notification:new', notification);
+          }
         }
 
         // Get updated reply stats for the parent
@@ -502,11 +539,8 @@ messageRoutes.post('/:spaceId', async (c) => {
         // Get all space members except sender (with mute + DND status)
         const members = await db.select({
           user_id: spaceMembers.user_id,
-          is_muted: spaceMembers.is_muted,
-          status_text: users.status_text,
         })
           .from(spaceMembers)
-          .innerJoin(users, eq(spaceMembers.user_id, users.id))
           .where(and(
             eq(spaceMembers.space_id, spaceId),
             sql`${spaceMembers.user_id} != ${user.id}`,
@@ -517,10 +551,6 @@ messageRoutes.post('/:spaceId', async (c) => {
         for (const member of members) {
           // Don't duplicate if already notified via mention
           if (mentionedUserIds.includes(member.user_id)) continue;
-          // Skip muted spaces
-          if (member.is_muted) continue;
-          // Skip DND users
-          if (member.status_text === 'Do Not Disturb') continue;
 
           const isDm = space.type === 'dm' || space.type === 'group_dm';
           const title = isDm
@@ -528,16 +558,18 @@ messageRoutes.post('/:spaceId', async (c) => {
             : `${userData?.name ?? 'Someone'} in #${space.name}`;
           const link = isDm ? `/chat` : `/chat?space=${spaceId}`;
 
-          const [notification] = await db.insert(notifications).values({
+          const notification = await createNotificationIfAllowed({
             org_id: user.org_id,
             user_id: member.user_id,
             type: 'message',
             title,
             body: plainContent,
             link,
-          }).returning();
+          }, { channel: 'chat', spaceId, isMention: false, respectDnd: true });
 
-          emitToUser(member.user_id, 'notification:new', notification);
+          if (notification) {
+            emitToUser(member.user_id, 'notification:new', notification);
+          }
         }
       }
     } catch (err) {
