@@ -12,6 +12,7 @@ import { createBaseExtensions } from '@/lib/editor/shared-config';
 import { registerBuiltInCommands } from '@/lib/editor/built-in-commands';
 import { registerAICommands } from '@/lib/editor/ai-commands';
 import { AILoadingListener } from '@/components/editor/ai-loading-listener';
+import { PersonAvatar } from './person-avatar';
 import { Callout } from '@/lib/editor/blocks/callout';
 import { Toggle, ToggleSummary, ToggleContent } from '@/lib/editor/blocks/toggle';
 import { CodeBlock } from '@/lib/editor/blocks/code-block';
@@ -179,6 +180,7 @@ type AgentEmployee = {
   id: string;
   user_id: string;
   name: string;
+  avatar_url?: string | null;
   role?: string;
   runtime_kind?: string | null;
   wake_mode?: string | null;
@@ -1424,12 +1426,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
               >
                 {task.assignee_name ? (
                   <>
-                    <div
-                      className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                      style={{ background: 'var(--accent)' }}
-                    >
-                      {task.assignee_name.charAt(0).toUpperCase()}
-                    </div>
+                    <PersonAvatar name={task.assignee_name} avatarUrl={task.assignee_avatar} size={20} fontSize={10} />
                     {task.assignee_name}
                   </>
                 ) : (
@@ -1479,12 +1476,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div
-                        className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {m.name.charAt(0).toUpperCase()}
-                      </div>
+                      <PersonAvatar name={m.name} avatarUrl={m.avatar_url} size={20} fontSize={10} />
                       {m.name}
                     </button>
                   ))}
@@ -1506,12 +1498,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                           onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                         >
-                          <div
-                            className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-                            style={{ background: '#8B5CF6' }}
-                          >
-                            {emp.name.charAt(0).toUpperCase()}
-                          </div>
+                          <PersonAvatar name={emp.name} avatarUrl={emp.avatar_url} kind="agent" size={20} fontSize={10} />
                           {emp.name}
                           <span className="text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--hover-tint)', color: 'var(--muted)' }}>AI</span>
                         </button>
@@ -2111,13 +2098,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
                     {/* Assignee avatar */}
                     {subtask.assignee_name && (
-                      <div
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-medium text-white flex-shrink-0"
-                        style={{ background: 'var(--accent)' }}
+                      <PersonAvatar
+                        name={subtask.assignee_name}
+                        avatarUrl={subtask.assignee_avatar}
+                        size={16}
+                        fontSize={8}
                         title={subtask.assignee_name}
-                      >
-                        {subtask.assignee_name.charAt(0).toUpperCase()}
-                      </div>
+                      />
                     )}
                   </div>
                 ))}
@@ -2515,10 +2502,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors min-w-0"
                       style={{ background: 'var(--surface-container)' }}
                     >
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
-                        style={{ background: 'var(--accent)' }}>
-                        {sourceMessage.author_name?.charAt(0).toUpperCase() || '?'}
-                      </div>
+                      <PersonAvatar
+                        name={sourceMessage.author_name}
+                        avatarUrl={sourceMessage.author_avatar}
+                        size={24}
+                        fontSize={9}
+                        className="mt-0.5"
+                      />
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
                           <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
@@ -2558,10 +2548,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       }}
                       className="flex items-start gap-2.5 px-3 py-2 rounded-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
                       style={{ background: 'var(--surface-container)' }}>
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0 mt-0.5"
-                        style={{ background: 'var(--primary-container)' }}>
-                        {ref.author_name?.charAt(0).toUpperCase() || '?'}
-                      </div>
+                      <PersonAvatar name={ref.author_name} avatarUrl={ref.author_avatar} size={24} fontSize={9} className="mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
                           <span className="text-[12px] font-medium" style={{ color: 'var(--foreground)' }}>
@@ -2598,12 +2585,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   )}
                   {comments.map((c) => (
                     <div key={c.id} className="flex gap-2.5">
-                      <div
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0 mt-0.5"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {c.user_name.charAt(0).toUpperCase()}
-                      </div>
+                      <PersonAvatar name={c.user_name} avatarUrl={c.user_avatar} size={24} fontSize={10} className="mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span
@@ -2631,12 +2613,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
 
                   {/* Add comment */}
                   <div className="flex gap-2 mt-2">
-                    <div
-                      className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0 mt-1"
-                      style={{ background: 'var(--accent)' }}
-                    >
-                      {user?.name?.charAt(0).toUpperCase()}
-                    </div>
+                    <PersonAvatar name={user?.name} avatarUrl={user?.avatar_url} size={24} fontSize={10} className="mt-1" />
                     <div className="flex-1">
                       <div
                         className="rounded-lg overflow-hidden"

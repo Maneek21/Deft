@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
 import { X, Users } from 'lucide-react';
+import { PersonAvatar } from '../person-avatar';
 
 type OrgMember = { id: string; name: string; email: string; avatar_url: string | null };
 
@@ -199,10 +200,7 @@ export function CreateEventModal({
                         style={{ color: 'var(--text-primary)' }}
                         onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover-tint, rgba(255,255,255,0.05))')}
                         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                        <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-medium text-white"
-                          style={{ background: 'var(--accent)' }}>
-                          {m.name.charAt(0).toUpperCase()}
-                        </div>
+                        <PersonAvatar name={m.name} avatarUrl={m.avatar_url} size={20} fontSize={9} />
                         <span>{m.name}</span>
                         <span className="ml-auto" style={{ color: 'var(--text-tertiary)' }}>{m.email}</span>
                       </button>

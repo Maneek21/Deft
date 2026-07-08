@@ -2,15 +2,16 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
-import { X, Search, Bot, Check } from 'lucide-react';
+import { X, Search, Check } from 'lucide-react';
 import { useChatContext } from '@/lib/chat-context';
 import { useAuth } from '@/lib/auth-context';
 import { AIBadge } from './ai-badge';
+import { PersonAvatar } from './person-avatar';
 
 type Member = {
   id: string;
   name: string;
-  avatar: string | null;
+  avatar_url: string | null;
   kind?: 'human' | 'agent' | 'system';
 };
 
@@ -20,11 +21,15 @@ type Props = {
   initialSelected?: Member[];
 };
 
-function avatarColor(name: string) {
-  const colors = ['#7C6B4F', '#5B7A6B', '#6B5D7A', '#7A5B5B', '#5B6B7A', '#7A6B5B'];
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  return colors[Math.abs(hash) % colors.length];
+type ApiMember = Omit<Member, 'avatar_url'> & { avatar_url?: string | null; avatar?: string | null };
+
+function normalizeMember(member: ApiMember): Member {
+  return {
+    id: member.id,
+    name: member.name,
+    avatar_url: member.avatar_url ?? member.avatar ?? null,
+    kind: member.kind,
+  };
 }
 
 function MemberRow({
@@ -53,23 +58,7 @@ function MemberRow({
         if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
       }}
     >
-      {member.avatar ? (
-        <img src={member.avatar} className="w-8 h-8 rounded-full" alt={member.name} />
-      ) : isAgent ? (
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center"
-          style={{ background: '#6366f1', color: '#fff' }}
-        >
-          <Bot size={15} strokeWidth={1.5} />
-        </div>
-      ) : (
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-medium text-white"
-          style={{ background: avatarColor(member.name) }}
-        >
-          {member.name.charAt(0).toUpperCase()}
-        </div>
-      )}
+      <PersonAvatar name={member.name} avatarUrl={member.avatar_url} kind={member.kind} size={32} fontSize={12} />
       <span
         className="text-[13px] font-medium flex-1"
         style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}
@@ -110,8 +99,8 @@ export function CreateDmModal({ onClose, initialSelected = [] }: Props) {
         const res = await api.get('/api/members');
         if (res.ok) {
           const data = await res.json();
-          const list: Member[] = data.members || data || [];
-          setMembers(list.filter((m) => m.id !== user?.id));
+          const list: ApiMember[] = data.members || data || [];
+          setMembers(list.map(normalizeMember).filter((m) => m.id !== user?.id));
         }
       } catch {
         // ignore

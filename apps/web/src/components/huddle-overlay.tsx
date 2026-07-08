@@ -3,6 +3,13 @@
 import { useState } from 'react';
 import { Mic, MicOff, PhoneOff, ChevronUp, ChevronDown, Monitor, UserPlus } from 'lucide-react';
 import { useChatContext } from '@/lib/chat-context';
+import { PersonAvatar } from './person-avatar';
+
+type HuddleMember = {
+  id: string;
+  name: string;
+  avatar_url?: string | null;
+};
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -159,7 +166,7 @@ function CompactBarMobile({
 }: {
   spaceName: string;
   participants: { user_id: string; muted: boolean }[];
-  orgMembers: { id: string; name: string }[];
+  orgMembers: HuddleMember[];
   speakingMap: Map<string, boolean>;
   muted: boolean;
   duration: number;
@@ -203,7 +210,16 @@ function CompactBarMobile({
           {participants.slice(0, 3).map((p) => {
             const member = orgMembers.find(m => m.id === p.user_id);
             const speaking = speakingMap.get(p.user_id);
-            return <ParticipantDot key={p.user_id} name={member?.name} muted={p.muted} speaking={speaking} size={28} />;
+            return (
+              <ParticipantDot
+                key={p.user_id}
+                name={member?.name}
+                avatarUrl={member?.avatar_url}
+                muted={p.muted}
+                speaking={speaking}
+                size={28}
+              />
+            );
           })}
           {participants.length > 3 && (
             <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-medium border-2"
@@ -247,7 +263,7 @@ function ExpandedSheetMobile({
 }: {
   spaceName: string;
   participants: { user_id: string; user_name: string; muted: boolean }[];
-  orgMembers: { id: string; name: string }[];
+  orgMembers: HuddleMember[];
   speakingMap: Map<string, boolean>;
   muted: boolean;
   duration: number;
@@ -299,7 +315,7 @@ function ExpandedSheetMobile({
           return (
             <div key={p.user_id} className="flex flex-col items-center gap-2">
               <div className="relative">
-                <ParticipantDot name={name} muted={p.muted} speaking={speaking} size={72} fontSize={24} />
+                <ParticipantDot name={name} avatarUrl={member?.avatar_url} muted={p.muted} speaking={speaking} size={72} fontSize={24} />
                 {p.muted && (
                   <div className="absolute bottom-0 right-0 w-6 h-6 rounded-full flex items-center justify-center border-2"
                     style={{ background: '#ef4444', borderColor: 'var(--surface-container-highest, #1e1e2e)' }}>
@@ -400,7 +416,7 @@ function CompactBarDesktop({
 }: {
   spaceName: string;
   participants: { user_id: string; muted: boolean }[];
-  orgMembers: { id: string; name: string }[];
+  orgMembers: HuddleMember[];
   speakingMap: Map<string, boolean>;
   muted: boolean;
   duration: number;
@@ -440,7 +456,16 @@ function CompactBarDesktop({
         {participants.slice(0, 4).map((p) => {
           const member = orgMembers.find(m => m.id === p.user_id);
           const speaking = speakingMap.get(p.user_id);
-          return <ParticipantDot key={p.user_id} name={member?.name} muted={p.muted} speaking={speaking} size={24} />;
+          return (
+            <ParticipantDot
+              key={p.user_id}
+              name={member?.name}
+              avatarUrl={member?.avatar_url}
+              muted={p.muted}
+              speaking={speaking}
+              size={24}
+            />
+          );
         })}
         {participants.length > 4 && (
           <div className="w-6 h-6 rounded-full flex items-center justify-center text-[8px] font-medium border-2"
@@ -475,7 +500,7 @@ function ExpandedPanelDesktop({
 }: {
   spaceName: string;
   participants: { user_id: string; user_name: string; muted: boolean }[];
-  orgMembers: { id: string; name: string }[];
+  orgMembers: HuddleMember[];
   speakingMap: Map<string, boolean>;
   muted: boolean;
   duration: number;
@@ -528,7 +553,7 @@ function ExpandedPanelDesktop({
           return (
             <div key={p.user_id} className="flex flex-col items-center gap-1.5">
               <div className="relative">
-                <ParticipantDot name={name} muted={p.muted} speaking={speaking} size={48} fontSize={16} />
+                <ParticipantDot name={name} avatarUrl={member?.avatar_url} muted={p.muted} speaking={speaking} size={48} fontSize={16} />
                 {p.muted && (
                   <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center"
                     style={{ background: '#ef4444' }}>
@@ -580,32 +605,29 @@ function ExpandedPanelDesktop({
 // ═══ Participant Avatar with Speaking Ring ═══
 
 function ParticipantDot({
-  name, muted, speaking, size = 24, fontSize = 10,
+  name, avatarUrl, muted, speaking, size = 24, fontSize = 10,
 }: {
   name?: string;
+  avatarUrl?: string | null;
   muted?: boolean;
   speaking?: boolean;
   size?: number;
   fontSize?: number;
 }) {
-  const initial = (name || '?')[0]?.toUpperCase();
   return (
-    <div
-      className="rounded-full flex items-center justify-center font-semibold border-2 transition-shadow"
+    <PersonAvatar
+      name={name}
+      avatarUrl={avatarUrl}
+      size={size}
+      fontSize={fontSize}
+      className="border-2 transition-shadow"
       style={{
-        width: size,
-        height: size,
-        fontSize,
-        background: 'var(--accent, #6366f1)',
-        color: 'white',
         borderColor: 'var(--surface-container-highest, #1e1e2e)',
         boxShadow: speaking ? '0 0 0 3px #22c55e' : 'none',
         opacity: muted ? 0.6 : 1,
         transitionDuration: '200ms',
       }}
       title={`${name || 'User'}${muted ? ' (muted)' : ''}${speaking ? ' (speaking)' : ''}`}
-    >
-      {initial}
-    </div>
+    />
   );
 }

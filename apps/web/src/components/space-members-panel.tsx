@@ -440,7 +440,7 @@ export function SpaceMembersPanel({ spaceId, spaceName, spaceType, onClose }: Pr
             .map((m) => ({
               id: m.id,
               name: m.name,
-              avatar: m.avatar_url,
+              avatar_url: m.avatar_url,
               kind: m.kind,
             }))}
         />

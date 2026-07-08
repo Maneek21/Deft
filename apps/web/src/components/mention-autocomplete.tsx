@@ -2,14 +2,17 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '@/lib/api';
-import { AtSign, Users, Bot } from 'lucide-react';
+import { AtSign, Users } from 'lucide-react';
+import { PersonAvatar } from './person-avatar';
 
 type Member = {
   id: string;
   name: string;
-  avatar: string | null;
+  avatar_url: string | null;
   kind?: 'human' | 'agent' | 'system';
 };
+
+type ApiMember = Omit<Member, 'avatar_url'> & { avatar_url?: string | null; avatar?: string | null };
 
 type Props = {
   query: string;
@@ -18,6 +21,15 @@ type Props = {
 };
 
 let cachedMembers: Member[] | null = null;
+
+function normalizeMembers(list: ApiMember[]): Member[] {
+  return list.map((member) => ({
+    id: member.id,
+    name: member.name,
+    avatar_url: member.avatar_url ?? member.avatar ?? null,
+    kind: member.kind,
+  }));
+}
 
 export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
   const [members, setMembers] = useState<Member[]>(cachedMembers || []);
@@ -31,9 +43,10 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
         const res = await api.get('/api/members');
         if (res.ok) {
           const data = await res.json();
-          const list = data.members || data || [];
-          cachedMembers = list;
-          setMembers(list);
+          const list: ApiMember[] = data.members || data || [];
+          const normalized = normalizeMembers(list);
+          cachedMembers = normalized;
+          setMembers(normalized);
         }
       } catch {
         // ignore
@@ -103,13 +116,6 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
 
   if (allOptions.length === 0) return null;
 
-  function avatarColor(name: string) {
-    const colors = ['#7C6B4F', '#5B7A6B', '#6B5D7A', '#7A5B5B', '#5B6B7A', '#7A6B5B'];
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-    return colors[Math.abs(hash) % colors.length];
-  }
-
   return (
     <div
       ref={ref}
@@ -132,16 +138,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
           }}
           onMouseEnter={() => setSelectedIndex(i)}
         >
-          {member.avatar ? (
-            <img src={member.avatar} className="w-6 h-6 rounded-full" alt={member.name} />
-          ) : (
-            <div
-              className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium text-white"
-              style={{ background: avatarColor(member.name) }}
-            >
-              {member.name.charAt(0).toUpperCase()}
-            </div>
-          )}
+          <PersonAvatar name={member.name} avatarUrl={member.avatar_url} kind={member.kind} size={24} fontSize={10} />
           <span>{member.name}</span>
         </button>
       ))}
@@ -162,16 +159,7 @@ export function MentionAutocomplete({ query, onSelect, onClose }: Props) {
             }}
             onMouseEnter={() => setSelectedIndex(idx)}
           >
-            {agent.avatar ? (
-              <img src={agent.avatar} className="w-6 h-6 rounded-full" alt={agent.name} />
-            ) : (
-              <div
-                className="w-6 h-6 rounded-full flex items-center justify-center"
-                style={{ background: '#6366f1', color: '#fff' }}
-              >
-                <Bot size={13} strokeWidth={1.5} />
-              </div>
-            )}
+            <PersonAvatar name={agent.name} avatarUrl={agent.avatar_url} kind={agent.kind} size={24} fontSize={10} />
             <span>{agent.name}</span>
             <span
               className="text-[11px] ml-auto px-1.5 py-0.5 rounded-full"

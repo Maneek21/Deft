@@ -6,6 +6,7 @@ import { X, ChevronDown } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import { TemplatePickerModal } from './template-picker-modal';
+import { PersonAvatar } from './person-avatar';
 
 type Props = {
   projectId: string;
@@ -40,7 +41,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
   const [dueDate, setDueDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [members, setMembers] = useState<{ id: string; name: string }[]>([]);
+  const [members, setMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   // Task 4.11 — resolved skill config drives custom fields + status vocab.
@@ -333,12 +334,7 @@ export function TaskQuickCreate({ projectId, defaultStatus, initialTitle, initia
                         onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                         onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                       >
-                        <div
-                          className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-medium text-white"
-                          style={{ background: 'var(--accent)' }}
-                        >
-                          {m.name.charAt(0).toUpperCase()}
-                        </div>
+                        <PersonAvatar name={m.name} avatarUrl={m.avatar_url} size={16} fontSize={9} />
                         {m.name}
                       </button>
                     ))}
