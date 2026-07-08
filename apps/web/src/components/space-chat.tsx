@@ -238,19 +238,14 @@ function compactReceiptTitle(title: string) {
   return cleaned.length > 44 ? `${cleaned.slice(0, 41)}...` : cleaned;
 }
 
-function hasKnowledgeReceipt(intents?: WorkIntentReceipt[]) {
-  return (intents ?? []).some((intent) => {
-    const metadata = intent.metadata ?? {};
-    return intent.status === 'converted' && typeof metadata.converted_wiki_slug === 'string';
-  });
-}
-
 function WorkIntentReceiptChips({
   intents,
   inline = false,
+  className = '',
 }: {
   intents?: WorkIntentReceipt[];
   inline?: boolean;
+  className?: string;
 }) {
   const knowledgeReceipts = (intents ?? []).filter((intent) => {
     const metadata = intent.metadata ?? {};
@@ -259,7 +254,7 @@ function WorkIntentReceiptChips({
   if (knowledgeReceipts.length === 0) return null;
 
   return (
-    <div className={`${inline ? 'inline-flex' : 'mt-1 flex'} items-center gap-1.5`} aria-label="Knowledge receipts">
+    <div className={`${inline ? 'inline-flex' : 'mt-1 flex'} ${className} items-center gap-1.5`} aria-label="Knowledge receipts">
       {knowledgeReceipts.slice(0, 3).map((intent) => {
         const metadata = intent.metadata ?? {};
         const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
@@ -1390,7 +1385,6 @@ export function SpaceChat({
             const isHovered = hoveredId === msg.id;
             const color = avatarColor(msg.user_name || '');
             const messageWorkIntents = workIntentsByMessage?.[msg.id];
-            const messageHasKnowledgeReceipt = hasKnowledgeReceipt(messageWorkIntents);
 
             // Detect system messages (task status changes, BYOA mention notices, etc.)
             const msgMeta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
@@ -1783,13 +1777,12 @@ export function SpaceChat({
                     <div className="flex gap-3 py-[2px]">
                       <div className="w-9 flex-shrink-0 flex items-start justify-center">
                         <div className="flex items-center justify-center gap-1 pt-[3px]">
-                          {(isHovered || messageHasKnowledgeReceipt) && (
+                          {isHovered && (
                             <span className="text-[10px]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}
                               title={formatTimeWithSenderZone(msg.created_at, msg.user_timezone, msg.user_name)}>
                               {formatMessageTime(msg.created_at)}
                             </span>
                           )}
-                          <WorkIntentReceiptChips intents={messageWorkIntents} inline />
                         </div>
                       </div>
                       <div className="flex-1 min-w-0">
@@ -1818,6 +1811,7 @@ export function SpaceChat({
                                 <>
                                   <div className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
                                     {renderContent(msg.content)}
+                                    <WorkIntentReceiptChips intents={messageWorkIntents} inline className="ml-1 align-middle" />
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
                                   </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
@@ -1889,7 +1883,7 @@ export function SpaceChat({
                     </div>
                   ) : (
                     <div className="flex gap-3 py-1.5">
-                      <div className="relative flex-shrink-0">
+                      <div className="relative h-9 w-9 flex-shrink-0 self-start">
                         {msg.user_avatar ? (
                           <img
                             src={msg.user_avatar}
