@@ -238,7 +238,20 @@ function compactReceiptTitle(title: string) {
   return cleaned.length > 44 ? `${cleaned.slice(0, 41)}...` : cleaned;
 }
 
-function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) {
+function hasKnowledgeReceipt(intents?: WorkIntentReceipt[]) {
+  return (intents ?? []).some((intent) => {
+    const metadata = intent.metadata ?? {};
+    return intent.status === 'converted' && typeof metadata.converted_wiki_slug === 'string';
+  });
+}
+
+function WorkIntentReceiptChips({
+  intents,
+  inline = false,
+}: {
+  intents?: WorkIntentReceipt[];
+  inline?: boolean;
+}) {
   const knowledgeReceipts = (intents ?? []).filter((intent) => {
     const metadata = intent.metadata ?? {};
     return intent.status === 'converted' && typeof metadata.converted_wiki_slug === 'string';
@@ -246,7 +259,7 @@ function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) 
   if (knowledgeReceipts.length === 0) return null;
 
   return (
-    <div className="mt-1 flex items-center gap-1.5" aria-label="Knowledge receipts">
+    <div className={`${inline ? 'inline-flex' : 'mt-1 flex'} items-center gap-1.5`} aria-label="Knowledge receipts">
       {knowledgeReceipts.slice(0, 3).map((intent) => {
         const metadata = intent.metadata ?? {};
         const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
@@ -257,7 +270,7 @@ function WorkIntentReceiptChips({ intents }: { intents?: WorkIntentReceipt[] }) 
           <a
             key={intent.id}
             href={`/knowledge?slug=${encodeURIComponent(wikiSlug!)}`}
-            className="inline-flex h-4 w-4 items-center justify-center rounded-full opacity-65 transition hover:opacity-100"
+            className={`${inline ? 'h-3.5 w-3.5' : 'h-4 w-4'} inline-flex items-center justify-center rounded-full opacity-70 transition hover:opacity-100`}
             style={{ color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 11%, transparent)' }}
             title={label}
             aria-label={label}
@@ -1376,6 +1389,8 @@ export function SpaceChat({
             const showDaySeparator = !prev || !isSameDay(prev.created_at, msg.created_at);
             const isHovered = hoveredId === msg.id;
             const color = avatarColor(msg.user_name || '');
+            const messageWorkIntents = workIntentsByMessage?.[msg.id];
+            const messageHasKnowledgeReceipt = hasKnowledgeReceipt(messageWorkIntents);
 
             // Detect system messages (task status changes, BYOA mention notices, etc.)
             const msgMeta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
@@ -1767,12 +1782,15 @@ export function SpaceChat({
                   {grouped ? (
                     <div className="flex gap-3 py-[2px]">
                       <div className="w-9 flex-shrink-0 flex items-start justify-center">
-                        {isHovered && (
-                          <span className="text-[10px] pt-[3px]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}
-                            title={formatTimeWithSenderZone(msg.created_at, msg.user_timezone, msg.user_name)}>
-                            {formatMessageTime(msg.created_at)}
-                          </span>
-                        )}
+                        <div className="flex items-center justify-center gap-1 pt-[3px]">
+                          {(isHovered || messageHasKnowledgeReceipt) && (
+                            <span className="text-[10px]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}
+                              title={formatTimeWithSenderZone(msg.created_at, msg.user_timezone, msg.user_name)}>
+                              {formatMessageTime(msg.created_at)}
+                            </span>
+                          )}
+                          <WorkIntentReceiptChips intents={messageWorkIntents} inline />
+                        </div>
                       </div>
                       <div className="flex-1 min-w-0">
                         {msg.is_deleted ? (
@@ -1849,7 +1867,6 @@ export function SpaceChat({
                                 }}
                               />
                             ))}
-                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
@@ -1897,7 +1914,7 @@ export function SpaceChat({
                         )}
                         {(presence.get(msg.user_id) === 'online' || presence.get(msg.user_id) === 'idle') && (
                           <div
-                            className="absolute bottom-0 right-0 w-[8px] h-[8px] rounded-full"
+                            className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full"
                             style={{
                               background: presence.get(msg.user_id) === 'online' ? 'var(--status-green)' : '#EAB308',
                               border: `2px solid ${isHovered ? 'var(--surface)' : 'var(--background)'}`,
@@ -1927,6 +1944,7 @@ export function SpaceChat({
                             title={formatTimeWithSenderZone(msg.created_at, msg.user_timezone, msg.user_name)}>
                             {formatMessageTime(msg.created_at)}
                           </span>
+                          <WorkIntentReceiptChips intents={messageWorkIntents} inline />
                           {msg.is_pinned && (
                             <span className="text-[0.6875rem] ml-1" style={{ color: 'var(--outline)' }}>pinned</span>
                           )}
@@ -2005,7 +2023,6 @@ export function SpaceChat({
                                 }}
                               />
                             ))}
-                            <WorkIntentReceiptChips intents={workIntentsByMessage?.[msg.id]} />
                             <MessageReactions
                               reactions={msg.reactions}
                               userId={user?.id}
