@@ -38,6 +38,7 @@ import { AppMenu } from '@/components/overlay-primitives';
 const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
 import { CreateProjectModal } from '@/components/create-project-modal';
+import { PersonAvatar } from '@/components/person-avatar';
 
 type Task = {
   id: string;
@@ -1406,12 +1407,7 @@ export default function TasksPage() {
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover-tint)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <div
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-medium text-white flex-shrink-0"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {member.name.charAt(0).toUpperCase()}
-                      </div>
+                      <PersonAvatar name={member.name} avatarUrl={member.avatar_url} size={16} fontSize={9} />
                       <span className="truncate">{member.name}</span>
                     </button>
                   ))}
