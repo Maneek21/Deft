@@ -368,16 +368,29 @@ function normalizeRegisteredToolCall(
 
   const validation = validateRegisteredProposalAction({ action, params: call.input });
   if (!validation.ok) return [];
+  const requestedWikiWriteMode = action === 'wiki_write'
+    ? inferRequestedWikiWriteMode(params.promptContent)
+    : undefined;
   return [{
     action,
     params: {
       ...call.input,
+      ...(requestedWikiWriteMode ? { requested_wiki_write_mode: requestedWikiWriteMode } : {}),
       source_message_id: params.sourceMessageId,
     },
     approval_tier: getApprovalTier(action),
     tool_use_id: null,
     source: 'action_compiler',
   }];
+}
+
+function inferRequestedWikiWriteMode(promptContent: string): 'create' | 'update' | undefined {
+  const plain = promptContent.replace(/\s+/g, ' ').trim();
+  if (/\b(?:update|edit|revise|correct|append|add\s+.+?\s+to)\b/i.test(plain)) return 'update';
+  if (/\b(?:create|make|start|write|save|record|capture)\b.{0,100}\b(?:wiki|knowledge)(?:\s+page)?\b/i.test(plain)) {
+    return 'create';
+  }
+  return undefined;
 }
 
 export function validateRegisteredProposalAction(action: {

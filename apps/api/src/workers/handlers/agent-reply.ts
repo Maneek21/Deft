@@ -310,7 +310,10 @@ async function resolvePendingActionTargets(
           ))
           .limit(1)
         : [];
-      if (requestedSlug && !existingPage) {
+      const requestedMode = params.requested_wiki_write_mode === 'create' || params.requested_wiki_write_mode === 'update'
+        ? params.requested_wiki_write_mode
+        : undefined;
+      if (!existingPage && (requestedMode === 'update' || (requestedSlug && requestedMode !== 'create'))) {
         warnings.push(`I could not find wiki page "${requestedSlug}".`);
         continue;
       }
@@ -324,17 +327,18 @@ async function resolvePendingActionTargets(
           continue;
         }
       }
+      const resolvedParams = existingPage
+        ? {
+          ...params,
+          slug: existingPage.slug,
+          title: existingPage.title,
+          wiki_write_mode: 'update',
+          resolved_wiki_page_id: existingPage.id,
+        }
+        : { ...params, slug: undefined, wiki_write_mode: 'create' };
       resolvedActions.push({
         ...action,
-        params: {
-          ...params,
-          ...(existingPage ? {
-            slug: existingPage.slug,
-            title: existingPage.title,
-            wiki_write_mode: 'update',
-            resolved_wiki_page_id: existingPage.id,
-          } : { wiki_write_mode: 'create' }),
-        },
+        params: resolvedParams,
       });
       continue;
     }
