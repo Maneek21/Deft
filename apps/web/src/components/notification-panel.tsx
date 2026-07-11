@@ -13,6 +13,13 @@ type Props = {
   onClose: () => void;
 };
 
+async function apiErrorMessage(res: Response, fallback: string) {
+  const body = await res.json().catch(() => null);
+  if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+  if (body && typeof body.message === 'string' && body.message.trim()) return body.message;
+  return fallback;
+}
+
 export function NotificationPanel({ onClose }: Props) {
   const router = useRouter();
   const { items, isLoading, markRead, markAllRead, refresh } = useInbox();
@@ -45,7 +52,7 @@ export function NotificationPanel({ onClose }: Props) {
   const handleApprove = async (item: InboxItem) => {
     if (!item.approval) return;
     const res = await api.post(`/api/agent/actions/${item.approval.action_id}/approve`, {});
-    if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+    if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
     const body = await res.json().catch(() => ({ status: 'approved' }));
     await markRead([item.id]);
     void refresh();
@@ -55,7 +62,7 @@ export function NotificationPanel({ onClose }: Props) {
   const handleReject = async (item: InboxItem) => {
     if (!item.approval) return;
     const res = await api.post(`/api/agent/actions/${item.approval.action_id}/reject`, {});
-    if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+    if (!res.ok) throw new Error(await apiErrorMessage(res, `Reject failed (${res.status})`));
     const body = await res.json().catch(() => ({ status: 'rejected' }));
     await markRead([item.id]);
     void refresh();

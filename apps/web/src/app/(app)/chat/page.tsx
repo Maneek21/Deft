@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { SpaceChat } from '@/components/space-chat';
 import { ThreadPanel } from '@/components/thread-panel';
+import { api } from '@/lib/api';
 import { useChatContext } from '@/lib/chat-context';
 
 export default function ChatPage() {
@@ -12,6 +13,7 @@ export default function ChatPage() {
 
   const urlSpaceId = searchParams.get('space');
   const urlMessageId = searchParams.get('message');
+  const urlThreadId = searchParams.get('thread');
 
   // Sync layout's activeSpaceId state from the URL (back/forward, deep links).
   // MUST use the state-only setter — calling the navigating setActiveSpaceId
@@ -24,7 +26,28 @@ export default function ChatPage() {
     }
   }, [urlSpaceId, activeSpaceId, spaces, syncActiveSpaceIdFromUrl]);
 
-  const effectiveSpaceId = urlSpaceId || activeSpaceId;
+  useEffect(() => {
+    if (!urlThreadId || threadMessage?.id === urlThreadId) return;
+
+    let cancelled = false;
+    async function loadThreadParent() {
+      const res = await api.get(`/api/messages/${urlThreadId}/thread`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const parent = data.parent;
+      if (!parent || cancelled) return;
+      if (parent.space_id && parent.space_id !== activeSpaceId && spaces.some(s => s.id === parent.space_id)) {
+        syncActiveSpaceIdFromUrl(parent.space_id);
+      }
+      setThreadMessage(parent);
+    }
+    loadThreadParent();
+    return () => {
+      cancelled = true;
+    };
+  }, [urlThreadId, threadMessage?.id, activeSpaceId, spaces, syncActiveSpaceIdFromUrl, setThreadMessage]);
+
+  const effectiveSpaceId = urlSpaceId || threadMessage?.space_id || activeSpaceId;
   const activeSpace = spaces.find((s) => s.id === effectiveSpaceId);
 
   return (

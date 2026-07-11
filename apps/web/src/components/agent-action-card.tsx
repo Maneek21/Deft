@@ -3,17 +3,35 @@
 import { useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
+  CalendarClock,
   CheckCircle2,
+  CheckSquare,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   ExternalLink,
+  FolderKanban,
   Info,
+  MessageSquare,
   ReceiptText,
   RotateCcw,
+  ScrollText,
+  ShieldAlert,
+  Sparkles,
+  StickyNote,
+  Tag,
+  UserRound,
   XCircle,
 } from 'lucide-react';
 import { ReceiptViewer } from './receipt-viewer';
 import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
+import {
+  getAgentActionPresentation,
+  type ApprovalChipIconName,
+  type ApprovalIconName,
+} from '@/lib/agent-action-presentation';
 
 export type AgentAction = {
   id: string;
@@ -33,6 +51,7 @@ export type AgentAction = {
 };
 
 type LocalStatus = 'approving' | 'rejecting' | 'approved' | 'rejected' | null;
+type AgentActionCardVariant = 'review' | 'compact';
 export type AgentActionMutationResult = {
   status?: string;
   approval_status?: string;
@@ -264,6 +283,100 @@ function getProposedOutcome(actionName: string, params: Record<string, any>, fal
   };
 }
 
+function getDueLabel(params: Record<string, any>) {
+  const value = getStringParam(params, ['due_date', 'dueDate', 'deadline', 'due_at', 'scheduled_for']);
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isFinite(parsed.getTime()) && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return truncate(value, 30);
+}
+
+function getCompactEyebrow(actionName: string, captureKind: unknown) {
+  if (actionName === 'wiki_create') {
+    if (captureKind === 'decision_candidate') return 'Decision draft';
+    if (captureKind === 'resource_candidate') return 'Resource draft';
+    return 'Knowledge draft';
+  }
+  if (actionName === 'task_create' || actionName === 'create_task') return 'Task draft';
+  if (actionName === 'task_update') return 'Task update draft';
+  if (actionName === 'post_message') return 'Message draft';
+  return 'Action draft';
+}
+
+function getCompactTitle(actionName: string, params: Record<string, any>, fallbackLabel: string) {
+  const title = getStringParam(params, ['title', 'name', 'summary']);
+  const space = getStringParam(params, ['space_name']);
+  if (actionName === 'post_message') {
+    return space ? `Post in #${space}` : 'Post a message';
+  }
+  if (title) return truncate(title, 96);
+  if (actionName === 'wiki_create') return 'Save a knowledge entry';
+  if (actionName === 'task_create' || actionName === 'create_task') return 'Create a task';
+  return fallbackLabel;
+}
+
+function getCompactSummary(actionName: string, params: Record<string, any>) {
+  const content = getStringParam(params, ['description', 'content', 'summary']);
+  if (!content) return '';
+  const max = actionName === 'post_message' ? 120 : 140;
+  return truncate(content, max);
+}
+
+function getCompactChips(actionName: string, params: Record<string, any>) {
+  const chips: Array<{ label: string; icon?: 'user' | 'calendar' | 'project' | 'book' | 'task' }> = [];
+  const assignee = getStringParam(params, ['assignee_name', 'assignee']);
+  const due = getDueLabel(params);
+  const project = getStringParam(params, ['project_name']);
+  const priority = getStringParam(params, ['priority']);
+  const scope = getScopeLabel(params);
+  const type = getStringParam(params, ['type']);
+  const subtaskText = getSubtaskDraftText(params);
+  const subtaskCount = subtaskText ? subtaskText.split('\n').filter((line) => /^\d+\./.test(line)).length : 0;
+
+  if (actionName === 'task_create' || actionName === 'create_task' || actionName === 'task_update') {
+    if (assignee) chips.push({ label: assignee, icon: 'user' });
+    if (due) chips.push({ label: due, icon: 'calendar' });
+    if (project) chips.push({ label: project, icon: 'project' });
+    if (subtaskCount > 0) chips.push({ label: `${subtaskCount} subtasks`, icon: 'task' });
+    if (priority) chips.push({ label: priority.toUpperCase(), icon: 'task' });
+  } else if (actionName === 'wiki_create') {
+    if (type) chips.push({ label: type.replaceAll('_', ' '), icon: 'book' });
+    if (scope) chips.push({ label: scope, icon: 'book' });
+  } else if (actionName === 'post_message') {
+    const space = getStringParam(params, ['space_name']);
+    if (space) chips.push({ label: `#${space}`, icon: 'project' });
+  }
+
+  return chips.slice(0, 4);
+}
+
+function CompactChipIcon({ icon }: { icon?: ApprovalChipIconName }) {
+  if (icon === 'user') return <UserRound size={12} strokeWidth={1.8} />;
+  if (icon === 'calendar') return <CalendarClock size={12} strokeWidth={1.8} />;
+  if (icon === 'project') return <FolderKanban size={12} strokeWidth={1.8} />;
+  if (icon === 'book') return <BookOpen size={12} strokeWidth={1.8} />;
+  if (icon === 'task') return <CheckSquare size={12} strokeWidth={1.8} />;
+  if (icon === 'message') return <MessageSquare size={12} strokeWidth={1.8} />;
+  if (icon === 'shield') return <ShieldAlert size={12} strokeWidth={1.8} />;
+  if (icon === 'clock') return <Clock3 size={12} strokeWidth={1.8} />;
+  if (icon === 'tag') return <Tag size={12} strokeWidth={1.8} />;
+  return null;
+}
+
+function CompactActionIcon({ icon }: { icon: ApprovalIconName }) {
+  if (icon === 'knowledge') return <BookOpen size={14} strokeWidth={1.9} />;
+  if (icon === 'message') return <MessageSquare size={14} strokeWidth={1.9} />;
+  if (icon === 'note') return <StickyNote size={14} strokeWidth={1.9} />;
+  if (icon === 'calendar') return <CalendarClock size={14} strokeWidth={1.9} />;
+  if (icon === 'canvas') return <ScrollText size={14} strokeWidth={1.9} />;
+  if (icon === 'plan') return <Sparkles size={14} strokeWidth={1.9} />;
+  if (icon === 'admin') return <ShieldAlert size={14} strokeWidth={1.9} />;
+  if (icon === 'generic') return <Info size={14} strokeWidth={1.9} />;
+  return <CheckSquare size={14} strokeWidth={1.9} />;
+}
+
 function getSourceQuote(params: Record<string, any>) {
   return getStringParam(params, [
     'source_message_content',
@@ -271,6 +384,65 @@ function getSourceQuote(params: Record<string, any>) {
     'source_content',
     'origin_message_content',
   ]);
+}
+
+function getDisplaySourceQuote(params: Record<string, any>) {
+  const quote = getSourceQuote(params)
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!quote) return '';
+  const lower = quote.toLowerCase();
+  if (
+    lower.includes('queued for your approval') ||
+    lower.includes('review the approval card') ||
+    lower.includes('where you can approve') ||
+    lower.includes('you can approve it')
+  ) {
+    return '';
+  }
+
+  return quote;
+}
+
+function getSubtaskDraftText(params: Record<string, any>) {
+  const subtasks = params.subtasks;
+  if (!Array.isArray(subtasks)) return '';
+  const lines = subtasks
+    .map((subtask, index) => {
+      if (!subtask || typeof subtask !== 'object') return '';
+      const record = subtask as Record<string, any>;
+      const title = getStringParam(record, ['title']);
+      if (!title) return '';
+      const assignee = getStringParam(record, ['assignee_name', 'assignee']);
+      const due = getStringParam(record, ['due_date', 'dueDate']);
+      const priority = getStringParam(record, ['priority']);
+      const meta = [assignee ? `assignee: ${assignee}` : '', due ? `due: ${due}` : '', priority ? priority.toUpperCase() : '']
+        .filter(Boolean)
+        .join(', ');
+      return `${index + 1}. ${title}${meta ? ` (${meta})` : ''}`;
+    })
+    .filter(Boolean);
+  if (lines.length === 0) return '';
+  return `Subtasks:\n${lines.join('\n')}`;
+}
+
+function getDraftDetailText(actionName: string, params: Record<string, any>) {
+  const messageActions = new Set(['post_message', 'message_post', 'send_message', 'post_thread_reply']);
+  if (messageActions.has(actionName)) {
+    return getStringParam(params, ['content', 'message', 'body', 'text']);
+  }
+  if (actionName === 'create_task' || actionName === 'task_create' || actionName === 'task_update') {
+    const description = getStringParam(params, ['description', 'content', 'summary', 'comment']);
+    const subtasks = getSubtaskDraftText(params);
+    return [description, subtasks].filter(Boolean).join('\n\n');
+  }
+  if (actionName.includes('wiki') || actionName.includes('memory') || actionName === 'create_note') {
+    return getStringParam(params, ['content', 'description', 'summary']);
+  }
+  return '';
 }
 
 function getTierLabel(tier?: string | null) {
@@ -285,18 +457,22 @@ export function AgentActionCard({
   onApprove,
   onReject,
   onUndo,
+  variant = 'review',
 }: {
   action: AgentAction;
   onApprove: () => AgentActionMutationResult | Promise<AgentActionMutationResult>;
   onReject: () => AgentActionMutationResult | Promise<AgentActionMutationResult>;
   onUndo?: () => void;
+  variant?: AgentActionCardVariant;
 }) {
   const [localStatus, setLocalStatus] = useState<LocalStatus>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localResult, setLocalResult] = useState<unknown>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   const humanized = humanizeToolName(action.action);
+  const presentation = getAgentActionPresentation(action);
   const displayLabel = ACTION_LABELS[action.action] ?? humanized.full;
   const captureLabel = typeof action.params.capture_kind === 'string'
     ? CAPTURE_LABELS[action.params.capture_kind] ?? null
@@ -304,9 +480,9 @@ export function AgentActionCard({
   const isCapture = Boolean(captureLabel || action.params.proposed_by === 'defty' || action.params.source_message_id || action.source === 'defty_capture');
   const captureHeadline = isCapture
     ? getCaptureHeadline(action.action, action.params.capture_kind, displayLabel)
-    : displayLabel;
-  const approveLabel = getApproveLabel(action.action, action.params.capture_kind, displayLabel);
-  const doneLabel = getStateLabel(action.action, action.params.capture_kind, displayLabel);
+    : presentation.headline || displayLabel;
+  const approveLabel = presentation.approveLabel || getApproveLabel(action.action, action.params.capture_kind, displayLabel);
+  const doneLabel = presentation.doneLabel || getStateLabel(action.action, action.params.capture_kind, displayLabel);
   const captureReason = getStringParam(action.params, ['capture_reason', 'policy_reason']);
   const workIntentStatus = typeof action.params.work_intent_status === 'string'
     ? INTENT_STATUS_LABELS[action.params.work_intent_status] ?? null
@@ -321,7 +497,8 @@ export function AgentActionCard({
   const resolvedStatus = localStatus ?? serverStatus;
   const isBusy = resolvedStatus === 'approving' || resolvedStatus === 'rejecting' || resolvedStatus === 'executing';
   const hasReceipt = Boolean(action.has_receipt || resolvedStatus === 'approved' || resolvedStatus === 'rejected');
-  const sourceQuote = getSourceQuote(action.params);
+  const sourceQuote = getDisplaySourceQuote(action.params);
+  const draftDetailText = getDraftDetailText(action.action, action.params);
   const outcome = getProposedOutcome(action.action, action.params, displayLabel);
   const confidence = formatConfidence(getNumberParam(action.params, ['confidence', 'capture_confidence', 'classification_confidence']));
   const age = formatAge(action.created_at);
@@ -348,6 +525,7 @@ export function AgentActionCard({
       : null;
   const createdAtMs = action.created_at ? new Date(action.created_at).getTime() : null;
   const isPossiblyStale = resolvedStatus === 'pending' && createdAtMs != null && Date.now() - createdAtMs > 60 * 60 * 1000;
+  const isCompact = variant === 'compact';
 
   async function handleApprove() {
     if (isBusy) return;
@@ -512,26 +690,281 @@ export function AgentActionCard({
     );
   }
 
+  if (isCompact) {
+    const compactTitle = presentation.title || getCompactTitle(action.action, action.params, displayLabel);
+    const compactSummary = presentation.summary || getCompactSummary(action.action, action.params);
+    const compactEyebrow = presentation.eyebrow || getCompactEyebrow(action.action, action.params.capture_kind);
+    const compactChips = presentation.chips.length > 0 ? presentation.chips : getCompactChips(action.action, action.params);
+    const compactBadge = presentation.badge ?? getStringParam(action.params, ['priority']);
+    const compactApproveLabel = presentation.approveLabel || approveLabel;
+    const compactBadgeStyle = presentation.badgeTone === 'danger'
+      ? {
+        color: 'var(--status-red)',
+        background: 'rgba(239,68,68,0.12)',
+        border: '1px solid rgba(239,68,68,0.18)',
+      }
+      : presentation.badgeTone === 'caution'
+        ? {
+          color: 'var(--status-amber)',
+          background: 'rgba(245,158,11,0.12)',
+          border: '1px solid rgba(245,158,11,0.18)',
+        }
+        : {
+          color: 'var(--muted)',
+          background: 'var(--surface-container-highest)',
+          border: '1px solid var(--border)',
+        };
+
+    return (
+      <div
+        className="mt-2.5 w-full max-w-[500px]"
+        style={{
+          color: 'var(--foreground)',
+        }}
+      >
+        <div
+          className="rounded-[18px] px-3.5 py-3"
+          style={{
+            background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 96%, var(--primary) 4%), var(--bg-elevated))',
+            border: '1px solid color-mix(in srgb, var(--border) 72%, var(--primary) 28%)',
+            boxShadow: '0 12px 30px rgba(0,0,0,0.14)',
+          }}
+        >
+          <div className="flex items-start gap-2.5">
+            <div
+              className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl"
+              style={{
+                background: 'color-mix(in srgb, var(--primary) 16%, transparent)',
+                color: 'var(--primary)',
+              }}
+              aria-hidden="true"
+            >
+              <CompactActionIcon icon={presentation.icon} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <p className="min-w-0 text-[11px] font-semibold uppercase tracking-[0.035em]" style={{ color: 'var(--primary)' }}>
+                  {compactEyebrow}
+                </p>
+                {compactBadge && (
+                  <span
+                    className="inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase"
+                    style={compactBadgeStyle}
+                  >
+                    {compactBadge}
+                  </span>
+                )}
+              </div>
+              <p
+                className="mt-1 text-[14px] font-semibold leading-snug break-words [overflow-wrap:anywhere]"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {compactTitle}
+              </p>
+              {compactSummary && (
+                <p
+                  className="mt-1.5 line-clamp-2 text-[12px] leading-relaxed break-words [overflow-wrap:anywhere]"
+                  style={{ color: 'var(--foreground-secondary)' }}
+                >
+                  {compactSummary}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {compactChips.length > 0 && (
+            <div
+              className="mt-3 flex flex-wrap gap-1.5 border-t pt-2.5"
+              style={{ borderColor: 'color-mix(in srgb, var(--border) 72%, transparent)' }}
+            >
+              {compactChips
+                .filter((chip) => chip.label.toLowerCase() !== String(compactBadge ?? '').toLowerCase())
+                .map((chip) => (
+                  <span
+                    key={`${chip.icon}-${chip.label}`}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+                    style={{
+                      color: 'var(--foreground-secondary)',
+                      background: 'color-mix(in srgb, var(--surface-container-highest) 82%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--border) 85%, transparent)',
+                    }}
+                  >
+                    <CompactChipIcon icon={chip.icon} />
+                    <span className="truncate">{chip.label}</span>
+                  </span>
+                ))}
+            </div>
+          )}
+
+          <div
+            className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]"
+            style={{ color: 'var(--muted)' }}
+          >
+            <span>{presentation.sourceLabel}</span>
+          </div>
+
+          {showDetails && (
+            <div
+              className="mt-3 rounded-xl px-3 py-2.5 text-[12px]"
+              style={{
+                background: 'color-mix(in srgb, var(--surface) 86%, transparent)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+                <Info size={12} strokeWidth={1.8} />
+                {presentation.detailsLabel}
+              </div>
+              {draftDetailText ? (
+                <p
+                  className="mt-1.5 max-h-72 overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+                  style={{ color: 'var(--foreground-secondary)' }}
+                >
+                  {draftDetailText}
+                </p>
+              ) : sourceQuote ? (
+                <p className="mt-1.5 max-h-20 overflow-y-auto break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+                  "{truncate(sourceQuote, 180)}"
+                </p>
+              ) : (
+                <p className="mt-1.5" style={{ color: 'var(--foreground-secondary)' }}>
+                  {presentation.emptyDetails}
+                </p>
+              )}
+              {isPossiblyStale && (
+                <p className="mt-1.5 text-[11px]" style={{ color: 'var(--muted)' }}>
+                  This draft is older than an hour. Re-read the thread if the work has moved on.
+                </p>
+              )}
+              {sourceMessageId && sourceSpaceId && (
+                <a
+                  href={`/chat?space=${sourceSpaceId}&message=${sourceMessageId}`}
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium underline underline-offset-2"
+                  style={{ color: 'var(--primary)' }}
+                >
+                  Open source message
+                  <ExternalLink size={12} strokeWidth={1.7} />
+                </a>
+              )}
+            </div>
+          )}
+
+          {localError && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-xl px-3 py-2 text-[12px]"
+              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', color: 'var(--status-red)' }}
+            >
+              <AlertTriangle size={13} strokeWidth={1.8} className="mt-0.5 flex-shrink-0" />
+              <p className="min-w-0 break-words [overflow-wrap:anywhere]">
+                {truncate(localError, 180)}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleApprove}
+            disabled={isBusy}
+            className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-semibold text-white shadow-sm disabled:opacity-60"
+            style={{ background: 'var(--primary-container)' }}
+          >
+            <CheckCircle2 size={13} strokeWidth={1.9} />
+            {compactApproveLabel}
+          </button>
+          <button
+            type="button"
+            onClick={handleReject}
+            disabled={isBusy}
+            className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-xl px-4 py-1.5 text-[12px] font-medium disabled:opacity-60"
+            style={{ background: 'var(--surface-container-highest)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowDetails((value) => !value)}
+            className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-xl px-2.5 py-1.5 text-[12px] font-medium"
+            style={{ color: 'var(--muted)' }}
+          >
+            {showDetails ? <ChevronUp size={14} strokeWidth={1.8} /> : <ChevronDown size={14} strokeWidth={1.8} />}
+            Details
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const reviewTitle = presentation.title || captureHeadline;
+  const reviewSummary = presentation.summary || outcome.detail;
+  const reviewEyebrow = presentation.eyebrow || proposerLabel;
+  const reviewChips = presentation.chips.length > 0
+    ? presentation.chips
+    : getCompactChips(action.action, action.params);
+  const reviewBadge = presentation.badge ?? null;
+
   return (
     <div
       className="p-3 sm:p-3.5 mt-2 max-w-[460px] w-full min-w-0"
-      style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '8px' }}
+      style={{
+        background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 97%, var(--primary) 3%), var(--bg-elevated))',
+        border: '1px solid color-mix(in srgb, var(--border-strong) 78%, var(--primary) 22%)',
+        borderRadius: '18px',
+      }}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
-            {proposerLabel}
-          </p>
-          <p className="text-[13px] font-semibold break-words [overflow-wrap:anywhere]" style={{ color: 'var(--text-primary)' }}>
-            {captureHeadline}
-          </p>
-          {isCapture && (
-            <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-              Nothing changes until you approve.
+        <div className="flex min-w-0 items-start gap-2.5">
+          <div
+            className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl"
+            style={{
+              background: 'color-mix(in srgb, var(--primary) 16%, transparent)',
+              color: 'var(--primary)',
+            }}
+            aria-hidden="true"
+          >
+            <CompactActionIcon icon={presentation.icon} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.045em]" style={{ color: 'var(--primary)' }}>
+              {reviewEyebrow}
             </p>
-          )}
+            <p className="mt-0.5 text-[14px] font-semibold leading-snug break-words [overflow-wrap:anywhere]" style={{ color: 'var(--text-primary)' }}>
+              {reviewTitle}
+            </p>
+            {reviewSummary && (
+              <p className="mt-1 text-[12px] leading-relaxed line-clamp-2 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
+                {reviewSummary}
+              </p>
+            )}
+            {isCapture && (
+              <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
+                Nothing changes until you approve.
+              </p>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap gap-1.5 sm:justify-end">
+          {reviewBadge && (
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap font-semibold uppercase"
+              style={{
+                color: presentation.badgeTone === 'danger'
+                  ? 'var(--status-red)'
+                  : presentation.badgeTone === 'caution'
+                    ? 'var(--status-amber)'
+                    : 'var(--muted)',
+                background: presentation.badgeTone === 'danger'
+                  ? 'rgba(239,68,68,0.12)'
+                  : presentation.badgeTone === 'caution'
+                    ? 'rgba(245,158,11,0.12)'
+                    : 'var(--surface-container-highest)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {reviewBadge}
+            </span>
+          )}
           {isPossiblyStale && (
             <span
               className="text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap"
@@ -549,17 +982,48 @@ export function AgentActionCard({
         </div>
       </div>
 
+      {reviewChips.length > 0 && (
+        <div
+          className="mt-3 flex flex-wrap gap-1.5 border-t pt-2.5"
+          style={{ borderColor: 'color-mix(in srgb, var(--border) 72%, transparent)' }}
+        >
+          {reviewChips
+            .filter((chip) => chip.label.toLowerCase() !== String(reviewBadge ?? '').toLowerCase())
+            .map((chip) => (
+              <span
+                key={`${chip.icon}-${chip.label}`}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+                style={{
+                  color: 'var(--foreground-secondary)',
+                  background: 'color-mix(in srgb, var(--surface-container-highest) 82%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--border) 85%, transparent)',
+                }}
+              >
+                <CompactChipIcon icon={chip.icon} />
+                <span className="truncate">{chip.label}</span>
+              </span>
+            ))}
+        </div>
+      )}
+
       <div
         className="mt-3 rounded-md px-3 py-2 min-w-0"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
         <p className="text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
-          Proposed outcome
+          {presentation.detailsLabel}
         </p>
         <p className="text-[12px] font-medium mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground)' }}>
           {outcome.label}
         </p>
-        {outcome.detail && (
+        {draftDetailText ? (
+          <p
+            className="text-[11px] mt-1 max-h-72 overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+            style={{ color: 'var(--foreground-secondary)' }}
+          >
+            {draftDetailText}
+          </p>
+        ) : outcome.detail && (
           <p className="text-[11px] mt-0.5 break-words [overflow-wrap:anywhere]" style={{ color: 'var(--foreground-secondary)' }}>
             {outcome.detail}
           </p>
