@@ -265,6 +265,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       'Missing priority should default to p2. Missing due date is allowed and means no due date.',
       'For create_task descriptions, write concise markdown: short summary plus bullets when useful. Do not create an unformatted text wall.',
       'If subtasks are requested, put them in subtasks and keep the parent task description brief.',
+      'Preserve subtask ordering as dependencies: when a later subtask says "after that", "after the previous step", or "after the draft", set depends_on to the matching earlier subtask using 1-based indexes.',
       'If the user says "me" or "myself", use caller_name as assignee_name when caller_name is provided.',
       'If the request refers to "all three", "both", or "those tasks", use the supplied prior task references.',
       'For ambiguous channel names, ask a clarification instead of guessing.',
@@ -563,7 +564,36 @@ function normalizeCompiledSubtasks(value: unknown, params: CompileDeftyActionDra
       });
     })
     .filter((subtask): subtask is NonNullable<typeof subtask> => Boolean(subtask));
-  return subtasks.length > 0 ? subtasks : undefined;
+  if (subtasks.length === 0) return undefined;
+
+  return subtasks.map((subtask, index) => {
+    if (subtask.depends_on?.length || index === 0) return subtask;
+    const inferred = inferSubtaskDependencies(subtask.title, subtasks, index);
+    if (inferred.length === 0) return subtask;
+    return { ...subtask, depends_on: inferred };
+  });
+}
+
+function inferSubtaskDependencies(
+  title: string,
+  subtasks: Array<{ title: string; depends_on?: number[] }>,
+  index: number,
+): number[] {
+  const normalized = title.toLowerCase();
+  if (/\bafter\s+(?:that|this|the previous (?:step|task)|the prior (?:step|task))\b/.test(normalized)) {
+    return [index];
+  }
+
+  const namedDependency = normalized.match(/\bafter\s+(?:the\s+)?([a-z][a-z0-9-]*)\b/)?.[1];
+  if (!namedDependency) return [];
+  const candidates = subtasks
+    .slice(0, index)
+    .map((candidate, candidateIndex) => ({
+      index: candidateIndex + 1,
+      matches: candidate.title.toLowerCase().includes(namedDependency),
+    }))
+    .filter((candidate) => candidate.matches);
+  return candidates.length === 1 ? [candidates[0]!.index] : [];
 }
 
 function normalizeCompiledAssignee(value: unknown, params: CompileDeftyActionDraftParams) {

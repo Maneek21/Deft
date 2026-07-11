@@ -84,6 +84,27 @@ test('real subtasks are not duplicated as bullets in the parent description', ()
   assert.deepEqual(result.actions[0]?.params.subtasks[1]?.depends_on, [1]);
 });
 
+test('natural subtask sequencing becomes real task dependencies', () => {
+  const result = normalizeCompiledToolCalls([{
+    name: 'create_task',
+    input: {
+      title: 'Buyer trial follow-up',
+      project_name: 'Pilot Marketing Launch',
+      subtasks: [
+        { title: 'Confirm trial rows' },
+        { title: 'Draft the buyer summary after that' },
+        { title: 'Post the approved summary after the draft' },
+      ],
+    },
+  }], compileContext);
+
+  assert.deepEqual(result.actions[0]?.params.subtasks, [
+    { title: 'Confirm trial rows' },
+    { title: 'Draft the buyer summary after that', depends_on: [1] },
+    { title: 'Post the approved summary after the draft', depends_on: [2] },
+  ]);
+});
+
 test('compound compiler normalization preserves every requested action family', () => {
   const result = normalizeCompiledToolCalls([
     { name: 'wiki_write', input: { title: 'Trial', type: 'fact', content: 'Water deeply.' } },

@@ -184,7 +184,7 @@ function getTaskIdentity(params: Record<string, any>) {
   ]);
 }
 
-function getTaskPatchSummary(params: Record<string, any>) {
+function getTaskPatchSummary(params: Record<string, any>, actionName = '') {
   const task = getTaskIdentity(params) || 'task';
   const status = getNestedStringParam(params, ['new_status', 'status', 'patch.status']);
   const assignee = getNestedStringParam(params, ['assignee_name', 'assignee', 'patch.assignee_name']);
@@ -193,6 +193,8 @@ function getTaskPatchSummary(params: Record<string, any>) {
   const label = getNestedStringParam(params, ['label_name', 'patch.label_name']);
   const comment = getNestedStringParam(params, ['comment', 'content', 'patch.comment']);
 
+  if (actionName === 'close_task') return `Mark ${task} done`;
+  if (actionName === 'reopen_task') return `Reopen ${task}`;
   if (status) return `Move ${task} to ${status.replaceAll('_', ' ')}`;
   if (assignee) return `Assign ${task} to ${assignee}`;
   if (priority) return `Set ${task} to ${priority.toUpperCase()}`;
@@ -318,7 +320,7 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       icon: 'task',
       eyebrow: 'Task update',
       headline: 'Defty drafted a task update',
-      title: getTaskPatchSummary(params),
+      title: getTaskPatchSummary(params, action.action),
       summary: content ? truncateApprovalText(content, 140) : 'Review the proposed task change before it is applied.',
       approveLabel: 'Approve update',
       doneLabel: 'Task updated',

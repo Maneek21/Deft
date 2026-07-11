@@ -11,6 +11,7 @@ import {
   isDiscussionTaskCommand,
   isThreadTaskContinuationCommand,
   normalizeApprovalSurfaceCopy,
+  preferSubtaskReferences,
 } from '../src/workers/handlers/agent-reply.js';
 
 test('compiler recovery gate recognizes the registered write families without choosing one', () => {
@@ -234,6 +235,26 @@ test('task references prefer the prior reply list before noisy source/citation t
   );
 
   assert.deepEqual(references, ['BUY-1', 'OPS-2', 'MKT-9']);
+});
+
+test('subtask follow-ups replace a parent reference with every child before applying the three-card cap', () => {
+  assert.deepEqual(
+    preferSubtaskReferences(
+      ['MKT-17', 'MKT-18', 'MKT-19', 'MKT-20'],
+      [
+        { identifier: 'MKT-17', parent_task_id: null },
+        { identifier: 'MKT-18', parent_task_id: 'parent-17' },
+        { identifier: 'MKT-19', parent_task_id: 'parent-17' },
+        { identifier: 'MKT-20', parent_task_id: 'parent-17' },
+      ],
+      [
+        { identifier: 'MKT-20', number: 20 },
+        { identifier: 'MKT-18', number: 18 },
+        { identifier: 'MKT-19', number: 19 },
+      ],
+    ),
+    ['MKT-18', 'MKT-19', 'MKT-20'],
+  );
 });
 
 test('post message fallback creates channel approval action but refuses DM wording', () => {
