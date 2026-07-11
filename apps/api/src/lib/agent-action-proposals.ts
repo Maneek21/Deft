@@ -568,18 +568,22 @@ function normalizeCompiledSubtasks(value: unknown, params: CompileDeftyActionDra
 
   return subtasks.map((subtask, index) => {
     if (subtask.depends_on?.length || index === 0) return subtask;
-    const inferred = inferSubtaskDependencies(subtask.title, subtasks, index);
+    const inferred = inferSubtaskDependencies(
+      [subtask.title, subtask.description].filter(Boolean).join(' '),
+      subtasks,
+      index,
+    );
     if (inferred.length === 0) return subtask;
     return { ...subtask, depends_on: inferred };
   });
 }
 
 function inferSubtaskDependencies(
-  title: string,
-  subtasks: Array<{ title: string; depends_on?: number[] }>,
+  meaning: string,
+  subtasks: Array<{ title: string; description?: string; depends_on?: number[] }>,
   index: number,
 ): number[] {
-  const normalized = title.toLowerCase();
+  const normalized = meaning.toLowerCase();
   if (/\bafter\s+(?:that|this|the previous (?:step|task)|the prior (?:step|task))\b/.test(normalized)) {
     return [index];
   }
@@ -590,7 +594,11 @@ function inferSubtaskDependencies(
     .slice(0, index)
     .map((candidate, candidateIndex) => ({
       index: candidateIndex + 1,
-      matches: candidate.title.toLowerCase().includes(namedDependency),
+      matches: [candidate.title, candidate.description]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(namedDependency),
     }))
     .filter((candidate) => candidate.matches);
   return candidates.length === 1 ? [candidates[0]!.index] : [];
