@@ -128,6 +128,10 @@ async function teardownFixture(c: pg.Client, f: Fixture): Promise<void> {
   await c.query(`DELETE FROM tasks WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM projects WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM agent_employees WHERE org_id = $1`, [f.orgId]);
+  // The nudge path records its agent action asynchronously after posting the
+  // comment. Sweep once more after deleting the employee so teardown cannot
+  // race that final audit write.
+  await c.query(`DELETE FROM agent_actions WHERE org_id = $1 OR user_id = $2`, [f.orgId, f.agentUserId]);
   await c.query(`DELETE FROM org_members WHERE org_id = $1`, [f.orgId]);
   await c.query(`DELETE FROM users WHERE id = $1`, [f.humanUserId]);
   await c.query(`DELETE FROM users WHERE id = $1`, [f.agentUserId]);

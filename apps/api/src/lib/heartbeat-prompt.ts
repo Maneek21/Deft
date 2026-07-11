@@ -20,7 +20,7 @@
  * idempotency + loop detection — the normalization excludes the real
  * timestamp so two identical ticks hash identically.
  */
-import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { db } from './db.js';
 import {
@@ -141,7 +141,8 @@ export async function buildHeartbeatPrompt(
     })
     .from(agentEmployeeSkills)
     .innerJoin(skills, eq(skills.id, agentEmployeeSkills.skill_id))
-    .where(eq(agentEmployeeSkills.agent_employee_id, employee.id));
+    .where(eq(agentEmployeeSkills.agent_employee_id, employee.id))
+    .orderBy(asc(skills.created_at), asc(skills.slug));
 
   const skillChecklist: string[] = [];
   for (const row of installed) {

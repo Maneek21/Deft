@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/scripts/seed-test-fixtures.ts && tsx --test --test-concurrency=1 --test-force-exit test/*.test.ts",
+    "test": "tsx src/scripts/run-api-tests.ts",
     "start": "node dist/server.js"
   },
   "dependencies": {
