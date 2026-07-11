@@ -1643,6 +1643,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           priorTaskReferences,
           spaceName: space?.name ?? null,
           callerName: callerUser?.name ?? null,
+          allowedActionNames: runtimeResolvedWikiUpdate ? ['wiki_write'] : undefined,
         });
       } catch (err) {
         console.warn('[agent-reply] Action draft compiler failed; falling back to deterministic extractors', {

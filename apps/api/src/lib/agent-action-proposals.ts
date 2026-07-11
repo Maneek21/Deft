@@ -137,6 +137,7 @@ type CompileDeftyActionDraftParams = {
   priorTaskReferences?: string[];
   spaceName?: string | null;
   callerName?: string | null;
+  allowedActionNames?: string[];
 };
 
 const CLARIFICATION_TOOL = {
@@ -160,8 +161,11 @@ export function getActionCompilerTools() {
   ];
 }
 
-function getActionCompilerToolsForPrompt(promptContent: string) {
-  const tools = getActionCompilerTools();
+export function getActionCompilerToolsForPrompt(promptContent: string, allowedActionNames?: string[]) {
+  const allowlist = allowedActionNames?.length ? new Set(allowedActionNames) : null;
+  const tools = allowlist
+    ? getActionCompilerTools().filter((tool) => allowlist.has(tool.name) || tool.name === CLARIFICATION_TOOL.name)
+    : getActionCompilerTools();
   if (/\b(?:remind\s+me|create\s+(?:a\s+)?reminder|set\s+(?:a\s+)?reminder)\b/i.test(promptContent)) {
     return tools.filter((tool) => tool.name === 'create_reminder');
   }
@@ -271,7 +275,7 @@ export async function compileDeftyActionDraft(params: CompileDeftyActionDraftPar
       'For ambiguous channel names, ask a clarification instead of guessing.',
       'Return no actions for read-only questions.',
     ].join('\n'),
-    tools: getActionCompilerToolsForPrompt(params.promptContent),
+    tools: getActionCompilerToolsForPrompt(params.promptContent, params.allowedActionNames),
     messages: [{
       role: 'user',
       content: JSON.stringify({
