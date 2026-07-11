@@ -505,6 +505,14 @@ export async function runAgentQuery(params: {
           agentEmployeeId,
         );
         allCitations.push(...citations);
+        executedActions.push({
+          actionId: null,
+          action: tool.name,
+          params: tool.input,
+          success: !(result && typeof result === 'object' && 'error' in result),
+          result,
+          readOnly: true,
+        });
 
         toolResults.push({
           type: 'tool_result' as const,
