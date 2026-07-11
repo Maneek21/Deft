@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, and, desc, lt, lte, gt, sql, isNull, inArray, ne } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
@@ -706,6 +706,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           .where(and(
             eq(agentEmployees.org_id, user.org_id),
             eq(agentEmployees.is_active, true),
+            ne(agentEmployees.runtime_kind, 'defty_system'),
             inArray(agentEmployees.user_id, Array.from(targetUserIds)),
           ));
 

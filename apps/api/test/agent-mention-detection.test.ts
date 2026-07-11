@@ -19,14 +19,16 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import { db } from '../src/lib/db.js';
-import { users, orgs, orgMembers, spaces, spaceMembers, jobQueue, messages, notifications } from '@deft/db/schema';
+import { users, orgs, orgMembers, spaces, spaceMembers, jobQueue, messages, notifications, agentEmployees, agentActions } from '@deft/db/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
-import { ensureDeftyMembership, DEFTY_EMAIL } from '../src/lib/ensure-defty-membership.js';
+import { ensureDeftyEmployee, ensureDeftyMembership, DEFTY_EMAIL } from '../src/lib/ensure-defty-membership.js';
 
 let testOrgId: string;
 let humanUserId: string;
 let deftyUserId: string;
+let deftyEmployeeId: string;
 let byoaAgentUserId: string;
+let byoaAgentEmployeeId: string;
 let spaceId: string;
 let app: Hono;
 // Whether Defty already existed before this test run — used in cleanup.
@@ -62,6 +64,7 @@ before(async () => {
   // Defty — the real system agent. ensureDeftyMembership creates-or-reuses
   // the canonical Defty user and adds it as a member of testOrgId.
   deftyUserId = await ensureDeftyMembership(testOrgId);
+  deftyEmployeeId = (await ensureDeftyEmployee(testOrgId)).employeeId;
 
   // BYOA agent — kind='agent' but NOT Defty. Simulates an arbitrary BYOA
   // employee. agent-reply must NOT fire for mentions of this user.
@@ -78,6 +81,28 @@ before(async () => {
     { org_id: testOrgId, user_id: byoaAgentUserId, role: 'member' },
     // Defty's org_members row is handled by ensureDeftyMembership above.
   ]);
+
+  const [byoaEmployee] = await db.insert(agentEmployees).values({
+    org_id: testOrgId,
+    user_id: byoaAgentUserId,
+    name: 'AMD BYOA Agent',
+    slug: `amd-byoa-agent-${ts}`,
+    role: 'custom',
+    system_prompt: 'Test BYOA agent.',
+    expertise_description: 'Test employee for mention routing.',
+    starter_prompts: [],
+    disabled_tools: [],
+    space_ids: [],
+    project_ids: [],
+    trust_level: 'conservative',
+    is_active: true,
+    is_byoa: true,
+    runtime_kind: 'custom_mcp',
+    wake_mode: 'manual',
+    certification_status: 'token_issued',
+    created_by: humanUserId,
+  }).returning({ id: agentEmployees.id });
+  byoaAgentEmployeeId = byoaEmployee!.id;
 
   const [space] = await db.insert(spaces).values({
     org_id: testOrgId,
@@ -124,8 +149,11 @@ after(async () => {
     // The message route creates mention + space notifications, so clean these before users.
     const userIdsToClean = [humanUserId, byoaAgentUserId, deftyUserId];
     await db.delete(notifications).where(inArray(notifications.user_id, userIdsToClean));
+    await db.delete(agentActions).where(eq(agentActions.org_id, testOrgId));
+    await db.delete(messages).where(eq(messages.space_id, spaceId));
     await db.delete(spaceMembers).where(eq(spaceMembers.space_id, spaceId));
     await db.delete(spaces).where(eq(spaces.id, spaceId));
+    await db.delete(agentEmployees).where(inArray(agentEmployees.id, [byoaAgentEmployeeId, deftyEmployeeId]));
     // Remove only the org_members rows we created for testOrgId.
     await db.delete(orgMembers).where(eq(orgMembers.org_id, testOrgId));
     await db.delete(users).where(inArray(users.id, [humanUserId, byoaAgentUserId]));
@@ -162,6 +190,24 @@ async function findAgentReplyJob(messageId: string): Promise<boolean> {
   return false;
 }
 
+async function findAgentEmployeeMessageJob(messageId: string): Promise<boolean> {
+  for (let i = 0; i < 6; i++) {
+    const rows = await db
+      .select({ id: jobQueue.id })
+      .from(jobQueue)
+      .where(
+        and(
+          eq(jobQueue.name, 'agent-employee-message'),
+          sql`${jobQueue.data}->>'messageId' = ${messageId}`,
+        ),
+      )
+      .limit(1);
+    if (rows.length > 0) return true;
+    if (i < 5) await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('structured mention of Defty user triggers agent-reply dispatch', async () => {
@@ -181,6 +227,12 @@ test('structured mention of Defty user triggers agent-reply dispatch', async () 
 
   const dispatched = await findAgentReplyJob(body.id!);
   assert.ok(dispatched, 'agent-reply job should be enqueued for Defty mention');
+  const employeeQueued = await findAgentEmployeeMessageJob(body.id!);
+  assert.equal(
+    employeeQueued,
+    false,
+    'Defty mention should not also enqueue the external agent-employee message path',
+  );
 });
 
 test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger agent-reply dispatch', async () => {
@@ -203,6 +255,8 @@ test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger 
   await new Promise((r) => setTimeout(r, 100));
   const dispatched = await findAgentReplyJob(body.id!);
   assert.ok(!dispatched, 'agent-reply job should NOT be enqueued for BYOA agent mention');
+  const employeeQueued = await findAgentEmployeeMessageJob(body.id!);
+  assert.ok(employeeQueued, 'BYOA agent mention should enqueue agent-employee-message');
 });
 
 test('structured mention of kind=human user does NOT trigger agent-reply dispatch', async () => {

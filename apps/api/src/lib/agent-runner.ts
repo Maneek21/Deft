@@ -5,7 +5,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './db.js';
-import { orgs, agentMemory, wikiPages } from '@deft/db/schema';
+import { orgs, agentMemory, users, wikiPages } from '@deft/db/schema';
 import { eq, and, or, desc, sql } from 'drizzle-orm';
 import { resolveReasonProvider, getOrgAIConfig } from './org-ai-config.js';
 import { createAgentMessage } from './agent-llm.js';
@@ -25,7 +25,7 @@ Rules:
 - Cite your sources (the tools return source IDs)
 - Be concise and direct
 - Before proposing a write action that names a person (assignee, mentioned user) or project, verify they exist using the appropriate search tool. If the named entity doesn't exist in this workspace, ASK the user to clarify rather than confidently proposing a write against a fabricated name. Never invent a project name to attach a task to — if the user hasn't named a project, OR explicitly says "no project", set project_name to "" (empty string). NEVER default to "General", "Inbox", "Default", or any other invented project name; there is no implicit default project. Same rule for assignee_name when unassigned.
-- For write actions (create_task, update_task_status, post_message), clearly explain what you'll do. When invoked from a chat mention, write actions are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
+- For registered write actions (including tasks, messages, wiki, notes, reminders, canvas, and decision links), clearly explain what you'll do. When invoked from a chat mention, writes are not executed immediately — they're queued for the user's approval, which appears as an Approve/Reject card on your reply and in the user's Inbox under the Approvals tab. Do NOT refer to an "Agent panel" or "Agent dashboard" — neither exists.
 - You are responding in a chat thread. Keep your reply as a single cohesive message.
 - Use markdown formatting (bold, lists, headers) for structure but keep it compact.
 - Do NOT narrate your tool usage. Do NOT say "I'll search for..." or "Let me look up..." — just use the tools silently and present your findings directly.
@@ -134,6 +134,8 @@ export async function runAgentQuery(params: {
     name: string;
     otherMemberName?: string;
   };
+  /** Bound ordinary interactive work without changing background-agent depth. */
+  maxIterations?: number;
 }): Promise<{
   text: string;
   citations: any[];
@@ -146,7 +148,14 @@ export async function runAgentQuery(params: {
   tokensIn: number;
   tokensOut: number;
   assistantBlocks: Anthropic.ContentBlock[] | null;
+  metrics: {
+    total_ms: number;
+    retrieval_ms: number;
+    reasoning_ms: number;
+    iterations: number;
+  };
 }> {
+  const runStartedAt = Date.now();
   const { content, orgId, userId, orgName, conversationHistory, mode = 'chat_mention', systemPromptOverride, agentEmployeeId } = params;
 
   // BYOK — resolve the org's chosen reasoning provider (anthropic | openai |
@@ -187,9 +196,17 @@ export async function runAgentQuery(params: {
     trustLevel = (params.trustLevelOverride || org?.trust_level || 'conservative') as TrustLevel;
   }
 
+  const [[orgClock], [userClock]] = await Promise.all([
+    db.select({ timezone: orgs.timezone }).from(orgs).where(eq(orgs.id, orgId)).limit(1),
+    db.select({ timezone: users.timezone }).from(users).where(eq(users.id, userId)).limit(1),
+  ]);
+  const workspaceTimezone = userClock?.timezone || orgClock?.timezone || 'UTC';
+  const nowIso = new Date().toISOString();
+
   let systemPrompt = SYSTEM_PROMPT
     .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
     .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
+  systemPrompt += `\nCurrent time: ${nowIso}. User/workspace timezone: ${workspaceTimezone}. Resolve relative dates and times in this timezone unless the user explicitly supplies another one.`;
 
   // Surface context — let the agent adapt to DM vs channel.
   if (params.spaceContext) {
@@ -204,6 +221,7 @@ export async function runAgentQuery(params: {
   }
 
   // Auto-load relevant wiki context through the shared retrieval gateway.
+  const retrievalStartedAt = Date.now();
   try {
     const searchQuery = content.replace(/[^a-zA-Z0-9\s]/g, '').trim();
     if (searchQuery.length > 2) {
@@ -240,7 +258,7 @@ export async function runAgentQuery(params: {
               })),
             ))
             .orderBy(desc(wikiPages.updated_at))
-            .limit(3)
+            .limit(2)
         : [];
       const allRelevantPages = await retrieveContext({
         query: searchQuery,
@@ -248,25 +266,30 @@ export async function runAgentQuery(params: {
         user_id: userId,
         agent_employee_id: agentEmployeeId,
         types: ['wiki'],
-        limit: 5,
+        limit: 3,
       });
 
       if (exactWikiRows.length > 0) {
         const exactWikiContext = exactWikiRows.map((p) => {
           const summary = p.summary?.trim()
-            || p.content.replace(/\s+/g, ' ').slice(0, 900);
+            || p.content.replace(/\s+/g, ' ').slice(0, 500);
           return `- **${p.title}** (${p.type ?? 'wiki'}, slug: ${p.slug}, fresh exact match): ${summary}`;
         }).join('\n');
         systemPrompt += `\n\nFresh exact matches from the team wiki:\n${exactWikiContext}`;
       }
 
-      if (allRelevantPages.length > 0) {
-        const wikiContext = allRelevantPages.map((p) => {
+      const exactSlugs = new Set(exactWikiRows.map((page) => page.slug));
+      const uniqueRelevantPages = allRelevantPages.filter((page) => {
+        const slug = typeof page.metadata?.slug === 'string' ? page.metadata.slug : page.source_id;
+        return !exactSlugs.has(slug);
+      });
+      if (uniqueRelevantPages.length > 0) {
+        const wikiContext = uniqueRelevantPages.map((p) => {
           const type = typeof p.metadata?.type === 'string' ? p.metadata.type : 'wiki';
           const slug = typeof p.metadata?.slug === 'string' ? p.metadata.slug : p.source_id;
           const summary = typeof p.metadata?.summary === 'string' && p.metadata.summary.trim().length > 0
             ? p.metadata.summary.trim()
-            : p.content.replace(/\s+/g, ' ').slice(0, 600);
+            : p.content.replace(/\s+/g, ' ').slice(0, 350);
           return `- **${p.title}** (${type}, slug: ${slug}, confidence: ${p.confidence ?? 'unknown'}): ${summary}`;
         }).join('\n');
         systemPrompt += `\n\nRelevant knowledge from the team wiki:\n${wikiContext}\nUse wiki_search and wiki_read tools for more details.`;
@@ -276,12 +299,14 @@ export async function runAgentQuery(params: {
     // Non-critical: don't fail the agent reply if wiki auto-load errors
     console.warn('[agent-runner] Wiki auto-load failed:', (err as Error).message);
   }
+  const retrievalMs = Date.now() - retrievalStartedAt;
 
   // Apply system prompt override if provided (for agent employees)
   if (systemPromptOverride) {
     systemPrompt = systemPromptOverride
       .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
-      .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo;
+      .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo
+      + `\nCurrent time: ${nowIso}. User/workspace timezone: ${workspaceTimezone}. Resolve relative dates and times in this timezone unless the user explicitly supplies another one.`;
   }
 
   const reasonModel = reasonProvider.model;
@@ -317,7 +342,8 @@ export async function runAgentQuery(params: {
   let totalTokensOut = 0;
 
   let iterations = 0;
-  const maxIterations = params.mode === 'background' ? 25 : 8;
+  const maxIterations = params.maxIterations ?? (params.mode === 'background' ? 25 : 8);
+  const reasoningStartedAt = Date.now();
 
   // Task 3.10 — emit live step progress to the org room so the task-detail
   // UI can render a strip while the agent works. We don't know the true
@@ -537,5 +563,11 @@ export async function runAgentQuery(params: {
     tokensIn: totalTokensIn,
     tokensOut: totalTokensOut,
     assistantBlocks: lastResponseContent,
+    metrics: {
+      total_ms: Date.now() - runStartedAt,
+      retrieval_ms: retrievalMs,
+      reasoning_ms: Date.now() - reasoningStartedAt,
+      iterations,
+    },
   };
 }
