@@ -64,15 +64,22 @@ async function getVisibleMessage(messageId: string, orgId: string, userId: strin
     org_id: messages.org_id,
     space_id: messages.space_id,
     user_id: messages.user_id,
+    parent_id: messages.parent_id,
     content: messages.content,
+    is_deleted: messages.is_deleted,
+    metadata: messages.metadata,
     created_at: messages.created_at,
     edited_at: messages.edited_at,
+    user_name: users.name,
+    user_avatar: users.avatar_url,
+    user_timezone: users.timezone,
   })
     .from(messages)
     .innerJoin(spaceMembers, and(
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
+    .innerJoin(users, eq(messages.user_id, users.id))
     .where(and(
       eq(messages.id, messageId),
       eq(messages.org_id, orgId),
@@ -957,16 +964,21 @@ messageRoutes.get('/:id/thread', async (c) => {
       )
       .orderBy(messages.created_at);
 
-    // Fetch reactions for replies
+    // Fetch reactions for parent + replies so deep-linked thread drawers can
+    // hydrate from this endpoint without needing the parent message list first.
     const replyIds = replies.map((r) => r.id);
-    const reactionsMap = await getReactionsForMessages(replyIds);
+    const reactionsMap = await getReactionsForMessages([parentMsg.id, ...replyIds]);
+    const parentWithReactions = {
+      ...parentMsg,
+      reactions: reactionsMap.get(parentMsg.id) ?? [],
+    };
 
     const repliesWithReactions = replies.map((reply) => ({
       ...reply,
       reactions: reactionsMap.get(reply.id) ?? [],
     }));
 
-    return c.json({ replies: repliesWithReactions });
+    return c.json({ parent: parentWithReactions, replies: repliesWithReactions });
   } catch (err) {
     console.error('Failed to fetch thread:', err);
     return c.json({ error: 'Failed to fetch thread', code: 'INTERNAL_ERROR' }, 500);

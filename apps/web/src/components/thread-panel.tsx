@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
@@ -11,6 +11,9 @@ import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
 import { RichComposer } from './rich-composer';
 import { useFileUpload } from './file-upload';
+import { AgentActionCard, type AgentAction } from './agent-action-card';
+import useSWR, { mutate as swrMutate } from 'swr';
+import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
 
 type Reaction = {
   emoji: string;
@@ -21,6 +24,7 @@ type Reaction = {
 type Message = {
   id: string;
   content: string;
+  space_id?: string;
   user_id: string;
   user_name: string;
   user_avatar: string | null;
@@ -30,6 +34,13 @@ type Message = {
   reactions?: Reaction[];
   file_ids?: string[];
 };
+
+async function apiErrorMessage(res: Response, fallback: string) {
+  const body = await res.json().catch(() => null);
+  if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+  if (body && typeof body.message === 'string' && body.message.trim()) return body.message;
+  return fallback;
+}
 
 // formatTime imported as formatMessageTime from @/lib/time
 
@@ -152,7 +163,6 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const messageId = parentMessage.id;
   const { user } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [replies, setReplies] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [emojiPickerMsgId, setEmojiPickerMsgId] = useState<string | null>(null);
@@ -162,6 +172,26 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
+  const pendingBySpaceKey = spaceId
+    ? `/api/agent/actions/pending-by-space?space_id=${spaceId}`
+    : null;
+
+  const { data: pendingByMessage } = useSWR(
+    pendingBySpaceKey,
+    async (url: string) => {
+      const res = await api.get(url);
+      if (!res.ok) return {} as Record<string, AgentAction[]>;
+      const list: Array<AgentAction & { message_id: string }> = await res.json();
+      const map: Record<string, AgentAction[]> = {};
+      for (const action of list) {
+        if (!action.message_id) continue;
+        (map[action.message_id] ??= []).push(action);
+      }
+      return map;
+    },
+    { refreshInterval: 5000, fallbackData: {} },
+  );
+
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
     check();
@@ -169,23 +199,19 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  // Sync ?thread= URL param on open/close
+  const closeThread = useCallback(() => {
+    router.replace(spaceId ? `/chat?space=${spaceId}` : '/chat');
+    onClose();
+  }, [onClose, router, spaceId]);
+
+  // Sync ?thread= URL param on open. Closing owns URL cleanup explicitly via
+  // closeThread; doing this in effect cleanup races with React dev remounts and
+  // can strip a valid deep link before the thread has hydrated.
   useEffect(() => {
-    const currentSpace = searchParams.get('space');
-    const base = currentSpace ? `/chat?space=${currentSpace}&thread=${messageId}` : `/chat?thread=${messageId}`;
-    router.replace(base);
-    return () => {
-      // Strip ?thread= only if the user is still on /chat. If they navigated
-      // away (e.g. clicked Tasks/Notes in the sidebar), Next.js has already
-      // started pushing the new route — running router.replace here would
-      // race with and override that navigation, sending them back to /chat.
-      if (typeof window === 'undefined' || window.location.pathname !== '/chat') return;
-      const currentSpaceNow = new URLSearchParams(window.location.search).get('space');
-      const sp = currentSpaceNow ? `/chat?space=${currentSpaceNow}` : '/chat';
-      router.replace(sp);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageId]);
+    const nextUrl = `/chat?space=${spaceId}&thread=${messageId}`;
+    if (typeof window !== 'undefined' && `${window.location.pathname}${window.location.search}` === nextUrl) return;
+    router.replace(nextUrl);
+  }, [messageId, router, spaceId]);
 
   const scrollToBottom = useCallback(() => {
     repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -225,6 +251,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
         setReplies((prev) => [...prev, msg]);
+        if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
         setTimeout(scrollToBottom, 50);
       }
     };
@@ -277,16 +304,16 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
       socket.off('reaction:added', onReactionAdded);
       socket.off('reaction:removed', onReactionRemoved);
     };
-  }, [messageId, scrollToBottom]);
+  }, [messageId, pendingBySpaceKey, scrollToBottom]);
 
   // Escape to close
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') closeThread();
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, [closeThread]);
 
   const handleRichSend = async (html: string, _text: string) => {
     let content = html;
@@ -338,8 +365,41 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     }
   };
 
+  const renderPendingActions = (msgId: string) => {
+    const actions = pendingByMessage?.[msgId] ?? [];
+    if (actions.length === 0) return null;
+    return (
+      <div className="mt-3 space-y-2">
+        {actions.map((action) => (
+          <AgentActionCard
+            key={action.id}
+            action={action}
+            variant="compact"
+            onApprove={async () => {
+              const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
+              if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
+              const body = await res.json().catch(() => ({ status: 'approved' }));
+              if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+              return body;
+            }}
+            onReject={async () => {
+              const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
+              if (!res.ok) throw new Error(await apiErrorMessage(res, `Reject failed (${res.status})`));
+              const body = await res.json().catch(() => ({ status: 'rejected' }));
+              if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+              return body;
+            }}
+          />
+        ))}
+      </div>
+    );
+  };
+
   const renderMessage = (msg: Message, isParent = false) => {
     const color = avatarColor(msg.user_name || '');
+    const inlineActions = pendingByMessage?.[msg.id] ?? [];
+    const hasApprovalContext = inlineActions.length > 0 || Object.keys(pendingByMessage ?? {}).length > 0;
+    const displayContent = normalizeInlineApprovalCopy(msg.content, hasApprovalContext);
     return (
       <div className={`flex gap-3 ${isParent ? 'py-3' : 'py-2'}`}>
         <div className="flex-shrink-0">
@@ -376,13 +436,15 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                 className="text-[13px] break-words mt-0.5"
                 style={{ color: 'var(--text-primary)', lineHeight: '20px' }}
               >
-                {renderContent(msg.content)}
+                {renderContent(displayContent)}
                 {msg.edited_at && (
                   <span className="text-[10px] ml-1.5" style={{ color: 'var(--muted)' }}>
                     (edited)
                   </span>
                 )}
               </div>
+
+              {renderPendingActions(msg.id)}
 
               {/* Reactions */}
               {msg.reactions && msg.reactions.length > 0 && (
@@ -447,7 +509,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         <div className="flex items-center gap-2">
           {isMobile && (
             <button
-              onClick={onClose}
+              onClick={closeThread}
               className="flex items-center justify-center min-h-[44px] min-w-[44px] rounded-md mr-1"
               style={{ color: 'var(--muted)' }}
             >
@@ -463,7 +525,7 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
         </div>
         {!isMobile && (
           <button
-            onClick={onClose}
+            onClick={closeThread}
             className="flex items-center justify-center min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 md:p-1 rounded-md"
             style={{ color: 'var(--muted)' }}
           >

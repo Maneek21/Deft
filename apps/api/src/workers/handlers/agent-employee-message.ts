@@ -114,18 +114,17 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   try {
     const io = getIO();
     const deftyUserId = await ensureDeftyMembership(orgId);
-    const cadence = employee.heartbeat_interval_min ?? 30;
     const lastSeen = employee.last_mcp_call_at ?? employee.last_heartbeat_at ?? null;
-    const statusText = lastSeen
-      ? `Last MCP contact: ${new Date(lastSeen).toLocaleString('en-US', { timeZone: 'UTC' })} UTC.`
-      : 'No MCP contact has been recorded yet; connect or certify the runtime from the Developer tab.';
+    const humanStatus = lastSeen
+      ? `${employee.name} will reply here when they pick it up.`
+      : `${employee.name} has not checked in yet, but this is waiting for them.`;
     const [sysMsg] = await db
       .insert(messages)
       .values({
         org_id: orgId,
         space_id: spaceId,
         user_id: deftyUserId,
-        content: `Queued for ${employee.name}. Live channel delivery will wake the runtime when it is connected; fetch_unread remains available as a fallback${employee.wake_mode === 'polling' ? ` (polling about every ${cadence}m)` : ''}. ${statusText}`,
+        content: `Sent to ${employee.name}. ${humanStatus}`,
         parent_id: triggerMsg.parent_id ?? null,
         metadata: {
           kind: 'system_note',

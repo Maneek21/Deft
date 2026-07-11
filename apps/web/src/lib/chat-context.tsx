@@ -17,6 +17,7 @@ type Space = {
 type ThreadMessage = {
   id: string;
   content: string;
+  space_id?: string;
   user_id: string;
   user_name: string;
   user_avatar: string | null;

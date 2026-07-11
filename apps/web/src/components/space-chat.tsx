@@ -58,6 +58,7 @@ import { ClipRecorder } from './clip-recorder';
 import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
+import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -84,6 +85,13 @@ type LinkPreview = {
   favicon: string | null;
   siteName: string | null;
 };
+
+async function apiErrorMessage(res: Response, fallback: string) {
+  const body = await res.json().catch(() => null);
+  if (body && typeof body.error === 'string' && body.error.trim()) return body.error;
+  if (body && typeof body.message === 'string' && body.message.trim()) return body.message;
+  return fallback;
+}
 
 type Message = {
   id: string;
@@ -669,6 +677,12 @@ export function SpaceChat({
     },
     { refreshInterval: 5000, fallbackData: {} },
   );
+
+  const displayContentForMessage = useCallback((msg: Message) => {
+    const hasInlineApproval = Boolean(pendingByMessage?.[msg.id]?.length);
+    const hasApprovalContext = hasInlineApproval || Object.keys(pendingByMessage ?? {}).length > 0;
+    return normalizeInlineApprovalCopy(msg.content, hasApprovalContext);
+  }, [pendingByMessage]);
 
   const workIntentBySpaceKey = spaceId
     ? `/api/work-intents?space_id=${spaceId}&limit=100`
@@ -1437,14 +1451,14 @@ export function SpaceChat({
                         background: 'var(--surface)',
                       }}
                     >
-                      {renderContent(msg.content)}
+                      {renderContent(displayContentForMessage(msg))}
                     </span>
                   </div>
                 )}
 
                 {/* Message row */}
                 {!isSystemMessage && <div
-                  className={`relative px-3 -mx-3 rounded-lg ${highlightedId === msg.id ? 'message-highlight' : ''}`}
+                  className={`relative px-3 -mx-2 md:-mx-3 rounded-lg ${highlightedId === msg.id ? 'message-highlight' : ''}`}
                   style={{
                     background: highlightedId === msg.id ? 'var(--accent-subtle)' : 'transparent',
                     marginTop: grouped ? '2px' : (i === 0 || showDaySeparator) ? '0px' : '16px',
@@ -1810,7 +1824,7 @@ export function SpaceChat({
                               return (
                                 <>
                                   <div className="text-[13px] whitespace-pre-wrap break-words" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
-                                    {renderContent(msg.content)}
+                                    {renderContent(displayContentForMessage(msg))}
                                     <WorkIntentReceiptChips intents={messageWorkIntents} inline className="ml-1 align-middle" />
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
                                   </div>
@@ -1843,9 +1857,10 @@ export function SpaceChat({
                               <AgentActionCard
                                 key={action.id}
                                 action={action}
+                                variant="compact"
                                 onApprove={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
-                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
@@ -1853,7 +1868,7 @@ export function SpaceChat({
                                 }}
                                 onReject={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
-                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  if (!res.ok) throw new Error(await apiErrorMessage(res, `Reject failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
@@ -1967,7 +1982,7 @@ export function SpaceChat({
                               return (
                                 <>
                                   <div className="text-[13px] whitespace-pre-wrap break-words mt-0.5" style={{ color: 'var(--foreground)', lineHeight: '20px' }}>
-                                    {renderContent(msg.content)}
+                                    {renderContent(displayContentForMessage(msg))}
                                     {msg.edited_at && <EditedIndicator messageId={msg.id} />}
                                   </div>
                                   <MessageFiles files={[...(msg.files || []), ...getEmbeddedFiles(msg.content)]} onImageClick={setLightboxSrc} />
@@ -1999,9 +2014,10 @@ export function SpaceChat({
                               <AgentActionCard
                                 key={action.id}
                                 action={action}
+                                variant="compact"
                                 onApprove={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/approve`, {});
-                                  if (!res.ok) throw new Error(`Approve failed (${res.status})`);
+                                  if (!res.ok) throw new Error(await apiErrorMessage(res, `Approve failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'approved' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
@@ -2009,7 +2025,7 @@ export function SpaceChat({
                                 }}
                                 onReject={async () => {
                                   const res = await api.post(`/api/agent/actions/${action.id}/reject`, {});
-                                  if (!res.ok) throw new Error(`Reject failed (${res.status})`);
+                                  if (!res.ok) throw new Error(await apiErrorMessage(res, `Reject failed (${res.status})`));
                                   const body = await res.json().catch(() => ({ status: 'rejected' }));
                                   if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
                                   if (workIntentBySpaceKey) swrMutate(workIntentBySpaceKey);
