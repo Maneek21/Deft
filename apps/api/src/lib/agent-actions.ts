@@ -21,7 +21,7 @@ import {
   crossReferences,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
-import { eq, and, sql, ilike, desc } from 'drizzle-orm';
+import { eq, and, sql, ilike, desc, inArray } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
 import { mcpClientManager } from '@deft/mcp';
@@ -635,7 +635,7 @@ export async function executeAction(
             const targets = await db
               .select({ id: wikiPages.id })
               .from(wikiPages)
-              .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+              .where(and(eq(wikiPages.org_id, orgId), inArray(wikiPages.slug, related_slugs)));
             for (const t of targets) {
               if (t.id !== existing.id) {
                 await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();

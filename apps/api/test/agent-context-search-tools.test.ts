@@ -51,8 +51,12 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 const SUFFIX = Date.now();
 const DECISION_ID = `search-tools-decision-${SUFFIX}`;
 const WIKI_ID = `search-tools-wiki-${SUFFIX}`;
+const RELATED_SOURCE_ID = `search-tools-related-source-${SUFFIX}`;
+const RELATED_TARGET_ID = `search-tools-related-target-${SUFFIX}`;
 // Unique search term that won't appear in other DB rows — prevents score competition.
 const WIKI_UNIQUE_TERM = `xyzpipelineuniq${SUFFIX}`;
+const RELATED_SOURCE_SLUG = `search-tools-related-source-${SUFFIX}`;
+const RELATED_TARGET_SLUG = `search-tools-related-target-${SUFFIX}`;
 
 before(async () => {
   await withClient(async (c) => {
@@ -104,11 +108,47 @@ before(async () => {
       ],
     );
     seededIds.push({ table: 'wiki_pages', id: WIKI_ID });
+
+    await c.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, content, confidence, is_deleted, created_at, updated_at)
+       VALUES
+         ($1, $2, 'concept', 'org', $3, $4,
+          'Source page for wiki_write related slug regression.',
+          1.0, false, NOW(), NOW()),
+         ($5, $2, 'resource', 'org', $6, $7,
+          'Target page for wiki_write related slug regression.',
+          1.0, false, NOW(), NOW())`,
+      [
+        RELATED_SOURCE_ID,
+        ORG_ID,
+        `Related source ${SUFFIX}`,
+        RELATED_SOURCE_SLUG,
+        RELATED_TARGET_ID,
+        `Related target ${SUFFIX}`,
+        RELATED_TARGET_SLUG,
+      ],
+    );
+    seededIds.push({ table: 'wiki_pages', id: RELATED_SOURCE_ID });
+    seededIds.push({ table: 'wiki_pages', id: RELATED_TARGET_ID });
   });
 });
 
 after(async () => {
   await withClient(async (c) => {
+    const wikiIds = seededIds.filter((row) => row.table === 'wiki_pages').map((row) => row.id);
+    if (wikiIds.length > 0) {
+      await c.query(
+        `DELETE FROM wiki_ops_log
+         WHERE page_id = ANY($1::text[])`,
+        [wikiIds],
+      );
+      await c.query(
+        `DELETE FROM wiki_links
+         WHERE source_page_id = ANY($1::text[]) OR target_page_id = ANY($1::text[])`,
+        [wikiIds],
+      );
+    }
     for (const { table, id } of [...seededIds].reverse()) {
       await c.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
     }
@@ -219,7 +259,57 @@ describe('search_decisions + search_knowledge migrate to retrieveContext', () =>
     }
   });
 
-  test('5. agent-context.ts search_decisions no longer uses ilike substring pattern', () => {
+  test('5. wiki_search returns full wiki rows for retrieveContext hits without ANY-array crash', async () => {
+    const { result, citations } = await executeToolCall(
+      'wiki_search',
+      { query: `deployment pipeline ${WIKI_UNIQUE_TERM}`, limit: 5 },
+      ORG_ID,
+      USER_ID,
+    );
+
+    assert.ok(Array.isArray(result.pages), 'wiki_search result.pages should be an array');
+    const found = result.pages.find((r: any) => r.id === WIKI_ID);
+    assert.ok(
+      found !== undefined,
+      `Expected wiki_search to return seeded wiki page ${WIKI_ID}. Got: ${JSON.stringify(result.pages.map((r: any) => r.id))}`,
+    );
+    assert.equal(found.slug, `cicd-pipeline-knowledge-${SUFFIX}`);
+    assert.ok(Array.isArray(found.linked_pages), 'wiki_search should include linked_pages array');
+    assert.ok(
+      citations.some((c: any) => c.id === WIKI_ID && c.type === 'wiki'),
+      'wiki_search should cite the seeded wiki page',
+    );
+  });
+
+  test('6. wiki_write updates related_slugs without ANY-array crash', async () => {
+    const { result } = await executeToolCall(
+      'wiki_write',
+      {
+        slug: RELATED_SOURCE_SLUG,
+        summary: `Updated summary ${SUFFIX}`,
+        related_slugs: [RELATED_TARGET_SLUG],
+      },
+      ORG_ID,
+      USER_ID,
+    );
+
+    assert.deepEqual(result, {
+      success: true,
+      slug: RELATED_SOURCE_SLUG,
+      action: 'updated',
+    });
+
+    await withClient(async (c) => {
+      const link = await c.query(
+        `SELECT id FROM wiki_links
+         WHERE org_id = $1 AND source_page_id = $2 AND target_page_id = $3`,
+        [ORG_ID, RELATED_SOURCE_ID, RELATED_TARGET_ID],
+      );
+      assert.equal(link.rows.length, 1, 'wiki_write should create the requested related wiki link');
+    });
+  });
+
+  test('7. agent-context.ts search_decisions no longer uses ilike substring pattern', () => {
     const __filename = fileURLToPath(import.meta.url);
     const contextPath = join(dirname(__filename), '../src/lib/agent-context.ts');
     const src = readFileSync(contextPath, 'utf8');
@@ -243,7 +333,7 @@ describe('search_decisions + search_knowledge migrate to retrieveContext', () =>
     );
   });
 
-  test('6. agent-context.ts search_knowledge no longer queries deprecated spaceKnowledge table', () => {
+  test('8. agent-context.ts search_knowledge no longer queries deprecated spaceKnowledge table', () => {
     const __filename = fileURLToPath(import.meta.url);
     const contextPath = join(dirname(__filename), '../src/lib/agent-context.ts');
     const src = readFileSync(contextPath, 'utf8');
