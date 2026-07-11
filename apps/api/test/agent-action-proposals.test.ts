@@ -164,6 +164,7 @@ test('wiki compiler preserves explicit create versus update intent', () => {
 
   assert.equal(create.actions[0]?.params.requested_wiki_write_mode, 'create');
   assert.equal(update.actions[0]?.params.requested_wiki_write_mode, 'update');
+  assert.equal(update.actions[0]?.params.requested_wiki_update_operation, 'append');
 });
 
 test('clarification calls and malformed registered actions never create approval actions', () => {

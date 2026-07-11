@@ -12,6 +12,7 @@ import {
   isThreadTaskContinuationCommand,
   normalizeApprovalSurfaceCopy,
   preferSubtaskReferences,
+  mergeWikiUpdateContent,
   shouldCompileRuntimeWikiSuggestion,
 } from '../src/workers/handlers/agent-reply.js';
 
@@ -51,6 +52,21 @@ test('resolved wiki suggestion triggers governed compilation for a natural updat
       [{ action: 'read_task' }],
     ),
     false,
+  );
+});
+
+test('wiki append updates preserve existing durable content and dedupe repeats', () => {
+  assert.equal(
+    mergeWikiUpdateContent('Original durable fact.', 'New reviewed rule.', 'append'),
+    'Original durable fact.\n\nNew reviewed rule.',
+  );
+  assert.equal(
+    mergeWikiUpdateContent('Original durable fact.\n\nNew reviewed rule.', 'New reviewed rule.', 'append'),
+    'Original durable fact.\n\nNew reviewed rule.',
+  );
+  assert.equal(
+    mergeWikiUpdateContent('Old content.', 'Replacement content.', 'replace'),
+    'Replacement content.',
   );
 });
 

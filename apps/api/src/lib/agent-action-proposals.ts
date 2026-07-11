@@ -375,17 +375,29 @@ function normalizeRegisteredToolCall(
   const requestedWikiWriteMode = action === 'wiki_write'
     ? inferRequestedWikiWriteMode(params.promptContent)
     : undefined;
+  const requestedWikiUpdateOperation = requestedWikiWriteMode === 'update'
+    ? inferRequestedWikiUpdateOperation(params.promptContent)
+    : undefined;
+  const requestedWikiTypeChange = requestedWikiWriteMode === 'update'
+    ? /\b(?:change|set|make)\b.{0,50}\btype\b/i.test(params.promptContent)
+    : false;
   return [{
     action,
     params: {
       ...call.input,
       ...(requestedWikiWriteMode ? { requested_wiki_write_mode: requestedWikiWriteMode } : {}),
+      ...(requestedWikiUpdateOperation ? { requested_wiki_update_operation: requestedWikiUpdateOperation } : {}),
+      ...(requestedWikiTypeChange ? { requested_wiki_type_change: true } : {}),
       source_message_id: params.sourceMessageId,
     },
     approval_tier: getApprovalTier(action),
     tool_use_id: null,
     source: 'action_compiler',
   }];
+}
+
+function inferRequestedWikiUpdateOperation(promptContent: string): 'append' | 'replace' {
+  return /\b(?:add|append|include|insert)\b/i.test(promptContent) ? 'append' : 'replace';
 }
 
 function inferRequestedWikiWriteMode(promptContent: string): 'create' | 'update' | undefined {
