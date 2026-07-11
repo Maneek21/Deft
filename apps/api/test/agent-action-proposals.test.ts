@@ -105,6 +105,27 @@ test('natural subtask sequencing becomes real task dependencies', () => {
   ]);
 });
 
+test('subtask sequencing in descriptions becomes real task dependencies', () => {
+  const result = normalizeCompiledToolCalls([{
+    name: 'create_task',
+    input: {
+      title: 'Buyer trial dependency proof',
+      project_name: 'Pilot Marketing Launch',
+      subtasks: [
+        { title: 'verify trial inventory' },
+        { title: 'draft the buyer brief', description: 'after that' },
+        { title: 'send the approved brief', description: 'after the draft' },
+      ],
+    },
+  }], compileContext);
+
+  assert.deepEqual(result.actions[0]?.params.subtasks, [
+    { title: 'verify trial inventory' },
+    { title: 'draft the buyer brief', description: 'after that', depends_on: [1] },
+    { title: 'send the approved brief', description: 'after the draft', depends_on: [2] },
+  ]);
+});
+
 test('compound compiler normalization preserves every requested action family', () => {
   const result = normalizeCompiledToolCalls([
     { name: 'wiki_write', input: { title: 'Trial', type: 'fact', content: 'Water deeply.' } },
