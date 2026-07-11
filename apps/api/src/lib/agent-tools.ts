@@ -81,6 +81,31 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
         assignee_name: { type: 'string', description: 'Assignee name' },
         due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format' },
         description: { type: 'string', description: 'Task description' },
+        subtasks: {
+          type: 'array',
+          description:
+            'Optional real subtasks to create under this task. Use this when the user asks for subtasks, checklist items, child tasks, or a multi-step task breakdown. Do not put requested subtasks only in the description.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Subtask title' },
+              description: { type: 'string', description: 'Optional subtask description' },
+              assignee_name: { type: 'string', description: 'Optional subtask assignee name' },
+              due_date: { type: 'string', description: 'Optional due date in YYYY-MM-DD format' },
+              priority: {
+                type: 'string',
+                enum: ['p0', 'p1', 'p2', 'p3'],
+                description: 'Optional subtask priority',
+              },
+              depends_on: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Optional 1-based numbers of earlier subtasks that must finish before this subtask.',
+              },
+            },
+            required: ['title'],
+          },
+        },
         source_message_id: {
           type: 'string',
           description:
@@ -710,6 +735,7 @@ export const ACTION_TOOLS = new Set([
   'update_task_status',
   'assign_task',
   'post_message',
+  'create_reminder',
   'add_knowledge',
   'wiki_write',
   // Task 3.4 — new task-mutation tools

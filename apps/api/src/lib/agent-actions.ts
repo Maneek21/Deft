@@ -31,7 +31,8 @@ import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
 import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
-import { reserveNextTaskNumber } from './task-numbering.js';
+import { resolveSpaceTarget } from './resolve-space-target.js';
+import { createTaskBundle } from './task-bundle.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -119,11 +120,18 @@ export async function executeAction(
 
     switch (action) {
       case 'create_task': {
-        const [project] = await db
-          .select()
-          .from(projects)
-          .where(and(eq(projects.org_id, orgId), ilike(projects.name, `%${params.project_name}%`)))
-          .limit(1);
+        const projectQuery = typeof params.resolved_project_id === 'string' && params.resolved_project_id.trim()
+          ? db
+            .select()
+            .from(projects)
+            .where(and(eq(projects.org_id, orgId), eq(projects.id, params.resolved_project_id)))
+            .limit(1)
+          : db
+            .select()
+            .from(projects)
+            .where(and(eq(projects.org_id, orgId), ilike(projects.name, `%${params.project_name}%`)))
+            .limit(1);
+        const [project] = await projectQuery;
         if (!project) return { success: false, result: null, error: 'Project not found' };
 
         let assigneeId: string | null = null;
@@ -156,52 +164,45 @@ export async function executeAction(
           }
         }
 
-        const taskNumber = await reserveNextTaskNumber({
-          projectId: project.id,
+        const bundle = await createTaskBundle({
           orgId,
+          projectId: project.id,
+          projectPrefix: project.prefix,
+          projectName: project.name,
+          createdBy: userId,
+          title: params.title,
+          description: params.description,
+          priority,
+          assigneeId,
+          dueDate: params.due_date ?? null,
+          startDate: params.start_date ?? null,
+          estimation: params.estimation ?? null,
+          sourceMessageId: params.source_message_id || null,
+          actionId,
+          actingAgentEmployeeId: agentEmployeeId,
+          subtasks: Array.isArray(params.subtasks) ? params.subtasks : null,
         });
-
-        const [task] = await db
-          .insert(tasks)
-          .values({
-            org_id: orgId,
-            project_id: project.id,
-            number: taskNumber,
-            title: params.title,
-            description: params.description || null,
-            status: 'backlog',
-            priority,
-            assignee_id: assigneeId,
-            created_by: userId,
-            due_date: params.due_date ? new Date(params.due_date) : null,
-            // Task 3.2 — if the agent was invoked by a message, link the
-            // created task back to it so the UI can show "from chat".
-            source_message_id: params.source_message_id || null,
-          })
-          .returning();
-
-        await db.insert(taskActivity).values({
-          org_id: orgId,
-          task_id: task!.id,
-          user_id: userId,
-          action: 'created',
-          agent_action_id: actionId,
-          acting_agent_employee_id: agentEmployeeId,
-        });
+        const task = bundle.parent;
 
         await db
           .update(agentActions)
           .set({
-            result: { task_id: task!.id, number: task!.number, prefix: project.prefix },
+            result: {
+              task_id: task.id,
+              number: task.number,
+              prefix: project.prefix,
+              subtasks: bundle.subtasks,
+            },
             before_state: null,
             after_state: {
-              id: task!.id,
-              title: task!.title,
-              status: task!.status,
-              priority: task!.priority,
-              assignee_id: task!.assignee_id,
-              project_id: task!.project_id,
-              number: task!.number,
+              id: task.id,
+              title: task.title,
+              status: task.status,
+              priority: task.priority,
+              assignee_id: task.assignee_id,
+              project_id: task.project_id,
+              number: task.number,
+              subtasks: bundle.subtasks,
             },
             executed_at: new Date(),
           })
@@ -209,10 +210,14 @@ export async function executeAction(
 
         const io = getIO();
         if (io) {
-          io.to(`org:${orgId}`).emit('task:created', {
-            ...task,
-            project_prefix: project.prefix,
-          });
+          for (const createdTask of bundle.allTasks) {
+            io.to(`org:${orgId}`).emit('task:created', {
+              ...createdTask,
+              project_id: project.id,
+              project_prefix: project.prefix,
+              project_name: project.name,
+            });
+          }
         }
 
         await logAuditEvent({
@@ -221,24 +226,25 @@ export async function executeAction(
           actorId: userId,
           action: 'create_task',
           entityType: 'task',
-          entityId: task!.id,
+          entityId: task.id,
           beforeState: null,
           afterState: {
-            id: task!.id,
-            title: task!.title,
-            status: task!.status,
-            priority: task!.priority,
-            assignee_id: task!.assignee_id,
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            priority: task.priority,
+            assignee_id: task.assignee_id,
+            subtasks: bundle.subtasks,
           },
-          metadata: { action_id: actionId, project: project.prefix },
+          metadata: { action_id: actionId, project: project.prefix, subtask_count: bundle.subtasks.length },
         });
 
-        // If assignee is an agent employee, wake them up to work the task.
-        if (assigneeId) {
+        // If an assignee is an agent employee, wake them up to work the task.
+        for (const createdTask of bundle.allTasks.filter((row) => row.assignee_id)) {
           await dispatchAgentEmployeeTask({
-            taskId: task!.id,
+            taskId: createdTask.id,
             orgId,
-            assigneeUserId: assigneeId,
+            assigneeUserId: createdTask.assignee_id!,
             assignedBy: userId,
           });
         }
@@ -246,16 +252,21 @@ export async function executeAction(
         return {
           success: true,
           result: {
-            task_id: task!.id,
-            identifier: `${project.prefix}-${task!.number}`,
+            task_id: task.id,
+            identifier: task.identifier,
             title: params.title,
+            subtasks: bundle.subtasks,
           },
         };
       }
 
       case 'update_task_status': {
-        let taskId = params.task_identifier as string;
-        const m = taskId.match(/^([A-Z]+)-(\d+)$/);
+        let taskId = typeof params.resolved_task_id === 'string' && params.resolved_task_id.trim()
+          ? params.resolved_task_id
+          : params.task_identifier as string;
+        const m = typeof params.resolved_task_id === 'string' && params.resolved_task_id.trim()
+          ? null
+          : taskId.match(/^([A-Z]+)-(\d+)$/);
         if (m) {
           const [proj] = await db
             .select({ id: projects.id })
@@ -478,12 +489,14 @@ export async function executeAction(
       }
 
       case 'post_message': {
-        const [space] = await db
-          .select()
-          .from(spaces)
-          .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
-          .limit(1);
-        if (!space) return { success: false, result: null, error: 'Space not found' };
+        const resolvedSpace = await resolveSpaceTarget(orgId, {
+          spaceId: params.space_id ?? params.resolved_space_id,
+          spaceName: params.space_name,
+        });
+        if (resolvedSpace.status !== 'resolved') {
+          return { success: false, result: null, error: resolvedSpace.message };
+        }
+        const space = resolvedSpace.space;
 
         const [msg] = await db
           .insert(messages)

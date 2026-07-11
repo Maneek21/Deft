@@ -44,9 +44,9 @@ import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
 import { getProjectResolvedConfig } from '../project-resolved-config.js';
 import { isValidTransition } from '../task-status-machine.js';
-import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
+import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -236,7 +236,11 @@ export type TaskCreateArgs = {
   assignee_name?: string;
   priority?: string;
   size?: string;
+  due_date?: string;
+  start_date?: string;
+  estimation?: string;
   source_message_id?: string;
+  subtasks?: TaskBundleSubtaskInput[];
 };
 
 /**
@@ -336,49 +340,44 @@ export async function executeTaskCreate(
       assigneeId = resolved.value.id;
     }
 
-    const taskNumber = await reserveNextTaskNumber({
-      projectId,
+    const [project] = await db
+      .select({ prefix: projects.prefix, name: projects.name })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.org_id, ctx.org_id)))
+      .limit(1);
+    if (!project) return errorResult('task_create: project not found');
+
+    const bundle = await createTaskBundle({
       orgId: ctx.org_id,
+      projectId,
+      projectPrefix: project.prefix,
+      projectName: project.name,
+      createdBy: shadowUserId,
+      title: args.title.trim(),
+      description: args.description,
+      priority,
+      assigneeId,
+      dueDate: args.due_date ?? null,
+      startDate: args.start_date ?? null,
+      estimation: args.estimation ?? args.size ?? null,
+      sourceMessageId: args.source_message_id ?? null,
+      actionId: opts?.actionId ?? null,
+      actingAgentEmployeeId: ctx.employee_id,
+      subtasks: Array.isArray(args.subtasks) ? args.subtasks : null,
     });
-
-    const [task] = await db
-      .insert(tasks)
-      .values({
-        org_id: ctx.org_id,
-        project_id: projectId,
-        number: taskNumber,
-        title: args.title.trim(),
-        description: args.description ?? null,
-        priority,
-        assignee_id: assigneeId,
-        created_by: shadowUserId,
-        source_message_id: args.source_message_id ?? null,
-      })
-      .returning();
-
-    await db.insert(taskActivity).values({
-      org_id: ctx.org_id,
-      task_id: task!.id,
-      user_id: shadowUserId,
-      action: 'created',
-      agent_action_id: opts?.actionId ?? null,
-      acting_agent_employee_id: ctx.employee_id,
-    });
+    const task = bundle.parent;
 
     try {
-      const [project] = await db
-        .select({ prefix: projects.prefix, name: projects.name })
-        .from(projects)
-        .where(eq(projects.id, projectId))
-        .limit(1);
       const { getIO } = await import('../../socket.js');
       const io = getIO();
       if (io) {
-        io.to(`org:${ctx.org_id}`).emit('task:created', {
-          ...task,
-          project_prefix: project?.prefix,
-          project_name: project?.name,
-        });
+        for (const createdTask of bundle.allTasks) {
+          io.to(`org:${ctx.org_id}`).emit('task:created', {
+            ...createdTask,
+            project_prefix: project.prefix,
+            project_name: project.name,
+          });
+        }
       }
     } catch {
       // Socket broadcast is best-effort in tests and headless workers.
@@ -386,8 +385,8 @@ export async function executeTaskCreate(
 
     try {
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'duplicate-detect', {
-        taskId: task!.id,
-        title: task!.title,
+        taskId: task.id,
+        title: task.title,
         projectId,
         orgId: ctx.org_id,
       });
@@ -398,15 +397,18 @@ export async function executeTaskCreate(
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
     const resultPayload = {
-      id: task!.id,
-      project_id: task!.project_id,
-      number: task!.number,
-      title: task!.title,
-      status: task!.status,
-      priority: task!.priority,
-      assignee_id: task!.assignee_id,
-      source_message_id: task!.source_message_id,
-      created_at: task!.created_at,
+      id: task.id,
+      task_id: task.id,
+      project_id: task.project_id,
+      number: task.number,
+      identifier: task.identifier,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      assignee_id: task.assignee_id,
+      source_message_id: task.source_message_id,
+      created_at: task.created_at,
+      subtasks: bundle.subtasks,
     };
 
     if (!opts?.skipReceipt) {
