@@ -745,6 +745,7 @@ async function collectRecentAgentTaskReferences(options: {
   agentUserId: string;
   messageId: string;
   parentId?: string | null;
+  promptContent: string;
 }) {
   const [trigger] = await db
     .select({ created_at: messages.created_at })
@@ -777,9 +778,59 @@ async function collectRecentAgentTaskReferences(options: {
     .orderBy(desc(messages.created_at))
     .limit(5);
 
-  return uniqueTaskReferences(
+  const references = uniqueTaskReferences(
     priorAgentReplies.flatMap((reply) => extractTaskReferencesFromAgentReply(reply.content, reply.metadata)),
-  ).slice(0, MAX_INLINE_APPROVAL_ACTIONS);
+  );
+  if (!/\bsubtasks?\b/i.test(stripMentionSyntax(options.promptContent)) || references.length === 0) {
+    return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
+  }
+
+  const referencedTasks = await db
+    .select({
+      id: tasks.id,
+      parent_task_id: tasks.parent_task_id,
+      identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(
+      eq(tasks.org_id, options.orgId),
+      eq(tasks.is_deleted, false),
+      inArray(sql<string>`${projects.prefix} || '-' || ${tasks.number}`, references),
+    ));
+  const parentIds = referencedTasks.filter((task) => !task.parent_task_id).map((task) => task.id);
+  if (parentIds.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
+
+  const childTasks = await db
+    .select({
+      identifier: sql<string>`${projects.prefix} || '-' || ${tasks.number}`,
+      number: tasks.number,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(
+      eq(tasks.org_id, options.orgId),
+      eq(tasks.is_deleted, false),
+      inArray(tasks.parent_task_id, parentIds),
+    ))
+    .orderBy(tasks.number);
+  if (childTasks.length === 0) return references.slice(0, MAX_INLINE_APPROVAL_ACTIONS);
+
+  return preferSubtaskReferences(references, referencedTasks, childTasks);
+}
+
+export function preferSubtaskReferences(
+  references: string[],
+  referencedTasks: Array<{ identifier: string; parent_task_id: string | null }>,
+  childTasks: Array<{ identifier: string; number: number }>,
+) {
+  const parentReferences = new Set(
+    referencedTasks.filter((task) => !task.parent_task_id).map((task) => task.identifier.toUpperCase()),
+  );
+  return uniqueTaskReferences([
+    ...references.filter((reference) => !parentReferences.has(reference.toUpperCase())),
+    ...childTasks.sort((left, right) => left.number - right.number).map((task) => task.identifier),
+  ]).slice(0, MAX_INLINE_APPROVAL_ACTIONS);
 }
 
 function hasExplicitPostMessageIntent(content: string): boolean {
@@ -1419,6 +1470,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           agentUserId,
           messageId,
           parentId: threadParentId,
+          promptContent,
         });
         compiledActionDraft = await compileDeftyActionDraft({
           orgId,
@@ -1566,6 +1618,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
           agentUserId,
           messageId,
           parentId: threadParentId,
+          promptContent,
         });
         compiledActionDraft = await compileDeftyActionDraft({
           orgId,

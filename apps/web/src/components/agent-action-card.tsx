@@ -439,6 +439,26 @@ function getDraftDetailText(actionName: string, params: Record<string, any>) {
     const subtasks = getSubtaskDraftText(params);
     return [description, subtasks].filter(Boolean).join('\n\n');
   }
+  const taskMutationActions = new Set([
+    'update_task', 'update_task_status', 'assign_task', 'comment_on_task', 'set_due_date',
+    'set_priority', 'add_label', 'close_task', 'reopen_task', 'add_dependency',
+    'remove_dependency', 'task_transition',
+  ]);
+  if (taskMutationActions.has(actionName)) {
+    const task = getStringParam(params, ['task_identifier', 'task_id', 'id']);
+    const status = getStringParam(params, ['new_status', 'status']) ||
+      (actionName === 'close_task' ? 'done' : actionName === 'reopen_task' ? 'reopened' : '');
+    const assignee = getStringParam(params, ['assignee_name', 'assignee']);
+    const due = getStringParam(params, ['due_date', 'dueDate']);
+    const priority = getStringParam(params, ['priority']);
+    return [
+      task ? `Task: ${task}` : '',
+      status ? `Status: ${status.replaceAll('_', ' ')}` : '',
+      assignee ? `Assignee: ${assignee}` : '',
+      due ? `Due: ${due}` : '',
+      priority ? `Priority: ${priority.toUpperCase()}` : '',
+    ].filter(Boolean).join('\n');
+  }
   if (actionName.includes('wiki') || actionName.includes('memory') || actionName === 'create_note') {
     return getStringParam(params, ['content', 'description', 'summary']);
   }
