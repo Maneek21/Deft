@@ -1765,7 +1765,7 @@ export async function executeToolCall(
                 and(
                   eq(wikiPages.org_id, orgId),
                   eq(wikiPages.is_deleted, false),
-                  sql`${wikiPages.id} = ANY(${hitIds})`,
+                  inArray(wikiPages.id, hitIds),
                   ...(pageType ? [eq(wikiPages.type, pageType)] : []),
                   ...(pageScope ? [eq(wikiPages.scope, pageScope)] : []),
                 ),
@@ -1891,7 +1891,7 @@ export async function executeToolCall(
           await db.delete(wikiLinks).where(eq(wikiLinks.source_page_id, existing.id));
           const targets = await db.select({ id: wikiPages.id })
             .from(wikiPages)
-            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+            .where(and(eq(wikiPages.org_id, orgId), inArray(wikiPages.slug, related_slugs)));
           for (const t of targets) {
             if (t.id !== existing.id) {
               await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: existing.id, target_page_id: t.id }).onConflictDoNothing();
@@ -1943,7 +1943,7 @@ export async function executeToolCall(
         if (related_slugs && related_slugs.length > 0) {
           const targets = await db.select({ id: wikiPages.id })
             .from(wikiPages)
-            .where(and(eq(wikiPages.org_id, orgId), sql`${wikiPages.slug} = ANY(${related_slugs})`));
+            .where(and(eq(wikiPages.org_id, orgId), inArray(wikiPages.slug, related_slugs)));
           for (const t of targets) {
             if (t.id !== page!.id) {
               await db.insert(wikiLinks).values({ org_id: orgId, source_page_id: page!.id, target_page_id: t.id }).onConflictDoNothing();
