@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { ACTION_TOOLS } from '../src/lib/agent-tools.js';
 import {
+  getActionCompilerToolsForPrompt,
   getActionCompilerTools,
   normalizeCompiledToolCalls,
   validateCompiledIntentAlignment,
@@ -26,6 +27,13 @@ test('action compiler derives its write vocabulary from the registered action to
     assert.ok(names.has(action), `compiler is missing registered action tool ${action}`);
   }
   assert.ok(names.has('request_action_clarification'));
+});
+
+test('semantic resolution can narrow the compiler to one governed action family', () => {
+  assert.deepEqual(
+    getActionCompilerToolsForPrompt('Update Buyer Trial Certification 2026.', ['wiki_write']).map((tool) => tool.name),
+    ['wiki_write', 'request_action_clarification'],
+  );
 });
 
 test('wiki requests remain wiki actions and cannot be normalized into task cards', () => {
