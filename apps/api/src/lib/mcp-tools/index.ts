@@ -378,7 +378,43 @@ export const toolSchemas: ToolSchema[] = [
           description: 'Optional source chat message id to link the created task back to the conversation.',
         },
         priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
+        due_date: {
+          type: 'string',
+          description: 'Optional ISO date/timestamp for the parent task due date.',
+        },
+        start_date: {
+          type: 'string',
+          description: 'Optional ISO date/timestamp for the parent task start date.',
+        },
+        estimation: {
+          type: 'string',
+          description: 'Optional parent task estimate such as 30m, 2h, or 1d.',
+        },
         size: { type: 'string' },
+        subtasks: {
+          type: 'array',
+          description:
+            'Optional real subtasks to create under the parent task. Use this for child tasks/checklists; do not bury requested subtasks only in description text.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              assignee_id: { type: 'string' },
+              assignee_name: { type: 'string' },
+              priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
+              due_date: { type: 'string' },
+              start_date: { type: 'string' },
+              estimation: { type: 'string' },
+              depends_on: {
+                type: 'array',
+                items: { type: 'number' },
+                description: 'Optional 1-based numbers of earlier subtasks that block this subtask.',
+              },
+            },
+            required: ['title'],
+          },
+        },
       },
       required: ['caller_employee_slug', 'title'],
     },

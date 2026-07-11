@@ -24,9 +24,9 @@ import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolResult } from './types.js';
-import { reserveNextTaskNumber } from '../task-numbering.js';
 import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
 import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-context.js';
+import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -1756,6 +1756,7 @@ type HumanTaskCreateArgs = {
   start_date?: string;
   estimation?: string;
   source_message_id?: string;
+  subtasks?: TaskBundleSubtaskInput[];
   idempotency_key?: string;
 };
 
@@ -1789,35 +1790,36 @@ export async function humanTaskCreate(args: HumanTaskCreateArgs, ctx: HumanToolC
       if (messageError) return messageError;
     }
 
-    let taskNumber: number;
+    let bundle;
     try {
-      taskNumber = await reserveNextTaskNumber({ projectId: project.id, orgId: ctx.org_id });
-    } catch {
-      return errorResult('task_create: project not found');
+      bundle = await createTaskBundle({
+        orgId: ctx.org_id,
+        projectId: project.id,
+        projectPrefix: project.prefix ?? 'TASK',
+        projectName: project.name,
+        createdBy: ctx.user_id,
+        title,
+        description: args.description,
+        priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority : 'p2',
+        assigneeId: assigneeResult.user?.id ?? null,
+        dueDate: dueDate as Date | null,
+        startDate: startDate as Date | null,
+        estimation: typeof args.estimation === 'string' && args.estimation.trim() ? args.estimation.trim() : null,
+        sourceMessageId,
+        subtasks: Array.isArray(args.subtasks) ? args.subtasks : null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return errorResult(msg);
     }
-    const [task] = await db.insert(tasks).values({
-      org_id: ctx.org_id,
-      project_id: project.id,
-      number: taskNumber,
-      title,
-      description: args.description ?? null,
-      priority: ['p0', 'p1', 'p2', 'p3'].includes(args.priority ?? '') ? args.priority as any : 'p2',
-      assignee_id: assigneeResult.user?.id ?? null,
-      created_by: ctx.user_id,
-      due_date: dueDate as Date | null,
-      start_date: startDate as Date | null,
-      estimation: typeof args.estimation === 'string' && args.estimation.trim() ? args.estimation.trim() : null,
-      source_message_id: sourceMessageId,
-    }).returning();
-    if (task) {
-      await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: task.id, user_id: ctx.user_id, action: 'created' });
-    }
+    const task = bundle.parent;
     return textResult({
       ...task,
-      task_key: taskReference(project.prefix, task?.number ?? null),
+      task_key: taskReference(project.prefix, task.number ?? null),
       project_name: project.name,
       assignee_name: assigneeResult.user?.name ?? null,
       assignee_email: assigneeResult.user?.email ?? null,
+      subtasks: bundle.subtasks,
     });
   });
 }
