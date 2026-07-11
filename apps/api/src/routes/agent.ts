@@ -42,8 +42,97 @@ import {
   markWorkIntentFailedForAction,
   markWorkIntentsExpiredForActions,
 } from '../lib/work-intents.js';
+import { getIO } from '../socket.js';
+import { formatApprovalConfirmation } from '../lib/agent-action-confirmation.js';
 
 export const agentRoutes = new Hono();
+
+async function maybePostApprovalConfirmation(params: {
+  orgId: string;
+  actionMessageId: string | null;
+  actorUserId: string;
+}) {
+  if (!params.actionMessageId) return;
+
+  const [approvalMessage] = await db
+    .select({
+      id: messages.id,
+      space_id: messages.space_id,
+      parent_id: messages.parent_id,
+      user_id: messages.user_id,
+    })
+    .from(messages)
+    .where(and(
+      eq(messages.id, params.actionMessageId),
+      eq(messages.org_id, params.orgId),
+      eq(messages.is_deleted, false),
+    ))
+    .limit(1);
+  if (!approvalMessage) return;
+
+  const [existingConfirmation] = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(and(
+      eq(messages.org_id, params.orgId),
+      eq(messages.space_id, approvalMessage.space_id),
+      sql`${messages.metadata}->>'approval_confirmation_for_message_id' = ${params.actionMessageId}`,
+    ))
+    .limit(1);
+  if (existingConfirmation) return;
+
+  const siblingActions = await db
+    .select()
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, params.orgId),
+      eq(agentActions.message_id, params.actionMessageId),
+    ))
+    .orderBy(asc(agentActions.created_at));
+  if (siblingActions.length === 0) return;
+
+  const pendingCount = siblingActions.filter((row) => row.approval_status === 'pending').length;
+  if (pendingCount > 0) return;
+
+  const approvedActions = siblingActions.filter((row) => row.approval_status === 'approved');
+  if (approvedActions.length === 0) return;
+
+  const content = formatApprovalConfirmation(approvedActions);
+
+  const confirmationAuthorId = approvalMessage.user_id || params.actorUserId;
+  const [actor] = await db
+    .select({ name: users.name, avatar_url: users.avatar_url })
+    .from(users)
+    .where(eq(users.id, confirmationAuthorId))
+    .limit(1);
+
+  const [confirmation] = await db
+    .insert(messages)
+    .values({
+      org_id: params.orgId,
+      space_id: approvalMessage.space_id,
+      user_id: confirmationAuthorId,
+      content,
+      parent_id: approvalMessage.parent_id ?? null,
+      metadata: {
+        is_agent_reply: true,
+        subtype: 'approval_confirmation',
+        approval_confirmation_for_message_id: params.actionMessageId,
+        confirmed_action_ids: approvedActions.map((row) => row.id),
+        requested_by_user_id: params.actorUserId,
+      } as any,
+    })
+    .returning();
+
+  const io = getIO();
+  if (io && confirmation) {
+    io.to(`space:${approvalMessage.space_id}`).emit('message:new', {
+      ...confirmation,
+      user_name: actor?.name ?? 'Defty',
+      user_avatar: actor?.avatar_url ?? null,
+    });
+  }
+}
 
 function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   return sql`(
@@ -1167,6 +1256,18 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         statusCode,
       );
     }
+    try {
+      await maybePostApprovalConfirmation({
+        orgId: user.org_id,
+        actionMessageId: action.message_id,
+        actorUserId: action.user_id,
+      });
+    } catch (err) {
+      console.warn('[agent-routes] Failed to post approval confirmation', {
+        actionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     return c.json({
       status: result.status,
       message: 'message' in result ? result.message : undefined,
@@ -1175,6 +1276,9 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   }
 
   if (action.approval_status === 'approved') {
+    if ((action.result as any)?.lifecycle_state === 'executing') {
+      return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
+    }
     return c.json({ status: 'approved', message: 'already approved', result: action.result ?? undefined });
   }
   if (action.approval_status === 'rejected') {
@@ -1189,7 +1293,12 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
 
   const [claimedAction] = await db
     .update(agentActions)
-    .set({ approval_status: 'approved', approved_at: new Date() })
+    .set({
+      approval_status: 'approved',
+      approved_at: new Date(),
+      result: { lifecycle_state: 'executing', started_at: new Date().toISOString() } as any,
+      error: null,
+    })
     .where(and(
       eq(agentActions.id, actionId),
       eq(agentActions.org_id, user.org_id),
@@ -1214,6 +1323,9 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       ))
       .limit(1);
     if (winner?.approval_status === 'approved') {
+      if ((winner.result as any)?.lifecycle_state === 'executing') {
+        return c.json({ status: 'executing', message: 'execution is already in progress' }, 202);
+      }
       return c.json({ status: 'approved', message: 'already approved', result: winner.result ?? undefined });
     }
     if (winner?.approval_status === 'rejected') {
@@ -1250,7 +1362,12 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   if (execResult.success) {
     await db
       .update(agentActions)
-      .set({ approval_status: 'approved', approved_at: new Date() })
+      .set({
+        approval_status: 'approved',
+        approved_at: new Date(),
+        result: execResult.result as any,
+        error: null,
+      })
       .where(eq(agentActions.id, actionId));
     if (action.source === 'defty_capture') {
       await generateReceipt({
@@ -1273,12 +1390,29 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         convertedBy: user.id,
       });
     }
+    try {
+      await maybePostApprovalConfirmation({
+        orgId: user.org_id,
+        actionMessageId: action.message_id,
+        actorUserId: action.user_id,
+      });
+    } catch (err) {
+      console.warn('[agent-routes] Failed to post approval confirmation', {
+        actionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   } else {
     await db
       .update(agentActions)
       .set({
         approval_status: 'pending',
         approved_at: null,
+        result: {
+          lifecycle_state: 'failed',
+          failed_at: new Date().toISOString(),
+          retryable: true,
+        } as any,
         error: execResult.error ?? 'Action failed',
       })
       .where(eq(agentActions.id, actionId));

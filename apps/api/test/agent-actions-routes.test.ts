@@ -126,9 +126,9 @@ async function teardownFixtures() {
     // them first so the subsequent cascade doesn't bounce off the FK.
     await c.query(
       `DELETE FROM action_receipts
-       WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
+       WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id IN ($1, $3))
           OR employee_id = $2`,
-      [SHADOW_USER_ID, EMP_ID],
+      [SHADOW_USER_ID, EMP_ID, APPROVER_USER_ID],
     );
     await c.query(
       `DELETE FROM work_intents
@@ -138,8 +138,8 @@ async function teardownFixtures() {
       [ORG_ID, EMP_ID, SHADOW_USER_ID, APPROVER_USER_ID],
     );
     await c.query(
-      `DELETE FROM agent_actions WHERE user_id = $1`,
-      [SHADOW_USER_ID],
+      `DELETE FROM agent_actions WHERE user_id IN ($1, $2)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID],
     );
     await c.query(
       `DELETE FROM messages WHERE space_id IN ($1, $2)`,
@@ -156,12 +156,12 @@ async function teardownFixtures() {
     if (TEST_PROJECT_ID) {
       await c.query(
         `DELETE FROM task_activity
-         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1 AND created_by = $2)`,
-        [TEST_PROJECT_ID, SHADOW_USER_ID],
+         WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3))`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID, APPROVER_USER_ID],
       );
       await c.query(
-        `DELETE FROM tasks WHERE project_id = $1 AND created_by = $2`,
-        [TEST_PROJECT_ID, SHADOW_USER_ID],
+        `DELETE FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3)`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID, APPROVER_USER_ID],
       );
     }
     await c.query(
@@ -1070,6 +1070,49 @@ test('POST /api/agent/actions/:id/approve executes the write', async () => {
 
     const t = await c.query(`SELECT title FROM tasks WHERE title = $1`, [title]);
     assert.equal(t.rows.length, 1);
+  });
+});
+
+test('approval confirmation is authored by the proposing agent, not the human requester', async () => {
+  const title = `routes-confirmation-author-${Date.now()}`;
+  const { actionId, approvalMessageId } = await withClient(async (c) => {
+    const message = await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'Review the task draft below.', '{"is_agent_reply":true}'::jsonb)
+       RETURNING id`,
+      [ORG_ID, VISIBLE_SPACE_ID, SHADOW_USER_ID],
+    );
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, conversation_id, message_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, 'mention', 'task_create', $6::jsonb, 'quick', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        APPROVER_USER_ID,
+        EMP_ID,
+        VISIBLE_SPACE_ID,
+        message.rows[0].id,
+        JSON.stringify({ title, project_id: TEST_PROJECT_ID, priority: 'p2' }),
+      ],
+    );
+    return { actionId: action.rows[0].id as string, approvalMessageId: message.rows[0].id as string };
+  });
+
+  const res = await app().request(`/api/agent/actions/${actionId}/approve`, { method: 'POST' });
+  assert.equal(res.status, 200);
+
+  await withClient(async (c) => {
+    const confirmation = await c.query(
+      `SELECT user_id, metadata->>'requested_by_user_id' AS requested_by_user_id
+       FROM messages
+       WHERE metadata->>'approval_confirmation_for_message_id' = $1`,
+      [approvalMessageId],
+    );
+    assert.equal(confirmation.rows.length, 1);
+    assert.equal(confirmation.rows[0].user_id, SHADOW_USER_ID);
+    assert.equal(confirmation.rows[0].requested_by_user_id, APPROVER_USER_ID);
   });
 });
 
