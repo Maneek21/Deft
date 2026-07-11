@@ -57,6 +57,18 @@ export function shouldCompileRuntimeWikiSuggestion(
   return asksForEdit && executedActions.some((action) => action.action === 'wiki_suggest_update');
 }
 
+export function mergeWikiUpdateContent(
+  existingContent: string,
+  requestedContent: string,
+  operation: unknown,
+): string {
+  const existing = existingContent.trim();
+  const requested = requestedContent.trim();
+  if (operation !== 'append' || !existing || !requested) return requested || existing;
+  if (existing.toLowerCase().includes(requested.toLowerCase())) return existing;
+  return `${existing}\n\n${requested}`;
+}
+
 function titleCaseTaskFragment(value: string): string {
   const cleaned = value
     .replace(/\b(?:a|an|the)\s+/i, '')
@@ -307,7 +319,15 @@ async function resolvePendingActionTargets(
         : '';
       const [existingPage] = requestedSlug || requestedTitle
         ? await db
-          .select({ id: wikiPages.id, slug: wikiPages.slug, title: wikiPages.title, scope: wikiPages.scope, space_id: wikiPages.space_id })
+          .select({
+            id: wikiPages.id,
+            slug: wikiPages.slug,
+            title: wikiPages.title,
+            content: wikiPages.content,
+            type: wikiPages.type,
+            scope: wikiPages.scope,
+            space_id: wikiPages.space_id,
+          })
           .from(wikiPages)
           .where(and(
             eq(wikiPages.org_id, orgId),
@@ -340,6 +360,12 @@ async function resolvePendingActionTargets(
           ...params,
           slug: existingPage.slug,
           title: existingPage.title,
+          content: mergeWikiUpdateContent(
+            existingPage.content,
+            typeof params.content === 'string' ? params.content : '',
+            params.requested_wiki_update_operation,
+          ),
+          type: params.requested_wiki_type_change === true ? params.type : existingPage.type,
           wiki_write_mode: 'update',
           resolved_wiki_page_id: existingPage.id,
         }
