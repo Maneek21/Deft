@@ -12,6 +12,7 @@ import {
   isThreadTaskContinuationCommand,
   normalizeApprovalSurfaceCopy,
   preferSubtaskReferences,
+  shouldCompileRuntimeWikiSuggestion,
 } from '../src/workers/handlers/agent-reply.js';
 
 test('compiler recovery gate recognizes the registered write families without choosing one', () => {
@@ -27,6 +28,30 @@ test('compiler recovery gate recognizes the registered write families without ch
   }
   assert.equal(hasExplicitRegisteredWriteIntent('What does the wiki say about watering?'), false);
   assert.equal(hasExplicitRegisteredWriteIntent('Do not create a wiki page for this lunch chat.'), false);
+});
+
+test('resolved wiki suggestion triggers governed compilation for a natural update follow-up', () => {
+  assert.equal(
+    shouldCompileRuntimeWikiSuggestion(
+      'Update Buyer Trial Certification 2026 to add the reviewed summary rule.',
+      [{ action: 'wiki_suggest_update' }],
+    ),
+    true,
+  );
+  assert.equal(
+    shouldCompileRuntimeWikiSuggestion(
+      'What does Buyer Trial Certification 2026 say?',
+      [{ action: 'wiki_suggest_update' }],
+    ),
+    false,
+  );
+  assert.equal(
+    shouldCompileRuntimeWikiSuggestion(
+      'Update MKT-25 to done.',
+      [{ action: 'read_task' }],
+    ),
+    false,
+  );
 });
 
 test('discussion task command accepts explicit discussion-to-task prompts', () => {

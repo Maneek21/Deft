@@ -49,6 +49,14 @@ export function hasExplicitRegisteredWriteIntent(content: string): boolean {
   return !/\b(?:do\s+not|don't|dont|never|without|avoid|no\s+need\s+to)\s+(?:\S+\s+){0,6}?(?:create|add|make|write|save|record|capture|post|send|update|edit|change|set|mark|move|close|reopen|assign|link|remove)\b/i.test(plain);
 }
 
+export function shouldCompileRuntimeWikiSuggestion(
+  content: string,
+  executedActions: Array<{ action?: unknown }>,
+): boolean {
+  const asksForEdit = /\b(?:update|edit|revise|correct|append|add)\b/i.test(stripMentionSyntax(content));
+  return asksForEdit && executedActions.some((action) => action.action === 'wiki_suggest_update');
+}
+
 function titleCaseTaskFragment(value: string): string {
   const cleaned = value
     .replace(/\b(?:a|an|the)\s+/i, '')
@@ -1609,9 +1617,11 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const referentialStatusRequest = result.pendingActions.length === 0 && !wantsDiscussionTask
       ? extractReferentialStatusUpdateRequest(promptContent)
       : null;
+    const runtimeResolvedWikiUpdate = shouldCompileRuntimeWikiSuggestion(promptContent, result.executedActions);
     const shouldCompileActionDraft = !wantsDiscussionTask && (
       hasWriteIntent ||
       Boolean(referentialStatusRequest) ||
+      runtimeResolvedWikiUpdate ||
       hasApprovalQueuedClaim(result.text)
     );
     if (shouldCompileActionDraft && !compiledActionDraft) {
