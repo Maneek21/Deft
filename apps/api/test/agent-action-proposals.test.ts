@@ -136,6 +136,28 @@ test('compound compiler normalization preserves every requested action family', 
   assert.deepEqual(result.actions.map((action) => action.action), ['wiki_write', 'create_task']);
 });
 
+test('wiki compiler preserves explicit create versus update intent', () => {
+  const create = normalizeCompiledToolCalls([{
+    name: 'wiki_write',
+    input: {
+      slug: 'buyer-trial-certification-2026',
+      title: 'Buyer Trial Certification 2026',
+      content: 'Trial inventory is verified first.',
+      type: 'fact',
+    },
+  }], { ...compileContext, promptContent: 'Create a wiki page called Buyer Trial Certification 2026.' });
+  const update = normalizeCompiledToolCalls([{
+    name: 'wiki_write',
+    input: {
+      slug: 'buyer-trial-certification-2026',
+      content: 'Add the reviewed summary rule.',
+    },
+  }], { ...compileContext, promptContent: 'Update Buyer Trial Certification 2026 to add the reviewed summary rule.' });
+
+  assert.equal(create.actions[0]?.params.requested_wiki_write_mode, 'create');
+  assert.equal(update.actions[0]?.params.requested_wiki_write_mode, 'update');
+});
+
 test('clarification calls and malformed registered actions never create approval actions', () => {
   const result = normalizeCompiledToolCalls([
     { name: 'request_action_clarification', input: { question: 'Which space?' } },
