@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouse
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
+import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
 import { isSettingsItemActive, settingsNavGroups } from '@/lib/settings-navigation';
 import { useTheme } from './theme-provider';
@@ -201,7 +202,7 @@ function ChatSidebarContent({
                   </div>
                 ) : null}
               </Link>
-              {activeHuddles.has(space.id) && (
+              {HUDDLES_ENABLED && activeHuddles.has(space.id) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); joinHuddleBySpace?.(space.id); }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[9px] font-medium flex-shrink-0 px-1.5 py-0.5 rounded-full hover:opacity-80"

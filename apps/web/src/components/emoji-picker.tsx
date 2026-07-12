@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState, useLayoutEffect, useMemo } from 'react';
+import { EMOJI_DATA, EMOJI_KEYWORDS } from '@/lib/emoji-data';
 
 // ═══ Expanded emoji set (~500 emoji) ═══
 
-const EMOJI_DATA: Record<string, { emoji: string[]; icon: string }> = {
+const CORRUPTED_EMOJI_DATA_UNUSED: Record<string, { emoji: string[]; icon: string }> = {
   'Frequent': { icon: '🕐', emoji: [] }, // Populated from localStorage
   'Smileys': { icon: '😀', emoji: [
     '😀','😃','����','😁','😆','😅','🤣','��','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙',
@@ -52,7 +53,7 @@ const EMOJI_DATA: Record<string, { emoji: string[]; icon: string }> = {
 };
 
 // Emoji keyword search data (partial — covers common emoji)
-const EMOJI_KEYWORDS: Record<string, string> = {
+const CORRUPTED_EMOJI_KEYWORDS_UNUSED: Record<string, string> = {
   '😀': 'grin happy smile', '😂': 'laugh cry joy', '😍': 'love heart eyes', '🤔': 'think hmm',
   '👍': 'thumbs up yes good ok', '👎': 'thumbs down no bad', '❤️': 'heart love red', '���': 'fire hot lit',
   '✨': 'sparkle stars magic', '🎉': 'party celebrate tada', '✅': 'check done yes complete',
