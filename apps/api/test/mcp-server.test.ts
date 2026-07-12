@@ -164,6 +164,7 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   const memoryRecall = body.tools.find((t: any) => t.name === 'memory_recall');
   const wikiSearch = body.tools.find((t: any) => t.name === 'wiki_search');
   const platformContext = body.tools.find((t: any) => t.name === 'platform_context');
+  const taskUpdate = body.tools.find((t: any) => t.name === 'task_update');
   assert.ok(memoryRecall?.inputSchema?.properties?.space_id, 'memory_recall exposes space_id');
   assert.ok(memoryRecall?.inputSchema?.properties?.include_org, 'memory_recall exposes include_org');
   assert.ok(wikiSearch?.inputSchema?.properties?.space_id, 'wiki_search exposes space_id');
@@ -172,6 +173,14 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
     String(platformContext?.description ?? ''),
     /context_packets/,
     'platform_context advertises context_packets',
+  );
+  assert.ok(
+    taskUpdate?.inputSchema?.properties?.patch?.properties?.comment,
+    'task_update advertises task comments to agent runtimes',
+  );
+  assert.ok(
+    taskUpdate?.inputSchema?.properties?.patch?.properties?.due_date,
+    'task_update advertises due-date changes to agent runtimes',
   );
 });
 

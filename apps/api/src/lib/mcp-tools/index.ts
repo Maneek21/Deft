@@ -440,6 +440,14 @@ export const toolSchemas: ToolSchema[] = [
             },
             priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
             assignee_id: { type: ['string', 'null'] },
+            due_date: {
+              type: ['string', 'null'],
+              description: 'ISO-8601 due date, or null to clear it.',
+            },
+            comment: {
+              type: 'string',
+              description: 'Add this text as a task comment without replacing the task description.',
+            },
           },
           additionalProperties: false,
         },
