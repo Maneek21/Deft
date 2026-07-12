@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
+  agentActions,
   agentChannelDeliveryAttempts,
   agentChannelEvents,
 } from '@deft/db/schema';
@@ -104,6 +105,39 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
   return event ?? null;
 }
 
+async function closeFallbackWorkForEvent(params: {
+  event: typeof agentChannelEvents.$inferSelect;
+  principal: AgentChannelPrincipal;
+  runtimeSessionKey?: string | null;
+  detail?: string | null;
+}) {
+  const payload = (params.event.payload ?? {}) as Record<string, unknown>;
+  const actionId = typeof payload.pending_action_id === 'string' ? payload.pending_action_id : null;
+  if (!actionId) return;
+  const now = new Date();
+  await db
+    .update(agentActions)
+    .set({
+      approval_status: 'approved',
+      approved_at: now,
+      executed_at: now,
+      result: {
+        channel_event_id: params.event.id,
+        channel_state: 'completed',
+        runtime_session_key: params.runtimeSessionKey ?? null,
+        detail: params.detail ?? null,
+      },
+      error: null,
+      updated_at: now,
+    })
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, params.principal.org_id),
+      eq(agentActions.agent_employee_id, params.principal.employee_id),
+      eq(agentActions.approval_status, 'pending'),
+    ));
+}
+
 agentChannelRoutes.get('/connect', async (c) => {
   const principal = await resolveChannelPrincipal(c, c.req.query('caller_employee_slug'));
   if (isResponse(principal)) return principal;
@@ -188,6 +222,14 @@ agentChannelRoutes.post('/ack', async (c) => {
     lastError: parsed.data.state === 'failed' ? patch.error ?? 'Runtime reported failure' : null,
   });
   await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+  if (parsed.data.state === 'completed') {
+    await closeFallbackWorkForEvent({
+      event,
+      principal,
+      runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+      detail: parsed.data.detail ?? null,
+    });
+  }
 
   return c.json({ ok: true, event: updated });
 });
@@ -323,6 +365,13 @@ agentChannelRoutes.post('/reply', async (c) => {
     lastError: result.isError ? text : null,
   });
   await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+  if (!result.isError) {
+    await closeFallbackWorkForEvent({
+      event,
+      principal,
+      detail: 'Runtime replied through the Agent Channel.',
+    });
+  }
 
   return c.json({ ok: !result.isError, idempotent: false, result: responseJson }, result.isError ? 500 : 200);
 });

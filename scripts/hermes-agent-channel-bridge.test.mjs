@@ -1,0 +1,118 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  HermesAgentChannelBridge,
+  buildEventPrompt,
+  conversationKey,
+  extractHermesText,
+  parseHermesDecision,
+} from './hermes-agent-channel-bridge.mjs';
+
+const event = {
+  id: 'event-1',
+  kind: 'message.created',
+  source_kind: 'message',
+  source_id: 'message-1',
+  space_id: 'space-1',
+  thread_id: 'thread-1',
+  payload: { content: '@Maya summarize this launch blocker', reply_thread_id: 'thread-1' },
+};
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function config() {
+  return {
+    channelUrl: 'https://deft.test/api/agent-channel/v1',
+    channelToken: 'channel-secret',
+    employeeSlug: 'maya',
+    hermesApiUrl: 'http://127.0.0.1:8642',
+    hermesApiKey: 'hermes-secret',
+    hermesModel: 'Maya',
+    pollMs: 1,
+    limit: 10,
+    once: true,
+  };
+}
+
+test('buildEventPrompt preserves the event and pins the employee identity', () => {
+  const prompt = buildEventPrompt(event, 'maya');
+  assert.match(prompt, /caller_employee_slug exactly "maya"/);
+  assert.match(prompt, /message\.created/);
+  assert.match(prompt, /summarize this launch blocker/);
+  assert.match(prompt, /Do not call message_post, send_message, post_thread_reply/);
+  assert.match(prompt, /bridge is the sole writer/);
+  assert.match(prompt, /different named destination/);
+  assert.doesNotMatch(prompt, /channel-secret/);
+});
+
+test('extractHermesText and parseHermesDecision accept Responses API output', () => {
+  const text = extractHermesText({
+    output: [{
+      type: 'message',
+      content: [{ type: 'output_text', text: '```json\n{"reply":"On it.","summary":"Queued a task proposal.","outcome":"needs_human"}\n```' }],
+    }],
+  });
+  assert.deepEqual(parseHermesDecision(text), {
+    reply: 'On it.',
+    summary: 'Queued a task proposal.',
+    outcome: 'needs_human',
+  });
+});
+
+test('conversationKey keeps a stable thread-scoped Hermes conversation', () => {
+  assert.equal(conversationKey(event, 'maya'), 'deft:maya:thread-1');
+});
+
+test('processEvent acks, marks working, invokes Hermes, replies once, and returns idle', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
+    if (url.includes('/v1/responses')) {
+      return jsonResponse({
+        id: 'resp-1',
+        output: [{
+          type: 'message',
+          content: [{
+            type: 'output_text',
+            text: '{"reply":"I created a governed proposal.","summary":"Proposal queued.","outcome":"needs_human"}',
+          }],
+        }],
+      });
+    }
+    return jsonResponse({ ok: true });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), { fetchImpl, logger: { info() {}, error() {} } });
+  await bridge.processEvent(event);
+
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+    '/api/agent-channel/v1/ack',
+    '/api/agent-channel/v1/status',
+    '/v1/responses',
+    '/api/agent-channel/v1/reply',
+    '/api/agent-channel/v1/status',
+  ]);
+  assert.equal(calls[0].body.state, 'received');
+  assert.equal(calls[1].body.state, 'working');
+  assert.equal(calls[3].body.idempotency_key, 'hermes-channel:event-1');
+  assert.equal(calls[4].body.state, 'idle');
+  assert.equal(calls[2].init.headers['X-Hermes-Session-Key'], 'deft:maya:thread-1');
+});
+
+test('processEvent reports runtime failures to the channel', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+    if (url.includes('/v1/responses')) return jsonResponse({ error: { message: 'provider offline' } }, 503);
+    return jsonResponse({ ok: true });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), { fetchImpl, logger: { info() {}, error() {} } });
+  await assert.rejects(() => bridge.processEvent(event), /provider offline/);
+  const terminalCalls = calls.slice(-2);
+  assert.equal(terminalCalls[0].body.state, 'failed');
+  assert.equal(terminalCalls[1].body.state, 'degraded');
+});

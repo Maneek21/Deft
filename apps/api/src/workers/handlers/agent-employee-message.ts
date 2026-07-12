@@ -1,10 +1,8 @@
 // Handler: agent-employee-message — processes DMs and @mentions directed at agent employees.
 //
-// Phase 9: every agent_employees row is BYOA. Deft never pushes work to
-// the agent runtime — it queues a pending `agent_actions` row that the
-// BYOA client discovers via the `poll_pending_work` MCP tool, and posts
-// a subtle system note in the thread so the human knows the mention
-// landed.
+// Every agent_employees row is BYOA. Deft publishes durable Agent Channel
+// events for live runtimes and also keeps a pending `agent_actions` fallback
+// so pull-only MCP clients can discover the work through `fetch_unread`.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
@@ -53,13 +51,9 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
     return;
   }
 
-  // ─── BYOA (MCP pull) — the only path ────────────────────────────────
-  // BYOA agents run in the user's own Claude Code / Claude Desktop /
-  // custom runtime. Deft has no push endpoint for them — they pull via
-  // MCP. Queue the mention as a pending agent_actions row so the BYOA
-  // client can discover it through `fetch_unread`, then post a
-  // subtle system note so the human sees the mention was received but
-  // the agent replies on its own schedule.
+  // Queue a pull fallback and publish the same work to the durable live
+  // channel. A runtime may consume either path; terminal channel handling
+  // closes the linked fallback row so Inbox does not retain phantom work.
   try {
     const [actionRow] = await db.insert(agentActions).values({
       org_id: orgId,

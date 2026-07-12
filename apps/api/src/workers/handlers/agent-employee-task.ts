@@ -1,8 +1,7 @@
 // Handler: agent-employee-task — processes task assignments to agent employees.
 //
-// Phase 9: every employee is BYOA. Task assignments to an agent are
-// queued as a pending `agent_actions` row so the BYOA client picks
-// the work up via `poll_pending_work`. The task itself stays in its
+// Every employee is BYOA. Task assignments publish to the durable Agent
+// Channel and retain an MCP pull fallback. The task itself stays in its
 // current status; the BYOA agent decides when to move it.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
@@ -50,9 +49,8 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
     return;
   }
 
-  // 3. Queue an agent_actions row so the BYOA client picks up the
-  // assignment via `poll_pending_work`. The assigning user is recorded
-  // so the audit log shows who handed the work off.
+  // 3. Queue an agent_actions fallback and publish a live Agent Channel
+  // event. The assigning user is recorded for the handoff audit trail.
   try {
     const [actionRow] = await db.insert(agentActions).values({
       org_id: orgId,
