@@ -140,7 +140,10 @@ after(async () => {
   }
 });
 
-async function publishMessageEvent(idempotencyKey = `message:${sourceMessageId}:employee:${employeeId}`) {
+async function publishMessageEvent(
+  idempotencyKey = `message:${sourceMessageId}:employee:${employeeId}`,
+  pendingActionId: string | null = null,
+) {
   const { event } = await publishAgentChannelEvent({
     orgId,
     employeeId,
@@ -155,6 +158,7 @@ async function publishMessageEvent(idempotencyKey = `message:${sourceMessageId}:
       message_id: sourceMessageId,
       content: 'hello channel agent',
       reply_thread_id: sourceMessageId,
+      pending_action_id: pendingActionId,
     },
   });
   return event!;
@@ -209,7 +213,32 @@ test('GET /events returns pending events once and marks them delivered', async (
 });
 
 test('POST /ack records received/completed state and cursor', async () => {
-  const event = await publishMessageEvent('agent-channel-ack');
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mention',
+    action: 'chat_mention',
+    params: { message_id: sourceMessageId },
+    approval_tier: 'auto',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const { event } = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'message.created',
+    sourceKind: 'message',
+    sourceId: sourceMessageId,
+    spaceId,
+    threadId: sourceMessageId,
+    actorUserId: humanUserId,
+    idempotencyKey: 'agent-channel-ack',
+    payload: {
+      message_id: sourceMessageId,
+      content: 'hello channel agent',
+      pending_action_id: fallbackAction!.id,
+    },
+  });
   const res = await app.request('/api/agent-channel/v1/ack', {
     method: 'POST',
     headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
@@ -227,10 +256,29 @@ test('POST /ack records received/completed state and cursor', async () => {
     .where(eq(agentChannelCursors.agent_employee_id, employeeId))
     .limit(1);
   assert.equal(cursor?.last_acked_event_id, event.id);
+
+  const [closedFallback] = await db
+    .select()
+    .from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id))
+    .limit(1);
+  assert.equal(closedFallback?.approval_status, 'approved');
+  assert.ok(closedFallback?.executed_at);
+  assert.equal((closedFallback?.result as any)?.channel_event_id, event.id);
 });
 
 test('POST /reply posts as the agent and is idempotent', async () => {
-  const event = await publishMessageEvent('agent-channel-reply');
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mention',
+    action: 'chat_mention',
+    params: { message_id: sourceMessageId },
+    approval_tier: 'auto',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const event = await publishMessageEvent('agent-channel-reply', fallbackAction!.id);
   const request = {
     event_id: event.id,
     content: 'I am replying through the channel.',
@@ -268,4 +316,13 @@ test('POST /reply posts as the agent and is idempotent', async () => {
       ),
     );
   assert.equal(rows[0]?.count, 1, 'reply should be written once');
+
+  const [closedFallback] = await db
+    .select()
+    .from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id))
+    .limit(1);
+  assert.equal(closedFallback?.approval_status, 'approved');
+  assert.ok(closedFallback?.executed_at);
+  assert.equal((closedFallback?.result as any)?.channel_event_id, event.id);
 });

@@ -318,6 +318,20 @@ export default function DeveloperPage() {
     null,
     2,
   );
+  const agentChannelQuickConfig = [
+    `DEFT_CHANNEL_URL=${data.channel_endpoint_url}`,
+    `DEFT_CHANNEL_TOKEN=${channelTokenForConfig}`,
+    `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
+    `DEFT_MCP_TOKEN=${tokenForConfig}`,
+    `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
+    ...(data.runtime_setup.runtime_kind === 'hermes'
+      ? [
+          'HERMES_API_URL=http://127.0.0.1:8642',
+          'HERMES_API_KEY=<hermes-api-key>',
+          `HERMES_API_MODEL=${data.employee.name ?? 'hermes-agent'}`,
+        ]
+      : []),
+  ].join('\n');
 
   return (
     <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
@@ -582,24 +596,13 @@ export default function DeveloperPage() {
           Agent Channel quick config
         </div>
         <CodeBlock
-          value={[
-            `DEFT_CHANNEL_URL=${data.channel_endpoint_url}`,
-            `DEFT_CHANNEL_TOKEN=${channelTokenForConfig}`,
-            `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
-            `DEFT_MCP_TOKEN=${tokenForConfig}`,
-            `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
-          ].join('\n')}
-          onCopy={() => copy('channel env', [
-            `DEFT_CHANNEL_URL=${data.channel_endpoint_url}`,
-            `DEFT_CHANNEL_TOKEN=${channelTokenForConfig}`,
-            `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
-            `DEFT_MCP_TOKEN=${tokenForConfig}`,
-            `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
-          ].join('\n'))}
+          value={agentChannelQuickConfig}
+          onCopy={() => copy('channel env', agentChannelQuickConfig)}
         />
         <p className="mt-1 text-[11px] text-muted-foreground">
           MCP is the tool surface. Agent Channel is the live inbox for DMs,
           mentions, task assignments, task comments, and task status changes.
+          For Hermes, keep its authenticated API and the Deft channel bridge running.
         </p>
       </section>
 

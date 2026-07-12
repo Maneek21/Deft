@@ -577,12 +577,77 @@ type CertificationStage = {
   detail: string;
 };
 
+type CertificationChallengeEvidence = {
+  seenTools: Set<string>;
+  missingTools: string[];
+  nonceSeen: boolean;
+  auditCount: number;
+  completed: boolean;
+};
+
 function runtimeKindOf(employee: { runtime_kind?: string | null }): string {
   return employee.runtime_kind || 'custom_mcp';
 }
 
 function runtimeToolName(runtimeKind: string, tool: string): string {
   return runtimeKind === 'hermes' ? `mcp_deft_${tool}` : tool;
+}
+
+async function loadCertificationChallengeEvidence(params: {
+  orgId: string;
+  employeeId: string;
+  challenge: {
+    nonce: string;
+    required_tools: string[];
+    status: string;
+    started_at: Date;
+  };
+}): Promise<CertificationChallengeEvidence> {
+  const { orgId, employeeId, challenge } = params;
+
+  // Certification evidence is scoped to the challenge and intentionally
+  // independent of the bounded recent-activity lists rendered in diagnostics.
+  // Grouping keeps the query bounded to unique tool names even after a runtime
+  // has made thousands of later calls.
+  const auditRows = await db
+    .select({ tool_name: agentMcpCallAudit.tool_name })
+    .from(agentMcpCallAudit)
+    .where(and(
+      eq(agentMcpCallAudit.org_id, orgId),
+      eq(agentMcpCallAudit.employee_id, employeeId),
+      eq(agentMcpCallAudit.success, true),
+      gte(agentMcpCallAudit.created_at, challenge.started_at),
+    ))
+    .groupBy(agentMcpCallAudit.tool_name);
+  const seenTools = new Set(auditRows.map((row) => row.tool_name));
+
+  const nonceRows = await db
+    .select({ id: agentCooperativeLog.id })
+    .from(agentCooperativeLog)
+    .where(and(
+      eq(agentCooperativeLog.org_id, orgId),
+      eq(agentCooperativeLog.employee_id, employeeId),
+      gte(agentCooperativeLog.created_at, challenge.started_at),
+      or(
+        sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
+        sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
+      ),
+    ))
+    .limit(1);
+
+  const persistedComplete = challenge.status === 'completed';
+  const missingTools = persistedComplete
+    ? []
+    : challenge.required_tools.filter((tool) => !seenTools.has(tool));
+  const nonceSeen = persistedComplete || nonceRows.length > 0;
+
+  return {
+    seenTools,
+    missingTools,
+    nonceSeen,
+    auditCount: auditRows.length,
+    completed: persistedComplete || (missingTools.length === 0 && nonceSeen),
+  };
 }
 
 function hermesBridgeScript(): string {
@@ -733,9 +798,11 @@ function buildRuntimeSetup(
       setup_steps: [
         'Save the Deft stdio bridge as deft-mcp-stdio.mjs on the machine where Hermes runs.',
         'Add the mcp_servers.deft block to the active Hermes config.yaml.',
+        'Enable the authenticated Hermes Responses API and start the Hermes gateway.',
+        'Set the Agent Channel quick-config variables shown below, including the Hermes API URL, key, and model.',
+        'Start the Deft Hermes Agent Channel bridge and keep it running beside Hermes.',
         'Restart or reload Hermes so the MCP server is discovered.',
         'Run hermes mcp test deft and verify Deft reports the Deft MCP tool list.',
-        'Configure the Deft Agent Channel endpoint with DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN so Deft messages wake Hermes.',
         'Run a Hermes chat prompt that uses the model-visible mcp_deft_<tool> names.',
         'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
       ],
@@ -756,6 +823,16 @@ function buildRuntimeSetup(
           description: 'Confirms the deft MCP tools are enabled for the CLI platform.',
         },
         {
+          label: 'Start the Hermes API',
+          command: 'hermes gateway run --force',
+          description: 'Runs the authenticated Hermes Responses API used for persistent Agent Channel turns.',
+        },
+        {
+          label: 'Start live Deft delivery',
+          command: 'pnpm agent:hermes-channel',
+          description: 'Consumes the durable Agent Channel inbox, asks Hermes, and posts exactly one reply through Deft.',
+        },
+        {
           label: 'Run certification prompt',
           command: `hermes chat -q "${certificationPrompt.replace(/"/g, '\\"')}" --cli --max-turns 20`,
           description: 'Confirms the Hermes model loop can call Deft tools, not just discover them.',
@@ -770,8 +847,6 @@ function buildRuntimeSetup(
         '    env:',
         `      DEFT_MCP_URL: ${endpoint}`,
         '      DEFT_MCP_TOKEN: <bearer-token>',
-        `      DEFT_CHANNEL_URL: ${channelEndpoint}`,
-        '      DEFT_CHANNEL_TOKEN: <channel-token>',
         '    connect_timeout: 60',
         '    timeout: 120',
       ].join('\n'),
@@ -784,6 +859,8 @@ function buildRuntimeSetup(
         'Use mcp_deft_memory_recall for wiki context; mcp_deft_wiki_search exists only for compatibility with older/native wording.',
         'If Hermes exits before tool calls with a provider/auth error, fix Hermes model credentials first.',
         'Avoid passing a toolset override that disables MCP tools for the run.',
+        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; the Hermes API and pnpm agent:hermes-channel process must both be running.',
+        'If a channel reply appears twice, stop any older bridge process and verify Hermes is not calling chat-writing MCP tools directly.',
       ],
     };
   }
@@ -1793,22 +1870,13 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       .orderBy(desc(agentChannelEvents.created_at))
       .limit(15);
 
-    const challengeStartedAt = latestChallenge?.started_at ? new Date(latestChallenge.started_at) : null;
-    const challengeCalls = challengeStartedAt
-      ? recentMcpCalls.filter((call) => call.success && new Date(call.created_at) >= challengeStartedAt)
-      : [];
-    const seenTools = new Set(challengeCalls.map((call) => call.tool_name));
-    const missingTools = latestChallenge
-      ? latestChallenge.required_tools.filter((tool) => !seenTools.has(tool))
-      : [];
-    const nonceSeen = latestChallenge
-      ? recentCooperativeLog.some((row) => {
-          if (challengeStartedAt && new Date(row.created_at) < challengeStartedAt) return false;
-          return row.summary.includes(latestChallenge.nonce)
-            || JSON.stringify(row.metadata ?? {}).includes(latestChallenge.nonce);
+    const challengeEvidence = latestChallenge
+      ? await loadCertificationChallengeEvidence({
+          orgId: user.org_id,
+          employeeId: id,
+          challenge: latestChallenge,
         })
-      : false;
-    const completed = latestChallenge?.status === 'completed' || (latestChallenge ? missingTools.length === 0 && nonceSeen : false);
+      : null;
 
     return c.json({
       employee: {
@@ -1839,10 +1907,10 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
             instructions: certificationInstructions(employee, latestChallenge.nonce),
             stages: buildCertificationStages({
               employee,
-              missingTools,
-              nonceSeen,
-              auditCount: challengeCalls.length,
-              completed,
+              missingTools: challengeEvidence?.missingTools ?? [],
+              nonceSeen: challengeEvidence?.nonceSeen ?? false,
+              auditCount: challengeEvidence?.auditCount ?? 0,
+              completed: challengeEvidence?.completed ?? false,
             }),
           }
         : null,
@@ -1985,6 +2053,14 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
       .orderBy(desc(agentCertificationChallenges.created_at))
       .limit(1);
 
+    const challengeEvidence = challenge
+      ? await loadCertificationChallengeEvidence({
+          orgId: user.org_id,
+          employeeId: id,
+          challenge,
+        })
+      : null;
+
     return c.json({
       employee: {
         id: employee.id,
@@ -2000,10 +2076,10 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
             instructions: certificationInstructions(employee, challenge.nonce),
             stages: buildCertificationStages({
               employee,
-              missingTools: challenge.required_tools,
-              nonceSeen: false,
-              auditCount: employee.last_mcp_call_at ? 1 : 0,
-              completed: challenge.status === 'completed',
+              missingTools: challengeEvidence?.missingTools ?? challenge.required_tools,
+              nonceSeen: challengeEvidence?.nonceSeen ?? false,
+              auditCount: challengeEvidence?.auditCount ?? 0,
+              completed: challengeEvidence?.completed ?? false,
             }),
           }
         : null,
@@ -2037,48 +2113,30 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       return c.json({ error: 'No certification challenge has been started', code: 'NO_CHALLENGE' }, 404);
     }
 
-    const auditRows = await db
-      .select({
-        tool_name: agentMcpCallAudit.tool_name,
-        created_at: agentMcpCallAudit.created_at,
-      })
-      .from(agentMcpCallAudit)
-      .where(and(
-        eq(agentMcpCallAudit.org_id, user.org_id),
-        eq(agentMcpCallAudit.employee_id, id),
-        eq(agentMcpCallAudit.success, true),
-        gte(agentMcpCallAudit.created_at, challenge.started_at),
-      ));
-    const seenTools = new Set(auditRows.map((row) => row.tool_name));
-    const missingTools = challenge.required_tools.filter((tool) => !seenTools.has(tool));
-
-    const nonceRows = await db
-      .select({ id: agentCooperativeLog.id })
-      .from(agentCooperativeLog)
-      .where(and(
-        eq(agentCooperativeLog.org_id, user.org_id),
-        eq(agentCooperativeLog.employee_id, id),
-        gte(agentCooperativeLog.created_at, challenge.started_at),
-        or(
-          sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
-          sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
-        ),
-      ))
-      .limit(1);
-    const nonce_seen = nonceRows.length > 0;
-    const completed = missingTools.length === 0 && nonce_seen;
+    const challengeEvidence = await loadCertificationChallengeEvidence({
+      orgId: user.org_id,
+      employeeId: id,
+      challenge,
+    });
+    const {
+      seenTools,
+      missingTools,
+      nonceSeen: nonce_seen,
+      auditCount,
+      completed,
+    } = challengeEvidence;
     const stages = buildCertificationStages({
       employee,
       missingTools,
       nonceSeen: nonce_seen,
-      auditCount: auditRows.length,
+      auditCount,
       completed,
     });
     const failureReason = certificationFailureReason({
       employee,
       missingTools,
       nonceSeen: nonce_seen,
-      auditCount: auditRows.length,
+      auditCount,
     });
 
     if (completed) {
