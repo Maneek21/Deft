@@ -56,7 +56,14 @@ import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { authMiddleware } from './middleware/auth.js';
-import { authLimiter, agentLimiter, uploadLimiter, defaultLimiter, webhookLimiter } from './middleware/rate-limit.js';
+import {
+  authLimiter,
+  agentLimiter,
+  agentChannelLimiter,
+  uploadLimiter,
+  defaultLimiter,
+  webhookLimiter,
+} from './middleware/rate-limit.js';
 import { githubWebhookRoutes } from './routes/webhooks/github.js';
 
 const app = new Hono();
@@ -105,7 +112,7 @@ app.route('/mcp', mcpServerRoutes);
 
 // Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
 app.route('/api/mcp/v1', mcpServerV1Routes);
-app.use('/api/agent-channel/v1/*', agentLimiter);
+app.use('/api/agent-channel/v1/*', agentChannelLimiter);
 app.route('/api/agent-channel/v1', agentChannelRoutes);
 
 // Phase 10 — Prometheus metrics export, own bearer scheme, mounted before

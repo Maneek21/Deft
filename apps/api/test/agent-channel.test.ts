@@ -326,3 +326,42 @@ test('POST /reply posts as the agent and is idempotent', async () => {
   assert.ok(closedFallback?.executed_at);
   assert.equal((closedFallback?.result as any)?.channel_event_id, event.id);
 });
+
+test('POST /reply keeps a top-level DM response inline', async () => {
+  const { event } = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'message.created',
+    sourceKind: 'message',
+    sourceId: sourceMessageId,
+    spaceId,
+    threadId: sourceMessageId,
+    actorUserId: humanUserId,
+    idempotencyKey: 'agent-channel-inline-dm-reply',
+    payload: {
+      message_id: sourceMessageId,
+      content: 'hello in a top-level DM',
+      is_dm: true,
+      parent_id: null,
+    },
+  });
+  const content = 'Inline employee reply';
+  const res = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content,
+      idempotency_key: 'inline-dm-reply-once',
+    }),
+  });
+  const body = await res.json() as any;
+  assert.equal(res.status, 200, JSON.stringify(body));
+
+  const [reply] = await db
+    .select({ parent_id: messages.parent_id })
+    .from(messages)
+    .where(and(eq(messages.org_id, orgId), eq(messages.content, content)))
+    .limit(1);
+  assert.equal(reply?.parent_id, null);
+});

@@ -4,6 +4,8 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_POLL_MS = 3000;
 const DEFAULT_LIMIT = 10;
+const DEFAULT_MAX_RETRIES = 5;
+const DEFAULT_RETRY_BASE_MS = 1000;
 
 function requiredEnv(env, key) {
   const value = env[key]?.trim();
@@ -30,6 +32,8 @@ export function configFromEnv(env = process.env) {
     hermesModel: env.HERMES_API_MODEL?.trim() || 'hermes-agent',
     pollMs: positiveInteger(env.DEFT_CHANNEL_POLL_MS, DEFAULT_POLL_MS),
     limit: Math.min(positiveInteger(env.DEFT_CHANNEL_BATCH_SIZE, DEFAULT_LIMIT), 100),
+    maxRetries: positiveInteger(env.DEFT_CHANNEL_MAX_RETRIES, DEFAULT_MAX_RETRIES),
+    retryBaseMs: positiveInteger(env.DEFT_CHANNEL_RETRY_BASE_MS, DEFAULT_RETRY_BASE_MS),
     once: ['1', 'true', 'yes'].includes((env.DEFT_CHANNEL_ONCE ?? '').toLowerCase()),
   };
 }
@@ -116,25 +120,48 @@ export class HermesAgentChannelBridge {
     this.config = config;
     this.fetch = options.fetchImpl ?? globalThis.fetch;
     this.log = options.logger ?? console;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.stopped = false;
   }
 
   async request(url, init = {}) {
-    const response = await this.fetch(url, init);
-    const text = await response.text();
-    let body = null;
-    if (text.trim()) {
+    for (let attempt = 0; ; attempt += 1) {
+      let response;
       try {
-        body = JSON.parse(text);
-      } catch {
-        body = { raw: text };
+        response = await this.fetch(url, init);
+      } catch (error) {
+        if (attempt >= this.config.maxRetries) throw error;
+        const delayMs = this.config.retryBaseMs * (2 ** attempt);
+        this.log.warn?.(`[deft-channel] transport error; retrying in ${delayMs}ms`);
+        await this.sleep(delayMs);
+        continue;
       }
-    }
-    if (!response.ok) {
+
+      const text = await response.text();
+      let body = null;
+      if (text.trim()) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = { raw: text };
+        }
+      }
+      if (response.ok) return body ?? {};
+
+      const retryable = response.status === 429 || response.status >= 500;
+      if (retryable && attempt < this.config.maxRetries) {
+        const retryAfterSeconds = Number.parseFloat(response.headers.get('retry-after') ?? '');
+        const delayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? Math.ceil(retryAfterSeconds * 1000)
+          : this.config.retryBaseMs * (2 ** attempt);
+        this.log.warn?.(`[deft-channel] HTTP ${response.status}; retrying in ${delayMs}ms`);
+        await this.sleep(delayMs);
+        continue;
+      }
+
       const message = body?.error?.message || body?.error || body?.raw || `HTTP ${response.status}`;
       throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
     }
-    return body ?? {};
   }
 
   channel(path, init = {}) {
@@ -177,12 +204,16 @@ export class HermesAgentChannelBridge {
   }
 
   async reply(event, content) {
+    const isTopLevelDm = event.payload?.is_dm === true && !event.payload?.parent_id;
+    const threadId = isTopLevelDm
+      ? null
+      : (event.thread_id ?? event.payload?.reply_thread_id ?? undefined);
     return this.channel('/reply', {
       method: 'POST',
       body: JSON.stringify({
         event_id: event.id,
         content,
-        thread_id: event.thread_id ?? event.payload?.reply_thread_id ?? undefined,
+        thread_id: threadId,
         idempotency_key: `hermes-channel:${event.id}`,
         caller_employee_slug: this.config.employeeSlug,
       }),
@@ -256,9 +287,15 @@ export class HermesAgentChannelBridge {
     const connection = await this.connect();
     this.log.info?.(`[deft-channel] connected as ${connection.employee?.slug ?? this.config.employeeSlug}`);
     do {
-      await this.pollOnce();
+      try {
+        await this.pollOnce();
+      } catch (error) {
+        if (this.config.once) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        this.log.warn?.(`[deft-channel] poll failed; staying alive: ${message}`);
+      }
       if (this.config.once || this.stopped) break;
-      await new Promise((resolve) => setTimeout(resolve, this.config.pollMs));
+      await this.sleep(this.config.pollMs);
     } while (!this.stopped);
   }
 }

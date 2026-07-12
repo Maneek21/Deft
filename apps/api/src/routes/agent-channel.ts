@@ -45,7 +45,7 @@ const ackSchema = z.object({
 const replySchema = z.object({
   event_id: z.string().min(1),
   content: z.string().min(1).max(16000),
-  thread_id: z.string().optional(),
+  thread_id: z.string().nullable().optional(),
   idempotency_key: z.string().min(1).max(300).optional(),
   caller_employee_slug: z.string().optional(),
 });
@@ -254,7 +254,12 @@ agentChannelRoutes.post('/reply', async (c) => {
 
   const idempotencyKey = parsed.data.idempotency_key
     ?? `reply:${event.id}:${Buffer.from(parsed.data.content).toString('base64url').slice(0, 64)}`;
-  const parentId = parsed.data.thread_id ?? event.thread_id ?? event.source_id ?? null;
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  const isTopLevelDm = payload.is_dm === true && !payload.parent_id;
+  const hasExplicitThreadId = Object.prototype.hasOwnProperty.call(parsed.data, 'thread_id');
+  const parentId = hasExplicitThreadId
+    ? (parsed.data.thread_id ?? null)
+    : (isTopLevelDm ? null : (event.thread_id ?? event.source_id ?? null));
   const requestJson = {
     event_id: event.id,
     content: parsed.data.content,
