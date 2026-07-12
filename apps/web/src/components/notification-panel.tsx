@@ -45,7 +45,7 @@ export function NotificationPanel({ onClose }: Props) {
 
   const handleApprovalNav = (item: InboxItem) => {
     void markRead([item.id]);
-    router.push(`/inbox?tab=${item.kind === 'work_capture' ? 'captures' : 'approvals'}`);
+    router.push(`/inbox?tab=${item.kind === 'work_capture' ? 'activity' : 'approvals'}`);
     onClose();
   };
 
