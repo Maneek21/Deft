@@ -34,6 +34,7 @@ import {
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
 
 // ─── Cooperative knowledge ────────────────────────────────────────────────
 
@@ -107,6 +108,15 @@ export async function requestHumanApproval(
     return errorResult('action and summary are required');
   }
 
+  const normalized = normalizeMcpApprovalAction(
+    action,
+    args.params ?? {},
+    ctx.employee_slug,
+  );
+  if (!normalized.ok) {
+    return errorResult(normalized.error);
+  }
+
   const [emp] = await db
     .select({ created_by: agentEmployees.created_by })
     .from(agentEmployees)
@@ -128,11 +138,11 @@ export async function requestHumanApproval(
       user_id: emp.created_by,
       agent_employee_id: ctx.employee_id,
       source: 'mcp',
-      action,
+      action: normalized.action,
       params: {
+        ...normalized.params,
         summary,
         requested_by_agent: ctx.employee_slug,
-        ...(args.params ?? {}),
       },
       approval_tier: 'full',
       approval_status: 'pending',

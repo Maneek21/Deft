@@ -64,15 +64,11 @@ import {
   markWorkIntentDismissedForAction,
   markWorkIntentFailedForAction,
 } from './work-intents.js';
-export const MCP_ACTION_KINDS = new Set([
-  'task_create',
-  'task_update',
-  'message_post',
-  'send_message',
-  'memory_update',
-  'wiki_create',
-  'wiki_update',
-]);
+import {
+  MCP_ACTION_KINDS,
+  normalizeMcpApprovalAction,
+} from './mcp-approval-actions.js';
+export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 
 export type ApprovalResolverError =
   | { status: 'error'; code: 'NOT_FOUND'; message: string }
@@ -156,15 +152,39 @@ async function dispatchAction(
     actionId,
     sourceReaderUserId: dispatchOpts?.sourceReaderUserId ?? null,
   } as const;
-  switch (actionName) {
+  const normalized = normalizeMcpApprovalAction(
+    actionName,
+    params,
+    ctx.employee_slug,
+  );
+  if (!normalized.ok) {
+    return {
+      content: [{ type: 'text', text: normalized.error }],
+      isError: true,
+    };
+  }
+
+  switch (normalized.action) {
     case 'task_create':
-      return executeTaskCreate(params as unknown as TaskCreateArgs, ctx, opts);
+      return executeTaskCreate(
+        normalized.params as unknown as TaskCreateArgs,
+        ctx,
+        opts,
+      );
     case 'task_update':
-      return executeTaskUpdate(params as unknown as TaskUpdateArgs, ctx, opts);
+      return executeTaskUpdate(
+        normalized.params as unknown as TaskUpdateArgs,
+        ctx,
+        opts,
+      );
     case 'message_post':
-      return executeMessagePost(params as unknown as MessagePostArgs, ctx, opts);
+      return executeMessagePost(
+        normalized.params as unknown as MessagePostArgs,
+        ctx,
+        opts,
+      );
     case 'send_message': {
-      const p = params as unknown as SendMessageArgs & {
+      const p = normalized.params as unknown as SendMessageArgs & {
         resolved_space_id?: string;
         parent_id?: string | null;
       };
@@ -193,13 +213,23 @@ async function dispatchAction(
       );
     }
     case 'memory_update':
-      return executeMemoryUpdate(params as unknown as MemoryUpdateArgs, ctx, opts);
+      return executeMemoryUpdate(
+        normalized.params as unknown as MemoryUpdateArgs,
+        ctx,
+        opts,
+      );
     case 'wiki_create':
-      return executeWikiCreate(params as unknown as WikiCreateArgs, ctx, opts);
+      return executeWikiCreate(
+        normalized.params as unknown as WikiCreateArgs,
+        ctx,
+        opts,
+      );
     case 'wiki_update':
-      return executeWikiUpdate(params as unknown as WikiUpdateArgs, ctx, opts);
-    default:
-      throw new Error(`Unsupported action: ${actionName}`);
+      return executeWikiUpdate(
+        normalized.params as unknown as WikiUpdateArgs,
+        ctx,
+        opts,
+      );
   }
 }
 
