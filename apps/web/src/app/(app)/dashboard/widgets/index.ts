@@ -17,12 +17,8 @@ import { focusDefinition } from './focus';
 import { linksDefinition } from './links';
 import { reviewDefinition } from './review';
 import { agentSuggestionsDefinition } from './agent-suggestions';
-import { teamClocksDefinition } from './team-clocks';
 import { pinnedDefinition } from './pinned';
 import { mentionsDefinition } from './mentions';
-import { celebrationsDefinition } from './celebrations';
-import { goalsDefinition } from './goals';
-import { rssDefinition } from './rss';
 
 let registered = false;
 
@@ -45,10 +41,6 @@ export function registerBuiltInWidgets(): void {
   registerWidget(linksDefinition);
   registerWidget(reviewDefinition);
   registerWidget(agentSuggestionsDefinition);
-  registerWidget(teamClocksDefinition);
   registerWidget(pinnedDefinition);
   registerWidget(mentionsDefinition);
-  registerWidget(celebrationsDefinition);
-  registerWidget(goalsDefinition);
-  registerWidget(rssDefinition);
 }

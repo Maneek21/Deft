@@ -16,6 +16,7 @@ import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
 import { HuddleRingToast } from '@/components/huddle-ring-toast';
+import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { Logo } from '@/components/brand/logo';
 
 type Space = {
@@ -460,7 +461,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </main>
           <CommandPalette />
           <KeyboardShortcuts open={showShortcuts} onClose={() => setShowShortcuts(false)} />
-          {huddleState.active && huddleState.huddleId && huddleState.spaceId && (
+          {HUDDLES_ENABLED && huddleState.active && huddleState.huddleId && huddleState.spaceId && (
             <HuddleOverlay
               huddleId={huddleState.huddleId}
               spaceId={huddleState.spaceId}
@@ -474,7 +475,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               onLeave={huddleState.leaveHuddle}
             />
           )}
-          {huddleState.pendingRings.length > 0 && (
+          {HUDDLES_ENABLED && huddleState.pendingRings.length > 0 && (
             <HuddleRingToast
               rings={huddleState.pendingRings}
               onJoin={huddleState.joinHuddleBySpace}

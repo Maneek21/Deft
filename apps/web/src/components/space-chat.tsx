@@ -9,6 +9,7 @@ import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
+import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { setCurrentSpaceMuted } from '@/lib/editor/chat-commands';
 import {
   Pencil,
@@ -1268,7 +1269,7 @@ export function SpaceChat({
             </button>
 
             {/* Huddle button */}
-            {(() => {
+            {HUDDLES_ENABLED && (() => {
               const inThisHuddle = huddleSpaceId === spaceId;
               const huddleHere = activeHuddles.get(spaceId);
               const othersInHuddle = !inThisHuddle && huddleHere && huddleHere.participants.length > 0;

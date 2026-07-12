@@ -266,7 +266,7 @@ export default function IntegrationsPage() {
                 stdio_command: 'npx',
                 stdio_args: ['-y', '@playwright/mcp@latest', '--headless'],
                 auth_type: 'none',
-                default_trust_tier: 'auto',
+                default_trust_tier: 'full',
               });
               setShowMcpForm(true);
             }}
