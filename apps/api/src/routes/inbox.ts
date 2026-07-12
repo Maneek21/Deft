@@ -49,7 +49,9 @@ export type InboxItem = {
   dm?: { space_id: string; unread_count: number; last_message_preview: string | null };
 };
 
-const NOTIF_KIND_MAP: Record<string, InboxItemKind> = {
+type NotificationType = typeof notifications.$inferSelect.type;
+
+const NOTIF_KIND_MAP: Record<NotificationType, InboxItemKind> = {
   mention: 'mention',
   task_assigned: 'task_assigned',
   task_updated: 'task_updated',
@@ -65,6 +67,35 @@ const NOTIF_KIND_MAP: Record<string, InboxItemKind> = {
   agent_suggestion: 'system',
   skill_update_available: 'system',
 };
+
+const INBOX_KINDS = new Set<InboxItemKind>([
+  'mention',
+  'dm_unread',
+  'task_assigned',
+  'task_updated',
+  'blocked',
+  'cross_reference',
+  'wiki_update',
+  'system',
+  'work_capture',
+  'pending_approval',
+]);
+
+function parseKindFilter(value: string | undefined): Set<InboxItemKind> | null {
+  if (!value) return null;
+  const values = value.split(',').map((kind) => kind.trim()).filter(Boolean);
+  if (values.length === 0 || values.some((kind) => !INBOX_KINDS.has(kind as InboxItemKind))) {
+    return new Set();
+  }
+  return new Set(values as InboxItemKind[]);
+}
+
+function notificationTypesForKinds(kinds: Set<InboxItemKind> | null) {
+  if (!kinds) return Object.keys(NOTIF_KIND_MAP) as NotificationType[];
+  return (Object.entries(NOTIF_KIND_MAP) as Array<[NotificationType, InboxItemKind]>)
+    .filter(([, kind]) => kinds.has(kind))
+    .map(([type]) => type);
+}
 
 function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   return sql`(
@@ -129,8 +160,15 @@ inboxRoutes.get('/', async (c) => {
     const user = c.get('user') as { id: string; org_id: string };
     const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
     const cursor = c.req.query('cursor');
-    const kindFilter = c.req.query('kind') as InboxItemKind | undefined;
+    const requestedKinds = parseKindFilter(c.req.query('kind'));
     const countOnly = c.req.query('count_only') === '1';
+
+    if (requestedKinds && requestedKinds.size === 0) {
+      return c.json({ error: 'Invalid inbox kind', code: 'VALIDATION_ERROR' }, 400);
+    }
+
+    const wantsKind = (kind: InboxItemKind) => !requestedKinds || requestedKinds.has(kind);
+    const notificationTypes = notificationTypesForKinds(requestedKinds);
 
     const expiredActions = await db.update(agentActions)
       .set({ approval_status: 'expired' })
@@ -146,19 +184,37 @@ inboxRoutes.get('/', async (c) => {
       actions: expiredActions,
     });
 
-    const notifRows = await db.select()
-      .from(notifications)
-      .where(and(
-        eq(notifications.user_id, user.id),
-        eq(notifications.org_id, user.org_id),
-        cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
-      ))
-      .orderBy(desc(notifications.created_at))
-      .limit(limit);
+    const notificationWhere = and(
+      eq(notifications.user_id, user.id),
+      eq(notifications.org_id, user.org_id),
+      notificationTypes.length > 0 ? inArray(notifications.type, notificationTypes) : sql`FALSE`,
+      cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
+    );
+    const unreadNotificationWhere = and(
+      eq(notifications.user_id, user.id),
+      eq(notifications.org_id, user.org_id),
+      eq(notifications.is_read, false),
+      notificationTypes.length > 0 ? inArray(notifications.type, notificationTypes) : sql`FALSE`,
+    );
+
+    const notifRows = countOnly || notificationTypes.length === 0
+      ? []
+      : await db.select()
+        .from(notifications)
+        .where(notificationWhere)
+        .orderBy(desc(notifications.created_at))
+        .limit(limit);
+
+    const [notificationCountRow] = notificationTypes.length === 0
+      ? [{ count: 0 }]
+      : await db.select({ count: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(unreadNotificationWhere);
+    const unreadNotificationCount = Number(notificationCountRow?.count ?? 0);
 
     const notifItems: InboxItem[] = notifRows.map((n) => ({
       id: `notif:${n.id}`,
-      kind: NOTIF_KIND_MAP[n.type as string] ?? 'system',
+      kind: NOTIF_KIND_MAP[n.type] ?? 'system',
       title: n.title,
       body: n.body ?? null,
       link: n.link ?? null,
@@ -167,7 +223,7 @@ inboxRoutes.get('/', async (c) => {
       source: 'notification',
     }));
 
-    const dmSpaces = await db.select({
+    const dmSpaces = !wantsKind('dm_unread') ? [] : await db.select({
       space_id: spaceMembers.space_id,
       last_read_at: spaceMembers.last_read_at,
       space_name: spaces.name,
@@ -215,7 +271,8 @@ inboxRoutes.get('/', async (c) => {
       });
     }
 
-    const approvalRows = await db.select({
+    const wantsApprovals = wantsKind('pending_approval') || wantsKind('work_capture');
+    const approvalRows = !wantsApprovals ? [] : await db.select({
       id: agentActions.id,
       action: agentActions.action,
       params: agentActions.params,
@@ -241,8 +298,7 @@ inboxRoutes.get('/', async (c) => {
         inArray(agentActions.approval_tier, ['quick', 'full']),
         visibleCaptureActionSql(user),
       ))
-      .orderBy(desc(agentActions.created_at))
-      .limit(limit);
+      .orderBy(desc(agentActions.created_at));
 
     const approvalItems: InboxItem[] = approvalRows.map((r) => {
       const isCapture = r.action_source === 'defty_capture';
@@ -271,11 +327,11 @@ inboxRoutes.get('/', async (c) => {
       };
     });
 
-    const all = [...notifItems, ...dmItems, ...approvalItems]
-      .filter((it) => !kindFilter || it.kind === kindFilter)
+    const filteredApprovalItems = approvalItems.filter((item) => wantsKind(item.kind));
+    const all = [...notifItems, ...dmItems, ...filteredApprovalItems]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-    const unreadCount = all.filter((it) => !it.read).length;
+    const unreadCount = unreadNotificationCount + dmItems.length + filteredApprovalItems.length;
 
     if (countOnly) {
       return c.json({ unread_count: unreadCount });
@@ -300,15 +356,23 @@ inboxRoutes.get('/', async (c) => {
 inboxRoutes.post('/read', async (c) => {
   try {
     const user = c.get('user') as { id: string; org_id: string };
-    const body = await c.req.json().catch(() => ({})) as { ids?: string[]; all?: boolean };
+    const body = await c.req.json().catch(() => ({})) as { ids?: string[]; all?: boolean; kinds?: unknown };
 
     if (body.all) {
+      const requestedKinds = Array.isArray(body.kinds)
+        ? new Set(body.kinds.filter((kind): kind is InboxItemKind => typeof kind === 'string' && INBOX_KINDS.has(kind as InboxItemKind)))
+        : null;
+      const notificationTypes = notificationTypesForKinds(requestedKinds);
+      if (notificationTypes.length === 0) {
+        return c.json({ success: true, updated: 0 });
+      }
       const updated = await db.update(notifications)
         .set({ is_read: true })
         .where(and(
           eq(notifications.user_id, user.id),
           eq(notifications.org_id, user.org_id),
           eq(notifications.is_read, false),
+          inArray(notifications.type, notificationTypes),
         ))
         .returning({ id: notifications.id });
       return c.json({ success: true, updated: updated.length });

@@ -59,6 +59,29 @@ export type ApprovalCardPresentation = {
   chips: Array<{ label: string; icon?: ApprovalChipIconName }>;
 };
 
+const INTERNAL_APPROVAL_PARAM_KEYS = new Set([
+  'idempotency_key',
+  'proposal_node_id',
+  'proposal_depends_on',
+  'source_message_id',
+  'source_space_id',
+  'origin_space_id',
+  'requested_by_user_id',
+  'agent_employee_id',
+  'org_id',
+  'user_id',
+]);
+
+export function getSafeGenericParams(params: Record<string, unknown>) {
+  return Object.entries(params).filter(([key, value]) => {
+    if (value === undefined || value === null || value === '') return false;
+    if (INTERNAL_APPROVAL_PARAM_KEYS.has(key)) return false;
+    if (key.startsWith('proposal_') || key.startsWith('debug_')) return false;
+    if (key.endsWith('_id') || key.endsWith('_ids')) return false;
+    return true;
+  });
+}
+
 function cleanText(value: unknown): string {
   if (typeof value !== 'string') return '';
   return stripHtml(value).replace(/\s+/g, ' ').trim();
