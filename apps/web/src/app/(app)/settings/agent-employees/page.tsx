@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
 import { Trash2, X, Plus, ExternalLink } from 'lucide-react';
+import { agentConnectionStatus, agentEmployeeLifecycle } from '@/lib/agent-employee-status';
 
 type AgentEmployee = {
   id: string;
@@ -31,6 +32,10 @@ type AgentEmployee = {
   pending_action_count?: number;
   recent_turn_count_24h?: number;
   last_turn_at?: string | null;
+  channel_last_seen_at?: string | null;
+  channel_status?: string | null;
+  installed_skill_count?: number;
+  required_workspace_skill_installed?: boolean;
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -54,156 +59,75 @@ const TRUST_LABELS: Record<string, string> = {
 
 const isSelfHosted = process.env.NEXT_PUBLIC_DEFT_SELF_HOSTED === 'true';
 
-function connectionStatus(lastHeartbeatAt: string | null): { label: string; color: string } {
-  if (!lastHeartbeatAt) return { label: 'Never connected', color: '#9ca3af' };
-  const elapsedMs = Date.now() - new Date(lastHeartbeatAt).getTime();
-  const elapsedMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
-  if (elapsedMinutes < 5) return { label: 'Connected', color: '#10b981' };
-  if (elapsedMinutes < 60) return { label: `Last seen ${elapsedMinutes}m ago`, color: '#f59e0b' };
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return { label: `Last seen ${elapsedHours}h ago`, color: '#f59e0b' };
-  return { label: `Last seen ${Math.floor(elapsedHours / 24)}d ago`, color: '#ef4444' };
-}
-
 function runtimeLabel(value: string | null | undefined): string {
   return value ? value.replace(/_/g, ' ') : 'custom MCP';
 }
 
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return 'never';
-  const elapsedMs = Date.now() - new Date(iso).getTime();
-  const elapsedMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
-  if (elapsedMinutes < 1) return 'just now';
-  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours}h ago`;
-  return `${Math.floor(elapsedHours / 24)}d ago`;
-}
-
-function lifecycleStatus(emp: AgentEmployee): {
-  label: string;
-  detail: string;
-  color: string;
-  background: string;
-  border: string;
-} {
-  if (emp.unhealthy) {
-    return {
-      label: 'Needs attention',
-      detail: emp.unhealthy_reason || 'health check failed',
-      color: '#ef4444',
-      background: 'rgba(239,68,68,0.10)',
-      border: 'rgba(239,68,68,0.22)',
-    };
-  }
-  if (!emp.is_active) {
-    return {
-      label: 'Paused',
-      detail: 'will not pick up new work',
-      color: '#9ca3af',
-      background: 'rgba(156,163,175,0.10)',
-      border: 'rgba(156,163,175,0.22)',
-    };
-  }
-  if (emp.pending_action_count && emp.pending_action_count > 0) {
-    return {
-      label: 'Needs approval',
-      detail: `${emp.pending_action_count} pending`,
-      color: '#f59e0b',
-      background: 'rgba(245,158,11,0.12)',
-      border: 'rgba(245,158,11,0.28)',
-    };
-  }
-  if (emp.certification_status === 'verified') {
-    const recentWork = emp.last_work_outcome_at ?? emp.last_turn_at ?? emp.last_mcp_call_at;
-    return {
-      label: 'Working',
-      detail: `last activity ${formatRelative(recentWork)}`,
-      color: '#10b981',
-      background: 'rgba(16,185,129,0.12)',
-      border: 'rgba(16,185,129,0.26)',
-    };
-  }
-  if (emp.last_mcp_call_at || emp.certification_status === 'mcp_reachable') {
-    return {
-      label: 'Connected',
-      detail: 'ready for certification',
-      color: '#3b82f6',
-      background: 'rgba(59,130,246,0.11)',
-      border: 'rgba(59,130,246,0.24)',
-    };
-  }
-  if (emp.certification_status === 'challenge_issued') {
-    return {
-      label: 'Certifying',
-      detail: 'waiting for challenge response',
-      color: '#f59e0b',
-      background: 'rgba(245,158,11,0.12)',
-      border: 'rgba(245,158,11,0.28)',
-    };
-  }
-  if (emp.certification_status === 'token_issued') {
-    return {
-      label: 'Token issued',
-      detail: 'waiting for first MCP call',
-      color: '#8b5cf6',
-      background: 'rgba(139,92,246,0.11)',
-      border: 'rgba(139,92,246,0.24)',
-    };
-  }
-  return {
-    label: 'Draft',
-    detail: 'finish setup',
-    color: '#9ca3af',
-    background: 'rgba(156,163,175,0.10)',
-    border: 'rgba(156,163,175,0.22)',
-  };
-}
+const STATUS_TONES = {
+  green: { color: '#10b981', background: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.26)' },
+  blue: { color: '#3b82f6', background: 'rgba(59,130,246,0.11)', border: 'rgba(59,130,246,0.24)' },
+  amber: { color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.28)' },
+  red: { color: '#ef4444', background: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.22)' },
+  gray: { color: '#9ca3af', background: 'rgba(156,163,175,0.10)', border: 'rgba(156,163,175,0.22)' },
+  purple: { color: '#8b5cf6', background: 'rgba(139,92,246,0.11)', border: 'rgba(139,92,246,0.24)' },
+} as const;
 
 export default function AgentEmployeesPage() {
   const [employees, setEmployees] = useState<AgentEmployee[]>([]);
   const [loading, setLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchEmployees = async () => {
+  const fetchEmployees = useCallback(async () => {
+    setError(null);
     try {
       const res = await api.get('/api/agent-employees?expand=stats');
-      if (res.ok) {
-        setEmployees(await res.json());
-      }
+      if (!res.ok) throw new Error(`Could not load agent employees (${res.status})`);
+      setEmployees(await res.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load agent employees.');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchEmployees();
   }, []);
 
+  useEffect(() => {
+    void fetchEmployees();
+    const timer = window.setInterval(() => { void fetchEmployees(); }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [fetchEmployees]);
+
   const handleToggleActive = async (emp: AgentEmployee) => {
+    setError(null);
     setTogglingId(emp.id);
     try {
       const endpoint = emp.is_active
         ? `/api/agent-employees/${emp.id}/pause`
         : `/api/agent-employees/${emp.id}/resume`;
       const res = await api.post(endpoint);
-      if (res.ok) {
-        setEmployees((prev) =>
-          prev.map((e) => (e.id === emp.id ? { ...e, is_active: !e.is_active } : e))
-        );
-      }
+      if (!res.ok) throw new Error(`Could not ${emp.is_active ? 'pause' : 'resume'} ${emp.name} (${res.status})`);
+      setEmployees((prev) =>
+        prev.map((e) => (e.id === emp.id ? { ...e, is_active: !e.is_active } : e))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the agent.');
     } finally {
       setTogglingId(null);
     }
   };
 
   const handleDelete = async (id: string) => {
-    const res = await api.delete(`/api/agent-employees/${id}`);
-    if (res.ok) {
+    setError(null);
+    try {
+      const res = await api.delete(`/api/agent-employees/${id}`);
+      if (!res.ok) throw new Error(`Could not delete the agent (${res.status})`);
       setEmployees((prev) => prev.filter((e) => e.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete the agent.');
+    } finally {
+      setConfirmDelete(null);
     }
-    setConfirmDelete(null);
   };
 
   return (
@@ -245,6 +169,17 @@ export default function AgentEmployeesPage() {
         )}
       </div>
 
+      {error && (
+        <div
+          className="mb-4 flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-[12px]"
+          style={{ color: 'var(--status-red)', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)' }}
+          role="alert"
+        >
+          <span>{error}</span>
+          <button type="button" className="deft-pill" onClick={() => void fetchEmployees()}>Retry</button>
+        </div>
+      )}
+
       {loading ? (
         <div className="py-12 text-center text-[13px]" style={{ color: 'var(--muted)' }}>
           Loading...
@@ -264,8 +199,10 @@ export default function AgentEmployeesPage() {
       ) : (
         <div className="space-y-2">
           {employees.map((emp) => {
-            const conn = connectionStatus(emp.last_mcp_call_at ?? emp.last_heartbeat_at);
-            const lifecycle = lifecycleStatus(emp);
+            const connection = agentConnectionStatus(emp);
+            const lifecycle = agentEmployeeLifecycle(emp);
+            const lifecycleTone = STATUS_TONES[lifecycle.tone];
+            const connectionTone = STATUS_TONES[connection.tone];
             return (
             <div
               key={emp.id}
@@ -297,12 +234,12 @@ export default function AgentEmployeesPage() {
                     <span
                       className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded"
                       style={{
-                        color: lifecycle.color,
-                        background: lifecycle.background,
-                        border: `1px solid ${lifecycle.border}`,
+                        color: lifecycleTone.color,
+                        background: lifecycleTone.background,
+                        border: `1px solid ${lifecycleTone.border}`,
                       }}
                     >
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: lifecycle.color }} />
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: lifecycleTone.color }} />
                       {lifecycle.label}
                     </span>
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
@@ -324,16 +261,10 @@ export default function AgentEmployeesPage() {
                       {TRUST_LABELS[emp.trust_level] || emp.trust_level}
                     </span>
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                      {emp.daily_action_count ?? 0}/{emp.max_daily_actions} actions
-                    </span>
-                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                       {runtimeLabel(emp.runtime_kind)} / {emp.wake_mode}
                     </span>
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                      {emp.pending_action_count ?? 0} pending
-                    </span>
-                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                      cert {emp.certification_status}
+                      {emp.installed_skill_count ?? 0} skill{emp.installed_skill_count === 1 ? '' : 's'}
                     </span>
                     <div className="flex items-center gap-1">
                       {emp.heartbeat_enabled && (
@@ -342,13 +273,16 @@ export default function AgentEmployeesPage() {
                         </span>
                       )}
                     </div>
+                    <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      {emp.daily_action_count ?? 0}/{emp.max_daily_actions} actions today
+                    </span>
                     <div className="flex items-center gap-1">
                       <div
                         className="w-2 h-2 rounded-full"
-                        style={{ background: conn.color }}
+                        style={{ background: connectionTone.color }}
                       />
                       <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                        {conn.label}
+                        {connection.label}
                       </span>
                     </div>
                     {emp.unhealthy && (

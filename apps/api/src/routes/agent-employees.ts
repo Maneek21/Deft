@@ -144,14 +144,53 @@ agentEmployeeRoutes.get('/', async (c) => {
       if (r.employee_id) lastTurnMap.set(r.employee_id, r.last_turn_at ?? null);
     }
 
+    const channelRows = await db
+      .select({
+        employee_id: agentChannelConnections.agent_employee_id,
+        status: agentChannelConnections.status,
+        last_seen_at: agentChannelConnections.last_seen_at,
+        last_error: agentChannelConnections.last_error,
+      })
+      .from(agentChannelConnections)
+      .where(eq(agentChannelConnections.org_id, user.org_id));
+    const channelMap = new Map(channelRows.map((row) => [row.employee_id, row]));
+
+    const skillStats = await db.execute(sql`
+      SELECT
+        aes.agent_employee_id AS employee_id,
+        COUNT(*)::int AS installed_skill_count,
+        BOOL_OR(s.slug = 'deft-workspace' AND s.is_deleted = false) AS has_workspace_skill
+      FROM agent_employee_skills aes
+      INNER JOIN skills s ON s.id = aes.skill_id
+      INNER JOIN agent_employees ae ON ae.id = aes.agent_employee_id
+      WHERE ae.org_id = ${user.org_id}
+        AND ae.is_deleted = false
+      GROUP BY aes.agent_employee_id
+    `);
+    const skillMap = new Map<string, { count: number; hasWorkspaceSkill: boolean }>();
+    for (const row of ((skillStats as any).rows ?? skillStats) as any[]) {
+      if (!row.employee_id) continue;
+      skillMap.set(row.employee_id, {
+        count: Number(row.installed_skill_count ?? 0),
+        hasWorkspaceSkill: row.has_workspace_skill === true,
+      });
+    }
+
     const enriched = employees.map((emp) => {
       const turn = turnMap.get(emp.id);
+      const channel = channelMap.get(emp.id);
+      const skill = skillMap.get(emp.id);
       return {
         ...emp,
         pending_action_count: pendingMap.get(emp.id) ?? 0,
         recent_turn_count_24h: turn?.cnt_24h ?? 0,
         last_turn_at: turn?.last_turn_at ?? lastTurnMap.get(emp.id) ?? null,
         avg_latency_ms_24h: turn?.avg_latency ?? null,
+        channel_status: channel?.status ?? null,
+        channel_last_seen_at: channel?.last_seen_at ?? null,
+        channel_last_error: channel?.last_error ?? null,
+        installed_skill_count: skill?.count ?? 0,
+        required_workspace_skill_installed: skill?.hasWorkspaceSkill ?? false,
       };
     });
 
@@ -915,6 +954,27 @@ async function issueMcpToken({
   return rawApiKey;
 }
 
+async function installRequiredWorkspaceSkill(employeeId: string) {
+  const [workspaceSkill] = await db
+    .select({ id: skills.id, version: skills.version })
+    .from(skills)
+    .where(and(eq(skills.slug, 'deft-workspace'), eq(skills.is_deleted, false)))
+    .limit(1);
+  if (!workspaceSkill) {
+    console.warn('[agent-employees] bundled deft-workspace skill is not seeded');
+    return false;
+  }
+  await db
+    .insert(agentEmployeeSkills)
+    .values({
+      agent_employee_id: employeeId,
+      skill_id: workspaceSkill.id,
+      installed_version: workspaceSkill.version,
+    })
+    .onConflictDoNothing();
+  return true;
+}
+
 agentEmployeeRoutes.post('/', async (c) => {
   try {
     const currentUser = c.get('user');
@@ -1004,6 +1064,8 @@ agentEmployeeRoutes.post('/', async (c) => {
       .update(users)
       .set({ agent_employee_id: employee!.id })
       .where(eq(users.id, agentUser!.id));
+
+    await installRequiredWorkspaceSkill(employee!.id);
 
     // 5. Always auto-generate the API key. Every agent in v1 is BYOA —
     // the same token is persisted on BOTH sides so the agent works

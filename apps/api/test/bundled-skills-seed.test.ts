@@ -102,6 +102,25 @@ test('deft-workspace skill ships the 9 Phase-3 task tools', async () => {
   });
 });
 
+test('seeding backfills deft-workspace onto existing agent employees', async () => {
+  await withClient(async (c) => {
+    const res = await c.query<{ missing_count: string }>(
+      `SELECT count(*)::text AS missing_count
+       FROM agent_employees ae
+       WHERE ae.is_deleted = false
+         AND NOT EXISTS (
+           SELECT 1
+           FROM agent_employee_skills aes
+           INNER JOIN skills s ON s.id = aes.skill_id
+           WHERE aes.agent_employee_id = ae.id
+             AND s.slug = 'deft-workspace'
+             AND s.is_deleted = false
+         )`,
+    );
+    assert.equal(res.rows[0]!.missing_count, '0');
+  });
+});
+
 test('capability-pack bundled skills map 1:1 to available packs', async () => {
   const available = new Set(
     CAPABILITY_PACKS.filter((p) => !p.coming_soon).map((p) => p.slug),
