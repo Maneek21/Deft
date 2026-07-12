@@ -875,9 +875,20 @@ export const toolSchemas: ToolSchema[] = [
         ...CALLER_SLUG_PROP,
         action: {
           type: 'string',
+          enum: [
+            'task_create',
+            'task_update',
+            'message_post',
+            'send_message',
+            'memory_update',
+            'wiki_create',
+            'wiki_update',
+            'add_task_comment',
+          ],
           description:
-            'Short handle for the action you want approved (e.g. ' +
-            '"send_email", "deploy_to_prod"). Shown in the approval UI.',
+            'Native Deft action to review. Use add_task_comment as a ' +
+            'convenience alias with params.task_id and params.comment; it ' +
+            'is normalized to task_update before it enters the queue.',
         },
         summary: {
           type: 'string',

@@ -264,6 +264,13 @@ async function teardownFixtures() {
     );
     if (TEST_PROJECT_ID) {
       await c.query(
+        `DELETE FROM task_comments
+         WHERE task_id IN (
+           SELECT id FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3)
+         )`,
+        [TEST_PROJECT_ID, SHADOW_USER_ID, DEFTY_USER_ID],
+      );
+      await c.query(
         `DELETE FROM task_activity
          WHERE task_id IN (
            SELECT id FROM tasks WHERE project_id = $1 AND created_by IN ($2, $3)
@@ -292,8 +299,14 @@ async function teardownFixtures() {
       );
     }
     await c.query(
-      `DELETE FROM messages WHERE user_id = $1`,
-      [SHADOW_USER_ID],
+      `DELETE FROM messages WHERE user_id IN ($1, $2, $3, $4, $5)`,
+      [
+        APPROVER_USER_ID,
+        OUTSIDER_USER_ID,
+        SHADOW_USER_ID,
+        DEFTY_USER_ID,
+        FOREIGN_USER_ID,
+      ],
     );
     await c.query(
       `DELETE FROM messages
@@ -395,6 +408,50 @@ async function insertPendingTaskCreate(
       ],
     );
     return r.rows[0].id as string;
+  });
+}
+
+async function createApprovedResolverTask(title: string): Promise<string> {
+  const actionId = await insertPendingTaskCreate(title);
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, APPROVER_USER_ID);
+  assert.equal(result.status, 'approved', `task setup failed: ${JSON.stringify(result)}`);
+
+  return withClient(async (c) => {
+    const row = await c.query(
+      `SELECT id FROM tasks WHERE title = $1 ORDER BY created_at DESC LIMIT 1`,
+      [title],
+    );
+    assert.equal(row.rows.length, 1, 'approved setup task should exist');
+    return row.rows[0].id as string;
+  });
+}
+
+async function insertLegacyPendingTaskComment(
+  taskId: string,
+  comment: string,
+): Promise<string> {
+  return withClient(async (c) => {
+    const row = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'mcp',
+         'add_task_comment', $4::jsonb, 'full', 'pending')
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        JSON.stringify({
+          task_id: taskId,
+          comment,
+          summary: 'Legacy task comment proposal',
+          requested_by_agent: EMP_SLUG,
+        }),
+      ],
+    );
+    return row.rows[0].id as string;
   });
 }
 
@@ -728,6 +785,110 @@ test('1b. approving task_create resolves assignee_name when assignee_id is absen
       [actionId],
     );
     assert.equal(action.rows[0].result.assignee_id, APPROVER_USER_ID);
+  });
+});
+
+test('1b2. request_human_approval normalizes add_task_comment and executes it', async () => {
+  const title = `resolver-comment-normalized-${Date.now()}`;
+  const taskId = await createApprovedResolverTask(title);
+  const comment = 'Normalized approval comment from the agent employee.';
+  const { requestHumanApproval } = await import('../src/lib/mcp-tools/cooperative.js');
+
+  const queued = await requestHumanApproval(
+    {
+      action: 'add_task_comment',
+      summary: 'Add the reviewed handoff note to the task.',
+      params: { task_id: taskId, comment },
+    },
+    {
+      org_id: ORG_ID,
+      employee_id: EMP_ID,
+      employee_slug: EMP_SLUG,
+      trust_level: 'conservative',
+    },
+  );
+
+  assert.equal(queued.isError, false, queued.content?.[0]?.text);
+  const queuedPayload = JSON.parse(queued.content![0]!.text);
+  const actionId = queuedPayload.action_id as string;
+
+  await withClient(async (c) => {
+    const action = await c.query(
+      `SELECT action, params FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].action, 'task_update');
+    assert.equal(action.rows[0].params.task_id, taskId);
+    assert.equal(action.rows[0].params.patch.comment, comment);
+    assert.equal(action.rows[0].params.comment, undefined);
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const approved = await approveAction(actionId, APPROVER_USER_ID);
+  assert.equal(approved.status, 'approved', JSON.stringify(approved));
+
+  await withClient(async (c) => {
+    const saved = await c.query(
+      `SELECT content FROM task_comments WHERE task_id = $1 AND content = $2`,
+      [taskId, comment],
+    );
+    assert.equal(saved.rows.length, 1, 'normalized comment should be written once');
+  });
+});
+
+test('1b3. legacy add_task_comment rows remain executable', async () => {
+  const title = `resolver-comment-legacy-${Date.now()}`;
+  const taskId = await createApprovedResolverTask(title);
+  const comment = 'Compatibility comment from a pre-fix approval row.';
+  const actionId = await insertLegacyPendingTaskComment(taskId, comment);
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+
+  const approved = await approveAction(actionId, APPROVER_USER_ID);
+  assert.equal(approved.status, 'approved', JSON.stringify(approved));
+
+  await withClient(async (c) => {
+    const action = await c.query(
+      `SELECT approval_status, executed_at, error FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(action.rows[0].approval_status, 'approved');
+    assert.ok(action.rows[0].executed_at);
+    assert.equal(action.rows[0].error, null);
+
+    const saved = await c.query(
+      `SELECT content FROM task_comments WHERE task_id = $1 AND content = $2`,
+      [taskId, comment],
+    );
+    assert.equal(saved.rows.length, 1, 'legacy comment should be written once');
+  });
+});
+
+test('1b4. request_human_approval rejects actions without an executor', async () => {
+  const summary = `unsupported-approval-${Date.now()}`;
+  const { requestHumanApproval } = await import('../src/lib/mcp-tools/cooperative.js');
+
+  const result = await requestHumanApproval(
+    {
+      action: 'deploy_to_prod',
+      summary,
+      params: { environment: 'production' },
+    },
+    {
+      org_id: ORG_ID,
+      employee_id: EMP_ID,
+      employee_slug: EMP_SLUG,
+      trust_level: 'conservative',
+    },
+  );
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? '', /unsupported approval action/i);
+  await withClient(async (c) => {
+    const row = await c.query(
+      `SELECT id FROM agent_actions WHERE params->>'summary' = $1`,
+      [summary],
+    );
+    assert.equal(row.rows.length, 0, 'unsupported action must not enter the queue');
   });
 });
 
