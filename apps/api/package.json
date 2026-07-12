@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "tsx src/scripts/run-api-tests.ts",
+    "inbox:compact": "tsx src/scripts/compact-inbox-history.ts",
     "start": "node dist/server.js"
   },
   "dependencies": {

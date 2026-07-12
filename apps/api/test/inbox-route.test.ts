@@ -115,6 +115,61 @@ test('GET /api/inbox returns mention notifications', async () => {
   assert.equal(mention.kind, 'mention');
 });
 
+test('GET /api/inbox defaults to attention and keeps background activity separate', async () => {
+  const [background, nudge] = await db.insert(notifications).values([
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'system',
+      title: 'Weekly background summary',
+      is_read: false,
+    },
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'agent_suggestion',
+      title: '2 overdue tasks',
+      metadata: { nudge_type: 'overdue', task_ids: ['task-a', 'task-b'] },
+      is_read: false,
+    },
+  ]).returning();
+  createdNotifIds.push(background.id, nudge.id);
+
+  const attentionRes = await app.request('/api/inbox');
+  assert.equal(attentionRes.status, 200);
+  const attention = await attentionRes.json() as { items: { id: string; kind: string }[] };
+  assert.equal(attention.items.some((item) => item.id === `notif:${background.id}`), false);
+  assert.equal(
+    attention.items.find((item) => item.id === `notif:${nudge.id}`)?.kind,
+    'task_updated',
+  );
+
+  const activityRes = await app.request('/api/inbox?kind=system');
+  assert.equal(activityRes.status, 200);
+  const activity = await activityRes.json() as { items: { id: string }[] };
+  assert.equal(activity.items.some((item) => item.id === `notif:${background.id}`), true);
+  assert.equal(activity.items.some((item) => item.id === `notif:${nudge.id}`), false);
+});
+
+test('GET /api/inbox hides read queue rows unless history is requested', async () => {
+  const [readNotification] = await db.insert(notifications).values({
+    org_id: testOrgId,
+    user_id: userId,
+    type: 'task_updated',
+    title: 'Historical task update',
+    is_read: true,
+  }).returning();
+  createdNotifIds.push(readNotification.id);
+
+  const queueRes = await app.request('/api/inbox?kind=task_updated');
+  const queue = await queueRes.json() as { items: { id: string }[] };
+  assert.equal(queue.items.some((item) => item.id === `notif:${readNotification.id}`), false);
+
+  const historyRes = await app.request('/api/inbox?kind=task_updated&include_read=1');
+  const history = await historyRes.json() as { items: { id: string }[] };
+  assert.equal(history.items.some((item) => item.id === `notif:${readNotification.id}`), true);
+});
+
 test('GET /api/inbox surfaces DM unread', async () => {
   const [m] = await db.insert(messages).values({
     org_id: testOrgId,
@@ -268,6 +323,38 @@ test('POST /api/inbox/read with all=true marks everything read', async () => {
 
   const [after] = await db.select().from(notifications).where(eq(notifications.id, n.id));
   assert.equal(after.is_read, true);
+});
+
+test('POST /api/inbox/read with all=true leaves background activity unread', async () => {
+  const [attention, background] = await db.insert(notifications).values([
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'task_updated',
+      title: 'Attention row',
+      is_read: false,
+    },
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'system',
+      title: 'Background row',
+      is_read: false,
+    },
+  ]).returning();
+  createdNotifIds.push(attention.id, background.id);
+
+  const res = await app.request('/api/inbox/read', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ all: true }),
+  });
+  assert.equal(res.status, 200);
+
+  const [attentionAfter] = await db.select().from(notifications).where(eq(notifications.id, attention.id));
+  const [backgroundAfter] = await db.select().from(notifications).where(eq(notifications.id, background.id));
+  assert.equal(attentionAfter.is_read, true);
+  assert.equal(backgroundAfter.is_read, false);
 });
 
 test('POST /api/inbox/read scoped to current user only', async () => {

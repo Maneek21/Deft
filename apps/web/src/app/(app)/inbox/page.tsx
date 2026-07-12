@@ -11,6 +11,7 @@ import {
   CheckSquare,
   Clock3,
   ExternalLink,
+  History,
   RotateCcw,
   XCircle,
 } from 'lucide-react';
@@ -487,8 +488,11 @@ export default function InboxPage() {
   const [retryError, setRetryError] = useState<{ intentId: string; message: string } | null>(null);
 
   const inboxKinds = TAB_TO_KINDS[tab];
-  const { items, unreadCount, isLoading, error: inboxError, markRead, markAllRead, refresh } = useInbox(inboxKinds);
-  const shouldLoadWorkIntents = tab === 'captures';
+  const { items, unreadCount, isLoading, error: inboxError, markRead, markAllRead, refresh } = useInbox(
+    inboxKinds,
+    { includeRead: tab === 'activity' },
+  );
+  const shouldLoadWorkIntents = tab === 'activity';
   const { data: workIntentData, error: workIntentsError, isLoading: workIntentsLoading, mutate: refreshWorkIntents } = useSWR(
     shouldLoadWorkIntents ? '/api/work-intents?limit=50' : null,
     fetchWorkIntents,
@@ -589,7 +593,7 @@ export default function InboxPage() {
   const handleTabChange = useCallback((nextTab: InboxTab) => {
     setTab(nextTab);
     const nextParams = new URLSearchParams(params.toString());
-    if (nextTab === 'all') nextParams.delete('tab');
+    if (nextTab === 'attention') nextParams.delete('tab');
     else nextParams.set('tab', nextTab);
     nextParams.delete('action');
     const query = nextParams.toString();
@@ -611,7 +615,7 @@ export default function InboxPage() {
               {inboxStatusText(tab, unreadCount, isLoading)}
             </p>
           </div>
-          {markableNotificationCount > 0 && (
+          {tab !== 'activity' && markableNotificationCount > 0 && (
             <button
               onClick={() => void markAllRead()}
               className="deft-pill min-h-[32px]"
@@ -623,7 +627,7 @@ export default function InboxPage() {
 
         {/* Tab strip */}
         <nav
-          className="mb-5 flex gap-1.5 overflow-x-auto whitespace-nowrap"
+          className="mb-5 flex items-center gap-1.5 overflow-x-auto whitespace-nowrap"
           role="tablist"
           aria-label="Inbox sections"
         >
@@ -639,6 +643,18 @@ export default function InboxPage() {
               {t.label}
             </button>
           ))}
+          <span className="mx-0.5 h-5 w-px flex-shrink-0" style={{ background: 'var(--border)' }} />
+          <button
+            type="button"
+            onClick={() => handleTabChange('activity')}
+            className="deft-pill inline-flex items-center gap-1.5"
+            data-active={tab === 'activity'}
+            role="tab"
+            aria-selected={tab === 'activity'}
+          >
+            <History size={13} strokeWidth={1.7} />
+            Activity
+          </button>
         </nav>
 
         {/* Body */}
@@ -667,6 +683,11 @@ export default function InboxPage() {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
+            {tab === 'activity' && filtered.length > 0 && (
+              <h2 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+                Workspace activity
+              </h2>
+            )}
             {filtered.map((item) => {
               if ((item.kind === 'pending_approval' || item.kind === 'work_capture') && item.approval) {
                 const action: AgentAction = {
@@ -696,6 +717,11 @@ export default function InboxPage() {
                 />
               );
             })}
+            {shouldLoadWorkIntents && historicWorkIntents.length > 0 && (
+              <h2 className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+                Capture outcomes
+              </h2>
+            )}
             {shouldLoadWorkIntents && historicWorkIntents
               .map((intent) => (
                 <WorkIntentRow
@@ -708,19 +734,21 @@ export default function InboxPage() {
                 />
               ))}
             {shouldLoadWorkIntents && observationTrail.length > 0 && (
-              <div className="mt-4 flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-[13px] font-semibold" style={{ color: 'var(--foreground)' }}>
-                    Observation trail
-                  </h2>
-                  <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+              <details className="group mt-4 rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--foreground-secondary)' }}>
+                    Processing details
+                  </span>
+                  <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
                     Last {observationTrail.length}
                   </span>
+                </summary>
+                <div className="mt-3 flex flex-col gap-2">
+                  {observationTrail.map((observation) => (
+                    <MessageObservationRow key={observation.id} observation={observation} />
+                  ))}
                 </div>
-                {observationTrail.map((observation) => (
-                  <MessageObservationRow key={observation.id} observation={observation} />
-                ))}
-              </div>
+              </details>
             )}
           </div>
         )}

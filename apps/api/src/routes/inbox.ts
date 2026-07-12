@@ -64,9 +64,20 @@ const NOTIF_KIND_MAP: Record<NotificationType, InboxItemKind> = {
   reminder: 'system',
   huddle_started: 'system',
   workload_imbalance: 'system',
-  agent_suggestion: 'system',
+  // Agent suggestions are task/work attention, not background system noise.
+  // This includes bundled overdue, stalled, and upcoming-due nudges.
+  agent_suggestion: 'task_updated',
   skill_update_available: 'system',
 };
+
+const ATTENTION_INBOX_KINDS = new Set<InboxItemKind>([
+  'mention',
+  'dm_unread',
+  'task_assigned',
+  'task_updated',
+  'blocked',
+  'pending_approval',
+]);
 
 const INBOX_KINDS = new Set<InboxItemKind>([
   'mention',
@@ -160,14 +171,16 @@ inboxRoutes.get('/', async (c) => {
     const user = c.get('user') as { id: string; org_id: string };
     const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
     const cursor = c.req.query('cursor');
-    const requestedKinds = parseKindFilter(c.req.query('kind'));
+    const parsedKinds = parseKindFilter(c.req.query('kind'));
+    const requestedKinds = parsedKinds ?? ATTENTION_INBOX_KINDS;
     const countOnly = c.req.query('count_only') === '1';
+    const includeRead = c.req.query('include_read') === '1';
 
     if (requestedKinds && requestedKinds.size === 0) {
       return c.json({ error: 'Invalid inbox kind', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const wantsKind = (kind: InboxItemKind) => !requestedKinds || requestedKinds.has(kind);
+    const wantsKind = (kind: InboxItemKind) => requestedKinds.has(kind);
     const notificationTypes = notificationTypesForKinds(requestedKinds);
 
     const expiredActions = await db.update(agentActions)
@@ -187,6 +200,7 @@ inboxRoutes.get('/', async (c) => {
     const notificationWhere = and(
       eq(notifications.user_id, user.id),
       eq(notifications.org_id, user.org_id),
+      includeRead ? sql`TRUE` : eq(notifications.is_read, false),
       notificationTypes.length > 0 ? inArray(notifications.type, notificationTypes) : sql`FALSE`,
       cursor ? lt(notifications.created_at, new Date(cursor)) : sql`TRUE`,
     );
@@ -361,7 +375,7 @@ inboxRoutes.post('/read', async (c) => {
     if (body.all) {
       const requestedKinds = Array.isArray(body.kinds)
         ? new Set(body.kinds.filter((kind): kind is InboxItemKind => typeof kind === 'string' && INBOX_KINDS.has(kind as InboxItemKind)))
-        : null;
+        : ATTENTION_INBOX_KINDS;
       const notificationTypes = notificationTypesForKinds(requestedKinds);
       if (notificationTypes.length === 0) {
         return c.json({ success: true, updated: 0 });

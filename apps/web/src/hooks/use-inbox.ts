@@ -48,9 +48,13 @@ async function fetchInbox(url: string): Promise<InboxResponse> {
   return (await res.json()) as InboxResponse;
 }
 
-export function useInbox(kinds?: InboxItemKind[]) {
+export function useInbox(kinds?: InboxItemKind[], options: { includeRead?: boolean } = {}) {
   const kindQuery = kinds?.length ? kinds.join(',') : '';
-  const url = kindQuery ? `/api/inbox?kind=${encodeURIComponent(kindQuery)}` : '/api/inbox';
+  const query = new URLSearchParams();
+  if (kindQuery) query.set('kind', kindQuery);
+  if (options.includeRead) query.set('include_read', '1');
+  const queryString = query.toString();
+  const url = queryString ? `/api/inbox?${queryString}` : '/api/inbox';
   const { data, mutate, isLoading, error } = useSWR<InboxResponse>(url, fetchInbox, {
     refreshInterval: 15_000,
     revalidateOnFocus: true,
