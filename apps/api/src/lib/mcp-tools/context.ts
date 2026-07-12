@@ -30,6 +30,7 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
+import { employeeCanAccessSpace } from './employee-space-access.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -281,6 +282,45 @@ export async function platformContext(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   const trigger = args.trigger;
+  let triggerMessageContent = '';
+
+  try {
+    if (
+      trigger?.space_id &&
+      !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, trigger.space_id))
+    ) {
+      return errorResult('You do not have access to the requested space.');
+    }
+
+    if (trigger?.triggering_message_id) {
+      const [message] = await db
+        .select({ content: messages.content, space_id: messages.space_id })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.id, trigger.triggering_message_id),
+            eq(messages.org_id, ctx.org_id),
+            eq(messages.is_deleted, false),
+          ),
+        )
+        .limit(1);
+
+      if (!message) {
+        return errorResult('The triggering message was not found.');
+      }
+      if (trigger.space_id && trigger.space_id !== message.space_id) {
+        return errorResult('The triggering message does not belong to the requested space.');
+      }
+      if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, message.space_id))) {
+        return errorResult('You do not have access to the triggering message.');
+      }
+
+      triggerMessageContent = message.content;
+    }
+  } catch {
+    return errorResult('Unable to validate the requested workspace context.');
+  }
+
   const key = cacheKey(ctx.employee_id, trigger);
   const cached = cacheGet(key);
   if (cached) {
@@ -345,13 +385,19 @@ export async function platformContext(
     }
 
     // ─── wiki snippet query source ───────────────────────────────
-    let queryText = '';
+    let queryText = triggerMessageContent;
     if (trigger?.triggering_message_id) {
       try {
         const [msg] = await db
           .select({ content: messages.content })
           .from(messages)
-          .where(eq(messages.id, trigger.triggering_message_id))
+          .where(
+            and(
+              eq(messages.id, trigger.triggering_message_id),
+              eq(messages.org_id, ctx.org_id),
+              eq(messages.is_deleted, false),
+            ),
+          )
           .limit(1);
         if (msg?.content) queryText = msg.content;
       } catch {

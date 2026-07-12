@@ -19,6 +19,9 @@
 import type { ToolContext, ToolResult } from './types.js';
 import { textResult, errorResult } from './types.js';
 import { executeToolCall } from '../agent-context.js';
+import { and, eq } from 'drizzle-orm';
+import { agentEmployees } from '@deft/db/schema';
+import { db } from '../db.js';
 
 function serialize(result: unknown): ToolResult {
   // executeToolCall may return error objects shaped `{ error: string }` — surface them as MCP errors.
@@ -28,16 +31,32 @@ function serialize(result: unknown): ToolResult {
   return textResult(result ?? {});
 }
 
+async function resolveEmployeeUserId(ctx: ToolContext): Promise<string | null> {
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id })
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.id, ctx.employee_id),
+        eq(agentEmployees.org_id, ctx.org_id),
+      ),
+    )
+    .limit(1);
+  return employee?.user_id ?? null;
+}
+
 export async function taskDetail(args: {
   caller_employee_slug?: string;
   task_identifier: string;
 }, ctx: ToolContext): Promise<ToolResult> {
   if (!args.task_identifier) return errorResult('task_identifier is required');
+  const userId = await resolveEmployeeUserId(ctx);
+  if (!userId) return errorResult('agent employee identity could not be resolved');
   const { result } = await executeToolCall(
     'get_task_detail',
     { task_identifier: args.task_identifier },
     ctx.org_id,
-    ctx.employee_id,
+    userId,
     undefined,
     ctx.employee_id,
   );
@@ -52,6 +71,8 @@ export async function messagesSearch(args: {
   limit?: number;
 }, ctx: ToolContext): Promise<ToolResult> {
   if (!args.query) return errorResult('query is required');
+  const userId = await resolveEmployeeUserId(ctx);
+  if (!userId) return errorResult('agent employee identity could not be resolved');
   const { result } = await executeToolCall(
     'search_messages',
     {
@@ -61,7 +82,7 @@ export async function messagesSearch(args: {
       limit: args.limit,
     },
     ctx.org_id,
-    ctx.employee_id,
+    userId,
     undefined,
     ctx.employee_id,
   );
@@ -73,6 +94,8 @@ export async function projectProgress(args: {
   project_identifier?: string;
   project_name?: string;
 }, ctx: ToolContext): Promise<ToolResult> {
+  const userId = await resolveEmployeeUserId(ctx);
+  if (!userId) return errorResult('agent employee identity could not be resolved');
   const params: Record<string, unknown> = {};
   if (args.project_identifier) params.project_identifier = args.project_identifier;
   if (args.project_name) params.project_name = args.project_name;
@@ -80,7 +103,7 @@ export async function projectProgress(args: {
     'get_project_progress',
     params,
     ctx.org_id,
-    ctx.employee_id,
+    userId,
     undefined,
     ctx.employee_id,
   );
@@ -91,11 +114,13 @@ export async function teamWorkload(args: {
   caller_employee_slug?: string;
   days?: number;
 }, ctx: ToolContext): Promise<ToolResult> {
+  const userId = await resolveEmployeeUserId(ctx);
+  if (!userId) return errorResult('agent employee identity could not be resolved');
   const { result } = await executeToolCall(
     'get_team_workload',
     { days: args.days },
     ctx.org_id,
-    ctx.employee_id,
+    userId,
     undefined,
     ctx.employee_id,
   );
