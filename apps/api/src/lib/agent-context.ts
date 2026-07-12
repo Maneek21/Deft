@@ -9,6 +9,7 @@ import {
   taskActivity,
   taskRelationships,
   spaces,
+  spaceMembers,
   orgMembers,
   events,
   agentMemory,
@@ -86,6 +87,10 @@ export async function executeToolCall(
         eq(messages.org_id, orgId),
         eq(messages.is_deleted, false),
         ilike(messages.content, `%${params.query}%`),
+        or(
+          eq(spaces.type, 'public'),
+          sql`${spaceMembers.id} IS NOT NULL`,
+        ),
       ];
 
       // Filter by space name
@@ -95,7 +100,8 @@ export async function executeToolCall(
           .from(spaces)
           .where(and(eq(spaces.org_id, orgId), ilike(spaces.name, params.space_name)))
           .limit(1);
-        if (space) conditions.push(eq(messages.space_id, space.id));
+        if (!space) return { result: [], citations: [] };
+        conditions.push(eq(messages.space_id, space.id));
       }
 
       // Filter by author name
@@ -108,7 +114,8 @@ export async function executeToolCall(
             and(eq(orgMembers.org_id, orgId), ilike(users.name, `%${params.author_name}%`)),
           )
           .limit(1);
-        if (author) conditions.push(eq(messages.user_id, author.id));
+        if (!author) return { result: [], citations: [] };
+        conditions.push(eq(messages.user_id, author.id));
       }
 
       const results = await db
@@ -121,6 +128,17 @@ export async function executeToolCall(
         })
         .from(messages)
         .innerJoin(users, eq(messages.user_id, users.id))
+        .innerJoin(
+          spaces,
+          and(eq(spaces.id, messages.space_id), eq(spaces.org_id, orgId)),
+        )
+        .leftJoin(
+          spaceMembers,
+          and(
+            eq(spaceMembers.space_id, spaces.id),
+            eq(spaceMembers.user_id, _userId),
+          ),
+        )
         .where(and(...conditions))
         .orderBy(desc(messages.created_at))
         .limit(limit);
