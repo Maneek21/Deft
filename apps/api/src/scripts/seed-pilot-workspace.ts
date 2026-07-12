@@ -18,6 +18,7 @@ import { reconcileProjectTaskCountersForOrg } from '../lib/task-numbering.js';
 import {
   actionReceipts,
   agentEmployees,
+  agentEmployeeSkills,
   agentActions,
   crossReferences,
   events,
@@ -57,6 +58,7 @@ import {
   wikiLinks,
   wikiOpsLog,
   wikiPages,
+  skills,
 } from '@deft/db/schema';
 
 const TOM_TOKEN = process.env.SEED_TOM_MCP_TOKEN ?? 'tom-pilot-mcp-token-2026';
@@ -254,6 +256,26 @@ async function upsertAgentUser(params: {
       set: employeeValues,
     })
     .returning(), `agent employee ${params.slug}`);
+
+  const [workspaceSkill] = await db
+    .select({ id: skills.id, version: skills.version })
+    .from(skills)
+    .where(and(eq(skills.slug, 'deft-workspace'), eq(skills.is_deleted, false)))
+    .limit(1);
+  if (!workspaceSkill) {
+    throw new Error('Bundled deft-workspace skill is missing. Run seed-platform-bundles first.');
+  }
+  await db
+    .insert(agentEmployeeSkills)
+    .values({
+      agent_employee_id: employee.id,
+      skill_id: workspaceSkill.id,
+      installed_version: workspaceSkill.version,
+    })
+    .onConflictDoUpdate({
+      target: [agentEmployeeSkills.agent_employee_id, agentEmployeeSkills.skill_id],
+      set: { installed_version: workspaceSkill.version, installed_at: new Date() },
+    });
 
   const user = expectOne(await db
     .update(users)

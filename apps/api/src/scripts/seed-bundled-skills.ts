@@ -77,6 +77,43 @@ export async function seedBundledSkills(
     log(`  upserted ${skill.slug}`);
   }
 
+  const workspaceBundle = BUNDLED_SKILLS.find((skill) => skill.slug === 'deft-workspace');
+  if (workspaceBundle) {
+    const [workspaceRow] = await db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(and(
+        eq(skills.source, 'bundled'),
+        isNull(skills.org_id),
+        eq(skills.slug, workspaceBundle.slug),
+        eq(skills.is_deleted, false),
+      ))
+      .limit(1);
+    if (!workspaceRow) throw new Error('deft-workspace bundle was not available after seeding');
+    const backfill = await db.execute(sql`
+      INSERT INTO agent_employee_skills (
+        agent_employee_id,
+        skill_id,
+        installed_at,
+        installed_version
+      )
+      SELECT
+        ae.id,
+        ${workspaceRow.id},
+        NOW(),
+        ${workspaceBundle.version}
+      FROM agent_employees ae
+      WHERE ae.is_deleted = false
+      ON CONFLICT (agent_employee_id, skill_id) DO UPDATE
+        SET installed_version = EXCLUDED.installed_version
+      RETURNING agent_employee_id
+    `);
+    const backfilledRows = ((backfill as any).rows ?? backfill) as unknown[];
+    if (backfilledRows.length > 0) {
+      log(`[seed-bundled-skills] synchronized deft-workspace for ${backfilledRows.length} existing agent employees`);
+    }
+  }
+
   // Clean up orphaned bundled rows whose slugs are no longer in BUNDLED_SKILLS.
   // This catches stale rows from previous seed runs (e.g. retired capability
   // packs like `web-browsing` / `shell-exec` after Phase 9). We delete junction

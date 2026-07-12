@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
+import { agentConnectionStatus } from '@/lib/agent-employee-status';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
 import { isSettingsItemActive, settingsNavGroups } from '@/lib/settings-navigation';
 import { useTheme } from './theme-provider';
@@ -56,6 +57,9 @@ type AgentEmployee = {
   unhealthy?: boolean;
   last_heartbeat_at?: string | null;
   last_mcp_call_at?: string | null;
+  channel_last_seen_at?: string | null;
+  channel_status?: string | null;
+  required_workspace_skill_installed?: boolean;
   pending_action_count?: number;
 };
 
@@ -118,11 +122,13 @@ function ChatSidebarContent({
   }, []);
 
   const agentStatusColor = (employee: AgentEmployee) => {
-    if (!employee.is_active || employee.unhealthy) return 'var(--outline)';
-    const lastContact = employee.last_mcp_call_at ?? employee.last_heartbeat_at;
-    if (!lastContact) return 'var(--status-amber)';
-    const elapsedMinutes = Math.floor((Date.now() - new Date(lastContact).getTime()) / 60000);
-    return elapsedMinutes < 15 ? 'var(--status-green)' : 'var(--status-amber)';
+    if (!employee.is_active || employee.unhealthy || employee.required_workspace_skill_installed === false) {
+      return 'var(--outline)';
+    }
+    const status = agentConnectionStatus(employee);
+    if (status.tone === 'green') return 'var(--status-green)';
+    if (status.tone === 'amber') return 'var(--status-amber)';
+    return 'var(--outline)';
   };
 
   const publicSpaces = spaces.filter((s) => s.type === 'public' || s.type === 'private');
@@ -421,6 +427,7 @@ function ChatSidebarContent({
                   )}
                   <div
                     className="absolute -bottom-0.5 -right-0.5 w-[10px] h-[10px] rounded-full"
+                    title={agentConnectionStatus(employee).label}
                     style={{
                       background: agentStatusColor(employee),
                       border: '2px solid var(--surface-container-low)',
