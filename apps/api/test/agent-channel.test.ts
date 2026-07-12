@@ -20,14 +20,20 @@ import {
   agentActions,
   actionReceipts,
   messages,
+  notifications,
   orgMembers,
   orgs,
+  jobQueue,
+  projects,
   spaceMembers,
   spaces,
+  taskActivity,
+  tasks,
   users,
 } from '@deft/db';
 import { agentChannelRoutes } from '../src/routes/agent-channel.js';
 import { publishAgentChannelEvent } from '../src/lib/agent-channel.js';
+import { projectRoutes } from '../src/routes/projects.js';
 
 const app = new Hono();
 app.route('/api/agent-channel/v1', agentChannelRoutes);
@@ -40,6 +46,7 @@ let employeeSlug: string;
 let spaceId: string;
 let sourceMessageId: string;
 let bearer: string;
+let projectId: string;
 
 before(async () => {
   const ts = Date.now();
@@ -117,6 +124,13 @@ before(async () => {
     content: 'hello channel agent',
   }).returning({ id: messages.id });
   sourceMessageId = source!.id;
+  projectId = crypto.randomUUID();
+  await db.insert(projects).values({
+    id: projectId,
+    org_id: orgId,
+    name: 'Agent Channel Project',
+    prefix: `ACP${String(ts).slice(-5)}`,
+  });
 });
 
 after(async () => {
@@ -128,9 +142,14 @@ after(async () => {
     await db.delete(agentChannelEvents).where(eq(agentChannelEvents.agent_employee_id, employeeId));
     await db.delete(actionReceipts).where(eq(actionReceipts.employee_id, employeeId));
     await db.delete(agentActions).where(eq(agentActions.org_id, orgId));
+    await db.delete(notifications).where(eq(notifications.org_id, orgId));
+    await db.delete(taskActivity).where(eq(taskActivity.org_id, orgId));
+    await db.delete(tasks).where(eq(tasks.org_id, orgId));
+    await db.execute(sql`DELETE FROM job_queue WHERE data->>'orgId' = ${orgId}`);
     await db.delete(messages).where(eq(messages.org_id, orgId));
     await db.delete(spaceMembers).where(eq(spaceMembers.space_id, spaceId));
     await db.delete(spaces).where(eq(spaces.id, spaceId));
+    await db.delete(projects).where(eq(projects.id, projectId));
     await db.delete(agentEmployees).where(eq(agentEmployees.id, employeeId));
     await db.delete(orgMembers).where(eq(orgMembers.org_id, orgId));
     await db.delete(users).where(inArray(users.id, [humanUserId, agentUserId]));
@@ -138,6 +157,46 @@ after(async () => {
   } catch (err) {
     console.error('[agent-channel-test] cleanup failed:', err);
   }
+});
+
+test('project-scoped UI task creation wakes an assigned agent employee', async () => {
+  const projectApp = new Hono();
+  projectApp.use('*', async (c, next) => {
+    c.set('user', {
+      id: humanUserId,
+      org_id: orgId,
+      email: 'channel-human@test.local',
+      name: 'Channel Human',
+    });
+    await next();
+  });
+  projectApp.route('/api/projects', projectRoutes);
+
+  const response = await projectApp.request(`/api/projects/${projectId}/tasks`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Inspect the live handoff',
+      description: 'Reply with a task comment and move this to in review.',
+      assignee_id: agentUserId,
+      metadata: { source: 'agent-channel-route-test' },
+    }),
+  });
+  const body = await response.json() as any;
+  assert.equal(response.status, 201, JSON.stringify(body));
+  assert.equal(body.assignee_id, agentUserId);
+  assert.equal(body.metadata.source, 'agent-channel-route-test');
+
+  const queued = await db.execute(sql`
+    SELECT name, data
+    FROM job_queue
+    WHERE name = 'agent-employee-task'
+      AND data->>'taskId' = ${body.id}
+    LIMIT 1
+  `);
+  const row = (queued as any).rows?.[0] ?? (queued as any)[0];
+  assert.equal(row?.name, 'agent-employee-task');
+  assert.equal(row?.data?.employeeId, employeeId);
 });
 
 async function publishMessageEvent(
