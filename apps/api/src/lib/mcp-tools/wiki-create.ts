@@ -19,6 +19,7 @@ import {
   shouldAutoExecute,
 } from '../agent-approval.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
+import { employeeCanAccessSpace } from './employee-space-access.js';
 import { generateReceipt } from '../receipts.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 
@@ -57,19 +58,6 @@ async function getShadowUserId(employeeId: string): Promise<string | null> {
     .where(eq(agentEmployees.id, employeeId))
     .limit(1);
   return row?.user_id ?? null;
-}
-
-async function verifySpaceInOrg(spaceId: string, orgId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ id: spaces.id })
-    .from(spaces)
-    .where(and(
-      eq(spaces.id, spaceId),
-      eq(spaces.org_id, orgId),
-      eq(spaces.is_archived, false),
-    ))
-    .limit(1);
-  return !!row;
 }
 
 async function verifyMessageVisibleToUser(
@@ -210,8 +198,11 @@ export async function executeWikiCreate(
     let sourceMessageExcerpt: string | null = null;
     let sourceSpaceId = args.source_space_id ?? args.space_id ?? null;
     let sourceUserId: string | null = null;
-    if (sourceSpaceId && !(await verifySpaceInOrg(sourceSpaceId, ctx.org_id))) {
-      return errorResult(`wiki_create: source space ${sourceSpaceId} not found in caller's org`);
+    if (
+      sourceSpaceId &&
+      !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))
+    ) {
+      return errorResult(`wiki_create: source space ${sourceSpaceId} is not accessible to this employee`);
     }
     if (scope === 'space' && !sourceSpaceId) {
       return errorResult('wiki_create: space_id or source_space_id is required when scope is space');
@@ -240,6 +231,11 @@ export async function executeWikiCreate(
         );
       }
       sourceSpaceId = source.space_id;
+      if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))) {
+        return errorResult(
+          `wiki_create: source message space ${sourceSpaceId} is not accessible to this employee`,
+        );
+      }
       sourceUserId = source.user_id;
       sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
     }
@@ -499,6 +495,13 @@ export async function executeWikiUpdate(
         return errorResult('wiki_update: cannot update another user-scoped page');
       }
     }
+    if (
+      existingPage.scope === 'space' &&
+      existingPage.space_id &&
+      !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, existingPage.space_id))
+    ) {
+      return errorResult('wiki_update: page not found');
+    }
 
     const patch = args.patch;
     const update: Record<string, unknown> = {};
@@ -544,8 +547,11 @@ export async function executeWikiUpdate(
     }
     if (patch.space_id !== undefined) {
       const spaceId = patch.space_id || null;
-      if (spaceId && !(await verifySpaceInOrg(spaceId, ctx.org_id))) {
-        return errorResult(`wiki_update: space ${spaceId} not found in caller's org`);
+      if (
+        spaceId &&
+        !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId))
+      ) {
+        return errorResult(`wiki_update: space ${spaceId} is not accessible to this employee`);
       }
       if (spaceId !== (existingPage.space_id ?? null)) {
         update.space_id = spaceId;
@@ -585,8 +591,11 @@ export async function executeWikiUpdate(
     let sourceMessageExcerpt: string | null = null;
     let sourceSpaceId = args.source_space_id ?? existingPage.origin_space_id ?? existingPage.space_id ?? null;
     let sourceUserId: string | null = null;
-    if (sourceSpaceId && !(await verifySpaceInOrg(sourceSpaceId, ctx.org_id))) {
-      return errorResult(`wiki_update: source space ${sourceSpaceId} not found in caller's org`);
+    if (
+      sourceSpaceId &&
+      !(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))
+    ) {
+      return errorResult(`wiki_update: source space ${sourceSpaceId} is not accessible to this employee`);
     }
     if (args.source_message_id?.trim()) {
       const readerIds = [
@@ -612,6 +621,11 @@ export async function executeWikiUpdate(
         );
       }
       sourceSpaceId = source.space_id;
+      if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, sourceSpaceId))) {
+        return errorResult(
+          `wiki_update: source message space ${sourceSpaceId} is not accessible to this employee`,
+        );
+      }
       sourceUserId = source.user_id;
       sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
     }

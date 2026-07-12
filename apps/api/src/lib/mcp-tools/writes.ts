@@ -47,6 +47,7 @@ import { isValidTransition } from '../task-status-machine.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
+import { employeeCanAccessSpace } from './employee-space-access.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -157,19 +158,6 @@ async function verifyProjectInOrg(
     .select({ id: projects.id })
     .from(projects)
     .where(and(eq(projects.id, projectId), eq(projects.org_id, orgId)))
-    .limit(1);
-  return !!row;
-}
-
-/** Resolves a space_id only if it belongs to the caller's org. */
-async function verifySpaceInOrg(
-  spaceId: string,
-  orgId: string,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: spaces.id })
-    .from(spaces)
-    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
     .limit(1);
   return !!row;
 }
@@ -797,9 +785,9 @@ export async function executeMessagePost(
       );
     }
 
-    if (!(await verifySpaceInOrg(args.space_id, ctx.org_id))) {
+    if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, args.space_id))) {
       return errorResult(
-        `message_post: space ${args.space_id} not found in caller's org`,
+        `message_post: space ${args.space_id} is not accessible to this employee`,
       );
     }
     if (args.parent_id) {
@@ -972,8 +960,8 @@ export async function sendMessage(
   }
 
   // Org-scope guard
-  if (!(await verifySpaceInOrg(spaceId, ctx.org_id))) {
-    return errorResult(`send_message: space ${spaceId} not found in caller's org`);
+  if (!(await employeeCanAccessSpace(ctx.employee_id, ctx.org_id, spaceId))) {
+    return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);
   }
 
   if (!shouldAutoExecute('send_message', ctx.trust_level)) {
@@ -996,6 +984,10 @@ export async function executeSendMessage(opts: {
 }, execOpts?: { skipReceipt?: boolean }): Promise<ToolResult> {
   const { orgId, spaceId, content, parentId, ctx } = opts;
   try {
+    if (!(await employeeCanAccessSpace(ctx.employee_id, orgId, spaceId))) {
+      return errorResult(`send_message: space ${spaceId} is not accessible to this employee`);
+    }
+
     const shadowUserId = await getShadowUserId(ctx.employee_id);
     if (!shadowUserId) {
       return errorResult(`send_message: no shadow user for employee ${ctx.employee_id}`);

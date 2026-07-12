@@ -7,6 +7,9 @@ import {
   _clearPlatformContextCache,
   platformContext,
 } from '../src/lib/mcp-tools/context.js';
+import { spaceMemoryGet, spaceMemorySet } from '../src/lib/mcp-tools/space-memory.js';
+import { executeSendMessage, sendMessage } from '../src/lib/mcp-tools/writes.js';
+import { executeWikiCreate, executeWikiUpdate } from '../src/lib/mcp-tools/wiki-create.js';
 import type { ToolContext } from '../src/lib/mcp-tools/types.js';
 
 const DATABASE_URL =
@@ -22,6 +25,7 @@ const HIDDEN_PRIVATE_SPACE_ID = `mcp-privacy-hidden-${suffix}`;
 const PUBLIC_MESSAGE_ID = `mcp-privacy-public-message-${suffix}`;
 const JOINED_PRIVATE_MESSAGE_ID = `mcp-privacy-joined-message-${suffix}`;
 const HIDDEN_PRIVATE_MESSAGE_ID = `mcp-privacy-hidden-message-${suffix}`;
+const HIDDEN_WIKI_PAGE_ID = `mcp-privacy-hidden-wiki-${suffix}`;
 const MARKER = `mcp-privacy-marker-${suffix}`;
 
 const ctx: ToolContext = {
@@ -122,11 +126,31 @@ before(async () => {
         `${MARKER} hidden private`,
       ],
     );
+    await client.query(
+      `INSERT INTO space_memory
+         (id, org_id, space_id, key, value, updated_by_employee_id)
+       VALUES (gen_random_uuid()::text, $1, $2, 'hidden-key', $3::jsonb, $4)`,
+      [ORG_ID, HIDDEN_PRIVATE_SPACE_ID, JSON.stringify({ secret: MARKER }), EMPLOYEE_ID],
+    );
+    await client.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, type, scope, title, slug, content, space_id, is_deleted)
+       VALUES ($1, $2, 'fact', 'space', 'Hidden privacy page', $3, $4, $5, false)`,
+      [
+        HIDDEN_WIKI_PAGE_ID,
+        ORG_ID,
+        `hidden-privacy-page-${suffix}`,
+        `${MARKER} hidden wiki content`,
+        HIDDEN_PRIVATE_SPACE_ID,
+      ],
+    );
   });
 });
 
 after(async () => {
   await withClient(async (client) => {
+    await client.query(`DELETE FROM wiki_pages WHERE id = $1`, [HIDDEN_WIKI_PAGE_ID]);
+    await client.query(`DELETE FROM space_memory WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM messages WHERE org_id = $1`, [ORG_ID]);
     await client.query(
       `DELETE FROM space_members WHERE space_id IN ($1, $2, $3)`,
@@ -231,4 +255,85 @@ test('platform_context rejects a message and space pair that do not match', asyn
   );
   assert.equal(result.isError, true);
   assert.match(result.content[0]!.text, /does not belong/i);
+});
+
+test('space memory cannot be read or written in an unjoined private space', async () => {
+  const getResult = await spaceMemoryGet(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      space_id: HIDDEN_PRIVATE_SPACE_ID,
+      key: 'hidden-key',
+    },
+    ctx,
+  );
+  assert.equal(getResult.isError, true);
+  assert.doesNotMatch(getResult.content[0]!.text, new RegExp(MARKER));
+
+  const setResult = await spaceMemorySet(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      space_id: HIDDEN_PRIVATE_SPACE_ID,
+      key: 'injected-key',
+      value: { injected: true },
+    },
+    ctx,
+  );
+  assert.equal(setResult.isError, true);
+});
+
+test('message proposals and approved execution cannot target an unjoined private space', async () => {
+  const proposed = await sendMessage(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      target: { space_id: HIDDEN_PRIVATE_SPACE_ID },
+      content: 'This must not be queued or posted.',
+    },
+    ctx,
+  );
+  assert.equal(proposed.isError, true);
+
+  const executed = await executeSendMessage({
+    orgId: ORG_ID,
+    spaceId: HIDDEN_PRIVATE_SPACE_ID,
+    content: 'This must not be posted by an old approval row.',
+    parentId: null,
+    ctx,
+  });
+  assert.equal(executed.isError, true);
+
+  const hiddenMessageCount = await withClient(async (client) => {
+    const result = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM messages
+       WHERE org_id = $1 AND space_id = $2 AND user_id = $3`,
+      [ORG_ID, HIDDEN_PRIVATE_SPACE_ID, EMPLOYEE_USER_ID],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  });
+  assert.equal(hiddenMessageCount, 0);
+});
+
+test('space-scoped wiki writes cannot target an unjoined private space', async () => {
+  const createResult = await executeWikiCreate(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      title: 'Attempted hidden page',
+      content: 'This should never be written.',
+      scope: 'space',
+      space_id: HIDDEN_PRIVATE_SPACE_ID,
+    },
+    ctx,
+  );
+  assert.equal(createResult.isError, true);
+
+  const updateResult = await executeWikiUpdate(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      page_id: HIDDEN_WIKI_PAGE_ID,
+      patch: { summary: 'This should never be written.' },
+    },
+    ctx,
+  );
+  assert.equal(updateResult.isError, true);
+  assert.match(updateResult.content[0]!.text, /page not found/i);
 });
