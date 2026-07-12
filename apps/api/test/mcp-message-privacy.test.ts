@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { messagesSearch } from '../src/lib/mcp-tools/reports.js';
+import {
+  _clearPlatformContextCache,
+  platformContext,
+} from '../src/lib/mcp-tools/context.js';
 import type { ToolContext } from '../src/lib/mcp-tools/types.js';
 
 const DATABASE_URL =
@@ -15,7 +19,17 @@ const EMPLOYEE_ID = `mcp-privacy-employee-${suffix}`;
 const PUBLIC_SPACE_ID = `mcp-privacy-public-${suffix}`;
 const JOINED_PRIVATE_SPACE_ID = `mcp-privacy-joined-${suffix}`;
 const HIDDEN_PRIVATE_SPACE_ID = `mcp-privacy-hidden-${suffix}`;
+const PUBLIC_MESSAGE_ID = `mcp-privacy-public-message-${suffix}`;
+const JOINED_PRIVATE_MESSAGE_ID = `mcp-privacy-joined-message-${suffix}`;
+const HIDDEN_PRIVATE_MESSAGE_ID = `mcp-privacy-hidden-message-${suffix}`;
 const MARKER = `mcp-privacy-marker-${suffix}`;
+
+const ctx: ToolContext = {
+  org_id: ORG_ID,
+  employee_id: EMPLOYEE_ID,
+  employee_slug: `privacy-${suffix}`,
+  trust_level: 'standard',
+};
 
 async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString: DATABASE_URL });
@@ -91,15 +105,18 @@ before(async () => {
     await client.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content)
        VALUES
-         (gen_random_uuid()::text, $1, $2, $5, $6),
-         (gen_random_uuid()::text, $1, $3, $5, $7),
-         (gen_random_uuid()::text, $1, $4, $5, $8)`,
+         ($6, $1, $2, $5, $9),
+         ($7, $1, $3, $5, $10),
+         ($8, $1, $4, $5, $11)`,
       [
         ORG_ID,
         PUBLIC_SPACE_ID,
         JOINED_PRIVATE_SPACE_ID,
         HIDDEN_PRIVATE_SPACE_ID,
         OWNER_ID,
+        PUBLIC_MESSAGE_ID,
+        JOINED_PRIVATE_MESSAGE_ID,
+        HIDDEN_PRIVATE_MESSAGE_ID,
         `${MARKER} public`,
         `${MARKER} joined private`,
         `${MARKER} hidden private`,
@@ -124,13 +141,6 @@ after(async () => {
 });
 
 test('messages_search hides private spaces the employee has not joined', async () => {
-  const ctx: ToolContext = {
-    org_id: ORG_ID,
-    employee_id: EMPLOYEE_ID,
-    employee_slug: `privacy-${suffix}`,
-    trust_level: 'standard',
-  };
-
   const result = await messagesSearch({ query: MARKER, limit: 10 }, ctx);
   assert.equal(result.isError, false, result.content[0]?.text);
   const rows = JSON.parse(result.content[0]!.text) as Array<{
@@ -150,4 +160,75 @@ test('messages_search hides private spaces the employee has not joined', async (
   );
   assert.equal(targeted.isError, false, targeted.content[0]?.text);
   assert.deepEqual(JSON.parse(targeted.content[0]!.text), []);
+});
+
+test('platform_context accepts public and joined-private trigger context', async () => {
+  _clearPlatformContextCache();
+  const publicResult = await platformContext(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      trigger: {
+        kind: 'message',
+        space_id: PUBLIC_SPACE_ID,
+        triggering_message_id: PUBLIC_MESSAGE_ID,
+      },
+    },
+    ctx,
+  );
+  assert.equal(publicResult.isError, false, publicResult.content[0]?.text);
+
+  _clearPlatformContextCache();
+  const privateResult = await platformContext(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      trigger: {
+        kind: 'message',
+        space_id: JOINED_PRIVATE_SPACE_ID,
+        triggering_message_id: JOINED_PRIVATE_MESSAGE_ID,
+      },
+    },
+    ctx,
+  );
+  assert.equal(privateResult.isError, false, privateResult.content[0]?.text);
+});
+
+test('platform_context rejects hidden private trigger context by space or message id', async () => {
+  _clearPlatformContextCache();
+  const hiddenSpaceResult = await platformContext(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      trigger: { kind: 'channel_wake', space_id: HIDDEN_PRIVATE_SPACE_ID },
+    },
+    ctx,
+  );
+  assert.equal(hiddenSpaceResult.isError, true);
+  assert.match(hiddenSpaceResult.content[0]!.text, /do not have access/i);
+
+  _clearPlatformContextCache();
+  const hiddenMessageResult = await platformContext(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      trigger: { kind: 'message', triggering_message_id: HIDDEN_PRIVATE_MESSAGE_ID },
+    },
+    ctx,
+  );
+  assert.equal(hiddenMessageResult.isError, true);
+  assert.match(hiddenMessageResult.content[0]!.text, /do not have access/i);
+});
+
+test('platform_context rejects a message and space pair that do not match', async () => {
+  _clearPlatformContextCache();
+  const result = await platformContext(
+    {
+      caller_employee_slug: ctx.employee_slug,
+      trigger: {
+        kind: 'message',
+        space_id: JOINED_PRIVATE_SPACE_ID,
+        triggering_message_id: PUBLIC_MESSAGE_ID,
+      },
+    },
+    ctx,
+  );
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]!.text, /does not belong/i);
 });

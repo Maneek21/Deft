@@ -25,6 +25,9 @@ import {
   users,
   wikiPages,
   messages,
+  agentEmployees,
+  spaces,
+  spaceMembers,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -276,11 +279,91 @@ export function invalidatePlatformContextCacheFor(employeeId: string) {
 
 // ─── Main handler ─────────────────────────────────────────────────────────
 
+async function canEmployeeAccessSpace(
+  employeeId: string,
+  orgId: string,
+  spaceId: string,
+): Promise<boolean> {
+  const [space] = await db
+    .select({ type: spaces.type })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, orgId)))
+    .limit(1);
+
+  if (!space) return false;
+  if (space.type === 'public') return true;
+
+  const [employee] = await db
+    .select({ user_id: agentEmployees.user_id })
+    .from(agentEmployees)
+    .where(
+      and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+      ),
+    )
+    .limit(1);
+  if (!employee) return false;
+
+  const [membership] = await db
+    .select({ id: spaceMembers.id })
+    .from(spaceMembers)
+    .where(
+      and(
+        eq(spaceMembers.space_id, spaceId),
+        eq(spaceMembers.user_id, employee.user_id),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(membership);
+}
+
 export async function platformContext(
   args: PlatformContextArgs,
   ctx: ToolContext,
 ): Promise<ToolResult> {
   const trigger = args.trigger;
+  let triggerMessageContent = '';
+
+  try {
+    if (
+      trigger?.space_id &&
+      !(await canEmployeeAccessSpace(ctx.employee_id, ctx.org_id, trigger.space_id))
+    ) {
+      return errorResult('You do not have access to the requested space.');
+    }
+
+    if (trigger?.triggering_message_id) {
+      const [message] = await db
+        .select({ content: messages.content, space_id: messages.space_id })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.id, trigger.triggering_message_id),
+            eq(messages.org_id, ctx.org_id),
+            eq(messages.is_deleted, false),
+          ),
+        )
+        .limit(1);
+
+      if (!message) {
+        return errorResult('The triggering message was not found.');
+      }
+      if (trigger.space_id && trigger.space_id !== message.space_id) {
+        return errorResult('The triggering message does not belong to the requested space.');
+      }
+      if (!(await canEmployeeAccessSpace(ctx.employee_id, ctx.org_id, message.space_id))) {
+        return errorResult('You do not have access to the triggering message.');
+      }
+
+      triggerMessageContent = message.content;
+    }
+  } catch {
+    return errorResult('Unable to validate the requested workspace context.');
+  }
+
   const key = cacheKey(ctx.employee_id, trigger);
   const cached = cacheGet(key);
   if (cached) {
@@ -345,13 +428,19 @@ export async function platformContext(
     }
 
     // ─── wiki snippet query source ───────────────────────────────
-    let queryText = '';
+    let queryText = triggerMessageContent;
     if (trigger?.triggering_message_id) {
       try {
         const [msg] = await db
           .select({ content: messages.content })
           .from(messages)
-          .where(eq(messages.id, trigger.triggering_message_id))
+          .where(
+            and(
+              eq(messages.id, trigger.triggering_message_id),
+              eq(messages.org_id, ctx.org_id),
+              eq(messages.is_deleted, false),
+            ),
+          )
           .limit(1);
         if (msg?.content) queryText = msg.content;
       } catch {
