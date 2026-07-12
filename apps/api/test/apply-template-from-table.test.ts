@@ -10,10 +10,12 @@ import { app } from '../src/index.js';
 async function authHeaders() {
   const res = await app.request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'diego@testers-tomatoes.com', password: 'tomato123' }),
+    body: JSON.stringify({ email: 'maneek@test.com', password: 'test1234' }),
     headers: { 'content-type': 'application/json' },
   });
+  assert.equal(res.status, 200, 'canonical test fixture login should succeed');
   const body = (await res.json()) as { accessToken: string };
+  assert.ok(body.accessToken, 'login should return an access token');
   return {
     authorization: `Bearer ${body.accessToken}`,
     'content-type': 'application/json',
@@ -51,6 +53,7 @@ test('POST /api/projects/:id/apply-template with missing template returns 404', 
     headers,
     body: JSON.stringify({ name: 'test-apply-template-2-' + ts, prefix: 'AG' + ts.toString().slice(-4) }),
   });
+  assert.equal(createRes.status, 201);
   const project2 = (await createRes.json()) as { id: string };
 
   const res = await app.request(`/api/projects/${project2.id}/apply-template`, {
