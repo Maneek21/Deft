@@ -29,6 +29,7 @@ import { humanizeToolName } from '@/lib/tool-display';
 import { stripHtml } from '@/lib/strip-html';
 import {
   getAgentActionPresentation,
+  getSafeGenericParams,
   type ApprovalChipIconName,
   type ApprovalIconName,
 } from '@/lib/agent-action-presentation';
@@ -87,7 +88,7 @@ const INTENT_STATUS_LABELS: Record<string, string> = {
 };
 
 function GenericParams({ params }: { params: Record<string, any> }) {
-  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  const entries = getSafeGenericParams(params);
   if (entries.length === 0) {
     return <p style={{ opacity: 0.6 }}>(no parameters)</p>;
   }

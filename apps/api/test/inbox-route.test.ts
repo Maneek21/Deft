@@ -292,3 +292,82 @@ test('POST /api/inbox/read scoped to current user only', async () => {
   await db.delete(notifications).where(eq(notifications.id, n.id));
   await db.delete(users).where(eq(users.id, otherUser.id));
 });
+
+test('GET /api/inbox supports multiple task notification kinds', async () => {
+  const inserted = await db.insert(notifications).values([
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'task_assigned',
+      title: 'Assigned task',
+      is_read: false,
+    },
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'task_updated',
+      title: 'Updated task',
+      is_read: false,
+    },
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'mention',
+      title: 'Unrelated mention',
+      is_read: false,
+    },
+  ]).returning();
+  createdNotifIds.push(...inserted.map((row) => row.id));
+
+  const res = await app.request('/api/inbox?kind=task_assigned,task_updated');
+  assert.equal(res.status, 200);
+  const body = await res.json() as { items: { id: string; kind: string }[]; unread_count: number };
+  const insertedIds = new Set(inserted.slice(0, 2).map((row) => `notif:${row.id}`));
+  const matching = body.items.filter((item) => insertedIds.has(item.id));
+
+  assert.deepEqual(
+    new Set(matching.map((item) => item.kind)),
+    new Set(['task_assigned', 'task_updated']),
+  );
+  assert.equal(body.items.some((item) => item.id === `notif:${inserted[2].id}`), false);
+  assert.ok(body.unread_count >= 2);
+});
+
+test('POST /api/inbox/read can mark only the selected tab kinds read', async () => {
+  const [taskNotification, mentionNotification] = await db.insert(notifications).values([
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'task_updated',
+      title: 'Scoped task update',
+      is_read: false,
+    },
+    {
+      org_id: testOrgId,
+      user_id: userId,
+      type: 'mention',
+      title: 'Scoped mention',
+      is_read: false,
+    },
+  ]).returning();
+  createdNotifIds.push(taskNotification.id, mentionNotification.id);
+
+  const res = await app.request('/api/inbox/read', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ all: true, kinds: ['task_assigned', 'task_updated'] }),
+  });
+  assert.equal(res.status, 200);
+
+  const [taskAfter] = await db.select().from(notifications).where(eq(notifications.id, taskNotification.id));
+  const [mentionAfter] = await db.select().from(notifications).where(eq(notifications.id, mentionNotification.id));
+  assert.equal(taskAfter.is_read, true);
+  assert.equal(mentionAfter.is_read, false);
+});
+
+test('GET /api/inbox rejects an invalid kind without broadening the query', async () => {
+  const res = await app.request('/api/inbox?kind=not-a-real-kind');
+  assert.equal(res.status, 400);
+  const body = await res.json() as { code?: string };
+  assert.equal(body.code, 'VALIDATION_ERROR');
+});

@@ -17,6 +17,7 @@ import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { TriggerInvocation } from './employee-trigger.js';
 import { getOrgTimezone, isOverdue, isDueWithinDays } from '../../lib/task-dates.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
+import { buildTaskNudgeDigest } from '../../lib/notification-digests.js';
 
 // Phase 6 — per-kind trigger routing. Stalled tasks and overdue tasks are
 // separate kinds so an employee can subscribe to just one. If the org has
@@ -336,7 +337,7 @@ interface NudgeParams {
   taskId: string;
   orgId: string;
   targetUserId: string;
-  nudgeType: 'stalled' | 'overdue' | 'workload_imbalance' | 'upcoming_due';
+  nudgeType: 'stalled' | 'overdue' | 'upcoming_due';
   taskIdentifier: string;
   message: string;
   since: Date;
@@ -363,16 +364,50 @@ async function processNudge(params: NudgeParams): Promise<void> {
       return; // Already nudged recently
     }
 
-    // Create notification
-    const notification = await createNotificationIfAllowed({
-      org_id: orgId,
-      user_id: targetUserId,
-      type: 'agent_suggestion',
-      title: nudgeType === 'stalled' ? 'Stalled Task' : nudgeType === 'overdue' ? 'Overdue Task' : nudgeType === 'upcoming_due' ? 'Due Soon' : 'Overdue Task',
-      body: message,
-      link: `/tasks?task=${taskIdentifier}`,
-      metadata: { task_id: taskId, nudge_type: nudgeType },
-    }, { channel: 'tasks' });
+    const [existingNotification] = await db
+      .select({
+        id: notifications.id,
+        metadata: notifications.metadata,
+      })
+      .from(notifications)
+      .where(and(
+        eq(notifications.org_id, orgId),
+        eq(notifications.user_id, targetUserId),
+        eq(notifications.type, 'agent_suggestion'),
+        eq(notifications.is_read, false),
+        gte(notifications.created_at, since),
+        sql`${notifications.metadata}->>'nudge_type' = ${nudgeType}`,
+      ))
+      .orderBy(sql`${notifications.created_at} DESC`)
+      .limit(1);
+
+    const digest = buildTaskNudgeDigest({
+      nudgeType,
+      taskId,
+      taskIdentifier,
+      existingMetadata: existingNotification?.metadata as Record<string, unknown> | null | undefined,
+    });
+
+    const notification = existingNotification
+      ? (await db.update(notifications)
+          .set({
+            title: digest.title,
+            body: digest.body,
+            link: digest.link,
+            metadata: digest.metadata,
+            updated_at: new Date(),
+          })
+          .where(eq(notifications.id, existingNotification.id))
+          .returning())[0] ?? null
+      : await createNotificationIfAllowed({
+          org_id: orgId,
+          user_id: targetUserId,
+          type: 'agent_suggestion',
+          title: digest.title,
+          body: digest.body,
+          link: digest.link,
+          metadata: digest.metadata,
+        }, { channel: 'tasks' });
 
     // Insert nudge record
     await db.insert(agentNudges).values({
@@ -384,7 +419,7 @@ async function processNudge(params: NudgeParams): Promise<void> {
     });
 
     // Emit notification to user via Socket.io
-    if (notification) {
+    if (notification && !existingNotification) {
       emitToUser(targetUserId, 'notification:new', notification);
     }
 

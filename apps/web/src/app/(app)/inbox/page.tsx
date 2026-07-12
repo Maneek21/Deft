@@ -1,8 +1,8 @@
 // apps/web/src/app/(app)/inbox/page.tsx
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
 import {
   AlertTriangle,
@@ -14,31 +14,19 @@ import {
   RotateCcw,
   XCircle,
 } from 'lucide-react';
-import { useInbox, type InboxItemKind } from '@/hooks/use-inbox';
+import { useInbox } from '@/hooks/use-inbox';
 import { InboxRow } from '@/components/inbox-row';
 import { AgentActionCard, type AgentAction } from '@/components/agent-action-card';
 import { api } from '@/lib/api';
 import { stripHtml } from '@/lib/strip-html';
-
-type Tab = 'all' | 'mentions' | 'dms' | 'tasks' | 'captures' | 'approvals';
-
-const TAB_TO_KIND: Record<Tab, InboxItemKind | undefined> = {
-  all: undefined,
-  mentions: 'mention',
-  dms: 'dm_unread',
-  tasks: 'task_assigned',
-  captures: 'work_capture',
-  approvals: 'pending_approval',
-};
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'mentions', label: 'Mentions' },
-  { id: 'dms', label: 'DMs' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'captures', label: 'Captures' },
-  { id: 'approvals', label: 'Approvals' },
-];
+import {
+  inboxEmptyText,
+  inboxStatusText,
+  INBOX_TABS,
+  normalizeInboxTab,
+  TAB_TO_KINDS,
+  type InboxTab,
+} from '@/lib/inbox-view-model';
 
 type WorkIntent = {
   id: string;
@@ -492,15 +480,14 @@ function MessageObservationRow({ observation }: { observation: MessageObservatio
 
 export default function InboxPage() {
   const params = useSearchParams();
-  const initialTab = (params.get('tab') as Tab) ?? 'all';
-  const [tab, setTab] = useState<Tab>(initialTab);
+  const pathname = usePathname();
+  const router = useRouter();
+  const [tab, setTab] = useState<InboxTab>(() => normalizeInboxTab(params.get('tab')));
   const [retryingIntentId, setRetryingIntentId] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<{ intentId: string; message: string } | null>(null);
 
-  // For 'tasks' we want both task_assigned and task_updated. Fetch all and filter
-  // client-side for that tab; for the others we pass kind to the API.
-  const apiKind = tab === 'tasks' ? undefined : TAB_TO_KIND[tab];
-  const { items, unreadCount, isLoading, error: inboxError, markRead, markAllRead, refresh } = useInbox(apiKind);
+  const inboxKinds = TAB_TO_KINDS[tab];
+  const { items, unreadCount, isLoading, error: inboxError, markRead, markAllRead, refresh } = useInbox(inboxKinds);
   const shouldLoadWorkIntents = tab === 'captures';
   const { data: workIntentData, error: workIntentsError, isLoading: workIntentsLoading, mutate: refreshWorkIntents } = useSWR(
     shouldLoadWorkIntents ? '/api/work-intents?limit=50' : null,
@@ -513,12 +500,11 @@ export default function InboxPage() {
     { refreshInterval: 15_000, revalidateOnFocus: true },
   );
 
-  const filtered = useMemo(() => {
-    if (tab === 'tasks') {
-      return items.filter((it) => it.kind === 'task_assigned' || it.kind === 'task_updated');
-    }
-    return items;
-  }, [items, tab]);
+  const filtered = items;
+  const markableNotificationCount = useMemo(
+    () => filtered.filter((item) => item.source === 'notification' && !item.read).length,
+    [filtered],
+  );
   const historicWorkIntents = useMemo(
     () => (workIntentData?.intents ?? []).filter((intent) => intent.status !== 'proposed'),
     [workIntentData?.intents],
@@ -596,6 +582,20 @@ export default function InboxPage() {
     [markRead],
   );
 
+  useEffect(() => {
+    setTab(normalizeInboxTab(params.get('tab')));
+  }, [params]);
+
+  const handleTabChange = useCallback((nextTab: InboxTab) => {
+    setTab(nextTab);
+    const nextParams = new URLSearchParams(params.toString());
+    if (nextTab === 'all') nextParams.delete('tab');
+    else nextParams.set('tab', nextTab);
+    nextParams.delete('action');
+    const query = nextParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [params, pathname, router]);
+
   return (
     <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden">
       <div className="max-w-[760px] mx-auto px-4 py-6 md:px-6 md:py-8">
@@ -608,17 +608,15 @@ export default function InboxPage() {
               Inbox
             </h1>
             <p className="text-[13px] mt-1" style={{ color: 'var(--muted)' }}>
-              {unreadCount > 0
-                ? `${unreadCount} unread item${unreadCount === 1 ? '' : 's'}`
-                : "You're caught up."}
+              {inboxStatusText(tab, unreadCount, isLoading)}
             </p>
           </div>
-          {unreadCount > 0 && (
+          {markableNotificationCount > 0 && (
             <button
               onClick={() => void markAllRead()}
               className="deft-pill min-h-[32px]"
             >
-              Mark all read
+              Mark notifications read
             </button>
           )}
         </header>
@@ -629,10 +627,10 @@ export default function InboxPage() {
           role="tablist"
           aria-label="Inbox sections"
         >
-          {TABS.map((t) => (
+          {INBOX_TABS.map((t) => (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => handleTabChange(t.id)}
               className="deft-pill"
               data-active={tab === t.id}
               role="tab"
@@ -665,7 +663,7 @@ export default function InboxPage() {
             className="text-[13px] py-12 text-center rounded-lg"
             style={{ color: 'var(--muted)', border: '1px dashed var(--border)' }}
           >
-            Nothing here.
+            {inboxEmptyText(tab)}
           </div>
         ) : (
           <div className="flex flex-col gap-2">

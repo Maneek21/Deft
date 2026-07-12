@@ -48,12 +48,12 @@ async function fetchInbox(url: string): Promise<InboxResponse> {
   return (await res.json()) as InboxResponse;
 }
 
-export function useInbox(kind?: InboxItemKind) {
-  const url = kind ? `/api/inbox?kind=${kind}` : '/api/inbox';
+export function useInbox(kinds?: InboxItemKind[]) {
+  const kindQuery = kinds?.length ? kinds.join(',') : '';
+  const url = kindQuery ? `/api/inbox?kind=${encodeURIComponent(kindQuery)}` : '/api/inbox';
   const { data, mutate, isLoading, error } = useSWR<InboxResponse>(url, fetchInbox, {
     refreshInterval: 15_000,
     revalidateOnFocus: true,
-    fallbackData: { items: [], unread_count: 0, has_more: false, next_cursor: null },
   });
 
   const markRead = useCallback(async (ids: string[]) => {
@@ -62,9 +62,9 @@ export function useInbox(kind?: InboxItemKind) {
   }, [mutate]);
 
   const markAllRead = useCallback(async () => {
-    await api.post('/api/inbox/read', { all: true });
+    await api.post('/api/inbox/read', { all: true, kinds });
     void mutate();
-  }, [mutate]);
+  }, [kinds, mutate]);
 
   return {
     items: data?.items ?? [],
