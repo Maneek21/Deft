@@ -1,9 +1,27 @@
 'use client';
 
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
-import { Trash2, X, Plus, ExternalLink } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  Clock3,
+  ExternalLink,
+  Plus,
+  Search,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
+import {
+  AGENT_EMPLOYEE_FLEET_FILTERS,
+  countAgentEmployeeFleet,
+  filterAndSortAgentEmployeeFleet,
+  type AgentEmployeeFleetFilter,
+} from '@/lib/agent-employee-fleet';
 import { agentConnectionStatus, agentEmployeeLifecycle } from '@/lib/agent-employee-status';
 
 type AgentEmployee = {
@@ -72,12 +90,35 @@ const STATUS_TONES = {
   purple: { color: '#8b5cf6', background: 'rgba(139,92,246,0.11)', border: 'rgba(139,92,246,0.24)' },
 } as const;
 
+function FleetMetric({ icon: Icon, label, value, tone = 'default' }: {
+  icon: LucideIcon;
+  label: string;
+  value: number;
+  tone?: 'default' | 'good' | 'warning' | 'danger';
+}) {
+  const color = tone === 'good' ? 'var(--status-green)'
+    : tone === 'warning' ? 'var(--status-amber)'
+      : tone === 'danger' ? 'var(--status-red)'
+        : 'var(--foreground)';
+  return (
+    <div className="min-h-[72px] rounded-lg p-3" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.04em]" style={{ color: 'var(--muted)' }}>
+        <Icon size={12} strokeWidth={1.8} />
+        {label}
+      </div>
+      <p className="mt-2 text-[23px] font-semibold leading-none" style={{ color }}>{value}</p>
+    </div>
+  );
+}
+
 export default function AgentEmployeesPage() {
   const [employees, setEmployees] = useState<AgentEmployee[]>([]);
   const [loading, setLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [fleetFilter, setFleetFilter] = useState<AgentEmployeeFleetFilter>('all');
 
   const fetchEmployees = useCallback(async () => {
     setError(null);
@@ -97,6 +138,12 @@ export default function AgentEmployeesPage() {
     const timer = window.setInterval(() => { void fetchEmployees(); }, 15_000);
     return () => window.clearInterval(timer);
   }, [fetchEmployees]);
+
+  const fleetCounts = useMemo(() => countAgentEmployeeFleet(employees), [employees]);
+  const visibleEmployees = useMemo(
+    () => filterAndSortAgentEmployeeFleet(employees, fleetFilter, search),
+    [employees, fleetFilter, search],
+  );
 
   const handleToggleActive = async (emp: AgentEmployee) => {
     setError(null);
@@ -132,20 +179,25 @@ export default function AgentEmployeesPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-    <div className="p-6 max-w-[600px]">
-      <div className="flex items-center justify-between mb-4">
-        <h2
-          className="text-[18px] font-semibold"
-          style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
-        >
-          Agent Employees
-        </h2>
+    <div className="mx-auto w-full max-w-[980px] p-4 md:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2
+            className="text-[20px] font-semibold"
+            style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
+          >
+            Agent Employees
+          </h2>
+          <p className="mt-1 max-w-[620px] text-[13px]" style={{ color: 'var(--muted)' }}>
+            See who is working, who needs review, and which runtimes still need setup.
+          </p>
+        </div>
         {isSelfHosted ? (
           <Link
             href="/settings/agent-employees/create"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+            className="deft-pill self-start"
+            data-active={true}
             style={{
-              background: 'var(--accent)',
               color: 'white',
               fontFamily: 'var(--font-heading)',
             }}
@@ -156,9 +208,9 @@ export default function AgentEmployeesPage() {
         ) : (
           <Link
             href="/settings/agent-employees/create"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+            className="deft-pill self-start"
+            data-active={true}
             style={{
-              background: 'var(--accent)',
               color: 'white',
               fontFamily: 'var(--font-heading)',
             }}
@@ -180,6 +232,56 @@ export default function AgentEmployeesPage() {
         </div>
       )}
 
+      {!loading && employees.length > 0 && (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <FleetMetric icon={Users} label="Total" value={employees.length} />
+            <FleetMetric icon={CheckCircle2} label="Active" value={fleetCounts.active} tone="good" />
+            <FleetMetric icon={AlertTriangle} label="Attention" value={fleetCounts.attention} tone="danger" />
+            <FleetMetric icon={Clock3} label="Setup" value={fleetCounts.setup} tone="warning" />
+          </div>
+          <div
+            className="mb-4 rounded-lg p-3"
+            style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
+          >
+            <label className="relative block">
+              <Search
+                size={15}
+                strokeWidth={1.7}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                style={{ color: 'var(--muted)' }}
+              />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search agents, roles, runtimes..."
+                aria-label="Search agent employees"
+                className="h-10 w-full rounded-full border bg-transparent pl-9 pr-3 text-[13px] outline-none"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              />
+            </label>
+            <div className="mt-3 flex gap-1.5 overflow-x-auto whitespace-nowrap" aria-label="Filter agent employees">
+              {AGENT_EMPLOYEE_FLEET_FILTERS.map((filter) => {
+                const count = filter.id === 'all' ? employees.length : fleetCounts[filter.id];
+                return (
+                  <button
+                    key={filter.id}
+                    type="button"
+                    onClick={() => setFleetFilter(filter.id)}
+                    className="deft-pill"
+                    data-active={fleetFilter === filter.id}
+                    aria-pressed={fleetFilter === filter.id}
+                  >
+                    {filter.label} <span style={{ color: 'var(--muted)' }}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
       {loading ? (
         <div className="py-12 text-center text-[13px]" style={{ color: 'var(--muted)' }}>
           Loading...
@@ -198,7 +300,12 @@ export default function AgentEmployeesPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {employees.map((emp) => {
+          {visibleEmployees.length === 0 && (
+            <div className="rounded-lg border border-dashed px-4 py-10 text-center text-[13px]" style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}>
+              No agent employees match this view.
+            </div>
+          )}
+          {visibleEmployees.map((emp) => {
             const connection = agentConnectionStatus(emp);
             const lifecycle = agentEmployeeLifecycle(emp);
             const lifecycleTone = STATUS_TONES[lifecycle.tone];
@@ -206,31 +313,35 @@ export default function AgentEmployeesPage() {
             return (
             <div
               key={emp.id}
-              className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-4 py-3 rounded-lg cursor-pointer"
+              className="flex flex-col gap-2 rounded-lg px-3 py-2.5 md:flex-row md:items-center md:gap-3"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}
             >
               {/* Clickable area: avatar + name/role + secondary metadata */}
               <Link
                 href={`/settings/agent-employees/${emp.id}/developer`}
-                className="flex items-center gap-3 flex-1 min-w-0"
+                className="flex min-w-0 flex-1 items-start gap-2.5"
               >
                 {/* Avatar */}
                 <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center text-[12px] font-medium text-white flex-shrink-0"
+                  className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-full text-[12px] font-medium text-white"
                   style={{ background: 'var(--accent)' }}
                 >
-                  {emp.name.charAt(0).toUpperCase()}
+                  {emp.avatar_url ? (
+                    <img src={emp.avatar_url} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <Bot size={16} strokeWidth={1.8} />
+                  )}
                 </div>
 
                 {/* Name, role, and secondary metadata stacked */}
                 <div className="flex-1 min-w-0">
-                  <p
-                    className="text-[14px] font-medium truncate"
-                    style={{ color: 'var(--foreground)' }}
-                  >
-                    {emp.name}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2 mt-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p
+                      className="max-w-full truncate text-[14px] font-medium"
+                      style={{ color: 'var(--foreground)' }}
+                    >
+                      {emp.name}
+                    </p>
                     <span
                       className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded"
                       style={{
@@ -246,15 +357,8 @@ export default function AgentEmployeesPage() {
                       {lifecycle.detail}
                     </span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-0.5">
-                    <span
-                      className="text-[11px] px-1.5 py-0.5 rounded"
-                      style={{
-                        background: 'var(--surface)',
-                        color: 'var(--foreground-secondary)',
-                        border: '1px solid var(--border)',
-                      }}
-                    >
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-secondary)' }}>
                       {ROLE_LABELS[emp.role] || emp.role}
                     </span>
                     <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
@@ -286,16 +390,14 @@ export default function AgentEmployeesPage() {
                       </span>
                     </div>
                     {emp.unhealthy && (
-                      <span className="text-[11px]" style={{ color: 'var(--danger)' }}>
-                        Unhealthy: {emp.unhealthy_reason || 'needs attention'}
-                      </span>
+                      <span className="sr-only">Unhealthy: {emp.unhealthy_reason || 'needs attention'}</span>
                     )}
                   </div>
                 </div>
               </Link>
 
-              {/* Controls row — inline on md+, drops below on mobile */}
-              <div className="flex items-center gap-3 flex-shrink-0 ml-12 md:ml-0">
+              {/* Controls stay aligned on desktop and wrap below the identity on mobile. */}
+              <div className="ml-11 flex flex-shrink-0 items-center gap-3 md:ml-0">
                 {/* Toggle switch */}
                 <button
                   onClick={(e) => { e.stopPropagation(); handleToggleActive(emp); }}
@@ -303,6 +405,7 @@ export default function AgentEmployeesPage() {
                   className="relative"
                   style={{ width: 36, height: 20 }}
                   title={emp.is_active ? 'Pause agent' : 'Resume agent'}
+                  aria-label={emp.is_active ? `Pause ${emp.name}` : `Resume ${emp.name}`}
                 >
                   <div
                     className="absolute inset-0 rounded-full transition-colors"
@@ -341,6 +444,7 @@ export default function AgentEmployeesPage() {
                     onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
                     onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.5')}
                     title="Delete agent"
+                    aria-label={`Delete ${emp.name}`}
                   >
                     <Trash2 size={13} />
                   </button>
