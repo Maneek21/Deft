@@ -11,6 +11,25 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+const configuredDatabaseUrl = process.env.DATABASE_URL;
+const explicitTestDatabaseUrl = process.env.DEFT_TEST_DATABASE_URL;
+const runningInCi = process.env.CI === 'true';
+
+if (explicitTestDatabaseUrl) {
+  process.env.DATABASE_URL = explicitTestDatabaseUrl;
+} else if (!runningInCi) {
+  console.error(
+    '[run-api-tests] Refusing to run database-writing tests against DATABASE_URL. ' +
+    'Set DEFT_TEST_DATABASE_URL to a disposable test database.',
+  );
+  process.exit(1);
+}
+
+if (!runningInCi && process.env.DATABASE_URL === configuredDatabaseUrl) {
+  console.error('[run-api-tests] DEFT_TEST_DATABASE_URL must not point at the active application database');
+  process.exit(1);
+}
+
 const pnpmCli = process.env.npm_execpath;
 if (!pnpmCli) {
   console.error('[run-api-tests] Run this script through pnpm so npm_execpath is available');
@@ -19,6 +38,7 @@ if (!pnpmCli) {
 const requestedTests = process.argv.slice(2);
 const commands = [
   ['exec', 'tsx', 'src/scripts/seed-test-fixtures.ts'],
+  ['exec', 'tsx', 'src/scripts/seed-platform-bundles.ts'],
   [
     'exec',
     'tsx',
@@ -30,11 +50,16 @@ const commands = [
 ];
 
 for (const args of commands) {
+  console.log(`[run-api-tests] ${args.join(' ')}`);
   const result = spawnSync(process.execPath, [pnpmCli, ...args], {
     cwd: resolve(here, '..', '..'),
     env: process.env,
     stdio: 'inherit',
+    timeout: Number(process.env.DEFT_TEST_TIMEOUT_MS ?? 15 * 60 * 1000),
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    console.error(`[run-api-tests] command failed: ${result.error.message}`);
+    throw result.error;
+  }
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

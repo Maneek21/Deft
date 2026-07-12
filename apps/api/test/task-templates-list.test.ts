@@ -9,10 +9,12 @@ import { app } from '../src/index.js';
 async function authHeaders(): Promise<Record<string, string>> {
   const res = await app.request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'diego@testers-tomatoes.com', password: 'tomato123' }),
+    body: JSON.stringify({ email: 'maneek@test.com', password: 'test1234' }),
     headers: { 'content-type': 'application/json' },
   });
+  assert.equal(res.status, 200, 'canonical test fixture login should succeed');
   const body = (await res.json()) as { accessToken: string };
+  assert.ok(body.accessToken, 'login should return an access token');
   return { authorization: `Bearer ${body.accessToken}` };
 }
 
