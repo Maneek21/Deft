@@ -72,6 +72,10 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       approval_status: 'pending',
     }).returning({ id: agentActions.id });
 
+    const replyThreadId = isDM
+      ? (triggerMsg.parent_id ?? null)
+      : (triggerMsg.parent_id ?? messageId);
+
     await publishAgentChannelEvent({
       orgId,
       employeeId,
@@ -79,14 +83,14 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
       sourceKind: 'message',
       sourceId: messageId,
       spaceId,
-      threadId: triggerMsg.parent_id ?? messageId,
+      threadId: replyThreadId,
       actorUserId: author!.id,
       idempotencyKey: `message:${messageId}:employee:${employeeId}`,
       payload: {
         message_id: messageId,
         space_id: spaceId,
         parent_id: triggerMsg.parent_id ?? null,
-        reply_thread_id: triggerMsg.parent_id ?? messageId,
+        reply_thread_id: replyThreadId,
         author_id: author!.id,
         author_name: author!.name,
         content: triggerMsg.content,

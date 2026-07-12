@@ -1,7 +1,7 @@
 // In-memory store — fine for single-instance self-host. If we ever ship
 // multi-instance, swap to the hono-rate-limiter Redis store.
 import { rateLimiter } from 'hono-rate-limiter';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -20,6 +20,10 @@ const AUTH_LIMIT_PER_MINUTE = positiveIntFromEnv(
 const AGENT_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AGENT_RATE_LIMIT_PER_MINUTE',
   isProduction ? 30 : 300,
+);
+const AGENT_CHANNEL_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_AGENT_CHANNEL_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 180 : 600,
 );
 const UPLOAD_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_UPLOAD_RATE_LIMIT_PER_MINUTE',
@@ -50,6 +54,14 @@ function ipKey(c: Context): string {
   return c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
          c.req.header('x-real-ip') ||
          'unknown';
+}
+
+function agentChannelKey(c: Context): string {
+  const authorization = c.req.header('authorization')?.trim();
+  if (authorization) {
+    return `channel:${createHash('sha256').update(authorization).digest('hex').slice(0, 32)}`;
+  }
+  return `ip:${ipKey(c)}`;
 }
 
 export function shouldBypassRateLimitForAudit(c: Context): boolean {
@@ -102,6 +114,20 @@ export const agentLimiter = withAuditBypass(rateLimiter({
   handler: (c) => c.json({
     error: 'Agent rate limit hit. Pause for a minute or talk to your admin about quota.',
     code: 'AGENT_RATE_LIMITED',
+  }, 429),
+}));
+
+// Agent Channel clients poll continuously and may share one office/NAT IP.
+// Isolate each channel credential so one employee cannot exhaust another's
+// budget, and leave enough headroom for ack/status/reply bursts around events.
+export const agentChannelLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: AGENT_CHANNEL_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: agentChannelKey,
+  handler: (c) => c.json({
+    error: 'Agent Channel rate limit hit. Retry shortly.',
+    code: 'AGENT_CHANNEL_RATE_LIMITED',
   }, 429),
 }));
 

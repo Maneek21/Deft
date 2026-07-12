@@ -35,6 +35,8 @@ function config() {
     hermesModel: 'Maya',
     pollMs: 1,
     limit: 10,
+    maxRetries: 2,
+    retryBaseMs: 5,
     once: true,
   };
 }
@@ -115,4 +117,57 @@ test('processEvent reports runtime failures to the channel', async () => {
   const terminalCalls = calls.slice(-2);
   assert.equal(terminalCalls[0].body.state, 'failed');
   assert.equal(terminalCalls[1].body.state, 'degraded');
+});
+
+test('top-level DM replies stay in the main conversation instead of opening a thread', async () => {
+  const calls = [];
+  const dmEvent = {
+    ...event,
+    id: 'event-dm',
+    thread_id: null,
+    payload: { content: 'hello', is_dm: true, parent_id: null, reply_thread_id: null },
+  };
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+    if (url.includes('/v1/responses')) {
+      return jsonResponse({
+        output_text: '{"reply":"Hello back.","summary":"Replied.","outcome":"completed"}',
+      });
+    }
+    return jsonResponse({ ok: true });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl,
+    logger: { info() {}, error() {} },
+  });
+
+  await bridge.processEvent(dmEvent);
+  const replyCall = calls.find((call) => call.url.endsWith('/reply'));
+  assert.ok(replyCall);
+  assert.equal(replyCall.body.thread_id, null);
+});
+
+test('request retries a transient channel rate limit instead of killing the bridge', async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return new Response(JSON.stringify({ error: 'slow down' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '0' },
+      });
+    }
+    return jsonResponse({ ok: true, employee: { slug: 'maya' } });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl,
+    sleep: async (ms) => sleeps.push(ms),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await bridge.connect();
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.deepEqual(sleeps, [5]);
 });
