@@ -12,6 +12,7 @@ import {
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
+import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
 
 export const projectRoutes = new Hono();
 
@@ -454,6 +455,7 @@ const createTaskSchema = z.object({
   sort_order: z.number().nullable().optional(),
   source_message_id: z.string().nullable().optional(),
   parent_task_id: z.string().nullable().optional(),
+  metadata: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
@@ -629,6 +631,7 @@ projectRoutes.post('/:id/tasks', async (c) => {
       sort_order: parsed.data.sort_order ?? 0,
       source_message_id: parsed.data.source_message_id || undefined,
       parent_task_id: parsed.data.parent_task_id || undefined,
+      metadata: parsed.data.metadata ?? undefined,
     }).returning();
 
     // Create activity log entry
@@ -666,6 +669,18 @@ projectRoutes.post('/:id/tasks', async (c) => {
           emitToUser(task!.assignee_id, 'notification:new', notification);
         }
       } catch {}
+    }
+
+    // The primary web task-creation flow uses this project-scoped route.
+    // Keep agent-employee handoff behavior aligned with POST /api/tasks so a
+    // task assigned in the UI wakes the connected runtime immediately.
+    if (task!.assignee_id) {
+      await dispatchAgentEmployeeTask({
+        taskId: task!.id,
+        orgId: user.org_id,
+        assigneeUserId: task!.assignee_id,
+        assignedBy: user.id,
+      });
     }
 
     // Enqueue duplicate detection job
