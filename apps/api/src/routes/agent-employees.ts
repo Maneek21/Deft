@@ -1687,6 +1687,11 @@ agentEmployeeRoutes.post('/:id/pause', async (c) => {
     const user = c.get('user');
     const id = c.req.param('id');
 
+    const role = await getOrgRole(user.id, user.org_id);
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json({ error: 'Only owners or admins can pause agent employees', code: 'FORBIDDEN' }, 403);
+    }
+
     const [existing] = await db
       .select()
       .from(agentEmployees)
@@ -1712,6 +1717,11 @@ agentEmployeeRoutes.post('/:id/resume', async (c) => {
   try {
     const user = c.get('user');
     const id = c.req.param('id');
+
+    const role = await getOrgRole(user.id, user.org_id);
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json({ error: 'Only owners or admins can resume agent employees', code: 'FORBIDDEN' }, 403);
+    }
 
     const [existing] = await db
       .select()

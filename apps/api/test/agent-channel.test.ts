@@ -427,6 +427,24 @@ test('operators can cancel and retry a live channel delivery', async () => {
   assert.equal(recorded?.error, null);
 });
 
+test('regular members cannot pause or resume an agent employee', async () => {
+  await db.update(orgMembers)
+    .set({ role: 'member' })
+    .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, humanUserId)));
+
+  try {
+    const pause = await operatorApp.request(`/api/agent-employees/${employeeId}/pause`, { method: 'POST' });
+    assert.equal(pause.status, 403, await pause.text());
+
+    const resume = await operatorApp.request(`/api/agent-employees/${employeeId}/resume`, { method: 'POST' });
+    assert.equal(resume.status, 403, await resume.text());
+  } finally {
+    await db.update(orgMembers)
+      .set({ role: 'owner' })
+      .where(and(eq(orgMembers.org_id, orgId), eq(orgMembers.user_id, humanUserId)));
+  }
+});
+
 test('POST /reply posts as the agent and is idempotent', async () => {
   const [fallbackAction] = await db.insert(agentActions).values({
     org_id: orgId,
