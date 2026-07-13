@@ -114,11 +114,18 @@ function ChatSidebarContent({
   const [agentEmployees, setAgentEmployees] = useState<AgentEmployee[]>([]);
 
   useEffect(() => {
-    api.get('/api/agent-employees?expand=stats').then(async (res) => {
-      if (res.ok) {
-        setAgentEmployees(await res.json());
-      }
-    });
+    let active = true;
+    const loadAgentEmployees = async () => {
+      const res = await api.get('/api/agent-employees?expand=stats');
+      if (active && res.ok) setAgentEmployees(await res.json());
+    };
+
+    void loadAgentEmployees();
+    const interval = window.setInterval(loadAgentEmployees, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
   }, []);
 
   const agentStatusColor = (employee: AgentEmployee) => {
