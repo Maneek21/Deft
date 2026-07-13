@@ -14,6 +14,7 @@ import {
   taskActivity,
   taskComments,
   tasks,
+  savedViews,
   users,
   wikiCitations,
   wikiOpsLog,
@@ -27,6 +28,8 @@ import { errorResult, textResult, type ToolResult } from './types.js';
 import { enrichOAuthAuditActions } from '../oauth-audit-receipts.js';
 import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-context.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
+import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
+import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -158,6 +161,7 @@ export const HUMAN_READ_TOOLS = new Set([
   'list_my_tasks',
   'task_get',
   'task_query',
+  'task_saved_view_get',
   'project_list',
   'resolve_project',
   'project_get',
@@ -185,6 +189,7 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'wiki_upsert',
   'task_create',
   'task_update',
+  'task_bulk_update',
   'task_transition',
   'comment_on_task',
   'message_post',
@@ -203,6 +208,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   task_get: humanTaskGet,
   memory_write: humanMemoryWrite,
   task_query: humanTaskQuery,
+  task_saved_view_get: humanTaskSavedViewGet,
   project_list: humanProjectList,
   resolve_project: humanResolveProject,
   project_get: humanProjectGet,
@@ -211,6 +217,7 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   space_get: humanSpaceGet,
   task_create: humanTaskCreate,
   task_update: humanTaskUpdate,
+  task_bulk_update: humanTaskBulkUpdate,
   task_transition: humanTaskTransition,
   comment_on_task: humanCommentOnTask,
   message_post: humanMessagePost,
@@ -298,6 +305,8 @@ function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): R
       };
     case 'task_update':
       return { task_id: args.task_id ?? null, patch: args.patch ?? null };
+    case 'task_bulk_update':
+      return { task_ids: args.task_ids ?? null, updates: args.updates ?? null };
     case 'task_transition':
       return { task_id: args.task_id ?? null, status: args.status ?? null };
     case 'comment_on_task':
@@ -1572,22 +1581,59 @@ export async function humanTaskGet(args: { task_id?: string }, ctx: HumanToolCon
   });
 }
 
-export async function humanTaskQuery(args: { filter?: { status?: string; assignee_id?: string; project_id?: string }; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+export async function humanTaskQuery(args: CompactTaskQuery & { filter?: { status?: string; assignee_id?: string; project_id?: string } }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:tasks');
   if (scopeError) return scopeError;
-  const filter = args.filter ?? {};
-  const conditions = [eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false)];
-  if (filter.status) conditions.push(eq(tasks.status, filter.status as any));
-  if (filter.assignee_id) conditions.push(eq(tasks.assignee_id, filter.assignee_id));
-  if (filter.project_id) conditions.push(eq(tasks.project_id, filter.project_id));
-  const rows = await db
-    .select({ task: tasks })
-    .from(tasks)
-    .innerJoin(projects, eq(tasks.project_id, projects.id))
-    .where(and(...conditions, visibleTaskCondition(ctx.user_id)))
-    .orderBy(desc(tasks.updated_at))
-    .limit(Math.min(Math.max(1, args.limit ?? 20), 50));
-  return textResult(rows.map((row) => row.task));
+  const legacy = args.filter ?? {};
+  try {
+    const rows = await queryCompactTasks({
+      ...args,
+      project_id: args.project_id ?? legacy.project_id,
+      statuses: args.statuses ?? (legacy.status ? [legacy.status] : undefined),
+      assignee_ids: args.assignee_ids ?? (legacy.assignee_id ? [legacy.assignee_id] : undefined),
+    }, { orgId: ctx.org_id, userId: ctx.user_id });
+    return textResult(rows);
+  } catch (err) {
+    return errorResult(`task_query failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export async function humanTaskSavedViewGet(args: { saved_view_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:tasks');
+  if (scopeError) return scopeError;
+  if (!args.saved_view_id) return errorResult('task_saved_view_get requires saved_view_id');
+  const [view] = await db.select().from(savedViews).where(and(
+    eq(savedViews.id, args.saved_view_id),
+    eq(savedViews.org_id, ctx.org_id),
+    or(eq(savedViews.user_id, ctx.user_id), eq(savedViews.is_shared, true)),
+  )).limit(1);
+  if (!view) return errorResult('task_saved_view_get: saved view not found');
+  return textResult({
+    id: view.id,
+    name: view.name,
+    project_id: view.project_id,
+    is_shared: view.is_shared,
+    query_config: view.config,
+    read_only: true,
+  });
+}
+
+export async function humanTaskBulkUpdate(
+  args: { task_ids?: string[]; updates?: Record<string, unknown>; idempotency_key?: string },
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:tasks');
+  if (scopeError) return scopeError;
+  const parsed = bulkTaskUpdateSchema.safeParse({ task_ids: args.task_ids, updates: args.updates });
+  if (!parsed.success) return errorResult(parsed.error.issues[0]?.message ?? 'Invalid bulk task update');
+  return withIdempotency('task_bulk_update', args, ctx, async () => {
+    try {
+      return textResult(await bulkUpdateTasks(parsed.data, { orgId: ctx.org_id, userId: ctx.user_id }));
+    } catch (err) {
+      if (err instanceof BulkTaskUpdateError) return errorResult(`${err.code}: ${err.message}`);
+      throw err;
+    }
+  });
 }
 
 export async function humanProjectList(args: { query?: string; include_archived?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
@@ -2941,6 +2987,45 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
           since: { type: 'string', description: 'Optional ISO timestamp lower bound.' },
           limit: { type: 'integer', minimum: 1, maximum: 100 },
         },
+      },
+    },
+    {
+      name: 'task_saved_view_get',
+      title: 'Get Deft Task Saved View',
+      description: 'Read one personal or shared saved task view as query configuration. Saved layouts are read-only through MCP. Human personal-MCP read: requires read:tasks.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: { saved_view_id: { type: 'string' } },
+        required: ['saved_view_id'],
+      },
+    },
+    {
+      name: 'task_bulk_update',
+      title: 'Bulk Update Deft Tasks',
+      description: 'Update up to 50 visible tasks atomically with the same canonical fields used by the task table. Always include idempotency_key for retry-safe writes. Human personal-MCP write: requires write:tasks.',
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
+          updates: {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'] },
+              priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
+              assignee_id: { type: ['string', 'null'] },
+              due_date: { type: ['string', 'null'] },
+              start_date: { type: ['string', 'null'] },
+              estimation: { type: ['string', 'null'] },
+              add_label_ids: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+              remove_label_ids: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+            },
+            additionalProperties: false,
+          },
+          idempotency_key: { type: 'string', description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.' },
+        },
+        required: ['task_ids', 'updates'],
       },
     },
     {

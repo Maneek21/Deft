@@ -131,6 +131,36 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'bulk_update_tasks',
+    description: 'Apply one reviewed update to 2-50 tasks atomically. Use when the user asks to change several named tasks together. REQUIRES USER APPROVAL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_identifiers: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 2,
+          maxItems: 50,
+          description: 'Exact task keys such as BUY-1, OPS-2, or task UUIDs.',
+        },
+        updates: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'] },
+            priority: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] },
+            assignee_name: { type: 'string' },
+            due_date: { type: ['string', 'null'] },
+            start_date: { type: ['string', 'null'] },
+            estimation: { type: ['string', 'null'] },
+            add_label_names: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+            remove_label_names: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+          },
+        },
+      },
+      required: ['task_identifiers', 'updates'],
+    },
+  },
+  {
     name: 'assign_task',
     description: 'Assign a task to a team member. REQUIRES USER APPROVAL.',
     input_schema: {
@@ -733,6 +763,7 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
 export const ACTION_TOOLS = new Set([
   'create_task',
   'update_task_status',
+  'bulk_update_tasks',
   'assign_task',
   'post_message',
   'create_reminder',

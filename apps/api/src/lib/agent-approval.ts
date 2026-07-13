@@ -47,6 +47,7 @@ export type ApprovalTier = 'auto' | 'quick' | 'full';
 /** Default approval tier for each action tool */
 export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   update_task_status: 'auto',
+  bulk_update_tasks: 'full',
   assign_task: 'auto',
   create_task: 'quick',
   add_knowledge: 'quick',

@@ -1,80 +1,34 @@
-/**
- * task_query — Phase 3 read-only task search.
- *
- * Write tools (task_create, task_update, message_post) land in Phase 4 with
- * trust-level gating. Phase 3 only needs to let the agent read the board.
- */
-import { and, eq, desc } from 'drizzle-orm';
-import type { SQL } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { agentEmployees } from '@deft/db/schema';
 import { db } from '../db.js';
-import { tasks } from '@deft/db/schema';
+import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 
-type TaskQueryFilter = {
-  status?: string;
-  assignee_id?: string;
-  project_id?: string;
-};
-
-export type TaskQueryArgs = {
+export type TaskQueryArgs = CompactTaskQuery & {
   caller_employee_slug: string;
-  filter?: TaskQueryFilter;
-  limit?: number;
+  filter?: {
+    status?: string;
+    assignee_id?: string;
+    project_id?: string;
+  };
 };
 
-const VALID_STATUS = new Set([
-  'backlog',
-  'todo',
-  'in_progress',
-  'in_review',
-  'done',
-  'cancelled',
-]);
-
-export async function taskQuery(
-  args: TaskQueryArgs,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const limit = Math.min(Math.max(1, args.limit ?? 20), 50);
-  const filter = args.filter ?? {};
-
+export async function taskQuery(args: TaskQueryArgs, ctx: ToolContext): Promise<ToolResult> {
   try {
-    const conditions: SQL[] = [
-      eq(tasks.org_id, ctx.org_id),
-      eq(tasks.is_deleted, false),
-    ];
-
-    if (filter.status && VALID_STATUS.has(filter.status)) {
-      conditions.push(eq(tasks.status, filter.status as 'todo'));
-    }
-    if (filter.assignee_id) {
-      conditions.push(eq(tasks.assignee_id, filter.assignee_id));
-    }
-    if (filter.project_id) {
-      conditions.push(eq(tasks.project_id, filter.project_id));
-    }
-
-    const rows = await db
-      .select({
-        id: tasks.id,
-        project_id: tasks.project_id,
-        number: tasks.number,
-        title: tasks.title,
-        status: tasks.status,
-        priority: tasks.priority,
-        assignee_id: tasks.assignee_id,
-        due_date: tasks.due_date,
-        updated_at: tasks.updated_at,
-      })
-      .from(tasks)
-      .where(and(...conditions))
-      .orderBy(desc(tasks.updated_at))
-      .limit(limit);
-
+    const [employee] = await db.select({ user_id: agentEmployees.user_id }).from(agentEmployees)
+      .where(and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id)))
+      .limit(1);
+    if (!employee) return errorResult('task_query: caller employee not found');
+    const legacy = args.filter ?? {};
+    const rows = await queryCompactTasks({
+      ...args,
+      project_id: args.project_id ?? legacy.project_id,
+      statuses: args.statuses ?? (legacy.status ? [legacy.status] : undefined),
+      assignee_ids: args.assignee_ids ?? (legacy.assignee_id ? [legacy.assignee_id] : undefined),
+    }, { orgId: ctx.org_id, userId: employee.user_id });
     return textResult(rows);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`task_query failed: ${msg}`);
+    return errorResult(`task_query failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

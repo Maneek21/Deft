@@ -33,6 +33,7 @@ import { checkReplyStorm, STORM_THRESHOLD } from './storm-detector.js';
 import { DEFTY_NAME } from './ensure-defty-membership.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
+import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -371,6 +372,78 @@ export async function executeAction(
           success: true,
           result: { task_id: taskId, old_status: oldStatus, new_status: params.new_status },
         };
+      }
+
+      case 'bulk_update_tasks': {
+        const identifiers = Array.isArray(params.task_identifiers)
+          ? [...new Set(params.task_identifiers.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0))]
+          : [];
+        if (identifiers.length < 2 || identifiers.length > 50) {
+          return { success: false, result: null, error: 'Bulk task updates require 2-50 exact task identifiers' };
+        }
+        const taskIds: string[] = [];
+        for (const identifier of identifiers) {
+          const taskId = await resolveTaskIdentifier(identifier, orgId);
+          if (!taskId) return { success: false, result: null, error: `Task not found: ${identifier}` };
+          taskIds.push(taskId);
+        }
+
+        const requested = params.updates && typeof params.updates === 'object' ? params.updates : {};
+        const updates: Record<string, unknown> = {};
+        for (const field of ['status', 'priority', 'due_date', 'start_date', 'estimation']) {
+          if (requested[field] !== undefined) updates[field] = requested[field];
+        }
+        if (typeof requested.assignee_name === 'string') {
+          const resolved = await resolveAssigneeWithMatches(requested.assignee_name, orgId);
+          if (!resolved.ok) {
+            const suffix = resolved.ambiguous ? ` Matches: ${resolved.matches.map((match) => match.name).join(', ')}` : '';
+            return { success: false, result: null, error: `Could not resolve assignee "${requested.assignee_name}".${suffix}` };
+          }
+          updates.assignee_id = resolved.value.id;
+        }
+
+        for (const [namesField, idsField] of [['add_label_names', 'add_label_ids'], ['remove_label_names', 'remove_label_ids']] as const) {
+          if (!Array.isArray(requested[namesField])) continue;
+          const names = [...new Set(requested[namesField].filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0))];
+          const ids: string[] = [];
+          for (const name of names) {
+            const matches = await db.select({ id: labels.id, name: labels.name }).from(labels)
+              .where(and(eq(labels.org_id, orgId), sql`lower(${labels.name}) = lower(${name})`));
+            if (matches.length !== 1) return { success: false, result: null, error: `Label must match exactly once: ${name}` };
+            ids.push(matches[0]!.id);
+          }
+          updates[idsField] = ids;
+        }
+
+        try {
+          const result = await bulkUpdateTasks({ task_ids: taskIds, updates } as any, {
+            orgId,
+            userId,
+            agentActionId: actionId,
+            agentEmployeeId,
+          });
+          await db.update(agentActions).set({
+            result: { ...result, task_identifiers: identifiers },
+            before_state: { task_ids: taskIds },
+            after_state: { task_ids: result.updated_ids, fields: result.fields },
+            executed_at: new Date(),
+          }).where(eq(agentActions.id, actionId));
+          await logAuditEvent({
+            orgId,
+            actorType: 'agent',
+            actorId: userId,
+            action: 'bulk_update_tasks',
+            entityType: 'task_batch',
+            entityId: actionId,
+            beforeState: { task_ids: taskIds },
+            afterState: { task_ids: result.updated_ids, updates },
+            metadata: { action_id: actionId, agent_employee_id: agentEmployeeId },
+          });
+          return { success: true, result: { ...result, task_identifiers: identifiers } };
+        } catch (err) {
+          if (err instanceof BulkTaskUpdateError) return { success: false, result: null, error: `${err.code}: ${err.message}` };
+          throw err;
+        }
       }
 
       case 'assign_task': {
