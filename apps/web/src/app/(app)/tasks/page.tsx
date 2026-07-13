@@ -770,6 +770,14 @@ export default function TasksPage() {
     setQuickCreateOpen(false);
   };
 
+  const handleInlineCreate = async (title: string, defaults: Record<string, unknown>) => {
+    if (!selectedProject) return false;
+    const res = await api.post(`/api/projects/${selectedProject.id}/tasks`, { title, ...defaults });
+    if (!res.ok) return false;
+    await loadTasks();
+    return true;
+  };
+
   const handleDuplicate = async (taskId: string) => {
     const res = await api.post(`/api/tasks/${taskId}/duplicate`);
     if (res.ok) {
@@ -1266,6 +1274,7 @@ export default function TasksPage() {
                 priorityVocab={resolvedConfig?.priority_vocab}
                 viewConfig={currentViewConfig}
                 onViewConfigChange={setLayoutConfig}
+                onInlineCreate={handleInlineCreate}
               />
             ) : view === 'calendar' ? (
               <TaskCalendarView

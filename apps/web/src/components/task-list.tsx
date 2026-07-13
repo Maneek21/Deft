@@ -9,6 +9,7 @@ import { priorityLabel } from '@/hooks/use-project-resolved-config';
 import { PersonAvatar } from './person-avatar';
 import {
   isTaskTableColumnVisible,
+  taskTableColumnConfig,
   TASK_TABLE_COLUMNS,
   type TaskTableColumnId,
   type TaskViewConfigV1,
@@ -62,6 +63,7 @@ type Props = {
   priorityVocab?: PriorityVocab;
   viewConfig: TaskViewConfigV1;
   onViewConfigChange: (config: TaskViewConfigV1) => void;
+  onInlineCreate?: (title: string, defaults: TaskPatch) => Promise<boolean>;
 };
 
 type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_id' | 'due_date' | 'start_date' | 'estimation'>> & {
@@ -70,6 +72,7 @@ type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_
 
 type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'start_date' | 'due_date' | 'estimation' | 'labels' | 'updated_at';
 type SortDir = 'asc' | 'desc';
+type GroupField = 'status' | 'priority' | 'assignee' | 'due_date' | 'project' | 'labels';
 
 const DEFAULT_STATUS_OPTIONS = [
   { value: 'backlog', label: statusLabel('backlog'), color: '#6b7280' },
@@ -134,7 +137,47 @@ function dateInputValue(value: string | null): string {
   return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
 }
 
-export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange }: Props) {
+function sortValue(task: Task, field: SortField): string | number {
+  switch (field) {
+    case 'number': return task.number;
+    case 'title': return task.title;
+    case 'status': return task.status;
+    case 'priority': return PRIORITY_ORDER[task.priority];
+    case 'assignee': return task.assignee_name || '';
+    case 'start_date': return task.start_date || '';
+    case 'due_date': return task.due_date || '';
+    case 'estimation': return task.estimation || '';
+    case 'labels': return task.labels.map((label) => label.name).join(',');
+    case 'updated_at': return task.updated_at;
+  }
+}
+
+function dueBucket(value: string | null): string {
+  if (!value) return 'No due date';
+  const due = new Date(value);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  due.setHours(0, 0, 0, 0);
+  const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+  if (days < 0) return 'Overdue';
+  if (days === 0) return 'Today';
+  if (days <= 7) return 'Next 7 days';
+  return 'Later';
+}
+
+function taskGroup(task: Task, field: string): string {
+  switch (field as GroupField) {
+    case 'status': return statusLabel(task.status);
+    case 'priority': return task.priority.toUpperCase();
+    case 'assignee': return task.assignee_name || 'Unassigned';
+    case 'due_date': return dueBucket(task.due_date);
+    case 'project': return task.project_name;
+    case 'labels': return task.labels[0]?.name || 'No labels';
+    default: return '';
+  }
+}
+
+export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange, onInlineCreate }: Props) {
   const STATUS_OPTIONS = useMemo(() => {
     if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return [...statuses]
@@ -144,14 +187,13 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
   const statusColorFor = (id: string): string =>
     STATUS_OPTIONS.find((s) => s.value === id)?.color || STATUS_COLORS[id] || 'var(--muted)';
-  const configuredSort = viewConfig.sort[0];
-  const sortField: SortField = configuredSort && TASK_TABLE_COLUMNS.some((column) => column.id === configuredSort.field)
-    ? configuredSort.field as SortField
-    : 'number';
-  const sortDir: SortDir = configuredSort?.direction ?? 'desc';
+  const configuredSorts = viewConfig.sort.filter((clause): clause is typeof clause & { field: SortField } =>
+    TASK_TABLE_COLUMNS.some((column) => column.id === clause.field));
+  const primarySort = configuredSorts[0] ?? { field: 'number' as SortField, direction: 'desc' as SortDir, nulls: 'last' as const };
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
   const [editingTitle, setEditingTitle] = useState<{ taskId: string; value: string } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
+  const [newTask, setNewTask] = useState<{ key: string; title: string } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   // Fix 3: client-side pagination — show 50 rows at a time
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -163,42 +205,52 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const handleSort = (field: SortField) => {
+  const handleSort = (field: SortField, additive = false) => {
     setVisibleCount(PAGE_SIZE);
+    const existing = configuredSorts.find((clause) => clause.field === field);
+    const next = { field, direction: existing?.direction === 'asc' ? 'desc' as const : 'asc' as const, nulls: 'last' as const };
+    const sort = additive
+      ? [...configuredSorts.filter((clause) => clause.field !== field), next].slice(-3)
+      : [next];
     onViewConfigChange({
       ...viewConfig,
-      sort: [{ field, direction: sortField === field && sortDir === 'asc' ? 'desc' : 'asc', nulls: 'last' }],
+      sort,
     });
   };
 
-  const sorted = useMemo(() => {
-    return [...tasks].sort((a, b) => {
-      let cmp = 0;
-      switch (sortField) {
-        case 'number': cmp = a.number - b.number; break;
-        case 'title': cmp = a.title.localeCompare(b.title); break;
-        case 'status': cmp = a.status.localeCompare(b.status); break;
-        case 'priority': cmp = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]; break;
-        case 'assignee': cmp = (a.assignee_name || '').localeCompare(b.assignee_name || ''); break;
-        case 'start_date': cmp = (a.start_date || '').localeCompare(b.start_date || ''); break;
-        case 'due_date': cmp = (a.due_date || '').localeCompare(b.due_date || ''); break;
-        case 'estimation': cmp = (a.estimation || '').localeCompare(b.estimation || ''); break;
-        case 'labels': cmp = a.labels.map((label) => label.name).join(',').localeCompare(b.labels.map((label) => label.name).join(',')); break;
-        case 'updated_at': cmp = a.updated_at.localeCompare(b.updated_at); break;
+  const sorted = [...tasks].sort((a, b) => {
+      const groupField = viewConfig.groupBy?.field;
+      if (groupField) {
+        const groupComparison = taskGroup(a, groupField).localeCompare(taskGroup(b, groupField));
+        if (groupComparison) return viewConfig.groupBy?.direction === 'desc' ? -groupComparison : groupComparison;
       }
-      return sortDir === 'desc' ? -cmp : cmp;
+      for (const clause of configuredSorts.length ? configuredSorts : [primarySort]) {
+        const left = sortValue(a, clause.field);
+        const right = sortValue(b, clause.field);
+        const cmp = typeof left === 'number' && typeof right === 'number'
+          ? left - right
+          : String(left).localeCompare(String(right));
+        if (cmp) return clause.direction === 'desc' ? -cmp : cmp;
+      }
+      return a.id.localeCompare(b.id);
     });
-  }, [tasks, sortField, sortDir]);
 
   // Fix 3: page-sliced rows
   const visibleRows = sorted.slice(0, visibleCount);
 
   const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <ArrowUpDown size={11} style={{ opacity: 0.3 }} />;
-    return sortDir === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />;
+    const index = configuredSorts.findIndex((clause) => clause.field === field);
+    if (index < 0) return <ArrowUpDown size={11} style={{ opacity: 0.3 }} />;
+    return <span className="flex items-center gap-0.5">{configuredSorts[index]?.direction === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />}{configuredSorts.length > 1 && <span>{index + 1}</span>}</span>;
   };
 
-  const columns = TASK_TABLE_COLUMNS.filter((column) => isTaskTableColumnVisible(viewConfig, column.id));
+  const columns = TASK_TABLE_COLUMNS
+    .filter((column) => isTaskTableColumnVisible(viewConfig, column.id))
+    .map((column) => {
+      const saved = taskTableColumnConfig(viewConfig, column.id);
+      return { ...column, ...saved, width: saved.width ?? column.width };
+    })
+    .sort((a, b) => a.position - b.position);
   const columnVisible = (id: TaskTableColumnId) => isTaskTableColumnVisible(viewConfig, id);
   const rowPadding = viewConfig.density === 'compact' ? 'py-1.5' : 'py-2.5';
 
@@ -211,6 +263,29 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
     setSavingCell(null);
     return ok;
   };
+
+  const inlineCreateRow = (key: string, defaults: TaskPatch = {}) => !onInlineCreate ? null : (
+    <tr key={`create:${key}`}>
+      <td colSpan={columns.length + (selectionMode ? 1 : 0)} className="px-3 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
+        <input
+          value={newTask?.key === key ? newTask.title : ''}
+          onFocus={() => setNewTask((current) => current?.key === key ? current : { key, title: '' })}
+          onChange={(event) => setNewTask({ key, title: event.target.value })}
+          onKeyDown={async (event) => {
+            if (event.key === 'Escape') setNewTask(null);
+            if (event.key === 'Enter' && newTask?.title.trim()) {
+              event.preventDefault();
+              if (await onInlineCreate(newTask.title.trim(), defaults)) setNewTask(null);
+            }
+          }}
+          placeholder="+ Add task"
+          aria-label={`Add task${key === 'all' ? '' : ` to ${key}`}`}
+          className="w-full bg-transparent px-1 py-1 text-[12px] outline-none"
+          style={{ color: 'var(--foreground)' }}
+        />
+      </td>
+    </tr>
+  );
 
   if (isMobile) {
     return (
@@ -307,14 +382,15 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
             {columns.map((col) => (
               <React.Fragment key={col.id}>
                 <th
-                  onClick={() => handleSort(col.id)}
+                  onClick={(event) => handleSort(col.id, event.shiftKey)}
+                  title="Click to sort; Shift-click to add up to three sorts"
                   className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
                   style={{
                     color: 'var(--muted)',
                     fontFamily: 'var(--font-heading)',
                     background: 'var(--surface)',
                     borderBottom: '1px solid var(--border)',
-                    width: col.width === '1fr' ? undefined : col.width,
+                    width: typeof col.width === 'number' ? `${col.width}px` : col.width === '1fr' ? undefined : col.width,
                     whiteSpace: col.id === 'status' ? 'nowrap' : undefined,
                     minWidth: col.id === 'status' ? '100px' : undefined,
                     left: col.id === 'number' ? (selectionMode ? 32 : 0) : col.id === 'title' ? (selectionMode ? 112 : 80) : undefined,
@@ -336,9 +412,26 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
             const isSelected = task.id === selectedTaskId;
             const isChecked = selectionMode && selectedTaskIds?.has(task.id);
 
+            const group = viewConfig.groupBy ? taskGroup(task, viewConfig.groupBy.field) : null;
+            const rowIndex = visibleRows.indexOf(task);
+            const previous = visibleRows[rowIndex - 1];
+            const next = visibleRows[rowIndex + 1];
+            const showGroup = group && (!previous || taskGroup(previous, viewConfig.groupBy!.field) !== group);
+            const groupEnds = group && (!next || taskGroup(next, viewConfig.groupBy!.field) !== group);
+            const inherited: TaskPatch = viewConfig.groupBy?.field === 'status' ? { status: task.status }
+              : viewConfig.groupBy?.field === 'priority' ? { priority: task.priority }
+              : viewConfig.groupBy?.field === 'assignee' ? { assignee_id: task.assignee_id }
+              : {};
             return (
+              <React.Fragment key={task.id}>
+              {showGroup && (
+                <tr>
+                  <td colSpan={columns.length + (selectionMode ? 1 : 0)} className="sticky left-0 px-3 py-1.5 text-[11px] font-semibold uppercase" style={{ color: 'var(--muted)', background: 'var(--surface-container-low)', borderBottom: '1px solid var(--border)' }}>
+                    {group}
+                  </td>
+                </tr>
+              )}
               <tr
-                key={task.id}
                 tabIndex={0}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && event.target === event.currentTarget) onTaskClick(task);
@@ -642,8 +735,11 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                   </span>
                 </td>
               </tr>
+              {groupEnds && inlineCreateRow(group, inherited)}
+              </React.Fragment>
             );
           })}
+          {!viewConfig.groupBy && inlineCreateRow('all')}
         </tbody>
       </table>
 

@@ -768,7 +768,7 @@ taskRoutes.delete('/saved-views/:id', async (c) => {
     const user = c.get('user');
     const viewId = c.req.param('id');
     const [view] = await db.select().from(savedViews)
-      .where(and(eq(savedViews.id, viewId), eq(savedViews.user_id, user.id))).limit(1);
+      .where(and(eq(savedViews.id, viewId), eq(savedViews.org_id, user.org_id), eq(savedViews.user_id, user.id))).limit(1);
     if (!view) return c.json({ error: 'View not found', code: 'NOT_FOUND' }, 404);
     await db.delete(savedViews).where(eq(savedViews.id, viewId));
     return c.json({ success: true });

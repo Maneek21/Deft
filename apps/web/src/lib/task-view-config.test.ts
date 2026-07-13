@@ -4,8 +4,10 @@ import {
   DEFAULT_TASK_VIEW_CONFIG,
   isTaskTableColumnVisible,
   normalizeTaskViewConfig,
+  moveTaskTableColumn,
   parseTaskSurfaceView,
   setTaskTableColumnVisibility,
+  setTaskTableColumnWidth,
   shouldApplyProjectDefaultView,
 } from './task-view-config';
 
@@ -82,4 +84,19 @@ test('column visibility defaults on and changes immutably', () => {
   const next = setTaskTableColumnVisibility(DEFAULT_TASK_VIEW_CONFIG, 'labels', false);
   assert.equal(isTaskTableColumnVisible(next, 'labels'), false);
   assert.equal(DEFAULT_TASK_VIEW_CONFIG.columns.length, 0);
+});
+
+test('column layout helpers bound widths and preserve frozen columns', () => {
+  const wide = setTaskTableColumnWidth(DEFAULT_TASK_VIEW_CONFIG, 'status', 5000);
+  assert.equal(wide.columns.find((column) => column.id === 'status')?.width, 800);
+  const frozen = moveTaskTableColumn(wide, 'status', -1);
+  assert.equal(frozen, wide);
+  const moved = moveTaskTableColumn(wide, 'assignee', -1);
+  const assignee = moved.columns.find((column) => column.id === 'assignee')!;
+  const priority = moved.columns.find((column) => column.id === 'priority')!;
+  const status = moved.columns.find((column) => column.id === 'status')!;
+  const title = moved.columns.find((column) => column.id === 'title')!;
+  assert.equal(title.position, 1);
+  assert.equal(status.position, 2);
+  assert.equal(assignee.position < priority.position, true);
 });

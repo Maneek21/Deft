@@ -3,15 +3,18 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { ChevronDown, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag } from 'lucide-react';
 import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 import type { PriorityVocab, ResolvedStatus, CanonicalPriority } from '@/hooks/use-project-resolved-config';
 import { priorityFullLabel } from '@/hooks/use-project-resolved-config';
 import { AppBottomSheet } from '@/components/overlay-primitives';
 import {
   isTaskTableColumnVisible,
+  moveTaskTableColumn,
   normalizeTaskViewConfig,
   setTaskTableColumnVisibility,
+  setTaskTableColumnWidth,
+  taskTableColumnConfig,
   TASK_TABLE_COLUMNS,
   type TaskViewConfigV1,
 } from '@/lib/task-view-config';
@@ -40,7 +43,7 @@ type Props = {
 
 type Member = { id: string; name: string; email: string; avatar_url: string | null };
 type Label = { id: string; name: string; color: string };
-type SavedView = { id: string; name: string; config: unknown };
+type SavedView = { id: string; name: string; config: unknown; user_id: string; is_shared: boolean };
 
 const PRIORITY_COLORS: Record<string, string> = {
   p0: '#DC2626',
@@ -78,6 +81,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [saveViewName, setSaveViewName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
+  const [saveShared, setSaveShared] = useState(false);
   const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -120,19 +124,21 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
       name: saveViewName.trim(),
       config: viewConfig,
       project_id: viewConfig.projectId,
+      is_shared: saveShared,
     });
     if (res.ok) {
       const view = await res.json();
       setSavedViews(prev => [view, ...prev]);
       setSaveViewName('');
       setShowSaveInput(false);
+      setSaveShared(false);
       setActiveSavedViewId(view.id);
     }
   };
 
   const handleLoadView = (view: SavedView) => {
     onApplyViewConfig(normalizeTaskViewConfig(view.config));
-    setActiveSavedViewId(view.id);
+    setActiveSavedViewId(view.user_id === user?.id ? view.id : null);
     setOpenDropdown(null);
   };
 
@@ -1071,7 +1077,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
             <ChevronDown size={11} />
           </button>
           {openDropdown === 'views' && (
-            <div className="absolute right-0 top-full mt-1 w-64 rounded-lg py-1 z-20"
+              <div className="absolute right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)] rounded-lg py-1 z-20"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
               {savedViews.length === 0 ? (
                 <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
@@ -1085,10 +1091,13 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <button onClick={() => handleLoadView(v)} className="flex-1 text-left truncate">
                       {v.name}
+                      {v.is_shared && <span className="ml-1 text-[9px] uppercase" style={{ color: 'var(--muted)' }}>Shared</span>}
                     </button>
-                    <button onClick={(e) => handleDeleteView(v.id, e)} className="ml-1 p-0.5" style={{ color: 'var(--muted)' }}>
-                      <X size={10} />
-                    </button>
+                    {v.user_id === user?.id && (
+                      <button onClick={(e) => handleDeleteView(v.id, e)} className="ml-1 p-0.5" style={{ color: 'var(--muted)' }} aria-label={`Delete ${v.name}`}>
+                        <X size={10} />
+                      </button>
+                    )}
                   </div>
                 ))
               )}
@@ -1109,19 +1118,49 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                       ))}
                     </div>
                   </div>
+                  <label className="flex items-center justify-between gap-2 text-[11px]" style={{ color: 'var(--foreground-secondary)' }}>
+                    Group rows
+                    <select
+                      value={viewConfig.groupBy?.field ?? ''}
+                      onChange={(event) => onApplyViewConfig({ ...viewConfig, groupBy: event.target.value ? { field: event.target.value, direction: 'asc' } : null })}
+                      className="task-table-select rounded-md px-2 py-1 text-[11px]"
+                      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}
+                    >
+                      <option value="">None</option>
+                      <option value="status">Status</option>
+                      <option value="priority">Priority</option>
+                      <option value="assignee">Assignee</option>
+                      <option value="due_date">Due date</option>
+                      <option value="project">Project</option>
+                      <option value="labels">First label</option>
+                    </select>
+                  </label>
                   <div>
                     <span className="text-[10px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Columns</span>
-                    <div className="mt-1 grid grid-cols-2 gap-1">
+                    <div className="mt-1 space-y-1">
                       {TASK_TABLE_COLUMNS.map((column) => (
-                        <label key={column.id} className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--foreground-secondary)' }}>
+                        <div key={column.id} className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--foreground-secondary)' }}>
                           <input
                             type="checkbox"
                             checked={isTaskTableColumnVisible(viewConfig, column.id)}
                             disabled={'required' in column && column.required}
                             onChange={(event) => onApplyViewConfig(setTaskTableColumnVisibility(viewConfig, column.id, event.target.checked))}
                           />
-                          {column.label}
-                        </label>
+                          <span className="min-w-0 flex-1 truncate">{column.label}</span>
+                          <button disabled={'required' in column && column.required} onClick={() => onApplyViewConfig(moveTaskTableColumn(viewConfig, column.id, -1))} aria-label={`Move ${column.label} left`} className="p-0.5 disabled:opacity-30"><ChevronLeft size={12} /></button>
+                          <button disabled={'required' in column && column.required} onClick={() => onApplyViewConfig(moveTaskTableColumn(viewConfig, column.id, 1))} aria-label={`Move ${column.label} right`} className="p-0.5 disabled:opacity-30"><ChevronRight size={12} /></button>
+                          <input
+                            type="number"
+                            min={64}
+                            max={800}
+                            step={8}
+                            value={taskTableColumnConfig(viewConfig, column.id).width ?? (column.width.endsWith('px') ? parseInt(column.width, 10) : 280)}
+                            onChange={(event) => onApplyViewConfig(setTaskTableColumnWidth(viewConfig, column.id, Number(event.target.value)))}
+                            aria-label={`${column.label} width`}
+                            className="w-14 rounded px-1 py-0.5 text-[10px]"
+                            style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}
+                          />
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -1136,6 +1175,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
               <div className="px-3 py-2" style={{ borderTop: '1px solid var(--border)' }}>
                 {canSaveCurrent ? (
                   showSaveInput ? (
+                    <div className="space-y-1">
                     <div className="flex gap-1">
                       <input
                         value={saveViewName}
@@ -1149,6 +1189,11 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                       <button onClick={handleSaveView} className="p-1" style={{ color: 'var(--accent)' }}>
                         <Save size={12} />
                       </button>
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--muted)' }}>
+                      <input type="checkbox" checked={saveShared} onChange={(event) => setSaveShared(event.target.checked)} />
+                      Share with workspace
+                    </label>
                     </div>
                   ) : (
                     <button onClick={() => setShowSaveInput(true)}
