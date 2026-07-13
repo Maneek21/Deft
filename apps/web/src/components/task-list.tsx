@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronUp, ArrowUpDown, Calendar, Check } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUpDown, Check, Loader2, Tags } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { TaskCardUnified } from './task-card-unified';
-import type { ResolvedStatus, PriorityVocab, CanonicalPriority } from '@/hooks/use-project-resolved-config';
+import type { ResolvedStatus, PriorityVocab } from '@/hooks/use-project-resolved-config';
 import { priorityLabel } from '@/hooks/use-project-resolved-config';
+import { PersonAvatar } from './person-avatar';
 
 type Task = {
   id: string;
@@ -42,7 +43,9 @@ type Props = {
   tasks: Task[];
   projectPrefix: string;
   onTaskClick: (task: Task) => void;
-  onStatusChange: (taskId: string, newStatus: string) => void;
+  onTaskPatch: (taskId: string, patch: TaskPatch) => Promise<boolean>;
+  members: { id: string; name: string; avatar_url: string | null }[];
+  availableLabels: { id: string; name: string; color: string }[];
   selectedTaskId: string | null;
   selectionMode?: boolean;
   selectedTaskIds?: Set<string>;
@@ -53,7 +56,11 @@ type Props = {
   priorityVocab?: PriorityVocab;
 };
 
-type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'due_date' | 'updated_at';
+type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_id' | 'due_date' | 'start_date' | 'estimation'>> & {
+  label_ids?: string[];
+};
+
+type SortField = 'number' | 'title' | 'status' | 'priority' | 'assignee' | 'start_date' | 'due_date' | 'estimation' | 'labels' | 'updated_at';
 type SortDir = 'asc' | 'desc';
 
 const DEFAULT_STATUS_OPTIONS = [
@@ -75,6 +82,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const PRIORITY_ORDER = { p0: 0, p1: 1, p2: 2, p3: 3 };
+const PAGE_SIZE = 50;
 const PRIORITY_STYLES: Record<string, { bg: string; color: string }> = {
   p0: { bg: 'rgba(220, 38, 38, 0.15)', color: '#DC2626' },
   p1: { bg: 'rgba(245, 158, 11, 0.15)', color: '#F59E0B' },
@@ -112,7 +120,13 @@ function formatDueDate(dateStr: string | null, status?: string): { text: string;
   return { text: dateText, color: 'var(--foreground-secondary)' };
 }
 
-export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab }: Props) {
+function dateInputValue(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+}
+
+export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab }: Props) {
   const STATUS_OPTIONS = useMemo(() => {
     if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return [...statuses]
@@ -125,9 +139,10 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   const [sortField, setSortField] = useState<SortField>('number');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
+  const [editingTitle, setEditingTitle] = useState<{ taskId: string; value: string } | null>(null);
+  const [savingCell, setSavingCell] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   // Fix 3: client-side pagination — show 50 rows at a time
-  const PAGE_SIZE = 50;
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
@@ -138,6 +153,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   }, []);
 
   const handleSort = (field: SortField) => {
+    setVisibleCount(PAGE_SIZE);
     if (sortField === field) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -147,8 +163,6 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
   };
 
   const sorted = useMemo(() => {
-    // Reset pagination when data or sort changes
-    setVisibleCount(PAGE_SIZE);
     return [...tasks].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
@@ -157,7 +171,10 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
         case 'status': cmp = a.status.localeCompare(b.status); break;
         case 'priority': cmp = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]; break;
         case 'assignee': cmp = (a.assignee_name || '').localeCompare(b.assignee_name || ''); break;
+        case 'start_date': cmp = (a.start_date || '').localeCompare(b.start_date || ''); break;
         case 'due_date': cmp = (a.due_date || '').localeCompare(b.due_date || ''); break;
+        case 'estimation': cmp = (a.estimation || '').localeCompare(b.estimation || ''); break;
+        case 'labels': cmp = a.labels.map((label) => label.name).join(',').localeCompare(b.labels.map((label) => label.name).join(',')); break;
         case 'updated_at': cmp = a.updated_at.localeCompare(b.updated_at); break;
       }
       return sortDir === 'desc' ? -cmp : cmp;
@@ -178,12 +195,22 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
     { field: 'status', label: 'Status', width: '130px' },
     { field: 'priority', label: 'Priority', width: '80px' },
     { field: 'assignee', label: 'Assignee', width: '140px' },
+    { field: 'start_date', label: 'Start', width: '120px' },
     { field: 'due_date', label: 'Due', width: '110px' },
+    { field: 'estimation', label: 'Estimate', width: '90px' },
+    { field: 'labels', label: 'Labels', width: '180px' },
     { field: 'updated_at', label: 'Updated', width: '110px' },
   ];
 
-
-  const hasAnyEstimation = tasks.some(t => t.estimation);
+  const save = async (taskId: string, field: string, patch: TaskPatch) => {
+    const key = `${taskId}:${field}`;
+    // ponytail: serialize table writes for v1; per-cell concurrency can wait until users need it.
+    if (savingCell) return false;
+    setSavingCell(key);
+    const ok = await onTaskPatch(taskId, patch);
+    setSavingCell(null);
+    return ok;
+  };
 
   if (isMobile) {
     return (
@@ -197,18 +224,50 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
           return (
-            <TaskCardUnified
-              key={task.id}
-              variant="list"
-              task={task as any}
-              projectPrefix={projectPrefix}
-              onClick={() => onTaskClick(task)}
-              isSelected={isSelected}
-              selectionMode={selectionMode}
-              isChecked={isChecked}
-              onToggleSelect={onToggleSelect}
-              hidePrefixIds={hidePrefixIds}
-            />
+            <div key={task.id} className="overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)', background: 'var(--card-bg)' }}>
+              <TaskCardUnified
+                variant="list"
+                task={task as any}
+                projectPrefix={projectPrefix}
+                onClick={() => onTaskClick(task)}
+                isSelected={isSelected}
+                selectionMode={selectionMode}
+                isChecked={isChecked}
+                onToggleSelect={onToggleSelect}
+                hidePrefixIds={hidePrefixIds}
+              />
+              <div className="grid grid-cols-3 gap-1 px-3 pb-3" onClick={(event) => event.stopPropagation()}>
+                <select
+                  aria-label={`Status for ${task.title}`}
+                  value={task.status}
+                  disabled={savingCell !== null}
+                  onChange={(event) => void save(task.id, 'status', { status: event.target.value })}
+                  className="task-table-select min-w-0 rounded-md px-2 py-1.5 text-[11px]"
+                  style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
+                >
+                  {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                <select
+                  aria-label={`Priority for ${task.title}`}
+                  value={task.priority}
+                  disabled={savingCell !== null}
+                  onChange={(event) => void save(task.id, 'priority', { priority: event.target.value as Task['priority'] })}
+                  className="task-table-select min-w-0 rounded-md px-2 py-1.5 text-[11px]"
+                  style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
+                >
+                  {(['p0', 'p1', 'p2', 'p3'] as const).map((priority) => <option key={priority} value={priority}>{priorityLabel(priority, priorityVocab)}</option>)}
+                </select>
+                <input
+                  type="date"
+                  aria-label={`Due date for ${task.title}`}
+                  value={dateInputValue(task.due_date)}
+                  disabled={savingCell !== null}
+                  onChange={(event) => void save(task.id, 'due_date', { due_date: event.target.value || null })}
+                  className="min-w-0 rounded-md px-1 py-1.5 text-[10px]"
+                  style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)', colorScheme: 'dark light' }}
+                />
+              </div>
+            </div>
           );
         })}
         {/* Fix 3: Load more */}
@@ -232,7 +291,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
       {/* Click-away */}
       {inlineDropdown && <div className="fixed inset-0 z-10" onClick={() => setInlineDropdown(null)} />}
 
-      <table className="w-full min-w-[800px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+      <table className="w-full min-w-[1250px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
             {selectionMode && (
@@ -258,6 +317,8 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     width: col.width === '1fr' ? undefined : col.width,
                     whiteSpace: col.field === 'status' ? 'nowrap' : undefined,
                     minWidth: col.field === 'status' ? '100px' : undefined,
+                    left: col.field === 'number' ? (selectionMode ? 32 : 0) : col.field === 'title' ? (selectionMode ? 112 : 80) : undefined,
+                    zIndex: col.field === 'number' || col.field === 'title' ? 4 : 2,
                   }}
                 >
                   <div className="flex items-center gap-1">
@@ -265,20 +326,6 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     <SortIcon field={col.field} />
                   </div>
                 </th>
-                {col.field === 'priority' && hasAnyEstimation && (
-                  <th
-                    className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide select-none sticky top-0"
-                    style={{
-                      color: 'var(--muted)',
-                      fontFamily: 'var(--font-heading)',
-                      background: 'var(--surface)',
-                      borderBottom: '1px solid var(--border)',
-                      width: '60px',
-                    }}
-                  >
-                    Est.
-                  </th>
-                )}
               </React.Fragment>
             ))}
           </tr>
@@ -286,13 +333,21 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
         <tbody>
           {visibleRows.map((task) => {
             const priorityStyle = PRIORITY_STYLES[task.priority];
-            const priorityText = priorityLabel(task.priority as CanonicalPriority, priorityVocab);
             const isSelected = task.id === selectedTaskId;
             const isChecked = selectionMode && selectedTaskIds?.has(task.id);
 
             return (
               <tr
                 key={task.id}
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && event.target === event.currentTarget) onTaskClick(task);
+                  if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.target === event.currentTarget) {
+                    event.preventDefault();
+                    const sibling = event.key === 'ArrowDown' ? event.currentTarget.nextElementSibling : event.currentTarget.previousElementSibling;
+                    if (sibling instanceof HTMLElement) sibling.focus();
+                  }
+                }}
                 onClick={() => {
                   if (selectionMode && onToggleSelect) {
                     onToggleSelect(task.id);
@@ -338,7 +393,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                 {/* ID */}
                 <td
                   className="px-3 py-2.5 text-[12px] font-medium"
-                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)' }}
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 32 : 0, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
                 >
                   {hidePrefixIds ? '' : `${projectPrefix || task.project_prefix}-${task.number}`}
                 </td>
@@ -346,29 +401,37 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                 {/* Title */}
                 <td
                   className="px-3 py-2.5 text-[13px]"
-                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', borderBottom: '1px solid var(--border)' }}
+                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 112 : 80, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="truncate">{task.title}</span>
-                    {task.labels.length > 0 && (
-                      <div className="flex gap-1 flex-shrink-0">
-                        {task.labels.slice(0, 2).map((l) => (
-                          <span
-                            key={l.id}
-                            className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
-                            style={{ background: `${l.color}20`, color: l.color }}
-                          >
-                            {l.name}
-                          </span>
-                        ))}
-                        {task.labels.length > 2 && (
-                          <span className="text-[10px]" style={{ color: 'var(--muted)' }}>
-                            +{task.labels.length - 2}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  {editingTitle?.taskId === task.id ? (
+                    <input
+                      autoFocus
+                      value={editingTitle.value}
+                      aria-label={`Title for ${projectPrefix || task.project_prefix}-${task.number}`}
+                      onChange={(event) => setEditingTitle({ taskId: task.id, value: event.target.value })}
+                      onBlur={() => setEditingTitle(null)}
+                      onKeyDown={async (event) => {
+                        if (event.key === 'Escape') setEditingTitle(null);
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          const title = editingTitle.value.trim();
+                          if (title && title !== task.title && await save(task.id, 'title', { title })) setEditingTitle(null);
+                        }
+                      }}
+                      className="w-full rounded-md px-2 py-1 text-[13px] outline-none"
+                      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--accent)', color: 'var(--foreground)' }}
+                    />
+                  ) : (
+                    <button
+                      className="w-full truncate text-left rounded px-1 py-1"
+                      onClick={() => setEditingTitle({ taskId: task.id, value: task.title })}
+                      onDoubleClick={() => onTaskClick(task)}
+                      title="Edit title; double-click for task details"
+                    >
+                      {task.title}
+                    </button>
+                  )}
                 </td>
 
                 {/* Status */}
@@ -408,7 +471,7 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                             key={opt.value}
                             onClick={(e) => {
                               e.stopPropagation();
-                              onStatusChange(task.id, opt.value);
+                              void save(task.id, 'status', { status: opt.value });
                               setInlineDropdown(null);
                             }}
                             className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-[12px]"
@@ -432,56 +495,60 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                 <td
                   className="px-3 py-2.5"
                   style={{ borderBottom: '1px solid var(--border)' }}
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  <span
-                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
+                  <select
+                    aria-label={`Priority for ${task.title}`}
+                    value={task.priority}
+                    disabled={savingCell !== null}
+                    onChange={(event) => void save(task.id, 'priority', { priority: event.target.value as Task['priority'] })}
+                    className="task-table-select rounded-md px-2 py-1 text-[11px] font-semibold outline-none"
                     style={{
                       background: priorityStyle.bg,
                       color: priorityStyle.color,
+                      border: 0,
                       fontFamily: 'var(--font-heading)',
                     }}
                   >
-                    {priorityText}
-                  </span>
+                    {(['p0', 'p1', 'p2', 'p3'] as const).map((priority) => (
+                      <option key={priority} value={priority}>{priorityLabel(priority, priorityVocab)}</option>
+                    ))}
+                  </select>
                 </td>
-
-                {/* Est. */}
-                {hasAnyEstimation && (
-                  <td
-                    className="px-3 py-2.5"
-                    style={{ borderBottom: '1px solid var(--border)' }}
-                  >
-                    {task.estimation ? (
-                      <span
-                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
-                        style={{ background: 'var(--surface-container-high)', color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
-                      >
-                        {task.estimation.toUpperCase()}
-                      </span>
-                    ) : null}
-                  </td>
-                )}
 
                 {/* Assignee */}
                 <td
                   className="px-3 py-2.5"
                   style={{ borderBottom: '1px solid var(--border)' }}
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  {task.assignee_name ? (
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium text-white flex-shrink-0"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {task.assignee_name.charAt(0).toUpperCase()}
-                      </div>
-                      <span className="text-[12px] truncate" style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
-                        {task.assignee_name}
-                      </span>
-                    </div>
-                  ) : (
-                    <span className="text-[12px]" style={{ color: 'var(--muted)' }}>—</span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {task.assignee_name && <PersonAvatar name={task.assignee_name} avatarUrl={task.assignee_avatar} size={20} />}
+                    <select
+                      aria-label={`Assignee for ${task.title}`}
+                      value={task.assignee_id ?? ''}
+                      disabled={savingCell !== null}
+                      onChange={(event) => void save(task.id, 'assignee', { assignee_id: event.target.value || null })}
+                      className="task-table-select min-w-0 max-w-[110px] bg-transparent text-[12px] outline-none"
+                      style={{ color: task.assignee_name ? 'var(--foreground)' : 'var(--muted)' }}
+                    >
+                      <option value="">Unassigned</option>
+                      {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                    </select>
+                  </div>
+                </td>
+
+                {/* Start Date */}
+                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="date"
+                    aria-label={`Start date for ${task.title}`}
+                    value={dateInputValue(task.start_date)}
+                    disabled={savingCell !== null}
+                    onChange={(event) => void save(task.id, 'start_date', { start_date: event.target.value || null })}
+                    className="w-[104px] bg-transparent text-[11px] outline-none"
+                    style={{ color: task.start_date ? 'var(--foreground-secondary)' : 'var(--muted)', colorScheme: 'dark light' }}
+                  />
                 </td>
 
                 {/* Due Date */}
@@ -491,28 +558,66 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     fontFamily: 'var(--font-body)',
                     borderBottom: '1px solid var(--border)',
                   }}
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  {(() => {
-                    const dueInfo = formatDueDate(task.due_date, task.status);
-                    if (!dueInfo) return <span style={{ color: 'var(--muted)' }}>—</span>;
-                    if (dueInfo.badge) {
-                      return (
-                        <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                          style={{ background: dueInfo.badgeBg, color: dueInfo.color }}
-                        >
-                          <Calendar size={10} strokeWidth={1.5} />
-                          {dueInfo.badge}
-                        </span>
-                      );
-                    }
-                    return (
-                      <span className="flex items-center gap-1" style={{ color: dueInfo.color }}>
-                        <Calendar size={11} strokeWidth={1.5} />
-                        {dueInfo.text}
-                      </span>
-                    );
-                  })()}
+                  <input
+                    type="date"
+                    aria-label={`Due date for ${task.title}`}
+                    value={dateInputValue(task.due_date)}
+                    disabled={savingCell !== null}
+                    onChange={(event) => void save(task.id, 'due_date', { due_date: event.target.value || null })}
+                    className="w-[104px] bg-transparent text-[11px] outline-none"
+                    style={{ color: formatDueDate(task.due_date, task.status)?.color ?? 'var(--muted)', colorScheme: 'dark light' }}
+                  />
+                </td>
+
+                {/* Estimate */}
+                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                  <select
+                    aria-label={`Estimate for ${task.title}`}
+                    value={task.estimation ?? ''}
+                    disabled={savingCell !== null}
+                    onChange={(event) => void save(task.id, 'estimation', { estimation: event.target.value || null })}
+                    className="task-table-select rounded-md bg-transparent px-1 py-1 text-[11px] outline-none"
+                    style={{ color: task.estimation ? 'var(--foreground-secondary)' : 'var(--muted)' }}
+                  >
+                    <option value="">None</option>
+                    {['xs', 's', 'm', 'l', 'xl'].map((estimate) => <option key={estimate} value={estimate}>{estimate.toUpperCase()}</option>)}
+                  </select>
+                </td>
+
+                {/* Labels */}
+                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                  <div className="relative">
+                    <button
+                      aria-label={`Labels for ${task.title}`}
+                      onClick={() => setInlineDropdown(inlineDropdown?.taskId === task.id && inlineDropdown.field === 'labels' ? null : { taskId: task.id, field: 'labels' })}
+                      className="flex max-w-[160px] items-center gap-1 overflow-hidden rounded-md px-1 py-1 text-[11px]"
+                      style={{ color: task.labels.length ? 'var(--foreground-secondary)' : 'var(--muted)' }}
+                    >
+                      <Tags size={12} />
+                      <span className="truncate">{task.labels.length ? task.labels.map((label) => label.name).join(', ') : 'Add labels'}</span>
+                    </button>
+                    {inlineDropdown?.taskId === task.id && inlineDropdown.field === 'labels' && (
+                      <div className="absolute right-0 top-full z-20 mt-1 max-h-56 w-52 overflow-auto rounded-lg p-1" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
+                        {availableLabels.map((label) => {
+                          const checked = task.labels.some((current) => current.id === label.id);
+                          return (
+                            <label key={label.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-[12px] hover:bg-[var(--hover-tint)]">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={savingCell !== null}
+                                onChange={() => void save(task.id, 'labels', { label_ids: checked ? task.labels.filter((current) => current.id !== label.id).map((current) => current.id) : [...task.labels.map((current) => current.id), label.id] })}
+                              />
+                              <span className="h-2 w-2 rounded-full" style={{ background: label.color }} />
+                              <span className="truncate">{label.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </td>
 
                 {/* Updated */}
@@ -524,7 +629,10 @@ export function TaskList({ tasks, projectPrefix, onTaskClick, onStatusChange, se
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  {new Date(task.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  <span className="flex items-center gap-1.5">
+                    {savingCell?.startsWith(`${task.id}:`) && <Loader2 size={12} className="animate-spin" />}
+                    {new Date(task.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
                 </td>
               </tr>
             );

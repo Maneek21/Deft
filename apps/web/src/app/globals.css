@@ -705,3 +705,17 @@ input:focus, textarea:focus {
 .hljs-attribute { color: #d19a66; }
 .hljs-regexp { color: #56b6c2; }
 .hljs-symbol, .hljs-bullet { color: #56b6c2; }
+
+/* Native task-table selects need an explicit scheme on Windows/Chrome. */
+.task-table-select {
+  color-scheme: dark;
+}
+
+.light .task-table-select {
+  color-scheme: light;
+}
+
+.task-table-select option {
+  background: var(--surface-container);
+  color: var(--foreground);
+}

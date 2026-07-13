@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { TaskBoard } from '@/components/task-board';
-import { TaskList } from '@/components/task-list';
+import { TaskTable } from '@/components/task-list';
 import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
@@ -39,6 +39,11 @@ const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
 import { CreateProjectModal } from '@/components/create-project-modal';
 import { PersonAvatar } from '@/components/person-avatar';
+import {
+  parseTaskSurfaceView,
+  shouldApplyProjectDefaultView,
+  type TaskSurfaceView,
+} from '@/lib/task-view-config';
 
 type Task = {
   id: string;
@@ -82,6 +87,10 @@ type Project = {
   done_tasks: number;
 };
 
+type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_id' | 'due_date' | 'start_date' | 'estimation'>> & {
+  label_ids?: string[];
+};
+
 const STATUS_OPTIONS = [
   { value: 'backlog', label: statusLabel('backlog') },
   { value: 'todo', label: statusLabel('todo') },
@@ -107,10 +116,9 @@ export default function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
   // Fix 1: derive view from URL (falls back to 'board')
-  const VIEW_VALUES = ['board', 'list', 'timeline', 'calendar', 'pipeline'] as const;
-  type View = typeof VIEW_VALUES[number];
-  const urlView = searchParams.get('view') as View | null;
-  const view: View = urlView && (VIEW_VALUES as readonly string[]).includes(urlView) ? urlView : 'board';
+  type View = TaskSurfaceView;
+  const requestedView = searchParams.get('view');
+  const view: View = parseTaskSurfaceView(requestedView) ?? 'board';
 
   // Task 4.9 — once the user toggles the view manually, we stop auto-selecting
   // the resolved-config default so their preference wins.
@@ -126,6 +134,10 @@ export default function TasksPage() {
     const str = qs.toString();
     router.replace(`/tasks${str ? '?' + str : ''}`);
   }, [searchParams, router]);
+
+  useEffect(() => {
+    if (requestedView === 'list') setQuery({ view: 'table' });
+  }, [requestedView, setQuery]);
 
   // Fix 1: initialize filters from URL params on mount
   const [filters, setFilters] = useState<Filters>(() => {
@@ -150,6 +162,7 @@ export default function TasksPage() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [bulkActionDropdown, setBulkActionDropdown] = useState<string | null>(null);
   const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
+  const [orgLabels, setOrgLabels] = useState<{ id: string; name: string; color: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [velocity, setVelocity] = useState<{ average: number } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
@@ -164,7 +177,7 @@ export default function TasksPage() {
 
   const viewOptions = useMemo(() => [
     { value: 'board' as View, label: 'Board', icon: <LayoutGrid size={14} /> },
-    { value: 'list' as View, label: 'List', icon: <List size={14} /> },
+    { value: 'table' as View, label: 'Table', icon: <List size={14} /> },
     { value: 'timeline' as View, label: 'Timeline', icon: <GanttChartSquare size={14} /> },
     { value: 'calendar' as View, label: 'Calendar', icon: <CalendarDays size={14} /> },
     { value: 'pipeline' as View, label: 'Pipeline', icon: <GitBranch size={14} /> },
@@ -178,7 +191,7 @@ export default function TasksPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (window.innerWidth < 768 && view === 'calendar') {
-      setQuery({ view: 'list' });
+      setQuery({ view: 'table' });
     }
   }, [view]);
 
@@ -192,12 +205,12 @@ export default function TasksPage() {
   // the user has already picked a view. "timeline" is kept engineering-only
   // (not a valid skill default today but guarded anyway).
   useEffect(() => {
-    if (!resolvedConfig || userSelectedView || isMyTasksView) return;
+    if (!resolvedConfig || !shouldApplyProjectDefaultView({ requestedView, userSelectedView, isMyTasksView })) return;
     const dv = resolvedConfig.default_view;
     if (dv && dv !== view && (dv === 'board' || dv === 'list' || dv === 'timeline' || dv === 'calendar' || dv === 'pipeline')) {
-      setQuery({ view: dv });
+      setQuery({ view: dv === 'list' ? 'table' : dv });
     }
-  }, [resolvedConfig, userSelectedView, isMyTasksView]);
+  }, [resolvedConfig, requestedView, userSelectedView, isMyTasksView, view, setQuery]);
 
   // Load projects
   useEffect(() => {
@@ -348,6 +361,13 @@ export default function TasksPage() {
         const list = data.members || data || [];
         setOrgMembers(list);
       }
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    api.get('/api/tasks/labels').then(async (res) => {
+      if (res.ok) setOrgLabels(await res.json());
     });
   }, [user]);
 
@@ -621,14 +641,59 @@ export default function TasksPage() {
     return Array.from(map.values());
   }, [filteredTasks]);
 
-  const handleStatusChange = async (taskId: string, newStatus: string) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus as Task['status'] } : t))
-    );
+  const handleTaskPatch = async (taskId: string, patch: TaskPatch): Promise<boolean> => {
+    const previousTask = tasks.find((task) => task.id === taskId);
+    if (!previousTask) return false;
+
+    const member = patch.assignee_id !== undefined
+      ? orgMembers.find((candidate) => candidate.id === patch.assignee_id)
+      : null;
+    const optimistic: Task = {
+      ...previousTask,
+      ...patch,
+      ...(patch.assignee_id !== undefined ? {
+        assignee_name: member?.name ?? null,
+        assignee_avatar: member?.avatar_url ?? null,
+      } : {}),
+      ...(patch.label_ids ? { labels: orgLabels.filter((label) => patch.label_ids!.includes(label.id)) } : {}),
+    };
+
+    setTasks((prev) => prev.map((task) => task.id === taskId ? optimistic : task));
     if (selectedTask?.id === taskId) {
-      setSelectedTask((prev) => prev ? { ...prev, status: newStatus as Task['status'] } : null);
+      setSelectedTask(optimistic);
     }
-    await api.patch(`/api/tasks/${taskId}`, { status: newStatus });
+    const res = await api.patch(`/api/tasks/${taskId}`, {
+      ...patch,
+      expected_updated_at: previousTask.updated_at,
+    });
+
+    if (res.ok) {
+      const updated = await res.json();
+      setTasks((prev) => prev.map((task) => task.id === taskId ? { ...optimistic, ...updated } : task));
+      if (selectedTask?.id === taskId) {
+        setSelectedTask({ ...optimistic, ...updated });
+      }
+      return true;
+    }
+
+    setTasks((prev) => prev.map((task) => task.id === taskId ? previousTask : task));
+    if (selectedTask?.id === taskId) setSelectedTask(previousTask);
+
+    let code = '';
+    try {
+      const body = await res.json();
+      code = typeof body?.code === 'string' ? body.code : '';
+    } catch {}
+
+    setToast(code === 'TASK_STALE'
+      ? 'This task changed elsewhere. The latest version is being loaded.'
+      : 'Update failed. Your previous value was restored.');
+    if (code === 'TASK_STALE') await loadTasks();
+    return false;
+  };
+
+  const handleStatusChange = async (taskId: string, newStatus: string) => {
+    await handleTaskPatch(taskId, { status: newStatus });
   };
 
   const handleReorder = async (taskId: string, newSortOrder: number) => {
@@ -884,18 +949,18 @@ export default function TasksPage() {
                 <span className="hidden md:inline">Board</span>
               </button>
               <button
-                aria-label="List view"
-                onClick={() => { setQuery({ view: 'list' }); setUserSelectedView(true); }}
+                aria-label="Table view"
+                onClick={() => { setQuery({ view: 'table' }); setUserSelectedView(true); }}
                 className="deft-pill"
-                data-active={view === 'list'}
+                data-active={view === 'table'}
                 style={{
-                  background: view === 'list' ? 'var(--accent)' : 'transparent',
-                  color: view === 'list' ? 'white' : 'var(--muted)',
+                  background: view === 'table' ? 'var(--accent)' : 'transparent',
+                  color: view === 'table' ? 'white' : 'var(--muted)',
                   fontFamily: 'var(--font-heading)',
                 }}
               >
                 <List size={13} />
-                <span className="hidden md:inline">List</span>
+                <span className="hidden md:inline">Table</span>
               </button>
               <button
                 aria-label="Timeline view"
@@ -1093,11 +1158,13 @@ export default function TasksPage() {
                       onToggleSelect={handleToggleSelect}
                     />
                   ) : (
-                    <TaskList
+                    <TaskTable
                       tasks={group.tasks}
                       projectPrefix={group.prefix}
                       onTaskClick={handleTaskClick}
-                      onStatusChange={handleStatusChange}
+                      onTaskPatch={handleTaskPatch}
+                      members={orgMembers}
+                      availableLabels={orgLabels}
                       selectedTaskId={selectedTask?.id || null}
                       selectionMode={selectionMode}
                       selectedTaskIds={selectedTaskIds}
@@ -1145,12 +1212,14 @@ export default function TasksPage() {
                 statuses={resolvedConfig?.statuses}
                 hidePrefixIds={resolvedConfig?.hide_prefix_ids}
               />
-            ) : view === 'list' ? (
-              <TaskList
+            ) : view === 'table' ? (
+              <TaskTable
                 tasks={filteredTasks}
                 projectPrefix={selectedProject?.prefix || ''}
                 onTaskClick={handleTaskClick}
-                onStatusChange={handleStatusChange}
+                onTaskPatch={handleTaskPatch}
+                members={orgMembers}
+                availableLabels={orgLabels}
                 selectedTaskId={selectedTask?.id || null}
                 selectionMode={selectionMode}
                 selectedTaskIds={selectedTaskIds}
