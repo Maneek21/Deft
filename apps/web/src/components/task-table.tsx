@@ -57,7 +57,7 @@ type Props = {
   selectionMode?: boolean;
   selectedTaskIds?: Set<string>;
   onToggleSelect?: (taskId: string) => void;
-  /** Task 4.9 — resolved skill config drives status dropdown + prefix + priority labels. */
+  /** Resolved project vocabulary drives status, prefix, and priority labels. */
   statuses?: ResolvedStatus[];
   hidePrefixIds?: boolean;
   priorityVocab?: PriorityVocab;

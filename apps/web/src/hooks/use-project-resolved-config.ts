@@ -6,7 +6,7 @@
  *   docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md
  *
  * Preserves the `{ config, loading, error, refresh }` return shape so
- * consumers (task-board, task-card, task-list, task-filters,
+ * consumers (task-board, task-card, task-table, task-filters,
  * task-pipeline-view, task-quick-create, task-detail, tasks/page) keep
  * compiling without changes. Every project renders the same engineering
  * vocabulary and `config` is always non-null (fixes the Marketing board

@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { TaskBoard } from '@/components/task-board';
-import { TaskTable } from '@/components/task-list';
+import { TaskTable } from '@/components/task-table';
 import { TaskDetail } from '@/components/task-detail';
 import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
@@ -54,8 +54,7 @@ type Task = {
   number: number;
   title: string;
   description: string | null;
-  // Wide string — resolved skill configs define arbitrary status IDs
-  // (e.g. 'lead' / 'qualified' for Sales).
+  // Kept as a string at the API boundary; the current product vocabulary is fixed.
   status: string;
   priority: 'p0' | 'p1' | 'p2' | 'p3';
   assignee_id: string | null;
@@ -206,19 +205,22 @@ export default function TasksPage() {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const viewOptions = useMemo(() => [
+  const primaryViewOptions = useMemo(() => [
     { value: 'board' as View, label: 'Board', icon: <LayoutGrid size={14} /> },
     { value: 'table' as View, label: 'Table', icon: <List size={14} /> },
     { value: 'timeline' as View, label: 'Timeline', icon: <GanttChartSquare size={14} /> },
     { value: 'calendar' as View, label: 'Calendar', icon: <CalendarDays size={14} /> },
-    { value: 'pipeline' as View, label: 'Pipeline', icon: <GitBranch size={14} /> },
   ], []);
 
-  const activeViewOption = viewOptions.find((option) => option.value === view) ?? viewOptions[0]!;
-  const mobileViewOptions = viewOptions.filter((option) => option.value !== 'calendar');
+  const activeViewOption = primaryViewOptions.find((option) => option.value === view) ?? {
+    value: 'pipeline' as View,
+    label: 'Pipeline',
+    icon: <GitBranch size={14} />,
+  };
+  const mobileViewOptions = primaryViewOptions.filter((option) => option.value !== 'calendar');
 
-  // Mobile-spillover P2-2: calendar cells (~55px wide) can't fit task content
-  // on mobile. Auto-redirect to list view when width < 768 and calendar is active.
+  // Calendar cells cannot preserve useful task context on a narrow viewport.
+  // Keep direct links durable on desktop and use Table as the mobile fallback.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (window.innerWidth < 768 && view === 'calendar') {
@@ -229,12 +231,10 @@ export default function TasksPage() {
   const currentProjectId = searchParams.get('project');
   const isMyTasksView = searchParams.get('view') === 'my';
 
-  // Task 4.9 — resolved skill config drives status/vocab/view/prefix
+  // Central project defaults keep status labels and view behavior consistent.
   const { config: resolvedConfig } = useProjectResolvedConfig(selectedProject?.id ?? null);
 
-  // Auto-select the project's default view once when the config loads, unless
-  // the user has already picked a view. "timeline" is kept engineering-only
-  // (not a valid skill default today but guarded anyway).
+  // Auto-select the project's default view once unless the user picked one.
   useEffect(() => {
     if (!resolvedConfig || !shouldApplyProjectDefaultView({ requestedView, userSelectedView, isMyTasksView })) return;
     const dv = resolvedConfig.default_view;
@@ -925,7 +925,7 @@ export default function TasksPage() {
     setSelectedProject(project);
     setProjectDropdownOpen(false);
     setSelectedTask(null);
-    // Task 4.9 — re-enable auto-default-view for the new project's skill config.
+    // Let the newly selected project apply its default view once.
     setUserSelectedView(false);
     router.push(`/tasks?project=${project.id}`);
   };
@@ -1097,76 +1097,23 @@ export default function TasksPage() {
               className="hidden md:flex items-center"
               style={{}}
             >
-              <button
-                aria-label="Board view"
-                onClick={() => { setQuery({ view: 'board' }); setUserSelectedView(true); }}
-                className="deft-pill"
-                data-active={view === 'board'}
-                style={{
-                  background: view === 'board' ? 'var(--accent)' : 'transparent',
-                  color: view === 'board' ? 'white' : 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                }}
-              >
-                <LayoutGrid size={13} />
-                <span className="hidden md:inline">Board</span>
-              </button>
-              <button
-                aria-label="Table view"
-                onClick={() => { setQuery({ view: 'table' }); setUserSelectedView(true); }}
-                className="deft-pill"
-                data-active={view === 'table'}
-                style={{
-                  background: view === 'table' ? 'var(--accent)' : 'transparent',
-                  color: view === 'table' ? 'white' : 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                }}
-              >
-                <List size={13} />
-                <span className="hidden md:inline">Table</span>
-              </button>
-              <button
-                aria-label="Timeline view"
-                onClick={() => { setQuery({ view: 'timeline' }); setUserSelectedView(true); }}
-                className="deft-pill"
-                data-active={view === 'timeline'}
-                style={{
-                  background: view === 'timeline' ? 'var(--accent)' : 'transparent',
-                  color: view === 'timeline' ? 'white' : 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                }}
-              >
-                <GanttChartSquare size={13} />
-                <span className="hidden md:inline">Timeline</span>
-              </button>
-              <button
-                aria-label="Calendar view"
-                onClick={() => { setQuery({ view: 'calendar' }); setUserSelectedView(true); }}
-                className="deft-pill"
-                data-active={view === 'calendar'}
-                style={{
-                  background: view === 'calendar' ? 'var(--accent)' : 'transparent',
-                  color: view === 'calendar' ? 'white' : 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                }}
-              >
-                <CalendarDays size={13} />
-                <span className="hidden md:inline">Calendar</span>
-              </button>
-              <button
-                aria-label="Pipeline view"
-                onClick={() => { setQuery({ view: 'pipeline' }); setUserSelectedView(true); }}
-                className="deft-pill"
-                data-active={view === 'pipeline'}
-                style={{
-                  background: view === 'pipeline' ? 'var(--accent)' : 'transparent',
-                  color: view === 'pipeline' ? 'white' : 'var(--muted)',
-                  fontFamily: 'var(--font-heading)',
-                }}
-              >
-                <GitBranch size={13} />
-                <span className="hidden md:inline">Pipeline</span>
-              </button>
+              {primaryViewOptions.map((option) => (
+                <button
+                  key={option.value}
+                  aria-label={`${option.label} view`}
+                  onClick={() => { setQuery({ view: option.value }); setUserSelectedView(true); }}
+                  className="deft-pill"
+                  data-active={view === option.value}
+                  style={{
+                    background: view === option.value ? 'var(--accent)' : 'transparent',
+                    color: view === option.value ? 'white' : 'var(--muted)',
+                    fontFamily: 'var(--font-heading)',
+                  }}
+                >
+                  {option.icon}
+                  <span className="hidden md:inline">{option.label}</span>
+                </button>
+              ))}
             </TabStrip>
 
             {/* Select toggle */}
@@ -1287,7 +1234,7 @@ export default function TasksPage() {
           onApplyViewConfig={handleApplyViewConfig}
         />
 
-        {/* Board or List view */}
+        {/* Primary and secondary task views */}
         <div className="flex-1 overflow-hidden">
           {isMyTasksView ? (
             /* My Tasks: grouped by project */
@@ -1350,7 +1297,7 @@ export default function TasksPage() {
               ))}
             </div>
           ) : (
-            /* Project view: single board/list/timeline */
+            /* Project view: one canonical renderer per task view */
             <div className="flex flex-col h-full">
               {/* Fix 2: scope label so users always know what they're seeing */}
               {!isMobile && (
