@@ -31,6 +31,9 @@ import {
   publishAgentChannelEvent,
 } from '../lib/agent-channel.js';
 import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
+import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '../lib/agent-channel-lifecycle.js';
+import { loadAgentActivity } from '../lib/agent-activity.js';
+import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -1747,18 +1750,93 @@ agentEmployeeRoutes.get('/:id/activity', async (c) => {
       return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const actions = await db
-      .select()
-      .from(agentActions)
-      .where(eq(agentActions.agent_employee_id, id))
-      .orderBy(desc(agentActions.created_at))
-      .limit(50);
-
-    return c.json(actions);
+    const limit = Math.min(Math.max(Number.parseInt(c.req.query('limit') ?? '50', 10) || 50, 1), 100);
+    return c.json(await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit }));
   } catch (err) {
     console.error('Failed to get agent employee activity:', err);
     return c.json({ error: 'Failed to get activity', code: 'INTERNAL_ERROR' }, 500);
   }
+});
+
+agentEmployeeRoutes.post('/:id/channel-events/:eventId/retry', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const eventId = c.req.param('eventId');
+  const role = await getOrgRole(user.id, user.org_id);
+  if (role !== 'owner' && role !== 'admin') {
+    return c.json({ error: 'Only owners or admins can retry deliveries', code: 'FORBIDDEN' }, 403);
+  }
+
+  const [event] = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.id, eventId),
+    eq(agentChannelEvents.agent_employee_id, id),
+    eq(agentChannelEvents.org_id, user.org_id),
+  )).limit(1);
+  if (!event) return c.json({ error: 'Channel event not found', code: 'NOT_FOUND' }, 404);
+  if (event.status !== 'failed' && event.status !== 'cancelled') {
+    return c.json({ error: 'Only failed or cancelled deliveries can be retried', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [updated] = await db.update(agentChannelEvents).set({
+    status: 'pending',
+    delivered_at: null,
+    acked_at: null,
+    completed_at: null,
+    failed_at: null,
+    error: null,
+    updated_at: new Date(),
+  }).where(and(
+    eq(agentChannelEvents.id, eventId),
+    eq(agentChannelEvents.agent_employee_id, id),
+    eq(agentChannelEvents.org_id, user.org_id),
+    or(eq(agentChannelEvents.status, 'failed'), eq(agentChannelEvents.status, 'cancelled')),
+  )).returning();
+  if (!updated) {
+    return c.json({ error: 'Delivery state changed before it could be retried', code: 'INVALID_STATE' }, 409);
+  }
+  return c.json({ event: updated });
+});
+
+agentEmployeeRoutes.post('/:id/channel-events/:eventId/cancel', async (c) => {
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const eventId = c.req.param('eventId');
+  const role = await getOrgRole(user.id, user.org_id);
+  if (role !== 'owner' && role !== 'admin') {
+    return c.json({ error: 'Only owners or admins can cancel deliveries', code: 'FORBIDDEN' }, 403);
+  }
+
+  const [event] = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.id, eventId),
+    eq(agentChannelEvents.agent_employee_id, id),
+    eq(agentChannelEvents.org_id, user.org_id),
+  )).limit(1);
+  if (!event) return c.json({ error: 'Channel event not found', code: 'NOT_FOUND' }, 404);
+  if (['completed', 'failed', 'cancelled'].includes(event.status)) {
+    return c.json({ error: 'Terminal deliveries cannot be cancelled', code: 'INVALID_STATE' }, 409);
+  }
+
+  const [updated] = await db.update(agentChannelEvents).set({
+    status: 'cancelled',
+    error: 'Cancelled by an operator',
+    failed_at: new Date(),
+    updated_at: new Date(),
+  }).where(and(
+    eq(agentChannelEvents.id, eventId),
+    eq(agentChannelEvents.agent_employee_id, id),
+    eq(agentChannelEvents.org_id, user.org_id),
+    or(
+      eq(agentChannelEvents.status, 'pending'),
+      eq(agentChannelEvents.status, 'delivered'),
+      eq(agentChannelEvents.status, 'acknowledged'),
+      eq(agentChannelEvents.status, 'running'),
+      eq(agentChannelEvents.status, 'approval_pending'),
+    ),
+  )).returning();
+  if (!updated) {
+    return c.json({ error: 'Delivery state changed before it could be cancelled', code: 'INVALID_STATE' }, 409);
+  }
+  return c.json({ event: updated });
 });
 
 // The legacy retry-provision endpoint and the agents.files.* RPC routes
@@ -1862,13 +1940,18 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
         source_id: agentChannelEvents.source_id,
         delivery_count: agentChannelEvents.delivery_count,
         error: agentChannelEvents.error,
+        delivered_at: agentChannelEvents.delivered_at,
+        acked_at: agentChannelEvents.acked_at,
+        completed_at: agentChannelEvents.completed_at,
+        failed_at: agentChannelEvents.failed_at,
         created_at: agentChannelEvents.created_at,
         updated_at: agentChannelEvents.updated_at,
       })
       .from(agentChannelEvents)
       .where(and(eq(agentChannelEvents.agent_employee_id, id), eq(agentChannelEvents.org_id, user.org_id)))
       .orderBy(desc(agentChannelEvents.created_at))
-      .limit(15);
+      .limit(100);
+    const activity = await loadAgentActivity({ orgId: user.org_id, employeeId: id, limit: 30 });
 
     const challengeEvidence = latestChallenge
       ? await loadCertificationChallengeEvidence({
@@ -1918,7 +2001,11 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       diagnostics: {
         recent_mcp_calls: recentMcpCalls,
         recent_cooperative_log: recentCooperativeLog,
-        recent_channel_events: recentChannelEvents,
+        recent_channel_events: recentChannelEvents.slice(0, 15).map((event) => ({
+          ...event,
+          lifecycle: summarizeAgentChannelLifecycle(event),
+        })),
+        activity,
       },
       mcp_endpoint_url: mcpEndpointUrl(),
       mcp_token_masked: employee.mcp_token_hash ? '********' : null,
@@ -1933,9 +2020,21 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
         queue: {
           pending: channelQueue.pending ?? 0,
           delivered: channelQueue.delivered ?? 0,
+          acknowledged: channelQueue.acknowledged ?? 0,
+          running: channelQueue.running ?? 0,
+          approval_pending: channelQueue.approval_pending ?? 0,
           completed: channelQueue.completed ?? 0,
           failed: channelQueue.failed ?? 0,
+          cancelled: channelQueue.cancelled ?? 0,
         },
+        metrics: summarizeAgentChannelMetrics(recentChannelEvents),
+        recovery: describeAgentRuntimeRecovery({
+          hasChannelToken: Boolean(activeChannelToken),
+          connectionStatus: channelConnection?.status,
+          lastSeenAt: channelConnection?.last_seen_at,
+          failedDeliveries: channelQueue.failed ?? 0,
+          pendingDeliveries: channelQueue.pending ?? 0,
+        }),
       },
     });
   } catch (err) {

@@ -33,10 +33,18 @@ import {
 } from '@deft/db';
 import { agentChannelRoutes } from '../src/routes/agent-channel.js';
 import { publishAgentChannelEvent } from '../src/lib/agent-channel.js';
+import { loadAgentActivity } from '../src/lib/agent-activity.js';
 import { projectRoutes } from '../src/routes/projects.js';
+import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
 
 const app = new Hono();
 app.route('/api/agent-channel/v1', agentChannelRoutes);
+const operatorApp = new Hono();
+operatorApp.use('*', async (c, next) => {
+  c.set('user', { id: humanUserId, org_id: orgId, email: 'channel-human@test.local', name: 'Channel Human' });
+  await next();
+});
+operatorApp.route('/api/agent-employees', agentEmployeeRoutes);
 
 let orgId: string;
 let humanUserId: string;
@@ -324,6 +332,99 @@ test('POST /ack records received/completed state and cursor', async () => {
   assert.equal(closedFallback?.approval_status, 'approved');
   assert.ok(closedFallback?.executed_at);
   assert.equal((closedFallback?.result as any)?.channel_event_id, event.id);
+});
+
+test('channel lifecycle records acknowledgement, work, and approval without regressing terminal state', async () => {
+  const event = await publishMessageEvent('agent-channel-lifecycle-route');
+  await app.request('/api/agent-channel/v1/events?limit=10', {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+
+  const acknowledge = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, state: 'received' }),
+  });
+  assert.equal(acknowledge.status, 200);
+
+  for (const state of ['working', 'approval_pending']) {
+    const response = await app.request('/api/agent-channel/v1/status', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ event_id: event.id, state }),
+    });
+    assert.equal(response.status, 200, `status ${state} should be accepted`);
+  }
+
+  const complete = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, state: 'completed' }),
+  });
+  assert.equal(complete.status, 200);
+
+  const lateWork = await app.request('/api/agent-channel/v1/status', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, state: 'working' }),
+  });
+  assert.equal(lateWork.status, 200);
+
+  const [recorded] = await db
+    .select()
+    .from(agentChannelEvents)
+    .where(eq(agentChannelEvents.id, event.id))
+    .limit(1);
+  assert.equal(recorded?.status, 'completed');
+  assert.ok(recorded?.delivered_at);
+  assert.ok(recorded?.acked_at);
+  assert.ok(recorded?.completed_at);
+});
+
+test('agent activity merges delivery and action records into one ordered stream', async () => {
+  const event = await publishMessageEvent('agent-channel-activity-stream');
+  const [action] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    conversation_id: spaceId,
+    source: 'test',
+    action: 'create_task',
+    params: { title: 'Activity test' },
+    approval_tier: 'quick',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+
+  const activity = await loadAgentActivity({ orgId, employeeId, limit: 20 });
+  const delivery = activity.find((item) => item.id === `delivery:${event.id}`);
+  const proposedAction = activity.find((item) => item.id === `action:${action!.id}`);
+
+  assert.equal(delivery?.kind, 'delivery');
+  assert.equal(delivery?.status, 'queued');
+  assert.equal(delivery?.target_url, `/chat?space=${spaceId}&thread=${sourceMessageId}`);
+  assert.equal(proposedAction?.kind, 'action');
+  assert.equal(proposedAction?.status, 'approval_pending');
+  assert.equal(proposedAction?.target_url, `/chat?space=${spaceId}`);
+});
+
+test('operators can cancel and retry a live channel delivery', async () => {
+  const event = await publishMessageEvent('agent-channel-operator-control');
+  const cancel = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${event.id}/cancel`, {
+    method: 'POST',
+  });
+  assert.equal(cancel.status, 200, await cancel.text());
+
+  let [recorded] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(recorded?.status, 'cancelled');
+
+  const retry = await operatorApp.request(`/api/agent-employees/${employeeId}/channel-events/${event.id}/retry`, {
+    method: 'POST',
+  });
+  assert.equal(retry.status, 200, await retry.text());
+
+  [recorded] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(recorded?.status, 'pending');
+  assert.equal(recorded?.error, null);
 });
 
 test('POST /reply posts as the agent and is idempotent', async () => {

@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { Check, Copy, Loader2, Play, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
+import { Check, Copy, Loader2, Play, RefreshCw, RotateCcw, Terminal, X } from 'lucide-react';
 
 type DeveloperPayload = {
   employee: {
@@ -88,6 +88,16 @@ type DeveloperPayload = {
       created_at: string;
       updated_at: string;
     }>;
+    activity: Array<{
+      id: string;
+      kind: 'delivery' | 'action' | 'tool_call' | 'session' | 'record';
+      label: string;
+      status: 'queued' | 'running' | 'approval_pending' | 'completed' | 'failed' | 'cancelled';
+      detail?: string | null;
+      occurred_at: string;
+      target_url?: string | null;
+      error?: string | null;
+    }>;
   };
   mcp_endpoint_url: string;
   mcp_token_masked: string | null;
@@ -115,6 +125,20 @@ type DeveloperPayload = {
       delivered: number;
       completed: number;
       failed: number;
+      cancelled: number;
+    };
+    metrics: {
+      sample_count: number;
+      delivery: { p50_ms: number | null; p95_ms: number | null };
+      acknowledgement: { p50_ms: number | null; p95_ms: number | null };
+      completion: { p50_ms: number | null; p95_ms: number | null };
+      oldest_open_age_ms: number | null;
+    };
+    recovery: {
+      state: 'healthy' | 'setup_required' | 'offline' | 'delivery_failed' | 'backlogged';
+      title: string;
+      detail: string;
+      action: 'none' | 'regenerate_channel_token' | 'send_channel_test' | 'inspect_queue';
     };
   };
 };
@@ -147,6 +171,7 @@ export default function DeveloperPage() {
   const [certBusy, setCertBusy] = useState(false);
   const [certResult, setCertResult] = useState<string | null>(null);
   const [channelTestBusy, setChannelTestBusy] = useState(false);
+  const [queueBusy, setQueueBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -268,6 +293,20 @@ export default function DeveloperPage() {
     }
   };
 
+  const controlDelivery = async (eventId: string, action: 'retry' | 'cancel') => {
+    setQueueBusy(eventId);
+    setError(null);
+    try {
+      const res = await api.post(`/api/agent-employees/${employeeId}/channel-events/${eventId}/${action}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setQueueBusy(null);
+    }
+  };
+
   const copy = async (label: string, value: string | null | undefined) => {
     if (!value) return;
     try {
@@ -362,6 +401,17 @@ export default function DeveloperPage() {
       )}
       {error && <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">{error}</div>}
 
+      <div className={`mb-4 rounded border px-3 py-2 text-xs ${data.channel.recovery.state === 'healthy' ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/30 bg-amber-500/10'}`}>
+        <div className="font-medium">{data.channel.recovery.title}</div>
+        <div className="mt-0.5 text-muted-foreground">{data.channel.recovery.detail}</div>
+        {data.channel.recovery.action === 'regenerate_channel_token' && (
+          <button type="button" onClick={regenerateChannelToken} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Generate token</button>
+        )}
+        {data.channel.recovery.action === 'send_channel_test' && (
+          <button type="button" onClick={startChannelTest} className="mt-2 rounded border border-border px-2 py-1 hover:bg-accent">Send test event</button>
+        )}
+      </div>
+
       <section className="space-y-3">
         <Field
           label="Employee slug"
@@ -453,6 +503,10 @@ export default function DeveloperPage() {
         <Field
           label="Channel status"
           value={`${channelConnectionLabel} - pending ${data.channel.queue.pending} - failed ${data.channel.queue.failed}`}
+        />
+        <Field
+          label="Channel latency"
+          value={`${data.channel.metrics.sample_count} samples - deliver ${formatMs(data.channel.metrics.delivery.p50_ms)}/${formatMs(data.channel.metrics.delivery.p95_ms)} p50/p95 - complete ${formatMs(data.channel.metrics.completion.p50_ms)}/${formatMs(data.channel.metrics.completion.p95_ms)}`}
         />
         <div className="grid grid-cols-12 gap-2 items-center">
           <div className="col-span-3 text-xs text-muted-foreground">Channel test</div>
@@ -607,6 +661,17 @@ export default function DeveloperPage() {
       </section>
 
       <section className="mt-6 grid gap-4 md:grid-cols-2">
+        <div className="md:col-span-2">
+          <LogPanel
+            title="Agent activity"
+            empty="No employee activity recorded yet."
+            rows={data.diagnostics.activity.map((row) => ({
+              id: row.id,
+              main: `${row.status.replaceAll('_', ' ')} · ${row.label}`,
+              sub: `${new Date(row.occurred_at).toLocaleString()}${row.detail ? ` · ${row.detail}` : ''}${row.error ? ` · ${row.error}` : ''}`,
+            }))}
+          />
+        </div>
         <LogPanel
           title="Recent MCP calls"
           empty="No MCP calls recorded yet."
@@ -632,6 +697,15 @@ export default function DeveloperPage() {
             id: row.id,
             main: `${row.status} ${row.kind}`,
             sub: `${new Date(row.created_at).toLocaleString()} - delivery count ${row.delivery_count}${row.error ? ` - ${row.error}` : ''}`,
+            actions: row.status === 'failed' || row.status === 'cancelled' ? (
+              <button type="button" onClick={() => controlDelivery(row.id, 'retry')} disabled={queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
+                <RotateCcw className="size-3" /> Retry
+              </button>
+            ) : ['pending', 'delivered', 'acknowledged', 'running', 'approval_pending'].includes(row.status) ? (
+              <button type="button" onClick={() => controlDelivery(row.id, 'cancel')} disabled={queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
+                <X className="size-3" /> Cancel
+              </button>
+            ) : undefined,
           }))}
         />
       </section>
@@ -704,7 +778,7 @@ function LogPanel({
 }: {
   title: string;
   empty: string;
-  rows: Array<{ id: string; main: string; sub: string }>;
+  rows: Array<{ id: string; main: string; sub: string; actions?: React.ReactNode }>;
 }) {
   return (
     <div>
@@ -713,9 +787,12 @@ function LogPanel({
         {rows.length === 0 ? (
           <div className="px-3 py-2 text-xs text-muted-foreground">{empty}</div>
         ) : rows.map((row) => (
-          <div key={row.id} className="border-b border-border px-3 py-2 last:border-b-0">
-            <div className="text-xs font-medium">{row.main}</div>
-            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{row.sub}</div>
+          <div key={row.id} className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 last:border-b-0">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">{row.main}</div>
+              <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{row.sub}</div>
+            </div>
+            {row.actions}
           </div>
         ))}
       </div>
@@ -739,4 +816,10 @@ function CodeBlock({ value, onCopy }: { value: string; onCopy?: () => void }) {
       )}
     </div>
   );
+}
+
+function formatMs(value: number | null) {
+  if (value === null) return '--';
+  if (value < 1_000) return `${value}ms`;
+  return `${(value / 1_000).toFixed(1)}s`;
 }

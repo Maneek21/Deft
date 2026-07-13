@@ -187,3 +187,61 @@ test('handler queues a heartbeat_tick agent_actions row when guards pass', async
     });
   }
 });
+
+test('concurrent scans queue one tick for the same heartbeat window', async () => {
+  const orgId = crypto.randomUUID();
+  const userId = `phase9-overlap-user-${crypto.randomUUID()}`;
+  const employeeId = `phase9-overlap-${crypto.randomUUID()}`;
+
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO orgs (id, name, slug) VALUES ($1, 'Heartbeat Overlap Org', $2)`,
+      [orgId, `heartbeat-overlap-${orgId.slice(0, 8)}`],
+    );
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent) VALUES ($1, $2, 'Heartbeat Overlap Shadow', true)`,
+      [userId, `${userId}@test.local`],
+    );
+    await c.query(
+      `INSERT INTO agent_employees
+         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+          is_byoa, is_active, heartbeat_enabled, heartbeat_interval_min,
+          max_daily_actions, daily_action_count, last_heartbeat_at, created_by)
+       VALUES
+         ($1, $2, $3, 'Overlap Employee', $4, 'project_manager', 'test', 'standard',
+          true, true, true, 5, 50, 0, NOW() - INTERVAL '1 hour', $3)`,
+      [employeeId, orgId, userId, `slug-${employeeId}`],
+    );
+  });
+
+  try {
+    const { handleAgentEmployeeHeartbeat } = await import(
+      '../src/workers/handlers/agent-employee-heartbeat.js'
+    );
+    const job = { kind: 'agent-employee-heartbeat', payload: {} } as Parameters<
+      typeof handleAgentEmployeeHeartbeat
+    >[0];
+    await Promise.all([
+      handleAgentEmployeeHeartbeat(job),
+      handleAgentEmployeeHeartbeat(job),
+    ]);
+
+    const count = await withClient(async (c) => {
+      const r = await c.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM agent_actions
+          WHERE agent_employee_id = $1 AND action = 'heartbeat_tick'`,
+        [employeeId],
+      );
+      return Number(r.rows[0].count);
+    });
+    assert.equal(count, 1);
+  } finally {
+    await withClient(async (c) => {
+      await c.query(`DELETE FROM agent_actions WHERE agent_employee_id = $1`, [employeeId]);
+      await c.query(`DELETE FROM agent_heartbeat_turns WHERE agent_employee_id = $1`, [employeeId]);
+      await c.query(`DELETE FROM agent_employees WHERE id = $1`, [employeeId]);
+      await c.query(`DELETE FROM users WHERE id = $1`, [userId]);
+      await c.query(`DELETE FROM orgs WHERE id = $1`, [orgId]);
+    });
+  }
+});

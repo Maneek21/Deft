@@ -153,6 +153,23 @@ async function detectActionLoop(
   }
 }
 
+/** Atomically claim a due window so concurrent workers cannot queue duplicates. */
+async function claimHeartbeatWindow(employeeId: string): Promise<boolean> {
+  const [claimed] = await db
+    .update(agentEmployees)
+    .set({ last_heartbeat_at: new Date() })
+    .where(
+      and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.heartbeat_enabled, true),
+        sql`(${agentEmployees.last_heartbeat_at} IS NULL OR ${agentEmployees.last_heartbeat_at} + (${agentEmployees.heartbeat_interval_min} || ' minutes')::interval < NOW())`,
+      ),
+    )
+    .returning({ id: agentEmployees.id });
+  return Boolean(claimed);
+}
+
 export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void> {
   // Phase 9: no kind filter — every active employee with heartbeat
   // enabled and a due window is a candidate. The handler re-derives the
@@ -174,6 +191,9 @@ export async function handleAgentEmployeeHeartbeat(_job: JobData): Promise<void>
 
   for (const employee of dueEmployees) {
     const cadenceMinutes = employee.heartbeat_interval_min;
+
+    // The due scan is advisory; this update is the overlap lock.
+    if (!(await claimHeartbeatWindow(employee.id))) continue;
 
     // ─── Guard: unhealthy circuit breaker ───────────────────────────────
     if (employee.unhealthy) {

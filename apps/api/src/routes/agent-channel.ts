@@ -9,7 +9,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
@@ -30,6 +30,7 @@ import {
   type AgentChannelPrincipal,
 } from '../lib/agent-channel.js';
 import { executeSendMessage } from '../lib/mcp-tools/writes.js';
+import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 
 export const agentChannelRoutes = new Hono();
 
@@ -51,7 +52,7 @@ const replySchema = z.object({
 });
 
 const statusSchema = z.object({
-  state: z.enum(['idle', 'typing', 'working', 'degraded', 'error']),
+  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'error']),
   event_id: z.string().optional(),
   detail: z.string().max(2000).optional(),
   caller_employee_slug: z.string().optional(),
@@ -202,19 +203,22 @@ agentChannelRoutes.post('/ack', async (c) => {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
 
-  const now = new Date();
-  const patch =
-    parsed.data.state === 'completed'
-      ? { status: 'completed', acked_at: event.acked_at ?? now, completed_at: now, error: null, updated_at: now }
-      : parsed.data.state === 'failed'
-        ? { status: 'failed', acked_at: event.acked_at ?? now, failed_at: now, error: parsed.data.error ?? parsed.data.detail ?? 'Runtime reported failure', updated_at: now }
-        : { status: 'delivered', acked_at: now, updated_at: now };
+  const patch = buildAgentChannelLifecyclePatch(
+    event,
+    parsed.data.state === 'received' ? 'acknowledged' : parsed.data.state,
+    new Date(),
+    parsed.data.error ?? parsed.data.detail,
+  );
 
-  const [updated] = await db
-    .update(agentChannelEvents)
-    .set(patch)
-    .where(eq(agentChannelEvents.id, event.id))
-    .returning();
+  let updated = event;
+  if (Object.keys(patch).length > 0) {
+    const [updatedRow] = await db
+      .update(agentChannelEvents)
+      .set(patch)
+      .where(eq(agentChannelEvents.id, event.id))
+      .returning();
+    if (updatedRow) updated = updatedRow;
+  }
 
   await touchAgentChannelConnection(principal, {
     status: parsed.data.state === 'failed' ? 'degraded' : 'connected',
@@ -353,16 +357,18 @@ agentChannelRoutes.post('/reply', async (c) => {
     })
     .where(eq(agentChannelDeliveryAttempts.id, claim.id));
 
-  await db
-    .update(agentChannelEvents)
-    .set({
-      status: result.isError ? 'failed' : 'completed',
-      completed_at: result.isError ? null : new Date(),
-      failed_at: result.isError ? new Date() : null,
-      error: result.isError ? text : null,
-      updated_at: new Date(),
-    })
-    .where(eq(agentChannelEvents.id, event.id));
+  const lifecyclePatch = buildAgentChannelLifecyclePatch(
+    event,
+    result.isError ? 'failed' : 'completed',
+    new Date(),
+    result.isError ? text : null,
+  );
+  if (Object.keys(lifecyclePatch).length > 0) {
+    await db
+      .update(agentChannelEvents)
+      .set(lifecyclePatch)
+      .where(eq(agentChannelEvents.id, event.id));
+  }
 
   await touchAgentChannelConnection(principal, {
     status: result.isError ? 'degraded' : 'connected',
@@ -401,13 +407,21 @@ agentChannelRoutes.post('/status', async (c) => {
   });
 
   if (parsed.data.event_id) {
-    await db.execute(sql`
-      UPDATE agent_channel_events
-      SET updated_at = now()
-      WHERE id = ${parsed.data.event_id}
-        AND org_id = ${principal.org_id}
-        AND agent_employee_id = ${principal.employee_id}
-    `);
+    const event = await getEventForPrincipal(parsed.data.event_id, principal);
+    const signal = parsed.data.state === 'approval_pending'
+      ? 'approval_pending'
+      : parsed.data.state === 'working' || parsed.data.state === 'typing'
+        ? 'running'
+        : null;
+    if (event && signal) {
+      const lifecyclePatch = buildAgentChannelLifecyclePatch(event, signal);
+      if (Object.keys(lifecyclePatch).length > 0) {
+        await db
+          .update(agentChannelEvents)
+          .set(lifecyclePatch)
+          .where(eq(agentChannelEvents.id, event.id));
+      }
+    }
   }
 
   return c.json({

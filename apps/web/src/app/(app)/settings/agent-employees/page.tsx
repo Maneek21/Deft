@@ -23,6 +23,7 @@ import {
   type AgentEmployeeFleetFilter,
 } from '@/lib/agent-employee-fleet';
 import { agentConnectionStatus, agentEmployeeLifecycle } from '@/lib/agent-employee-status';
+import { getSocket } from '@/lib/socket';
 
 type AgentEmployee = {
   id: string;
@@ -138,6 +139,19 @@ export default function AgentEmployeesPage() {
     const timer = window.setInterval(() => { void fetchEmployees(); }, 15_000);
     return () => window.clearInterval(timer);
   }, [fetchEmployees]);
+
+  useEffect(() => {
+    const token = window.localStorage.getItem('deft-access-token');
+    if (!token) return;
+    const socket = getSocket(token);
+    const onPresence = (event: { employee_id: string; status: string; last_seen_at: string }) => {
+      setEmployees((current) => current.map((employee) => employee.id === event.employee_id
+        ? { ...employee, channel_status: event.status, channel_last_seen_at: event.last_seen_at }
+        : employee));
+    };
+    socket.on('agent:presence', onPresence);
+    return () => { socket.off('agent:presence', onPresence); };
+  }, []);
 
   const fleetCounts = useMemo(() => countAgentEmployeeFleet(employees), [employees]);
   const visibleEmployees = useMemo(
