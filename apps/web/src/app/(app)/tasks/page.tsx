@@ -33,12 +33,13 @@ import {
   FileText,
 } from 'lucide-react';
 import { TabStrip } from '@/components/tab-strip';
-import { AppMenu } from '@/components/overlay-primitives';
+import { AppDialog, AppMenu } from '@/components/overlay-primitives';
 
 const TaskTimeline = lazy(() => import('./timeline'));
 import { EmptyState } from '@/components/empty-state';
 import { CreateProjectModal } from '@/components/create-project-modal';
 import { PersonAvatar } from '@/components/person-avatar';
+import ConfirmDialog from '@/components/confirm-dialog';
 import {
   DEFAULT_TASK_VIEW_CONFIG,
   normalizeTaskViewConfig,
@@ -162,12 +163,26 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [pasteCreateOpen, setPasteCreateOpen] = useState(false);
+  const [pasteTaskText, setPasteTaskText] = useState('');
+  const [pasteCreating, setPasteCreating] = useState(false);
   const [templatesDropdownOpen, setTemplatesDropdownOpen] = useState(false);
   const [quickCreateStatus, setQuickCreateStatus] = useState<string | undefined>(undefined);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [bulkActionDropdown, setBulkActionDropdown] = useState<string | null>(null);
+  const [bulkDueDate, setBulkDueDate] = useState('');
+  const [bulkStartDate, setBulkStartDate] = useState('');
+  const [bulkEstimate, setBulkEstimate] = useState('');
+  const [pendingBulkAction, setPendingBulkAction] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    updates?: Record<string, unknown>;
+    danger?: boolean;
+    success: string;
+  } | null>(null);
   const [orgMembers, setOrgMembers] = useState<{ id: string; name: string; avatar_url: string | null }[]>([]);
   const [orgLabels, setOrgLabels] = useState<{ id: string; name: string; color: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -181,6 +196,7 @@ export default function TasksPage() {
     previousCursors: [] as Array<string | null>,
     loading: false,
   });
+  const pastedTaskTitles = useMemo(() => pasteTaskText.split(/\r?\n/).map((title) => title.trim()).filter(Boolean).slice(0, 50), [pasteTaskText]);
   const viewMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   useEffect(() => {
@@ -477,54 +493,77 @@ export default function TasksPage() {
     });
   }, []);
 
-  const handleBulkStatusChange = async (status: string) => {
-    const ids = Array.from(selectedTaskIds);
-    const res = await api.patch('/api/tasks/bulk', { task_ids: ids, updates: { status } });
-    if (res.ok) {
-      setSelectedTaskIds(new Set());
-      setSelectionMode(false);
-      setBulkActionDropdown(null);
-      await loadTasks();
-      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} moved to ${statusLabel(status)}`);
-    }
+  const queueBulkUpdate = (title: string, change: string, updates: Record<string, unknown>, success: string) => {
+    const count = selectedTaskIds.size;
+    setBulkActionDropdown(null);
+    setPendingBulkAction({
+      title,
+      message: `${change} for ${count} selected task${count === 1 ? '' : 's'}?`,
+      confirmLabel: 'Apply change',
+      updates,
+      success,
+    });
   };
 
-  const handleBulkAssigneeChange = async (assigneeId: string | null) => {
+  const runPendingBulkAction = async () => {
+    if (!pendingBulkAction) return;
     const ids = Array.from(selectedTaskIds);
-    const res = await api.patch('/api/tasks/bulk', { task_ids: ids, updates: { assignee_id: assigneeId } });
+    const res = pendingBulkAction.danger
+      ? await api.post('/api/tasks/bulk-delete', { task_ids: ids })
+      : await api.patch('/api/tasks/bulk', { task_ids: ids, updates: pendingBulkAction.updates });
     if (res.ok) {
       setSelectedTaskIds(new Set());
       setSelectionMode(false);
       setBulkActionDropdown(null);
       await loadTasks();
-      const name = assigneeId ? orgMembers.find((m) => m.id === assigneeId)?.name || 'someone' : 'Unassigned';
-      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} assigned to ${name}`);
+      setToast(pendingBulkAction.success);
+    } else {
+      const error = await res.json().catch(() => null) as { error?: string } | null;
+      setToast(error?.error ?? 'Bulk action failed');
     }
+    setPendingBulkAction(null);
   };
 
-  const handleBulkPriorityChange = async (priority: string) => {
-    const ids = Array.from(selectedTaskIds);
-    const res = await api.patch('/api/tasks/bulk', { task_ids: ids, updates: { priority } });
-    if (res.ok) {
-      setSelectedTaskIds(new Set());
-      setSelectionMode(false);
-      setBulkActionDropdown(null);
-      await loadTasks();
-      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} set to ${priority.toUpperCase()}`);
-    }
+  const handleBulkStatusChange = (status: string) => {
+    queueBulkUpdate('Change task status', `Move them to ${statusLabel(status)}`, { status }, `${selectedTaskIds.size} tasks moved to ${statusLabel(status)}`);
   };
 
-  const handleBulkDelete = async () => {
-    const ids = Array.from(selectedTaskIds);
-    if (!confirm(`Delete ${ids.length} task${ids.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
-    const res = await api.post('/api/tasks/bulk-delete', { task_ids: ids });
-    if (res.ok) {
-      setSelectedTaskIds(new Set());
-      setSelectionMode(false);
-      setBulkActionDropdown(null);
-      await loadTasks();
-      setToast(`${ids.length} task${ids.length !== 1 ? 's' : ''} deleted`);
+  const handleBulkAssigneeChange = (assigneeId: string | null) => {
+    const name = assigneeId ? orgMembers.find((member) => member.id === assigneeId)?.name ?? 'selected owner' : 'Unassigned';
+    queueBulkUpdate('Change task owner', `Assign them to ${name}`, { assignee_id: assigneeId }, `${selectedTaskIds.size} tasks assigned to ${name}`);
+  };
+
+  const handleBulkPriorityChange = (priority: string) => {
+    queueBulkUpdate('Change task priority', `Set priority to ${priority.toUpperCase()}`, { priority }, `${selectedTaskIds.size} tasks set to ${priority.toUpperCase()}`);
+  };
+
+  const handleBulkDelete = () => {
+    const count = selectedTaskIds.size;
+    setPendingBulkAction({
+      title: 'Delete selected tasks?',
+      message: `Soft-delete ${count} selected task${count === 1 ? '' : 's'}? Their history will be preserved.`,
+      confirmLabel: 'Delete tasks',
+      danger: true,
+      success: `${count} task${count === 1 ? '' : 's'} deleted`,
+    });
+  };
+
+  const createPastedTasks = async () => {
+    if (!selectedProject || pastedTaskTitles.length === 0 || pasteCreating) return;
+    setPasteCreating(true);
+    const results = await Promise.all(pastedTaskTitles.map((title) =>
+      api.post(`/api/projects/${selectedProject.id}/tasks`, { title }),
+    ));
+    const created = results.filter((result) => result.ok).length;
+    setPasteCreating(false);
+    if (created === pastedTaskTitles.length) {
+      setPasteCreateOpen(false);
+      setPasteTaskText('');
     }
+    await loadTasks();
+    setToast(created === pastedTaskTitles.length
+      ? `${created} tasks created`
+      : `${created} of ${pastedTaskTitles.length} tasks created`);
   };
 
   // External callers (command palette, etc.) can request the quick-create
@@ -1209,6 +1248,14 @@ export default function TasksPage() {
                 </div>
               )}
               <button
+                onClick={() => setPasteCreateOpen(true)}
+                className="deft-pill min-h-[36px] px-3 text-[13px]"
+                style={{ color: 'var(--foreground)', border: '1px solid var(--border)' }}
+              >
+                <FileText size={14} />
+                Paste tasks
+              </button>
+              <button
                 onClick={() => {
                   setQuickCreateStatus(undefined);
                   setQuickCreateOpen(true);
@@ -1529,7 +1576,7 @@ export default function TasksPage() {
             <div className="fixed inset-0 z-40" onClick={() => setBulkActionDropdown(null)} />
           )}
           <div
-            className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl max-w-[calc(100vw-2rem)] overflow-x-auto"
+            className={`fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl max-w-[calc(100vw-2rem)] ${bulkActionDropdown ? 'overflow-visible' : 'overflow-x-auto'}`}
             style={{
               background: 'var(--card-bg)',
               border: '1px solid var(--border)',
@@ -1661,6 +1708,123 @@ export default function TasksPage() {
               )}
             </div>
 
+            {/* Dates, estimate, and labels */}
+            <div className="relative">
+              <button
+                onClick={() => setBulkActionDropdown(bulkActionDropdown === 'more' ? null : 'more')}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
+                style={{
+                  background: bulkActionDropdown === 'more' ? 'var(--hover-tint)' : 'var(--surface)',
+                  color: 'var(--foreground)',
+                  fontFamily: 'var(--font-heading)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                More
+                <ChevronDown size={12} />
+              </button>
+              {bulkActionDropdown === 'more' && (
+                <div
+                  className="absolute bottom-full right-0 mb-2 w-72 rounded-lg p-3 z-50 space-y-3 max-h-[60vh] overflow-y-auto"
+                  style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <label className="block text-[11px] font-medium" style={{ color: 'var(--muted)' }}>
+                    Due date
+                    <div className="mt-1 flex gap-1">
+                      <input
+                        type="date"
+                        value={bulkDueDate}
+                        onChange={(event) => setBulkDueDate(event.target.value)}
+                        className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-[12px]"
+                        style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                      />
+                      <button
+                        disabled={!bulkDueDate}
+                        onClick={() => queueBulkUpdate('Set due date', `Set due date to ${bulkDueDate}`, { due_date: bulkDueDate }, `${selectedTaskIds.size} task due dates updated`)}
+                        className="rounded-md px-2 text-[11px] disabled:opacity-40"
+                        style={{ background: 'var(--accent)', color: 'white' }}
+                      >Set</button>
+                      <button
+                        onClick={() => queueBulkUpdate('Clear due date', 'Remove their due dates', { due_date: null }, `${selectedTaskIds.size} task due dates cleared`)}
+                        className="rounded-md px-2 text-[11px]"
+                        style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                      >Clear</button>
+                    </div>
+                  </label>
+                  <label className="block text-[11px] font-medium" style={{ color: 'var(--muted)' }}>
+                    Start date
+                    <div className="mt-1 flex gap-1">
+                      <input
+                        type="date"
+                        value={bulkStartDate}
+                        onChange={(event) => setBulkStartDate(event.target.value)}
+                        className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-[12px]"
+                        style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                      />
+                      <button
+                        disabled={!bulkStartDate}
+                        onClick={() => queueBulkUpdate('Set start date', `Set start date to ${bulkStartDate}`, { start_date: bulkStartDate }, `${selectedTaskIds.size} task start dates updated`)}
+                        className="rounded-md px-2 text-[11px] disabled:opacity-40"
+                        style={{ background: 'var(--accent)', color: 'white' }}
+                      >Set</button>
+                      <button
+                        onClick={() => queueBulkUpdate('Clear start date', 'Remove their start dates', { start_date: null }, `${selectedTaskIds.size} task start dates cleared`)}
+                        className="rounded-md px-2 text-[11px]"
+                        style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                      >Clear</button>
+                    </div>
+                  </label>
+                  <label className="block text-[11px] font-medium" style={{ color: 'var(--muted)' }}>
+                    Estimate
+                    <div className="mt-1 flex gap-1">
+                      <input
+                        value={bulkEstimate}
+                        onChange={(event) => setBulkEstimate(event.target.value)}
+                        placeholder="e.g. 2h"
+                        className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-[12px]"
+                        style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                      />
+                      <button
+                        disabled={!bulkEstimate.trim()}
+                        onClick={() => queueBulkUpdate('Set estimate', `Set estimate to ${bulkEstimate.trim()}`, { estimation: bulkEstimate.trim() }, `${selectedTaskIds.size} task estimates updated`)}
+                        className="rounded-md px-2 text-[11px] disabled:opacity-40"
+                        style={{ background: 'var(--accent)', color: 'white' }}
+                      >Set</button>
+                      <button
+                        onClick={() => queueBulkUpdate('Clear estimate', 'Remove their estimates', { estimation: null }, `${selectedTaskIds.size} task estimates cleared`)}
+                        className="rounded-md px-2 text-[11px]"
+                        style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                      >Clear</button>
+                    </div>
+                  </label>
+                  {orgLabels.length > 0 && (
+                    <div>
+                      <div className="text-[11px] font-medium mb-1" style={{ color: 'var(--muted)' }}>Labels</div>
+                      <div className="space-y-1">
+                        {orgLabels.map((label) => (
+                          <div key={label.id} className="flex items-center gap-2 text-[12px]">
+                            <span className="h-2 w-2 rounded-full" style={{ background: label.color }} />
+                            <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--foreground)' }}>{label.name}</span>
+                            <button
+                              onClick={() => queueBulkUpdate('Add label', `Add ${label.name}`, { add_label_ids: [label.id] }, `${label.name} added to selected tasks`)}
+                              className="px-2 py-1 rounded-md"
+                              style={{ color: 'var(--accent)', border: '1px solid var(--border)' }}
+                            >Add</button>
+                            <button
+                              onClick={() => queueBulkUpdate('Remove label', `Remove ${label.name}`, { remove_label_ids: [label.id] }, `${label.name} removed from selected tasks`)}
+                              className="px-2 py-1 rounded-md"
+                              style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}
+                            >Remove</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Delete button */}
             <button
               onClick={handleBulkDelete}
@@ -1694,6 +1858,67 @@ export default function TasksPage() {
             </button>
           </div>
         </>
+      )}
+
+      {pasteCreateOpen && selectedProject && (
+        <AppDialog
+          open
+          onClose={() => !pasteCreating && setPasteCreateOpen(false)}
+          title="Paste task titles"
+          description="One title per line. Review the list before creating up to 50 tasks."
+          width={520}
+          footer={
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                {pastedTaskTitles.length} task{pastedTaskTitles.length === 1 ? '' : 's'}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  disabled={pasteCreating}
+                  onClick={() => setPasteCreateOpen(false)}
+                  className="rounded-lg px-4 py-2 text-[13px]"
+                  style={{ color: 'var(--foreground)', border: '1px solid var(--border)' }}
+                >Cancel</button>
+                <button
+                  disabled={pastedTaskTitles.length === 0 || pasteCreating}
+                  onClick={() => void createPastedTasks()}
+                  className="rounded-lg px-4 py-2 text-[13px] text-white disabled:opacity-40"
+                  style={{ background: 'var(--accent)' }}
+                >{pasteCreating ? 'Creating...' : `Create ${pastedTaskTitles.length}`}</button>
+              </div>
+            </div>
+          }
+        >
+          <textarea
+            autoFocus
+            value={pasteTaskText}
+            onChange={(event) => setPasteTaskText(event.target.value)}
+            placeholder={'Confirm sample count\nDraft buyer update\nSchedule launch review'}
+            className="h-40 w-full resize-y rounded-lg p-3 text-[13px] outline-none"
+            style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }}
+          />
+          {pastedTaskTitles.length > 0 && (
+            <div className="mt-3 max-h-36 overflow-y-auto rounded-lg p-2" style={{ background: 'var(--surface)' }}>
+              {pastedTaskTitles.map((title, index) => (
+                <div key={`${title}-${index}`} className="flex gap-2 py-1 text-[12px]" style={{ color: 'var(--foreground)' }}>
+                  <span style={{ color: 'var(--muted)' }}>{index + 1}.</span>
+                  <span>{title}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </AppDialog>
+      )}
+
+      {pendingBulkAction && (
+        <ConfirmDialog
+          title={pendingBulkAction.title}
+          message={pendingBulkAction.message}
+          confirmLabel={pendingBulkAction.confirmLabel}
+          danger={pendingBulkAction.danger}
+          onConfirm={() => void runPendingBulkAction()}
+          onCancel={() => setPendingBulkAction(null)}
+        />
       )}
 
       {/* Toast notification */}

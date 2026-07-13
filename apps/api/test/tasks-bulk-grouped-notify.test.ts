@@ -34,6 +34,9 @@ function randomLetters(n: number): string {
 
 let projectPrefix: string | null = null;
 let projectId: string | null = null;
+let hiddenProjectId: string | null = null;
+let hiddenTaskId: string | null = null;
+let labelId: string | null = null;
 const taskIds: string[] = [];
 let testApp: Hono | null = null;
 
@@ -76,7 +79,7 @@ before(async () => {
     );
     projectId = p.rows[0].id as string;
 
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 50; i++) {
       const t = await c.query(
         `INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by, is_deleted)
          VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 'todo', 'p2', $5, false)
@@ -85,6 +88,24 @@ before(async () => {
       );
       taskIds.push(t.rows[0].id as string);
     }
+    const hiddenProject = await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, 0) RETURNING id`,
+      [ORG_ID, `Hidden Bulk ${projectPrefix}`, `H${projectPrefix}`, ASSIGNEE_ID],
+    );
+    hiddenProjectId = hiddenProject.rows[0].id as string;
+    const hiddenTask = await c.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by, is_deleted, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, 1, 'Hidden bulk task', 'todo', 'p2', $3, false, '{"visibility":"restricted"}'::jsonb)
+       RETURNING id`,
+      [ORG_ID, hiddenProjectId, ASSIGNEE_ID],
+    );
+    hiddenTaskId = hiddenTask.rows[0].id as string;
+    const label = await c.query(
+      `INSERT INTO labels (id, org_id, name, color) VALUES (gen_random_uuid()::text, $1, $2, '#7c3aed') RETURNING id`,
+      [ORG_ID, `Bulk label ${projectPrefix}`],
+    );
+    labelId = label.rows[0].id as string;
   });
 
   const { taskRoutes } = await import('../src/routes/tasks.js');
@@ -120,6 +141,12 @@ after(async () => {
     await c.query(`DELETE FROM task_assignees WHERE task_id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
     await c.query(`DELETE FROM tasks WHERE id IN (${fixtureTaskFilter})`, [ACTOR_ID]);
     await c.query(`DELETE FROM projects WHERE id IN (${fixtureProjectFilter})`, [ACTOR_ID]);
+    if (hiddenTaskId) {
+      await c.query(`DELETE FROM task_activity WHERE task_id = $1`, [hiddenTaskId]);
+      await c.query(`DELETE FROM tasks WHERE id = $1`, [hiddenTaskId]);
+    }
+    if (hiddenProjectId) await c.query(`DELETE FROM projects WHERE id = $1`, [hiddenProjectId]);
+    if (labelId) await c.query(`DELETE FROM labels WHERE id = $1`, [labelId]);
     await c.query(
       `DELETE FROM notifications WHERE user_id IN ($1, $2)`,
       [ACTOR_ID, ASSIGNEE_ID],
@@ -236,5 +263,93 @@ test('bulk self-assign (actor==assignee) skips the notification even at ≥3', a
       [ACTOR_ID],
     );
     assert.equal(r.rows.length, 0, 'self-assign must not notify');
+  });
+});
+
+test('bulk update handles 1, 10, and 50 tasks and repeats as an idempotent no-op', async () => {
+  const one = taskIds.slice(0, 1);
+  const dueDate = '2026-08-20T00:00:00.000Z';
+  const startDate = '2026-08-18T00:00:00.000Z';
+  const body = { task_ids: one, updates: { due_date: dueDate, start_date: startDate, estimation: '2h', add_label_ids: [labelId] } };
+  const first = await testApp!.request('/api/tasks/bulk', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as any).updated, 1);
+
+  const activityBeforeRepeat = await withClient(async (c) => {
+    const row = await c.query(`SELECT count(*)::int AS count FROM task_activity WHERE task_id = $1`, [one[0]]);
+    return row.rows[0].count as number;
+  });
+  const repeat = await testApp!.request('/api/tasks/bulk', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal(repeat.status, 200);
+  assert.equal((await repeat.json() as any).updated, 0);
+  await withClient(async (c) => {
+    const task = await c.query(`SELECT to_char(due_date, 'YYYY-MM-DD') AS due_date, to_char(start_date, 'YYYY-MM-DD') AS start_date, estimation FROM tasks WHERE id = $1`, [one[0]]);
+    assert.equal(task.rows[0].due_date, '2026-08-20');
+    assert.equal(task.rows[0].start_date, '2026-08-18');
+    assert.equal(task.rows[0].estimation, '2h');
+    const attached = await c.query(`SELECT 1 FROM task_labels WHERE task_id = $1 AND label_id = $2`, [one[0], labelId]);
+    assert.equal(attached.rows.length, 1);
+    const activity = await c.query(`SELECT count(*)::int AS count FROM task_activity WHERE task_id = $1`, [one[0]]);
+    assert.equal(activity.rows[0].count, activityBeforeRepeat);
+  });
+
+  const ten = await testApp!.request('/api/tasks/bulk', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_ids: taskIds.slice(0, 10), updates: { priority: 'p0' } }),
+  });
+  assert.equal(ten.status, 200);
+  assert.equal((await ten.json() as any).updated, 10);
+
+  const fifty = await testApp!.request('/api/tasks/bulk', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_ids: taskIds, updates: { status: 'in_progress' } }),
+  });
+  assert.equal(fifty.status, 200);
+  assert.equal((await fifty.json() as any).updated, 50);
+});
+
+test('mixed visible and inaccessible IDs fail atomically', async () => {
+  const visibleId = taskIds[0]!;
+  const before = await withClient(async (c) => {
+    const row = await c.query(`SELECT priority FROM tasks WHERE id = $1`, [visibleId]);
+    return row.rows[0].priority as string;
+  });
+  const response = await testApp!.request('/api/tasks/bulk', {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_ids: [visibleId, hiddenTaskId], updates: { priority: 'p3' } }),
+  });
+  assert.equal(response.status, 404);
+  await withClient(async (c) => {
+    const row = await c.query(`SELECT priority FROM tasks WHERE id = $1`, [visibleId]);
+    assert.equal(row.rows[0].priority, before);
+  });
+});
+
+test('bulk delete is atomic across visibility boundaries and preserves history', async () => {
+  const visibleId = taskIds[49]!;
+  const rejected = await testApp!.request('/api/tasks/bulk-delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_ids: [visibleId, hiddenTaskId] }),
+  });
+  assert.equal(rejected.status, 404);
+  await withClient(async (c) => {
+    const row = await c.query(`SELECT is_deleted FROM tasks WHERE id = $1`, [visibleId]);
+    assert.equal(row.rows[0].is_deleted, false);
+  });
+
+  const deleted = await testApp!.request('/api/tasks/bulk-delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ task_ids: [visibleId] }),
+  });
+  assert.equal(deleted.status, 200);
+  assert.deepEqual((await deleted.json() as any).deleted_ids, [visibleId]);
+  await withClient(async (c) => {
+    const row = await c.query(`SELECT is_deleted, title FROM tasks WHERE id = $1`, [visibleId]);
+    assert.equal(row.rows[0].is_deleted, true);
+    assert.equal(row.rows[0].title, 'Bulk task 50');
   });
 });
