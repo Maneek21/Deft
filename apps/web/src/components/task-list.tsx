@@ -7,6 +7,12 @@ import { TaskCardUnified } from './task-card-unified';
 import type { ResolvedStatus, PriorityVocab } from '@/hooks/use-project-resolved-config';
 import { priorityLabel } from '@/hooks/use-project-resolved-config';
 import { PersonAvatar } from './person-avatar';
+import {
+  isTaskTableColumnVisible,
+  TASK_TABLE_COLUMNS,
+  type TaskTableColumnId,
+  type TaskViewConfigV1,
+} from '@/lib/task-view-config';
 
 type Task = {
   id: string;
@@ -54,6 +60,8 @@ type Props = {
   statuses?: ResolvedStatus[];
   hidePrefixIds?: boolean;
   priorityVocab?: PriorityVocab;
+  viewConfig: TaskViewConfigV1;
+  onViewConfigChange: (config: TaskViewConfigV1) => void;
 };
 
 type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_id' | 'due_date' | 'start_date' | 'estimation'>> & {
@@ -126,7 +134,7 @@ function dateInputValue(value: string | null): string {
   return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
 }
 
-export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab }: Props) {
+export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange }: Props) {
   const STATUS_OPTIONS = useMemo(() => {
     if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return [...statuses]
@@ -136,8 +144,11 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
   const statusColorFor = (id: string): string =>
     STATUS_OPTIONS.find((s) => s.value === id)?.color || STATUS_COLORS[id] || 'var(--muted)';
-  const [sortField, setSortField] = useState<SortField>('number');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const configuredSort = viewConfig.sort[0];
+  const sortField: SortField = configuredSort && TASK_TABLE_COLUMNS.some((column) => column.id === configuredSort.field)
+    ? configuredSort.field as SortField
+    : 'number';
+  const sortDir: SortDir = configuredSort?.direction ?? 'desc';
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
   const [editingTitle, setEditingTitle] = useState<{ taskId: string; value: string } | null>(null);
   const [savingCell, setSavingCell] = useState<string | null>(null);
@@ -154,12 +165,10 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
   const handleSort = (field: SortField) => {
     setVisibleCount(PAGE_SIZE);
-    if (sortField === field) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortDir('asc');
-    }
+    onViewConfigChange({
+      ...viewConfig,
+      sort: [{ field, direction: sortField === field && sortDir === 'asc' ? 'desc' : 'asc', nulls: 'last' }],
+    });
   };
 
   const sorted = useMemo(() => {
@@ -189,18 +198,9 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
     return sortDir === 'asc' ? <ChevronUp size={11} /> : <ChevronDown size={11} />;
   };
 
-  const columns: { field: SortField; label: string; width: string }[] = [
-    { field: 'number', label: 'ID', width: '80px' },
-    { field: 'title', label: 'Title', width: '1fr' },
-    { field: 'status', label: 'Status', width: '130px' },
-    { field: 'priority', label: 'Priority', width: '80px' },
-    { field: 'assignee', label: 'Assignee', width: '140px' },
-    { field: 'start_date', label: 'Start', width: '120px' },
-    { field: 'due_date', label: 'Due', width: '110px' },
-    { field: 'estimation', label: 'Estimate', width: '90px' },
-    { field: 'labels', label: 'Labels', width: '180px' },
-    { field: 'updated_at', label: 'Updated', width: '110px' },
-  ];
+  const columns = TASK_TABLE_COLUMNS.filter((column) => isTaskTableColumnVisible(viewConfig, column.id));
+  const columnVisible = (id: TaskTableColumnId) => isTaskTableColumnVisible(viewConfig, id);
+  const rowPadding = viewConfig.density === 'compact' ? 'py-1.5' : 'py-2.5';
 
   const save = async (taskId: string, field: string, patch: TaskPatch) => {
     const key = `${taskId}:${field}`;
@@ -291,7 +291,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
       {/* Click-away */}
       {inlineDropdown && <div className="fixed inset-0 z-10" onClick={() => setInlineDropdown(null)} />}
 
-      <table className="w-full min-w-[1250px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+      <table className="w-full min-w-[900px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
             {selectionMode && (
@@ -305,9 +305,9 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
               />
             )}
             {columns.map((col) => (
-              <React.Fragment key={col.field}>
+              <React.Fragment key={col.id}>
                 <th
-                  onClick={() => handleSort(col.field)}
+                  onClick={() => handleSort(col.id)}
                   className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
                   style={{
                     color: 'var(--muted)',
@@ -315,15 +315,15 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     background: 'var(--surface)',
                     borderBottom: '1px solid var(--border)',
                     width: col.width === '1fr' ? undefined : col.width,
-                    whiteSpace: col.field === 'status' ? 'nowrap' : undefined,
-                    minWidth: col.field === 'status' ? '100px' : undefined,
-                    left: col.field === 'number' ? (selectionMode ? 32 : 0) : col.field === 'title' ? (selectionMode ? 112 : 80) : undefined,
-                    zIndex: col.field === 'number' || col.field === 'title' ? 4 : 2,
+                    whiteSpace: col.id === 'status' ? 'nowrap' : undefined,
+                    minWidth: col.id === 'status' ? '100px' : undefined,
+                    left: col.id === 'number' ? (selectionMode ? 32 : 0) : col.id === 'title' ? (selectionMode ? 112 : 80) : undefined,
+                    zIndex: col.id === 'number' || col.id === 'title' ? 4 : 2,
                   }}
                 >
                   <div className="flex items-center gap-1">
                     {col.label}
-                    <SortIcon field={col.field} />
+                    <SortIcon field={col.id} />
                   </div>
                 </th>
               </React.Fragment>
@@ -392,7 +392,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* ID */}
                 <td
-                  className="px-3 py-2.5 text-[12px] font-medium"
+                  hidden={!columnVisible('number')}
+                  className={`px-3 ${rowPadding} text-[12px] font-medium`}
                   style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 32 : 0, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
                 >
                   {hidePrefixIds ? '' : `${projectPrefix || task.project_prefix}-${task.number}`}
@@ -400,7 +401,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Title */}
                 <td
-                  className="px-3 py-2.5 text-[13px]"
+                  hidden={!columnVisible('title')}
+                  className={`px-3 ${rowPadding} text-[13px]`}
                   style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 112 : 80, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
                   onClick={(event) => event.stopPropagation()}
                 >
@@ -436,7 +438,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Status */}
                 <td
-                  className="px-3 py-2.5"
+                  hidden={!columnVisible('status')}
+                  className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', minWidth: '100px' }}
                 >
                   <div className="relative">
@@ -493,7 +496,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Priority */}
                 <td
-                  className="px-3 py-2.5"
+                  hidden={!columnVisible('priority')}
+                  className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)' }}
                   onClick={(event) => event.stopPropagation()}
                 >
@@ -518,7 +522,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Assignee */}
                 <td
-                  className="px-3 py-2.5"
+                  hidden={!columnVisible('assignee')}
+                  className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)' }}
                   onClick={(event) => event.stopPropagation()}
                 >
@@ -539,7 +544,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                 </td>
 
                 {/* Start Date */}
-                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td hidden={!columnVisible('start_date')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
                   <input
                     type="date"
                     aria-label={`Start date for ${task.title}`}
@@ -553,7 +558,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Due Date */}
                 <td
-                  className="px-3 py-2.5 text-[12px]"
+                  hidden={!columnVisible('due_date')}
+                  className={`px-3 ${rowPadding} text-[12px]`}
                   style={{
                     fontFamily: 'var(--font-body)',
                     borderBottom: '1px solid var(--border)',
@@ -572,7 +578,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                 </td>
 
                 {/* Estimate */}
-                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td hidden={!columnVisible('estimation')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
                   <select
                     aria-label={`Estimate for ${task.title}`}
                     value={task.estimation ?? ''}
@@ -587,7 +593,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                 </td>
 
                 {/* Labels */}
-                <td className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td hidden={!columnVisible('labels')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
                   <div className="relative">
                     <button
                       aria-label={`Labels for ${task.title}`}
@@ -622,7 +628,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Updated */}
                 <td
-                  className="px-3 py-2.5 text-[12px]"
+                  hidden={!columnVisible('updated_at')}
+                  className={`px-3 ${rowPadding} text-[12px]`}
                   style={{
                     color: 'var(--muted)',
                     fontFamily: 'var(--font-body)',

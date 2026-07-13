@@ -40,9 +40,12 @@ import { EmptyState } from '@/components/empty-state';
 import { CreateProjectModal } from '@/components/create-project-modal';
 import { PersonAvatar } from '@/components/person-avatar';
 import {
+  DEFAULT_TASK_VIEW_CONFIG,
+  normalizeTaskViewConfig,
   parseTaskSurfaceView,
   shouldApplyProjectDefaultView,
   type TaskSurfaceView,
+  type TaskViewConfigV1,
 } from '@/lib/task-view-config';
 
 type Task = {
@@ -152,6 +155,10 @@ export default function TasksPage() {
       projectId: searchParams.get('filterProject') || null,
     };
   });
+  const [layoutConfig, setLayoutConfig] = useState<TaskViewConfigV1>(() => ({
+    ...DEFAULT_TASK_VIEW_CONFIG,
+    view: 'table',
+  }));
   const [loading, setLoading] = useState(true);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
@@ -732,6 +739,32 @@ export default function TasksPage() {
     });
   }, [setQuery]);
 
+  const currentViewConfig = useMemo<TaskViewConfigV1>(() => ({
+    ...layoutConfig,
+    view,
+    filters,
+    projectId: selectedProject?.id ?? null,
+  }), [layoutConfig, view, filters, selectedProject?.id]);
+
+  const handleApplyViewConfig = useCallback((input: TaskViewConfigV1) => {
+    const config = normalizeTaskViewConfig(input);
+    setLayoutConfig(config);
+    setFilters(config.filters as Filters);
+    setUserSelectedView(true);
+    setQuery({
+      view: config.view,
+      project: config.projectId,
+      assignee: config.filters.assigneeIds.length ? config.filters.assigneeIds.join(',') : null,
+      priority: config.filters.priorities.length ? config.filters.priorities.join(',') : null,
+      status: config.filters.status.length ? config.filters.status.join(',') : null,
+      labels: config.filters.labels.length ? config.filters.labels.join(',') : null,
+      dueDate: config.filters.dueDate,
+      dateFrom: config.filters.dateFrom,
+      dateTo: config.filters.dateTo,
+      filterProject: config.filters.projectId,
+    });
+  }, [setQuery]);
+
   const handleTaskCreated = () => {
     loadTasks();
     setQuickCreateOpen(false);
@@ -1112,6 +1145,8 @@ export default function TasksPage() {
           projects={projects}
           statuses={resolvedConfig?.statuses}
           priorityVocab={resolvedConfig?.priority_vocab}
+          viewConfig={currentViewConfig}
+          onApplyViewConfig={handleApplyViewConfig}
         />
 
         {/* Board or List view */}
@@ -1169,6 +1204,8 @@ export default function TasksPage() {
                       selectionMode={selectionMode}
                       selectedTaskIds={selectedTaskIds}
                       onToggleSelect={handleToggleSelect}
+                      viewConfig={currentViewConfig}
+                      onViewConfigChange={setLayoutConfig}
                     />
                   )}
                 </div>
@@ -1227,6 +1264,8 @@ export default function TasksPage() {
                 statuses={resolvedConfig?.statuses}
                 hidePrefixIds={resolvedConfig?.hide_prefix_ids}
                 priorityVocab={resolvedConfig?.priority_vocab}
+                viewConfig={currentViewConfig}
+                onViewConfigChange={setLayoutConfig}
               />
             ) : view === 'calendar' ? (
               <TaskCalendarView

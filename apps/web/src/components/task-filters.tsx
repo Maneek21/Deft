@@ -8,6 +8,13 @@ import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 import type { PriorityVocab, ResolvedStatus, CanonicalPriority } from '@/hooks/use-project-resolved-config';
 import { priorityFullLabel } from '@/hooks/use-project-resolved-config';
 import { AppBottomSheet } from '@/components/overlay-primitives';
+import {
+  isTaskTableColumnVisible,
+  normalizeTaskViewConfig,
+  setTaskTableColumnVisibility,
+  TASK_TABLE_COLUMNS,
+  type TaskViewConfigV1,
+} from '@/lib/task-view-config';
 
 export type Filters = {
   assigneeIds: string[];
@@ -27,11 +34,13 @@ type Props = {
   /** Task 4.9 — resolved skill config drives status chips + priority labels. */
   statuses?: ResolvedStatus[];
   priorityVocab?: PriorityVocab;
+  viewConfig: TaskViewConfigV1;
+  onApplyViewConfig: (config: TaskViewConfigV1) => void;
 };
 
 type Member = { id: string; name: string; email: string; avatar_url: string | null };
 type Label = { id: string; name: string; color: string };
-type SavedView = { id: string; name: string; config: any };
+type SavedView = { id: string; name: string; config: unknown };
 
 const PRIORITY_COLORS: Record<string, string> = {
   p0: '#DC2626',
@@ -51,7 +60,7 @@ const DUE_DATE_OPTIONS = [
   { value: 'this_week', label: 'This week' },
 ];
 
-export function TaskFilters({ filters, onChange, projects, statuses, priorityVocab }: Props) {
+export function TaskFilters({ filters, onChange, projects, statuses, priorityVocab, viewConfig, onApplyViewConfig }: Props) {
   const { user } = useAuth();
   const PRIORITY_OPTIONS = (['p0', 'p1', 'p2', 'p3'] as CanonicalPriority[]).map((value) => ({
     value,
@@ -69,6 +78,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [saveViewName, setSaveViewName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
+  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -106,18 +116,35 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
 
   const handleSaveView = async () => {
     if (!saveViewName.trim()) return;
-    const res = await api.post('/api/tasks/saved-views', { name: saveViewName.trim(), config: filters });
+    const res = await api.post('/api/tasks/saved-views', {
+      name: saveViewName.trim(),
+      config: viewConfig,
+      project_id: viewConfig.projectId,
+    });
     if (res.ok) {
       const view = await res.json();
       setSavedViews(prev => [view, ...prev]);
       setSaveViewName('');
       setShowSaveInput(false);
+      setActiveSavedViewId(view.id);
     }
   };
 
   const handleLoadView = (view: SavedView) => {
-    onChange(view.config as Filters);
+    onApplyViewConfig(normalizeTaskViewConfig(view.config));
+    setActiveSavedViewId(view.id);
     setOpenDropdown(null);
+  };
+
+  const handleUpdateView = async () => {
+    if (!activeSavedViewId) return;
+    const res = await api.patch(`/api/tasks/saved-views/${activeSavedViewId}`, {
+      config: viewConfig,
+      project_id: viewConfig.projectId,
+    });
+    if (!res.ok) return;
+    const updated = await res.json();
+    setSavedViews((current) => current.map((view) => view.id === updated.id ? updated : view));
   };
 
   const handleDeleteView = async (id: string, e: React.MouseEvent) => {
@@ -125,6 +152,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
     const res = await api.delete(`/api/tasks/saved-views/${id}`);
     if (res.ok) {
       setSavedViews(prev => prev.filter(v => v.id !== id));
+      if (activeSavedViewId === id) setActiveSavedViewId(null);
     }
   };
 
@@ -137,6 +165,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
     filters.dateFrom !== null ||
     filters.dateTo !== null ||
     filters.projectId !== null;
+  const canSaveCurrent = hasActive || viewConfig.view === 'table';
 
   const activeFilterCount =
     filters.assigneeIds.length +
@@ -447,7 +476,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                     </button>
                   </div>
                 ))}
-                {hasActive && (
+                {canSaveCurrent && (
                   <div className="mt-1">
                     {showSaveInput ? (
                       <div className="flex gap-1">
@@ -1063,9 +1092,49 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                   </div>
                 ))
               )}
+              {viewConfig.view === 'table' && (
+                <div className="px-3 py-2 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Density</span>
+                    <div className="flex rounded-full p-0.5" style={{ background: 'var(--surface-container-low)' }}>
+                      {(['comfortable', 'compact'] as const).map((density) => (
+                        <button
+                          key={density}
+                          onClick={() => onApplyViewConfig({ ...viewConfig, density })}
+                          className="rounded-full px-2 py-1 text-[10px] font-medium capitalize"
+                          style={{ background: viewConfig.density === density ? 'var(--accent)' : 'transparent', color: viewConfig.density === density ? 'white' : 'var(--muted)' }}
+                        >
+                          {density}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Columns</span>
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      {TASK_TABLE_COLUMNS.map((column) => (
+                        <label key={column.id} className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--foreground-secondary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={isTaskTableColumnVisible(viewConfig, column.id)}
+                            disabled={'required' in column && column.required}
+                            onChange={(event) => onApplyViewConfig(setTaskTableColumnVisibility(viewConfig, column.id, event.target.checked))}
+                          />
+                          {column.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  {activeSavedViewId && (
+                    <button onClick={handleUpdateView} className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
+                      Update saved view
+                    </button>
+                  )}
+                </div>
+              )}
               {/* Save current */}
               <div className="px-3 py-2" style={{ borderTop: '1px solid var(--border)' }}>
-                {hasActive ? (
+                {canSaveCurrent ? (
                   showSaveInput ? (
                     <div className="flex gap-1">
                       <input
@@ -1084,7 +1153,7 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
                   ) : (
                     <button onClick={() => setShowSaveInput(true)}
                       className="text-[11px] font-medium" style={{ color: 'var(--accent)', fontFamily: 'var(--font-heading)' }}>
-                      + Save current filter set as...
+                      + Save current view as...
                     </button>
                   )
                 ) : (

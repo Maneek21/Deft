@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_TASK_VIEW_CONFIG,
+  isTaskTableColumnVisible,
   normalizeTaskViewConfig,
   parseTaskSurfaceView,
+  setTaskTableColumnVisibility,
   shouldApplyProjectDefaultView,
 } from './task-view-config';
 
@@ -72,4 +75,11 @@ test('project default never overwrites an explicit valid or invalid view request
   assert.equal(shouldApplyProjectDefaultView({ requestedView: null, userSelectedView: false, isMyTasksView: false }), true);
   assert.equal(shouldApplyProjectDefaultView({ requestedView: null, userSelectedView: true, isMyTasksView: false }), false);
   assert.equal(shouldApplyProjectDefaultView({ requestedView: null, userSelectedView: false, isMyTasksView: true }), false);
+});
+
+test('column visibility defaults on and changes immutably', () => {
+  assert.equal(isTaskTableColumnVisible(DEFAULT_TASK_VIEW_CONFIG, 'labels'), true);
+  const next = setTaskTableColumnVisibility(DEFAULT_TASK_VIEW_CONFIG, 'labels', false);
+  assert.equal(isTaskTableColumnVisible(next, 'labels'), false);
+  assert.equal(DEFAULT_TASK_VIEW_CONFIG.columns.length, 0);
 });
