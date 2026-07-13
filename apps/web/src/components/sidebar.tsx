@@ -46,6 +46,7 @@ import { SavedMessages } from './saved-messages';
 import { CreateProjectModal } from './create-project-modal';
 import { useInboxCount } from '@/hooks/use-inbox-count';
 import { AppMenu, type AppMenuItem } from './overlay-primitives';
+import { getSocket } from '@/lib/socket';
 
 type AgentEmployee = {
   id: string;
@@ -126,6 +127,19 @@ function ChatSidebarContent({
       active = false;
       window.clearInterval(interval);
     };
+  }, []);
+
+  useEffect(() => {
+    const token = window.localStorage.getItem('deft-access-token');
+    if (!token) return;
+    const socket = getSocket(token);
+    const onPresence = (event: { employee_id: string; status: string; last_seen_at: string }) => {
+      setAgentEmployees((current) => current.map((employee) => employee.id === event.employee_id
+        ? { ...employee, channel_status: event.status, channel_last_seen_at: event.last_seen_at }
+        : employee));
+    };
+    socket.on('agent:presence', onPresence);
+    return () => { socket.off('agent:presence', onPresence); };
   }, []);
 
   const agentStatusColor = (employee: AgentEmployee) => {

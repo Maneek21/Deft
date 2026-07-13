@@ -10,6 +10,7 @@ import {
   agentEmployees,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
+import { getIO } from '../socket.js';
 
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v1';
 
@@ -217,6 +218,15 @@ export async function touchAgentChannelConnection(
     })
     .returning();
 
+  if (connection) {
+    getIO()?.to(`org:${principal.org_id}`).emit('agent:presence', {
+      employee_id: principal.employee_id,
+      status: connection.status,
+      runtime_kind: connection.runtime_kind,
+      last_seen_at: connection.last_seen_at?.toISOString() ?? now.toISOString(),
+      last_error: connection.last_error ?? null,
+    });
+  }
   return connection ?? null;
 }
 
