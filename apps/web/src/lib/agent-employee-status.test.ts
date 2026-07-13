@@ -61,3 +61,15 @@ test('partial sidebar records are not mistaken for paused employees', () => {
   }, NOW);
   assert.equal(status.label, 'Ready to connect');
 });
+
+test('explicit disconnect overrides a recent contact timestamp', () => {
+  const employee = {
+    ...base,
+    certification_status: 'verified',
+    channel_status: 'disconnected',
+    channel_last_seen_at: '2026-07-12T11:59:00Z',
+  };
+
+  assert.equal(agentEmployeeLifecycle(employee, NOW).label, 'Offline');
+  assert.equal(agentConnectionStatus(employee, NOW).label, 'Disconnected - last seen 1m ago');
+});

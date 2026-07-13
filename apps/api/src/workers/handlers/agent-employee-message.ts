@@ -7,11 +7,14 @@ import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import {
   agentActions,
+  agentChannelConnections,
   agentEmployees,
   messages,
+  notifications,
+  orgMembers,
   users,
 } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, lte, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { ensureDeftyMembership } from '../../lib/ensure-defty-membership.js';
 import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
@@ -22,6 +25,77 @@ interface AgentEmployeeMessageData {
   orgId: string;
   employeeId: string;
   isDM: boolean;
+}
+
+type AgentChannelState = {
+  id?: string;
+  status: string;
+  last_seen_at: Date | null;
+} | null;
+
+export function describeAgentDelivery(
+  employeeName: string,
+  connection: AgentChannelState,
+  now = Date.now(),
+) {
+  const lastSeenAt = connection?.last_seen_at?.getTime() ?? 0;
+  const isLive = connection?.status === 'connected' && now - lastSeenAt < 5 * 60_000;
+  if (isLive) {
+    return {
+      state: 'sent' as const,
+      content: `Sent to ${employeeName}. They will reply here when they pick it up.`,
+    };
+  }
+  if (lastSeenAt) {
+    return {
+      state: 'queued' as const,
+      content: `Queued for ${employeeName}. Their runtime is offline; Deft will deliver this when it reconnects.`,
+    };
+  }
+  return {
+    state: 'queued' as const,
+    content: `Queued for ${employeeName}. Connect their runtime to deliver it.`,
+  };
+}
+
+async function notifyAdminsOfQueuedRuntime(orgId: string, employeeId: string, employeeName: string) {
+  const admins = await db
+    .select({ userId: orgMembers.user_id })
+    .from(orgMembers)
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.is_active, true),
+      sql`${orgMembers.role} IN ('owner', 'admin')`,
+    ));
+
+  for (const admin of admins) {
+    const [recent] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(and(
+        eq(notifications.org_id, orgId),
+        eq(notifications.user_id, admin.userId),
+        eq(notifications.type, 'system'),
+        sql`${notifications.metadata}->>'subtype' = 'agent_runtime_offline'`,
+        sql`${notifications.metadata}->>'agent_employee_id' = ${employeeId}`,
+        sql`${notifications.created_at} > now() - interval '24 hours'`,
+      ))
+      .limit(1);
+    if (recent) continue;
+
+    await db.insert(notifications).values({
+      org_id: orgId,
+      user_id: admin.userId,
+      type: 'system',
+      title: `${employeeName} is offline`,
+      body: 'New work is queued and will be delivered when the runtime reconnects.',
+      link: `/settings/agent-employees/${employeeId}/developer`,
+      metadata: {
+        subtype: 'agent_runtime_offline',
+        agent_employee_id: employeeId,
+      },
+    });
+  }
 }
 
 export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
@@ -112,23 +186,56 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   try {
     const io = getIO();
     const deftyUserId = await ensureDeftyMembership(orgId);
-    const lastSeen = employee.last_mcp_call_at ?? employee.last_heartbeat_at ?? null;
-    const humanStatus = lastSeen
-      ? `${employee.name} will reply here when they pick it up.`
-      : `${employee.name} has not checked in yet, but this is waiting for them.`;
+    const [connection] = await db
+      .select({
+        id: agentChannelConnections.id,
+        status: agentChannelConnections.status,
+        last_seen_at: agentChannelConnections.last_seen_at,
+      })
+      .from(agentChannelConnections)
+      .where(and(
+        eq(agentChannelConnections.org_id, orgId),
+        eq(agentChannelConnections.agent_employee_id, employeeId),
+      ))
+      .limit(1);
+    const delivery = describeAgentDelivery(employee.name, connection ?? null);
+
+    if (delivery.state === 'queued') {
+      if (connection?.status === 'connected' && connection.id && connection.last_seen_at) {
+        await db.update(agentChannelConnections)
+          .set({ status: 'disconnected', last_error: 'Runtime contact timed out', updated_at: new Date() })
+          .where(and(
+            eq(agentChannelConnections.id, connection.id),
+            eq(agentChannelConnections.status, 'connected'),
+            lte(agentChannelConnections.last_seen_at, connection.last_seen_at),
+          ));
+      }
+      try {
+        await notifyAdminsOfQueuedRuntime(orgId, employeeId, employee.name);
+      } catch (alertError) {
+        console.warn(
+          '[agent-employee-message] offline runtime alert failed:',
+          alertError instanceof Error ? alertError.message : alertError,
+        );
+      }
+    }
+
     const [sysMsg] = await db
       .insert(messages)
       .values({
         org_id: orgId,
         space_id: spaceId,
         user_id: deftyUserId,
-        content: `Sent to ${employee.name}. ${humanStatus}`,
+        content: delivery.content,
         parent_id: triggerMsg.parent_id ?? null,
         metadata: {
           kind: 'system_note',
           subtype: 'byoa_mention_received',
           agent_employee_id: employeeId,
           wake_mode: employee.wake_mode,
+          delivery_state: delivery.state,
+          channel_status: connection?.status ?? 'never_connected',
+          channel_last_seen_at: connection?.last_seen_at ?? null,
           last_mcp_call_at: employee.last_mcp_call_at,
           last_heartbeat_at: employee.last_heartbeat_at,
         } as never,
