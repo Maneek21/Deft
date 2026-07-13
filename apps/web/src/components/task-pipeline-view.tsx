@@ -3,15 +3,14 @@
 /**
  * Task 4.10 — Pipeline view.
  *
- * Horizontal stages (one per resolved-config status). Wider cards than the
- * board variant so Sales/CRM-style `contact_name` + `deal_value` metadata
- * can render inline. v1 is read-only: clicking a card opens the detail
+ * Secondary business-stage view over the fixed task status vocabulary.
+ * Wider cards can expose legacy/imported `contact_name` + `deal_value`
+ * metadata inline. v1 is read-only: clicking a card opens the detail
  * panel, dragging between stages is NOT wired yet — the API accepts PATCH
  * status so follow-up work can add dnd-kit wiring.
  *
- * Column footer shows a sum of deal_value + task count so Sales skill users
- * can eyeball pipeline weight at a glance. Other skill kinds (Marketing
- * campaign, Engineering) see only the count.
+ * Column footer shows a sum of deal_value + task count when that metadata is
+ * available; ordinary projects see only the count.
  *
  * Mobile (< md): collapses to a single-column view with a stage select
  * above, mirroring the Board view's status-tab pattern (Mobile-spillover P2-1).
@@ -105,7 +104,7 @@ export function TaskPipelineView<T extends PipelineTask>({
     return (
       <div className="flex items-center justify-center h-full" style={{ color: 'var(--muted)' }}>
         <p className="text-[13px]" style={{ fontFamily: 'var(--font-body)' }}>
-          Attach a skill with a pipeline (e.g. Sales) to use this view.
+          No workflow stages are available for this project.
         </p>
       </div>
     );
