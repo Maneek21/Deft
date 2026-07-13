@@ -259,6 +259,32 @@ test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger 
   assert.ok(employeeQueued, 'BYOA agent mention should enqueue agent-employee-message');
 });
 
+test('TipTap HTML mention in a thread reply dispatches to a BYOA employee', async () => {
+  const parentRes = await app.request(`/api/messages/${spaceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: 'Thread parent for employee dispatch' }),
+  });
+  assert.equal(parentRes.status, 201);
+  const parent = await parentRes.json() as { id: string };
+  createdMessageIds.push(parent.id);
+
+  const content = `<p><span data-type="mention" data-mention-uuid="${byoaAgentUserId}" data-mention-name="AMD BYOA Agent">@AMD BYOA Agent</span> please inspect this thread.</p>`;
+  const replyRes = await app.request(`/api/messages/${spaceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, parent_id: parent.id }),
+  });
+  assert.equal(replyRes.status, 201);
+  const reply = await replyRes.json() as { id: string };
+  createdMessageIds.push(reply.id);
+
+  assert.ok(
+    await findAgentEmployeeMessageJob(reply.id),
+    'TipTap mention in a thread reply should enqueue agent-employee-message',
+  );
+});
+
 test('structured mention of kind=human user does NOT trigger agent-reply dispatch', async () => {
   // Same mention format but pointing at a human user — should NOT trigger.
   const content = `Hey <@${humanUserId}|AMD Human>, what do you think?`;
