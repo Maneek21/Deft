@@ -175,6 +175,13 @@ async function getTaskProjectId(tid: string): Promise<string | null> {
   });
 }
 
+async function getTaskSnapshot(tid: string): Promise<{ title: string; updated_at: string }> {
+  const res = await app().request(`/api/tasks/${tid}`, { method: 'GET' });
+  assert.equal(res.status, 200);
+  const task = await res.json() as any;
+  return { title: task.title, updated_at: task.updated_at };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('GET /api/tasks/:id returns flattened assignee fields for task detail clients', async () => {
@@ -192,6 +199,22 @@ test('GET /api/tasks/:id returns flattened assignee fields for task detail clien
   assert.equal(body.source_message?.space_name, 'tasks-patch-source');
   assert.equal(body.source_message?.author_name, 'Tasks Patch Member');
   assert.equal(body.source_message?.content, '<p>source task message</p>');
+});
+
+test('project task list returns every field editable from the table', async () => {
+  const detail = await app().request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ start_date: '2026-07-14', estimation: 'm' }),
+  });
+  assert.equal(detail.status, 200, await detail.text());
+
+  const response = await app().request(`/api/tasks/project/${projectAId}`, { method: 'GET' });
+  assert.equal(response.status, 200);
+  const listed = (await response.json() as any[]).find((task) => task.id === taskId);
+  assert.ok(listed);
+  assert.equal(listed.start_date.slice(0, 10), '2026-07-14');
+  assert.equal(listed.estimation, 'm');
 });
 
 test('PATCH /api/tasks/:id rejects project_id change with 400 PROJECT_CHANGE_UNSUPPORTED', async () => {
@@ -224,6 +247,122 @@ test('PATCH /api/tasks/:id with project_id change AND other fields still rejects
     assert.notEqual(r.rows[0].title, 'should-not-stick');
     assert.equal(r.rows[0].project_id, projectAId);
   });
+});
+
+test('PATCH /api/tasks/:id rejects a stale expected_updated_at without overwriting the newer task', async () => {
+  const initial = await getTaskSnapshot(taskId!);
+  const firstTitle = `fresh-title-${Date.now()}`;
+
+  const first = await app().request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: firstTitle, expected_updated_at: initial.updated_at }),
+  });
+  const firstBody = await first.json() as any;
+  assert.equal(first.status, 200, JSON.stringify({ initial, firstBody }));
+
+  const stale = await app().request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'must-not-overwrite', expected_updated_at: initial.updated_at }),
+  });
+  assert.equal(stale.status, 409);
+  const body = await stale.json() as any;
+  assert.equal(body.code, 'TASK_STALE');
+  assert.equal(body.current_task.title, firstTitle);
+
+  const persisted = await getTaskSnapshot(taskId!);
+  assert.equal(persisted.title, firstTitle);
+});
+
+test('PATCH /api/tasks/:id allows only one concurrent writer for the same version', async () => {
+  const initial = await getTaskSnapshot(taskId!);
+  const titles = [`concurrent-a-${Date.now()}`, `concurrent-b-${Date.now()}`];
+
+  const responses = await Promise.all(titles.map((title) => app().request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title, expected_updated_at: initial.updated_at }),
+  })));
+
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  const persisted = await getTaskSnapshot(taskId!);
+  assert.ok(titles.includes(persisted.title));
+});
+
+test('PATCH /api/tasks/:id replaces labels atomically and rejects stale label writes', async () => {
+  const labelIds = await withClient(async (c) => {
+    const result = await c.query(
+      `INSERT INTO labels (id, org_id, name, color)
+       VALUES (gen_random_uuid()::text, $1, $2, '#7c3aed'), (gen_random_uuid()::text, $1, $3, '#059669')
+       RETURNING id`,
+      [ORG_ID, `table-label-a-${Date.now()}`, `table-label-b-${Date.now()}`],
+    );
+    return result.rows.map((row) => row.id as string);
+  });
+
+  try {
+    const initial = await getTaskSnapshot(taskId!);
+    const applied = await app().request(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label_ids: labelIds, expected_updated_at: initial.updated_at }),
+    });
+    assert.equal(applied.status, 200, await applied.text());
+
+    const persisted = await withClient(async (c) => {
+      const result = await c.query(`SELECT label_id FROM task_labels WHERE task_id = $1 ORDER BY label_id`, [taskId]);
+      return result.rows.map((row) => row.label_id as string);
+    });
+    assert.deepEqual(persisted, [...labelIds].sort());
+
+    const stale = await app().request(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label_ids: [], expected_updated_at: initial.updated_at }),
+    });
+    assert.equal(stale.status, 409);
+  } finally {
+    await withClient(async (c) => {
+      await c.query(`DELETE FROM task_labels WHERE label_id = ANY($1::text[])`, [labelIds]);
+      await c.query(`DELETE FROM labels WHERE id = ANY($1::text[])`, [labelIds]);
+    });
+  }
+});
+
+test('PATCH /api/tasks/:id preserves version coherence across 100 sequential table edits', async () => {
+  let version = (await getTaskSnapshot(taskId!)).updated_at;
+  let expectedTitle = '';
+
+  for (let index = 0; index < 100; index += 1) {
+    expectedTitle = `table-sequence-${index}-${Date.now()}`;
+    const response = await app().request(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: expectedTitle,
+        expected_updated_at: version,
+      }),
+    });
+    const body = await response.json() as any;
+    assert.equal(response.status, 200, JSON.stringify(body));
+    version = body.updated_at;
+  }
+
+  const persisted = await getTaskSnapshot(taskId!);
+  assert.equal(persisted.title, expectedTitle);
+  assert.equal(persisted.updated_at, version);
+});
+
+test('PATCH /api/tasks/:id rejects malformed expected_updated_at', async () => {
+  const res = await app().request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'todo', expected_updated_at: 'not-a-date' }),
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json() as any;
+  assert.equal(body.code, 'VALIDATION_ERROR');
 });
 
 test('PATCH /api/tasks/:id with project_id equal to current is ignored, not rejected', async () => {

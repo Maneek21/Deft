@@ -40,6 +40,7 @@ const createTaskWithProjectSchema = createTaskSchema.extend({
 });
 
 const updateTaskSchema = z.object({
+  expected_updated_at: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
   description: z.string().optional(),
   status: z.string().optional(),
@@ -48,6 +49,7 @@ const updateTaskSchema = z.object({
   due_date: z.string().nullable().optional(),
   start_date: z.string().nullable().optional(),
   estimation: z.string().nullable().optional(),
+  label_ids: z.array(z.string().uuid()).optional(),
   sort_order: z.number().optional(),
   // Task 0.6 — project_id intentionally omitted. Tasks cannot be moved across
   // projects via PATCH because cross-references (PREFIX-N) in chat messages,
@@ -357,6 +359,8 @@ taskRoutes.get('/my', async (c) => {
       assignee_id: tasks.assignee_id,
       created_by: tasks.created_by,
       due_date: tasks.due_date,
+      start_date: tasks.start_date,
+      estimation: tasks.estimation,
       sort_order: tasks.sort_order,
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
@@ -1470,6 +1474,8 @@ taskRoutes.get('/project/:projectId', async (c) => {
       assignee_id: tasks.assignee_id,
       created_by: tasks.created_by,
       due_date: tasks.due_date,
+      start_date: tasks.start_date,
+      estimation: tasks.estimation,
       sort_order: tasks.sort_order,
       project_id: tasks.project_id,
       source_message_id: tasks.source_message_id,
@@ -1767,6 +1773,21 @@ taskRoutes.patch('/:id', async (c) => {
       );
     }
 
+    let expectedUpdatedAt: Date | null = null;
+    if (parsed.data.expected_updated_at !== undefined) {
+      expectedUpdatedAt = new Date(parsed.data.expected_updated_at);
+      if (Number.isNaN(expectedUpdatedAt.getTime())) {
+        return c.json({ error: 'Invalid expected_updated_at', code: 'VALIDATION_ERROR' }, 400);
+      }
+      if (expectedUpdatedAt.getTime() !== existingTask.updated_at.getTime()) {
+        return c.json({
+          error: 'Task changed after it was loaded',
+          code: 'TASK_STALE',
+          current_task: existingTask,
+        }, 409);
+      }
+    }
+
     const updateData: Record<string, any> = {};
     const activityEntries: { action: string; field: string; old_value: string | null; new_value: string | null }[] = [];
 
@@ -1803,13 +1824,6 @@ taskRoutes.patch('/:id', async (c) => {
         updateData.assignee_id = newAssignee;
         activityEntries.push({ action: 'assigned', field: 'assignee_id', old_value: existingTask.assignee_id ?? null, new_value: newAssignee });
       }
-      // Phase 0.3 — no duplication: if the new primary is currently listed as an
-      // additional assignee, remove the taskAssignees row so the two sources of
-      // truth never point to the same user.
-      if (newAssignee) {
-        await db.delete(taskAssignees)
-          .where(and(eq(taskAssignees.task_id, taskId), eq(taskAssignees.user_id, newAssignee)));
-      }
     }
 
     if (parsed.data.due_date !== undefined) {
@@ -1837,6 +1851,25 @@ taskRoutes.patch('/:id', async (c) => {
 
     if (parsed.data.estimation !== undefined) {
       updateData.estimation = parsed.data.estimation;
+    }
+
+    let nextLabelIds: string[] | undefined;
+    let labelsChanged = false;
+    if (parsed.data.label_ids !== undefined) {
+      nextLabelIds = [...new Set(parsed.data.label_ids)];
+      const validLabels = nextLabelIds.length
+        ? await db.select({ id: labels.id }).from(labels).where(and(eq(labels.org_id, user.org_id), inArray(labels.id, nextLabelIds)))
+        : [];
+      if (validLabels.length !== nextLabelIds.length) {
+        return c.json({ error: 'One or more labels are invalid', code: 'INVALID_LABEL' }, 400);
+      }
+      const currentLabels = await db.select({ id: taskLabels.label_id }).from(taskLabels).where(eq(taskLabels.task_id, taskId));
+      const currentIds = currentLabels.map((label) => label.id).sort();
+      labelsChanged = currentIds.join(',') !== [...nextLabelIds].sort().join(',');
+      if (labelsChanged) {
+        updateData.updated_at = new Date();
+        activityEntries.push({ action: 'labels_changed', field: 'labels', old_value: currentIds.join(','), new_value: nextLabelIds.join(',') });
+      }
     }
 
     if (parsed.data.sort_order !== undefined) {
@@ -1876,10 +1909,56 @@ taskRoutes.patch('/:id', async (c) => {
       return c.json({ error: 'No fields to update', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    const [updatedTask] = await db.update(tasks)
-      .set(updateData)
-      .where(eq(tasks.id, taskId))
-      .returning();
+    let updatedTask: typeof tasks.$inferSelect | null = null;
+    if (expectedUpdatedAt || labelsChanged) {
+      updatedTask = await db.transaction(async (tx) => {
+        const [lockedTask] = await tx.select({ updated_at: tasks.updated_at })
+          .from(tasks)
+          .where(eq(tasks.id, taskId))
+          .for('update');
+        if (!lockedTask || (expectedUpdatedAt && lockedTask.updated_at.getTime() !== expectedUpdatedAt.getTime())) {
+          return null;
+        }
+        const [updated] = await tx.update(tasks)
+          .set(updateData)
+          .where(eq(tasks.id, taskId))
+          .returning();
+        if (labelsChanged && nextLabelIds) {
+          await tx.delete(taskLabels).where(eq(taskLabels.task_id, taskId));
+          if (nextLabelIds.length) {
+            await tx.insert(taskLabels).values(nextLabelIds.map((labelId) => ({ task_id: taskId, label_id: labelId })));
+          }
+        }
+        return updated ?? null;
+      });
+    } else {
+      const [updated] = await db.update(tasks)
+        .set(updateData)
+        .where(eq(tasks.id, taskId))
+        .returning();
+      updatedTask = updated ?? null;
+    }
+
+    // The row lock makes the version check and update one atomic operation.
+    // A concurrent writer cannot slip between them and be overwritten.
+    if (!updatedTask) {
+      const currentTask = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
+      return c.json({
+        error: 'Task changed after it was loaded',
+        code: 'TASK_STALE',
+        current_task: currentTask,
+      }, 409);
+    }
+
+    // Only mutate the additional-assignee table after the guarded task update
+    // succeeds, so a stale write cannot leave related state half-updated.
+    if (parsed.data.assignee_id !== undefined && updatedTask.assignee_id) {
+      await db.delete(taskAssignees)
+        .where(and(
+          eq(taskAssignees.task_id, taskId),
+          eq(taskAssignees.user_id, updatedTask.assignee_id),
+        ));
+    }
 
     let activityRows: { id: string; action: string; field: string | null }[] = [];
 
