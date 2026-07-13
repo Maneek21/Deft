@@ -24,7 +24,7 @@ export type EnrichedAuditAction<T extends AuditActionRow = AuditActionRow> = T &
 
 type ToolResultRecord = Record<string, unknown>;
 
-const TASK_WRITE_TOOLS = new Set(['task_create', 'task_update', 'task_transition', 'comment_on_task']);
+const TASK_WRITE_TOOLS = new Set(['task_create', 'task_update', 'task_bulk_update', 'task_transition', 'comment_on_task']);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -81,6 +81,7 @@ function fallbackTitle(action: AuditActionRow): string {
     if (tool === 'task_create') return 'Created task';
     if (tool === 'task_transition') return 'Changed task status';
     if (tool === 'task_update') return 'Updated task';
+    if (tool === 'task_bulk_update') return 'Updated tasks';
     if (tool === 'comment_on_task') return 'Commented on task';
     if (tool === 'message_post') return 'Posted message';
     if (tool === 'send_message') return 'Sent message';
@@ -203,7 +204,16 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
 
     if (action.event === 'mcp_idempotency_result' && result && tool) {
       if (TASK_WRITE_TOOLS.has(tool)) {
-        const taskId = tool === 'comment_on_task'
+        if (tool === 'task_bulk_update') {
+          const updated = asNumber(result.updated) ?? 0;
+          const fields = Array.isArray(result.fields) ? result.fields.filter((field): field is string => typeof field === 'string') : [];
+          receipt = {
+            title: 'Updated tasks',
+            detail: `${updated} task${updated === 1 ? '' : 's'}${fields.length ? `: ${fields.join(', ')}` : ''}`,
+            target_kind: 'task',
+          };
+        } else {
+          const taskId = tool === 'comment_on_task'
           ? asString(result.task_id)
           : asString(result.id) ?? asString(result.task_id);
         const task = taskId ? taskMap.get(taskId) : undefined;
@@ -216,16 +226,17 @@ export async function enrichOAuthAuditActions<T extends AuditActionRow>(
         const from = asString(transition?.from);
         const to = asString(transition?.to) ?? task?.status ?? asString(result.status);
 
-        receipt = {
-          title: fallbackTitle(action),
-          detail: tool === 'task_transition'
-            ? `${key}: ${from ?? 'previous'} -> ${to ?? 'updated'}`
-            : `${key}: ${title}`,
-          href: taskId ? `/tasks?task=${encodeURIComponent(taskId)}` : undefined,
-          target_kind: 'task',
-          target_id: taskId ?? undefined,
-          preview: title,
-        };
+          receipt = {
+            title: fallbackTitle(action),
+            detail: tool === 'task_transition'
+              ? `${key}: ${from ?? 'previous'} -> ${to ?? 'updated'}`
+              : `${key}: ${title}`,
+            href: taskId ? `/tasks?task=${encodeURIComponent(taskId)}` : undefined,
+            target_kind: 'task',
+            target_id: taskId ?? undefined,
+            preview: title,
+          };
+        }
       } else if (tool === 'message_post' || tool === 'send_message') {
         const messageId = asString(result.id);
         const spaceId = asString(result.space_id);

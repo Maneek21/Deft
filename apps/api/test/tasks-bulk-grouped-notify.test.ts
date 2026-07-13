@@ -16,6 +16,8 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { Hono } from 'hono';
+import { humanTaskBulkUpdate, humanTaskQuery, humanTaskSavedViewGet } from '../src/lib/mcp-tools/human.js';
+import { executeAction } from '../src/lib/agent-actions.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
@@ -127,6 +129,7 @@ after(async () => {
       SELECT id FROM tasks WHERE project_id IN (${fixtureProjectFilter})
     `;
 
+    await c.query(`DELETE FROM saved_views WHERE org_id = $1 AND user_id = $2`, [ORG_ID, ACTOR_ID]);
     await c.query(
       `DELETE FROM task_relationships
        WHERE source_task_id IN (${fixtureTaskFilter})
@@ -151,6 +154,8 @@ after(async () => {
       `DELETE FROM notifications WHERE user_id IN ($1, $2)`,
       [ACTOR_ID, ASSIGNEE_ID],
     );
+    await c.query(`DELETE FROM oauth_audit_events WHERE org_id = $1 AND user_id = $2`, [ORG_ID, ACTOR_ID]);
+    await c.query(`DELETE FROM audit_log WHERE org_id = $1 AND actor_id = $2`, [ORG_ID, ACTOR_ID]);
     await c.query(
       `DELETE FROM action_receipts
        WHERE action_id IN (
@@ -188,7 +193,6 @@ after(async () => {
       `DELETE FROM org_members WHERE user_id IN ($1, $2)`,
       [ACTOR_ID, ASSIGNEE_ID],
     );
-    await c.query(`DELETE FROM users WHERE id IN ($1, $2)`, [ACTOR_ID, ASSIGNEE_ID]);
   });
 });
 
@@ -326,6 +330,106 @@ test('mixed visible and inaccessible IDs fail atomically', async () => {
   await withClient(async (c) => {
     const row = await c.query(`SELECT priority FROM tasks WHERE id = $1`, [visibleId]);
     assert.equal(row.rows[0].priority, before);
+  });
+});
+
+test('human MCP bulk update shares validation and replays an idempotent result', async () => {
+  const ids = taskIds.slice(10, 12);
+  const ctx = {
+    org_id: ORG_ID,
+    user_id: ACTOR_ID,
+    role: 'member' as const,
+    scopes: ['write:tasks'],
+    token_id: 'bulk-test-token',
+    client_id: 'bulk-test-client',
+  };
+  const args = { task_ids: ids, updates: { priority: 'p3' }, idempotency_key: `bulk-priority-p3-${projectPrefix}` };
+  const first = await humanTaskBulkUpdate(args, ctx);
+  assert.equal(first.isError, false);
+  const firstPayload = JSON.parse(first.content[0]!.text);
+  assert.equal(firstPayload.updated, 2);
+  const activityCount = await withClient(async (c) => {
+    const row = await c.query(`SELECT count(*)::int AS count FROM task_activity WHERE task_id = ANY($1::text[]) AND field = 'priority'`, [ids]);
+    return row.rows[0].count as number;
+  });
+
+  const replay = await humanTaskBulkUpdate(args, ctx);
+  assert.deepEqual(replay, first);
+  await withClient(async (c) => {
+    const row = await c.query(`SELECT count(*)::int AS count FROM task_activity WHERE task_id = ANY($1::text[]) AND field = 'priority'`, [ids]);
+    assert.equal(row.rows[0].count, activityCount);
+  });
+});
+
+test('MCP query and saved-view reads expose compact canonical task state', async () => {
+  const ctx = {
+    org_id: ORG_ID,
+    user_id: ACTOR_ID,
+    role: 'member' as const,
+    scopes: ['read:tasks'],
+    token_id: 'bulk-test-token',
+    client_id: 'bulk-test-client',
+  };
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO tasks (id, org_id, project_id, parent_task_id, number, title, status, priority, created_by, is_deleted, is_template)
+       VALUES
+         (gen_random_uuid()::text, $1, $2, $3, 101, 'P3 subtask', 'todo', 'p3', $4, false, false),
+         (gen_random_uuid()::text, $1, $2, null, 102, 'P3 template', 'todo', 'p3', $4, false, true)`,
+      [ORG_ID, projectId, taskIds[0], ACTOR_ID],
+    );
+  });
+  const queried = await humanTaskQuery({ project_id: projectId!, priorities: ['p3'], sort: { field: 'number', direction: 'asc' }, limit: 20 }, ctx);
+  assert.equal(queried.isError, false);
+  const queryPayload = JSON.parse(queried.content[0]!.text);
+  assert.equal(queryPayload.length, 2);
+  assert.deepEqual(queryPayload.map((task: any) => task.task_key), [`${projectPrefix}-11`, `${projectPrefix}-12`]);
+  assert.equal('description' in queryPayload[0], false);
+  assert.equal(queryPayload.some((task: any) => task.id === hiddenTaskId), false);
+
+  const viewId = await withClient(async (c) => {
+    const row = await c.query(
+      `INSERT INTO saved_views (id, org_id, project_id, user_id, name, config, is_shared)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'P3 compact view', $4::jsonb, false)
+       RETURNING id`,
+      [ORG_ID, projectId, ACTOR_ID, JSON.stringify({ filters: { priorities: ['p3'] }, sort: { field: 'number', direction: 'asc' }, columns: ['title', 'priority'] })],
+    );
+    return row.rows[0].id as string;
+  });
+  const saved = await humanTaskSavedViewGet({ saved_view_id: viewId }, ctx);
+  assert.equal(saved.isError, false);
+  const savedPayload = JSON.parse(saved.content[0]!.text);
+  assert.equal(savedPayload.read_only, true);
+  assert.deepEqual(savedPayload.query_config.columns, ['title', 'priority']);
+});
+
+test('Defty bulk execution uses the same service and attributes every task change', async () => {
+  const identifiers = [`${projectPrefix}-21`, `${projectPrefix}-22`, `${projectPrefix}-23`];
+  const actionId = await withClient(async (c) => {
+    const row = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, source, action, params, approval_tier, approval_status, approved_at)
+       VALUES (gen_random_uuid()::text, $1, $2, 'native', 'bulk_update_tasks', $3::jsonb, 'full', 'approved', now())
+       RETURNING id`,
+      [ORG_ID, ACTOR_ID, JSON.stringify({ task_identifiers: identifiers, updates: { priority: 'p0' } })],
+    );
+    return row.rows[0].id as string;
+  });
+  const result = await executeAction(actionId, 'bulk_update_tasks', {
+    task_identifiers: identifiers,
+    updates: { priority: 'p0' },
+  }, ORG_ID, ACTOR_ID);
+  assert.equal(result.success, true);
+  assert.equal(result.result.updated, 3);
+  await withClient(async (c) => {
+    const tasks = await c.query(`SELECT priority FROM tasks WHERE id = ANY($1::text[])`, [taskIds.slice(20, 23)]);
+    assert.deepEqual(tasks.rows.map((row) => row.priority), ['p0', 'p0', 'p0']);
+    const activity = await c.query(
+      `SELECT count(*)::int AS count FROM task_activity
+       WHERE task_id = ANY($1::text[]) AND agent_action_id = $2 AND field = 'priority'`,
+      [taskIds.slice(20, 23), actionId],
+    );
+    assert.equal(activity.rows[0].count, 3);
   });
 });
 

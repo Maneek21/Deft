@@ -23,6 +23,7 @@ import {
   type TaskTableSort,
   type TaskTableSortField,
 } from '../lib/task-table-query.js';
+import { bulkTaskUpdateSchema, bulkUpdateTasks, BulkTaskUpdateError } from '../lib/task-bulk-update.js';
 
 export const taskRoutes = new Hono();
 
@@ -70,22 +71,6 @@ const updateTaskSchema = z.object({
 });
 
 const bulkTaskIdsSchema = z.array(z.string().min(1)).min(1).max(50);
-const bulkTaskUpdateSchema = z.object({
-  task_ids: bulkTaskIdsSchema,
-  updates: z.object({
-    status: z.enum(['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']).optional(),
-    priority: z.enum(['p0', 'p1', 'p2', 'p3']).optional(),
-    assignee_id: z.string().nullable().optional(),
-    due_date: z.string().nullable().optional(),
-    start_date: z.string().nullable().optional(),
-    estimation: z.string().max(100).nullable().optional(),
-    add_label_ids: z.array(z.string().uuid()).max(50).optional(),
-    remove_label_ids: z.array(z.string().uuid()).max(50).optional(),
-  }).refine((updates) => Object.values(updates).some((value) => value !== undefined), {
-    message: 'At least one update is required',
-  }),
-});
-
 const bulkTaskDeleteSchema = z.object({ task_ids: bulkTaskIdsSchema });
 
 async function validateAssignableAssigneeId(assigneeId: unknown, orgId: string): Promise<string | null | undefined> {
@@ -559,178 +544,15 @@ taskRoutes.patch('/bulk', async (c) => {
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid bulk update', code: 'VALIDATION_ERROR' }, 400);
     }
-    const taskIds = [...new Set(parsed.data.task_ids)];
-    const updates = parsed.data.updates;
-
-    const targetTasks = await db.select({
-      id: tasks.id,
-      project_id: tasks.project_id,
-      status: tasks.status,
-      priority: tasks.priority,
-      assignee_id: tasks.assignee_id,
-      due_date: tasks.due_date,
-      start_date: tasks.start_date,
-      estimation: tasks.estimation,
-    })
-      .from(tasks)
-      .innerJoin(projects, eq(tasks.project_id, projects.id))
-      .where(and(
-        inArray(tasks.id, taskIds),
-        eq(tasks.org_id, user.org_id),
-        eq(tasks.is_deleted, false),
-        visibleTaskCondition(user.id),
-      ));
-    if (targetTasks.length !== taskIds.length) {
-      return c.json({ error: 'One or more tasks were not found or are not accessible', code: 'TASK_NOT_FOUND' }, 404);
-    }
-
-    const nextAssigneeId = await validateAssignableAssigneeId(updates.assignee_id, user.org_id);
-    if (updates.assignee_id !== undefined && nextAssigneeId === undefined) {
-      return c.json({ error: 'Assignee must be an active user or healthy agent in this organization', code: 'INVALID_ASSIGNEE' }, 400);
-    }
-
-    const parseDate = (value: string | null | undefined) => {
-      if (value === undefined || value === null || value === '') return value === undefined ? undefined : null;
-      const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? undefined : date;
-    };
-    const nextDueDate = parseDate(updates.due_date);
-    const nextStartDate = parseDate(updates.start_date);
-    if ((updates.due_date && nextDueDate === undefined) || (updates.start_date && nextStartDate === undefined)) {
-      return c.json({ error: 'Dates must be valid ISO dates', code: 'VALIDATION_ERROR' }, 400);
-    }
-
-    if (updates.status) {
-      const config = await getProjectResolvedConfig(targetTasks[0]!.project_id);
-      const invalidTransition = targetTasks.find((task) => !isValidTransition(task.status, updates.status!, config));
-      if (invalidTransition) {
-        return c.json({ error: `Cannot move every selected task to ${updates.status}`, code: 'INVALID_STATUS_TRANSITION' }, 400);
-      }
-    }
-
-    const addLabelIds = [...new Set(updates.add_label_ids ?? [])];
-    const removeLabelIds = [...new Set(updates.remove_label_ids ?? [])];
-    if (addLabelIds.some((id) => removeLabelIds.includes(id))) {
-      return c.json({ error: 'A label cannot be added and removed in the same operation', code: 'VALIDATION_ERROR' }, 400);
-    }
-    const requestedLabelIds = [...new Set([...addLabelIds, ...removeLabelIds])];
-    if (requestedLabelIds.length) {
-      const validLabels = await db.select({ id: labels.id }).from(labels)
-        .where(and(eq(labels.org_id, user.org_id), inArray(labels.id, requestedLabelIds)));
-      if (validLabels.length !== requestedLabelIds.length) {
-        return c.json({ error: 'One or more labels are invalid', code: 'INVALID_LABEL' }, 400);
-      }
-    }
-    const currentLabelRows = requestedLabelIds.length
-      ? await db.select({ task_id: taskLabels.task_id, label_id: taskLabels.label_id }).from(taskLabels)
-        .where(and(inArray(taskLabels.task_id, taskIds), inArray(taskLabels.label_id, requestedLabelIds)))
-      : [];
-    const currentLabelKeys = new Set(currentLabelRows.map((row) => `${row.task_id}:${row.label_id}`));
-
-    const sameDate = (left: Date | null, right: Date | null | undefined) => right === undefined || left?.getTime() === right?.getTime();
-    const activityRows: Array<typeof taskActivity.$inferInsert> = [];
-    const changedIds = new Set<string>();
-    const canonicalChangedIds = new Set<string>();
-    const labelAdds: Array<{ task_id: string; label_id: string }> = [];
-    const labelRemoves: Array<{ task_id: string; label_id: string }> = [];
-    for (const task of targetTasks) {
-      const record = (action: string, field: string, oldValue: string | null, newValue: string | null) => {
-        changedIds.add(task.id);
-        canonicalChangedIds.add(task.id);
-        activityRows.push({ org_id: user.org_id, task_id: task.id, user_id: user.id, action, field, old_value: oldValue, new_value: newValue });
-      };
-      if (updates.status !== undefined && updates.status !== task.status) record('status_changed', 'status', task.status, updates.status);
-      if (updates.priority !== undefined && updates.priority !== task.priority) record('priority_changed', 'priority', task.priority, updates.priority);
-      if (updates.assignee_id !== undefined && nextAssigneeId !== task.assignee_id) record('assigned', 'assignee_id', task.assignee_id, nextAssigneeId ?? null);
-      if (updates.due_date !== undefined && !sameDate(task.due_date, nextDueDate)) record('due_date_changed', 'due_date', task.due_date?.toISOString() ?? null, nextDueDate?.toISOString() ?? null);
-      if (updates.start_date !== undefined && !sameDate(task.start_date, nextStartDate)) record('start_date_changed', 'start_date', task.start_date?.toISOString() ?? null, nextStartDate?.toISOString() ?? null);
-      if (updates.estimation !== undefined && updates.estimation !== task.estimation) record('estimation_changed', 'estimation', task.estimation, updates.estimation);
-      for (const labelId of addLabelIds) {
-        if (!currentLabelKeys.has(`${task.id}:${labelId}`)) {
-          labelAdds.push({ task_id: task.id, label_id: labelId });
-          changedIds.add(task.id);
-          activityRows.push({ org_id: user.org_id, task_id: task.id, user_id: user.id, action: 'label_added', field: 'labels', new_value: labelId });
-        }
-      }
-      for (const labelId of removeLabelIds) {
-        if (currentLabelKeys.has(`${task.id}:${labelId}`)) {
-          labelRemoves.push({ task_id: task.id, label_id: labelId });
-          changedIds.add(task.id);
-          activityRows.push({ org_id: user.org_id, task_id: task.id, user_id: user.id, action: 'label_removed', field: 'labels', old_value: labelId });
-        }
-      }
-    }
-
-    const updatedIds = [...changedIds];
-    if (!updatedIds.length) return c.json({ success: true, requested: taskIds.length, updated: 0, updated_ids: [] });
-
-    const updateData: Partial<typeof tasks.$inferInsert> = { updated_at: new Date() };
-    if (updates.status !== undefined) updateData.status = updates.status;
-    if (updates.priority !== undefined) updateData.priority = updates.priority;
-    if (updates.assignee_id !== undefined) updateData.assignee_id = nextAssigneeId ?? null;
-    if (updates.due_date !== undefined) updateData.due_date = nextDueDate ?? null;
-    if (updates.start_date !== undefined) updateData.start_date = nextStartDate ?? null;
-    if (updates.estimation !== undefined) updateData.estimation = updates.estimation;
-
-    await db.transaction(async (tx) => {
-      if (canonicalChangedIds.size) {
-        await tx.update(tasks).set(updateData).where(inArray(tasks.id, [...canonicalChangedIds]));
-      } else {
-        await tx.update(tasks).set({ updated_at: new Date() }).where(inArray(tasks.id, updatedIds));
-      }
-      if (labelAdds.length) await tx.insert(taskLabels).values(labelAdds).onConflictDoNothing();
-      if (labelRemoves.length) {
-        for (const row of labelRemoves) {
-          await tx.delete(taskLabels).where(and(eq(taskLabels.task_id, row.task_id), eq(taskLabels.label_id, row.label_id)));
-        }
-      }
-      if (updates.assignee_id !== undefined && nextAssigneeId) {
-        await tx.delete(taskAssignees).where(and(inArray(taskAssignees.task_id, updatedIds), eq(taskAssignees.user_id, nextAssigneeId)));
-      }
-      if (activityRows.length) await tx.insert(taskActivity).values(activityRows);
-    });
-
-    // Task 5.5 — grouped notification for bulk assign.
-    // When ≥3 tasks in one bulk op target the same user (excluding the
-    // actor), write one notification (type=task_assigned) with
-    // metadata.task_ids so the client can render a grouped chip +
-    // deep-link to the filtered list.
-    const assignedIds = targetTasks.filter((task) => updates.assignee_id !== undefined && task.assignee_id !== nextAssigneeId).map((task) => task.id);
-    if (nextAssigneeId && nextAssigneeId !== user.id && assignedIds.length >= 3) {
-      try {
-        const notification = await createNotificationIfAllowed({
-          org_id: user.org_id,
-          user_id: nextAssigneeId,
-          type: 'task_assigned',
-          title: `You were assigned ${assignedIds.length} tasks`,
-          body: null,
-          link: `/tasks?mine=1`,
-          metadata: { task_ids: assignedIds, grouped: true, kind: 'bulk_assign' },
-        }, { channel: 'tasks' });
-        if (notification) {
-          emitToUser(nextAssigneeId, 'notification:new', notification);
-        }
-      } catch (err) {
-        console.error('Failed to write grouped bulk-assign notification:', err);
-      }
-    }
-
-    // Task 5.5 — single batched socket event instead of N per-task events.
-    const io = getIO();
-    if (io) {
-      io.to(`org:${user.org_id}`).emit('task:bulk_updated', {
-        task_ids: updatedIds,
-        changes: updateData,
-      });
-    }
-
-    return c.json({ success: true, requested: taskIds.length, updated: updatedIds.length, updated_ids: updatedIds });
+    return c.json(await bulkUpdateTasks(parsed.data, { orgId: user.org_id, userId: user.id }));
   } catch (err) {
+    if (err instanceof BulkTaskUpdateError) {
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
     console.error('Failed to bulk update tasks:', err);
     return c.json({ error: 'Failed to bulk update tasks', code: 'INTERNAL_ERROR' }, 500);
   }
 });
-
 // POST /api/tasks/bulk-delete — soft delete multiple tasks
 taskRoutes.post('/bulk-delete', async (c) => {
   try {

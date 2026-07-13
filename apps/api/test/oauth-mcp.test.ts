@@ -40,6 +40,7 @@ const PRIVATE_WIKI_SLUG = `oauth-mcp-private-sauce-${TEST_ID.slice(0, 8)}`;
 const PROJECT_ID = `oauth-mcp-project-${TEST_ID}`;
 const PRIVATE_PROJECT_ID = `oauth-mcp-private-project-${TEST_ID}`;
 const TASK_ID = `oauth-mcp-task-${TEST_ID}`;
+const SAVED_VIEW_ID = `oauth-mcp-saved-view-${TEST_ID}`;
 const RESTRICTED_TASK_ID = `oauth-mcp-restricted-task-${TEST_ID}`;
 const PRIVATE_EVENT_ID = `oauth-mcp-private-event-${TEST_ID}`;
 const SPACE_ID = `oauth-mcp-space-${TEST_ID}`;
@@ -88,6 +89,7 @@ async function cleanup() {
     await client.query(`DELETE FROM spaces WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM saved_views WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM projects WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_citations WHERE org_id = $1`, [ORG_ID]);
@@ -172,6 +174,11 @@ async function seedWorkspace() {
       `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
        VALUES ($1, $2, 'OAuth MCP Demo Project', 'OMCP', $3, 1)`,
       [PROJECT_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO saved_views (id, org_id, project_id, user_id, name, config, is_shared)
+       VALUES ($1, $2, $3, $4, 'OAuth P2 view', '{"filters":{"priorities":["p2"]},"columns":["title","priority"]}'::jsonb, false)`,
+      [SAVED_VIEW_ID, ORG_ID, PROJECT_ID, USER_ID],
     );
     await client.query(
       `INSERT INTO tasks
@@ -1155,6 +1162,7 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     list_my_tasks: { limit: 5 },
     task_get: { task_id: TASK_ID },
     task_query: { limit: 5 },
+    task_saved_view_get: { saved_view_id: SAVED_VIEW_ID },
     project_list: { limit: 5 },
     resolve_project: { query: 'OAuth MCP Demo', limit: 5 },
     project_get: { project_id: PROJECT_ID },

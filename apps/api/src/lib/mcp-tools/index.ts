@@ -249,8 +249,7 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'task_query',
     description:
-      'Read the task board. Filter by status, assignee, or project. Returns ' +
-      'the top 20 matching tasks by most-recently-updated.',
+      'Query visible tasks using the same canonical fields as the task table. Returns compact task rows; use task_get/get_task_detail for full descriptions and activity.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -264,7 +263,24 @@ export const toolSchemas: ToolSchema[] = [
           },
           additionalProperties: false,
         },
-        limit: { type: 'integer', minimum: 1, maximum: 50 },
+        project_id: { type: 'string' },
+        mine: { type: 'boolean' },
+        assignee_ids: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+        statuses: { type: 'array', items: { type: 'string', enum: ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'] }, maxItems: 6 },
+        priorities: { type: 'array', items: { type: 'string', enum: ['p0', 'p1', 'p2', 'p3'] }, maxItems: 4 },
+        label_ids: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+        due: { type: 'string', enum: ['overdue', 'today', 'this_week'] },
+        date_from: { type: 'string', description: 'Due-date lower bound as ISO date.' },
+        date_to: { type: 'string', description: 'Due-date upper bound as ISO date.' },
+        sort: {
+          type: 'object',
+          properties: {
+            field: { type: 'string', enum: ['number', 'title', 'status', 'priority', 'assignee', 'start_date', 'due_date', 'estimation', 'updated_at', 'project'] },
+            direction: { type: 'string', enum: ['asc', 'desc'] },
+          },
+          additionalProperties: false,
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
       },
       required: ['caller_employee_slug'],
     },
