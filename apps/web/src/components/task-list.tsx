@@ -64,6 +64,15 @@ type Props = {
   viewConfig: TaskViewConfigV1;
   onViewConfigChange: (config: TaskViewConfigV1) => void;
   onInlineCreate?: (title: string, defaults: TaskPatch) => Promise<boolean>;
+  pagination?: {
+    page: number;
+    total: number;
+    hasPrevious: boolean;
+    hasNext: boolean;
+    loading: boolean;
+    onPrevious: () => void;
+    onNext: () => void;
+  };
 };
 
 type TaskPatch = Partial<Pick<Task, 'title' | 'status' | 'priority' | 'assignee_id' | 'due_date' | 'start_date' | 'estimation'>> & {
@@ -177,7 +186,7 @@ function taskGroup(task: Task, field: string): string {
   }
 }
 
-export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange, onInlineCreate }: Props) {
+export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange, onInlineCreate, pagination }: Props) {
   const STATUS_OPTIONS = useMemo(() => {
     if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return [...statuses]
@@ -235,8 +244,9 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
       return a.id.localeCompare(b.id);
     });
 
-  // Fix 3: page-sliced rows
-  const visibleRows = sorted.slice(0, visibleCount);
+  // Server-backed pages already arrive in cursor order. Re-sorting a page here
+  // can move rows across page boundaries and cause skips or duplicates.
+  const visibleRows = pagination ? tasks : sorted.slice(0, visibleCount);
 
   const SortIcon = ({ field }: { field: SortField }) => {
     const index = configuredSorts.findIndex((clause) => clause.field === field);
@@ -286,6 +296,28 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
       </td>
     </tr>
   );
+
+  const paginationControls = pagination && (pagination.hasPrevious || pagination.hasNext) ? (
+    <div className="flex items-center justify-center gap-3 py-3 text-[12px]" style={{ color: 'var(--muted)' }}>
+      <button
+        disabled={!pagination.hasPrevious || pagination.loading}
+        onClick={pagination.onPrevious}
+        className="rounded-full px-3 py-1.5 font-medium disabled:opacity-35"
+        style={{ border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
+      >
+        Previous
+      </button>
+      <span>Page {pagination.page} · {pagination.total} tasks</span>
+      <button
+        disabled={!pagination.hasNext || pagination.loading}
+        onClick={pagination.onNext}
+        className="rounded-full px-3 py-1.5 font-medium disabled:opacity-35"
+        style={{ border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
+      >
+        Next
+      </button>
+    </div>
+  ) : null;
 
   if (isMobile) {
     return (
@@ -345,8 +377,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
             </div>
           );
         })}
-        {/* Fix 3: Load more */}
-        {visibleCount < sorted.length && (
+        {paginationControls}
+        {!pagination && visibleCount < sorted.length && (
           <div className="flex justify-center py-3">
             <button
               onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
@@ -748,8 +780,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
           <p className="text-[14px]" style={{ fontFamily: 'var(--font-body)' }}>No tasks match the current filters</p>
         </div>
       )}
-      {/* Fix 3: Load more button */}
-      {visibleCount < sorted.length && (
+      {paginationControls}
+      {!pagination && visibleCount < sorted.length && (
         <div className="flex justify-center py-4">
           <button
             onClick={() => setVisibleCount(c => c + PAGE_SIZE)}

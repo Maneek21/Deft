@@ -173,6 +173,14 @@ export default function TasksPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [velocity, setVelocity] = useState<{ average: number } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [tablePage, setTablePage] = useState({
+    serverBacked: false,
+    total: 0,
+    cursor: null as string | null,
+    nextCursor: null as string | null,
+    previousCursors: [] as Array<string | null>,
+    loading: false,
+  });
   const viewMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   useEffect(() => {
@@ -257,7 +265,45 @@ export default function TasksPage() {
   }, [currentProjectId, projects]);
 
   // Load tasks when project changes (or for My Tasks view)
-  const loadTasks = useCallback(async () => {
+  const loadTasks = useCallback(async (cursor: string | null = null) => {
+    if (view === 'table') {
+      const params = new URLSearchParams();
+      if (isMyTasksView) params.set('mine', 'true');
+      const projectId = isMyTasksView ? filters.projectId : selectedProject?.id;
+      if (projectId) params.set('project_id', projectId);
+      if (filters.assigneeIds.length) params.set('assignee', filters.assigneeIds.join(','));
+      if (filters.priorities.length) params.set('priority', filters.priorities.join(','));
+      if (filters.status.length) params.set('status', filters.status.join(','));
+      if (filters.labels.length) params.set('labels', filters.labels.join(','));
+      if (filters.dueDate) params.set('due', filters.dueDate);
+      if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+      if (filters.dateTo) params.set('date_to', filters.dateTo);
+      if (layoutConfig.sort.length) {
+        params.set('sort', layoutConfig.sort.slice(0, 3).map((sort) => `${sort.field}:${sort.direction}:${sort.nulls}`).join(','));
+      }
+      if (layoutConfig.groupBy) params.set('group', `${layoutConfig.groupBy.field}:${layoutConfig.groupBy.direction}`);
+      if (cursor) params.set('cursor', cursor);
+      params.set('page_size', isMobile ? '50' : '200');
+
+      setTablePage((current) => ({ ...current, loading: true }));
+      const tableResponse = await api.get(`/api/tasks/table?${params}`);
+      if (tableResponse.ok) {
+        const page = await tableResponse.json();
+        setTasks(page.data);
+        setTablePage((current) => ({
+          ...current,
+          serverBacked: true,
+          total: page.total,
+          cursor,
+          nextCursor: page.next_cursor,
+          previousCursors: cursor === null ? [] : current.previousCursors,
+          loading: false,
+        }));
+        return;
+      }
+      // Keep the pre-Loop-3 loader as a safe rollback path.
+      setTablePage((current) => ({ ...current, serverBacked: false, loading: false }));
+    }
     if (isMyTasksView) {
       // Load all tasks assigned to the current user across all projects
       const res = await api.get('/api/tasks/my');
@@ -273,7 +319,7 @@ export default function TasksPage() {
       const data = await res.json();
       setTasks(data);
     }
-  }, [selectedProject, isMyTasksView]);
+  }, [selectedProject, isMyTasksView, view, filters, layoutConfig.sort, layoutConfig.groupBy, isMobile]);
 
   useEffect(() => {
     loadTasks();
@@ -297,10 +343,18 @@ export default function TasksPage() {
 
     const onCreated = (payload: Task) => {
       if (!isInScope(payload)) return;
+      if (view === 'table') {
+        void loadTasks(tablePage.cursor);
+        return;
+      }
       setTasks((prev) => (prev.some((t) => t.id === payload.id) ? prev : [...prev, payload]));
     };
 
     const onUpdated = (payload: Partial<Task> & { id: string }) => {
+      if (view === 'table') {
+        void loadTasks(tablePage.cursor);
+        return;
+      }
       setTasks((prev) => {
         const idx = prev.findIndex((t) => t.id === payload.id);
         if (idx === -1) {
@@ -317,6 +371,11 @@ export default function TasksPage() {
     };
 
     const onDeleted = (payload: { id: string }) => {
+      if (view === 'table') {
+        void loadTasks(tablePage.cursor);
+        setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
+        return;
+      }
       setTasks((prev) => prev.filter((t) => t.id !== payload.id));
       setSelectedTask((prev) => (prev && prev.id === payload.id ? null : prev));
     };
@@ -326,6 +385,10 @@ export default function TasksPage() {
     // shifted (new in-scope items after bulk assign).
     const onBulkUpdated = (payload: { task_ids: string[]; changes: Partial<Task> }) => {
       if (!payload || !Array.isArray(payload.task_ids)) return;
+      if (view === 'table') {
+        void loadTasks(tablePage.cursor);
+        return;
+      }
       const ids = new Set(payload.task_ids);
       setTasks((prev) => {
         let touched = false;
@@ -357,7 +420,7 @@ export default function TasksPage() {
       socket.off('task:bulk_updated', onBulkUpdated);
       socket.off('task:deleted', onDeleted);
     };
-  }, [selectedProject, isMyTasksView, user?.id, loadTasks]);
+  }, [selectedProject, isMyTasksView, user?.id, loadTasks, view, tablePage.cursor]);
 
   // Load org members for assignee dropdown in bulk actions
   useEffect(() => {
@@ -745,6 +808,26 @@ export default function TasksPage() {
     filters,
     projectId: selectedProject?.id ?? null,
   }), [layoutConfig, view, filters, selectedProject?.id]);
+
+  const handleTableNextPage = useCallback(async () => {
+    if (!tablePage.nextCursor || tablePage.loading) return;
+    const next = tablePage.nextCursor;
+    setTablePage((current) => ({
+      ...current,
+      previousCursors: [...current.previousCursors, current.cursor],
+    }));
+    await loadTasks(next);
+  }, [tablePage.nextCursor, tablePage.loading, loadTasks]);
+
+  const handleTablePreviousPage = useCallback(async () => {
+    if (!tablePage.previousCursors.length || tablePage.loading) return;
+    const previous = tablePage.previousCursors.at(-1) ?? null;
+    setTablePage((current) => ({
+      ...current,
+      previousCursors: current.previousCursors.slice(0, -1),
+    }));
+    await loadTasks(previous);
+  }, [tablePage.previousCursors, tablePage.loading, loadTasks]);
 
   const handleApplyViewConfig = useCallback((input: TaskViewConfigV1) => {
     const config = normalizeTaskViewConfig(input);
@@ -1228,7 +1311,8 @@ export default function TasksPage() {
                   <span className="text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
                     Showing{' '}
                     <span style={{ color: 'var(--foreground-secondary)', fontWeight: 500 }}>
-                      {filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'}
+                      {view === 'table' && tablePage.serverBacked ? tablePage.total : filteredTasks.length}{' '}
+                      {(view === 'table' && tablePage.serverBacked ? tablePage.total : filteredTasks.length) === 1 ? 'task' : 'tasks'}
                     </span>
                     {selectedProject ? (
                       <> in <span style={{ color: 'var(--foreground-secondary)', fontWeight: 500 }}>{selectedProject.name}</span></>
@@ -1275,6 +1359,15 @@ export default function TasksPage() {
                 viewConfig={currentViewConfig}
                 onViewConfigChange={setLayoutConfig}
                 onInlineCreate={handleInlineCreate}
+                pagination={tablePage.serverBacked ? {
+                  page: tablePage.previousCursors.length + 1,
+                  total: tablePage.total,
+                  hasPrevious: tablePage.previousCursors.length > 0,
+                  hasNext: Boolean(tablePage.nextCursor),
+                  loading: tablePage.loading,
+                  onPrevious: handleTablePreviousPage,
+                  onNext: handleTableNextPage,
+                } : undefined}
               />
             ) : view === 'calendar' ? (
               <TaskCalendarView

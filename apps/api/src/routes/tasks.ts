@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, asc, sql, inArray, ilike, or, isNull } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
@@ -16,6 +16,13 @@ import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/age
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
+import {
+  decodeTaskTableCursor,
+  encodeTaskTableCursor,
+  parseTaskTableQuery,
+  type TaskTableSort,
+  type TaskTableSortField,
+} from '../lib/task-table-query.js';
 
 export const taskRoutes = new Hono();
 
@@ -101,7 +108,8 @@ async function getLabelsForTasks(taskIds: string[]) {
   })
     .from(taskLabels)
     .innerJoin(labels, eq(taskLabels.label_id, labels.id))
-    .where(inArray(taskLabels.task_id, taskIds));
+    .where(inArray(taskLabels.task_id, taskIds))
+    .orderBy(taskLabels.task_id, sql`lower(${labels.name})`, labels.id);
 
   const result = new Map<string, { id: string; name: string; color: string }[]>();
   for (const row of rows) {
@@ -676,6 +684,249 @@ taskRoutes.post('/bulk-delete', async (c) => {
   } catch (err) {
     console.error('Failed to bulk delete tasks:', err);
     return c.json({ error: 'Failed to bulk delete tasks', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+type TableOrderKey = Omit<TaskTableSort, 'field'> & { field: TaskTableSortField | 'id'; group?: boolean };
+
+function tableOrderExpression(key: TableOrderKey): SQL {
+  if (key.group && key.field === 'due_date') {
+    return sql`case
+      when ${tasks.due_date} is null then 'No due date'
+      when ${tasks.due_date} < current_date then 'Overdue'
+      when ${tasks.due_date} < current_date + interval '1 day' then 'Today'
+      when ${tasks.due_date} < current_date + interval '8 days' then 'Next 7 days'
+      else 'Later'
+    end`;
+  }
+  switch (key.field) {
+    case 'id': return sql`${tasks.id}`;
+    case 'number': return sql`${tasks.number}`;
+    case 'title': return sql`lower(${tasks.title})`;
+    case 'status': return sql`${tasks.status}`;
+    case 'priority': return sql`case ${tasks.priority} when 'p0' then 0 when 'p1' then 1 when 'p2' then 2 else 3 end`;
+    case 'assignee': return sql`lower(${users.name})`;
+    case 'start_date': return sql`${tasks.start_date}`;
+    case 'due_date': return sql`${tasks.due_date}`;
+    case 'estimation': return sql`${tasks.estimation}`;
+    case 'labels': return sql`(
+      select lower(${labels.name}) from ${taskLabels}
+      inner join ${labels} on ${labels.id} = ${taskLabels.label_id}
+      where ${taskLabels.task_id} = ${tasks.id}
+      order by lower(${labels.name}), ${labels.id}
+      limit 1
+    )`;
+    case 'updated_at': return sql`${tasks.updated_at}`;
+    case 'project': return sql`lower(${projects.name})`;
+  }
+}
+
+type TaskTableCursorRow = {
+  id: string;
+  number: number;
+  title: string;
+  status: string;
+  priority: 'p0' | 'p1' | 'p2' | 'p3';
+  assignee_name: string | null;
+  start_date: Date | string | null;
+  due_date: Date | string | null;
+  estimation: string | number | null;
+  labels: Array<{ name: string }>;
+  updated_at: Date | string;
+  project_name: string;
+  group_cursor_value: string | number | null;
+};
+
+function tableCursorValue(task: TaskTableCursorRow, key: TableOrderKey): string | number | null {
+  if (key.group) return task.group_cursor_value;
+  switch (key.field) {
+    case 'id': return task.id;
+    case 'number': return task.number;
+    case 'title': return task.title.toLowerCase();
+    case 'status': return task.status;
+    case 'priority': return ({ p0: 0, p1: 1, p2: 2, p3: 3 } as const)[task.priority];
+    case 'assignee': return task.assignee_name?.toLowerCase() ?? null;
+    case 'start_date': return task.start_date ? new Date(task.start_date).toISOString() : null;
+    case 'due_date': return task.due_date ? new Date(task.due_date).toISOString() : null;
+    case 'estimation': return task.estimation == null ? null : Number(task.estimation);
+    case 'labels': return task.labels[0]?.name.toLowerCase() ?? null;
+    case 'updated_at': return new Date(task.updated_at).toISOString();
+    case 'project': return task.project_name.toLowerCase();
+  }
+}
+
+function cursorAfter(expression: SQL, value: string | number | null, key: TableOrderKey): SQL {
+  if (value === null) {
+    return key.nulls === 'first' ? sql`${expression} is not null` : sql`false`;
+  }
+  const comparison = key.direction === 'desc'
+    ? sql`${expression} < ${value}`
+    : sql`${expression} > ${value}`;
+  return key.nulls === 'last'
+    ? sql`(${comparison} or ${expression} is null)`
+    : comparison;
+}
+
+function tableCursorCondition(keys: TableOrderKey[], values: Array<string | number | null>): SQL | null {
+  if (values.length !== keys.length) return null;
+  const branches = keys.map((key, index) => {
+    const prior = keys.slice(0, index).map((priorKey, priorIndex) => {
+      const expression = tableOrderExpression(priorKey);
+      const value = values[priorIndex];
+      return value === null ? sql`${expression} is null` : sql`${expression} = ${value}`;
+    });
+    return and(...prior, cursorAfter(tableOrderExpression(key), values[index]!, key))!;
+  });
+  return or(...branches)!;
+}
+
+// GET /api/tasks/table — the server-backed query used only by Table view.
+taskRoutes.get('/table', async (c) => {
+  try {
+    const user = c.get('user');
+    const parsed = parseTaskTableQuery(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid table query', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const query = parsed.data;
+    const decodedCursor = decodeTaskTableCursor(query.cursor);
+    if (query.cursor && !decodedCursor) {
+      return c.json({ error: 'Invalid cursor', code: 'INVALID_CURSOR' }, 400);
+    }
+
+    if (query.projectId) {
+      const [project] = await db.select({ id: projects.id }).from(projects).where(and(
+        eq(projects.id, query.projectId),
+        eq(projects.org_id, user.org_id),
+      )).limit(1);
+      if (!project) return c.json({ error: 'Project not found', code: 'NOT_FOUND' }, 404);
+    }
+
+    const baseConditions: SQL[] = [
+      eq(tasks.org_id, user.org_id),
+      eq(tasks.is_deleted, false),
+      eq(tasks.is_template, false),
+      isNull(tasks.parent_task_id),
+      visibleTaskCondition(user.id)!,
+    ];
+    if (query.mine) baseConditions.push(eq(tasks.assignee_id, user.id));
+    if (query.projectId) baseConditions.push(eq(tasks.project_id, query.projectId));
+    if (query.assigneeIds.length) baseConditions.push(inArray(tasks.assignee_id, query.assigneeIds));
+    if (query.priorities.length) baseConditions.push(inArray(tasks.priority, query.priorities as Array<'p0' | 'p1' | 'p2' | 'p3'>));
+    if (query.statuses.length) baseConditions.push(inArray(tasks.status, query.statuses as Array<'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done' | 'cancelled'>));
+    if (query.labelIds.length) baseConditions.push(sql`exists (
+      select 1 from ${taskLabels}
+      where ${taskLabels.task_id} = ${tasks.id}
+        and ${inArray(taskLabels.label_id, query.labelIds)}
+    )`);
+    if (query.due === 'overdue') baseConditions.push(sql`${tasks.due_date} < current_date`);
+    if (query.due === 'today') baseConditions.push(sql`${tasks.due_date} >= current_date and ${tasks.due_date} < current_date + interval '1 day'`);
+    if (query.due === 'this_week') baseConditions.push(sql`${tasks.due_date} >= current_date and ${tasks.due_date} < current_date + interval '8 days'`);
+    if (query.dateFrom) baseConditions.push(sql`${tasks.due_date} >= ${query.dateFrom}::date`);
+    if (query.dateTo) baseConditions.push(sql`${tasks.due_date} < (${query.dateTo}::date + interval '1 day')`);
+
+    const configured = query.sorts.length ? query.sorts : [{ field: 'number', direction: 'desc', nulls: 'last' } satisfies TaskTableSort];
+    const keys: TableOrderKey[] = [
+      ...(query.group ? [{ ...query.group, group: true }] : []),
+      ...configured.filter((sort) => sort.field !== query.group?.field),
+      { field: 'id', direction: 'asc', nulls: 'last' },
+    ];
+    const cursorSignature = JSON.stringify({
+      projectId: query.projectId,
+      mine: query.mine,
+      assigneeIds: query.assigneeIds,
+      priorities: query.priorities,
+      statuses: query.statuses,
+      labelIds: query.labelIds,
+      due: query.due,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+      keys,
+    });
+    const cursorValues = decodedCursor?.values ?? null;
+    if (decodedCursor && decodedCursor.signature !== cursorSignature) {
+      return c.json({ error: 'Cursor does not match query', code: 'INVALID_CURSOR' }, 400);
+    }
+    const pageConditions = [...baseConditions];
+    if (cursorValues) {
+      const cursorCondition = tableCursorCondition(keys, cursorValues);
+      if (!cursorCondition) return c.json({ error: 'Cursor does not match query', code: 'INVALID_CURSOR' }, 400);
+      pageConditions.push(cursorCondition);
+    }
+
+    const baseWhere = and(...baseConditions);
+    const [countRow] = await db.select({ total: sql<number>`count(*)::int` })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
+      .leftJoin(users, eq(tasks.assignee_id, users.id))
+      .where(baseWhere);
+
+    const rows = await db.select({
+      id: tasks.id,
+      number: tasks.number,
+      title: tasks.title,
+      description: tasks.description,
+      status: tasks.status,
+      priority: tasks.priority,
+      assignee_id: tasks.assignee_id,
+      created_by: tasks.created_by,
+      due_date: tasks.due_date,
+      start_date: tasks.start_date,
+      estimation: tasks.estimation,
+      sort_order: tasks.sort_order,
+      project_id: tasks.project_id,
+      source_message_id: tasks.source_message_id,
+      parent_task_id: tasks.parent_task_id,
+      is_deleted: tasks.is_deleted,
+      created_at: tasks.created_at,
+      updated_at: tasks.updated_at,
+      assignee_name: users.name,
+      assignee_avatar: users.avatar_url,
+      project_name: projects.name,
+      project_prefix: projects.prefix,
+      project_color: projects.color,
+      group_cursor_value: query.group
+        ? sql<string | number | null>`${tableOrderExpression({ ...query.group, group: true })}`
+        : sql<string | number | null>`null`,
+    })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
+      .leftJoin(users, eq(tasks.assignee_id, users.id))
+      .where(and(...pageConditions))
+      .orderBy(...keys.map((key) => sql`${tableOrderExpression(key)} ${sql.raw(key.direction.toUpperCase())} NULLS ${sql.raw(key.nulls.toUpperCase())}`))
+      .limit(query.pageSize + 1);
+
+    const pageRows = rows.slice(0, query.pageSize);
+    const taskIds = pageRows.map((task) => task.id);
+    const labelsMap = await getLabelsForTasks(taskIds);
+    const subtaskCounts = taskIds.length ? await db.select({
+      parent_task_id: tasks.parent_task_id,
+      total: sql<number>`count(*)::int`,
+      done: sql<number>`count(*) filter (where ${tasks.status} = 'done')::int`,
+    }).from(tasks).where(and(inArray(tasks.parent_task_id, taskIds), eq(tasks.is_deleted, false))).groupBy(tasks.parent_task_id) : [];
+    const subtaskMap = new Map(subtaskCounts.map((item) => [item.parent_task_id, item]));
+    const creatorIds = [...new Set(pageRows.map((task) => task.created_by))];
+    const creatorRows = creatorIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, creatorIds)) : [];
+    const creatorMap = new Map(creatorRows.map((creator) => [creator.id, creator.name]));
+    const enriched = pageRows.map((task) => ({
+      ...task,
+      creator_name: creatorMap.get(task.created_by) ?? null,
+      labels: labelsMap.get(task.id) ?? [],
+      subtask_count: subtaskMap.get(task.id)?.total ?? 0,
+      subtask_done_count: subtaskMap.get(task.id)?.done ?? 0,
+    }));
+    const last = enriched.at(-1);
+    const data = enriched.map(({ group_cursor_value: _groupCursorValue, ...task }) => task);
+    return c.json({
+      data,
+      total: countRow?.total ?? 0,
+      next_cursor: rows.length > query.pageSize && last
+        ? encodeTaskTableCursor(cursorSignature, keys.map((key) => tableCursorValue(last, key)))
+        : null,
+    });
+  } catch (err) {
+    console.error('Failed to query task table:', err);
+    return c.json({ error: 'Failed to query task table', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
