@@ -57,6 +57,15 @@ export function agentEmployeeLifecycle(emp: AgentEmployeeHealth, now = Date.now(
   }
   if (emp.is_active === false) return { label: 'Paused', detail: 'will not pick up new work', tone: 'gray' };
 
+  if (emp.channel_status === 'disconnected') {
+    const contact = latestAgentContact(emp);
+    return {
+      label: 'Offline',
+      detail: contact ? `last runtime contact ${formatAgentAge(contact, now)}` : 'runtime is not connected',
+      tone: 'gray',
+    };
+  }
+
   if (emp.required_workspace_skill_installed === false) {
     return { label: 'Setup incomplete', detail: 'Deft Workspace skill is missing', tone: 'amber' };
   }
@@ -102,6 +111,12 @@ export function agentEmployeeLifecycle(emp: AgentEmployeeHealth, now = Date.now(
 
 export function agentConnectionStatus(emp: AgentEmployeeHealth, now = Date.now()) {
   const contact = latestAgentContact(emp);
+  if (emp.channel_status === 'disconnected') {
+    return {
+      label: contact ? `Disconnected - last seen ${formatAgentAge(contact, now)}` : 'Disconnected',
+      tone: 'gray' as const,
+    };
+  }
   if (!contact) return { label: 'Never connected', tone: 'gray' as const };
   const elapsedMinutes = Math.max(0, Math.floor((now - validTime(contact)) / 60_000));
   if (elapsedMinutes < 5) return { label: 'Connected', tone: 'green' as const };
