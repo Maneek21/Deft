@@ -36,6 +36,31 @@ export type TaskViewColumnV1 = {
   frozen?: boolean;
 };
 
+export const TASK_TABLE_COLUMNS = [
+  { id: 'number', label: 'ID', width: '80px', required: true },
+  { id: 'title', label: 'Title', width: '1fr', required: true },
+  { id: 'status', label: 'Status', width: '130px' },
+  { id: 'priority', label: 'Priority', width: '80px' },
+  { id: 'assignee', label: 'Assignee', width: '140px' },
+  { id: 'start_date', label: 'Start', width: '120px' },
+  { id: 'due_date', label: 'Due', width: '110px' },
+  { id: 'estimation', label: 'Estimate', width: '90px' },
+  { id: 'labels', label: 'Labels', width: '180px' },
+  { id: 'updated_at', label: 'Updated', width: '110px' },
+] as const;
+
+export type TaskTableColumnId = (typeof TASK_TABLE_COLUMNS)[number]['id'];
+
+export function taskTableColumnConfig(config: TaskViewConfigV1, id: TaskTableColumnId) {
+  const fallback = TASK_TABLE_COLUMNS.findIndex((column) => column.id === id);
+  const saved = config.columns.find((column) => column.id === id);
+  return {
+    visible: saved?.visible !== false,
+    position: saved?.position ?? fallback,
+    width: saved?.width,
+  };
+}
+
 export type TaskViewConfigV1 = {
   version: typeof TASK_VIEW_CONFIG_VERSION;
   view: TaskConfigView;
@@ -71,6 +96,59 @@ export const DEFAULT_TASK_VIEW_CONFIG: TaskViewConfigV1 = {
   projectId: null,
 };
 
+export function isTaskTableColumnVisible(config: TaskViewConfigV1, id: TaskTableColumnId): boolean {
+  return taskTableColumnConfig(config, id).visible;
+}
+
+export function setTaskTableColumnVisibility(
+  config: TaskViewConfigV1,
+  id: TaskTableColumnId,
+  visible: boolean,
+): TaskViewConfigV1 {
+  const existing = config.columns.some((column) => column.id === id);
+  const columns = existing
+    ? config.columns.map((column) => column.id === id ? { ...column, visible } : column)
+    : [...config.columns, { id, visible, position: TASK_TABLE_COLUMNS.findIndex((column) => column.id === id) }];
+  return { ...config, columns };
+}
+
+export function setTaskTableColumnWidth(
+  config: TaskViewConfigV1,
+  id: TaskTableColumnId,
+  width: number,
+): TaskViewConfigV1 {
+  const bounded = Math.max(64, Math.min(800, width));
+  const existing = config.columns.some((column) => column.id === id);
+  const columns = existing
+    ? config.columns.map((column) => column.id === id ? { ...column, width: bounded } : column)
+    : [...config.columns, { id, visible: true, position: TASK_TABLE_COLUMNS.findIndex((column) => column.id === id), width: bounded }];
+  return { ...config, columns };
+}
+
+export function moveTaskTableColumn(
+  config: TaskViewConfigV1,
+  id: TaskTableColumnId,
+  direction: -1 | 1,
+): TaskViewConfigV1 {
+  if (id === 'number' || id === 'title') return config;
+  const ordered = TASK_TABLE_COLUMNS.map((column) => ({
+    id: column.id,
+    position: taskTableColumnConfig(config, column.id).position,
+  })).sort((a, b) => a.position - b.position);
+  const index = ordered.findIndex((column) => column.id === id);
+  const target = index + direction;
+  if (index < 0 || target < 2 || target >= ordered.length) return config;
+  [ordered[index], ordered[target]] = [ordered[target]!, ordered[index]!];
+  const positions = new Map(ordered.map((column, position) => [column.id, position]));
+  return {
+    ...config,
+    columns: TASK_TABLE_COLUMNS.map((column) => {
+      const current = config.columns.find((candidate) => candidate.id === column.id);
+      return { id: column.id, visible: current?.visible !== false, position: positions.get(column.id)!, ...(current?.width ? { width: current.width } : {}) };
+    }),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -85,12 +163,15 @@ function nullableString(value: unknown): string | null {
 
 function normalizeFilters(value: unknown): TaskViewFiltersV1 {
   const filters = isRecord(value) ? value : {};
+  const dueDate = filters.dueDate === 'overdue' || filters.dueDate === 'today' || filters.dueDate === 'this_week'
+    ? filters.dueDate
+    : null;
   return {
     assigneeIds: stringArray(filters.assigneeIds),
     priorities: stringArray(filters.priorities),
     status: stringArray(filters.status),
     labels: stringArray(filters.labels),
-    dueDate: nullableString(filters.dueDate),
+    dueDate,
     dateFrom: nullableString(filters.dateFrom),
     dateTo: nullableString(filters.dateTo),
     projectId: nullableString(filters.projectId),

@@ -739,12 +739,36 @@ taskRoutes.post('/saved-views', async (c) => {
   }
 });
 
+taskRoutes.patch('/saved-views/:id', async (c) => {
+  try {
+    const user = c.get('user');
+    const viewId = c.req.param('id');
+    const parsed = createViewSchema.partial().safeParse(await c.req.json());
+    if (!parsed.success || Object.keys(parsed.data).length === 0) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR' }, 400);
+    }
+    const [view] = await db.update(savedViews).set({
+      ...parsed.data,
+      updated_at: new Date(),
+    }).where(and(
+      eq(savedViews.id, viewId),
+      eq(savedViews.org_id, user.org_id),
+      eq(savedViews.user_id, user.id),
+    )).returning();
+    if (!view) return c.json({ error: 'View not found', code: 'NOT_FOUND' }, 404);
+    return c.json(view);
+  } catch (err) {
+    console.error('Failed to update saved view:', err);
+    return c.json({ error: 'Failed to update saved view', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
 taskRoutes.delete('/saved-views/:id', async (c) => {
   try {
     const user = c.get('user');
     const viewId = c.req.param('id');
     const [view] = await db.select().from(savedViews)
-      .where(and(eq(savedViews.id, viewId), eq(savedViews.user_id, user.id))).limit(1);
+      .where(and(eq(savedViews.id, viewId), eq(savedViews.org_id, user.org_id), eq(savedViews.user_id, user.id))).limit(1);
     if (!view) return c.json({ error: 'View not found', code: 'NOT_FOUND' }, 404);
     await db.delete(savedViews).where(eq(savedViews.id, viewId));
     return c.json({ success: true });
