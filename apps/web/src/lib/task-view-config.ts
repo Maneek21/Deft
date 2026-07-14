@@ -1,9 +1,9 @@
 export const TASK_VIEW_CONFIG_VERSION = 1 as const;
 
-export const TASK_SURFACE_VIEWS = ['board', 'table', 'timeline', 'calendar', 'pipeline'] as const;
+export const TASK_SURFACE_VIEWS = ['board', 'table', 'timeline', 'calendar'] as const;
 export type TaskSurfaceView = (typeof TASK_SURFACE_VIEWS)[number];
 
-export const TASK_CONFIG_VIEWS = ['board', 'table', 'timeline', 'calendar', 'pipeline'] as const;
+export const TASK_CONFIG_VIEWS = ['board', 'table', 'timeline', 'calendar'] as const;
 export type TaskConfigView = (typeof TASK_CONFIG_VIEWS)[number];
 
 export type TaskViewFiltersV1 = {
@@ -180,6 +180,7 @@ function normalizeFilters(value: unknown): TaskViewFiltersV1 {
 
 function normalizeConfigView(value: unknown): TaskConfigView {
   if (value === 'list') return 'table';
+  if (value === 'pipeline') return 'board';
   return typeof value === 'string' && (TASK_CONFIG_VIEWS as readonly string[]).includes(value)
     ? value as TaskConfigView
     : 'board';
@@ -243,6 +244,7 @@ export function normalizeTaskViewConfig(value: unknown): TaskViewConfigV1 {
 
 export function parseTaskSurfaceView(value: string | null): TaskSurfaceView | null {
   if (value === 'list') return 'table';
+  if (value === 'pipeline') return 'board';
   return value && (TASK_SURFACE_VIEWS as readonly string[]).includes(value)
     ? value as TaskSurfaceView
     : null;

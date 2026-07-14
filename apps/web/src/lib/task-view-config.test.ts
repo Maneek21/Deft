@@ -66,7 +66,7 @@ test('recognizes only currently rendered task surface views', () => {
   assert.equal(parseTaskSurfaceView('board'), 'board');
   assert.equal(parseTaskSurfaceView('calendar'), 'calendar');
   assert.equal(parseTaskSurfaceView('timeline'), 'timeline');
-  assert.equal(parseTaskSurfaceView('pipeline'), 'pipeline');
+  assert.equal(parseTaskSurfaceView('pipeline'), 'board');
   assert.equal(parseTaskSurfaceView('table'), 'table');
   assert.equal(parseTaskSurfaceView('list'), 'table');
   assert.equal(parseTaskSurfaceView('my'), null);
@@ -74,9 +74,9 @@ test('recognizes only currently rendered task surface views', () => {
   assert.equal(parseTaskSurfaceView(null), null);
 });
 
-test('preserves pipeline in saved view configuration', () => {
+test('maps retired pipeline saved views to board without losing task data', () => {
   const config = normalizeTaskViewConfig({ version: 1, view: 'pipeline', filters: {} });
-  assert.equal(config.view, 'pipeline');
+  assert.equal(config.view, 'board');
 });
 
 test('project default never overwrites an explicit valid or invalid view request', () => {
