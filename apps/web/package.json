@@ -75,6 +75,6 @@
     "@types/simple-peer": "^9.11.9",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.2.10",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
