@@ -99,7 +99,20 @@ async function maybePostApprovalConfirmation(params: {
 
   const content = formatApprovalConfirmation(approvedActions);
 
-  const confirmationAuthorId = approvalMessage.user_id || params.actorUserId;
+  const proposingEmployeeId = approvedActions.find((row) => row.agent_employee_id)?.agent_employee_id;
+  const [proposingEmployee] = proposingEmployeeId
+    ? await db
+        .select({ user_id: agentEmployees.user_id })
+        .from(agentEmployees)
+        .where(and(
+          eq(agentEmployees.id, proposingEmployeeId),
+          eq(agentEmployees.org_id, params.orgId),
+        ))
+        .limit(1)
+    : [];
+  const confirmationAuthorId = proposingEmployee?.user_id
+    ?? approvalMessage.user_id
+    ?? params.actorUserId;
   const [actor] = await db
     .select({ name: users.name, avatar_url: users.avatar_url })
     .from(users)

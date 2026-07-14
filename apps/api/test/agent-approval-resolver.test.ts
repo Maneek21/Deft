@@ -792,13 +792,23 @@ test('1b2. request_human_approval normalizes add_task_comment and executes it', 
   const title = `resolver-comment-normalized-${Date.now()}`;
   const taskId = await createApprovedResolverTask(title);
   const comment = 'Normalized approval comment from the agent employee.';
+  const sourceMessageId = await withClient(async (c) => {
+    const source = await c.query(
+      `INSERT INTO messages (id, org_id, space_id, user_id, content)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'Please add the reviewed handoff note.')
+       RETURNING id`,
+      [ORG_ID, TEST_SPACE_ID, APPROVER_USER_ID],
+    );
+    SOURCE_MESSAGE_IDS.push(source.rows[0].id);
+    return source.rows[0].id as string;
+  });
   const { requestHumanApproval } = await import('../src/lib/mcp-tools/cooperative.js');
 
   const queued = await requestHumanApproval(
     {
       action: 'add_task_comment',
       summary: 'Add the reviewed handoff note to the task.',
-      params: { task_id: taskId, comment },
+      params: { task_id: taskId, comment, source_message_id: sourceMessageId },
     },
     {
       org_id: ORG_ID,
@@ -814,13 +824,14 @@ test('1b2. request_human_approval normalizes add_task_comment and executes it', 
 
   await withClient(async (c) => {
     const action = await c.query(
-      `SELECT action, params FROM agent_actions WHERE id = $1`,
+      `SELECT action, params, message_id FROM agent_actions WHERE id = $1`,
       [actionId],
     );
     assert.equal(action.rows[0].action, 'task_update');
     assert.equal(action.rows[0].params.task_id, taskId);
     assert.equal(action.rows[0].params.patch.comment, comment);
     assert.equal(action.rows[0].params.comment, undefined);
+    assert.equal(action.rows[0].message_id, sourceMessageId);
   });
 
   const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
