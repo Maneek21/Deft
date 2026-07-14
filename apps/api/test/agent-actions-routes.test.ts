@@ -1078,9 +1078,9 @@ test('approval confirmation is authored by the proposing agent, not the human re
   const { actionId, approvalMessageId } = await withClient(async (c) => {
     const message = await c.query(
       `INSERT INTO messages (id, org_id, space_id, user_id, content, metadata)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, 'Review the task draft below.', '{"is_agent_reply":true}'::jsonb)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'Please create this task.', '{}'::jsonb)
        RETURNING id`,
-      [ORG_ID, VISIBLE_SPACE_ID, SHADOW_USER_ID],
+      [ORG_ID, VISIBLE_SPACE_ID, APPROVER_USER_ID],
     );
     const action = await c.query(
       `INSERT INTO agent_actions

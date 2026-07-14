@@ -31,6 +31,8 @@ import {
   agentActions,
   agentCooperativeLog,
   agentEmployees,
+  messages,
+  spaceMembers,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -118,7 +120,10 @@ export async function requestHumanApproval(
   }
 
   const [emp] = await db
-    .select({ created_by: agentEmployees.created_by })
+    .select({
+      created_by: agentEmployees.created_by,
+      user_id: agentEmployees.user_id,
+    })
     .from(agentEmployees)
     .where(
       and(
@@ -131,12 +136,39 @@ export async function requestHumanApproval(
     return errorResult('employee lookup failed');
   }
 
+  const requestedSourceMessageId = typeof normalized.params.source_message_id === 'string'
+    ? normalized.params.source_message_id.trim()
+    : '';
+  let sourceMessageId: string | null = null;
+  if (requestedSourceMessageId) {
+    const [visibleSource] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(
+        spaceMembers,
+        and(
+          eq(spaceMembers.space_id, messages.space_id),
+          eq(spaceMembers.user_id, emp.user_id),
+        ),
+      )
+      .where(
+        and(
+          eq(messages.id, requestedSourceMessageId),
+          eq(messages.org_id, ctx.org_id),
+          eq(messages.is_deleted, false),
+        ),
+      )
+      .limit(1);
+    sourceMessageId = visibleSource?.id ?? null;
+  }
+
   const [row] = await db
     .insert(agentActions)
     .values({
       org_id: ctx.org_id,
       user_id: emp.created_by,
       agent_employee_id: ctx.employee_id,
+      message_id: sourceMessageId,
       source: 'mcp',
       action: normalized.action,
       params: {
