@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { ChevronDown, ChevronLeft, ChevronRight, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag, GitBranch } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, X, User, AlertTriangle, Calendar, FolderOpen, Bookmark, Save, SlidersHorizontal, CircleDashed, Tag } from 'lucide-react';
 import { STATUS_LABELS, statusLabel } from '@/lib/task-status-labels';
 import type { PriorityVocab, ResolvedStatus, CanonicalPriority } from '@/hooks/use-project-resolved-config';
 import { priorityFullLabel } from '@/hooks/use-project-resolved-config';
@@ -465,20 +465,6 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
               {/* Secondary and saved views (mobile) */}
               <div className="px-3 py-1.5">
                 <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}>Views</p>
-                <button
-                  onClick={() => { onApplyViewConfig({ ...viewConfig, view: 'pipeline' }); setOpenDropdown(null); }}
-                  className="w-full px-2 py-1.5 text-left text-[12px] rounded-md flex items-center gap-2"
-                  style={{
-                    color: viewConfig.view === 'pipeline' ? 'var(--accent)' : 'var(--foreground)',
-                    background: viewConfig.view === 'pipeline' ? 'var(--accent-subtle)' : 'transparent',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                >
-                  <GitBranch size={12} />
-                  Pipeline
-                  <span className="ml-auto text-[10px]" style={{ color: 'var(--muted)' }}>Business stages</span>
-                </button>
-                {savedViews.length > 0 && <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />}
                 {savedViews.map(v => (
                   <div
                     key={v.id}
@@ -1093,20 +1079,6 @@ export function TaskFilters({ filters, onChange, projects, statuses, priorityVoc
           {openDropdown === 'views' && (
               <div className="absolute right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)] rounded-lg py-1 z-20"
               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
-              <button
-                onClick={() => { onApplyViewConfig({ ...viewConfig, view: 'pipeline' }); setOpenDropdown(null); }}
-                className="w-full px-3 py-2 text-left text-[12px] flex items-center gap-2"
-                style={{
-                  color: viewConfig.view === 'pipeline' ? 'var(--accent)' : 'var(--foreground)',
-                  background: viewConfig.view === 'pipeline' ? 'var(--accent-subtle)' : 'transparent',
-                  fontFamily: 'var(--font-body)',
-                }}
-              >
-                <GitBranch size={13} />
-                <span className="font-medium">Pipeline</span>
-                <span className="ml-auto text-[10px]" style={{ color: 'var(--muted)' }}>Business stages</span>
-              </button>
-              <div className="my-1" style={{ borderTop: '1px solid var(--border)' }} />
               {savedViews.length === 0 ? (
                 <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
                   No saved views yet.

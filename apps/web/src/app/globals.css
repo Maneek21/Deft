@@ -719,3 +719,44 @@ input:focus, textarea:focus {
   background: var(--surface-container);
   color: var(--foreground);
 }
+
+.task-table-select:focus-visible,
+.task-table-grid input:focus-visible,
+.task-table-grid button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.task-table-grid thead th {
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.task-table-row {
+  --task-row-bg: var(--surface);
+}
+
+.task-table-row > td {
+  background: var(--task-row-bg);
+  transition: background 120ms ease;
+}
+
+.task-table-row:hover:not([data-selected="true"]),
+.task-table-row:focus-visible:not([data-selected="true"]) {
+  --task-row-bg: var(--hover-tint);
+}
+
+.task-table-row[data-selected="true"] > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.task-table-frozen-title {
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.task-table-create-row {
+  background: color-mix(in srgb, var(--surface-container-low) 45%, transparent);
+}
+
+.task-table-create-row:focus-within {
+  background: var(--surface-container-low);
+}

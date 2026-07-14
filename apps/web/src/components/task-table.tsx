@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronUp, ArrowUpDown, Check, Loader2, Tags } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUpDown, Check, Loader2, Tags, AlertCircle, Plus } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { TaskCardUnified } from './task-card-unified';
 import type { ResolvedStatus, PriorityVocab } from '@/hooks/use-project-resolved-config';
@@ -59,6 +59,7 @@ type Props = {
   onToggleSelect?: (taskId: string) => void;
   /** Resolved project vocabulary drives status, prefix, and priority labels. */
   statuses?: ResolvedStatus[];
+  allowedTransitions?: Record<string, string[]> | null;
   hidePrefixIds?: boolean;
   priorityVocab?: PriorityVocab;
   viewConfig: TaskViewConfigV1;
@@ -186,7 +187,23 @@ function taskGroup(task: Task, field: string): string {
   }
 }
 
-export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange, onInlineCreate, pagination }: Props) {
+function OrderedTableCells({
+  columns,
+  children,
+}: {
+  columns: ReadonlyArray<{ id: TaskTableColumnId }>;
+  children: React.ReactNode;
+}) {
+  const cells = new Map<TaskTableColumnId, React.ReactElement>();
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement<{ 'data-column-id'?: TaskTableColumnId }>(child)) return;
+    const id = child.props['data-column-id'];
+    if (id) cells.set(id, child);
+  });
+  return <>{columns.map((column) => <React.Fragment key={column.id}>{cells.get(column.id)}</React.Fragment>)}</>;
+}
+
+export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, members, availableLabels, selectedTaskId, selectionMode, selectedTaskIds, onToggleSelect, statuses, allowedTransitions, hidePrefixIds, priorityVocab, viewConfig, onViewConfigChange, onInlineCreate, pagination }: Props) {
   const STATUS_OPTIONS = useMemo(() => {
     if (!statuses || statuses.length === 0) return DEFAULT_STATUS_OPTIONS;
     return [...statuses]
@@ -196,13 +213,23 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
   const statusColorFor = (id: string): string =>
     STATUS_OPTIONS.find((s) => s.value === id)?.color || STATUS_COLORS[id] || 'var(--muted)';
+  const statusOptionsFor = (currentStatus: string) => {
+    const allowed = allowedTransitions?.[currentStatus];
+    if (!allowed) return STATUS_OPTIONS;
+    const visible = new Set([currentStatus, ...allowed]);
+    return STATUS_OPTIONS.filter((option) => visible.has(option.value));
+  };
   const configuredSorts = viewConfig.sort.filter((clause): clause is typeof clause & { field: SortField } =>
     TASK_TABLE_COLUMNS.some((column) => column.id === clause.field));
   const primarySort = configuredSorts[0] ?? { field: 'number' as SortField, direction: 'desc' as SortDir, nulls: 'last' as const };
   const [inlineDropdown, setInlineDropdown] = useState<{ taskId: string; field: string } | null>(null);
   const [editingTitle, setEditingTitle] = useState<{ taskId: string; value: string } | null>(null);
-  const [savingCell, setSavingCell] = useState<string | null>(null);
+  const [savingCells, setSavingCells] = useState<Set<string>>(new Set());
+  const [savedCells, setSavedCells] = useState<Set<string>>(new Set());
+  const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [newTask, setNewTask] = useState<{ key: string; title: string } | null>(null);
+  const [creatingKey, setCreatingKey] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   // Fix 3: client-side pagination — show 50 rows at a time
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -266,33 +293,93 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
   const save = async (taskId: string, field: string, patch: TaskPatch) => {
     const key = `${taskId}:${field}`;
-    // ponytail: serialize table writes for v1; per-cell concurrency can wait until users need it.
-    if (savingCell) return false;
-    setSavingCell(key);
-    const ok = await onTaskPatch(taskId, patch);
-    setSavingCell(null);
-    return ok;
+    if (savingCells.has(key)) return false;
+    setSavingCells((current) => new Set(current).add(key));
+    setCellErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    try {
+      const ok = await onTaskPatch(taskId, patch);
+      if (!ok) {
+        setCellErrors((current) => ({ ...current, [key]: 'Could not save. Try again.' }));
+        return false;
+      }
+      setSavedCells((current) => new Set(current).add(key));
+      window.setTimeout(() => setSavedCells((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      }), 1400);
+      return true;
+    } catch {
+      setCellErrors((current) => ({ ...current, [key]: 'Could not save. Try again.' }));
+      return false;
+    } finally {
+      setSavingCells((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const cellState = (taskId: string, field: string) => {
+    const key = `${taskId}:${field}`;
+    if (savingCells.has(key)) return <Loader2 size={12} className="shrink-0 animate-spin" aria-label="Saving" style={{ color: 'var(--muted)' }} />;
+    if (cellErrors[key]) return <span title={cellErrors[key]}><AlertCircle size={12} className="shrink-0" aria-label={cellErrors[key]} style={{ color: 'var(--danger)' }} /></span>;
+    if (savedCells.has(key)) return <Check size={12} className="shrink-0" aria-label="Saved" style={{ color: 'var(--success)' }} />;
+    return null;
+  };
+
+  const commitTitle = async (task: Task) => {
+    if (editingTitle?.taskId !== task.id) return;
+    const title = editingTitle.value.trim();
+    if (!title || title === task.title) {
+      setEditingTitle(null);
+      return;
+    }
+    if (await save(task.id, 'title', { title })) setEditingTitle(null);
   };
 
   const inlineCreateRow = (key: string, defaults: TaskPatch = {}) => !onInlineCreate ? null : (
-    <tr key={`create:${key}`}>
-      <td colSpan={columns.length + (selectionMode ? 1 : 0)} className="px-3 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
-        <input
+    <tr key={`create:${key}`} className="task-table-create-row">
+      <td colSpan={columns.length + (selectionMode ? 1 : 0)} className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div className="sticky left-3 z-[2] flex w-[min(720px,calc(100vw-3rem))] max-w-full items-center gap-2">
+          {creatingKey === key ? <Loader2 size={14} className="shrink-0 animate-spin" style={{ color: 'var(--accent)' }} /> : <Plus size={14} className="shrink-0" style={{ color: 'var(--muted)' }} />}
+          <input
           value={newTask?.key === key ? newTask.title : ''}
-          onFocus={() => setNewTask((current) => current?.key === key ? current : { key, title: '' })}
+          disabled={creatingKey !== null}
+          onFocus={() => {
+            setCreateError(null);
+            setNewTask((current) => current?.key === key ? current : { key, title: '' });
+          }}
           onChange={(event) => setNewTask({ key, title: event.target.value })}
           onKeyDown={async (event) => {
             if (event.key === 'Escape') setNewTask(null);
             if (event.key === 'Enter' && newTask?.title.trim()) {
               event.preventDefault();
-              if (await onInlineCreate(newTask.title.trim(), defaults)) setNewTask(null);
+              setCreatingKey(key);
+              setCreateError(null);
+              try {
+                if (await onInlineCreate(newTask.title.trim(), defaults)) setNewTask(null);
+                else setCreateError('Task was not created. Try again.');
+              } catch {
+                setCreateError('Task was not created. Try again.');
+              } finally {
+                setCreatingKey(null);
+              }
             }
           }}
-          placeholder="+ Add task"
+          placeholder="Add a task"
           aria-label={`Add task${key === 'all' ? '' : ` to ${key}`}`}
-          className="w-full bg-transparent px-1 py-1 text-[12px] outline-none"
+          className="min-w-0 flex-1 bg-transparent py-1 text-[12px] outline-none disabled:opacity-60"
           style={{ color: 'var(--foreground)' }}
         />
+          {newTask?.key === key && newTask.title && <span className="hidden shrink-0 text-[10px] md:block" style={{ color: 'var(--muted)' }}>Enter to create</span>}
+          {createError && newTask?.key === key && <span className="shrink-0 text-[11px]" role="alert" style={{ color: 'var(--danger)' }}>{createError}</span>}
+        </div>
       </td>
     </tr>
   );
@@ -331,7 +418,15 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
           const isSelected = task.id === selectedTaskId;
           const isChecked = selectionMode && selectedTaskIds?.has(task.id);
           return (
-            <div key={task.id} className="overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)', background: 'var(--card-bg)' }}>
+            <div
+              key={task.id}
+              className="overflow-hidden rounded-lg"
+              style={{
+                border: `1px solid ${isSelected || isChecked ? 'var(--accent)' : 'var(--border)'}`,
+                background: 'var(--card-bg)',
+                boxShadow: isSelected || isChecked ? '0 0 0 1px var(--accent-subtle)' : undefined,
+              }}
+            >
               <TaskCardUnified
                 variant="list"
                 task={task as any}
@@ -343,36 +438,54 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                 onToggleSelect={onToggleSelect}
                 hidePrefixIds={hidePrefixIds}
               />
-              <div className="grid grid-cols-3 gap-1 px-3 pb-3" onClick={(event) => event.stopPropagation()}>
-                <select
+              <div className="grid grid-cols-2 gap-2 px-3 pb-3" onClick={(event) => event.stopPropagation()}>
+                <label className="min-w-0 space-y-1">
+                  <span className="block text-[9px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Status</span>
+                  <span className="flex items-center gap-1">
+                  <select
                   aria-label={`Status for ${task.title}`}
                   value={task.status}
-                  disabled={savingCell !== null}
+                  disabled={savingCells.has(`${task.id}:status`)}
                   onChange={(event) => void save(task.id, 'status', { status: event.target.value })}
-                  className="task-table-select min-w-0 rounded-md px-2 py-1.5 text-[11px]"
+                  className="task-table-select min-w-0 flex-1 rounded-md px-2 py-2 text-[11px]"
                   style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
                 >
-                  {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {statusOptionsFor(task.status).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
-                <select
+                  {cellState(task.id, 'status')}
+                  </span>
+                </label>
+                <label className="min-w-0 space-y-1">
+                  <span className="block text-[9px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Priority</span>
+                  <span className="flex items-center gap-1">
+                  <select
                   aria-label={`Priority for ${task.title}`}
                   value={task.priority}
-                  disabled={savingCell !== null}
+                  disabled={savingCells.has(`${task.id}:priority`)}
                   onChange={(event) => void save(task.id, 'priority', { priority: event.target.value as Task['priority'] })}
-                  className="task-table-select min-w-0 rounded-md px-2 py-1.5 text-[11px]"
+                  className="task-table-select min-w-0 flex-1 rounded-md px-2 py-2 text-[11px]"
                   style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)' }}
                 >
                   {(['p0', 'p1', 'p2', 'p3'] as const).map((priority) => <option key={priority} value={priority}>{priorityLabel(priority, priorityVocab)}</option>)}
                 </select>
-                <input
+                  {cellState(task.id, 'priority')}
+                  </span>
+                </label>
+                <label className="col-span-2 min-w-0 space-y-1">
+                  <span className="block text-[9px] font-semibold uppercase" style={{ color: 'var(--muted)' }}>Due date</span>
+                  <span className="flex items-center gap-1">
+                  <input
                   type="date"
                   aria-label={`Due date for ${task.title}`}
                   value={dateInputValue(task.due_date)}
-                  disabled={savingCell !== null}
+                  disabled={savingCells.has(`${task.id}:due_date`)}
                   onChange={(event) => void save(task.id, 'due_date', { due_date: event.target.value || null })}
-                  className="min-w-0 rounded-md px-1 py-1.5 text-[10px]"
+                  className="min-w-0 flex-1 rounded-md px-2 py-2 text-[11px]"
                   style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)', color: 'var(--foreground-secondary)', colorScheme: 'dark light' }}
                 />
+                  {cellState(task.id, 'due_date')}
+                  </span>
+                </label>
               </div>
             </div>
           );
@@ -394,20 +507,23 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
   }
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="task-table-shell h-full overflow-auto">
       {/* Click-away */}
       {inlineDropdown && <div className="fixed inset-0 z-10" onClick={() => setInlineDropdown(null)} />}
 
-      <table className="w-full min-w-[900px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+      <table className="task-table-grid w-full min-w-[900px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
         <thead>
           <tr>
             {selectionMode && (
               <th
-                className="px-2 py-2 sticky top-0"
+                className="sticky left-0 top-0 px-2 py-2"
                 style={{
                   background: 'var(--surface)',
                   borderBottom: '1px solid var(--border)',
                   width: '32px',
+                  minWidth: '32px',
+                  maxWidth: '32px',
+                  zIndex: 5,
                 }}
               />
             )}
@@ -416,7 +532,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                 <th
                   onClick={(event) => handleSort(col.id, event.shiftKey)}
                   title="Click to sort; Shift-click to add up to three sorts"
-                  className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide cursor-pointer select-none sticky top-0"
+                  className={`cursor-pointer select-none sticky top-0 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide ${col.id === 'title' ? 'task-table-frozen-title' : ''}`}
                   style={{
                     color: 'var(--muted)',
                     fontFamily: 'var(--font-heading)',
@@ -424,7 +540,8 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     borderBottom: '1px solid var(--border)',
                     width: typeof col.width === 'number' ? `${col.width}px` : col.width === '1fr' ? undefined : col.width,
                     whiteSpace: col.id === 'status' ? 'nowrap' : undefined,
-                    minWidth: col.id === 'status' ? '100px' : undefined,
+                    minWidth: col.id === 'number' ? '80px' : col.id === 'status' ? '100px' : undefined,
+                    maxWidth: col.id === 'number' ? '80px' : undefined,
                     left: col.id === 'number' ? (selectionMode ? 32 : 0) : col.id === 'title' ? (selectionMode ? 112 : 80) : undefined,
                     zIndex: col.id === 'number' || col.id === 'title' ? 4 : 2,
                   }}
@@ -480,30 +597,27 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     onTaskClick(task);
                   }
                 }}
-                className="cursor-pointer group"
+                className="task-table-row cursor-pointer group outline-none"
+                data-selected={isSelected || isChecked ? 'true' : 'false'}
                 style={{
-                  background: isSelected ? 'var(--accent-subtle)' : 'transparent',
-                  transition: 'background 150ms',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isSelected) e.currentTarget.style.background = 'var(--hover-tint)';
-                }}
-                onMouseLeave={(e) => {
-                  if (!isSelected) e.currentTarget.style.background = 'transparent';
-                }}
+                  '--task-row-bg': isSelected || isChecked ? 'var(--accent-subtle)' : 'var(--surface)',
+                } as React.CSSProperties}
               >
                 {/* Checkbox (selection mode) */}
                 {selectionMode && (
                   <td
-                    className="px-2 py-2.5"
-                    style={{ borderBottom: '1px solid var(--border)', width: '32px' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleSelect?.(task.id);
-                    }}
+                    className="sticky left-0 z-[3] px-2 py-2.5"
+                    style={{ borderBottom: '1px solid var(--border)', width: '32px', minWidth: '32px', maxWidth: '32px', background: 'var(--task-row-bg)' }}
                   >
-                    <div
+                    <button
+                      type="button"
+                      aria-label={`${isChecked ? 'Deselect' : 'Select'} ${task.title}`}
+                      aria-pressed={Boolean(isChecked)}
                       className="w-5 h-5 md:w-4 md:h-4 min-w-[20px] min-h-[20px] rounded border flex items-center justify-center"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleSelect?.(task.id);
+                      }}
                       style={{
                         borderColor: isChecked ? 'var(--accent)' : 'var(--border)',
                         background: isChecked ? 'var(--accent)' : 'transparent',
@@ -511,64 +625,73 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                       }}
                     >
                       {isChecked && <Check size={10} strokeWidth={3} style={{ color: 'white' }} />}
-                    </div>
+                    </button>
                   </td>
                 )}
 
+                <OrderedTableCells columns={columns}>
                 {/* ID */}
                 <td
+                  data-column-id="number"
                   hidden={!columnVisible('number')}
                   className={`px-3 ${rowPadding} text-[12px] font-medium`}
-                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 32 : 0, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
+                  style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 32 : 0, zIndex: 2, width: '80px', minWidth: '80px', maxWidth: '80px', background: 'var(--task-row-bg)' }}
                 >
                   {hidePrefixIds ? '' : `${projectPrefix || task.project_prefix}-${task.number}`}
                 </td>
 
                 {/* Title */}
                 <td
+                  data-column-id="title"
                   hidden={!columnVisible('title')}
-                  className={`px-3 ${rowPadding} text-[13px]`}
-                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 112 : 80, zIndex: 2, background: isSelected ? 'var(--accent-subtle)' : 'var(--surface)' }}
+                  className={`task-table-frozen-title px-3 ${rowPadding} text-[13px]`}
+                  style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)', borderBottom: '1px solid var(--border)', position: 'sticky', left: selectionMode ? 112 : 80, zIndex: 2, background: 'var(--task-row-bg)' }}
                   onClick={(event) => event.stopPropagation()}
                 >
                   {editingTitle?.taskId === task.id ? (
+                    <div className="flex items-center gap-1.5">
                     <input
                       autoFocus
                       value={editingTitle.value}
                       aria-label={`Title for ${projectPrefix || task.project_prefix}-${task.number}`}
                       onChange={(event) => setEditingTitle({ taskId: task.id, value: event.target.value })}
-                      onBlur={() => setEditingTitle(null)}
+                      onBlur={() => void commitTitle(task)}
                       onKeyDown={async (event) => {
                         if (event.key === 'Escape') setEditingTitle(null);
                         if (event.key === 'Enter') {
                           event.preventDefault();
-                          const title = editingTitle.value.trim();
-                          if (title && title !== task.title && await save(task.id, 'title', { title })) setEditingTitle(null);
+                          event.currentTarget.blur();
                         }
                       }}
-                      className="w-full rounded-md px-2 py-1 text-[13px] outline-none"
+                      disabled={savingCells.has(`${task.id}:title`)}
+                      className="w-full rounded-md px-2 py-1 text-[13px] outline-none disabled:opacity-70"
                       style={{ background: 'var(--surface-container-low)', border: '1px solid var(--accent)', color: 'var(--foreground)' }}
                     />
+                    {cellState(task.id, 'title')}
+                    </div>
                   ) : (
                     <button
+                      disabled={savingCells.has(`${task.id}:title`)}
                       className="w-full truncate text-left rounded px-1 py-1"
                       onClick={() => setEditingTitle({ taskId: task.id, value: task.title })}
                       onDoubleClick={() => onTaskClick(task)}
                       title="Edit title; double-click for task details"
                     >
-                      {task.title}
+                      <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{task.title}</span>{cellState(task.id, 'title')}</span>
                     </button>
                   )}
                 </td>
 
                 {/* Status */}
                 <td
+                  data-column-id="status"
                   hidden={!columnVisible('status')}
                   className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap', minWidth: '100px' }}
                 >
                   <div className="relative">
                     <button
+                      disabled={savingCells.has(`${task.id}:status`)}
                       onClick={(e) => {
                         e.stopPropagation();
                         setInlineDropdown(
@@ -577,7 +700,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                             : { taskId: task.id, field: 'status' }
                         );
                       }}
-                      className="flex items-center gap-1.5 text-[12px] font-medium px-2 py-0.5 rounded-md"
+                      className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium disabled:opacity-60"
                       style={{
                         color: 'var(--foreground)',
                         fontFamily: 'var(--font-body)',
@@ -588,13 +711,14 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     >
                       <div className="w-2 h-2 rounded-full" style={{ background: statusColorFor(task.status) }} />
                       {STATUS_OPTIONS.find((s) => s.value === task.status)?.label ?? statusLabel(task.status)}
+                      {cellState(task.id, 'status')}
                     </button>
                     {inlineDropdown?.taskId === task.id && inlineDropdown?.field === 'status' && (
                       <div
                         className="absolute top-full left-0 mt-1 w-40 rounded-lg py-1 z-20"
                         style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
                       >
-                        {STATUS_OPTIONS.map((opt) => (
+                        {statusOptionsFor(task.status).map((opt) => (
                           <button
                             key={opt.value}
                             onClick={(e) => {
@@ -621,15 +745,17 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Priority */}
                 <td
+                  data-column-id="priority"
                   hidden={!columnVisible('priority')}
                   className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)' }}
                   onClick={(event) => event.stopPropagation()}
                 >
+                  <div className="flex items-center gap-1.5">
                   <select
                     aria-label={`Priority for ${task.title}`}
                     value={task.priority}
-                    disabled={savingCell !== null}
+                    disabled={savingCells.has(`${task.id}:priority`)}
                     onChange={(event) => void save(task.id, 'priority', { priority: event.target.value as Task['priority'] })}
                     className="task-table-select rounded-md px-2 py-1 text-[11px] font-semibold outline-none"
                     style={{
@@ -643,10 +769,13 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                       <option key={priority} value={priority}>{priorityLabel(priority, priorityVocab)}</option>
                     ))}
                   </select>
+                  {cellState(task.id, 'priority')}
+                  </div>
                 </td>
 
                 {/* Assignee */}
                 <td
+                  data-column-id="assignee"
                   hidden={!columnVisible('assignee')}
                   className={`px-3 ${rowPadding}`}
                   style={{ borderBottom: '1px solid var(--border)' }}
@@ -657,7 +786,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     <select
                       aria-label={`Assignee for ${task.title}`}
                       value={task.assignee_id ?? ''}
-                      disabled={savingCell !== null}
+                      disabled={savingCells.has(`${task.id}:assignee`)}
                       onChange={(event) => void save(task.id, 'assignee', { assignee_id: event.target.value || null })}
                       className="task-table-select min-w-0 max-w-[110px] bg-transparent text-[12px] outline-none"
                       style={{ color: task.assignee_name ? 'var(--foreground)' : 'var(--muted)' }}
@@ -665,24 +794,29 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                       <option value="">Unassigned</option>
                       {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
                     </select>
+                    {cellState(task.id, 'assignee')}
                   </div>
                 </td>
 
                 {/* Start Date */}
-                <td hidden={!columnVisible('start_date')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td data-column-id="start_date" hidden={!columnVisible('start_date')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                  <div className="flex items-center gap-1.5">
                   <input
                     type="date"
                     aria-label={`Start date for ${task.title}`}
                     value={dateInputValue(task.start_date)}
-                    disabled={savingCell !== null}
+                    disabled={savingCells.has(`${task.id}:start_date`)}
                     onChange={(event) => void save(task.id, 'start_date', { start_date: event.target.value || null })}
                     className="w-[104px] bg-transparent text-[11px] outline-none"
                     style={{ color: task.start_date ? 'var(--foreground-secondary)' : 'var(--muted)', colorScheme: 'dark light' }}
                   />
+                  {cellState(task.id, 'start_date')}
+                  </div>
                 </td>
 
                 {/* Due Date */}
                 <td
+                  data-column-id="due_date"
                   hidden={!columnVisible('due_date')}
                   className={`px-3 ${rowPadding} text-[12px]`}
                   style={{
@@ -691,23 +825,27 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                   }}
                   onClick={(event) => event.stopPropagation()}
                 >
+                  <div className="flex items-center gap-1.5">
                   <input
                     type="date"
                     aria-label={`Due date for ${task.title}`}
                     value={dateInputValue(task.due_date)}
-                    disabled={savingCell !== null}
+                    disabled={savingCells.has(`${task.id}:due_date`)}
                     onChange={(event) => void save(task.id, 'due_date', { due_date: event.target.value || null })}
                     className="w-[104px] bg-transparent text-[11px] outline-none"
                     style={{ color: formatDueDate(task.due_date, task.status)?.color ?? 'var(--muted)', colorScheme: 'dark light' }}
                   />
+                  {cellState(task.id, 'due_date')}
+                  </div>
                 </td>
 
                 {/* Estimate */}
-                <td hidden={!columnVisible('estimation')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td data-column-id="estimation" hidden={!columnVisible('estimation')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                  <div className="flex items-center gap-1.5">
                   <select
                     aria-label={`Estimate for ${task.title}`}
                     value={task.estimation ?? ''}
-                    disabled={savingCell !== null}
+                    disabled={savingCells.has(`${task.id}:estimation`)}
                     onChange={(event) => void save(task.id, 'estimation', { estimation: event.target.value || null })}
                     className="task-table-select rounded-md bg-transparent px-1 py-1 text-[11px] outline-none"
                     style={{ color: task.estimation ? 'var(--foreground-secondary)' : 'var(--muted)' }}
@@ -715,10 +853,12 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     <option value="">None</option>
                     {['xs', 's', 'm', 'l', 'xl'].map((estimate) => <option key={estimate} value={estimate}>{estimate.toUpperCase()}</option>)}
                   </select>
+                  {cellState(task.id, 'estimation')}
+                  </div>
                 </td>
 
                 {/* Labels */}
-                <td hidden={!columnVisible('labels')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
+                <td data-column-id="labels" hidden={!columnVisible('labels')} className={`px-3 ${rowPadding}`} style={{ borderBottom: '1px solid var(--border)' }} onClick={(event) => event.stopPropagation()}>
                   <div className="relative">
                     <button
                       aria-label={`Labels for ${task.title}`}
@@ -728,6 +868,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                     >
                       <Tags size={12} />
                       <span className="truncate">{task.labels.length ? task.labels.map((label) => label.name).join(', ') : 'Add labels'}</span>
+                      {cellState(task.id, 'labels')}
                     </button>
                     {inlineDropdown?.taskId === task.id && inlineDropdown.field === 'labels' && (
                       <div className="absolute right-0 top-full z-20 mt-1 max-h-56 w-52 overflow-auto rounded-lg p-1" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}>
@@ -738,7 +879,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                               <input
                                 type="checkbox"
                                 checked={checked}
-                                disabled={savingCell !== null}
+                                disabled={savingCells.has(`${task.id}:labels`)}
                                 onChange={() => void save(task.id, 'labels', { label_ids: checked ? task.labels.filter((current) => current.id !== label.id).map((current) => current.id) : [...task.labels.map((current) => current.id), label.id] })}
                               />
                               <span className="h-2 w-2 rounded-full" style={{ background: label.color }} />
@@ -753,6 +894,7 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
 
                 {/* Updated */}
                 <td
+                  data-column-id="updated_at"
                   hidden={!columnVisible('updated_at')}
                   className={`px-3 ${rowPadding} text-[12px]`}
                   style={{
@@ -762,10 +904,10 @@ export function TaskTable({ tasks, projectPrefix, onTaskClick, onTaskPatch, memb
                   }}
                 >
                   <span className="flex items-center gap-1.5">
-                    {savingCell?.startsWith(`${task.id}:`) && <Loader2 size={12} className="animate-spin" />}
                     {new Date(task.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </span>
                 </td>
+                </OrderedTableCells>
               </tr>
               {groupEnds && inlineCreateRow(group, inherited)}
               </React.Fragment>

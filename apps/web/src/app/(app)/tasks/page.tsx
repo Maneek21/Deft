@@ -12,7 +12,6 @@ import { TaskFilters, type Filters } from '@/components/task-filters';
 import { TaskQuickCreate } from '@/components/task-quick-create';
 import { registerOpenTaskQuickCreate } from '@/lib/quick-actions';
 import { TaskCalendarView } from '@/components/task-calendar-view';
-import { TaskPipelineView } from '@/components/task-pipeline-view';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useProjectResolvedConfig } from '@/hooks/use-project-resolved-config';
 import {
@@ -29,8 +28,10 @@ import {
   Trash2,
   GanttChartSquare,
   CalendarDays,
-  GitBranch,
   FileText,
+  ArrowRight,
+  Flag,
+  MoreHorizontal,
 } from 'lucide-react';
 import { TabStrip } from '@/components/tab-strip';
 import { AppDialog, AppMenu } from '@/components/overlay-primitives';
@@ -140,6 +141,7 @@ export default function TasksPage() {
 
   useEffect(() => {
     if (requestedView === 'list') setQuery({ view: 'table' });
+    if (requestedView === 'pipeline') setQuery({ view: 'board' });
   }, [requestedView, setQuery]);
 
   // Fix 1: initialize filters from URL params on mount
@@ -187,6 +189,7 @@ export default function TasksPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [velocity, setVelocity] = useState<{ average: number } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [quickCreateDueDate, setQuickCreateDueDate] = useState<string | undefined>();
   const [tablePage, setTablePage] = useState({
     serverBacked: false,
     total: 0,
@@ -212,21 +215,8 @@ export default function TasksPage() {
     { value: 'calendar' as View, label: 'Calendar', icon: <CalendarDays size={14} /> },
   ], []);
 
-  const activeViewOption = primaryViewOptions.find((option) => option.value === view) ?? {
-    value: 'pipeline' as View,
-    label: 'Pipeline',
-    icon: <GitBranch size={14} />,
-  };
-  const mobileViewOptions = primaryViewOptions.filter((option) => option.value !== 'calendar');
-
-  // Calendar cells cannot preserve useful task context on a narrow viewport.
-  // Keep direct links durable on desktop and use Table as the mobile fallback.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (window.innerWidth < 768 && view === 'calendar') {
-      setQuery({ view: 'table' });
-    }
-  }, [view]);
+  const activeViewOption = primaryViewOptions.find((option) => option.value === view) ?? primaryViewOptions[0]!;
+  const mobileViewOptions = primaryViewOptions;
 
   const currentProjectId = searchParams.get('project');
   const isMyTasksView = searchParams.get('view') === 'my';
@@ -239,7 +229,7 @@ export default function TasksPage() {
     if (!resolvedConfig || !shouldApplyProjectDefaultView({ requestedView, userSelectedView, isMyTasksView })) return;
     const dv = resolvedConfig.default_view;
     if (dv && dv !== view && (dv === 'board' || dv === 'list' || dv === 'timeline' || dv === 'calendar' || dv === 'pipeline')) {
-      setQuery({ view: dv === 'list' ? 'table' : dv });
+      setQuery({ view: dv === 'list' ? 'table' : dv === 'pipeline' ? 'board' : dv });
     }
   }, [resolvedConfig, requestedView, userSelectedView, isMyTasksView, view, setQuery]);
 
@@ -286,6 +276,9 @@ export default function TasksPage() {
       const params = new URLSearchParams();
       if (isMyTasksView) params.set('mine', 'true');
       const projectId = isMyTasksView ? filters.projectId : selectedProject?.id;
+      // Project state resolves after the URL on first paint. Do not send an
+      // invalid unscoped table request while that selection is still loading.
+      if (!isMyTasksView && !projectId) return;
       if (projectId) params.set('project_id', projectId);
       if (filters.assigneeIds.length) params.set('assignee', filters.assigneeIds.join(','));
       if (filters.priorities.length) params.set('priority', filters.priorities.join(','));
@@ -572,12 +565,14 @@ export default function TasksPage() {
   useEffect(() => {
     return registerOpenTaskQuickCreate(() => {
       setQuickCreateStatus(undefined);
+      setQuickCreateDueDate(undefined);
       setQuickCreateOpen(true);
     });
   }, []);
   useEffect(() => {
     if (searchParams.get('new') === '1') {
       setQuickCreateStatus(undefined);
+      setQuickCreateDueDate(undefined);
       setQuickCreateOpen(true);
       // Strip the param so reloads don't keep re-opening it.
       const params = new URLSearchParams(searchParams.toString());
@@ -595,6 +590,7 @@ export default function TasksPage() {
         if (isEditing) return;
         e.preventDefault();
         setQuickCreateStatus(undefined);
+        setQuickCreateDueDate(undefined);
         setQuickCreateOpen(true);
       }
       if (e.key === 'Escape') {
@@ -918,6 +914,7 @@ export default function TasksPage() {
 
   const handleColumnAdd = (status: string) => {
     setQuickCreateStatus(status);
+    setQuickCreateDueDate(undefined);
     setQuickCreateOpen(true);
   };
 
@@ -1205,6 +1202,7 @@ export default function TasksPage() {
               <button
                 onClick={() => {
                   setQuickCreateStatus(undefined);
+                  setQuickCreateDueDate(undefined);
                   setQuickCreateOpen(true);
                 }}
                 className="deft-pill deft-pill-active min-h-[36px] px-4 text-[13px]"
@@ -1289,6 +1287,7 @@ export default function TasksPage() {
                       selectionMode={selectionMode}
                       selectedTaskIds={selectedTaskIds}
                       onToggleSelect={handleToggleSelect}
+                      allowedTransitions={resolvedConfig?.allowed_transitions}
                       viewConfig={currentViewConfig}
                       onViewConfigChange={setLayoutConfig}
                     />
@@ -1348,6 +1347,7 @@ export default function TasksPage() {
                 selectedTaskIds={selectedTaskIds}
                 onToggleSelect={handleToggleSelect}
                 statuses={resolvedConfig?.statuses}
+                allowedTransitions={resolvedConfig?.allowed_transitions}
                 hidePrefixIds={resolvedConfig?.hide_prefix_ids}
                 priorityVocab={resolvedConfig?.priority_vocab}
                 viewConfig={currentViewConfig}
@@ -1371,29 +1371,21 @@ export default function TasksPage() {
                 onTaskClick={handleTaskClick}
                 onAddOnDate={(iso) => {
                   setQuickCreateStatus(undefined);
+                  setQuickCreateDueDate(iso);
                   setQuickCreateOpen(true);
-                  // Best-effort: seed the quick-create modal with due_date via
-                  // a global setter would be invasive; the user can set it
-                  // manually after click. Follow-up can thread a
-                  // `defaultDueDate` prop through TaskQuickCreate.
-                  void iso;
                 }}
-              />
-            ) : view === 'pipeline' ? (
-              <TaskPipelineView
-                tasks={filteredTasks}
-                projectPrefix={selectedProject?.prefix || ''}
-                statuses={resolvedConfig?.statuses}
-                hidePrefixIds={resolvedConfig?.hide_prefix_ids}
-                priorityVocab={resolvedConfig?.priority_vocab}
-                onTaskClick={handleTaskClick}
+                onTaskReschedule={(taskId, dueDate) => handleTaskPatch(taskId, { due_date: dueDate })}
               />
             ) : (
               view === 'timeline' && selectedProject && (
                 <Suspense fallback={<div className="flex items-center justify-center py-12"><Loader2 size={20} className="animate-spin" /></div>}>
                   <TaskTimeline
                     tasks={filteredTasks}
-                    onTaskClick={(num) => router.push(`/tasks?task=${selectedProject.prefix}-${num}`)}
+                    onTaskClick={(taskId) => {
+                      const task = filteredTasks.find((candidate) => candidate.id === taskId);
+                      if (task) handleTaskClick(task);
+                    }}
+                    onTaskPatch={handleTaskPatch}
                     projectPrefix={selectedProject.prefix}
                   />
                 </Suspense>
@@ -1467,6 +1459,7 @@ export default function TasksPage() {
         <TaskQuickCreate
           projectId={selectedProject.id}
           defaultStatus={quickCreateStatus}
+          defaultDueDate={quickCreateDueDate}
           onClose={() => setQuickCreateOpen(false)}
           onCreated={handleTaskCreated}
         />
@@ -1475,7 +1468,7 @@ export default function TasksPage() {
       {/* Mobile FAB */}
       {isMobile && !isMyTasksView && !selectedTask && (
         <button
-          onClick={() => { setQuickCreateStatus(undefined); setQuickCreateOpen(true); }}
+          onClick={() => { setQuickCreateStatus(undefined); setQuickCreateDueDate(undefined); setQuickCreateOpen(true); }}
           aria-label="Create task"
           title="Create task"
           className="fixed z-30 w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg"
@@ -1493,7 +1486,7 @@ export default function TasksPage() {
       {/* Selection mode active indicator (shown when in select mode but nothing chosen yet) */}
       {selectionMode && selectedTaskIds.size === 0 && (
         <div
-          className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl"
+          className="fixed bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-3 py-2 rounded-full"
           style={{
             background: 'var(--card-bg)',
             border: '1px solid var(--border)',
@@ -1504,7 +1497,7 @@ export default function TasksPage() {
             className="text-[13px] font-medium"
             style={{ color: 'var(--muted)', fontFamily: 'var(--font-heading)' }}
           >
-            0 selected — click tasks to select
+            Select tasks to edit together
           </span>
           <button
             onClick={() => setSelectionMode(false)}
@@ -1523,25 +1516,30 @@ export default function TasksPage() {
             <div className="fixed inset-0 z-40" onClick={() => setBulkActionDropdown(null)} />
           )}
           <div
-            className={`fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl max-w-[calc(100vw-2rem)] ${bulkActionDropdown ? 'overflow-visible' : 'overflow-x-auto'}`}
+            className="fixed bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 z-50 w-[min(760px,calc(100vw-1rem))] rounded-lg p-2"
             style={{
               background: 'var(--card-bg)',
               border: '1px solid var(--border)',
               boxShadow: 'var(--shadow-lg)',
             }}
           >
-            <span
-              className="text-[13px] font-medium mr-2"
-              style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', whiteSpace: 'nowrap' }}
-            >
-              {selectedTaskIds.size} selected
-            </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-2 md:flex-nowrap">
+              <div className="flex shrink-0 items-center gap-2 px-2" style={{ color: 'var(--foreground)' }}>
+                <span className="grid h-7 w-7 place-items-center rounded-full" style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}>
+                  <CheckSquare size={14} />
+                </span>
+                <span className="text-[13px] font-semibold whitespace-nowrap" style={{ fontFamily: 'var(--font-heading)' }}>
+                  {selectedTaskIds.size} selected
+                </span>
+              </div>
+              <div className="hidden h-6 w-px shrink-0 md:block" style={{ background: 'var(--border)' }} />
+              <div className="order-3 grid w-full grid-cols-2 gap-1.5 pt-1 md:order-none md:flex md:min-w-0 md:flex-1 md:items-center md:pt-0.5">
 
             {/* Status dropdown */}
-            <div className="relative">
+            <div className="relative min-w-0 md:flex-none">
               <button
                 onClick={() => setBulkActionDropdown(bulkActionDropdown === 'status' ? null : 'status')}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
+                className="flex h-9 w-full items-center justify-center gap-1.5 px-3 rounded-full text-[12px] font-medium whitespace-nowrap md:w-auto"
                 style={{
                   background: bulkActionDropdown === 'status' ? 'var(--hover-tint)' : 'var(--surface)',
                   color: 'var(--foreground)',
@@ -1549,7 +1547,8 @@ export default function TasksPage() {
                   border: '1px solid var(--border)',
                 }}
               >
-                Move to...
+                <ArrowRight size={13} />
+                Status
                 <ChevronDown size={12} />
               </button>
               {bulkActionDropdown === 'status' && (
@@ -1574,10 +1573,10 @@ export default function TasksPage() {
             </div>
 
             {/* Assignee dropdown */}
-            <div className="relative">
+            <div className="relative min-w-0 md:flex-none">
               <button
                 onClick={() => setBulkActionDropdown(bulkActionDropdown === 'assignee' ? null : 'assignee')}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
+                className="flex h-9 w-full items-center justify-center gap-1.5 px-3 rounded-full text-[12px] font-medium whitespace-nowrap md:w-auto"
                 style={{
                   background: bulkActionDropdown === 'assignee' ? 'var(--hover-tint)' : 'var(--surface)',
                   color: 'var(--foreground)',
@@ -1585,7 +1584,8 @@ export default function TasksPage() {
                   border: '1px solid var(--border)',
                 }}
               >
-                Assign to...
+                <User size={13} />
+                Assignee
                 <ChevronDown size={12} />
               </button>
               {bulkActionDropdown === 'assignee' && (
@@ -1620,10 +1620,10 @@ export default function TasksPage() {
             </div>
 
             {/* Priority dropdown */}
-            <div className="relative">
+            <div className="relative min-w-0 md:flex-none">
               <button
                 onClick={() => setBulkActionDropdown(bulkActionDropdown === 'priority' ? null : 'priority')}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
+                className="flex h-9 w-full items-center justify-center gap-1.5 px-3 rounded-full text-[12px] font-medium whitespace-nowrap md:w-auto"
                 style={{
                   background: bulkActionDropdown === 'priority' ? 'var(--hover-tint)' : 'var(--surface)',
                   color: 'var(--foreground)',
@@ -1631,7 +1631,8 @@ export default function TasksPage() {
                   border: '1px solid var(--border)',
                 }}
               >
-                Set priority...
+                <Flag size={13} />
+                Priority
                 <ChevronDown size={12} />
               </button>
               {bulkActionDropdown === 'priority' && (
@@ -1656,10 +1657,10 @@ export default function TasksPage() {
             </div>
 
             {/* Dates, estimate, and labels */}
-            <div className="relative">
+            <div className="relative min-w-0 md:flex-none">
               <button
                 onClick={() => setBulkActionDropdown(bulkActionDropdown === 'more' ? null : 'more')}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
+                className="flex h-9 w-full items-center justify-center gap-1.5 px-3 rounded-full text-[12px] font-medium whitespace-nowrap md:w-auto"
                 style={{
                   background: bulkActionDropdown === 'more' ? 'var(--hover-tint)' : 'var(--surface)',
                   color: 'var(--foreground)',
@@ -1667,6 +1668,7 @@ export default function TasksPage() {
                   border: '1px solid var(--border)',
                 }}
               >
+                <MoreHorizontal size={14} />
                 More
                 <ChevronDown size={12} />
               </button>
@@ -1768,26 +1770,22 @@ export default function TasksPage() {
                       </div>
                     </div>
                   )}
+                  <div className="pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+                    <button
+                      onClick={handleBulkDelete}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] font-medium"
+                      style={{ color: 'var(--danger)' }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(220, 38, 38, 0.08)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <Trash2 size={13} />
+                      Delete selected tasks
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
-
-            {/* Delete button */}
-            <button
-              onClick={handleBulkDelete}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px] font-medium"
-              style={{
-                background: 'var(--surface)',
-                color: 'var(--danger)',
-                fontFamily: 'var(--font-heading)',
-                border: '1px solid var(--border)',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(220, 38, 38, 0.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--surface)')}
-            >
-              <Trash2 size={12} />
-              Delete
-            </button>
+              </div>
 
             {/* Clear selection */}
             <button
@@ -1795,14 +1793,15 @@ export default function TasksPage() {
                 setSelectedTaskIds(new Set());
                 setSelectionMode(false);
               }}
-              className="p-1.5 rounded-md ml-1"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full"
               style={{ color: 'var(--muted)' }}
               onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--foreground)')}
               onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--muted)')}
               title="Clear selection"
             >
-              <X size={14} />
+              <X size={15} />
             </button>
+            </div>
           </div>
         </>
       )}
