@@ -1,0 +1,33 @@
+services:
+  deft:
+    ports: []
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}@postgres:5432/deft
+      REDIS_URL: redis://redis:6379
+      API_PORT: 3001
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL required}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL required}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?NEXT_PUBLIC_WS_URL required}
+      DEFT_PUBLIC_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL required}
+      DEFT_WEB_URL: http://deft:3000
+      DEFT_API_URL: http://deft:3001
+      NODE_ENV: production
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DEFT_PUBLIC_HOST: ${DEFT_PUBLIC_HOST:?DEFT_PUBLIC_HOST required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - deft
+
+volumes:
+  caddy_data:
+  caddy_config:
