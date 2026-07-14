@@ -69,6 +69,12 @@ Only the reverse proxy should be public.
 
 ## 3. Reverse Proxy
 
+For a Docker-hosted demo where Caddy joins the Compose network, start from the
+secret-free templates in `deploy/demo/`. Copy them to the repository root as
+`Caddyfile` and `compose.demo.yml`, set `DEFT_PUBLIC_HOST` in `.env`, and include
+the overlay in every Compose command. The root copies are intentionally
+server-local; the examples are the versioned recovery source.
+
 Example Caddyfile:
 
 ```caddyfile

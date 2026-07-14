@@ -1,0 +1,27 @@
+{$DEFT_PUBLIC_HOST:demo.example.com} {
+  encode zstd gzip
+
+  handle /health {
+    reverse_proxy deft:3001
+  }
+
+  handle /api/* {
+    reverse_proxy deft:3001
+  }
+
+  handle /socket.io/* {
+    reverse_proxy deft:3001
+  }
+
+  handle /.well-known/* {
+    reverse_proxy deft:3001
+  }
+
+  handle /oauth/* {
+    reverse_proxy deft:3001
+  }
+
+  handle {
+    reverse_proxy deft:3000
+  }
+}
