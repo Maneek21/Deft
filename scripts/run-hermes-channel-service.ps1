@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-  [string]$ServiceRoot = (Join-Path $env:LOCALAPPDATA 'Deft\hermes-channel')
+  [string]$ServiceRoot = (Join-Path $env:LOCALAPPDATA 'Deft\hermes-channel'),
+  [int]$RestartDelaySeconds = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,12 +26,16 @@ try {
   }
 
   $node = (Get-Command node.exe -ErrorAction Stop).Source
-  "$(Get-Date -Format o) starting Hermes channel bridge" | Add-Content -LiteralPath $logPath -Encoding utf8
-  & $node $bridgePath 2>&1 | ForEach-Object {
-    "$_" | Add-Content -LiteralPath $logPath -Encoding utf8
+  while ($true) {
+    "$(Get-Date -Format o) starting Hermes channel bridge" | Add-Content -LiteralPath $logPath -Encoding utf8
+    & $node $bridgePath 2>&1 | ForEach-Object {
+      "$_" | Add-Content -LiteralPath $logPath -Encoding utf8
+    }
+    $bridgeExitCode = $LASTEXITCODE
+    "$(Get-Date -Format o) bridge exited with code $bridgeExitCode; restarting in $RestartDelaySeconds seconds" |
+      Add-Content -LiteralPath $logPath -Encoding utf8
+    Start-Sleep -Seconds $RestartDelaySeconds
   }
-  $bridgeExitCode = $LASTEXITCODE
-  exit $bridgeExitCode
 } catch {
   "$(Get-Date -Format o) service failed: $($_.Exception.Message)" | Add-Content -LiteralPath $logPath -Encoding utf8
   exit 1
