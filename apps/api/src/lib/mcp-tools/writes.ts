@@ -31,6 +31,7 @@ import {
   spaceMembers,
   taskActivity,
   workflowRules,
+  users,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -1004,12 +1005,40 @@ export async function executeSendMessage(opts: {
       })
       .returning();
 
+    const [author] = await db
+      .select({ name: users.name, avatar_url: users.avatar_url })
+      .from(users)
+      .where(eq(users.id, shadowUserId))
+      .limit(1);
+    const messageWithUser = {
+      ...row,
+      user_name: author?.name ?? ctx.employee_slug,
+      user_avatar: author?.avatar_url ?? null,
+      reactions: [],
+      reply_count: 0,
+      latest_reply_at: null,
+    };
+
     // Best-effort broadcast. Socket.io might not be initialized in tests.
     try {
       const { getIO } = await import('../../socket.js');
       const io = getIO();
       if (io && row) {
-        io.to(`space:${spaceId}`).emit('message:new', row);
+        io.to(`space:${spaceId}`).emit('message:new', messageWithUser);
+        if (parentId) {
+          const [replyStats] = await db
+            .select({
+              count: sql<number>`count(*)::int`,
+              latest: sql<string>`to_char(max(${messages.created_at}), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+            })
+            .from(messages)
+            .where(and(eq(messages.parent_id, parentId), eq(messages.is_deleted, false)));
+          io.to(`space:${spaceId}`).emit('thread:updated', {
+            parent_id: parentId,
+            reply_count: replyStats?.count ?? 1,
+            latest_reply_at: replyStats?.latest ?? row.created_at,
+          });
+        }
       }
     } catch {
       // swallow — broadcast must not roll back the write.

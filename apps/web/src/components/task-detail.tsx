@@ -641,6 +641,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const [submittingComment, setSubmittingComment] = useState(false);
   const commentEditor = useEditor({
     immediatelyRender: false,
+    onUpdate: ({ editor }) => setNewComment(editor.getText()),
     extensions: [
       ...createBaseExtensions({
         surface: 'task-comment',
@@ -1046,6 +1047,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     const res = await api.post(`/api/tasks/${taskId}/comments`, { content: html });
     if (res.ok) {
       commentEditor?.commands.clearContent();
+      setNewComment('');
       loadComments();
     }
     setSubmittingComment(false);
@@ -2631,7 +2633,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                       <div className="flex justify-end mt-1.5">
                         <button
                           onClick={handleAddComment}
-                          disabled={!(commentEditor?.getText() ?? '').trim() || submittingComment}
+                          disabled={!newComment.trim() || submittingComment}
                           className="text-[12px] font-medium px-3 py-1 rounded-md text-white disabled:opacity-50"
                           style={{
                             background: 'var(--accent)',

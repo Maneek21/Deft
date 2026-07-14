@@ -42,6 +42,7 @@ async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
 const SEARCH_TERM = `cloudflare${Date.now()}`;
 
 let wikiPageId: string;
+let hyphenatedWikiPageId: string;
 let decisionPageId: string;
 let noteId: string;
 let otherUserNoteId: string;
@@ -90,6 +91,16 @@ before(async () => {
       ],
     );
     seededIds.push({ table: 'wiki_pages', id: wikiPageId });
+
+    // Body-only hyphenated marker: Knowledge and global search must agree when
+    // users type the same phrase with spaces.
+    hyphenatedWikiPageId = `srkg-hyphen-wiki-${Date.now()}`;
+    await c.query(
+      `INSERT INTO wiki_pages (id, org_id, type, scope, title, slug, content, confidence, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, 'resource', 'org', 'Pilot proof page', 'pilot-proof-page', $3, 1.0, false, NOW(), NOW())`,
+      [hyphenatedWikiPageId, ORG_ID, 'The durable proof marker is ruby-sunrise-2026.'],
+    );
+    seededIds.push({ table: 'wiki_pages', id: hyphenatedWikiPageId });
 
     // Seed decision page (type='decision') containing SEARCH_TERM
     decisionPageId = `srkg-decision-${Date.now()}`;
@@ -203,6 +214,16 @@ test('2. wiki group contains the seeded wiki concept page', async () => {
   const found = body.wiki.find((w: any) => w.id === wikiPageId);
   assert.ok(found, `Wiki group should contain the seeded wiki page (${wikiPageId})`);
   assert.ok(found.title, 'Wiki result should have a title');
+});
+
+test('global search finds a body-only hyphenated wiki phrase from spaced words', async () => {
+  const { status, body } = await callSearch('ruby sunrise');
+
+  assert.equal(status, 200);
+  assert.ok(
+    body.wiki.some((page: any) => page.id === hyphenatedWikiPageId),
+    'Global search should find ruby-sunrise-2026 when the user searches ruby sunrise',
+  );
 });
 
 test('3. decisions group contains the seeded decision page', async () => {
