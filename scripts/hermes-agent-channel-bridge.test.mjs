@@ -37,6 +37,7 @@ function config() {
     limit: 10,
     maxRetries: 2,
     retryBaseMs: 5,
+    heartbeatMs: 60000,
     once: true,
   };
 }
@@ -170,4 +171,24 @@ test('request retries a transient channel rate limit instead of killing the brid
   assert.equal(result.ok, true);
   assert.equal(attempts, 2);
   assert.deepEqual(sleeps, [5]);
+});
+
+test('heartbeat is rate-limited while proving the poll loop is alive', () => {
+  const messages = [];
+  let now = 100000;
+  const bridge = new HermesAgentChannelBridge(config(), {
+    now: () => now,
+    logger: { info: (message) => messages.push(message) },
+  });
+
+  bridge.logHeartbeat(0);
+  now += 1000;
+  bridge.logHeartbeat(0);
+  now += 60000;
+  bridge.logHeartbeat(2);
+
+  assert.deepEqual(messages, [
+    '[deft-channel] heartbeat (0 events)',
+    '[deft-channel] heartbeat (2 events)',
+  ]);
 });
