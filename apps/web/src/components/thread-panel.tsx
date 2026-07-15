@@ -149,7 +149,7 @@ function renderContent(content: string) {
     .replace(/<@([^|]+)\|([^>]+)>/g,
       '<span style="background:var(--accent-muted);color:var(--primary);padding:1px 5px;border-radius:4px;font-weight:500">@$2</span>')
     .replace(/([A-Z]{2,6})-(\d+)/g,
-      '<span style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem">$1-$2</span>');
+      '<a href="/tasks?task=$1-$2" style="background:var(--surface-container-highest);color:var(--primary);padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:0.75rem;text-decoration:none">$1-$2</a>');
   return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
 }
 

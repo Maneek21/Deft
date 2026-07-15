@@ -259,6 +259,30 @@ test('structured mention of BYOA agent (kind=agent, not Defty) does NOT trigger 
   assert.ok(employeeQueued, 'BYOA agent mention should enqueue agent-employee-message');
 });
 
+test('plain-text BYOA agent name is normalized and dispatches to the employee', async () => {
+  const content = 'Hey @AMD BYOA Agent, can you help?';
+
+  const res = await app.request(`/api/messages/${spaceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+
+  assert.equal(res.status, 201);
+  const body = await res.json() as { id: string; content: string };
+  createdMessageIds.push(body.id);
+  assert.match(body.content, new RegExp(`<@${byoaAgentUserId}\\|AMD BYOA Agent>`));
+  assert.ok(
+    await findAgentEmployeeMessageJob(body.id),
+    'typed agent name should enqueue agent-employee-message',
+  );
+  assert.equal(
+    await findAgentReplyJob(body.id),
+    false,
+    'typed BYOA name should not wake Defty',
+  );
+});
+
 test('TipTap HTML mention in a thread reply dispatches to a BYOA employee', async () => {
   const parentRes = await app.request(`/api/messages/${spaceId}`, {
     method: 'POST',

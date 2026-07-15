@@ -13,6 +13,11 @@ test('confirmation copy names concrete task, wiki, note, and message outcomes', 
     result: { prefix: 'MKT', number: 42, title: 'Run field trial', subtasks: [{}, {}] },
   }), 'Created MKT-42: Run field trial with 2 subtasks.');
   assert.equal(summarizeConfirmedAction({
+    action: 'task_create',
+    params: { title: 'Prepare buyer brief' },
+    result: { identifier: 'BUY-17', title: 'Prepare buyer brief' },
+  }), 'Created BUY-17: Prepare buyer brief.');
+  assert.equal(summarizeConfirmedAction({
     action: 'wiki_write',
     params: { title: 'Watering guide' },
     result: { action: 'created', slug: 'watering-guide' },

@@ -24,7 +24,8 @@ export function summarizeConfirmedAction(action: ConfirmedAction) {
   const title = titleFrom(params, result);
 
   switch (action.action) {
-    case 'create_task': {
+    case 'create_task':
+    case 'task_create': {
       const identifier = typeof result.identifier === 'string'
         ? result.identifier
         : typeof result.prefix === 'string' && typeof result.number === 'number'

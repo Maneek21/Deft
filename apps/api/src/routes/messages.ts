@@ -12,6 +12,7 @@ import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
+import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 
 export const messageRoutes = new Hono();
 
@@ -388,8 +389,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
 
     // Normalize plain @defty / @deft / @agent (case-insensitive) into structured
-    // mentions so the renderer styles them as pills uniformly. Skip if a
-    // structured Defty mention is already present.
+    // mentions so the renderer styles them as pills uniformly.
     let normalizedContent = parsed.data.content;
     if (!/<@[^|]+\|Defty?>/i.test(normalizedContent)) {
       const hasLegacyAgent = /(^|[^a-z0-9_])@(defty|deft|agent)\b/i.test(normalizedContent);
@@ -400,6 +400,38 @@ messageRoutes.post('/:spaceId', async (c) => {
           (_match, prefix) => `${prefix}<@${deftyUserId}|Defty>`,
         );
       }
+    }
+
+    const plainMentionScan = normalizedContent.replace(/<@[^>]+>/g, '');
+    if (/(^|[^a-z0-9_])@[a-z0-9]/i.test(plainMentionScan)) {
+      const agentIdentities = await db
+        .select({
+          userId: agentEmployees.user_id,
+          name: agentEmployees.name,
+          slug: agentEmployees.slug,
+        })
+        .from(agentEmployees)
+        .innerJoin(users, eq(agentEmployees.user_id, users.id))
+        .where(and(
+          eq(agentEmployees.org_id, user.org_id),
+          eq(agentEmployees.is_active, true),
+        ));
+      const plainAgentMentions = normalizePlainAgentMentions(
+        normalizedContent,
+        agentIdentities.flatMap((agent) => agent.userId ? [{
+          userId: agent.userId,
+          name: agent.name,
+          slug: agent.slug,
+        }] : []),
+      );
+      if (plainAgentMentions.ambiguousAliases.length > 0) {
+        const handles = plainAgentMentions.ambiguousAliases.map((alias) => `@${alias}`).join(', ');
+        return c.json({
+          error: `${handles} matches more than one active agent. Choose the intended agent from the mention menu.`,
+          code: 'AMBIGUOUS_AGENT_MENTION',
+        }, 409);
+      }
+      normalizedContent = plainAgentMentions.content;
     }
 
     const [message] = await db.insert(messages).values({
@@ -459,8 +491,8 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
 
     // Parse mentions and create notifications
-    const { userIds: directMentionedUserIds } = parseMentions(parsed.data.content);
-    const groupMentionedUserIds = await resolveGroupMentionUserIds(parsed.data.content, user.org_id);
+    const { userIds: directMentionedUserIds } = parseMentions(normalizedContent);
+    const groupMentionedUserIds = await resolveGroupMentionUserIds(normalizedContent, user.org_id);
     const mentionedUserIds = Array.from(new Set([
       ...directMentionedUserIds,
       ...groupMentionedUserIds,
@@ -482,7 +514,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           user_id: mentionedUserId,
           type: 'mention',
           title: `${userData?.name ?? 'Someone'} mentioned you`,
-          body: parsed.data.content.slice(0, 200),
+          body: normalizedContent.slice(0, 200),
           link: `/spaces/${spaceId}?message=${message!.id}`,
         }, { channel: 'chat', spaceId, isMention: true });
 
@@ -510,7 +542,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             user_id: parentMessage.user_id,
             type: 'mention',
             title: `${userData?.name ?? 'Someone'} replied to your message`,
-            body: parsed.data.content.slice(0, 200),
+            body: normalizedContent.slice(0, 200),
             link: `/spaces/${spaceId}?message=${parsed.data.parent_id}`,
           }, { channel: 'chat', spaceId, isMention: true });
 
@@ -553,7 +585,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             sql`${spaceMembers.user_id} != ${user.id}`,
           ));
 
-        const plainContent = parsed.data.content.replace(/<[^>]+>/g, '').slice(0, 200);
+        const plainContent = normalizedContent.replace(/<[^>]+>/g, '').slice(0, 200);
 
         for (const member of members) {
           // Don't duplicate if already notified via mention
@@ -600,7 +632,7 @@ messageRoutes.post('/:spaceId', async (c) => {
     }
     // Backwards-compat fallback: legacy `<@agent|Deft>` and freeform `@defty`/`@deft`/`@agent` still trigger Defty.
     const legacyAgentMentionRegex = /@(agent|defty|deft)\b|<@agent\|Defty?>/i;
-    if (!agentMentioned && legacyAgentMentionRegex.test(parsed.data.content)) {
+    if (!agentMentioned && legacyAgentMentionRegex.test(normalizedContent)) {
       agentMentioned = true;
     }
     // Auto-trigger Defty in DM-with-Defty / agent_conversation spaces — no mention required.
@@ -644,7 +676,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           orgId: user.org_id,
           userId: user.id,
           orgName: org?.name ?? 'Unknown',
-          content: parsed.data.content,
+          content: normalizedContent,
         });
       } catch (err) {
         // Don't block message sending if Redis/queue is down
@@ -733,12 +765,12 @@ messageRoutes.post('/:spaceId', async (c) => {
 
     // Cross-reference detection — check for task identifier patterns like PROJ-42
     const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;
-    if (TASK_ID_PATTERN.test(parsed.data.content)) {
+    if (TASK_ID_PATTERN.test(normalizedContent)) {
       try {
         await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {
           messageId: message!.id,
           spaceId,
-          content: parsed.data.content,
+          content: normalizedContent,
           orgId: user.org_id,
           userId: user.id,
         });
