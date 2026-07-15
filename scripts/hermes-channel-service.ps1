@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Uninstall')]
+  [ValidateSet('Install', 'Start', 'Stop', 'Status', 'Repair', 'Uninstall')]
   [string]$Action = 'Status',
   [string]$ConfigPath,
   [string]$TaskName = 'Deft Hermes Agent Channel',
@@ -61,6 +61,20 @@ switch ($Action) {
     if (-not $ConfigPath) { throw 'Install requires -ConfigPath.' }
     $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath).Path
     Assert-Config $resolvedConfig
+
+    # Upgrades must replace the running copy as well as the files. Otherwise the
+    # old supervisor keeps the mutex and the newly registered task exits idle.
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
+      $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      if ((-not $existingTask -or [string]$existingTask.State -ne 'Running') -and @(Get-ServiceProcess).Count -eq 0) {
+        break
+      }
+      Start-Sleep -Milliseconds 250
+    }
+    Start-Sleep -Seconds 1
+
     New-Item -ItemType Directory -Force -Path $ServiceRoot | Out-Null
     Copy-Item -LiteralPath $runnerSource -Destination $runnerTarget -Force
     Copy-Item -LiteralPath $bridgeSource -Destination $bridgeTarget -Force
@@ -71,13 +85,15 @@ switch ($Action) {
     $taskAction = New-ScheduledTaskAction -Execute $powershell -Argument (
       '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ServiceRoot "{1}"' -f $runnerTarget, $ServiceRoot
     )
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $settings = New-ScheduledTaskSettingsSet -RestartCount 20 -RestartInterval (New-TimeSpan -Minutes 1) `
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+      -RepetitionInterval (New-TimeSpan -Minutes 5)
+    $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
       -ExecutionTimeLimit (New-TimeSpan -Days 3650) -MultipleInstances IgnoreNew -StartWhenAvailable `
       -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
       -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $trigger `
+    Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger @($logonTrigger, $watchdogTrigger) `
       -Settings $settings -Principal $principal -Description 'Runs the Deft Hermes Agent Channel bridge.' -Force | Out-Null
     Start-ScheduledTask -TaskName $TaskName
     Write-Output "Installed and started '$TaskName'."
@@ -95,13 +111,38 @@ switch ($Action) {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     $info = if ($task) { Get-ScheduledTaskInfo -TaskName $TaskName } else { $null }
     $processes = @(Get-ServiceProcess)
+    $logPath = Join-Path $ServiceRoot 'service.log'
+    $logItem = Get-Item -LiteralPath $logPath -ErrorAction SilentlyContinue
+    $taskState = if ($task) { [string]$task.State } else { 'NotInstalled' }
+    $logAgeSeconds = if ($logItem) {
+      [Math]::Round(((Get-Date) - $logItem.LastWriteTime).TotalSeconds)
+    } else { $null }
     [pscustomobject]@{
       Installed = [bool]$task
-      TaskState = if ($task) { [string]$task.State } else { 'NotInstalled' }
+      Healthy = [bool]($task -and $taskState -eq 'Running' -and $processes.Count -eq 1 -and $logItem -and $logAgeSeconds -le 180)
+      TaskState = $taskState
       ProcessCount = $processes.Count
       LastRunTime = $info.LastRunTime
       LastTaskResult = $info.LastTaskResult
       ConfigPresent = Test-Path -LiteralPath $configTarget
+      LastLogWriteTime = $logItem.LastWriteTime
+      LogAgeSeconds = $logAgeSeconds
+      LastLogLine = if ($logItem) { Get-Content -LiteralPath $logPath -Tail 1 } else { $null }
+    }
+  }
+  'Repair' {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { throw "'$TaskName' is not installed. Run Install first." }
+    Assert-Config $configTarget
+    $logItem = Get-Item -LiteralPath (Join-Path $ServiceRoot 'service.log') -ErrorAction SilentlyContinue
+    $logIsFresh = $logItem -and ((Get-Date) - $logItem.LastWriteTime).TotalSeconds -le 180
+    if ([string]$task.State -ne 'Running' -or @(Get-ServiceProcess).Count -ne 1 -or -not $logIsFresh) {
+      Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+      Start-ScheduledTask -TaskName $TaskName
+      Write-Output "Repaired and started '$TaskName'."
+    } else {
+      Write-Output "'$TaskName' is healthy; no repair needed."
     }
   }
   'Uninstall' {

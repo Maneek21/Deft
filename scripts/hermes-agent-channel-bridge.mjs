@@ -6,6 +6,7 @@ const DEFAULT_POLL_MS = 3000;
 const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_MS = 1000;
+const DEFAULT_HEARTBEAT_MS = 60000;
 
 function requiredEnv(env, key) {
   const value = env[key]?.trim();
@@ -34,6 +35,7 @@ export function configFromEnv(env = process.env) {
     limit: Math.min(positiveInteger(env.DEFT_CHANNEL_BATCH_SIZE, DEFAULT_LIMIT), 100),
     maxRetries: positiveInteger(env.DEFT_CHANNEL_MAX_RETRIES, DEFAULT_MAX_RETRIES),
     retryBaseMs: positiveInteger(env.DEFT_CHANNEL_RETRY_BASE_MS, DEFAULT_RETRY_BASE_MS),
+    heartbeatMs: positiveInteger(env.DEFT_CHANNEL_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS),
     once: ['1', 'true', 'yes'].includes((env.DEFT_CHANNEL_ONCE ?? '').toLowerCase()),
   };
 }
@@ -121,6 +123,8 @@ export class HermesAgentChannelBridge {
     this.fetch = options.fetchImpl ?? globalThis.fetch;
     this.log = options.logger ?? console;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.now = options.now ?? (() => Date.now());
+    this.lastHeartbeatAt = 0;
     this.stopped = false;
   }
 
@@ -283,12 +287,20 @@ export class HermesAgentChannelBridge {
     this.stopped = true;
   }
 
+  logHeartbeat(eventCount) {
+    const now = this.now();
+    if (now - this.lastHeartbeatAt < this.config.heartbeatMs) return;
+    this.lastHeartbeatAt = now;
+    this.log.info?.(`[deft-channel] heartbeat (${eventCount} event${eventCount === 1 ? '' : 's'})`);
+  }
+
   async run() {
     const connection = await this.connect();
     this.log.info?.(`[deft-channel] connected as ${connection.employee?.slug ?? this.config.employeeSlug}`);
     do {
       try {
-        await this.pollOnce();
+        const eventCount = await this.pollOnce();
+        this.logHeartbeat(eventCount);
       } catch (error) {
         if (this.config.once) throw error;
         const message = error instanceof Error ? error.message : String(error);
