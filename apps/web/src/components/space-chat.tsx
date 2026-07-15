@@ -531,12 +531,12 @@ function renderContent(content: string) {
     return <span className="message-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
   }
 
-  const parts = text.split(/(<@[^>]+>|#[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
+  const parts = text.split(/(<@[^>]+>|#?[A-Z]{2,6}-\d+|@(?:here|all|channel)\b)/g);
   const result: React.ReactNode[] = [];
 
   parts.forEach((part, i) => {
     const mentionMatch = part.match(/^<@([^|]+)\|([^>]+)>$/);
-    const taskRefMatch = part.match(/^#([A-Z]{2,6})-(\d+)$/);
+    const taskRefMatch = part.match(/^#?([A-Z]{2,6})-(\d+)$/);
     const broadcastMatch = part.match(/^@(here|all|channel)$/);
     if (broadcastMatch) {
       result.push(
