@@ -45,6 +45,7 @@
     "agent:hermes-channel": "node scripts/hermes-agent-channel-bridge.mjs",
     "test:hermes-channel": "node --test scripts/hermes-agent-channel-bridge.test.mjs",
     "chat:certify": "tsx scripts/reports/chat-ui-certification.ts",
+    "certify:60-person": "node scripts/certify-60-person.mjs",
     "selfhost:backup": "tsx scripts/selfhost-backup.ts",
     "selfhost:bootstrap": "tsx scripts/selfhost-bootstrap.ts",
     "selfhost:doctor": "tsx scripts/selfhost-doctor.ts",

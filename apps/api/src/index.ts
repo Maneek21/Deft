@@ -58,6 +58,7 @@ import { workIntentRoutes } from './routes/work-intents.js';
 import { authMiddleware } from './middleware/auth.js';
 import {
   authLimiter,
+  loginIpLimiter,
   agentLimiter,
   agentChannelLimiter,
   uploadLimiter,
@@ -98,7 +99,7 @@ app.route('/oauth', oauthPublicRoutes);
 // but let read-only session checks use the normal app budget. UI-heavy pages
 // can call /auth/me repeatedly during navigation; treating those like login
 // attempts makes a valid session look expired after a short local demo sweep.
-app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/login', loginIpLimiter);
 app.use('/api/auth/signup', authLimiter);
 app.use('/api/auth/refresh', authLimiter);
 app.use('/api/auth/logout', authLimiter);

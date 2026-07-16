@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   notifications,
@@ -179,4 +179,73 @@ export async function createNotificationIfAllowed(
     },
   }).returning();
   return notification ?? null;
+}
+
+/**
+ * Apply one shared policy context to many recipients with a single policy
+ * read and a single insert. This is the hot path for messages in large rooms.
+ */
+export async function createNotificationsIfAllowed(
+  values: NotificationInsert[],
+  options: NotificationPolicyOptions = {},
+): Promise<Array<typeof notifications.$inferSelect>> {
+  if (values.length === 0) return [];
+  const first = values[0]!;
+
+  const inferredChannel = options.channel === undefined
+    ? notificationChannelForType(String(first.type))
+    : options.channel;
+  const userIds = Array.from(new Set(values.map((value) => value.user_id)));
+  const recipients = await db
+    .select({
+      id: users.id,
+      notification_preferences: users.notification_preferences,
+      status_text: users.status_text,
+      is_muted: spaceMembers.is_muted,
+      notification_level: spaceMembers.notification_level,
+    })
+    .from(users)
+    .leftJoin(
+      spaceMembers,
+      options.spaceId
+        ? and(eq(spaceMembers.user_id, users.id), eq(spaceMembers.space_id, options.spaceId))
+        : eq(spaceMembers.user_id, sqlNeverMatches()),
+    )
+    .where(inArray(users.id, userIds));
+  const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]));
+  const evaluatedAt = new Date().toISOString();
+
+  const allowed = values.flatMap((value) => {
+    const recipient = recipientById.get(value.user_id);
+    if (!recipient) return [];
+    if (options.respectDnd && recipient.status_text === 'Do Not Disturb') return [];
+    if (inferredChannel && !options.bypassUserPreferences) {
+      const preferences = normalizePreferences(recipient.notification_preferences);
+      if (preferences.channels[inferredChannel] === false) return [];
+    }
+    if (options.spaceId) {
+      if (recipient.is_muted === null || recipient.is_muted === undefined) return [];
+      if (recipient.is_muted) return [];
+      if (!spaceLevelAllowsNotification(recipient.notification_level, !!options.isMention)) return [];
+    }
+    const existingMetadata = value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
+      ? value.metadata as Record<string, unknown>
+      : {};
+    return [{
+      ...value,
+      metadata: {
+        ...existingMetadata,
+        delivery_policy: { status: 'delivered', reason: 'allowed', channel: inferredChannel ?? null, evaluated_at: evaluatedAt },
+      },
+    }];
+  });
+
+  if (allowed.length === 0) return [];
+  return db.insert(notifications).values(allowed).returning();
+}
+
+// Drizzle requires an expression for a LEFT JOIN even when no space policy is
+// requested. A false text comparison keeps the join empty in that uncommon path.
+function sqlNeverMatches() {
+  return '__deft_no_space__';
 }

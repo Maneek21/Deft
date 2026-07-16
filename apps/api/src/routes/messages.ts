@@ -11,7 +11,7 @@ import { resolveReasonProvider } from '../lib/org-ai-config.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membership.js';
 import { enqueueChatObservation } from '../lib/chat-observation.js';
-import { createNotificationIfAllowed } from '../lib/notification-policy.js';
+import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 
 export const messageRoutes = new Hono();
@@ -587,28 +587,26 @@ messageRoutes.post('/:spaceId', async (c) => {
 
         const plainContent = normalizedContent.replace(/<[^>]+>/g, '').slice(0, 200);
 
-        for (const member of members) {
-          // Don't duplicate if already notified via mention
-          if (mentionedUserIds.includes(member.user_id)) continue;
-
-          const isDm = space.type === 'dm' || space.type === 'group_dm';
-          const title = isDm
-            ? `${userData?.name ?? 'Someone'} sent you a message`
-            : `${userData?.name ?? 'Someone'} in #${space.name}`;
-          const link = isDm ? `/chat` : `/chat?space=${spaceId}`;
-
-          const notification = await createNotificationIfAllowed({
+        const isDm = space.type === 'dm' || space.type === 'group_dm';
+        const title = isDm
+          ? `${userData?.name ?? 'Someone'} sent you a message`
+          : `${userData?.name ?? 'Someone'} in #${space.name}`;
+        const link = isDm ? `/chat` : `/chat?space=${spaceId}`;
+        const recipientNotifications = await createNotificationsIfAllowed(
+          members
+            .filter((member) => !mentionedUserIds.includes(member.user_id))
+            .map((member) => ({
             org_id: user.org_id,
             user_id: member.user_id,
             type: 'message',
             title,
             body: plainContent,
             link,
-          }, { channel: 'chat', spaceId, isMention: false, respectDnd: true });
-
-          if (notification) {
-            emitToUser(member.user_id, 'notification:new', notification);
-          }
+          })),
+          { channel: 'chat', spaceId, isMention: false, respectDnd: true },
+        );
+        for (const notification of recipientNotifications) {
+          emitToUser(notification.user_id, 'notification:new', notification);
         }
       }
     } catch (err) {

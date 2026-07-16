@@ -35,6 +35,24 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+export function allowAccountLoginAttempt(email: string): boolean {
+  const now = Date.now();
+  if (loginAttempts.size > 10_000) {
+    for (const [key, attempt] of loginAttempts) {
+      if (attempt.resetAt <= now) loginAttempts.delete(key);
+    }
+  }
+  const key = createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+  const current = loginAttempts.get(key);
+  if (!current || current.resetAt <= now) {
+    loginAttempts.set(key, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= 10;
+}
+
 function generateTokens(user: { id: string; email: string; org_id: string }) {
   const accessToken = jwt.sign(
     { id: user.id, email: user.email, org_id: user.org_id },
@@ -160,6 +178,10 @@ authRoutes.post('/login', async (c) => {
   }
 
   const { email, password } = parsed.data;
+
+  if (!allowAccountLoginAttempt(email)) {
+    return c.json({ error: 'Too many login attempts for this account. Try again in a minute.', code: 'RATE_LIMITED' }, 429);
+  }
 
   const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (!user || !user.password_hash) {
