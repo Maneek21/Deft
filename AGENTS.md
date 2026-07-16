@@ -207,7 +207,7 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 
 ## Known Limitations (deployment blockers)
 
-- **Use `pnpm db:push-full` for fresh installs; `pnpm db:migrate` is not supported yet.** The Drizzle `_journal.json` was rebuilt and is current through 0066. Plain `drizzle-kit push` (`pnpm db:push`) can't express the generated tsvector/GIN full-text-search objects, so `push-full` runs `push` and then applies the orphan SQL files (`0020_wiki_search_vector.sql`, `0033_tasks_embedding.sql`) plus the expression-based unique index push drops — see `packages/db/scripts/apply-extras.ts`. `pnpm db:migrate` will not pick up the current schema; versioned migrate is post-alpha. (See the matching note in CLAUDE.md.)
+- **Use `pnpm db:push-full` for fresh installs and `pnpm db:upgrade` for supported upgrades.** The first tracked upgrade baseline is `v0.2.0-preview.1`; the upgrader fingerprints untracked baseline databases and records checksums in `deft_schema_migrations`. Plain `drizzle-kit push` cannot express every generated search/index object, and raw `pnpm db:migrate` remains unsupported. Historical pre-preview databases are rejected for manual review instead of being mutated.
 - **No live OpenClaw gateway in dev.** All `openclaw`-kind agent_employees rows currently have `connection_url IS NULL`. Block 1's live-gateway smoke tests run only once a gateway is provisioned; unit tests use MockTransport + `_setGatewayResolver` seams to exercise the forwarding code paths end-to-end.
 
 ## What NOT To Do

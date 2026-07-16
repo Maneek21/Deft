@@ -109,6 +109,87 @@ jobs:
       - name: Build web
         run: pnpm --filter @deft/web build
 
+  versioned-upgrade:
+    name: Versioned Upgrade
+    runs-on: ubuntu-latest
+    needs: typecheck
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_upgrade
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_upgrade
+      BASELINE_IMAGE: ghcr.io/maneek21/deft:0.2.0-preview.1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create preview-release database
+        run: |
+          set -euo pipefail
+          docker pull "$BASELINE_IMAGE"
+          docker run --rm --network host \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e ENCRYPTION_KEY=12345678901234567890123456789012 \
+            --entrypoint sh "$BASELINE_IMAGE" \
+            -c 'pnpm db:push-full && pnpm db:seed:demo'
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            DO \$\$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM orgs WHERE slug = 'testers-tomatoes') THEN
+                RAISE EXCEPTION 'preview seed org missing';
+              END IF;
+              IF (SELECT count(*) FROM users) < 6 THEN
+                RAISE EXCEPTION 'preview seed users missing';
+              END IF;
+            END \$\$;
+          "
+      - name: Inspect and dry-run without writing a ledger
+        run: |
+          if pnpm db:assert-fresh; then
+            echo 'fresh initializer accepted an existing release database' >&2
+            exit 1
+          fi
+          pnpm db:upgrade --status
+          pnpm db:upgrade --dry-run
+          test "$(psql "$DATABASE_URL" -Atc "SELECT to_regclass('public.deft_schema_migrations') IS NULL")" = "t"
+      - name: Adopt baseline and prove idempotency
+        run: |
+          pnpm db:upgrade
+          pnpm db:upgrade
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            DO \$\$
+            BEGIN
+              IF (SELECT count(*) FROM deft_schema_migrations WHERE version = '0.2.0-preview.1' AND kind = 'baseline') <> 1 THEN
+                RAISE EXCEPTION 'baseline ledger row missing or duplicated';
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM orgs WHERE slug = 'testers-tomatoes') THEN
+                RAISE EXCEPTION 'seeded org was not preserved';
+              END IF;
+              IF (SELECT count(*) FROM users) < 6 THEN
+                RAISE EXCEPTION 'seeded users were not preserved';
+              END IF;
+            END \$\$;
+          "
+      - name: Run upgrade unit tests
+        run: pnpm test:upgrade
+
   docker-build:
     name: Production Image + Browser Smoke
     # The production Dockerfile drifted multiple times without being noticed

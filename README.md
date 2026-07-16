@@ -133,11 +133,12 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
 ```
 
-The current preview channel is for fresh installs. Read the self-hosting guide
-and [current limitations](docs/current-limitations.md) before putting durable
-data into an alpha deployment.
+Fresh installs use `init`. The supported versioned upgrade baseline starts at
+`v0.2.0-preview.1`; later releases can be applied with the backup-first
+`pnpm selfhost:upgrade --prod --release` flow documented in the self-hosting
+guide. Historical pre-preview databases are not automatically adopted.
 
-> Fresh installs currently use `pnpm db:push-full`. Versioned `pnpm db:migrate` upgrades are not supported yet. Read [Project status and limitations](#project-status-and-limitations) before deploying important data.
+> `pnpm db:push-full` is for fresh installs. `pnpm db:upgrade` is for supported release-to-release upgrades. Do not use raw `pnpm db:migrate` against important data.
 
 ## Local development
 
@@ -196,7 +197,7 @@ Deft is an **alpha**. It is suitable for technical evaluation, internal dogfoodi
 Important current boundaries:
 
 - One workspace per self-hosted deployment is the supported product contract.
-- Fresh installs use `pnpm db:push-full`; a supported versioned migration path is still in progress.
+- Versioned upgrades are supported from the `v0.2.0-preview.1` baseline forward; older untracked alpha databases require a reviewed migration or fresh install.
 - Native Google, Slack, Gmail, and GitHub OAuth integrations are not part of the current self-hosted v1 promise. Use ICS for calendar subscriptions and bring external tools through your own agent or MCP runtime.
 - Agent quality depends on the configured model, scopes, workspace data, and approval policy.
 - This repository is source-available under BSL 1.1, not OSI open source today.

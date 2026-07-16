@@ -56,9 +56,9 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 ```
 
 Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
-the exact commit and image digest. Preview images are currently
-**fresh-install-only**; do not run `init` against data from another tagged
-version until that upgrade hop is explicitly documented as supported.
+the exact commit, image digest, and upgrade baseline. Use `init` only for a
+fresh database. Versioned release upgrades begin at `v0.2.0-preview.1` and use
+the dedicated `upgrade` service described below.
 
 ### Fast path: one-command bootstrap
 
@@ -146,7 +146,8 @@ Run the one-shot init service once:
 docker compose run --rm init
 ```
 
-The init service runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
+The init service first refuses any database that already contains application
+tables, then runs `pnpm db:push-full && pnpm db:seed` inside the Deft image.
 No host Node.js or pnpm install is required for the Docker self-host path.
 
 `db:push-full` enables the `vector` extension, syncs the schema, and applies the
@@ -415,26 +416,49 @@ gunzip -c backups/deft-backup-20260101T120000Z.sql.gz | docker compose exec -T p
 
 ## Upgrading
 
-Deft publishes alpha preview releases but does not yet provide a supported versioned database migration path. Do not run an unreviewed `git pull` against important data.
+The first supported versioned schema baseline is `v0.2.0-preview.1`. The
+upgrader fingerprints an untracked database before adopting that baseline,
+records checksums in `deft_schema_migrations`, applies each later migration in
+a transaction, and refuses unknown, newer, or modified migration histories.
 
-For a controlled alpha update:
-
-1. Pin the target commit or preview tag.
-2. Read its release notes and schema changes.
-3. Take a SQL backup and preserve uploads.
-4. Rehearse the update and restore on a copy of the deployment.
-5. Only then rebuild and run the alpha initializer:
+For a source checkout:
 
 ```bash
-git checkout <reviewed-commit-or-preview-tag>
-docker compose build deft init doctor smoke
-docker compose up -d
-docker compose run --rm init
-docker compose run --rm doctor
-docker compose run --rm smoke
+git pull --ff-only
+pnpm selfhost:upgrade --prod
 ```
 
-`docker compose run --rm init` applies the current schema shape. It is the available alpha update mechanism, not a compatibility guarantee for every historical database. Versioned `pnpm db:migrate` upgrades are not supported yet.
+For a named GHCR release, set the target image and use the release overlay:
+
+```bash
+export DEFT_IMAGE=ghcr.io/maneek21/deft:<target-version>
+pnpm selfhost:upgrade --prod --release
+```
+
+The wrapper builds or pulls the target image before downtime, stops app writes,
+writes a compressed Postgres backup, runs the `upgrade` service, recreates the
+app, and requires doctor plus MCP smoke to pass. Site-specific overlays can be
+appended with `--compose-file <file>`.
+
+Preview the exact sequence without changing data:
+
+```bash
+pnpm selfhost:upgrade --prod --release --dry-run
+```
+
+Database-only checks are also available inside the target image:
+
+```bash
+pnpm db:upgrade --status
+pnpm db:upgrade --dry-run
+pnpm db:upgrade
+```
+
+Do not run `init`, `db:push-full`, or raw `db:migrate` as an upgrade mechanism.
+If the upgrader rejects a pre-preview or incomplete schema, restore the backup
+and use a reviewed migration or a fresh deployment. Uploads remain in the
+Docker volume and are not deleted by the upgrade command; back them up according
+to your storage policy before high-risk changes.
 
 See [current limitations](current-limitations.md) before upgrading production.
 

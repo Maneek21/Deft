@@ -97,7 +97,7 @@ jobs:
             "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}",
             "digest": "${{ steps.image.outputs.digest }}",
             "platforms": ["linux/amd64"],
-            "upgrade_support": "fresh-install-only"
+            "upgrade_support": "versioned-from-v0.2.0-preview.1"
           }
           JSON
 

@@ -46,7 +46,25 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: sh -c "pnpm db:push-full && pnpm db:seed"
+    command: sh -c "pnpm db:assert-fresh && pnpm db:push-full && pnpm db:seed"
+    profiles: ['tools']
+
+  upgrade:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:3001}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - generate with `openssl rand -hex 32`}@postgres:5432/deft
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "pnpm db:upgrade"
     profiles: ['tools']
 
   doctor:
