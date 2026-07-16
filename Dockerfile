@@ -23,9 +23,9 @@ WORKDIR /app
 # docker-compose passes these as build args; declare and export them before
 # `next build` so self-hosted installs on custom domains/ports do not silently
 # fall back to localhost:3001.
-ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
-ARG NEXT_PUBLIC_WS_URL=http://localhost:3001
+ARG NEXT_PUBLIC_APP_URL=__DEFT_APP_URL__
+ARG NEXT_PUBLIC_API_URL=__DEFT_API_URL__
+ARG NEXT_PUBLIC_WS_URL=__DEFT_WS_URL__
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
@@ -72,4 +72,4 @@ EXPOSE 3000 3001
 # Start both web and API. Use the locally-installed next binary (pnpm exec),
 # not `npx next start` — npx downloads a fresh next install to ~/.npm/_npx/
 # that lacks the Turbopack runtime files our build produced.
-CMD sh -c "cd /app/apps/api && node --import tsx src/server.ts & cd /app/apps/web && pnpm exec next start -p 3000"
+CMD ["sh", "/app/scripts/docker-entrypoint.sh"]

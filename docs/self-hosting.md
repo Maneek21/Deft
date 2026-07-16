@@ -28,6 +28,38 @@ The stack runs comfortably on 2 vCPU / 4 GB RAM for small pilots.
 
 ## First Boot
 
+### Choose source build or named release
+
+The source-build path below is the most flexible option for contributors.
+Tagged preview releases also publish an amd64 image to
+`ghcr.io/maneek21/deft`. The release image injects `NEXT_PUBLIC_APP_URL`,
+`NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_WS_URL` when the container starts, so
+the same image works on localhost or a custom domain.
+
+For a named release, download `docker-compose.yml`, `compose.prod.yml`,
+`compose.release.yml`, and `.env.example` from the GitHub release into one
+directory. Then set:
+
+```bash
+DEFT_IMAGE=ghcr.io/maneek21/deft:<release-version>
+```
+
+Use the release overlay in every application/tool command:
+
+```bash
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres redis
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm smoke
+```
+
+Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
+the exact commit and image digest. Preview images are currently
+**fresh-install-only**; do not run `init` against data from another tagged
+version until that upgrade hop is explicitly documented as supported.
+
 ### Fast path: one-command bootstrap
 
 If you are working from a cloned repo with Node.js and pnpm available on the

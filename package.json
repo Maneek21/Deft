@@ -52,6 +52,7 @@
     "selfhost:preflight": "tsx scripts/selfhost-doctor.ts",
     "selfhost:reset": "tsx scripts/selfhost-reset.ts",
     "selfhost:smoke": "tsx scripts/selfhost-smoke.ts",
+    "test:public-env": "node --test scripts/inject-public-env.test.mjs",
     "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {
