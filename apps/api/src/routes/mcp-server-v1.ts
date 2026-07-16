@@ -44,6 +44,7 @@ import {
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
 import {
   HUMAN_TOOLS,
+  HUMAN_TOOL_SCOPES,
   buildHumanToolSchemas,
   type HumanToolContext,
 } from '../lib/mcp-tools/human.js';
@@ -198,53 +199,11 @@ async function dispatchTool(
   }
 }
 
-const HUMAN_TOOL_SCOPE: Record<string, string> = {
-  search: 'read:workspace',
-  fetch: 'read:workspace',
-  platform_context: 'read:workspace',
-  member_list: 'read:workspace',
-  resolve_member: 'read:workspace',
-  resolve_targets: 'read:workspace',
-  member_get: 'read:workspace',
-  activity_query: 'read:workspace',
-  events_query: 'read:calendar',
-  memory_recall: 'read:wiki',
-  wiki_search: 'read:wiki',
-  memory_list: 'read:wiki',
-  list_my_tasks: 'read:tasks',
-  task_get: 'read:tasks',
-  task_query: 'read:tasks',
-  task_saved_view_get: 'read:tasks',
-  project_list: 'read:workspace',
-  resolve_project: 'read:workspace',
-  project_get: 'read:workspace',
-  space_list: 'read:messages',
-  resolve_space: 'read:messages',
-  space_get: 'read:messages',
-  project_progress: 'read:tasks',
-  team_workload: 'read:tasks',
-  team_list: 'read:workspace',
-  team_get: 'read:workspace',
-  team_context: 'read:workspace',
-  thread_fetch: 'read:messages',
-  messages_recent: 'read:messages',
-  messages_search: 'read:messages',
-  memory_write: 'write:wiki',
-  wiki_upsert: 'write:wiki',
-  task_create: 'write:tasks',
-  task_update: 'write:tasks',
-  task_bulk_update: 'write:tasks',
-  task_transition: 'write:tasks',
-  comment_on_task: 'write:tasks',
-  message_post: 'write:messages',
-  send_message: 'write:messages',
-};
-
 function humanCatalog(scopes: string[]) {
   return buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
     .filter((schema) => {
       const name = String(schema.name ?? '');
-      const required = HUMAN_TOOL_SCOPE[name];
+      const required = HUMAN_TOOL_SCOPES[name];
       return !required || scopes.includes(required);
     });
 }
@@ -259,7 +218,7 @@ async function dispatchHumanTool(
   if (!handler) {
     return { isError: true, content: [{ type: 'text', text: `Unknown or unavailable personal MCP tool: ${toolName}` }] };
   }
-  const requiredScope = HUMAN_TOOL_SCOPE[canonicalToolName];
+  const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
   if (requiredScope && !ctx.scopes.includes(requiredScope)) {
     return { isError: true, content: [{ type: 'text', text: `Missing MCP scope: ${requiredScope}` }] };
   }

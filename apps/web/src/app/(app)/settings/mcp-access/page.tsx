@@ -38,7 +38,7 @@ type McpToken = {
 };
 
 const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar'];
-const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki'];
+const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki', 'write:calendar', 'write:workspace'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -50,6 +50,8 @@ const SCOPE_LABELS: Record<string, string> = {
   'write:tasks': 'Create, update, transition, and comment on tasks',
   'write:messages': 'Post messages into spaces and DMs you can access',
   'write:wiki': 'Save or update wiki knowledge as you',
+  'write:calendar': 'Create, update, and cancel your native Deft calendar events',
+  'write:workspace': 'Manage your notes, inbox, approvals, projects, and agent operations',
 };
 
 type ClientId = 'codex' | 'claude-code' | 'claude-desktop' | 'remote-web' | 'custom' | 'agent-employee';

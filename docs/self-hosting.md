@@ -256,7 +256,12 @@ Create a personal token, choose read-only or write-enabled scopes, and paste the
 generated streamable HTTP MCP config into Claude Desktop, Claude Code, ChatGPT
 MCP clients, or any compatible MCP runtime. Personal tokens act as the user who
 created them. Writes create tasks, messages, and wiki pages under that user's
-identity.
+identity. With the corresponding scopes, personal clients can also manage the
+user's notes, native calendar events, inbox state, assigned approvals, projects,
+saved task views, and bounded agent-employee state. Initial authentication,
+connector authorization, member administration, credentials, billing, and
+irreversible deletion remain UI-only. In that sense Deft is operationally
+headless after setup, not a UI-free product.
 
 ### AI client compatibility
 
@@ -288,7 +293,10 @@ token in Settings -> MCP Access and use it as a bearer token.
 Start pilots with read-only scopes (`read:workspace`, `read:wiki`,
 `read:tasks`, `read:messages`, `read:calendar`). Add write scopes only when the
 user expects that AI client to create or update Deft records under their own
-identity.
+identity. The write scopes are `write:tasks`, `write:messages`, `write:wiki`,
+`write:calendar`, and `write:workspace`. The broad workspace scope covers notes,
+inbox state, approvals, projects, saved views, and owner/admin-only agent state;
+it does not expose secrets or member administration.
 
 Bring-your-own-agent employees connect through MCP:
 

@@ -107,7 +107,9 @@ function OAuthAuthorizeContent() {
   const canWriteTasks = preview?.scopes.includes('write:tasks') ?? false;
   const canWriteMessages = preview?.scopes.includes('write:messages') ?? false;
   const canWriteWiki = preview?.scopes.includes('write:wiki') ?? false;
-  const hasWriteAccess = canWriteTasks || canWriteMessages || canWriteWiki;
+  const canWriteCalendar = preview?.scopes.includes('write:calendar') ?? false;
+  const canWriteWorkspace = preview?.scopes.includes('write:workspace') ?? false;
+  const hasWriteAccess = canWriteTasks || canWriteMessages || canWriteWiki || canWriteCalendar || canWriteWorkspace;
   const accessLabel = hasWriteAccess ? 'Workspace helper access' : 'Knowledge access';
 
   return (
@@ -180,6 +182,12 @@ function OAuthAuthorizeContent() {
                       <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Create and update wiki knowledge pages</li>
                     ) : (
                       <li className="flex gap-2"><X size={16} style={{ color: 'var(--danger)' }} /> Edit wiki pages</li>
+                    )}
+                    {canWriteCalendar && (
+                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Manage your native Deft calendar events</li>
+                    )}
+                    {canWriteWorkspace && (
+                      <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Manage notes, inbox, approvals, projects, and agent operations</li>
                     )}
                   </>
                 ) : (

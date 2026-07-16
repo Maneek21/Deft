@@ -3,8 +3,13 @@ import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   connectedAccounts,
+  agentActions,
+  agentEmployees,
   events,
   messages,
+  notes,
+  noteVersions,
+  notifications,
   oauthAuditEvents,
   orgMembers,
   orgs,
@@ -30,6 +35,8 @@ import { getTeamContext, getTeamProfile, listTeamSummaries } from './team-contex
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../task-bulk-update.js';
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
+import { visibleNoteCondition } from '../note-visibility.js';
+import { approveAction, rejectAction } from '../agent-approval-resolver.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -182,6 +189,19 @@ export const HUMAN_READ_TOOLS = new Set([
   'team_list',
   'team_get',
   'team_context',
+  'workspace_capabilities',
+  'note_list',
+  'note_get',
+  'calendar_list',
+  'calendar_get',
+  'calendar_availability',
+  'inbox_list',
+  'inbox_get',
+  'approval_list',
+  'approval_get',
+  'task_saved_view_list',
+  'agent_employee_list',
+  'agent_employee_get',
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
@@ -194,6 +214,21 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'comment_on_task',
   'message_post',
   'send_message',
+  'note_create',
+  'note_update',
+  'note_archive',
+  'calendar_event_create',
+  'calendar_event_update',
+  'calendar_event_cancel',
+  'inbox_mark_read',
+  'inbox_mark_all_read',
+  'approval_approve',
+  'approval_reject',
+  'project_create',
+  'project_update',
+  'project_archive',
+  'task_saved_view_create',
+  'agent_employee_update_state',
 ]);
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
@@ -237,6 +272,34 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   events_query: humanEventsQuery,
   wiki_upsert: humanWikiUpsert,
   send_message: humanSendMessage,
+  workspace_capabilities: humanWorkspaceCapabilities,
+  note_list: humanNoteList,
+  note_get: humanNoteGet,
+  note_create: humanNoteCreate,
+  note_update: humanNoteUpdate,
+  note_archive: humanNoteArchive,
+  calendar_list: humanCalendarList,
+  calendar_get: humanCalendarGet,
+  calendar_availability: humanCalendarAvailability,
+  calendar_event_create: humanCalendarEventCreate,
+  calendar_event_update: humanCalendarEventUpdate,
+  calendar_event_cancel: humanCalendarEventCancel,
+  inbox_list: humanInboxList,
+  inbox_get: humanInboxGet,
+  inbox_mark_read: humanInboxMarkRead,
+  inbox_mark_all_read: humanInboxMarkAllRead,
+  approval_list: humanApprovalList,
+  approval_get: humanApprovalGet,
+  approval_approve: humanApprovalApprove,
+  approval_reject: humanApprovalReject,
+  project_create: humanProjectCreate,
+  project_update: humanProjectUpdate,
+  project_archive: humanProjectArchive,
+  task_saved_view_list: humanTaskSavedViewList,
+  task_saved_view_create: humanTaskSavedViewCreate,
+  agent_employee_list: humanAgentEmployeeList,
+  agent_employee_get: humanAgentEmployeeGet,
+  agent_employee_update_state: humanAgentEmployeeUpdateState,
 };
 
 function hasAnyScope(ctx: HumanToolContext, scopes: string[]): boolean {
@@ -315,6 +378,35 @@ function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): R
       return { space_id: args.space_id ?? null, parent_id: args.parent_id ?? null, content: normalizedText(args.content) };
     case 'send_message':
       return { target: args.target ?? null, space_id: args.space_id ?? null, space_name: normalizedText(args.space_name), thread_id: args.thread_id ?? null, user_id: args.user_id ?? null, email: normalizedText(args.email), person_name: normalizedText(args.person_name), content: normalizedText(args.content) };
+    case 'note_create':
+      return { title: normalizedText(args.title), content: normalizedText(args.content), visibility: args.visibility ?? 'private', visibility_space_id: args.visibility_space_id ?? null };
+    case 'note_update':
+      return { note_id: args.note_id ?? null, fields: args };
+    case 'note_archive':
+      return { note_id: args.note_id ?? null };
+    case 'calendar_event_create':
+      return { title: normalizedText(args.title), start: args.start ?? null, end: args.end ?? null, all_day: args.all_day ?? false };
+    case 'calendar_event_update':
+      return { event_id: args.event_id ?? null, fields: args };
+    case 'calendar_event_cancel':
+      return { event_id: args.event_id ?? null };
+    case 'inbox_mark_read':
+      return { notification_id: args.notification_id ?? null };
+    case 'inbox_mark_all_read':
+      return { all: true };
+    case 'approval_approve':
+    case 'approval_reject':
+      return { action_id: args.action_id ?? null, reason: normalizedText(args.reason) };
+    case 'project_create':
+      return { name: normalizedText(args.name), prefix: normalizedText(args.prefix) };
+    case 'project_update':
+      return { project_id: args.project_id ?? null, fields: args };
+    case 'project_archive':
+      return { project_id: args.project_id ?? null, archived: args.archived ?? true };
+    case 'task_saved_view_create':
+      return { name: normalizedText(args.name), project_id: args.project_id ?? null, config: args.config ?? null, is_shared: args.is_shared ?? false };
+    case 'agent_employee_update_state':
+      return { employee_id: args.employee_id ?? null, state: args.state ?? null };
     default:
       return null;
   }
@@ -2746,6 +2838,445 @@ export async function humanEventsQuery(args: { limit?: number }, ctx: HumanToolC
   return textResult((rows as any).rows ?? []);
 }
 
+function operationalBoundary() {
+  return {
+    operationally_headless: true,
+    ui_only: [
+      'initial workspace authentication and connector authorization',
+      'billing and provider secrets',
+      'ownership transfer, member role changes, and member removal',
+      'agent credential reveal, rotation, and deletion',
+      'irreversible project deletion',
+    ],
+  };
+}
+
+export async function humanWorkspaceCapabilities(_args: Record<string, never>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const available = [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS].filter((name) => {
+    const required = HUMAN_TOOL_SCOPES[name];
+    if (required && !ctx.scopes.includes(required)) return false;
+    if (name === 'agent_employee_update_state' && !canManageWorkspace(ctx)) return false;
+    return true;
+  });
+  return textResult({
+    ...operationalBoundary(),
+    role: ctx.role,
+    granted_scopes: ctx.scopes,
+    available_tools: available.sort(),
+    guidance: 'Use attention_digest for triage, resolve_targets before fuzzy writes, and reuse idempotency_key when retrying the same write.',
+  });
+}
+
+export async function humanNoteList(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
+  const query = args.query?.trim();
+  const rows = await db.select({
+    id: notes.id, title: notes.title, content: notes.content, icon: notes.icon,
+    is_pinned: notes.is_pinned, visibility: notes.visibility,
+    visibility_space_id: notes.visibility_space_id, user_id: notes.user_id,
+    version: notes.version, created_at: notes.created_at, updated_at: notes.updated_at,
+  }).from(notes).where(and(
+    eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), eq(notes.is_template, false),
+    visibleNoteCondition(ctx.user_id), query ? sql`(${notes.title} ILIKE ${`%${query}%`} OR ${notes.content} ILIKE ${`%${query}%`})` : sql`true`,
+  )).orderBy(desc(notes.is_pinned), desc(notes.updated_at)).limit(limit);
+  return textResult(rows.map((row) => ({ ...row, url: `/notes?note=${row.id}` })));
+}
+
+export async function humanNoteGet(args: { note_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  if (!args.note_id) return errorResult('note_id is required');
+  const [row] = await db.select().from(notes).where(and(
+    eq(notes.id, args.note_id), eq(notes.org_id, ctx.org_id), eq(notes.is_deleted, false), visibleNoteCondition(ctx.user_id),
+  )).limit(1);
+  return row ? textResult({ ...row, url: `/notes?note=${row.id}` }) : errorResult('Note not found or not visible');
+}
+
+function validNoteVisibility(value: unknown): value is 'private' | 'org' | 'space' {
+  return typeof value === 'string' && ['private', 'org', 'space'].includes(value);
+}
+
+async function validateNoteSpace(ctx: HumanToolContext, visibility: string, spaceId?: string | null): Promise<ToolResult | null> {
+  if (visibility !== 'space') return null;
+  if (!spaceId) return errorResult('visibility_space_id is required for a space-visible note');
+  return await userIsSpaceMember(ctx, spaceId) ? null : errorResult('You are not a member of that space');
+}
+
+export async function humanNoteCreate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace');
+  if (scopeError) return scopeError;
+  return withIdempotency('note_create', args, ctx, async () => {
+    const visibility = validNoteVisibility(args.visibility) ? args.visibility : 'private';
+    const spaceId = typeof args.visibility_space_id === 'string' ? args.visibility_space_id : null;
+    const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
+    if (spaceError) return spaceError;
+    const [created] = await db.insert(notes).values({
+      org_id: ctx.org_id, user_id: ctx.user_id,
+      title: typeof args.title === 'string' ? args.title.trim() : '',
+      content: typeof args.content === 'string' ? args.content : '',
+      icon: typeof args.icon === 'string' ? args.icon : null,
+      is_pinned: args.is_pinned === true,
+      visibility, visibility_space_id: visibility === 'space' ? spaceId : null,
+    }).returning();
+    return textResult({ created: true, note: created, url: `/notes?note=${created!.id}` });
+  });
+}
+
+export async function humanNoteUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace');
+  if (scopeError) return scopeError;
+  if (typeof args.note_id !== 'string') return errorResult('note_id is required');
+  return withIdempotency('note_update', args, ctx, async () => {
+    const [current] = await db.select().from(notes).where(and(
+      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
+    )).limit(1);
+    if (!current) return errorResult('Note not found or not owned by the connected user');
+    const visibility = validNoteVisibility(args.visibility) ? args.visibility : current.visibility;
+    const spaceId = args.visibility_space_id === null ? null : typeof args.visibility_space_id === 'string' ? args.visibility_space_id : current.visibility_space_id;
+    const spaceError = await validateNoteSpace(ctx, visibility, spaceId);
+    if (spaceError) return spaceError;
+    const updates: Record<string, unknown> = {};
+    for (const field of ['title', 'content', 'icon', 'is_pinned'] as const) if (args[field] !== undefined) updates[field] = args[field];
+    if (args.visibility !== undefined) updates.visibility = visibility;
+    if (args.visibility !== undefined || args.visibility_space_id !== undefined) updates.visibility_space_id = visibility === 'space' ? spaceId : null;
+    if (args.content !== undefined && args.content !== current.content) {
+      await db.insert(noteVersions).values({ note_id: current.id, version: current.version, title: current.title, content: current.content, edited_by: ctx.user_id }).onConflictDoNothing();
+      updates.version = current.version + 1;
+    }
+    if (Object.keys(updates).length === 0) return textResult({ updated: false, note: current, url: `/notes?note=${current.id}` });
+    const [updated] = await db.update(notes).set(updates).where(and(eq(notes.id, current.id), eq(notes.version, current.version))).returning();
+    return updated ? textResult({ updated: true, note: updated, url: `/notes?note=${updated.id}` }) : errorResult('Note changed in another session; read it again before retrying');
+  });
+}
+
+export async function humanNoteArchive(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace');
+  if (scopeError) return scopeError;
+  if (typeof args.note_id !== 'string') return errorResult('note_id is required');
+  return withIdempotency('note_archive', args, ctx, async () => {
+    const [updated] = await db.update(notes).set({ is_deleted: true }).where(and(
+      eq(notes.id, args.note_id as string), eq(notes.org_id, ctx.org_id), eq(notes.user_id, ctx.user_id), eq(notes.is_deleted, false),
+    )).returning({ id: notes.id, title: notes.title });
+    return updated ? textResult({ archived: true, note: updated }) : errorResult('Note not found or not owned by the connected user');
+  });
+}
+
+function parseRequiredDate(value: unknown, field: string): Date | ToolResult {
+  if (typeof value !== 'string') return errorResult(`${field} is required as an ISO timestamp`);
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? errorResult(`${field} must be a valid ISO timestamp`) : parsed;
+}
+
+export async function humanCalendarList(args: { from?: string; until?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:calendar');
+  if (scopeError) return scopeError;
+  const from = args.from ? new Date(args.from) : new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const until = args.until ? new Date(args.until) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(until.getTime()) || until <= from) return errorResult('from/until must be a valid increasing ISO range');
+  const rows = await db.execute(sql`
+    SELECT e.* FROM events e LEFT JOIN connected_accounts ca ON ca.id = e.connected_account_id
+    WHERE e.org_id = ${ctx.org_id} AND (e.user_id = ${ctx.user_id} OR ca.user_id = ${ctx.user_id})
+      AND e.event_type = 'calendar_event' AND e.timestamp >= ${from} AND e.timestamp <= ${until}
+    ORDER BY e.timestamp ASC LIMIT ${Math.min(Math.max(1, args.limit ?? 100), 200)}
+  `);
+  return textResult((rows as any).rows ?? []);
+}
+
+export async function humanCalendarGet(args: { event_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:calendar');
+  if (scopeError) return scopeError;
+  if (!args.event_id || !(await userCanSeeEvent(ctx, args.event_id))) return errorResult('Event not found or not visible');
+  const [row] = await db.select().from(events).where(eq(events.id, args.event_id)).limit(1);
+  return textResult(row);
+}
+
+export async function humanCalendarAvailability(args: { from?: string; until?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const result = await humanCalendarList({ from: args.from, until: args.until, limit: 200 }, ctx);
+  if (result.isError) return result;
+  const rows = JSON.parse(result.content[0]?.text ?? '[]') as Array<any>;
+  return textResult({ from: args.from ?? null, until: args.until ?? null, busy: rows.map((row) => ({ event_id: row.id, title: row.title, start: row.metadata?.start ?? row.timestamp, end: row.metadata?.end ?? row.timestamp, source: row.source })) });
+}
+
+export async function humanCalendarEventCreate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:calendar');
+  if (scopeError) return scopeError;
+  return withIdempotency('calendar_event_create', args, ctx, async () => {
+    if (typeof args.title !== 'string' || !args.title.trim()) return errorResult('title is required');
+    const start = parseRequiredDate(args.start, 'start'); if (!(start instanceof Date)) return start;
+    const end = parseRequiredDate(args.end, 'end'); if (!(end instanceof Date)) return end;
+    if (end <= start) return errorResult('end must be after start');
+    const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.user_id)).limit(1);
+    const [created] = await db.insert(events).values({ org_id: ctx.org_id, source: 'native', event_type: 'calendar_event', title: args.title.trim(), body: typeof args.description === 'string' ? args.description : null, actor: user?.email ?? null, timestamp: start, metadata: { start: start.toISOString(), end: end.toISOString(), location: typeof args.location === 'string' ? args.location : null, attendees: [], status: 'confirmed', allDay: args.all_day === true }, user_id: ctx.user_id }).returning();
+    return textResult({ created: true, event: created, url: `/calendar?event=${created!.id}` });
+  });
+}
+
+export async function humanCalendarEventUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:calendar');
+  if (scopeError) return scopeError;
+  if (typeof args.event_id !== 'string') return errorResult('event_id is required');
+  return withIdempotency('calendar_event_update', args, ctx, async () => {
+    const [current] = await db.select().from(events).where(and(eq(events.id, args.event_id as string), eq(events.org_id, ctx.org_id), eq(events.user_id, ctx.user_id), eq(events.source, 'native'))).limit(1);
+    if (!current) return errorResult('Native event not found or not editable');
+    const metadata = { ...(current.metadata as Record<string, unknown>) };
+    const updates: Record<string, unknown> = {};
+    if (typeof args.title === 'string' && args.title.trim()) updates.title = args.title.trim();
+    if (args.description !== undefined) updates.body = typeof args.description === 'string' ? args.description : null;
+    if (args.start !== undefined) { const start = parseRequiredDate(args.start, 'start'); if (!(start instanceof Date)) return start; updates.timestamp = start; metadata.start = start.toISOString(); }
+    if (args.end !== undefined) { const end = parseRequiredDate(args.end, 'end'); if (!(end instanceof Date)) return end; metadata.end = end.toISOString(); }
+    if (args.location !== undefined) metadata.location = typeof args.location === 'string' ? args.location : null;
+    const startValue = new Date(String(metadata.start ?? current.timestamp)); const endValue = new Date(String(metadata.end ?? current.timestamp));
+    if (!Number.isNaN(endValue.getTime()) && endValue <= startValue) return errorResult('end must be after start');
+    updates.metadata = metadata;
+    const [updated] = await db.update(events).set(updates).where(eq(events.id, current.id)).returning();
+    return textResult({ updated: true, event: updated, url: `/calendar?event=${updated!.id}` });
+  });
+}
+
+export async function humanCalendarEventCancel(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:calendar');
+  if (scopeError) return scopeError;
+  if (typeof args.event_id !== 'string') return errorResult('event_id is required');
+  return withIdempotency('calendar_event_cancel', args, ctx, async () => {
+    const [deleted] = await db.delete(events).where(and(eq(events.id, args.event_id as string), eq(events.org_id, ctx.org_id), eq(events.user_id, ctx.user_id), eq(events.source, 'native'))).returning({ id: events.id, title: events.title });
+    return deleted ? textResult({ cancelled: true, event: deleted }) : errorResult('Native event not found or not cancellable');
+  });
+}
+
+export async function humanInboxList(args: { unread_only?: boolean; type?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const rows = await db.select().from(notifications).where(and(
+    eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id),
+    args.unread_only === false ? sql`true` : eq(notifications.is_read, false),
+    args.type ? eq(notifications.type, args.type as any) : sql`true`,
+  )).orderBy(desc(notifications.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  return textResult(rows);
+}
+
+export async function humanInboxGet(args: { notification_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+  if (!args.notification_id) return errorResult('notification_id is required');
+  const [row] = await db.select().from(notifications).where(and(eq(notifications.id, args.notification_id), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id))).limit(1);
+  return row ? textResult(row) : errorResult('Notification not found');
+}
+
+export async function humanInboxMarkRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (typeof args.notification_id !== 'string') return errorResult('notification_id is required');
+  return withIdempotency('inbox_mark_read', args, ctx, async () => {
+    const [row] = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.id, args.notification_id as string), eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id))).returning();
+    return row ? textResult({ marked_read: true, notification: row }) : errorResult('Notification not found');
+  });
+}
+
+export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  return withIdempotency('inbox_mark_all_read', args, ctx, async () => {
+    const rows = await db.update(notifications).set({ is_read: true }).where(and(eq(notifications.org_id, ctx.org_id), eq(notifications.user_id, ctx.user_id), eq(notifications.is_read, false))).returning({ id: notifications.id });
+    return textResult({ marked_read: rows.length });
+  });
+}
+
+async function ownApproval(ctx: HumanToolContext, actionId: string) {
+  const [row] = await db.select().from(agentActions).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, ctx.org_id), eq(agentActions.user_id, ctx.user_id))).limit(1);
+  return row ?? null;
+}
+
+export async function humanApprovalList(args: { status?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+  const status = args.status ?? 'pending';
+  if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), eq(agentActions.user_id, ctx.user_id), status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  return textResult(rows.map((row) => ({ ...row, url: '/inbox?tab=approvals' })));
+}
+
+export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+  if (!args.action_id) return errorResult('action_id is required');
+  const row = await ownApproval(ctx, args.action_id);
+  return row ? textResult({ ...row, url: '/inbox?tab=approvals' }) : errorResult('Approval not found');
+}
+
+export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (typeof args.action_id !== 'string') return errorResult('action_id is required');
+  return withIdempotency('approval_approve', args, ctx, async () => {
+    if (!(await ownApproval(ctx, args.action_id as string))) return errorResult('Approval not found');
+    const result = await approveAction(args.action_id as string, ctx.user_id);
+    return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
+  });
+}
+
+export async function humanApprovalReject(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (typeof args.action_id !== 'string') return errorResult('action_id is required');
+  return withIdempotency('approval_reject', args, ctx, async () => {
+    if (!(await ownApproval(ctx, args.action_id as string))) return errorResult('Approval not found');
+    const result = await rejectAction(args.action_id as string, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
+    return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
+  });
+}
+
+function canManageWorkspace(ctx: HumanToolContext) { return ctx.role === 'owner' || ctx.role === 'admin'; }
+
+export async function humanProjectCreate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  return withIdempotency('project_create', args, ctx, async () => {
+    const name = typeof args.name === 'string' ? args.name.trim() : '';
+    const prefix = typeof args.prefix === 'string' ? args.prefix.trim().toUpperCase() : '';
+    if (!name || !/^[A-Z0-9]{2,6}$/.test(prefix)) return errorResult('name and a unique 2-6 character alphanumeric prefix are required');
+    const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_create lead' });
+    if (leadResult.error) return leadResult.error;
+    const [duplicate] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.org_id, ctx.org_id), eq(projects.prefix, prefix))).limit(1);
+    if (duplicate) return errorResult(`Project prefix ${prefix} is already in use`);
+    const [created] = await db.insert(projects).values({ org_id: ctx.org_id, name, prefix, description: typeof args.description === 'string' ? args.description : null, color: typeof args.color === 'string' ? args.color : null, icon: typeof args.icon === 'string' ? args.icon : null, lead_id: leadResult.user?.id ?? null }).returning();
+    return textResult({ created: true, project: created, url: `/tasks?project=${created!.id}` });
+  });
+}
+
+export async function humanProjectUpdate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (typeof args.project_id !== 'string') return errorResult('project_id is required');
+  return withIdempotency('project_update', args, ctx, async () => {
+    if (!(await userCanSeeProject(ctx, args.project_id as string))) return errorResult('Project not found');
+    const updates: Record<string, unknown> = {};
+    for (const field of ['name', 'description', 'color', 'icon'] as const) if (args[field] !== undefined) updates[field] = args[field];
+    if (args.lead_id === null) updates.lead_id = null;
+    else if (args.lead_id !== undefined) {
+      const leadResult = await resolveActiveMember(ctx, { user_id: args.lead_id, label: 'project_update lead' });
+      if (leadResult.error) return leadResult.error;
+      updates.lead_id = leadResult.user?.id ?? null;
+    }
+    if (Object.keys(updates).length === 0) return errorResult('At least one editable project field is required');
+    const [updated] = await db.update(projects).set(updates).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id))).returning();
+    return textResult({ updated: true, project: updated, url: `/tasks?project=${updated!.id}` });
+  });
+}
+
+export async function humanProjectArchive(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (typeof args.project_id !== 'string') return errorResult('project_id is required');
+  return withIdempotency('project_archive', args, ctx, async () => {
+    const [updated] = await db.update(projects).set({ is_archived: args.archived !== false }).where(and(eq(projects.id, args.project_id as string), eq(projects.org_id, ctx.org_id), eq(projects.is_deleted, false))).returning();
+    return updated ? textResult({ archived: updated.is_archived, project: updated, url: `/tasks?project=${updated.id}` }) : errorResult('Project not found');
+  });
+}
+
+export async function humanTaskSavedViewList(args: { project_id?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:tasks'); if (scopeError) return scopeError;
+  const rows = await db.select().from(savedViews).where(and(eq(savedViews.org_id, ctx.org_id), or(eq(savedViews.user_id, ctx.user_id), eq(savedViews.is_shared, true)), args.project_id ? eq(savedViews.project_id, args.project_id) : sql`true`)).orderBy(desc(savedViews.updated_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  return textResult(rows);
+}
+
+export async function humanTaskSavedViewCreate(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:tasks'); if (scopeError) return scopeError;
+  return withIdempotency('task_saved_view_create', args, ctx, async () => {
+    if (typeof args.name !== 'string' || !args.name.trim() || !args.config || typeof args.config !== 'object') return errorResult('name and config are required');
+    if (typeof args.project_id === 'string' && !(await userCanSeeProject(ctx, args.project_id))) return errorResult('Project not found');
+    const [created] = await db.insert(savedViews).values({ org_id: ctx.org_id, user_id: ctx.user_id, project_id: typeof args.project_id === 'string' ? args.project_id : null, name: args.name.trim(), config: args.config, is_shared: args.is_shared === true && canManageWorkspace(ctx) }).returning();
+    return textResult({ created: true, saved_view: created });
+  });
+}
+
+export async function humanAgentEmployeeList(args: { include_paused?: boolean; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+  const rows = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, runtime_kind: agentEmployees.runtime_kind, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false), args.include_paused ? sql`true` : eq(agentEmployees.is_active, true))).orderBy(agentEmployees.name).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  return textResult(rows.map((row) => ({ ...row, url: `/settings/agent-employees/${row.id}` })));
+}
+
+export async function humanAgentEmployeeGet(args: { employee_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
+  if (!args.employee_id) return errorResult('employee_id is required');
+  const [row] = await db.select({ id: agentEmployees.id, name: agentEmployees.name, slug: agentEmployees.slug, role: agentEmployees.role, job_title: agentEmployees.job_title, expertise_description: agentEmployees.expertise_description, runtime_kind: agentEmployees.runtime_kind, trust_level: agentEmployees.trust_level, max_daily_actions: agentEmployees.max_daily_actions, daily_action_count: agentEmployees.daily_action_count, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy, unhealthy_reason: agentEmployees.unhealthy_reason, certification_status: agentEmployees.certification_status, last_verified_at: agentEmployees.last_verified_at, last_mcp_call_at: agentEmployees.last_mcp_call_at, last_work_outcome_at: agentEmployees.last_work_outcome_at }).from(agentEmployees).where(and(eq(agentEmployees.id, args.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).limit(1);
+  return row ? textResult({ ...row, url: `/settings/agent-employees/${row.id}` }) : errorResult('Agent employee not found');
+}
+
+export async function humanAgentEmployeeUpdateState(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
+  if (!canManageWorkspace(ctx)) return errorResult('Only workspace owners and admins can pause, resume, or mark an agent healthy');
+  if (typeof args.employee_id !== 'string') return errorResult('employee_id is required');
+  return withIdempotency('agent_employee_update_state', args, ctx, async () => {
+    const updates: Record<string, unknown> = {};
+    if (args.state === 'paused') updates.is_active = false;
+    else if (args.state === 'active') updates.is_active = true;
+    else if (args.state === 'healthy') { updates.unhealthy = false; updates.unhealthy_reason = null; }
+    else return errorResult('state must be active, paused, or healthy');
+    const [updated] = await db.update(agentEmployees).set(updates).where(and(eq(agentEmployees.id, args.employee_id as string), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false))).returning({ id: agentEmployees.id, name: agentEmployees.name, is_active: agentEmployees.is_active, unhealthy: agentEmployees.unhealthy });
+    return updated ? textResult({ updated: true, employee: updated, url: `/settings/agent-employees/${updated.id}` }) : errorResult('Agent employee not found');
+  });
+}
+
+export const HUMAN_TOOL_SCOPES: Record<string, string> = {
+  search: 'read:workspace', fetch: 'read:workspace', platform_context: 'read:workspace', attention_digest: 'read:workspace',
+  member_list: 'read:workspace', resolve_member: 'read:workspace', resolve_targets: 'read:workspace', member_get: 'read:workspace', activity_query: 'read:workspace',
+  events_query: 'read:calendar', memory_recall: 'read:wiki', wiki_search: 'read:wiki', memory_list: 'read:wiki',
+  list_my_tasks: 'read:tasks', task_get: 'read:tasks', task_query: 'read:tasks', task_saved_view_get: 'read:tasks',
+  project_list: 'read:workspace', resolve_project: 'read:workspace', project_get: 'read:workspace',
+  space_list: 'read:messages', resolve_space: 'read:messages', space_get: 'read:messages', thread_fetch: 'read:messages', messages_recent: 'read:messages', messages_search: 'read:messages',
+  project_progress: 'read:tasks', team_workload: 'read:tasks', team_list: 'read:workspace', team_get: 'read:workspace', team_context: 'read:workspace',
+  memory_write: 'write:wiki', wiki_upsert: 'write:wiki', task_create: 'write:tasks', task_update: 'write:tasks', task_bulk_update: 'write:tasks', task_transition: 'write:tasks', comment_on_task: 'write:tasks',
+  message_post: 'write:messages', send_message: 'write:messages',
+  workspace_capabilities: 'read:workspace', note_list: 'read:workspace', note_get: 'read:workspace',
+  note_create: 'write:workspace', note_update: 'write:workspace', note_archive: 'write:workspace',
+  calendar_list: 'read:calendar', calendar_get: 'read:calendar', calendar_availability: 'read:calendar',
+  calendar_event_create: 'write:calendar', calendar_event_update: 'write:calendar', calendar_event_cancel: 'write:calendar',
+  inbox_list: 'read:workspace', inbox_get: 'read:workspace', inbox_mark_read: 'write:workspace', inbox_mark_all_read: 'write:workspace',
+  approval_list: 'read:workspace', approval_get: 'read:workspace', approval_approve: 'write:workspace', approval_reject: 'write:workspace',
+  project_create: 'write:workspace', project_update: 'write:workspace', project_archive: 'write:workspace',
+  task_saved_view_list: 'read:tasks', task_saved_view_create: 'write:tasks',
+  agent_employee_list: 'read:workspace', agent_employee_get: 'read:workspace', agent_employee_update_state: 'write:workspace',
+};
+
+function operationalHumanSchemas(): Array<Record<string, unknown>> {
+  const read = (name: string, title: string, description: string, properties: Record<string, unknown> = {}, required?: string[]) => ({
+    name, title, description, annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object', properties, ...(required ? { required } : {}) },
+  });
+  const write = (name: string, title: string, description: string, properties: Record<string, unknown> = {}, required?: string[]) => ({
+    name, title, description: `${description} Reuse idempotency_key when retrying the same intent.`,
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    inputSchema: { type: 'object', properties: { ...properties, idempotency_key: { type: 'string', description: 'Stable retry key.' } }, ...(required ? { required } : {}) },
+  });
+  const id = (description: string) => ({ type: 'string', description });
+  const limit = { type: 'integer', minimum: 1, maximum: 100 };
+  const iso = (description: string) => ({ type: 'string', description });
+  return [
+    read('workspace_capabilities', 'Inspect Deft MCP Capabilities', 'Return granted scopes, available operational tools, usage guidance, and the intentionally UI-only boundary.'),
+    read('note_list', 'List Deft Notes', 'List private notes owned by the connected user plus org/space notes they can see.', { query: { type: 'string' }, limit }),
+    read('note_get', 'Get Deft Note', 'Read one visible note including its full TipTap HTML content.', { note_id: id('Note id') }, ['note_id']),
+    write('note_create', 'Create Deft Note', 'Create a private, org, or space-visible note as the connected user.', { title: { type: 'string' }, content: { type: 'string' }, icon: { type: 'string' }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: id('Required for space visibility') }),
+    write('note_update', 'Update Deft Note', 'Update a note owned by the connected user with optimistic version protection.', { note_id: id('Note id'), title: { type: 'string' }, content: { type: 'string' }, icon: { type: ['string', 'null'] }, is_pinned: { type: 'boolean' }, visibility: { type: 'string', enum: ['private', 'org', 'space'] }, visibility_space_id: { type: ['string', 'null'] } }, ['note_id']),
+    write('note_archive', 'Archive Deft Note', 'Soft-delete a note owned by the connected user.', { note_id: id('Note id') }, ['note_id']),
+    read('calendar_list', 'List Deft Calendar Events', "List the connected user's native and imported calendar events in a time range.", { from: iso('ISO range start'), until: iso('ISO range end'), limit }),
+    read('calendar_get', 'Get Deft Calendar Event', 'Read one visible native or imported calendar event.', { event_id: id('Event id') }, ['event_id']),
+    read('calendar_availability', 'Check Deft Calendar Availability', 'Return busy windows from native and imported calendar context.', { from: iso('ISO range start'), until: iso('ISO range end') }),
+    write('calendar_event_create', 'Create Deft Calendar Event', 'Create a native Deft calendar event owned by the connected user.', { title: { type: 'string' }, start: iso('ISO start'), end: iso('ISO end'), description: { type: 'string' }, location: { type: 'string' }, all_day: { type: 'boolean' } }, ['title', 'start', 'end']),
+    write('calendar_event_update', 'Update Deft Calendar Event', 'Update a native event owned by the connected user. Imported ICS events remain read-only.', { event_id: id('Event id'), title: { type: 'string' }, start: iso('ISO start'), end: iso('ISO end'), description: { type: ['string', 'null'] }, location: { type: ['string', 'null'] } }, ['event_id']),
+    { ...write('calendar_event_cancel', 'Cancel Deft Calendar Event', 'Remove a native event owned by the connected user. Imported events cannot be changed.', { event_id: id('Event id') }, ['event_id']), annotations: { readOnlyHint: false, destructiveHint: true } },
+    read('inbox_list', 'List Deft Inbox', 'List notifications for the connected user.', { unread_only: { type: 'boolean' }, type: { type: 'string' }, limit }),
+    read('inbox_get', 'Get Deft Inbox Item', 'Read one notification owned by the connected user.', { notification_id: id('Notification id') }, ['notification_id']),
+    write('inbox_mark_read', 'Mark Deft Inbox Item Read', 'Mark one owned notification read.', { notification_id: id('Notification id') }, ['notification_id']),
+    write('inbox_mark_all_read', 'Mark Deft Inbox Read', 'Mark all unread notifications for the connected user read.'),
+    read('approval_list', 'List Deft Approvals', 'List pending or historical approval actions assigned to the connected user.', { status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'expired', 'all'] }, limit }),
+    read('approval_get', 'Get Deft Approval', 'Read one approval assigned to the connected user, including exact action parameters.', { action_id: id('Approval action id') }, ['action_id']),
+    write('approval_approve', 'Approve Deft Action', 'Approve and execute one pending action assigned to the connected user through the canonical approval resolver.', { action_id: id('Approval action id') }, ['action_id']),
+    write('approval_reject', 'Reject Deft Action', 'Reject one pending action assigned to the connected user.', { action_id: id('Approval action id'), reason: { type: 'string' } }, ['action_id']),
+    write('project_create', 'Create Deft Project', 'Create a project with fixed Deft workflow defaults.', { name: { type: 'string' }, prefix: { type: 'string', minLength: 2, maxLength: 6 }, description: { type: 'string' }, color: { type: 'string' }, icon: { type: 'string' }, lead_id: id('Optional member user id') }, ['name', 'prefix']),
+    write('project_update', 'Update Deft Project', 'Update editable fields on an active project. Prefixes remain immutable.', { project_id: id('Project id'), name: { type: 'string' }, description: { type: ['string', 'null'] }, color: { type: ['string', 'null'] }, icon: { type: ['string', 'null'] }, lead_id: { type: ['string', 'null'] } }, ['project_id']),
+    write('project_archive', 'Archive Or Restore Deft Project', 'Archive or unarchive a project without deleting its task history.', { project_id: id('Project id'), archived: { type: 'boolean', description: 'Defaults to true.' } }, ['project_id']),
+    read('task_saved_view_list', 'List Deft Task Saved Views', 'List personal and shared task views available to the connected user.', { project_id: id('Optional project id'), limit }),
+    write('task_saved_view_create', 'Create Deft Task Saved View', 'Save task filters, sorting, grouping, and columns as a personal view. Admins may share it.', { name: { type: 'string' }, project_id: id('Optional project id'), config: { type: 'object', additionalProperties: true }, is_shared: { type: 'boolean' } }, ['name', 'config']),
+    read('agent_employee_list', 'List Deft Agent Employees', 'List agent employees and their operational health without exposing credentials.', { include_paused: { type: 'boolean' }, limit }),
+    read('agent_employee_get', 'Get Deft Agent Employee', "Read one agent employee's health, certification, limits, and recent contact state without exposing credentials.", { employee_id: id('Agent employee id') }, ['employee_id']),
+    write('agent_employee_update_state', 'Update Deft Agent State', 'Owner/admin-only control to pause, resume, or clear an unhealthy circuit breaker. Credential operations remain UI-only.', { employee_id: id('Agent employee id'), state: { type: 'string', enum: ['active', 'paused', 'healthy'] } }, ['employee_id', 'state']),
+  ];
+}
+
 function withoutCallerSlug(schema: Record<string, unknown>): Record<string, unknown> {
   const clone = JSON.parse(JSON.stringify(schema));
   if (clone?.inputSchema?.properties) delete clone.inputSchema.properties.caller_employee_slug;
@@ -2757,6 +3288,7 @@ function withoutCallerSlug(schema: Record<string, unknown>): Record<string, unkn
 
 export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const compatibilitySchemas = [
+    ...operationalHumanSchemas(),
     {
       name: 'search',
       title: 'Search Deft',
@@ -3149,7 +3681,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     });
   const existingNames = new Set(existing.map((schema) => String(schema.name ?? '')));
   return [
-    ...compatibilitySchemas.filter((schema) => !existingNames.has(schema.name)),
+    ...compatibilitySchemas.filter((schema) => !existingNames.has(String(schema.name ?? ''))),
     ...existing,
   ];
 }
