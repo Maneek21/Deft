@@ -17,6 +17,10 @@ const AUTH_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AUTH_RATE_LIMIT_PER_MINUTE',
   isProduction ? 10 : 120,
 );
+const LOGIN_IP_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_LOGIN_IP_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 120 : 600,
+);
 const AGENT_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AGENT_RATE_LIMIT_PER_MINUTE',
   isProduction ? 30 : 300,
@@ -101,6 +105,16 @@ export const authLimiter = withAuditBypass(rateLimiter({
     error: 'Too many requests. Try again in a minute.',
     code: 'RATE_LIMITED',
   }, 429),
+}));
+
+// A whole office can reauthenticate after a restart from one NAT IP. Keep a
+// broad IP ceiling here; login itself also applies a strict per-account guard.
+export const loginIpLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: LOGIN_IP_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: ipKey,
+  handler: (c) => c.json({ error: 'Too many login attempts. Try again in a minute.', code: 'RATE_LIMITED' }, 429),
 }));
 
 // Per-user for the agent surface. Agent calls hit Anthropic/OpenAI on every
