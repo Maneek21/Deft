@@ -13,6 +13,9 @@ services:
   init:
     <<: *deft-release-image
 
+  upgrade:
+    <<: *deft-release-image
+
   doctor:
     <<: *deft-release-image
 

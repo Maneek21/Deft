@@ -337,7 +337,7 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 
 ## Known Limitations (deployment blockers)
 
-- **Use `pnpm db:push-full`, not `pnpm db:push` or `pnpm db:migrate`, for fresh installs.** The Drizzle `_journal.json` was rebuilt and is current through 0066. Plain `drizzle-kit push` (`pnpm db:push`) can't express the generated tsvector columns + GIN indexes that wiki/task full-text search needs, so it leaves FTS broken. `push-full` runs `push` and then applies the two orphan SQL files (`0020_wiki_search_vector.sql`, `0033_tasks_embedding.sql`) plus the expression-based unique index push silently drops (`agent_employee_templates_org_slug_uniq`, migration 0051) — see `packages/db/scripts/apply-extras.ts`. That's the supported fresh-install path. Versioned `db:migrate` upgrades will be wired up post-alpha once the journal is reconciled — don't use `db:migrate` yet.
+- **Use `pnpm db:push-full` for fresh installs and `pnpm db:upgrade` for supported release upgrades.** `push-full` applies the Drizzle schema plus supplemental search/index SQL. The tracked upgrade baseline starts at `v0.2.0-preview.1` and uses a checksumed `deft_schema_migrations` ledger. Raw `pnpm db:push` and `pnpm db:migrate` are not supported operator upgrade paths; historical pre-preview databases require manual review.
 
 ## What NOT To Do
 

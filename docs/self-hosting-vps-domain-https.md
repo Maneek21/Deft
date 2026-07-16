@@ -220,13 +220,22 @@ deployment.
 
 ## 7. Upgrade Loop
 
-Before upgrades, take a Postgres backup. Then:
+Versioned upgrades are supported from `v0.2.0-preview.1` forward. From a source
+checkout, run:
 
 ```bash
-git pull
-docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
-docker compose -f docker-compose.yml -f compose.prod.yml up -d
-docker compose -f docker-compose.yml -f compose.prod.yml run --rm init
-docker compose -f docker-compose.yml -f compose.prod.yml run --rm doctor
-docker compose -f docker-compose.yml -f compose.prod.yml run --rm smoke
+git pull --ff-only
+pnpm selfhost:upgrade --prod
 ```
+
+For a named release image:
+
+```bash
+export DEFT_IMAGE=ghcr.io/maneek21/deft:<target-version>
+pnpm selfhost:upgrade --prod --release
+```
+
+The command prepares the image before downtime, stops app writes, takes a
+Postgres backup, applies the checksumed schema upgrade, recreates Deft, and runs
+doctor plus smoke. Add `--compose-file compose.demo.yml` or another site overlay
+when required. Use `--dry-run` to inspect the sequence first.
