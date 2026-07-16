@@ -1,45 +1,57 @@
-# Security Policy
+# Security policy
 
-## Supported Versions
+## Supported versions
 
-Deft is in alpha. Security fixes land on the latest commit of the `master` branch. We don't yet publish tagged releases — versioned release support will begin when we cut `v0.1.0`.
+Deft is an alpha. Security fixes land on the latest commit of `master` and are included in the next preview release. The project does not maintain long-lived security branches yet.
 
-| Version | Supported |
-| ------- | --------- |
-| `master` (latest commit) | ✅ |
-| Older commits / forks | ❌ |
+| Version | Support |
+|---|---|
+| `master` | Actively maintained |
+| Latest GitHub preview release | Best effort until the next preview is published |
+| Older commits, releases, and forks | Not maintained by the Deft project |
 
-## Reporting a Vulnerability
+Production operators should pin a commit, review release notes before updating, and maintain tested backups. See [current limitations](docs/current-limitations.md).
 
-If you've found a security issue, please report it **privately** rather than opening a public GitHub issue.
+## Report a vulnerability privately
 
-**Preferred:** [GitHub Security Advisories](https://github.com/Maneek21/Deft/security/advisories/new) (private to maintainers).
+Do not open a public GitHub issue for a suspected vulnerability.
 
-**Or email:** security@deft.ing
+Preferred channel: [GitHub Security Advisories](https://github.com/Maneek21/Deft/security/advisories/new).
 
-Please include:
-- A description of the issue and its impact
-- Steps to reproduce
-- Affected version / commit SHA
-- Any proof-of-concept code
+Alternative: email `security@deft.ing`.
 
-We aim to acknowledge within **3 business days** and provide a triage update within **7 business days**.
+Include, when possible:
 
-## Disclosure Timeline
+- A clear description of the issue and its impact
+- Affected commit SHA, release, and deployment shape
+- Reproduction steps or proof-of-concept code
+- Whether the issue can cross an org, user, space, or agent boundary
+- Any suggested mitigation
 
-We follow a **90-day disclosure window** from initial report. If we can't fix in 90 days we'll coordinate publication with you. Severe issues affecting production self-hosters may move faster.
+We aim to acknowledge reports within three business days and provide an initial triage update within seven business days. These are targets, not a contractual SLA.
 
-## Scope
+## Disclosure
 
-In scope:
-- The Deft API (`apps/api`), web app (`apps/web`), database schema (`packages/db`)
-- The docker-compose self-host stack
-- Authentication, authorization, multi-tenant isolation (`org_id` enforcement)
-- The agent action surface and approval flow
+We generally coordinate around a 90-day disclosure window. Critical issues affecting active self-hosters may be handled faster. Please allow maintainers time to ship a fix and notify operators before publishing technical details.
 
-Out of scope:
-- Third-party MCP servers connecting BYOA agents — report those to the MCP server's maintainer
-- Vulnerabilities in dependencies (report to upstream, then ping us so we can bump)
-- Issues only reproducible against modified forks
+## In scope
 
-Thanks for helping keep Deft secure.
+- Authentication, authorization, session, invitation, and role handling
+- Multi-tenant and `org_id` isolation
+- Private space and direct-message access
+- Agent, approval, MCP, OAuth, webhook, and token boundaries
+- Task, message, wiki, note, calendar, people, and team APIs
+- WebSocket room authorization and event delivery
+- Upload, file path, rich-content, and rendering security
+- Docker Compose, bootstrap, backup, and self-host configuration supplied by this repository
+- Supply-chain issues in project-owned build and release automation
+
+## Out of scope
+
+- Vulnerabilities in third-party MCP servers, AI clients, model providers, or customer-owned agent runtimes
+- Unsupported forks or local modifications
+- Social engineering, credential reuse, or exposed secrets not caused by Deft
+- Dependency vulnerabilities without a demonstrated impact on Deft; report those upstream and notify us if Deft needs a coordinated upgrade
+- Availability testing that could disrupt a public demo or another operator's deployment
+
+Thank you for helping keep Deft and its self-hosters safe.
