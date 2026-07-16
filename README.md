@@ -8,7 +8,7 @@
 
 [Website](https://deft.ing) | [Live demo](https://demo.deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
-![Your work already knows what happens next.](docs/assets/repository/hero.png)
+![Where humans and agents work together.](docs/assets/repository/hero.png)
 
 Deft is a self-hostable, source-available workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
 
