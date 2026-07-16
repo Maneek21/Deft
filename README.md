@@ -118,6 +118,25 @@ Open [http://localhost:3000](http://localhost:3000). The first account creates a
 
 See [docs/self-hosting.md](docs/self-hosting.md) for environment variables, HTTPS, backups, health checks, AI providers, and production operations.
 
+### Run a named preview image
+
+Preview releases also publish an amd64 image to GHCR. Download the release
+assets, copy `.env.example` to `.env`, set the required secrets and public
+URLs, then run:
+
+```bash
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.2.0-preview.1
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres redis
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
+```
+
+The current preview channel is for fresh installs. Read the self-hosting guide
+and [current limitations](docs/current-limitations.md) before putting durable
+data into an alpha deployment.
+
 > Fresh installs currently use `pnpm db:push-full`. Versioned `pnpm db:migrate` upgrades are not supported yet. Read [Project status and limitations](#project-status-and-limitations) before deploying important data.
 
 ## Local development

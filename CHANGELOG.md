@@ -12,6 +12,9 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ### Added
 
+- Tagged preview release workflow with a GHCR image, provenance attestation,
+  SPDX SBOM, checksums, and a machine-readable release manifest.
+- Runtime public-URL injection for portable prebuilt images.
 - Guided personal MCP connections for Codex, Claude, ChatGPT-compatible clients, and custom streamable HTTP MCP clients.
 - Operational headless MCP tools for unread triage, context packets, people, teams, tasks, messages, notes, wiki, decisions, and calendar workflows.
 - Task Table view, richer Timeline and Calendar interactions, persistent view preferences, and improved bulk operations.

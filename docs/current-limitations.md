@@ -8,6 +8,7 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 
 - Fresh installs use `pnpm db:push-full` to apply the Drizzle schema plus supplemental search and index SQL.
 - `pnpm db:migrate` is not a supported upgrade path yet.
+- Named GHCR preview images are amd64-only and fresh-install-only.
 - The repository does not currently certify upgrading every historical alpha database to the latest commit.
 - Operators should pin a commit, back up Postgres and uploads, and rehearse restore before updating.
 
