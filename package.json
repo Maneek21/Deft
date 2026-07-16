@@ -62,7 +62,12 @@
   },
   "pnpm": {
     "overrides": {
-      "esbuild": "^0.28.1"
+      "esbuild": "^0.28.1",
+      "fast-uri": "^3.1.2",
+      "ip-address": "^10.1.1",
+      "postcss": "^8.5.10",
+      "qs": "^6.15.2",
+      "ws": "^8.21.0"
     }
   },
   "devDependencies": {
