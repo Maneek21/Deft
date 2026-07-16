@@ -383,20 +383,28 @@ gunzip -c backups/deft-backup-20260101T120000Z.sql.gz | docker compose exec -T p
 
 ## Upgrading
 
-Deft is alpha and does not yet publish stable tagged releases. To roll forward:
+Deft publishes alpha preview releases but does not yet provide a supported versioned database migration path. Do not run an unreviewed `git pull` against important data.
+
+For a controlled alpha update:
+
+1. Pin the target commit or preview tag.
+2. Read its release notes and schema changes.
+3. Take a SQL backup and preserve uploads.
+4. Rehearse the update and restore on a copy of the deployment.
+5. Only then rebuild and run the alpha initializer:
 
 ```bash
-git pull
+git checkout <reviewed-commit-or-preview-tag>
 docker compose build deft init doctor smoke
 docker compose up -d
 docker compose run --rm init
 docker compose run --rm doctor
+docker compose run --rm smoke
 ```
 
-`docker compose run --rm init` is the supported schema/update path during the
-alpha. Versioned `pnpm db:migrate` is not supported yet.
+`docker compose run --rm init` applies the current schema shape. It is the available alpha update mechanism, not a compatibility guarantee for every historical database. Versioned `pnpm db:migrate` upgrades are not supported yet.
 
-Before upgrading production, snapshot the Postgres volume or take a SQL backup.
+See [current limitations](current-limitations.md) before upgrading production.
 
 ## What's Not In Self-Hosted v1
 

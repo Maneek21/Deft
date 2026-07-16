@@ -1,106 +1,124 @@
 # Contributing to Deft
 
-## Development Setup
+Deft welcomes focused bug fixes, tests, documentation, accessibility improvements, and product changes that fit the current self-hosted workspace scope.
 
-### Prerequisites
-- Node.js 20+ (22 recommended)
-- pnpm 9+
-- PostgreSQL 16
-- Redis 7 (optional — needed for real-time features)
+## Before you start
 
-### Setup
+- Search existing issues and pull requests.
+- Open an issue before a large architectural or product change.
+- Keep pull requests narrow enough to review and revert safely.
+- Do not include secrets, customer data, generated reports, local databases, or unrelated formatting churn.
+- Read [current limitations](docs/current-limitations.md) and the [roadmap](ROADMAP.md) before building around a deferred capability.
+
+## Development setup
+
+### Requirements
+
+- Node.js 20 or newer (22 recommended)
+- pnpm 9 or newer
+- PostgreSQL 16 with pgvector
+- Redis 7
 
 ```bash
 git clone https://github.com/Maneek21/Deft.git
-cd deft
+cd Deft
 pnpm install
 cp .env.example .env
-# Edit .env with your database credentials
 
-# Create database and push schema (+ full-text-search extras)
 createdb deft
 pnpm db:push-full
-
-# Seed demo data (6 Testers Tomatoes users + demo org + sample messages/tasks).
-# This wipes the DB — dev only, NEVER run in production.
-pnpm db:seed:demo
-
-# Or, for a prod-safe seed (Defty + bundled skills/templates only):
-#   pnpm db:seed
-
-# Start development servers
+pnpm db:seed
 pnpm dev
 ```
 
-The web app runs at `http://localhost:3000`, API at `http://localhost:3001`.
+The web app runs at `http://localhost:3000`; the API runs at `http://localhost:3001`.
 
-### Test accounts (after seeding)
-| Email | Password | Role |
-|-------|----------|------|
-| diego@testers-tomatoes.com | tomato123 | Owner |
-| marigold@testers-tomatoes.com | tomato123 | Admin |
-| cesar@testers-tomatoes.com | tomato123 | Member |
-| lina@testers-tomatoes.com | tomato123 | Member |
-| sage@testers-tomatoes.com | tomato123 | Member |
-| tomas@testers-tomatoes.com | tomato123 | Member |
+Use `pnpm db:seed` for the production-safe platform bundle. The following development seeds reset the database and must never be used against production data:
 
-## Project Structure
-
+```bash
+pnpm db:seed:demo
+pnpm db:seed:pilot
 ```
+
+Demo users use the password `tomato123`. Start with `diego@testers-tomatoes.com`.
+
+## Repository structure
+
+```text
 deft/
-├── apps/web/src/
-│   ├── app/(app)/         # Authenticated pages (dashboard, chat, tasks, agent, settings)
-│   ├── app/login/         # Auth pages
-│   ├── components/        # Shared React components
-│   └── lib/               # Client utilities (api, auth, socket, context)
-├── apps/api/src/
-│   ├── routes/            # Hono API route handlers
-│   ├── lib/               # Server utilities (db, env, agent tools)
-│   ├── middleware/         # Auth middleware
-│   └── socket.ts          # Socket.io setup
-├── packages/db/
-│   ├── src/schema.ts      # Drizzle ORM schema (all 30 tables)
-│   ├── seed.ts            # Database seed script
-│   └── drizzle.config.ts  # Migration config
-└── packages/shared/       # Shared types and constants
+|-- apps/
+|   |-- web/               Next.js App Router application
+|   `-- api/               Hono API, WebSocket, jobs, agents, and MCP
+|-- packages/
+|   |-- db/                Drizzle schema, migrations, and seeds
+|   `-- shared/            Shared schemas, types, and constants
+|-- scripts/               Bootstrap, smoke, pilot, and certification tools
+|-- docs/                  User docs and engineering records
+|-- docker-compose.yml
+`-- pnpm-workspace.yaml
 ```
 
-## Code Standards
+## Code standards
 
-- **TypeScript strict mode** everywhere — no `any` unless absolutely necessary
-- **Zod** for all request validation on API routes
-- **Drizzle ORM** — no raw SQL except in agent queries
-- **Functional React** — no class components, prefer server components where possible
-- **Tailwind CSS** — no CSS modules, no styled-components
-- **File naming**: kebab-case for files, PascalCase for components
+- TypeScript strict mode
+- Zod validation at request and external-data boundaries
+- Drizzle ORM for application data access
+- `org_id` and permission checks on every workspace query
+- Functional React components and existing local component patterns
+- Tailwind CSS and shared tokens from `apps/web/src/app/globals.css`
+- Kebab-case files and PascalCase React components
+- Error responses shaped as `{ error: string, code: string }`
+- Succinct comments only where the implementation is not self-explanatory
 
-## Adding a New API Endpoint
+## Tests and gates
 
-1. Create or edit a route file in `apps/api/src/routes/`
-2. Use Hono: `export const myRoutes = new Hono();`
-3. Add Zod validation for request body
-4. Use `c.get('user')` for authenticated user context
-5. Always filter by `org_id` for multi-tenant isolation
-6. Return errors as `{ error: string, code: string }`
-7. Register in `apps/api/src/index.ts`
+Choose tests based on the change. CI runs the required repository gates, but local focused tests should pass before a pull request is opened.
 
-## Adding a New Agent Tool
+| Change | Minimum local validation |
+|---|---|
+| Documentation only | `git diff --check` and local-link review |
+| Web UI | `pnpm --filter @deft/web lint`, `pnpm --filter @deft/web typecheck`, and browser verification at relevant desktop/mobile breakpoints |
+| API or agent behavior | Focused API test files plus `pnpm --filter @deft/api typecheck` |
+| Database schema | Fresh `pnpm db:push-full`, seed, focused API tests, and an explicit upgrade/rollback note |
+| Self-host or Docker | `pnpm selfhost:doctor`, `pnpm selfhost:smoke`, and the affected Compose flow |
+| MCP | Focused protocol tests and one real client-style workflow when behavior changes |
 
-1. Define the tool schema in `apps/api/src/lib/agent-tools.ts`
-2. Implement the handler in `apps/api/src/lib/agent-context.ts` (read-only) or `agent-actions.ts` (write)
-3. Write actions must go through approval flow
+Before requesting review:
 
-## Branch & PR Convention
+```bash
+pnpm typecheck
+pnpm --filter @deft/web lint
+pnpm --filter @deft/api test
+pnpm build
+```
 
-- Branch names: `feat/short-description`, `fix/short-description`, `chore/short-description`
-- Commit messages: conventional commits (`feat:`, `fix:`, `chore:`, `docs:`)
-- PRs: describe changes, link related issue, include screenshots for UI changes
-- All PRs must pass TypeScript type-check
+If a broad command cannot run in your environment, say so in the pull request and include the focused evidence you did collect.
 
-## Design System
+## API and database changes
 
-Key rules:
-- No borders for layout — use tonal layering
-- Inter for text, JetBrains Mono for technical data
-- All colors via CSS variables in `apps/web/src/app/globals.css`
-- Brand assets live in `apps/web/public/brand/`; use the `<Logo />` component (`apps/web/src/components/brand/logo.tsx`) rather than inlining SVGs.
+1. Validate requests and responses with Zod.
+2. Resolve the authenticated user and org before querying workspace data.
+3. Enforce space, role, and entity ownership explicitly.
+4. Add or update focused tests for success, permission denial, cross-org denial, and malformed input.
+5. Register new routes in the existing router structure.
+6. Document migrations, fresh-install behavior, and upgrade behavior.
+
+## Agent and MCP changes
+
+- Treat model output as an untrusted proposal.
+- Keep resolver and executor validation authoritative.
+- Route risky writes through the established approval tiers.
+- Preserve actor identity and produce an audit receipt.
+- Add idempotency for externally retried writes.
+- Test ambiguous references, revoked credentials, stale state, private resources, duplicate commands, and partial failure.
+
+## Pull requests
+
+- Use a short descriptive branch name.
+- Use conventional commit prefixes such as `feat:`, `fix:`, `docs:`, `test:`, or `chore:`.
+- Explain the user-visible behavior, implementation boundary, validation, and residual risk.
+- Include before/after screenshots for UI work.
+- Link an issue when one exists.
+- Keep generated certification artifacts out of the repository unless maintainers explicitly request them.
+
+By contributing, you agree that your contribution is licensed under the repository's [Business Source License 1.1](LICENSE) terms and retains the required project attribution.

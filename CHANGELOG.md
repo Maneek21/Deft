@@ -10,9 +10,36 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Added
+
+- Guided personal MCP connections for Codex, Claude, ChatGPT-compatible clients, and custom streamable HTTP MCP clients.
+- Operational headless MCP tools for unread triage, context packets, people, teams, tasks, messages, notes, wiki, decisions, and calendar workflows.
+- Task Table view, richer Timeline and Calendar interactions, persistent view preferences, and improved bulk operations.
+- Profile, member, team, and linked-resource management with team dashboard summaries.
+- Agent employee bridge supervision, structured-mention wakeup, assignment flows, and completion receipts.
+- Synthetic 60-person workspace certification for isolation, job backlog, notification volume, bulk operations, and recovery exercises.
+
+### Changed
+
+- Reworked Defty planning so natural-language requests resolve through model-generated structured drafts, deterministic validation, approval, execution, and confirmation.
+- Moved supported approval cards into the source conversation with an inbox mirror.
+- Reworked chat knowledge capture into settled-window episode processing with quiet receipts.
+- Simplified Connections, Agent employees, Inbox, Settings, Chat, Tasks, Knowledge, and Calendar interfaces across desktop and mobile.
+- Standardized public positioning on source-available BSL 1.1, the self-hosted v1 integration contract, and current alpha boundaries.
+
+### Fixed
+
+- Scheduled chat-to-knowledge jobs now reach their registered handler.
+- Agent task creation supports structured descriptions, subtasks, dependencies, and richer completion receipts.
+- Personal MCP unread and owner-operator workflows avoid hidden-tool and keyword-search fallbacks.
+- Mobile scrolling, navigation overlays, chat composers, avatar propagation, mentions, approval placement, and task-view interaction defects found during dogfooding.
+- Self-host bootstrap, environment validation, health checks, and production preflight coverage.
+
 ## [0.1.0-alpha] — 2026-05-26
 
-First public alpha. Deft is an open-source AI-native workspace — native chat
+> Historical release snapshot. Some integrations and architecture described below were later retired or narrowed. Use [FEATURES.md](FEATURES.md), [current limitations](docs/current-limitations.md), and the self-hosted v1 contract for the current product boundary.
+
+First public alpha. Deft is a source-available AI-native workspace: native chat
 + tasks + an AI agent (Defty) with direct SQL access to your data, plus a
 Bring-Your-Own-Agent (BYOA) MCP surface for connecting external runtimes
 (Claude Code, Claude Desktop, Codex, Cursor, custom MCP).
