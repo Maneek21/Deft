@@ -52,6 +52,10 @@ const PRIVATE_MESSAGE_ID = `oauth-mcp-private-message-${TEST_ID}`;
 const PRIVATE_PROOF = `PRIVATE-OAUTH-MCP-PROOF-${TEST_ID}`;
 const TEAM_ID = `oauth-mcp-team-${TEST_ID}`;
 const TEAM_HANDLE = `oauth-mcp-salsa-ops-${TEST_ID.slice(0, 8)}`;
+const NOTE_ID = `oauth-mcp-note-${TEST_ID}`;
+const EVENT_ID = `oauth-mcp-event-${TEST_ID}`;
+const NOTIFICATION_ID = `oauth-mcp-notification-${TEST_ID}`;
+const APPROVAL_ID = `oauth-mcp-approval-${TEST_ID}`;
 
 let testApp: Hono;
 let helpers: typeof import('../src/lib/oauth-mcp.js');
@@ -79,6 +83,9 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_audit_events WHERE user_id = $1 OR org_id = $2`, [USER_ID, ORG_ID]);
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM notifications WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM action_receipts WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM agent_actions WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM team_dashboard_snapshots WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM team_resources WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM team_members WHERE org_id = $1`, [ORG_ID]);
@@ -96,6 +103,8 @@ async function cleanup() {
     await client.query(`DELETE FROM wiki_ops_log WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_page_versions WHERE page_id IN (SELECT id FROM wiki_pages WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_pages WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM note_versions WHERE note_id IN (SELECT id FROM notes WHERE org_id = $1)`, [ORG_ID]);
+    await client.query(`DELETE FROM notes WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM agent_employees WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM org_members WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM users WHERE id IN ($1, $2)`, [USER_ID, OTHER_USER_ID]);
@@ -302,6 +311,27 @@ async function seedWorkspace() {
       `INSERT INTO messages (id, org_id, space_id, user_id, content)
        VALUES ($1, $2, $3, $4, $5)`,
       [PRIVATE_MESSAGE_ID, ORG_ID, PRIVATE_SPACE_ID, OTHER_USER_ID, `${PRIVATE_PROOF} private space message`],
+    );
+    await client.query(
+      `INSERT INTO notes (id, org_id, user_id, title, content, visibility)
+       VALUES ($1, $2, $3, 'OAuth MCP operator note', '<p>Headless operating note</p>', 'private')`,
+      [NOTE_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO events (id, org_id, source, event_type, title, body, actor, timestamp, metadata, user_id)
+       VALUES ($1, $2, 'native', 'calendar_event', 'OAuth MCP operating review', 'Review headless parity', 'OAuth MCP User', now() + interval '2 days',
+         jsonb_build_object('start', (now() + interval '2 days')::text, 'end', (now() + interval '2 days 1 hour')::text, 'status', 'confirmed'), $3)`,
+      [EVENT_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO notifications (id, org_id, user_id, type, title, body, link)
+       VALUES ($1, $2, $3, 'system', 'OAuth MCP attention item', 'Inspect this through MCP', '/inbox')`,
+      [NOTIFICATION_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, action, params, approval_tier, approval_status)
+       VALUES ($1, $2, $3, $4, 'post_message', jsonb_build_object('space_id', $5::text, 'content', 'Approval contract fixture'), 'quick', 'pending')`,
+      [APPROVAL_ID, ORG_ID, USER_ID, ATTRIBUTED_AGENT_EMPLOYEE_ID, SPACE_ID],
     );
   });
 }
@@ -1183,6 +1213,19 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     messages_search: { query: 'salsa', limit: 5 },
     project_progress: { project_id: PROJECT_ID },
     team_workload: { days: 7 },
+    workspace_capabilities: {},
+    note_list: { limit: 5 },
+    note_get: { note_id: NOTE_ID },
+    calendar_list: { limit: 5 },
+    calendar_get: { event_id: EVENT_ID },
+    calendar_availability: {},
+    inbox_list: { limit: 5 },
+    inbox_get: { notification_id: NOTIFICATION_ID },
+    approval_list: { limit: 5 },
+    approval_get: { action_id: APPROVAL_ID },
+    task_saved_view_list: { limit: 5 },
+    agent_employee_list: { limit: 5 },
+    agent_employee_get: { employee_id: ATTRIBUTED_AGENT_EMPLOYEE_ID },
   };
 
   for (const tool of tools) {
@@ -1198,6 +1241,70 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     const body = (await res.json()) as any;
     assert.equal(body.result?.isError, false, `${tool.name} should be callable, got ${JSON.stringify(body)}`);
   }
+});
+
+test('OAuth operational profile can run reversible owner workflows with receipts and dedupe', async () => {
+  const client = await registerClient();
+  const token = await issueOAuthToken(client.client_id, [
+    'read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar',
+    'write:workspace', 'write:calendar', 'write:tasks', 'write:messages', 'write:wiki',
+  ]);
+  let requestId = 2000;
+  const call = async (name: string, args: Record<string, unknown>) => {
+    const res = await jsonPost('/api/mcp/v1', {
+      jsonrpc: '2.0', id: requestId++, method: 'tools/call', params: { name, arguments: args },
+    }, token.access_token);
+    assert.equal(res.status, 200, `${name} returns HTTP 200`);
+    const body = (await res.json()) as any;
+    assert.equal(body.result?.isError, false, `${name} should succeed: ${JSON.stringify(body)}`);
+    return JSON.parse(body.result.content[0].text);
+  };
+
+  const capabilities = await call('workspace_capabilities', {});
+  assert.equal(capabilities.operationally_headless, true);
+  assert.ok(capabilities.available_tools.includes('note_create'));
+  assert.ok(capabilities.available_tools.includes('calendar_event_create'));
+  assert.ok(capabilities.ui_only.includes('initial workspace authentication and connector authorization'));
+
+  const noteArgs = { title: 'MCP weekly operator note', content: '<p>One operating record</p>', visibility: 'private' };
+  const firstNote = await call('note_create', noteArgs);
+  const replayedNote = await call('note_create', noteArgs);
+  assert.equal(replayedNote.note.id, firstNote.note.id, 'fallback dedupe replays an identical create intent');
+  assert.match(firstNote.url, /^\/notes\?note=/);
+  const updatedNote = await call('note_update', { note_id: firstNote.note.id, content: '<p>Updated operating record</p>', idempotency_key: `note-update-${TEST_ID}` });
+  assert.equal(updatedNote.note.version, 2);
+
+  const start = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 45 * 60 * 1000);
+  const calendar = await call('calendar_event_create', { title: 'Headless owner review', start: start.toISOString(), end: end.toISOString(), idempotency_key: `event-create-${TEST_ID}` });
+  assert.match(calendar.url, /^\/calendar\?event=/);
+  const calendarUpdate = await call('calendar_event_update', { event_id: calendar.event.id, title: 'Headless owner review updated', idempotency_key: `event-update-${TEST_ID}` });
+  assert.equal(calendarUpdate.event.title, 'Headless owner review updated');
+  const cancelled = await call('calendar_event_cancel', { event_id: calendar.event.id, idempotency_key: `event-cancel-${TEST_ID}` });
+  assert.equal(cancelled.cancelled, true);
+
+  const inbox = await call('inbox_mark_read', { notification_id: NOTIFICATION_ID, idempotency_key: `inbox-${TEST_ID}` });
+  assert.equal(inbox.notification.is_read, true);
+  const rejected = await call('approval_reject', { action_id: APPROVAL_ID, reason: 'Contract verification', idempotency_key: `approval-${TEST_ID}` });
+  assert.ok(['rejected', 'ok'].includes(rejected.status) || rejected.approval_status === 'rejected');
+
+  const prefix = `H${TEST_ID.replace(/-/g, '').slice(0, 4)}`.toUpperCase();
+  const createdProject = await call('project_create', { name: 'Headless MCP Operations', prefix, idempotency_key: `project-create-${TEST_ID}` });
+  assert.match(createdProject.url, /^\/tasks\?project=/);
+  const updatedProject = await call('project_update', { project_id: createdProject.project.id, description: 'Managed through one MCP connection', idempotency_key: `project-update-${TEST_ID}` });
+  assert.equal(updatedProject.project.description, 'Managed through one MCP connection');
+  const archivedProject = await call('project_archive', { project_id: createdProject.project.id, archived: true, idempotency_key: `project-archive-${TEST_ID}` });
+  assert.equal(archivedProject.archived, true);
+
+  const savedView = await call('task_saved_view_create', { name: 'Owner attention', project_id: PROJECT_ID, config: { filters: { priorities: ['p1'] }, columns: ['title', 'priority'] }, idempotency_key: `view-${TEST_ID}` });
+  assert.equal(savedView.created, true);
+  const paused = await call('agent_employee_update_state', { employee_id: ATTRIBUTED_AGENT_EMPLOYEE_ID, state: 'paused', idempotency_key: `agent-pause-${TEST_ID}` });
+  assert.equal(paused.employee.is_active, false);
+  const resumed = await call('agent_employee_update_state', { employee_id: ATTRIBUTED_AGENT_EMPLOYEE_ID, state: 'active', idempotency_key: `agent-resume-${TEST_ID}` });
+  assert.equal(resumed.employee.is_active, true);
+
+  const archivedNote = await call('note_archive', { note_id: firstNote.note.id, idempotency_key: `note-archive-${TEST_ID}` });
+  assert.equal(archivedNote.archived, true);
 });
 
 test('OAuth refresh tokens rotate and reject replay', async () => {

@@ -17,6 +17,8 @@ const ALLOWED_SCOPES = [
   'write:tasks',
   'write:messages',
   'write:wiki',
+  'write:calendar',
+  'write:workspace',
 ] as const;
 
 const createTokenSchema = z.object({
