@@ -1,216 +1,197 @@
-# Deft — The AI-Native Workspace
+# Deft
 
-> Chat, tasks, and an AI agent that actually understands your work. Source-available.
+### Where humans and agents work together.
 
-## What is Deft?
+[![CI](https://github.com/Maneek21/Deft/actions/workflows/ci.yml/badge.svg)](https://github.com/Maneek21/Deft/actions/workflows/ci.yml)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-7c5cff.svg)](./LICENSE)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-f59e0b.svg)](#project-status-and-limitations)
 
-Deft combines team chat, task management, and an AI agent into one workspace. The AI has direct SQL access to your conversations and tasks — it doesn't just search, it understands context and takes action.
+[Website](https://deft.ing) | [Live demo](https://demo.deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
-- **Chat** — Real-time messaging with threads, reactions, @mentions, file sharing, rich text
-- **Tasks** — Kanban boards, list views, priorities, assignments, due dates, drag-and-drop
-- **AI Agent** — Ask questions, create tasks, summarize conversations, execute multi-step workflows with approval gates
-- **Dashboard** — Morning pulse briefing, task overview, activity feed, project progress
+![Your work already knows what happens next.](docs/assets/repository/hero.png)
 
-> **License:** Source-available under the [Business Source License 1.1](./LICENSE). Use it for any purpose — including self-hosting — **except** offering Deft as a hosted or managed service to third parties. Forks must retain attribution. Converts to Apache License 2.0 four years from each release date.
+Deft is a self-hostable, source-available workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
 
-## Project status
+Instead of pasting fragments from Slack, Notion, and a task tracker into an AI chat, connect Codex, Claude, ChatGPT, or your own agent to the work record your team already uses.
 
-Deft is in **alpha** — usable and self-hostable today, but expect breaking changes and rough edges until a tagged `v0.1.0`. Designed for **one workspace per deployment**. Source-available under BSL 1.1.
+## The core loop
 
-## Quick Start
+1. **Work happens in context.** People discuss an issue in chat, update a task, write a note, or record a decision.
+2. **An agent reads the same workspace.** Defty, an agent employee, or a personal MCP client can retrieve the relevant messages, tasks, wiki pages, people, and calendar context.
+3. **Writes stay governed.** Risky changes are drafted first and shown as approval cards in the conversation and approval inbox.
+4. **The result lands in Deft.** Tasks, messages, notes, wiki pages, and status changes become part of the shared record.
+5. **Every action leaves a receipt.** The workspace records who or what acted, what changed, and where the result lives.
 
-Get to first login in under 5 minutes.
+![A live Deft workspace](docs/assets/repository/dashboard.png)
 
-### Prerequisites
+## What ships today
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
-- (Optional) Any supported AI provider key, or a local Ollama server, for AI features. Chat and tasks work without one
+### A workspace people can use normally
 
-### Steps
+- Real-time chat with spaces, DMs, threads, mentions, reactions, files, presence, and rich text
+- Task management with Board, Table, Timeline, Calendar, Pipeline, and personal views
+- Notes, company knowledge, channel memory, decisions, references, and knowledge graph views
+- Native calendar events plus read-only ICS subscriptions
+- Dashboard, inbox, notifications, people, teams, roles, and profile management
+- Dark and light themes, desktop and mobile layouts
+
+### A work record agents can use safely
+
+- Built-in Defty workflows for workspace questions and governed native actions
+- Personal MCP access for Codex, Claude, ChatGPT, and streamable HTTP MCP clients
+- Agent employees that can participate in channels, receive assignments, and use Deft tools
+- Native task, message, wiki, note, calendar, member, team, and context-packet tools
+- Approval tiers, trust levels, token scopes, revocation, activity history, and action receipts
+- Provider-neutral AI configuration: OpenAI, Anthropic, OpenRouter, OpenAI-compatible endpoints, or local Ollama-style providers
+
+Deft still works as a normal workspace without an AI provider key. Chat, tasks, notes, knowledge, calendar, people, and teams remain available; AI features stay disabled until a provider is configured.
+
+## Product surfaces
+
+### Chat keeps the source conversation attached
+
+Chat is both a human communication surface and part of the workspace record. Threads, structured mentions, quiet knowledge capture, and agent replies keep decisions close to their source.
+
+![Deft chat](docs/assets/repository/chat.png)
+
+### Tasks turn context into accountable work
+
+Projects support Board, Table, Timeline, Calendar, and Pipeline views, plus dependencies, subtasks, recurrence, comments, activity diffs, bulk actions, and agent-created drafts.
+
+![Deft task table](docs/assets/repository/tasks-table.png)
+
+### Knowledge becomes durable team memory
+
+Deft separates transient conversation from durable concepts, entities, decisions, resources, procedures, preferences, and facts. Agents can ask for org-wide or channel-specific context instead of reading an undifferentiated transcript.
+
+![Deft knowledge](docs/assets/repository/knowledge.png)
+
+### Connect the AI app you already use
+
+The Connections page guides each user through the setup required by their client. Personal connections act as that user, inherit their access boundaries, expose explicit scopes, and can be revoked.
+
+![Deft connections](docs/assets/repository/connections.png)
+
+## Why Deft is different
+
+| Traditional stack | Deft |
+|---|---|
+| Chat, tasks, docs, calendar, and AI live in separate products | One work record connects the discussion, assigned work, durable memory, and agent action |
+| Context is copied into an AI conversation by hand | Agents retrieve permission-aware workspace context through MCP or native tools |
+| Agent writes are invisible or happen outside the workspace | Proposed writes can require approval and completed work leaves a receipt |
+| AI is tied to one vendor or sidebar | Teams can use Defty, Codex, Claude, ChatGPT, or their own agent runtime |
+| SaaS data and behavior are controlled by a vendor | The product is self-hostable and its source is available under BSL 1.1 |
+
+## Quick start with Docker
+
+### Requirements
+
+- Docker Desktop or Docker Engine with Compose
+- A machine capable of running PostgreSQL, Redis, the API, and the web app
+- Optional: an AI provider key or local model endpoint for agent features
 
 ```bash
 git clone https://github.com/Maneek21/Deft.git
-cd deft
-
-# 1. Create your env file
+cd Deft
 cp .env.example .env
 ```
 
-Open `.env` and set the three required values. AI keys are optional and can be added later in Settings -> AI.
+Set the three required secrets in `.env`:
 
-| Variable | Required? | How to get it |
-|---|---|---|
-| `POSTGRES_PASSWORD` | **Required** | Any strong string — `openssl rand -hex 32` |
-| `JWT_SECRET` | **Required** | `openssl rand -hex 32` |
-| `JWT_REFRESH_SECRET` | **Required** | `openssl rand -hex 32` (run it again) |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_URL` | Optional | Configure one provider for AI features; can also be set per-org in Settings -> AI |
+| Variable | Generate with |
+|---|---|
+| `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
+| `JWT_SECRET` | `openssl rand -hex 32` |
+| `JWT_REFRESH_SECRET` | `openssl rand -hex 32` |
+
+Then build, start, initialize, and verify the stack:
 
 ```bash
-# 2. Build app + tool images, then start the stack
 docker compose build deft init doctor smoke
 docker compose up -d
-
-# 3. Initialize the database from inside Docker (run once on first boot)
 docker compose run --rm init
-
-# Optional: verify the self-host stack
 docker compose run --rm doctor
 docker compose run --rm smoke
 ```
 
-> **Note:** Use `pnpm db:push-full`, not `pnpm db:migrate`. `push-full` is the supported path for fresh installs — it diffs the live schema against `packages/db/src/schema.ts`, then applies supplemental SQL files for generated search columns, GIN/vector indexes, and safe metadata backfills that Drizzle's pushed schema can't fully express. Plain `pnpm db:push` skips those extras and leaves search/backfill behavior incomplete. Versioned `db:migrate` upgrade paths are not yet supported and will arrive post-alpha.
+Open [http://localhost:3000](http://localhost:3000). The first account creates and owns the workspace.
 
-> **`pnpm db:seed` is prod-safe and idempotent** — re-running on a populated workspace is a no-op. It inserts only platform bundles (Defty system user, internal agent/tool bundles, bundled task templates, first-party employee templates). It never inserts test accounts.
+See [docs/self-hosting.md](docs/self-hosting.md) for environment variables, HTTPS, backups, health checks, AI providers, and production operations.
 
-Open **http://localhost:3000** and create your account. The first signup becomes the org owner and administrator.
+> Fresh installs currently use `pnpm db:push-full`. Versioned `pnpm db:migrate` upgrades are not supported yet. Read [Project status and limitations](#project-status-and-limitations) before deploying important data.
 
-> **Want to poke around with demo data?** Use the local development or pilot path below and run `pnpm db:seed:demo` or `pnpm db:seed:pilot` (dev only — wipes the DB and inserts six Testers Tomatoes users with password `tomato123`). Never run demo/pilot seeds in production.
+## Local development
 
-> **Single-org note:** Deft is designed for one workspace per deployment. Additional users join via invite link from Settings → Members — direct signups after the first account are blocked.
-
-For a deeper setup guide — environment variable reference, backups, upgrades, and MCP agent configuration — see [docs/self-hosting.md](docs/self-hosting.md).
-
-### Local Development
+Requirements: Node.js 20+, pnpm, PostgreSQL 16, and Redis.
 
 ```bash
-# Prerequisites: Node.js 20+, pnpm, PostgreSQL 16, Redis
 git clone https://github.com/Maneek21/Deft.git
-cd deft
+cd Deft
 pnpm install
 cp .env.example .env
-# Edit .env with your database URL
 
-# Set up database
 pnpm db:push-full
-pnpm db:seed         # Platform bundle only (prod-safe)
-# pnpm db:seed:demo  # OR: wipe + populate with 6 Testers Tomatoes users (dev only)
-# pnpm db:seed:pilot # OR: demo seed + pilot polish fixtures (dev/pilot only)
-
-# Start dev servers
-pnpm dev        # Starts web (3000) + API (3001)
+pnpm db:seed
+pnpm dev
 ```
 
-### Fresh Pilot/Demo Install
-
-For a local pilot workspace with the full Testers Tomatoes demo and pilot polish fixtures:
+Useful development seeds:
 
 ```bash
-pnpm install
-cp .env.example .env
-# Set POSTGRES_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET, DATABASE_URL, REDIS_URL
-pnpm pilot:reset
-pnpm pilot:preflight:strict
-pnpm pilot:cracks:battery
+pnpm db:seed:demo   # Testers Tomatoes demo data
+pnpm db:seed:pilot  # Demo data plus pilot fixtures
 ```
 
-The pilot seed creates six users. Password is `tomato123`; start with `diego@testers-tomatoes.com`.
+Both development seeds reset the database. Never run them against a production workspace.
 
 ## Architecture
 
-```
+```text
 deft/
-├── apps/
-│   ├── web/          # Next.js 16 (App Router, TypeScript)
-│   └── api/          # Hono on Node.js (REST + WebSocket + agent engine)
-├── packages/
-│   ├── db/           # Drizzle ORM schema + migrations
-│   └── shared/       # Shared types and constants
-├── docker-compose.yml
-└── pnpm-workspace.yaml
+|-- apps/
+|   |-- web/       Next.js 16, React 19, Tailwind CSS, TipTap
+|   `-- api/       Hono, Socket.io, BullMQ, agent and MCP runtime
+|-- packages/
+|   |-- db/        PostgreSQL, pgvector, Drizzle schema and migrations
+|   `-- shared/    Shared types, schemas, and constants
+|-- docker-compose.yml
+`-- pnpm-workspace.yaml
 ```
-
-## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 16, React 19, Tailwind CSS v4, TipTap |
+|---|---|
+| Web | Next.js 16, React 19, TypeScript, Tailwind CSS v4, TipTap |
 | API | Hono on Node.js |
-| Database | PostgreSQL 16 + Drizzle ORM |
-| Real-time | Socket.io + Redis adapter |
-| Background Jobs | BullMQ + Redis |
-| AI | Provider-neutral BYOK: Anthropic, OpenAI, OpenRouter, or Ollama |
-| Auth | JWT + refresh tokens |
-| File Storage | Local disk (R2-ready) |
+| Data | PostgreSQL 16, pgvector, Drizzle ORM |
+| Realtime | Socket.io with Redis adapter |
+| Jobs | BullMQ and Redis |
+| Auth | better-auth with JWT and refresh tokens |
+| AI | Provider-neutral routing plus MCP |
+| Storage | Local disk with R2-compatible paths |
 | Monorepo | pnpm workspaces |
 
-## AI Agent
+## Project status and limitations
 
-The agent has **direct SQL access** to your data — no API middleman. It can:
+Deft is an **alpha**. It is suitable for technical evaluation, internal dogfooding, and controlled pilots. Expect breaking changes before a stable release.
 
-- Answer questions about tasks, conversations, and team activity
-- Create and assign tasks from natural language
-- Summarize conversation threads and spaces
-- Execute multi-step plans with approval gates and live progress streaming
-- Post messages and updates across spaces
-- Leave proactive comments on stalled or overdue tasks
-- Offer inline task suggestions from actionable chat messages
+Important current boundaries:
 
-Every write action goes through an approval flow. The user sees what the agent wants to do, approves or rejects, and can undo after execution.
+- One workspace per self-hosted deployment is the supported product contract.
+- Fresh installs use `pnpm db:push-full`; a supported versioned migration path is still in progress.
+- Native Google, Slack, Gmail, and GitHub OAuth integrations are not part of the current self-hosted v1 promise. Use ICS for calendar subscriptions and bring external tools through your own agent or MCP runtime.
+- Agent quality depends on the configured model, scopes, workspace data, and approval policy.
+- This repository is source-available under BSL 1.1, not OSI open source today.
 
-**Bring your own provider.** Self-hosted Deft can run with Anthropic, OpenAI, OpenRouter, or local Ollama. Without a provider, AI features are disabled but the core workspace still works.
-
-## Features
-
-### Chat
-- Real-time messaging with Socket.io
-- Threaded conversations
-- Emoji reactions (24+ common emojis)
-- @mentions with autocomplete
-- File upload with inline image preview
-- Rich text (bold, italic, code blocks, lists, links)
-- Typing indicators and online presence
-- Unread badges and mark-as-read
-
-### Tasks
-- Kanban, List, Calendar, and Pipeline views
-- Fixed engineering workflow defaults: backlog, todo, in progress, in review, done, cancelled
-- Drag-and-drop across columns
-- Task detail panel with full editing
-- Emoji reactions on tasks
-- @mentions in task descriptions and comments with notification dispatch
-- Activity diff view (old → new) on the activity log
-- Comments + full activity log
-- Labels, due dates, assignments, recurrence (daily/weekly/biweekly/monthly)
-- Quick-create (press C)
-- Project archive + soft-delete with 7-day recovery
-
-### Dashboard
-- Personalized greeting with morning pulse
-- Due today / this week / overdue task sections
-- In-progress task tracker
-- Unread messages widget
-- Recent activity feed
-- Project progress cards
-
-### Global
-- Cmd+K command palette (search + commands)
-- Dark mode (default, with light mode support)
-- Real-time presence (online/idle/offline)
-- Notification system with mentions, tasks, agent alerts
-
-## Environment Variables
-
-See `.env.example` for all configuration options with inline documentation. Three variables are required for first boot:
-
-- `POSTGRES_PASSWORD` — Database password (`openssl rand -hex 32`)
-- `JWT_SECRET` — Secret for JWT signing (`openssl rand -hex 32`)
-- `JWT_REFRESH_SECRET` — Secret for refresh tokens (`openssl rand -hex 32`)
-
-AI provider keys are optional. The app boots without Anthropic, OpenAI, OpenRouter, or Ollama; AI features stay disabled until a provider is configured via env or per-org in Settings -> AI.
-
-Full reference: [docs/self-hosting.md#environment-variables-reference](docs/self-hosting.md#environment-variables-reference)
-
-## License
-
-Business Source License 1.1 (BSL-1.1)
-
-- Use, copy, modify, and distribute for any purpose
-- **Cannot** offer as a hosted/managed service to third parties
-- Attribution required in forks and derivative works
-- Converts to Apache License 2.0 after 4 years from each release
-
-See [LICENSE](./LICENSE) for full terms.
+Security reports should follow [SECURITY.md](SECURITY.md). Operational support boundaries are documented in [docs/self-hosted-v1-contract.md](docs/self-hosted-v1-contract.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), run the relevant tests, and open a focused pull request.
+
+If Deft is useful to you, starring the repository helps more teams find the project.
+
+## License
+
+Deft is licensed under the [Business Source License 1.1](LICENSE).
+
+You may use, copy, modify, and self-host Deft. You may not offer it as a hosted or managed service to third parties under the current license. Forks and derivative works must retain the required attribution. Each release converts to Apache License 2.0 four years after its release date.
