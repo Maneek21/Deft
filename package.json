@@ -42,6 +42,8 @@
     "pilot:preflight:strict": "tsx scripts/pilot-preflight.ts --strict",
     "pilot:reset": "pnpm db:push-full && pnpm db:seed:pilot && pnpm pilot:preflight",
     "pilot:swarm": "node scripts/pilot-multi-user-swarm.mjs",
+    "test:product-browser": "node scripts/product-browser-smoke.mjs",
+    "test:product-browser:seed": "tsx scripts/seed-product-browser-smoke.ts",
     "agent:hermes-channel": "node scripts/hermes-agent-channel-bridge.mjs",
     "test:hermes-channel": "node --test scripts/hermes-agent-channel-bridge.test.mjs",
     "chat:certify": "tsx scripts/reports/chat-ui-certification.ts",
@@ -57,6 +59,11 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": "^0.28.1"
+    }
   },
   "devDependencies": {
     "playwright": "^1.61.1",
