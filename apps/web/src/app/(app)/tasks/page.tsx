@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useSearchParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { TaskBoard } from '@/components/task-board';
 import { TaskTable } from '@/components/task-table';
 import { TaskDetail } from '@/components/task-detail';
@@ -1186,6 +1187,11 @@ export default function TasksPage() {
                             </div>
                           </button>
                         ))}
+                        <div className="mt-1 border-t px-2 pt-1" style={{ borderColor: 'var(--border)' }}>
+                          <Link href="/settings/library" className="block rounded-md px-2 py-2 text-[11px] font-medium hover:bg-[var(--hover-tint)]" style={{ color: 'var(--accent)' }}>Manage task templates</Link>
+                          <Link href="/settings/workflows" className="block rounded-md px-2 py-2 text-[11px] hover:bg-[var(--hover-tint)]" style={{ color: 'var(--muted)' }}>Automations</Link>
+                          <Link href="/settings/projects" className="block rounded-md px-2 py-2 text-[11px] hover:bg-[var(--hover-tint)]" style={{ color: 'var(--muted)' }}>Project recovery</Link>
+                        </div>
                       </div>
                     </>
                   )}

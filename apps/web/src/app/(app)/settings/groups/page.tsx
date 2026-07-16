@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { AtSign, Check, MessageSquare, Plus, Trash2, Users, X } from 'lucide-react';
+import { AtSign, Check, Plus, Trash2, Users, X } from 'lucide-react';
 import { api } from '@/lib/api';
 
 type GroupMember = {
@@ -164,9 +163,9 @@ export default function GroupsPage() {
       <div className="mx-auto max-w-[860px] p-4 sm:p-6">
         <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-[1.125rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Groups</h2>
+            <h1 className="text-[1.125rem] font-semibold" style={{ color: 'var(--on-surface)' }}>Mention groups</h1>
             <p className="mt-0.5 text-[0.8125rem]" style={{ color: 'var(--outline)' }}>
-              Lightweight mention lists for chat. Use teams when you need ownership, leads, resources, and operating context.
+              Notify the same coworkers with one reusable @mention. Mention groups never grant access to private spaces.
             </p>
           </div>
           <button
@@ -176,20 +175,6 @@ export default function GroupsPage() {
           >
             <Plus size={14} strokeWidth={2} /> Create
           </button>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-3 mb-5">
-          <GroupNote icon={AtSign} title="Mention lists" body="Groups exist so people can notify a set of coworkers with one handle." />
-          <GroupNote icon={MessageSquare} title="Chat-first" body="Use @handle in chat; it does not grant private space access by itself." />
-          <Link
-            href="/settings/teams"
-            className="rounded-xl p-4"
-            style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }}
-          >
-            <Users size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
-            <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--on-surface)' }}>Need structure?</p>
-            <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--outline)' }}>Use Teams for leads, membership, linked work, and team dashboards.</p>
-          </Link>
         </div>
 
         <div className="grid grid-cols-2 gap-2 mb-5">
@@ -329,27 +314,6 @@ export default function GroupsPage() {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function GroupNote({
-  icon: Icon,
-  title,
-  body,
-}: {
-  icon: typeof AtSign;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div
-      className="rounded-xl p-4"
-      style={{ background: 'var(--surface-container-low)', border: '1px solid var(--outline-variant)' }}
-    >
-      <Icon size={16} strokeWidth={1.75} style={{ color: 'var(--accent)' }} />
-      <p className="text-[13px] font-semibold mt-3" style={{ color: 'var(--on-surface)' }}>{title}</p>
-      <p className="text-[12px] leading-relaxed mt-1" style={{ color: 'var(--outline)' }}>{body}</p>
     </div>
   );
 }

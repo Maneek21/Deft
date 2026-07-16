@@ -196,12 +196,12 @@ export default function AgentEmployeesPage() {
     <div className="mx-auto w-full max-w-[980px] p-4 md:p-6">
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2
+          <h1
             className="text-[20px] font-semibold"
             style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
           >
             Agent Employees
-          </h2>
+          </h1>
           <p className="mt-1 max-w-[620px] text-[13px]" style={{ color: 'var(--muted)' }}>
             See who is working, who needs review, and which runtimes still need setup.
           </p>
@@ -234,6 +234,11 @@ export default function AgentEmployeesPage() {
           </Link>
         )}
       </div>
+
+      <nav className="mb-4 flex gap-1 overflow-x-auto" aria-label="Agent employee settings">
+        <Link href="/settings/agent-employees" className="deft-pill" data-active={true}>Employees</Link>
+        <Link href="/settings/agent" className="deft-pill" style={{ color: 'var(--muted)' }}>Governance & audit</Link>
+      </nav>
 
       {error && (
         <div

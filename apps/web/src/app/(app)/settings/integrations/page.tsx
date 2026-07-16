@@ -169,11 +169,11 @@ export default function IntegrationsPage() {
   return (
     <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-[640px]">
-      <h2 className="text-[1.125rem] font-semibold mb-1" style={{ color: 'var(--on-surface)' }}>
-        Integrations
-      </h2>
+      <h1 className="text-[1.5rem] font-semibold mb-1" style={{ color: 'var(--on-surface)' }}>
+        Agent tool servers
+      </h1>
       <p className="text-[0.8125rem] mb-6" style={{ color: 'var(--outline)' }}>
-        Connect calendar feeds and MCP-compatible tool servers. Agent employees can bring their own external tools through MCP.
+        Connect MCP-compatible tool servers that extend what agent employees can do. Personal AI apps and calendar feeds are managed in their own settings.
       </p>
 
       <div className="grid gap-3 md:grid-cols-3 mb-6">
@@ -216,7 +216,7 @@ export default function IntegrationsPage() {
       <div className="mt-10">
         <div className="flex items-center justify-between mb-1">
           <h2 className="text-[1.125rem] font-semibold" style={{ color: 'var(--on-surface)' }}>
-            MCP Connections
+            Connected tool servers
           </h2>
           <button
             onClick={() => { setEditingMcp(null); setMcpPrefill(null); setShowMcpForm(true); }}
@@ -224,7 +224,7 @@ export default function IntegrationsPage() {
             style={{ background: 'var(--accent)', color: 'white', fontFamily: 'var(--font-heading)' }}
           >
             <Plug size={13} />
-            Add MCP Server
+            Add tool server
           </button>
         </div>
         <p className="text-[0.8125rem] mb-4" style={{ color: 'var(--outline)' }}>

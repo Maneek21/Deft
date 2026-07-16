@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   Archive,
   ArchiveRestore,
   Bot,
@@ -264,6 +265,7 @@ function SectionTitle({ icon: Icon, title, eyebrow }: { icon: any; title: string
 export default function TeamsSettingsPage() {
   const { user } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [members, setMembers] = useState<SimpleMember[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<TeamDetail | null>(null);
@@ -569,11 +571,11 @@ export default function TeamsSettingsPage() {
   const leadName = detail?.lead?.name ?? (detail?.team.lead_user_id ? 'Assigned lead' : 'No lead yet');
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[1220px] space-y-4 p-4 sm:p-6">
+    <div className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
+      <div className="mx-auto w-full min-w-0 max-w-[1220px] space-y-4 p-4 sm:p-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
-            <h2 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>Teams</h2>
+            <h1 className="section-title" style={{ fontFamily: 'var(--font-heading)' }}>Teams</h1>
             <p className="mt-1 max-w-2xl text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>
               Shape work around real operating teams, then give managers one place to see people, linked work, context, and agent activity.
             </p>
@@ -671,7 +673,7 @@ export default function TeamsSettingsPage() {
         )}
 
         <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-          <section className="min-w-0 overflow-hidden rounded-lg" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
+          <section className={`${mobileDetailOpen ? 'hidden lg:block' : 'block'} min-w-0 overflow-hidden rounded-lg`} style={{ background: 'var(--card-bg)', border: '1px solid var(--border)' }}>
             <div className="border-b p-3" style={{ borderColor: 'var(--border-default)' }}>
               <div className="relative">
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--muted)' }} />
@@ -699,7 +701,7 @@ export default function TeamsSettingsPage() {
                 return (
                   <button
                     key={team.id}
-                    onClick={() => setSelectedId(team.id)}
+                    onClick={() => { setSelectedId(team.id); setMobileDetailOpen(true); }}
                     className="flex w-full min-w-0 items-start gap-3 border-b px-3 py-3 text-left transition last:border-b-0 hover:bg-[var(--bg-hover)]"
                     style={{ background: selected ? 'var(--hover-tint)' : 'transparent', borderColor: 'var(--border-default)' }}
                   >
@@ -728,7 +730,10 @@ export default function TeamsSettingsPage() {
             </div>
           </section>
 
-          <section className="min-w-0 space-y-4">
+          <section className={`${mobileDetailOpen ? 'block' : 'hidden lg:block'} min-w-0 space-y-4`}>
+            <button type="button" onClick={() => setMobileDetailOpen(false)} className="deft-pill lg:hidden" style={{ color: 'var(--muted)', border: '1px solid var(--border)' }}>
+              <ArrowLeft size={13} /> All teams
+            </button>
             {detailLoading ? (
               <div className="rounded-lg p-8 text-center text-[13px]" style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
                 Loading team dashboard...
@@ -758,7 +763,7 @@ export default function TeamsSettingsPage() {
                         </p>
                       )}
                     </div>
-                    <div className="flex flex-col gap-2 sm:w-[320px]">
+                    <div className="min-w-0 flex flex-col gap-2 sm:w-[320px] sm:max-w-full">
                       {canManageSelectedTeam && (
                         archiveConfirm === (detail.team.is_archived ? 'restore' : 'archive') ? (
                           <div
@@ -1019,7 +1024,7 @@ export default function TeamsSettingsPage() {
                               data-testid="team-resource-select"
                               value={resourceForm.resource_id}
                               onChange={(e) => setResourceForm((prev) => ({ ...prev, resource_id: e.target.value }))}
-                              className="h-8 min-w-0 rounded-md px-2 text-[12px] outline-none"
+                              className="h-8 w-full min-w-0 max-w-full rounded-md px-2 text-[12px] outline-none"
                               style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
                               disabled={availableResources.length === 0}
                             >
@@ -1065,7 +1070,7 @@ export default function TeamsSettingsPage() {
                           return (
                             <span
                               key={resource.id}
-                              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+                              className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
                               title={restricted ? 'You need to be a member of this private space to see its name and messages.' : undefined}
                               style={{
                                 color: restricted ? 'var(--muted)' : 'white',
@@ -1073,8 +1078,8 @@ export default function TeamsSettingsPage() {
                                 border: restricted ? '1px solid var(--border)' : '1px solid transparent',
                               }}
                             >
-                              {restricted && <Lock size={10} />}
-                              {resourceSingularLabel(resource.resource_type)}: {label}
+                              {restricted && <Lock size={10} className="shrink-0" />}
+                              <span className="truncate">{resourceSingularLabel(resource.resource_type)}: {label}</span>
                               {canManageSelectedTeam && (
                                 <button
                                   data-testid={`team-resource-detach-${resource.resource_type}-${resource.resource_id}`}
