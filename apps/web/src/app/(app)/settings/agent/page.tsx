@@ -297,18 +297,23 @@ export default function AgentSettingsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-    <div className="p-6 max-w-[900px]">
+    <div className="mx-auto w-full max-w-[900px] p-4 sm:p-6">
       <div className="mb-6">
-        <h2
+        <h1
           className="text-[18px] font-semibold"
           style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)' }}
         >
           Agent governance
-        </h2>
+        </h1>
         <p className="text-[12px] mt-1 max-w-[640px]" style={{ color: 'var(--muted)' }}>
           Set global trust rails for Defty and shared agent employees, then review approvals, receipts, and agent health from one place.
         </p>
       </div>
+
+      <nav className="mb-4 flex gap-1 overflow-x-auto" aria-label="Agent employee settings">
+        <Link href="/settings/agent-employees" className="deft-pill" style={{ color: 'var(--muted)' }}>Employees</Link>
+        <Link href="/settings/agent" className="deft-pill" data-active={true}>Governance & audit</Link>
+      </nav>
 
       {/* Approvals moved banner */}
       <div
@@ -316,10 +321,7 @@ export default function AgentSettingsPage() {
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
       >
         Pending approvals moved to{' '}
-        <a href="/approvals" className="underline" style={{ color: 'var(--accent)' }}>
-          Approvals
-        </a>
-        .
+        <Link href="/inbox?tab=approvals" className="underline" style={{ color: 'var(--accent)' }}>Inbox &gt; Approvals</Link>.
       </div>
 
       {/* Trust level — unchanged */}
@@ -330,7 +332,7 @@ export default function AgentSettingsPage() {
         >
           Trust Level
         </h3>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {TRUST_LEVELS.map((t) => (
             <button
               key={t.value}

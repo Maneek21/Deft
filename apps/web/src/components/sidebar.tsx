@@ -7,7 +7,7 @@ import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { agentConnectionStatus } from '@/lib/agent-employee-status';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
-import { isSettingsItemActive, settingsNavGroups } from '@/lib/settings-navigation';
+import { getSettingsNavGroups, isSettingsItemActive } from '@/lib/settings-navigation';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
 import { api } from '@/lib/api';
@@ -39,6 +39,7 @@ import {
   BookOpen,
   Smile,
   Inbox,
+  ChevronDown,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
@@ -600,6 +601,16 @@ function TasksSidebarContent({ onNav }: { onNav?: () => void }) {
 // ── Settings sidebar content ─────────────────────────────────────────
 function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
   const pathname = usePathname();
+  const { user } = useAuth();
+  const groups = getSettingsNavGroups(user?.role ?? 'member');
+  const primaryGroups = groups.filter((group) => !group.advanced);
+  const advancedGroup = groups.find((group) => group.advanced);
+  const advancedActive = advancedGroup?.items.some((item) => isSettingsItemActive(pathname, item.href)) ?? false;
+  const [advancedOpen, setAdvancedOpen] = useState(advancedActive);
+
+  useEffect(() => {
+    if (advancedActive) setAdvancedOpen(true);
+  }, [advancedActive]);
 
   return (
     <div className="px-3 pt-5 pb-6 overflow-y-auto">
@@ -612,7 +623,7 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
         </span>
       </div>
       <div className="space-y-4">
-        {settingsNavGroups.map((group) => (
+        {primaryGroups.map((group) => (
           <div key={group.label}>
             <div className="px-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--outline)' }}>
               {group.label}
@@ -642,6 +653,47 @@ function SettingsSidebarContent({ onNav }: { onNav?: () => void }) {
             </div>
           </div>
         ))}
+        {advancedGroup && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              className="flex h-8 w-full items-center justify-between rounded-full px-2 text-left"
+              style={{
+                background: advancedActive ? 'var(--bg-active)' : 'transparent',
+                color: advancedActive ? 'var(--on-surface)' : 'var(--outline)',
+              }}
+              aria-expanded={advancedOpen}
+            >
+              <span className="text-[0.625rem] font-semibold uppercase tracking-[0.06em]">Advanced</span>
+              <ChevronDown size={13} className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {advancedOpen && (
+              <div className="mt-1 space-y-0.5">
+                {advancedGroup.items.map((section) => {
+                  const active = isSettingsItemActive(pathname, section.href);
+                  return (
+                    <Link
+                      key={section.href}
+                      href={section.href}
+                      onClick={onNav}
+                      className="block flex h-[34px] w-full items-center gap-2 px-2 text-left"
+                      style={{
+                        background: active ? 'var(--bg-active)' : 'transparent',
+                        color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)',
+                        fontWeight: 500,
+                        fontSize: '0.8125rem',
+                        borderRadius: '999px',
+                      }}
+                    >
+                      <span className="truncate">{section.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

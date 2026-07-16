@@ -10,7 +10,6 @@ import {
   ChevronRight,
   Code2,
   Copy,
-  FileText,
   Globe2,
   History,
   KeyRound,
@@ -19,7 +18,6 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-  Terminal,
   Trash2,
   Wrench,
 } from 'lucide-react';
@@ -142,21 +140,6 @@ const PRESETS: Array<{ id: AccessPreset; title: string; detail: string; scopes: 
     title: 'Custom scopes',
     detail: 'Choose exact MCP scopes. Best for self-hosted admins and unusual clients.',
     scopes: READ_SCOPES,
-  },
-];
-
-const CONTEXT_PACKET_CARDS = [
-  {
-    title: 'Company memory',
-    detail: 'Org-wide wiki knowledge the AI app can use across projects and channels.',
-  },
-  {
-    title: 'Channel memory',
-    detail: 'Knowledge created in, cited from, or scoped to the space where the work is happening.',
-  },
-  {
-    title: 'Personal memory',
-    detail: 'Private notes and memories scoped to the connected human user.',
   },
 ];
 
@@ -583,9 +566,9 @@ export default function McpAccessPage() {
   ];
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="flex h-full min-w-0 flex-col overflow-x-hidden overflow-y-auto">
       <PageHeader
-        title="AI App Connections"
+        title="Connections"
         description="Connect Codex, Claude, ChatGPT, or any MCP client to your Deft workspace."
         secondary={
           <TabStrip>
@@ -600,7 +583,7 @@ export default function McpAccessPage() {
         compact
       />
 
-      <div className="max-w-5xl w-full mx-auto px-4 md:px-6 pb-8 space-y-4">
+      <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4 px-4 pb-8 md:px-6">
         {error && (
           <div className="rounded-lg px-3 py-2 text-[13px]" style={{ color: 'var(--danger)', border: '1px solid var(--danger)', background: 'color-mix(in srgb, var(--danger) 8%, transparent)' }}>
             {error}
@@ -612,177 +595,175 @@ export default function McpAccessPage() {
           </div>
         )}
 
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-          <div className="flex flex-col gap-4">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                <Sparkles size={16} />
+        {!loading && (tokens.length > 0 || grants.length > 0) && (
+          <section className="flex min-w-0 items-center justify-between gap-3 rounded-lg p-3 sm:p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                <Check size={14} style={{ color: 'var(--status-green, #10b981)' }} />
+                {tokens.length + grants.length} active connection{tokens.length + grants.length === 1 ? '' : 's'}
               </div>
-              <div>
-                <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>What do you want to connect?</h2>
-                <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                  Pick the app first. Deft will show the right connection path instead of making you sort through every MCP detail.
-                </p>
+              <p className="mt-1 hidden truncate text-[11px] sm:block" style={{ color: 'var(--text-secondary)' }}>Review last use, scopes, or revoke access below.</p>
+            </div>
+            <a href="#active-connections" className="deft-pill shrink-0" style={{ color: 'var(--accent)', border: '1px solid var(--border-default)' }}>Manage</a>
+          </section>
+        )}
+
+        <section className="min-w-0 overflow-hidden rounded-lg" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+          <div className="flex flex-col gap-4 p-4 md:p-5" style={{ borderBottom: '1px solid var(--border-default)' }}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                  <Sparkles size={16} />
+                </div>
+                <div>
+                  <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Connect an AI app</h2>
+                  <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>Choose an app. Deft will only show the setup it needs.</p>
+                </div>
               </div>
+              <Link href="/settings/agent-employees" className="inline-flex items-center gap-1.5 self-start text-[12px] font-medium" style={{ color: 'var(--accent)' }}>
+                Need a shared agent employee? <ChevronRight size={13} />
+              </Link>
             </div>
 
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {CLIENT_OPTIONS.map((client) => {
+            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+              {CLIENT_OPTIONS.filter((client) => client.id !== 'agent-employee').map((client) => {
                 const active = client.id === selectedClient;
                 return (
                   <button
                     key={client.id}
                     type="button"
                     onClick={() => chooseClient(client.id)}
-                    className="rounded-md p-3 text-left transition-colors"
+                    className="deft-pill shrink-0 gap-2 transition-colors"
                     style={{
-                      background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
+                      background: active ? 'var(--accent)' : 'var(--surface-container)',
                       border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
+                      color: active ? 'white' : 'var(--text-secondary)',
                     }}
+                    aria-pressed={active}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style={{ background: active ? 'var(--accent-muted)' : 'var(--surface-container-low)', color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                          {clientIcon(client.id)}
-                        </span>
-                        <span className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{client.name}</span>
-                      </div>
-                      <span className="text-[10px] rounded px-1.5 py-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>{client.fit}</span>
-                    </div>
-                    <p className="text-[11px] mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{client.detail}</p>
+                    {clientIcon(client.id)}
+                    {client.name}
                   </button>
                 );
               })}
             </div>
           </div>
-        </section>
 
-        <div className="grid lg:grid-cols-[1.05fr_.95fr] gap-4 items-start">
-          <div className="space-y-4">
-            {tokenSetupClient && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <ShieldCheck size={16} />
+          <div className="p-4 md:p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                  {clientIcon(selectedClient)}
+                </span>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-[16px] font-semibold" style={{ color: 'var(--text-primary)' }}>{selectedClientOption.name}</h3>
+                    <span className="rounded-full px-2 py-0.5 text-[10px]" style={{ background: 'var(--surface-container)', color: 'var(--text-tertiary)', border: '1px solid var(--border-default)' }}>{selectedClientOption.fit}</span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Choose what {selectedClientOption.name} can do</h2>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Personal MCP tokens act as you. The app can only see what you can see, and every write is recorded under your name.
-                    </p>
-
-                    <div className="grid md:grid-cols-3 gap-3 mt-4">
-                      {PRESETS.map((preset) => {
-                        const active = preset.id === accessPreset;
-                        return (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => setAccessPreset(preset.id)}
-                            className="rounded-md p-3 text-left"
-                            style={{
-                              background: active ? 'color-mix(in srgb, var(--accent) 12%, var(--surface-container))' : 'var(--surface-container)',
-                              border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
-                            }}
-                          >
-                            <div className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{preset.title}</div>
-                            <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{preset.detail}</p>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {accessPreset === 'custom' && (
-                      <div className="grid sm:grid-cols-2 gap-2 mt-3">
-                        {ALL_SCOPES.map((scope) => (
-                          <label key={scope} className="flex items-start gap-2 rounded-md p-2.5 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
-                            <input
-                              type="checkbox"
-                              checked={customScopes.includes(scope)}
-                              onChange={() => toggleCustomScope(scope)}
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>{scope}</span>
-                              <span> - {SCOPE_LABELS[scope]}</span>
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {selectedScopes.map((scope) => <ScopePill key={scope} scope={scope} />)}
-                    </div>
-                  </div>
+                  <p className="mt-1 max-w-2xl text-[12px]" style={{ color: 'var(--text-secondary)' }}>{selectedClientOption.detail}</p>
                 </div>
-              </section>
-            )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                <span className="flex h-5 w-5 items-center justify-center rounded-full text-white" style={{ background: 'var(--accent)' }}><Check size={11} /></span>
+                App
+                <span className="mx-1 h-px w-5" style={{ background: 'var(--border-default)' }} />
+                <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ border: '1px solid var(--border-default)', color: 'var(--text-secondary)' }}>2</span>
+                {tokenSetupClient ? 'Access' : 'Setup'}
+                <span className="mx-1 h-px w-5" style={{ background: 'var(--border-default)' }} />
+                <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ border: '1px solid var(--border-default)', color: 'var(--text-secondary)' }}>3</span>
+                Connect
+              </div>
+            </div>
 
             {tokenSetupClient && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                    <KeyRound size={16} />
+              <div className="mt-5 grid min-w-0 gap-6 lg:grid-cols-[minmax(0,.85fr)_minmax(0,1.15fr)]">
+                <div className="min-w-0 lg:pr-6" style={{ borderColor: 'var(--border-default)' }}>
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={14} style={{ color: 'var(--accent)' }} />
+                    <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>2. Choose access</h4>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h2 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Create the connection</h2>
-                    <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                      Generate a token, copy the config for {selectedClientOption.name}, then test it from the AI app.
-                    </p>
-                    <div className="grid md:grid-cols-[1fr_auto] gap-3 mt-4">
-                      <input
-                        value={tokenName}
-                        onChange={(e) => setTokenName(e.target.value)}
-                        className="h-10 rounded-md px-3 text-[13px] outline-none"
-                        style={{ background: 'var(--surface-container)', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}
-                      />
-                      <button
-                        type="button"
-                        disabled={busy || selectedScopes.length === 0}
-                        onClick={createToken}
-                        className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
-                        style={{ background: 'var(--accent)' }}
-                      >
+                  <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>This connection acts as you and can only reach work you can access.</p>
+                  <div className="mt-3 divide-y" style={{ borderColor: 'var(--border-default)' }}>
+                    {PRESETS.map((preset) => {
+                      const active = preset.id === accessPreset;
+                      return (
+                        <button key={preset.id} type="button" onClick={() => setAccessPreset(preset.id)} className="flex w-full items-start gap-3 py-3 text-left">
+                          <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full" style={{ border: active ? '4px solid var(--accent)' : '1px solid var(--border-strong, var(--border-default))' }} />
+                          <span>
+                            <span className="block text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>{preset.title}</span>
+                            <span className="mt-0.5 block text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{preset.detail}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {accessPreset === 'custom' ? (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                      {ALL_SCOPES.map((scope) => (
+                        <label key={scope} className="flex items-start gap-2 rounded-md p-2.5 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>
+                          <input type="checkbox" checked={customScopes.includes(scope)} onChange={() => toggleCustomScope(scope)} className="mt-0.5" />
+                          <span><span className="font-medium" style={{ color: 'var(--text-primary)' }}>{scope}</span><span> - {SCOPE_LABELS[scope]}</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setAccessPreset('custom')} className="mt-3 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
+                      Review individual scopes
+                    </button>
+                  )}
+                </div>
+
+                <div className="min-w-0 border-t pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0" style={{ borderColor: 'var(--border-default)' }}>
+                  <div className="flex items-center gap-2">
+                    <KeyRound size={14} style={{ color: 'var(--accent)' }} />
+                    <h4 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>3. Create connection</h4>
+                  </div>
+                  <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>Create one token for this app. The config appears after the token is generated.</p>
+                  <label className="mt-4 block">
+                    <span className="mb-1.5 block text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>Connection name</span>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} className="h-10 min-w-0 flex-1 rounded-md px-3 text-[13px] outline-none" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }} />
+                      <button type="button" disabled={busy || selectedScopes.length === 0} onClick={createToken} className="inline-flex h-10 items-center justify-center gap-2 rounded-full px-4 text-[13px] font-medium text-white disabled:opacity-50" style={{ background: 'var(--accent)' }}>
                         {busy ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
-                        Generate token
+                        {newToken ? 'Create another' : 'Generate token'}
                       </button>
                     </div>
+                  </label>
 
-                    {newToken && (
-                      <div className="mt-4 rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-container))', border: '1px solid var(--accent)' }}>
+                  {newToken ? (
+                    <div className="mt-4 space-y-3">
+                      <div className="rounded-md p-3" style={{ background: 'color-mix(in srgb, var(--accent) 8%, var(--surface-container))', border: '1px solid var(--accent)' }}>
                         <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>New token</div>
-                            <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Copy it now. Deft will not show it again.</p>
-                          </div>
-                          <button type="button" onClick={() => copy('token', newToken)} className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px]" style={{ border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
-                            <Copy size={13} /> Copy
-                          </button>
+                          <div><div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>Token ready</div><p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>Copy it now. Deft will not show it again.</p></div>
+                          <button type="button" onClick={() => copy('token', newToken)} className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ background: 'var(--accent)', color: 'white' }}><Copy size={12} /> Copy token</button>
                         </div>
-                        <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>{newToken}</pre>
+                        <pre className="mt-3 max-w-full overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container)', color: 'var(--text-primary)' }}>{newToken}</pre>
                       </div>
-                    )}
-
-                    <div className="mt-4 rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{selectedSnippet.title}</div>
-                          <p className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>{selectedSnippet.detail}</p>
+                      <div className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div><div className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{selectedSnippet.title}</div><p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{selectedSnippet.detail}</p></div>
+                          <button type="button" onClick={() => copy(selectedSnippet.title.toLowerCase(), selectedSnippet.value)} className="shrink-0 rounded-md p-1.5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${selectedSnippet.title}`}><Copy size={13} /></button>
                         </div>
-                        <button type="button" onClick={() => copy(selectedSnippet.title.toLowerCase(), selectedSnippet.value)} className="p-1.5 rounded-md shrink-0" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }} aria-label={`Copy ${selectedSnippet.title}`}>
-                          <Copy size={13} />
-                        </button>
+                        <pre className="mt-3 max-h-56 max-w-full overflow-x-auto rounded-md p-3 text-[11px]" style={{ background: 'var(--surface-container-high, var(--surface-container-low))', color: 'var(--text-primary)' }}>{selectedSnippet.value}</pre>
                       </div>
-                      <pre className="mt-3 overflow-x-auto rounded-md p-3 text-[11px] max-h-56" style={{ background: 'var(--surface-container-high, var(--surface-container-low))', color: 'var(--text-primary)' }}>{selectedSnippet.value}</pre>
+                      <div className="flex items-start justify-between gap-3 rounded-md px-3 py-2.5" style={{ background: 'var(--surface-container)' }}>
+                        <div className="min-w-0"><div className="text-[11px] font-medium" style={{ color: 'var(--text-primary)' }}>Test the connection</div><p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-secondary)' }}>{TEST_PROMPTS[0]}</p></div>
+                        <button type="button" onClick={() => copy('test prompt', TEST_PROMPTS[0])} className="shrink-0 rounded-md p-1.5" style={{ color: 'var(--text-secondary)' }} aria-label="Copy test prompt"><Copy size={13} /></button>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="mt-4 flex items-start gap-3 rounded-md px-3 py-3" style={{ background: 'var(--surface-container)' }}>
+                      <ShieldCheck size={15} className="mt-0.5 shrink-0" style={{ color: 'var(--text-tertiary)' }} />
+                      <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>Your token and ready-to-copy {selectedClientOption.name} config will appear here. Every use is recorded in connection activity below.</p>
+                    </div>
+                  )}
                 </div>
-              </section>
+              </div>
             )}
 
             {selectedClientOption.setupKind === 'oauth' && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+              <div className="mt-5 border-t pt-5" style={{ borderColor: 'var(--border-default)' }}>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
                     <Globe2 size={16} />
@@ -842,31 +823,33 @@ export default function McpAccessPage() {
                         </div>
                       </div>
                     )}
-                    <div className="grid md:grid-cols-2 gap-3 mt-4">
-                      {remoteRows.slice(0, 3).map(([label, value]) => (
-                        <div key={label} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                          <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{label}</div>
-                          <div className="mt-1 flex items-center gap-2 min-w-0">
-                            <code className="text-[11px] truncate flex-1" style={{ color: 'var(--text-primary)' }}>{value ?? 'Not loaded'}</code>
-                            {value && (
-                              <button type="button" onClick={() => copy(label.toLowerCase(), value)} className="p-1 rounded-md" style={{ color: 'var(--text-secondary)' }} aria-label={`Copy ${label}`}>
-                                <Copy size={13} />
-                              </button>
-                            )}
+                    {!isClaudeConnector && (
+                      <div className="grid md:grid-cols-2 gap-3 mt-4">
+                        {remoteRows.slice(0, 3).map(([label, value]) => (
+                          <div key={label} className="rounded-md p-3 min-w-0" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
+                            <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>{label}</div>
+                            <div className="mt-1 flex items-center gap-2 min-w-0">
+                              <code className="text-[11px] truncate flex-1" style={{ color: 'var(--text-primary)' }}>{value ?? 'Not loaded'}</code>
+                              {value && (
+                                <button type="button" onClick={() => copy(label.toLowerCase(), value)} className="p-1 rounded-md" style={{ color: 'var(--text-secondary)' }} aria-label={`Copy ${label}`}>
+                                  <Copy size={13} />
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                     <button type="button" onClick={() => setAdvancedOpen(true)} className="mt-3 inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--accent)' }}>
                       <Settings2 size={13} /> Show all OAuth endpoints
                     </button>
                   </div>
                 </div>
-              </section>
+              </div>
             )}
 
             {selectedClientOption.setupKind === 'agent' && (
-              <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+              <div className="mt-5 border-t pt-5" style={{ borderColor: 'var(--border-default)' }}>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
                     <Bot size={16} />
@@ -881,51 +864,12 @@ export default function McpAccessPage() {
                     </Link>
                   </div>
                 </div>
-              </section>
+              </div>
             )}
           </div>
+        </section>
 
-          <aside className="space-y-4">
-            <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
-                  <Terminal size={16} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Test it from the app</h2>
-                  <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    After connecting, run one prompt and check that recent activity updates below.
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {TEST_PROMPTS.map((prompt) => (
-                      <div key={prompt} className="flex items-start gap-2 rounded-md p-2" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                        <FileText size={13} className="mt-0.5 shrink-0" style={{ color: 'var(--text-tertiary)' }} />
-                        <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{prompt}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
-              <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Context packets available</h2>
-              <p className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>Connected clients can retrieve the right memory packet for the work they are doing.</p>
-              <div className="space-y-2 mt-3">
-                {CONTEXT_PACKET_CARDS.map((card) => (
-                  <div key={card.title} className="rounded-md p-3" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-                    <div className="flex items-center gap-2 text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                      <FileText size={13} /> {card.title}
-                    </div>
-                    <p className="text-[11px] mt-1 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{card.detail}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </aside>
-        </div>
-
-        <section className="rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+        <section id="active-connections" className="min-w-0 scroll-mt-4 rounded-lg p-4" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
           <div className="flex items-center gap-2 mb-3">
             <Activity size={15} style={{ color: 'var(--accent)' }} />
             <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>Manage active connections</h2>
