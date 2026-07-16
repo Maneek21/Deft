@@ -110,7 +110,7 @@ jobs:
         run: pnpm --filter @deft/web build
 
   docker-build:
-    name: Docker Image Build
+    name: Production Image + Browser Smoke
     # The production Dockerfile drifted multiple times without being noticed
     # because nobody runs `docker build` locally during dev (we use `pnpm dev`).
     # First deploy from a fresh clone surfaced 5 Dockerfile bugs in one go.
@@ -120,6 +120,14 @@ jobs:
     needs: typecheck
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - uses: docker/setup-buildx-action@v4
       - name: Build production image
         uses: docker/build-push-action@v7
@@ -149,3 +157,79 @@ jobs:
             test -d /app/apps/web/node_modules
             test -d /app/packages/mcp/node_modules
           '
+      - name: Start production-image test stack
+        env:
+          POSTGRES_PASSWORD: browser-smoke-postgres
+          JWT_SECRET: browser-smoke-jwt-secret
+          JWT_REFRESH_SECRET: browser-smoke-refresh-secret
+          ENCRYPTION_KEY: 12345678901234567890123456789012
+          NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:3001
+          NEXT_PUBLIC_WS_URL: http://127.0.0.1:3001
+        run: |
+          set -euo pipefail
+          docker network create deft-browser-smoke
+          docker run -d --name deft-browser-postgres --network deft-browser-smoke \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+            -e POSTGRES_DB=deft \
+            pgvector/pgvector:pg16
+          docker run -d --name deft-browser-redis --network deft-browser-smoke redis:7-alpine
+          for attempt in $(seq 1 30); do
+            docker exec deft-browser-postgres pg_isready -U postgres >/dev/null 2>&1 && \
+              docker exec deft-browser-redis redis-cli ping >/dev/null 2>&1 && break
+            if [ "$attempt" = 30 ]; then echo 'database services did not become ready'; exit 1; fi
+            sleep 2
+          done
+          docker run --rm --network deft-browser-smoke \
+            -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
+            -e REDIS_URL=redis://deft-browser-redis:6379 \
+            -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+            --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed:demo'
+          docker run --rm --network deft-browser-smoke \
+            -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
+            -e DEFT_TEST_EMAIL=diego@testers-tomatoes.com \
+            -e DEFT_APPROVAL_SMOKE_MARKER="CI approval smoke $GITHUB_RUN_ID" \
+            --entrypoint sh deft:ci -c 'pnpm test:product-browser:seed'
+          docker run -d --name deft-browser-app --network deft-browser-smoke \
+            -p 3000:3000 -p 3001:3001 \
+            -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
+            -e REDIS_URL=redis://deft-browser-redis:6379 \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET" \
+            -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+            -e NEXT_PUBLIC_APP_URL="$NEXT_PUBLIC_APP_URL" \
+            -e NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            -e NEXT_PUBLIC_WS_URL="$NEXT_PUBLIC_WS_URL" \
+            deft:ci
+          for attempt in $(seq 1 45); do
+            curl --fail --silent http://127.0.0.1:3001/health >/dev/null && \
+              curl --fail --silent http://127.0.0.1:3000/login >/dev/null && break
+            if [ "$attempt" = 45 ]; then docker logs deft-browser-app; exit 1; fi
+            sleep 2
+          done
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run production browser smoke
+        env:
+          DEFT_WEB_URL: http://127.0.0.1:3000
+          DEFT_TEST_EMAIL: diego@testers-tomatoes.com
+          DEFT_TEST_PASSWORD: tomato123
+          DEFT_APPROVAL_SMOKE_MARKER: CI approval smoke ${{ github.run_id }}
+        run: pnpm test:product-browser
+      - name: Block critical production-image vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: deft:ci
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Dump product stack logs on failure
+        if: failure()
+        run: docker logs deft-browser-app || true
+      - name: Stop product test stack
+        if: always()
+        run: |
+          docker rm -f deft-browser-app deft-browser-postgres deft-browser-redis 2>/dev/null || true
+          docker network rm deft-browser-smoke 2>/dev/null || true

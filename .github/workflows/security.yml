@@ -1,0 +1,36 @@
+name: Security
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: '23 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v4

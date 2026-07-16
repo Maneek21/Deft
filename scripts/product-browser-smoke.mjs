@@ -1,0 +1,118 @@
+import { chromium } from 'playwright';
+
+const webUrl = (process.env.DEFT_WEB_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+const email = process.env.DEFT_TEST_EMAIL || 'diego@testers-tomatoes.com';
+const password = process.env.DEFT_TEST_PASSWORD || 'tomato123';
+const approvalMarker = process.env.DEFT_APPROVAL_SMOKE_MARKER;
+const runMarker = process.env.GITHUB_RUN_ID || String(Date.now());
+const chatMarker = `CI browser chat ${runMarker}`;
+const taskMarker = `CI browser task ${runMarker}`;
+
+if (!approvalMarker) throw new Error('DEFT_APPROVAL_SMOKE_MARKER is required');
+
+const results = [];
+const record = (name, detail = '') => {
+  results.push({ name, detail });
+  console.log(`[PASS] ${name}${detail ? ` - ${detail}` : ''}`);
+};
+
+async function settle(page, path) {
+  await page.goto(`${webUrl}${path}`, { waitUntil: 'domcontentloaded' });
+  await page.locator('main').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.waitForTimeout(350);
+}
+
+async function main() {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  try {
+    await page.goto(`${webUrl}/login`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#login-email').fill(email);
+    await page.locator('#login-password').fill(password);
+    await Promise.all([
+      page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 }),
+      page.getByRole('button', { name: 'Sign in', exact: true }).click(),
+    ]);
+    record('Login through the production UI', email);
+
+    await settle(page, '/chat');
+    const general = page.getByText('general', { exact: true }).first();
+    await general.click();
+    const composer = page.locator('[contenteditable="true"]').last();
+    await composer.waitFor({ state: 'visible', timeout: 10_000 });
+    await composer.fill(chatMarker);
+    await composer.press('Enter');
+    await page.getByText(chatMarker, { exact: true }).waitFor({ timeout: 10_000 });
+    record('Post and render a chat message', '#general');
+
+    await settle(page, '/tasks');
+    await page.getByRole('button', { name: /New task/i }).first().click();
+    await page.getByPlaceholder('Task title').fill(taskMarker);
+    await page.getByRole('button', { name: 'Create task', exact: true }).click();
+    const createdTask = page.getByText(taskMarker, { exact: true }).first();
+    await createdTask.waitFor({ timeout: 10_000 });
+    record('Create a task through the production UI');
+
+    await createdTask.click();
+    await page.getByRole('heading', { name: taskMarker, exact: true }).waitFor({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Backlog', exact: true }).last().click();
+    await page.getByRole('button', { name: 'To Do', exact: true }).last().click();
+    await page.getByRole('button', { name: 'To Do', exact: true }).last().waitFor({ timeout: 10_000 });
+    record('Update task status inline', 'Backlog -> To Do');
+
+    await settle(page, '/inbox?tab=approvals');
+    const approveButton = page.getByRole('button', { name: /Approve post/i }).first();
+    await approveButton.waitFor({ state: 'visible', timeout: 10_000 });
+    const [approvalResponse] = await Promise.all([
+      page.waitForResponse((response) => response.url().includes('/api/agent/actions/') && response.url().endsWith('/approve')),
+      approveButton.click(),
+    ]);
+    if (!approvalResponse.ok()) {
+      throw new Error(`Approval returned ${approvalResponse.status()}: ${await approvalResponse.text()}`);
+    }
+    record('Approve a governed write from Inbox');
+
+    await settle(page, '/chat');
+    await page.getByText('general', { exact: true }).first().click();
+    await page.getByText(approvalMarker, { exact: true }).waitFor({ timeout: 10_000 });
+    record('Verify the approved write on its destination surface');
+
+    for (const [path, heading] of [
+      ['/settings', 'Settings'],
+      ['/settings/profile', 'Profile'],
+      ['/settings/mcp-access', 'Connect an AI app'],
+    ]) {
+      await settle(page, path);
+      await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
+    }
+    record('Navigate core settings surfaces');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobilePaths = ['/chat', '/tasks', '/knowledge', '/calendar', '/notes', '/inbox', '/settings'];
+    for (const path of mobilePaths) {
+      await settle(page, path);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (overflow > 2) throw new Error(`${path} overflows the mobile viewport by ${overflow}px`);
+    }
+    record('Core mobile surfaces avoid document-level horizontal overflow', `${mobilePaths.length} routes`);
+
+    if (pageErrors.length > 0) {
+      throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
+    }
+    record('No uncaught browser page errors');
+
+    console.log(`\nProduct browser smoke passed: ${results.length} checks`);
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch((error) => {
+  console.error('[FAIL] Product browser smoke');
+  console.error(error);
+  process.exitCode = 1;
+});
