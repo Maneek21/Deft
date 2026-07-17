@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REMOTE_MCP_SCOPES, normalizeScopes } from '../src/lib/oauth-mcp.js';
+import { REMOTE_MCP_SCOPES, normalizeScopes, profileForScopes } from '../src/lib/oauth-mcp.js';
+import { isHttpsPublicUrl } from '../src/lib/public-url.js';
 import {
   HUMAN_READ_TOOLS,
   HUMAN_TOOL_SCOPES,
@@ -58,6 +59,16 @@ test('operational headless scopes are accepted without weakening default read gr
     'write:calendar',
     'write:workspace',
   ]);
+  assert.equal(profileForScopes(['read:workspace']), 'knowledge');
+  assert.equal(profileForScopes(['read:workspace', 'write:tasks']), 'task-helper');
+  assert.equal(profileForScopes(['read:workspace', 'write:calendar']), 'workspace-operator');
+  assert.equal(profileForScopes(['read:workspace', 'write:workspace']), 'workspace-operator');
+});
+
+test('hosted connector readiness requires a real HTTPS public URL', () => {
+  assert.equal(isHttpsPublicUrl('http://localhost:3301'), false);
+  assert.equal(isHttpsPublicUrl('http://127.0.0.1:3301'), false);
+  assert.equal(isHttpsPublicUrl('https://deft.example.com'), true);
 });
 
 test('every operational tool is registered, classified, and advertised once', () => {

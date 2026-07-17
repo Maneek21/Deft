@@ -19,6 +19,20 @@ type Preview = {
   profile: string;
 };
 
+const SCOPE_LABELS: Record<string, string> = {
+  'read:workspace': 'Workspace map, people, projects, receipts, and activity',
+  'read:wiki': 'Company, channel, and personal knowledge',
+  'read:tasks': 'Tasks, comments, progress, and workload',
+  'read:messages': 'Visible spaces, threads, unread work, and search',
+  'read:calendar': 'Native and subscribed calendar context',
+  'write:tasks': 'Create, update, transition, and comment on tasks',
+  'write:messages': 'Post messages into spaces and DMs you can access',
+  'write:wiki': 'Create and update wiki knowledge',
+  'write:calendar': 'Create, update, and cancel native calendar events',
+  'write:workspace': 'Manage notes, inbox, approvals, projects, and agent operations',
+  offline_access: 'Keep this connector signed in by allowing secure refresh-token rotation',
+};
+
 export default function OAuthAuthorizePage() {
   return (
     <Suspense>
@@ -32,6 +46,7 @@ function OAuthAuthorizeContent() {
   const searchParams = useSearchParams();
   const { user, loading } = useAuth();
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -65,7 +80,9 @@ function OAuthAuthorizeContent() {
         setError(body.error_description ?? body.error ?? `Authorization preview failed: ${res.status}`);
         return;
       }
-      setPreview(await res.json());
+      const nextPreview = await res.json() as Preview;
+      setPreview(nextPreview);
+      setSelectedScopes(nextPreview.scopes);
     })().catch((err) => {
       if (!cancelled) setError((err as Error).message);
     });
@@ -76,7 +93,10 @@ function OAuthAuthorizeContent() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.post('/api/oauth/authorize', authorizeParams);
+      const res = await api.post('/api/oauth/authorize', {
+        ...authorizeParams,
+        scope: selectedScopes.join(' '),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error_description ?? body.error ?? `Authorization failed: ${res.status}`);
@@ -104,11 +124,21 @@ function OAuthAuthorizeContent() {
     window.location.href = url.toString();
   }
 
-  const canWriteTasks = preview?.scopes.includes('write:tasks') ?? false;
-  const canWriteMessages = preview?.scopes.includes('write:messages') ?? false;
-  const canWriteWiki = preview?.scopes.includes('write:wiki') ?? false;
-  const canWriteCalendar = preview?.scopes.includes('write:calendar') ?? false;
-  const canWriteWorkspace = preview?.scopes.includes('write:workspace') ?? false;
+  function toggleScope(scope: string) {
+    setSelectedScopes((current) => current.includes(scope)
+      ? current.filter((item) => item !== scope)
+      : [...current, scope]);
+  }
+
+  const requestedReadScopes = preview?.scopes.filter((scope) => scope.startsWith('read:')) ?? [];
+  const requestedWriteScopes = preview?.scopes.filter((scope) => scope.startsWith('write:')) ?? [];
+  const requestedSessionScopes = preview?.scopes.filter((scope) => scope === 'offline_access') ?? [];
+  const canWriteTasks = selectedScopes.includes('write:tasks');
+  const canWriteMessages = selectedScopes.includes('write:messages');
+  const canWriteWiki = selectedScopes.includes('write:wiki');
+  const canWriteCalendar = selectedScopes.includes('write:calendar');
+  const canWriteWorkspace = selectedScopes.includes('write:workspace');
+  const hasResourceScope = selectedScopes.some((scope) => scope !== 'offline_access');
   const hasWriteAccess = canWriteTasks || canWriteMessages || canWriteWiki || canWriteCalendar || canWriteWorkspace;
   const accessLabel = hasWriteAccess ? 'Workspace helper access' : 'Knowledge access';
 
@@ -148,13 +178,50 @@ function OAuthAuthorizeContent() {
         {preview && (
           <>
             <section className="mt-6 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
-              <h2 className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>This app can read</h2>
-              <ul className="mt-3 space-y-2 text-[14px]" style={{ color: 'var(--text-primary)' }}>
-                <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Company wiki and memory</li>
-                <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Tasks and project context you can access</li>
-                <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Messages in spaces you can access</li>
-                <li className="flex gap-2"><Check size={16} style={{ color: 'var(--accent)' }} /> Calendar context available to your workspace</li>
-              </ul>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-[13px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Choose access</h2>
+                  <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>Turn off anything this connection does not need. You can revoke it later from Settings → Connections.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setSelectedScopes([...requestedReadScopes, ...requestedSessionScopes])} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>Read only</button>
+                  <button type="button" onClick={() => setSelectedScopes(preview.scopes)} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'white', background: 'var(--accent)' }}>Requested access</button>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Read</div>
+                  <div className="mt-2 space-y-2">
+                    {requestedReadScopes.map((scope) => (
+                      <label key={scope} className="flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                        <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
+                        <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>{scope}</strong><br />{SCOPE_LABELS[scope] ?? scope}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Write</div>
+                  {requestedWriteScopes.length > 0 ? (
+                    <div className="mt-2 space-y-2">
+                      {requestedWriteScopes.map((scope) => (
+                        <label key={scope} className="flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                          <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
+                          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>{scope}</strong><br />{SCOPE_LABELS[scope] ?? scope}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 rounded-md p-3 text-[11px]" style={{ color: 'var(--text-secondary)', background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>This app requested read-only access. No write permission will be granted.</p>
+                  )}
+                </div>
+              </div>
+              {requestedSessionScopes.map((scope) => (
+                <label key={scope} className="mt-4 flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
+                  <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
+                  <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>Stay connected</strong><br />{SCOPE_LABELS[scope]}</span>
+                </label>
+              ))}
             </section>
 
             <section className="mt-3 rounded-lg p-4" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)' }}>
@@ -202,7 +269,7 @@ function OAuthAuthorizeContent() {
             </section>
 
             <div className="mt-4 flex flex-wrap gap-1.5">
-              {preview.scopes.map((scope) => (
+              {selectedScopes.map((scope) => (
                 <span key={scope} className="rounded-md px-2 py-1 text-[11px]" style={{ background: 'var(--surface-container)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)' }}>
                   {scope}
                 </span>
@@ -213,7 +280,7 @@ function OAuthAuthorizeContent() {
               <button type="button" onClick={deny} className="h-11 rounded-md text-[14px] font-medium" style={{ border: '1px solid var(--border-default)', color: 'var(--text-primary)' }}>
                 Cancel
               </button>
-              <button type="button" disabled={busy} onClick={approve} className="h-11 rounded-md text-[14px] font-medium text-white disabled:opacity-60 inline-flex items-center justify-center gap-2" style={{ background: 'var(--accent)' }}>
+              <button type="button" disabled={busy || !hasResourceScope} onClick={approve} className="h-11 rounded-md text-[14px] font-medium text-white disabled:opacity-60 inline-flex items-center justify-center gap-2" style={{ background: 'var(--accent)' }}>
                 {busy && <Loader2 size={16} className="animate-spin" />}
                 Allow access
               </button>
