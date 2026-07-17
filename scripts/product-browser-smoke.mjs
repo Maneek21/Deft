@@ -84,7 +84,7 @@ async function main() {
     for (const [path, heading] of [
       ['/settings', 'Settings'],
       ['/settings/profile', 'Profile'],
-      ['/settings/mcp-access', 'Connect an AI app'],
+      ['/settings/mcp-access', 'Connect Deft to an AI app'],
     ]) {
       await settle(page, path);
       await page.getByRole('heading', { name: heading }).first().waitFor({ timeout: 10_000 });
