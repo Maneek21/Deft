@@ -97,6 +97,7 @@ async function cleanup() {
     await client.query(`DELETE FROM task_comments WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM task_activity WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM saved_views WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM agent_nudges WHERE task_id IN (SELECT id FROM tasks WHERE org_id = $1)`, [ORG_ID]);
     await client.query(`DELETE FROM tasks WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM projects WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM wiki_citations WHERE org_id = $1`, [ORG_ID]);
@@ -415,6 +416,7 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   assert.equal(protectedBody.resource, 'http://localhost:3301/api/mcp/v1');
   assert.ok(protectedBody.authorization_servers.includes('http://localhost:3301'));
   assert.ok(protectedBody.scopes_supported.includes('write:wiki'));
+  assert.equal(protectedBody.scopes_supported.includes('offline_access'), false);
 
   const authServer = await testApp.request('/.well-known/oauth-authorization-server');
   assert.equal(authServer.status, 200);
@@ -422,6 +424,7 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   assert.equal(authBody.registration_endpoint, 'http://localhost:3301/oauth/register');
   assert.equal(authBody.authorization_endpoint, 'http://localhost:3012/oauth/authorize');
   assert.ok(authBody.scopes_supported.includes('write:wiki'));
+  assert.ok(authBody.scopes_supported.includes('offline_access'));
 
   const client = await registerClient();
   assert.ok(client.client_id.startsWith('deft_dcr_'));
@@ -436,6 +439,15 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   const wikiClient = (await wikiClientRes.json()) as { client_id: string; scope: string };
   assert.ok(wikiClient.client_id.startsWith('deft_dcr_'));
   assert.equal(wikiClient.scope, 'read:workspace read:wiki write:wiki');
+
+  const refreshClientRes = await jsonPost('/oauth/register', {
+    client_name: `OAuth MCP Refresh Client ${TEST_ID}`,
+    redirect_uris: ['http://localhost:3999/callback'],
+    scope: 'read:workspace offline_access',
+  });
+  assert.equal(refreshClientRes.status, 201);
+  const refreshClient = (await refreshClientRes.json()) as { scope: string };
+  assert.equal(refreshClient.scope, 'read:workspace offline_access');
 });
 
 test('OAuth PKCE token exchange resolves to a scoped human MCP principal', async () => {

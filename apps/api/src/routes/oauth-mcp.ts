@@ -5,6 +5,7 @@ import { db } from '../lib/db.js';
 import { oauthClients, oauthGrants, oauthAccessTokens, oauthRefreshTokens, oauthAuditEvents } from '@deft/db/schema';
 import {
   OAuthMcpError,
+  REMOTE_MCP_AUTHORIZATION_SCOPES,
   REMOTE_MCP_SCOPES,
   auditOAuth,
   createAuthorizationCode,
@@ -87,7 +88,7 @@ oauthWellKnownRoutes.get('/oauth-authorization-server', (c) => {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: REMOTE_MCP_SCOPES,
+    scopes_supported: REMOTE_MCP_AUTHORIZATION_SCOPES,
   });
 });
 
@@ -194,7 +195,7 @@ oauthProtectedRoutes.get('/readiness', async (c) => {
     authorization_server_metadata: urls.authorizationServerMetadata,
     https_ready: isHttpsPublicUrl(),
     scopes: REMOTE_MCP_SCOPES,
-    profiles: ['knowledge', 'task-helper'],
+    profiles: ['knowledge', 'task-helper', 'workspace-operator'],
   });
 });
 

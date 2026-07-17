@@ -20,7 +20,6 @@ export function oauthIssuerUrl(): string {
   return apiPublicUrl();
 }
 
-export function isHttpsPublicUrl(): boolean {
-  const url = apiPublicUrl();
-  return url.startsWith('https://') || url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1');
+export function isHttpsPublicUrl(url = apiPublicUrl()): boolean {
+  return url.startsWith('https://');
 }

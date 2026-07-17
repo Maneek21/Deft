@@ -33,8 +33,16 @@ export const REMOTE_MCP_SCOPES = [
   ...REMOTE_MCP_WRITE_SCOPES,
 ] as const;
 
+// Authorization-only scope. It is advertised by the OAuth server, but not by
+// the MCP protected resource because it does not grant access to workspace data.
+export const REMOTE_MCP_AUTHORIZATION_SCOPES = [
+  ...REMOTE_MCP_SCOPES,
+  'offline_access',
+] as const;
+
 export type RemoteMcpScope = typeof REMOTE_MCP_SCOPES[number];
-export type ConnectorProfile = 'knowledge' | 'task-helper';
+type RemoteMcpAuthorizationScope = typeof REMOTE_MCP_AUTHORIZATION_SCOPES[number];
+export type ConnectorProfile = 'knowledge' | 'task-helper' | 'workspace-operator';
 
 export type OAuthAccessPrincipal = {
   kind: 'oauth';
@@ -70,12 +78,17 @@ export function randomToken(prefix: string): string {
 export function normalizeScopes(value: string | string[] | undefined | null): string[] {
   const raw = Array.isArray(value) ? value.join(' ') : value ?? '';
   const requested = raw.split(/\s+/).map((s) => s.trim()).filter(Boolean);
-  const allowed = new Set(REMOTE_MCP_SCOPES);
-  const scopes = requested.length > 0 ? requested.filter((s) => allowed.has(s as RemoteMcpScope)) : [...REMOTE_MCP_READ_SCOPES];
+  const allowed = new Set(REMOTE_MCP_AUTHORIZATION_SCOPES);
+  const scopes = requested.length > 0
+    ? requested.filter((s) => allowed.has(s as RemoteMcpAuthorizationScope))
+    : [...REMOTE_MCP_READ_SCOPES];
   return scopes.length > 0 ? Array.from(new Set(scopes)) : [...REMOTE_MCP_READ_SCOPES];
 }
 
 export function profileForScopes(scopes: string[]): ConnectorProfile {
+  if (scopes.includes('write:workspace') || scopes.includes('write:calendar')) {
+    return 'workspace-operator';
+  }
   return scopes.some((scope) => REMOTE_MCP_WRITE_SCOPES.includes(scope as typeof REMOTE_MCP_WRITE_SCOPES[number]))
     ? 'task-helper'
     : 'knowledge';
