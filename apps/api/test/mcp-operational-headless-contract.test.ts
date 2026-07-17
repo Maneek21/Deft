@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REMOTE_MCP_SCOPES, normalizeScopes, profileForScopes } from '../src/lib/oauth-mcp.js';
+import {
+  REMOTE_MCP_AUTHORIZATION_SCOPES,
+  REMOTE_MCP_READ_SCOPES,
+  REMOTE_MCP_SCOPES,
+  authorizationScopeSelection,
+  normalizeScopes,
+  profileForScopes,
+} from '../src/lib/oauth-mcp.js';
 import { isHttpsPublicUrl } from '../src/lib/public-url.js';
 import {
   HUMAN_READ_TOOLS,
@@ -63,6 +70,36 @@ test('operational headless scopes are accepted without weakening default read gr
   assert.equal(profileForScopes(['read:workspace', 'write:tasks']), 'task-helper');
   assert.equal(profileForScopes(['read:workspace', 'write:calendar']), 'workspace-operator');
   assert.equal(profileForScopes(['read:workspace', 'write:workspace']), 'workspace-operator');
+});
+
+test('scope-less OAuth clients get a read-safe default with explicit access choices', () => {
+  const omitted = authorizationScopeSelection(undefined, {});
+  assert.deepEqual(omitted.scopes, [...REMOTE_MCP_READ_SCOPES]);
+  assert.deepEqual(omitted.availableScopes, [...REMOTE_MCP_AUTHORIZATION_SCOPES]);
+  assert.equal(omitted.mode, 'deft-choice');
+
+  const legacyChatGpt = authorizationScopeSelection(
+    'read:workspace read:wiki read:tasks read:messages read:calendar',
+    { client_name: 'ChatGPT' },
+  );
+  assert.deepEqual(legacyChatGpt.scopes, [...REMOTE_MCP_READ_SCOPES]);
+  assert.deepEqual(legacyChatGpt.availableScopes, [...REMOTE_MCP_AUTHORIZATION_SCOPES]);
+  assert.equal(legacyChatGpt.mode, 'deft-choice');
+
+  const explicitReadOnly = authorizationScopeSelection(
+    'read:workspace read:wiki',
+    { scope: 'read:workspace read:wiki' },
+  );
+  assert.deepEqual(explicitReadOnly.scopes, ['read:workspace', 'read:wiki']);
+  assert.deepEqual(explicitReadOnly.availableScopes, ['read:workspace', 'read:wiki']);
+  assert.equal(explicitReadOnly.mode, 'client-requested');
+
+  const blockedEscalation = authorizationScopeSelection(
+    'read:workspace write:tasks',
+    { scope: 'read:workspace' },
+  );
+  assert.deepEqual(blockedEscalation.scopes, ['read:workspace']);
+  assert.deepEqual(blockedEscalation.availableScopes, ['read:workspace']);
 });
 
 test('hosted connector readiness requires a real HTTPS public URL', () => {

@@ -43,6 +43,7 @@ export const REMOTE_MCP_AUTHORIZATION_SCOPES = [
 export type RemoteMcpScope = typeof REMOTE_MCP_SCOPES[number];
 type RemoteMcpAuthorizationScope = typeof REMOTE_MCP_AUTHORIZATION_SCOPES[number];
 export type ConnectorProfile = 'knowledge' | 'task-helper' | 'workspace-operator';
+export type AuthorizationScopeSelectionMode = 'client-requested' | 'deft-choice';
 
 export type OAuthAccessPrincipal = {
   kind: 'oauth';
@@ -83,6 +84,29 @@ export function normalizeScopes(value: string | string[] | undefined | null): st
     ? requested.filter((s) => allowed.has(s as RemoteMcpAuthorizationScope))
     : [...REMOTE_MCP_READ_SCOPES];
   return scopes.length > 0 ? Array.from(new Set(scopes)) : [...REMOTE_MCP_READ_SCOPES];
+}
+
+export function authorizationScopeSelection(
+  requestedScope: string | string[] | undefined | null,
+  clientMetadata: Record<string, unknown> | null | undefined,
+) {
+  const registeredScope = typeof clientMetadata?.scope === 'string' && clientMetadata.scope.trim()
+    ? clientMetadata.scope
+    : null;
+  const clientOmittedScope = registeredScope === null;
+  const requestedScopes = normalizeScopes(requestedScope ?? registeredScope);
+  const registeredScopes = registeredScope ? normalizeScopes(registeredScope) : null;
+  const scopes = registeredScopes
+    ? requestedScopes.filter((scope) => registeredScopes.includes(scope))
+    : requestedScopes;
+
+  return {
+    scopes,
+    availableScopes: clientOmittedScope
+      ? [...REMOTE_MCP_AUTHORIZATION_SCOPES]
+      : scopes,
+    mode: (clientOmittedScope ? 'deft-choice' : 'client-requested') as AuthorizationScopeSelectionMode,
+  };
 }
 
 export function profileForScopes(scopes: string[]): ConnectorProfile {

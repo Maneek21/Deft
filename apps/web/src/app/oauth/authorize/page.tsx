@@ -16,6 +16,8 @@ type Preview = {
   };
   resource: string;
   scopes: string[];
+  available_scopes: string[];
+  scope_selection_mode: 'client-requested' | 'deft-choice';
   profile: string;
 };
 
@@ -130,9 +132,10 @@ function OAuthAuthorizeContent() {
       : [...current, scope]);
   }
 
-  const requestedReadScopes = preview?.scopes.filter((scope) => scope.startsWith('read:')) ?? [];
-  const requestedWriteScopes = preview?.scopes.filter((scope) => scope.startsWith('write:')) ?? [];
-  const requestedSessionScopes = preview?.scopes.filter((scope) => scope === 'offline_access') ?? [];
+  const availableScopes = preview?.available_scopes ?? preview?.scopes ?? [];
+  const availableReadScopes = availableScopes.filter((scope) => scope.startsWith('read:'));
+  const availableWriteScopes = availableScopes.filter((scope) => scope.startsWith('write:'));
+  const availableSessionScopes = availableScopes.filter((scope) => scope === 'offline_access');
   const canWriteTasks = selectedScopes.includes('write:tasks');
   const canWriteMessages = selectedScopes.includes('write:messages');
   const canWriteWiki = selectedScopes.includes('write:wiki');
@@ -184,15 +187,23 @@ function OAuthAuthorizeContent() {
                   <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>Turn off anything this connection does not need. You can revoke it later from Settings → Connections.</p>
                 </div>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => setSelectedScopes([...requestedReadScopes, ...requestedSessionScopes])} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>Read only</button>
-                  <button type="button" onClick={() => setSelectedScopes(preview.scopes)} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'white', background: 'var(--accent)' }}>Requested access</button>
+                  <button type="button" onClick={() => setSelectedScopes([...availableReadScopes, ...availableSessionScopes])} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-default)' }}>Read only</button>
+                  <button type="button" onClick={() => setSelectedScopes(availableScopes)} className="rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ color: 'white', background: 'var(--accent)' }}>
+                    {preview.scope_selection_mode === 'deft-choice' ? 'Full workspace' : 'Requested access'}
+                  </button>
                 </div>
               </div>
+              {preview.scope_selection_mode === 'deft-choice' && (
+                <div className="mt-4 rounded-md p-3 text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--accent) 7%, var(--surface-container-low))', border: '1px solid var(--border-default)' }}>
+                  <strong style={{ color: 'var(--text-primary)' }}>{preview.client.client_name} did not specify OAuth permissions.</strong>{' '}
+                  Deft started this connection in read-only mode. You can explicitly add write access below, but the AI app may still limit write actions based on its plan, workspace controls, or connection mode.
+                </div>
+              )}
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Read</div>
                   <div className="mt-2 space-y-2">
-                    {requestedReadScopes.map((scope) => (
+                    {availableReadScopes.map((scope) => (
                       <label key={scope} className="flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                         <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
                         <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>{scope}</strong><br />{SCOPE_LABELS[scope] ?? scope}</span>
@@ -202,9 +213,9 @@ function OAuthAuthorizeContent() {
                 </div>
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-tertiary)' }}>Write</div>
-                  {requestedWriteScopes.length > 0 ? (
+                  {availableWriteScopes.length > 0 ? (
                     <div className="mt-2 space-y-2">
-                      {requestedWriteScopes.map((scope) => (
+                      {availableWriteScopes.map((scope) => (
                         <label key={scope} className="flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                           <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
                           <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>{scope}</strong><br />{SCOPE_LABELS[scope] ?? scope}</span>
@@ -216,7 +227,7 @@ function OAuthAuthorizeContent() {
                   )}
                 </div>
               </div>
-              {requestedSessionScopes.map((scope) => (
+              {availableSessionScopes.map((scope) => (
                 <label key={scope} className="mt-4 flex cursor-pointer items-start gap-2 rounded-md p-2.5" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border-default)' }}>
                   <input type="checkbox" checked={selectedScopes.includes(scope)} onChange={() => toggleScope(scope)} className="mt-0.5" />
                   <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}><strong style={{ color: 'var(--text-primary)' }}>Stay connected</strong><br />{SCOPE_LABELS[scope]}</span>
