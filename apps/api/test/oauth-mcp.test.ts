@@ -448,6 +448,15 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   assert.equal(refreshClientRes.status, 201);
   const refreshClient = (await refreshClientRes.json()) as { scope: string };
   assert.equal(refreshClient.scope, 'read:workspace offline_access');
+
+  const scopeLessClientRes = await jsonPost('/oauth/register', {
+    client_name: `OAuth MCP Test Scope-less ${TEST_ID}`,
+    redirect_uris: ['http://localhost:3999/callback'],
+  });
+  assert.equal(scopeLessClientRes.status, 201);
+  const scopeLessClient = (await scopeLessClientRes.json()) as Record<string, unknown>;
+  assert.ok(String(scopeLessClient.client_id).startsWith('deft_dcr_'));
+  assert.equal(Object.hasOwn(scopeLessClient, 'scope'), false);
 });
 
 test('OAuth PKCE token exchange resolves to a scoped human MCP principal', async () => {

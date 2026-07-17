@@ -7,6 +7,7 @@ import {
   OAuthMcpError,
   REMOTE_MCP_AUTHORIZATION_SCOPES,
   REMOTE_MCP_SCOPES,
+  authorizationScopeSelection,
   auditOAuth,
   createAuthorizationCode,
   exchangeAuthorizationCode,
@@ -132,7 +133,9 @@ oauthPublicRoutes.post('/register', async (c) => {
       grant_types: grantTypes,
       response_types: responseTypes,
       token_endpoint_auth_method: authMethod,
-      scope: normalizeScopes(parsed.data.scope).join(' '),
+      ...(parsed.data.scope?.trim()
+        ? { scope: normalizeScopes(parsed.data.scope).join(' ') }
+        : {}),
     }, 201);
   } catch (err) {
     return oauthError(c, err);
@@ -214,7 +217,10 @@ oauthProtectedRoutes.get('/authorize/preview', async (c) => {
       codeChallengeMethod: parsed.data.code_challenge_method,
       resource: parsed.data.resource,
     });
-    const scopes = normalizeScopes(parsed.data.scope);
+    const selection = authorizationScopeSelection(
+      parsed.data.scope,
+      client.metadata as Record<string, unknown>,
+    );
     return c.json({
       client: {
         client_id: client.client_id,
@@ -223,8 +229,10 @@ oauthProtectedRoutes.get('/authorize/preview', async (c) => {
         logo_uri: client.logo_uri,
       },
       resource,
-      scopes,
-      profile: profileForScopes(scopes),
+      scopes: selection.scopes,
+      available_scopes: selection.availableScopes,
+      scope_selection_mode: selection.mode,
+      profile: profileForScopes(selection.scopes),
     });
   } catch (err) {
     return oauthError(c, err);
@@ -247,7 +255,15 @@ oauthProtectedRoutes.post('/authorize', async (c) => {
       codeChallengeMethod: parsed.data.code_challenge_method,
       resource: parsed.data.resource,
     });
-    const scopes = normalizeScopes(parsed.data.scope);
+    const requestedScopes = normalizeScopes(parsed.data.scope);
+    const selection = authorizationScopeSelection(
+      parsed.data.scope,
+      client.metadata as Record<string, unknown>,
+    );
+    if (requestedScopes.some((scope) => !selection.scopes.includes(scope))) {
+      throw new OAuthMcpError(400, 'invalid_scope', 'Requested scope exceeds this client registration');
+    }
+    const scopes = selection.scopes;
     const { code } = await createAuthorizationCode({
       orgId: user.org_id,
       userId: user.id,

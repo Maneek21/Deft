@@ -99,8 +99,8 @@ const CLIENT_OPTIONS: ClientOption[] = [
   {
     id: 'remote-web',
     name: 'ChatGPT / hosted AI apps',
-    fit: 'Remote OAuth app',
-    detail: 'Create a custom app in ChatGPT or another hosted client using Deft\'s public MCP URL and OAuth discovery.',
+    fit: 'Plan-dependent access',
+    detail: 'ChatGPT Pro currently supports read/fetch. Full read/write MCP requires an eligible Business or Enterprise/Edu workspace using Developer Mode.',
     setupKind: 'oauth',
     defaultPreset: 'read',
     tokenName: 'Remote AI app',
@@ -585,8 +585,8 @@ export default function McpAccessPage() {
     : [
         'In ChatGPT web, enable developer mode for an eligible account, then open Settings -> Apps -> Create.',
         'Use the Connector URL below and choose OAuth authentication. Deft publishes the discovery metadata automatically.',
-        'Click Scan Tools, complete the Deft authorization screen, and choose the exact read and write permissions.',
-        'Create the draft app, enable it in a new chat, and confirm a read before trying a write action.',
+        'Click Scan Tools and complete the Deft authorization screen. Deft starts scope-less connections read-only; add write permissions only when your ChatGPT plan supports full MCP.',
+        'Create the draft app, enable it in a new chat, and confirm a read. On Business or Enterprise/Edu, test a write action and approve ChatGPT\'s confirmation prompt.',
       ];
   const claudeConnectorFields = [
     {
