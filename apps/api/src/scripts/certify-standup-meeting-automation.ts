@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import {
   automationRuns,
@@ -83,7 +84,7 @@ async function main() {
     created_at: new Date(now.getTime() - 10 * 60_000),
   });
 
-  const certSuffix = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const certSuffix = randomUUID().replaceAll('-', '').slice(0, 6).toUpperCase();
   const [project] = await db.insert(projects).values({
     org_id: org.id,
     name: `Automation certification ${certSuffix}`,
