@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
+import { calendarMemberDisplayName, calendarMemberMatches } from '@/lib/calendar-members';
 import { X, Users } from 'lucide-react';
 import { PersonAvatar } from '../person-avatar';
 
-type OrgMember = { id: string; name: string; email: string; avatar_url: string | null };
+type OrgMember = { id: string; name: string | null; email: string | null; avatar_url: string | null };
 
 export function CreateEventModal({
   onClose, onCreated, defaultDate, defaultStart, defaultEnd,
@@ -43,8 +44,7 @@ export function CreateEventModal({
 
   const filteredMembers = allMembers.filter(m =>
     !attendees.some(a => a.id === m.id) &&
-    (m.name.toLowerCase().includes(attendeeSearch.toLowerCase()) ||
-     m.email.toLowerCase().includes(attendeeSearch.toLowerCase()))
+    calendarMemberMatches(m, attendeeSearch)
   );
 
   useEffect(() => {
@@ -71,7 +71,10 @@ export function CreateEventModal({
         description: description.trim() || undefined,
         location: location.trim() || undefined,
         metadata: attendees.length > 0 ? {
-          attendees: attendees.map(a => ({ name: a.name, email: a.email })),
+          attendees: attendees.map(a => ({
+            name: calendarMemberDisplayName(a),
+            email: a.email ?? '',
+          })),
         } : undefined,
       });
 
@@ -170,7 +173,7 @@ export function CreateEventModal({
                 {attendees.map(a => (
                   <span key={a.id} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px]"
                     style={{ background: 'var(--surface-container-highest, var(--bg-surface))', color: 'var(--text-primary)', border: '1px solid var(--border-default)' }}>
-                    {a.name}
+                    {calendarMemberDisplayName(a)}
                     <button type="button" onClick={() => setAttendees(prev => prev.filter(x => x.id !== a.id))}
                       className="hover:opacity-70">
                       <X size={10} />
@@ -200,8 +203,8 @@ export function CreateEventModal({
                         style={{ color: 'var(--text-primary)' }}
                         onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover-tint, rgba(255,255,255,0.05))')}
                         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                        <PersonAvatar name={m.name} avatarUrl={m.avatar_url} size={20} fontSize={9} />
-                        <span>{m.name}</span>
+                        <PersonAvatar name={calendarMemberDisplayName(m)} avatarUrl={m.avatar_url} size={20} fontSize={9} />
+                        <span>{calendarMemberDisplayName(m)}</span>
                         <span className="ml-auto" style={{ color: 'var(--text-tertiary)' }}>{m.email}</span>
                       </button>
                     ))}
