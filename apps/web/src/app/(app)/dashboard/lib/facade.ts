@@ -40,7 +40,12 @@ export type Activity = {
   task_prefix: string | null; new_value: string | null; created_at: string;
 };
 
-export type Standup = { summary: string; date: string } | null;
+export type Standup = {
+  summary: string;
+  date: string;
+  generator?: 'agent' | 'fallback' | 'native';
+  model?: string | null;
+} | null;
 
 export type HealthCard = {
   userId: string; name: string; status: 'green' | 'yellow' | 'red';

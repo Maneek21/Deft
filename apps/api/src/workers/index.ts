@@ -4,9 +4,9 @@ import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
 const CRON_DELAYS: Record<string, number> = {
-  'standup-generate': 3600000,    // 1 hour
+  'standup-generate': 5 * 60_000, // timezone-aware scan; durable run key prevents duplicates
   'nudge-check': 3600000,         // 1 hour
-  'meeting-prep-check': 900000,   // 15 min
+  'meeting-prep-check': 5 * 60_000, // overlapping 30-minute lookahead
   'people-graph': 86400000,       // 24 hours
   'manager-pulse': 86400000,      // 24 hours
   'burnout-detect': 86400000,     // 24 hours

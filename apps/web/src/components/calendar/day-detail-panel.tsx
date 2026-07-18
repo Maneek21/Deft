@@ -1,7 +1,8 @@
 'use client';
 
-import { CalEvent, DayBucket, ITEM_COLORS, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
-import { formatFullDateLong, formatEventTime } from '@/lib/time';
+import { CalBrief, CalEvent, DayBucket, ITEM_COLORS, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
+import { formatCalendarDateLong, formatEventTime } from '@/lib/time';
+import { plainAutomationText } from '@/components/automation-text';
 import { X, ExternalLink, MapPin, Users, CheckCircle2, Circle, FileText, Bell } from 'lucide-react';
 import Link from 'next/link';
 
@@ -18,12 +19,10 @@ export function DayDetailPanel({
   dateKey: string;
   bucket: DayBucket | null;
   onClose: () => void;
-  briefs?: Map<string, string>;
+  briefs?: Map<string, CalBrief>;
   onEventClick?: (event: CalEvent) => void;
 }) {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  const dateLabel = formatFullDateLong(date);
+  const dateLabel = formatCalendarDateLong(dateKey);
   const events = bucket?.events || [];
   const tasks = bucket?.tasks || [];
   const notes = bucket?.notes || [];
@@ -80,7 +79,8 @@ export function DayDetailPanel({
               {events.map((e) => {
                 const startTime = formatEventTime(e.metadata?.start || e.timestamp);
                 const endTime = e.metadata?.end ? formatEventTime(e.metadata.end) : null;
-                const briefText = briefs?.get(e.id);
+                const brief = briefs?.get(e.id);
+                const briefText = brief?.brief_text;
                 const eventColor = getEventSourceColor(e.source);
                 const attendeeCount = e.metadata?.attendees?.length || 0;
 
@@ -146,8 +146,11 @@ export function DayDetailPanel({
                         <div className="mb-1 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider"
                           style={{ color: 'var(--accent)' }}>
                           <FileText size={9} /> Meeting prep
+                          <span className="normal-case tracking-normal" style={{ color: 'var(--text-tertiary)' }}>
+                            {brief?.generator === 'fallback' ? 'Basic summary' : 'AI synthesis'}
+                          </span>
                         </div>
-                        {briefText.slice(0, 200)}{briefText.length > 200 ? '...' : ''}
+                        {plainAutomationText(briefText).slice(0, 200)}{plainAutomationText(briefText).length > 200 ? '...' : ''}
                       </div>
                     )}
                   </div>

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { CalEvent, DayBucket, HOURS, ITEM_COLORS, formatHourLabel, toDateKey, getEventSourceColor } from '@/lib/calendar';
-import { formatEventTime } from '@/lib/time';
+import { dateKeyInUserTimezone, formatEventTime, timePartsInUserTimezone } from '@/lib/time';
 import { MapPin, ExternalLink, CheckCircle2, Circle } from 'lucide-react';
 import Link from 'next/link';
 
@@ -22,7 +22,7 @@ export function DayView({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const now = new Date();
-  const isToday = anchor.toDateString() === now.toDateString();
+  const isToday = toDateKey(anchor) === dateKeyInUserTimezone(now);
   const dateKey = toDateKey(anchor);
 
   useEffect(() => {
@@ -43,7 +43,8 @@ export function DayView({
       } else {
         const start = new Date(e.metadata.start);
         const end = e.metadata.end ? new Date(e.metadata.end) : new Date(start.getTime() + 3600000);
-        const startMin = start.getHours() * 60 + start.getMinutes();
+        const startParts = timePartsInUserTimezone(e.metadata.start);
+        const startMin = startParts.hour * 60 + startParts.minute;
         const durationMin = Math.max(30, (end.getTime() - start.getTime()) / 60000);
         timedEvents.push({ event: e, startMin, durationMin });
       }
@@ -124,7 +125,10 @@ export function DayView({
 
           {isToday && (
             <div className="absolute w-full z-10 pointer-events-none"
-              style={{ top: (now.getHours() * 60 + now.getMinutes()) * (ROW_HEIGHT / 60) }}>
+              style={{ top: (() => {
+                const parts = timePartsInUserTimezone(now);
+                return (parts.hour * 60 + parts.minute) * (ROW_HEIGHT / 60);
+              })() }}>
               <div className="flex items-center">
                 <div className="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1" />
                 <div className="flex-1 h-px bg-red-500" />

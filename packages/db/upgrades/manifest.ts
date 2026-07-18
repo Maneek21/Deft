@@ -36,7 +36,13 @@ export const upgradeManifest = {
       'teams_org_handle_unique',
     ],
   },
-  migrations: [] satisfies UpgradeMigration[],
+  migrations: [
+    {
+      version: '0.2.0-preview.2',
+      file: '0.2.0-preview.2-automation-runs.sql',
+      description: 'Add durable automation runs and meeting brief idempotency',
+    },
+  ] satisfies UpgradeMigration[],
 } as const;
 
 export type UpgradeManifest = typeof upgradeManifest;

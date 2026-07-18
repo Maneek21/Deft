@@ -1,5 +1,7 @@
 // ═══ Shared Calendar Types & Helpers ═══
 
+import { dateKeyInUserTimezone } from '@/lib/time';
+
 export type CalTask = {
   id: string; number: number; title: string; status: string; priority: string;
   due_date: string; project_prefix: string; project_color: string | null;
@@ -20,7 +22,13 @@ export type CalendarData = { tasks: CalTask[]; events: CalEvent[]; notes: CalNot
 
 export type CalendarView = 'month' | 'week' | 'day';
 
-export type CalBrief = { id: string; event_id: string; brief_text: string; created_at: string };
+export type CalBrief = {
+  id: string;
+  event_id: string;
+  brief_text: string;
+  created_at: string;
+  generator?: 'agent' | 'fallback' | 'native' | null;
+};
 
 // ═══ Constants ═══
 
@@ -81,13 +89,13 @@ export function bucketByDay(data: CalendarData): Map<string, DayBucket> {
     ensure(toDateKey(new Date(t.due_date))).tasks.push(t);
   }
   for (const e of data.events) {
-    ensure(toDateKey(new Date(e.timestamp))).events.push(e);
+    ensure(dateKeyInUserTimezone(e.timestamp)).events.push(e);
   }
   for (const n of data.notes) {
-    ensure(toDateKey(new Date(n.created_at))).notes.push(n);
+    ensure(dateKeyInUserTimezone(n.created_at)).notes.push(n);
   }
   for (const r of (data.reminders || [])) {
-    ensure(toDateKey(new Date(r.remind_at))).reminders.push(r);
+    ensure(dateKeyInUserTimezone(r.remind_at)).reminders.push(r);
   }
   return buckets;
 }

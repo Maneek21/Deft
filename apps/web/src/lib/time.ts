@@ -25,6 +25,42 @@ function parseDate(iso: string): Date {
   return new Date(ensureUTC(iso));
 }
 
+function partsFor(date: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    timeZone: userTimezone,
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return {
+    year: value('year'), month: value('month'), day: value('day'),
+    hour: value('hour'), minute: value('minute'),
+  };
+}
+
+/** Calendar-day key for an instant in the signed-in user's timezone. */
+export function dateKeyInUserTimezone(value: string | Date): string {
+  const date = typeof value === 'string' ? parseDate(value) : value;
+  const { year, month, day } = partsFor(date);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** Clock position for an instant in the signed-in user's timezone. */
+export function timePartsInUserTimezone(value: string | Date): { hour: number; minute: number } {
+  const date = typeof value === 'string' ? parseDate(value) : value;
+  const { hour, minute } = partsFor(date);
+  return { hour, minute };
+}
+
+/** Long label for a date-only calendar key, without timezone rollover. */
+export function formatCalendarDateLong(dateKey: string): string {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+  }).format(date);
+}
+
 // "2:30 PM"
 export function formatMessageTime(iso: string): string {
   return new Intl.DateTimeFormat('en-US', {
@@ -153,7 +189,7 @@ export function isSameDay(iso1: string, iso2: string): boolean {
     year: 'numeric', month: '2-digit', day: '2-digit',
     timeZone: userTimezone,
   });
-  return fmt.format(new Date(iso1)) === fmt.format(new Date(iso2));
+  return fmt.format(parseDate(iso1)) === fmt.format(parseDate(iso2));
 }
 
 // Format a Date object as "h:mm AM/PM" in user timezone (for calendar events etc.)

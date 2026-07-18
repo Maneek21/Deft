@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, and, between, desc, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { tasks, events, notes, projects, meetingBriefs, reminders } from '@deft/db/schema';
+import { tasks, events, notes, projects, meetingBriefs, reminders, automationRuns } from '@deft/db/schema';
 import { getOrgTimezone, getDayBoundaries } from '../lib/task-dates.js';
 
 export const calendarRoutes = new Hono();
@@ -136,7 +136,9 @@ calendarRoutes.get('/briefs', async (c) => {
     event_id: meetingBriefs.event_id,
     brief_text: meetingBriefs.brief_text,
     created_at: meetingBriefs.created_at,
+    generator: automationRuns.generator,
   }).from(meetingBriefs)
+    .leftJoin(automationRuns, eq(automationRuns.result_entity_id, meetingBriefs.id))
     .where(and(
       eq(meetingBriefs.user_id, user.id),
       inArray(meetingBriefs.event_id, eventIds),

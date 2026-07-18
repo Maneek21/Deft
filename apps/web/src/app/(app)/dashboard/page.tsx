@@ -635,6 +635,11 @@ function DashboardBody() {
                     {formatMessageTime(core.standup.date)}
                   </span>
                 )}
+                {core?.standup && (
+                  <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                    {core.standup.generator === 'fallback' ? 'Basic activity summary' : 'AI synthesis'}
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => setStandupOpen(false)}

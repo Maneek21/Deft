@@ -4,6 +4,7 @@ import { db } from '../lib/db.js';
 import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, taskActivity, notifications, events, standups, orgs, peopleExpertise, peopleInteractions, peoplePatterns, agentActions, agentEmployees, wikiPages } from '@deft/db/schema';
 import { getIO } from '../socket.js';
 import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
+import { generateDailyStandup } from '../lib/standup-automation.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -298,10 +299,10 @@ dashboardRoutes.get('/', async (c) => {
       .limit(5);
 
     // 9. Today's standup
-    let standup: { summary: string; date: string } | null = null;
+    let standup: { summary: string; date: string; generator?: string; model?: string | null } | null = null;
     try {
       const [todayStandup] = await db
-        .select({ summary: standups.summary, date: standups.date })
+        .select({ summary: standups.summary, date: standups.date, raw_data: standups.raw_data })
         .from(standups)
         .where(
           and(
@@ -314,9 +315,12 @@ dashboardRoutes.get('/', async (c) => {
         .limit(1);
 
       if (todayStandup) {
+        const rawData = todayStandup.raw_data as Record<string, unknown> | null;
         standup = {
           summary: todayStandup.summary,
           date: todayStandup.date.toISOString(),
+          generator: typeof rawData?.generator === 'string' ? rawData.generator : undefined,
+          model: typeof rawData?.model === 'string' ? rawData.model : null,
         };
       }
     } catch {}
@@ -415,6 +419,30 @@ dashboardRoutes.get('/', async (c) => {
 dashboardRoutes.post('/standup', async (c) => {
   try {
     const user = c.get('user');
+    const result = await generateDailyStandup({
+      orgId: user.org_id,
+      requestedByUserId: user.id,
+    });
+    if (!result.standup) {
+      return c.json({
+        error: 'Standup generation is already in progress',
+        code: 'AUTOMATION_IN_PROGRESS',
+      }, 409);
+    }
+    const runRawData = result.standup.raw_data as Record<string, unknown> | null;
+    return c.json({
+      standup: {
+        summary: result.standup.summary,
+        date: result.standup.date.toISOString(),
+        generator: runRawData?.generator ?? result.run?.generator ?? 'fallback',
+        model: runRawData?.model ?? null,
+      },
+      already_existed: result.alreadyExisted,
+    });
+
+    // Kept in a local function for one compatibility cycle while the shared
+    // automation service is certified. It is deliberately not invoked.
+    async function legacyStandupImplementation() {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86400000);
@@ -643,6 +671,8 @@ dashboardRoutes.post('/standup', async (c) => {
       standup: { summary, date: now.toISOString(), model: model || null },
       already_existed: false,
     });
+    }
+    void legacyStandupImplementation;
   } catch (err) {
     console.error('[standup] unexpected error:', err);
     return c.json({ error: 'Failed to generate standup', code: 'INTERNAL_ERROR' }, 500);

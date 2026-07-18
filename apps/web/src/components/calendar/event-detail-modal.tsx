@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { CalEvent, getEventSourceColor, getEventSourceLabel } from '@/lib/calendar';
 import { formatEventTime, formatFullDateLong } from '@/lib/time';
+import { AutomationText } from '@/components/automation-text';
 import { api } from '@/lib/api';
 import {
   X, MapPin, ExternalLink, Users, Video, FileText,
@@ -18,10 +19,11 @@ const RESPONSE_COLORS: Record<string, string> = {
 };
 
 export function EventDetailModal({
-  event, briefText, onClose, onDeleted, onUpdated,
+  event, briefText, briefGenerator, onClose, onDeleted, onUpdated,
 }: {
   event: CalEvent;
   briefText?: string;
+  briefGenerator?: 'agent' | 'fallback' | 'native' | null;
   onClose: () => void;
   onDeleted?: () => void;
   onUpdated?: () => void;
@@ -167,11 +169,11 @@ export function EventDetailModal({
                 <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--accent)' }}>
                   Meeting Prep
                 </span>
+                <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                  {briefGenerator === 'fallback' ? 'Basic summary' : 'AI synthesis'}
+                </span>
               </div>
-              <p className="text-[11px] leading-relaxed whitespace-pre-wrap"
-                style={{ color: 'var(--text-secondary)' }}>
-                {briefText}
-              </p>
+              <AutomationText text={briefText} />
             </div>
           )}
 

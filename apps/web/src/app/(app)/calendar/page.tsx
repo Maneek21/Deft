@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import {
-  CalendarView, CalendarData, CalEvent, DayBucket,
+  CalendarView, CalendarData, CalBrief, CalEvent, DayBucket,
   bucketByDay, getDateRangeForView, toDateKey,
 } from '@/lib/calendar';
 import { CalendarHeader } from '@/components/calendar/calendar-header';
@@ -53,7 +53,7 @@ export default function CalendarPage() {
   const [toast, setToast] = useState<string | null>(null);
 
   // Feature 3: Briefs
-  const [briefs, setBriefs] = useState<Map<string, string>>(new Map());
+  const [briefs, setBriefs] = useState<Map<string, CalBrief>>(new Map());
 
   // Feature 4: Create event modal
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -103,8 +103,8 @@ export default function CalendarPage() {
     api.get(`/api/calendar/briefs?event_ids=${eventIds}`).then(async (res) => {
       if (res.ok) {
         const data = await res.json();
-        const map = new Map<string, string>();
-        for (const b of data.briefs) map.set(b.event_id, b.brief_text);
+        const map = new Map<string, CalBrief>();
+        for (const b of data.briefs as CalBrief[]) map.set(b.event_id, b);
         setBriefs(map);
       }
     }).catch(() => {});
@@ -115,8 +115,14 @@ export default function CalendarPage() {
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
-    const handler = (data: { event_id: string; brief_text: string }) => {
-      setBriefs((prev) => new Map(prev).set(data.event_id, data.brief_text));
+    const handler = (data: { event_id: string; brief_text: string; generator?: CalBrief['generator'] }) => {
+      setBriefs((prev) => new Map(prev).set(data.event_id, {
+        id: data.event_id,
+        event_id: data.event_id,
+        brief_text: data.brief_text,
+        created_at: new Date().toISOString(),
+        generator: data.generator,
+      }));
     };
     socket.on('meeting-brief:new', handler);
     return () => { socket.off('meeting-brief:new', handler); };
@@ -350,7 +356,8 @@ export default function CalendarPage() {
       {selectedEvent && (
         <EventDetailModal
           event={selectedEvent}
-          briefText={briefs.get(selectedEvent.id)}
+          briefText={briefs.get(selectedEvent.id)?.brief_text}
+          briefGenerator={briefs.get(selectedEvent.id)?.generator}
           onClose={() => setSelectedEvent(null)}
           onDeleted={handleEventDeleted}
           onUpdated={handleEventUpdated}
