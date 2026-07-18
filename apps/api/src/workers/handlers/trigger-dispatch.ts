@@ -43,7 +43,6 @@ type DispatchJobData =
  * hour-of-day. Keep the map tiny — Phase 8.7 v1 has two cron kinds.
  */
 const CRON_HOUR_UTC: Record<string, number> = {
-  'cron:standup': 9,
   'cron:nightly-review': 21,
 };
 
@@ -96,9 +95,7 @@ export async function handleTriggerDispatch(job: JobData): Promise<void> {
     await fanOutTrigger({
       triggerKind: kind,
       context: { fired_at: now.toISOString() },
-      goal: kind === 'cron:standup'
-        ? 'Generate a standup summary from yesterday\'s activity and post it in your default space.'
-        : 'Compose a nightly review of today\'s activity and post it in your default space.',
+      goal: 'Compose a nightly review of today\'s activity and post it in your default space.',
     });
   }
 }

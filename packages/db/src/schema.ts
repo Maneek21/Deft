@@ -963,6 +963,32 @@ export const workflowRuns = pgTable('workflow_runs', {
   executed_at: timestamp('executed_at').defaultNow().notNull(),
 });
 
+// Durable orchestration ledger for scheduled product automations. Code owns
+// scheduling, permissions, retries, and delivery; agents may own synthesis.
+export const automationRuns = pgTable('automation_runs', {
+  ...id(),
+  ...orgId(),
+  kind: text('kind').notNull(), // 'standup' | 'meeting_prep'
+  subject_id: text('subject_id'), // event id, local date, or another stable subject
+  user_id: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+  agent_employee_id: text('agent_employee_id'),
+  idempotency_key: text('idempotency_key').notNull(),
+  scheduled_for: timestamp('scheduled_for').notNull(),
+  status: text('status').default('scheduled').notNull(),
+  generator: text('generator').default('native').notNull(), // native | agent | fallback
+  context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
+  output: jsonb('output').$type<Record<string, unknown>>(),
+  result_entity_id: text('result_entity_id'),
+  error: text('error'),
+  started_at: timestamp('started_at'),
+  completed_at: timestamp('completed_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('automation_runs_idempotency_unique').on(t.org_id, t.idempotency_key),
+  index('automation_runs_org_kind_status_idx').on(t.org_id, t.kind, t.status),
+  index('automation_runs_scheduled_idx').on(t.scheduled_for),
+]);
+
 // ═══ ONBOARDING STATE ═══
 export const onboardingState = pgTable('onboarding_state', {
   ...id(),
@@ -1106,7 +1132,9 @@ export const meetingBriefs = pgTable('meeting_briefs', {
   event_id: text('event_id').notNull().references(() => events.id),
   brief_text: text('brief_text').notNull(),
   ...timestamps(),
-});
+}, (t) => [
+  uniqueIndex('meeting_briefs_event_user_unique').on(t.event_id, t.user_id),
+]);
 
 // ═══ PEOPLE GRAPH: INTERACTIONS ═══
 export const peopleInteractions = pgTable('people_interactions', {

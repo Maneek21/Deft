@@ -6,13 +6,22 @@ import { events } from '@deft/db/schema';
 
 export const eventRoutes = new Hono();
 
+const attendeeSchema = z.object({
+  email: z.string().trim().email(),
+  displayName: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+});
+
 // Schema for creating a native calendar event
-const createEventSchema = z.object({
+export const createEventSchema = z.object({
   title: z.string().trim().min(1, 'Title is required'),
   start: z.string(),
   end: z.string(),
   description: z.string().optional(),
   location: z.string().optional(),
+  metadata: z.object({
+    attendees: z.array(attendeeSchema).max(100).optional(),
+  }).optional(),
 });
 
 // POST / — create a native calendar event
@@ -26,7 +35,7 @@ eventRoutes.post('/', async (c) => {
     return c.json({ error: firstError || 'Validation error', code: 'VALIDATION_ERROR' }, 400);
   }
 
-  const { title, start, end, description, location } = parsed.data;
+  const { title, start, end, description, location, metadata } = parsed.data;
 
   const startDate = new Date(start);
   const endDate = new Date(end);
@@ -53,7 +62,10 @@ eventRoutes.post('/', async (c) => {
       start: startDate.toISOString(),
       end: endDate.toISOString(),
       location: location || null,
-      attendees: [],
+      attendees: (metadata?.attendees ?? []).map((attendee) => ({
+        email: attendee.email,
+        displayName: attendee.displayName ?? attendee.name ?? attendee.email.split('@')[0],
+      })),
       hangoutLink: null,
       status: 'confirmed',
       allDay: false,
@@ -94,6 +106,16 @@ eventRoutes.patch('/:id', async (c) => {
   }
   if (body.location !== undefined) {
     metaUpdates.location = body.location || null;
+  }
+  if (body.metadata?.attendees !== undefined) {
+    const parsedAttendees = z.array(attendeeSchema).max(100).safeParse(body.metadata.attendees);
+    if (!parsedAttendees.success) {
+      return c.json({ error: 'Invalid attendees', code: 'VALIDATION_ERROR' }, 400);
+    }
+    metaUpdates.attendees = parsedAttendees.data.map((attendee) => ({
+      email: attendee.email,
+      displayName: attendee.displayName ?? attendee.name ?? attendee.email.split('@')[0],
+    }));
   }
 
   updates.metadata = metaUpdates;

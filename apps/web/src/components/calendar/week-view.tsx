@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { CalEvent, DayBucket, buildWeekDates, toDateKey, HOURS, ITEM_COLORS, formatHourLabel, getEventSourceColor } from '@/lib/calendar';
+import { dateKeyInUserTimezone, timePartsInUserTimezone } from '@/lib/time';
 
 const ROW_HEIGHT = 60;
 const ALL_DAY_MIN = 32;
@@ -20,7 +21,7 @@ export function WeekView({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const week = buildWeekDates(anchor);
-  const today = toDateKey(new Date());
+  const today = dateKeyInUserTimezone(new Date());
   const now = new Date();
 
   useEffect(() => {
@@ -43,7 +44,8 @@ export function WeekView({
         } else if (e.metadata?.start) {
           const start = new Date(e.metadata.start);
           const end = e.metadata.end ? new Date(e.metadata.end) : new Date(start.getTime() + 3600000);
-          const startMin = start.getHours() * 60 + start.getMinutes();
+          const startParts = timePartsInUserTimezone(e.metadata.start);
+          const startMin = startParts.hour * 60 + startParts.minute;
           const durationMin = Math.max(30, (end.getTime() - start.getTime()) / 60000);
           timed.push({ id: e.id, title: e.title, startMin, durationMin, color: eventColor, event: e });
         } else {
@@ -141,7 +143,10 @@ export function WeekView({
 
               {isToday && (
                 <div className="absolute w-full z-10 pointer-events-none"
-                  style={{ top: (now.getHours() * 60 + now.getMinutes()) * (ROW_HEIGHT / 60) }}>
+                  style={{ top: (() => {
+                    const parts = timePartsInUserTimezone(now);
+                    return (parts.hour * 60 + parts.minute) * (ROW_HEIGHT / 60);
+                  })() }}>
                   <div className="flex items-center">
                     <div className="w-2 h-2 rounded-full bg-red-500 -ml-1" />
                     <div className="flex-1 h-px bg-red-500" />

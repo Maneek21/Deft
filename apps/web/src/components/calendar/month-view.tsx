@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { CalEvent, CalTask, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS, getEventSourceColor } from '@/lib/calendar';
+import { CalBrief, CalEvent, CalTask, DayBucket, toDateKey, buildMonthGrid, CAL_DAYS, ITEM_COLORS, getEventSourceColor } from '@/lib/calendar';
 import { CalendarItem } from './calendar-item';
 import { TaskCardUnified } from '@/components/task-card-unified';
+import { dateKeyInUserTimezone, formatEventTime } from '@/lib/time';
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors,
   useDroppable, useDraggable,
@@ -21,12 +22,12 @@ export function MonthView({
   selectedDay: string | null;
   onSelectDay: (dateKey: string) => void;
   onDrillDown: (dateKey: string) => void;
-  briefs?: Map<string, string>;
+  briefs?: Map<string, CalBrief>;
   onTaskReschedule?: (taskId: string, newDateKey: string) => void;
   onEventClick?: (event: CalEvent) => void;
 }) {
   const grid = buildMonthGrid(anchor);
-  const today = toDateKey(new Date());
+  const today = dateKeyInUserTimezone(new Date());
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   // DnD setup
@@ -208,18 +209,18 @@ function DraggableTask({ id, children }: { id: string; children: React.ReactNode
 
 type FlatItem = { id: string; type: 'event' | 'task' | 'note' | 'reminder'; title: string; time?: string; hasBrief?: boolean; color?: string; event?: CalEvent; task?: CalTask };
 
-function getItems(bucket: DayBucket | undefined, briefs?: Map<string, string>): FlatItem[] {
+function getItems(bucket: DayBucket | undefined, briefs?: Map<string, CalBrief>): FlatItem[] {
   if (!bucket) return [];
   const items: FlatItem[] = [];
   for (const e of bucket.events) {
-    const time = new Date(e.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const time = formatEventTime(e.metadata?.start || e.timestamp);
     items.push({ id: e.id, type: 'event', title: e.title, time, hasBrief: briefs?.has(e.id), color: getEventSourceColor(e.source), event: e });
   }
   for (const t of bucket.tasks) {
     items.push({ id: t.id, type: 'task', title: t.title, task: t });
   }
   for (const r of bucket.reminders) {
-    const time = new Date(r.remind_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const time = formatEventTime(r.remind_at);
     items.push({ id: r.id, type: 'reminder', title: `⏰ ${r.message}`, time });
   }
   for (const n of bucket.notes) {
