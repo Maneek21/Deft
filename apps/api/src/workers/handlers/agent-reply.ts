@@ -959,7 +959,7 @@ function buildWriteIntentClarification(content: string, replyText: string): stri
 
 export function normalizeApprovalSurfaceCopy(text: string): string {
   const inlineApprovalCopy =
-    'Use the approval card below this message to approve or dismiss it. It is also mirrored in Inbox > Approvals.';
+    'Use the approval card below this message to approve or dismiss it. It is also mirrored in Inbox under Needs you.';
   let normalized = text
     .replace(
       /(?:Please\s+)?(?:check|open|go to)\s+(?:your\s+)?Inbox\s+(?:under|in)\s+the\s+["']?Approvals["']?\s+tab\s+to\s+approve\s+or\s+reject[^.\n]*(?:\.|$)/gi,
@@ -967,7 +967,7 @@ export function normalizeApprovalSurfaceCopy(text: string): string {
     )
     .replace(
       /You can also manage this in your Inbox under the Approvals tab\.?/gi,
-      'It is also mirrored in Inbox > Approvals.',
+      'It is also mirrored in Inbox under Needs you.',
     );
 
   const mentionsInlineCard = /\b(?:approval card|approve\/reject button|approve or dismiss|below this message|here to finalize)\b/i.test(normalized);
