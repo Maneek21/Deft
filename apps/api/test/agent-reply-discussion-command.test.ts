@@ -357,6 +357,6 @@ test('approval copy points to the inline card before inbox fallback', () => {
   );
 
   assert.match(normalized, /approval card below this message/i);
-  assert.match(normalized, /Inbox > Approvals/i);
+  assert.match(normalized, /Inbox under Needs you/i);
   assert.doesNotMatch(normalized, /check your Inbox under the Approvals tab/i);
 });
