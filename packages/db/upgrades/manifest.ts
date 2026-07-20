@@ -42,6 +42,11 @@ export const upgradeManifest = {
       file: '0.2.0-preview.2-automation-runs.sql',
       description: 'Add durable automation runs and meeting brief idempotency',
     },
+    {
+      version: '0.2.0-preview.3',
+      file: '0.2.0-preview.3-attention-notifications.sql',
+      description: 'Add durable attention lifecycle, delivery ledger, approvers, and browser subscriptions',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

@@ -13,10 +13,10 @@
  * from the UI and race conditions between the approve button and an
  * eventual expiry cron.
  *
- * Permission model (MVP): any member of the action's org can approve or
- * reject. We deliberately DO NOT require role='admin' for v1 — the SaaS
- * story is "one org = one small team, everybody trusts everybody" and
- * stricter ACLs can layer on later.
+ * Permission model: the effective requester may approve or reject their own
+ * proposed write. Org owners and admins may review any proposal. Internal
+ * system flows must opt into the explicit `internal` bypass instead of
+ * impersonating a human reviewer.
  *
  * Phase 7 hook point: the `generateReceipt({...})` call slots in right
  * after the inner executor returns (both on success and error paths).
@@ -86,16 +86,24 @@ export type ApprovalResolverResult =
   | ApprovalResolverSuccess
   | ApprovalResolverError;
 
+function actionRequesterId(row: { user_id: string; params: unknown }): string {
+  if (row.params && typeof row.params === 'object' && !Array.isArray(row.params)) {
+    const params = row.params as Record<string, unknown>;
+    const sourceUserId = params.source_user_id ?? params.origin_user_id;
+    if (typeof sourceUserId === 'string' && sourceUserId.trim()) return sourceUserId;
+  }
+  return row.user_id;
+}
+
 /**
- * Throws if the user is not a member of the given org. Returns quietly
- * on success.
+ * Returns the active org membership used by the reviewer policy.
  */
-async function assertUserInOrg(
+async function loadReviewMembership(
   userId: string,
   orgId: string,
-): Promise<boolean> {
+): Promise<{ role: string } | null> {
   const [row] = await db
-    .select({ id: orgMembers.id })
+    .select({ role: orgMembers.role })
     .from(orgMembers)
     .where(
       and(
@@ -105,7 +113,7 @@ async function assertUserInOrg(
       ),
     )
     .limit(1);
-  return !!row;
+  return row ?? null;
 }
 
 /** Look up the employee row for a queued action so we can rebuild ctx. */
@@ -237,11 +245,12 @@ async function dispatchAction(
  * Approve a pending action. Idempotent: already-approved actions return
  * the stored result; already-rejected actions return the current status.
  *
- * Permission: approver must be a member of the action's org. 403 otherwise.
+ * Permission: the requester or an org owner/admin may review an action.
  */
 export async function approveAction(
   actionId: string,
   approverUserId: string,
+  options: { internal?: boolean } = {},
 ): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
@@ -290,12 +299,19 @@ export async function approveAction(
   }
 
   // Permission check.
-  const isMember = await assertUserInOrg(approverUserId, row.org_id);
-  if (!isMember) {
+  const membership = await loadReviewMembership(approverUserId, row.org_id);
+  const canReview = options.internal || (
+    membership !== null && (
+      actionRequesterId(row) === approverUserId ||
+      membership.role === 'owner' ||
+      membership.role === 'admin'
+    )
+  );
+  if (!canReview) {
     return {
       status: 'error',
       code: 'FORBIDDEN',
-      message: 'approver is not a member of the action org',
+      message: 'only the requester or an org owner/admin may approve this action',
     };
   }
 
@@ -533,12 +549,17 @@ export async function rejectAction(
   }
 
   // Permission check.
-  const isMember = await assertUserInOrg(rejecterUserId, row.org_id);
-  if (!isMember) {
+  const membership = await loadReviewMembership(rejecterUserId, row.org_id);
+  const canReview = membership !== null && (
+    actionRequesterId(row) === rejecterUserId ||
+    membership.role === 'owner' ||
+    membership.role === 'admin'
+  );
+  if (!canReview) {
     return {
       status: 'error',
       code: 'FORBIDDEN',
-      message: 'rejecter is not a member of the action org',
+      message: 'only the requester or an org owner/admin may reject this action',
     };
   }
 

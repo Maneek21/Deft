@@ -6,11 +6,14 @@ import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname ?? '.', '..', '..', '..');
 
-test('inbox page exists', () => {
+test('inbox page uses the durable attention model and all three lanes', () => {
   const p = resolve(ROOT, 'apps/web/src/app/(app)/inbox/page.tsx');
   assert.ok(existsSync(p), `expected ${p} to exist`);
   const src = readFileSync(p, 'utf8');
-  assert.ok(src.includes('useInbox'), 'page should consume useInbox hook');
+  assert.ok(src.includes('useAttention'), 'page should consume the durable attention hook');
+  assert.ok(src.includes("setTab('needs_you')"), 'page should expose the Needs you lane');
+  assert.ok(src.includes("setTab('updates')"), 'page should expose the Updates lane');
+  assert.ok(src.includes("setTab('activity')"), 'page should expose the Activity lane');
 });
 
 test('approvals page is a redirect, not a full inbox', () => {

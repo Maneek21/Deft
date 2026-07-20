@@ -10,7 +10,6 @@ import {
   agentActions,
   agentEmployees,
 } from '@deft/db/schema';
-import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
 
 export const inboxRoutes = new Hono();
 
@@ -166,9 +165,21 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   )`;
 }
 
+function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
+  if (user.role === 'owner' || user.role === 'admin') return visibleCaptureActionSql(user);
+  return and(
+    visibleCaptureActionSql(user),
+    sql`COALESCE(
+      ${agentActions.params}->>'source_user_id',
+      ${agentActions.params}->>'origin_user_id',
+      ${agentActions.user_id}
+    ) = ${user.id}`,
+  );
+}
+
 inboxRoutes.get('/', async (c) => {
   try {
-    const user = c.get('user') as { id: string; org_id: string };
+    const user = c.get('user') as { id: string; org_id: string; role?: string };
     const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 100);
     const cursor = c.req.query('cursor');
     const parsedKinds = parseKindFilter(c.req.query('kind'));
@@ -182,20 +193,6 @@ inboxRoutes.get('/', async (c) => {
 
     const wantsKind = (kind: InboxItemKind) => requestedKinds.has(kind);
     const notificationTypes = notificationTypesForKinds(requestedKinds);
-
-    const expiredActions = await db.update(agentActions)
-      .set({ approval_status: 'expired' })
-      .where(and(
-        eq(agentActions.org_id, user.org_id),
-        eq(agentActions.approval_status, 'pending'),
-        lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
-        visibleCaptureActionSql(user),
-      ))
-      .returning({ id: agentActions.id, params: agentActions.params });
-    await markWorkIntentsExpiredForActions({
-      orgId: user.org_id,
-      actions: expiredActions,
-    });
 
     const notificationWhere = and(
       eq(notifications.user_id, user.id),
@@ -310,7 +307,7 @@ inboxRoutes.get('/', async (c) => {
         // heartbeat ticks, trigger dispatch, task assignments are
         // pull-queue entries for BYOA runtimes — not user-actionable).
         inArray(agentActions.approval_tier, ['quick', 'full']),
-        visibleCaptureActionSql(user),
+        reviewableActionSql(user),
       ))
       .orderBy(desc(agentActions.created_at));
 

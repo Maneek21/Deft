@@ -16,6 +16,7 @@ import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/age
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
+import { resolveAttentionBySource } from '../lib/attention.js';
 import {
   decodeTaskTableCursor,
   encodeTaskTableCursor,
@@ -2132,6 +2133,26 @@ taskRoutes.patch('/:id', async (c) => {
         code: 'TASK_STALE',
         current_task: currentTask,
       }, 409);
+    }
+
+    if (
+      (updateData.status && ['done', 'cancelled'].includes(updateData.status))
+      || parsed.data.assignee_id !== undefined
+      || parsed.data.due_date !== undefined
+    ) {
+      await resolveAttentionBySource({
+        orgId: user.org_id,
+        sourceType: 'task',
+        sourceId: taskId,
+        resolution: updateData.status === 'done'
+          ? 'task_completed'
+          : updateData.status === 'cancelled'
+            ? 'task_cancelled'
+            : parsed.data.assignee_id !== undefined
+              ? 'task_reassigned'
+              : 'task_due_date_changed',
+        actorUserId: user.id,
+      });
     }
 
     // Only mutate the additional-assignee table after the guarded task update

@@ -28,6 +28,7 @@ const CRON_DELAYS: Record<string, number> = {
   'ics-sync': 60_000,
   'chat-observation-backfill': 5 * 60_000,
   'chat-knowledge-batch': 30 * 60_000,
+  'attention-maintenance': 15 * 60_000,
 };
 
 const CRON_KEYS: Record<string, string> = {
@@ -46,6 +47,7 @@ const CRON_KEYS: Record<string, string> = {
   'ics-sync': 'cron:ics-sync',
   'chat-observation-backfill': 'cron:chat-observation-backfill',
   'chat-knowledge-batch': 'cron:chat-knowledge-batch',
+  'attention-maintenance': 'cron:attention-maintenance',
 };
 
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
@@ -221,6 +223,14 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/chat-observation-backfill.js');
       return mod.handleChatObservationBackfill;
     }
+    case 'attention-maintenance': {
+      const mod = await import('./handlers/attention-maintenance.js');
+      return mod.handleAttentionMaintenance;
+    }
+    case 'attention-delivery': {
+      const mod = await import('./handlers/attention-delivery.js');
+      return mod.handleAttentionDelivery;
+    }
     default:
       return null;
   }
@@ -238,7 +248,7 @@ async function getHandler(queueName: string, jobName: string): Promise<JobHandle
 
 async function processDequeuedJob(
   queueName: string,
-  job: { id: string; name: string; data: any },
+  job: { id: string; name: string; data: any; attempts: number },
 ): Promise<void> {
   const handler = await getHandler(queueName, job.name);
   if (!handler) {
@@ -248,7 +258,7 @@ async function processDequeuedJob(
 
   try {
     await runWithTimeout(
-      handler({ id: job.id, name: job.name, data: job.data }),
+      handler({ id: job.id, name: job.name, data: job.data, attempts: job.attempts }),
       `Job ${job.name} (${job.id.slice(0, 8)})`,
     );
     await completeJob(job.id);
@@ -272,7 +282,7 @@ async function processDequeuedJob(
 }
 
 async function pollQueueBatch(queueName: string): Promise<void> {
-  const jobs: Array<{ id: string; name: string; data: any }> = [];
+  const jobs: Array<{ id: string; name: string; data: any; attempts: number }> = [];
   for (let i = 0; i < WORKER_BATCH_SIZE; i += 1) {
     const job = await dequeueJob(queueName as any);
     if (!job) break;

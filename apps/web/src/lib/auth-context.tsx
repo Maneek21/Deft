@@ -14,6 +14,15 @@ type NotificationPreferences = {
     calendar: boolean;
     agents: boolean;
   };
+  push?: {
+    enabled: boolean;
+    chat: boolean;
+    tasks: boolean;
+    approvals: boolean;
+    calendar: boolean;
+    agents: boolean;
+    quiet_hours: { enabled: boolean; start: string; end: string };
+  };
 };
 
 type User = {

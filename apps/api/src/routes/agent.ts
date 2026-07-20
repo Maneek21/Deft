@@ -3,10 +3,11 @@ import { streamSSE } from 'hono/streaming';
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import type { TrustLevel } from '../lib/agent-approval.js';
-import { eq, and, asc, desc, lt, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
+  agentActionApprovers,
   agentMemory,
   agentEmployees,
   actionReceipts,
@@ -40,10 +41,10 @@ import {
   markWorkIntentConvertedForAction,
   markWorkIntentDismissedForAction,
   markWorkIntentFailedForAction,
-  markWorkIntentsExpiredForActions,
 } from '../lib/work-intents.js';
 import { getIO } from '../socket.js';
 import { formatApprovalConfirmation } from '../lib/agent-action-confirmation.js';
+import { recordActionApproverDecision, resolveAttentionBySource } from '../lib/attention.js';
 
 export const agentRoutes = new Hono();
 
@@ -203,6 +204,52 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
       )
     )
   )`;
+}
+
+function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
+  const canReviewOrgActions = user.role === 'owner' || user.role === 'admin';
+  return and(
+    visibleCaptureActionSql(user),
+    sql`(
+      EXISTS (
+        SELECT 1 FROM ${agentActionApprovers}
+        WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+          AND ${agentActionApprovers.org_id} = ${user.org_id}
+          AND ${agentActionApprovers.user_id} = ${user.id}
+      )
+      OR (
+        NOT EXISTS (
+          SELECT 1 FROM ${agentActionApprovers}
+          WHERE ${agentActionApprovers.action_id} = ${agentActions.id}
+        )
+        AND (
+          COALESCE(
+            ${agentActions.params}->>'source_user_id',
+            ${agentActions.params}->>'origin_user_id',
+            ${agentActions.user_id}
+          ) = ${user.id}
+          OR (
+            ${canReviewOrgActions}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ${users}
+              INNER JOIN org_members review_om
+                ON review_om.user_id = ${users.id}
+                AND review_om.org_id = ${agentActions.org_id}
+                AND review_om.is_active = true
+              WHERE ${users.id} = COALESCE(
+                ${agentActions.params}->>'source_user_id',
+                ${agentActions.params}->>'origin_user_id',
+                ${agentActions.user_id}
+              )
+                AND ${users.is_agent} = false
+                AND ${users.kind} = 'human'
+            )
+          )
+        )
+      )
+    )`,
+  );
 }
 
 function actionParamString(params: unknown, key: string): string | null {
@@ -732,22 +779,6 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
     return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   }
 
-  // Expire stale pending actions (older than 1 hour)
-  const expiredActions = await db.update(agentActions)
-    .set({ approval_status: 'expired' })
-    .where(and(
-      eq(agentActions.conversation_id, id),
-      eq(agentActions.org_id, user.org_id),
-      eq(agentActions.approval_status, 'pending'),
-      lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
-      visibleCaptureActionSql(user),
-    ))
-    .returning({ id: agentActions.id, params: agentActions.params });
-  await markWorkIntentsExpiredForActions({
-    orgId: user.org_id,
-    actions: expiredActions,
-  });
-
   // P2-7: Read from unified messages table (space_id = conversation id).
   const rows = await db
     .select()
@@ -952,21 +983,6 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
 // The UI uses the `proposer` field + `employee_name` to show a source badge.
 agentRoutes.get('/actions/pending', async (c) => {
   const user = c.get('user');
-  // Auto-expire stale pending actions so the list doesn't grow forever.
-  const expiredActions = await db.update(agentActions)
-    .set({ approval_status: 'expired' })
-    .where(and(
-      eq(agentActions.org_id, user.org_id),
-      eq(agentActions.approval_status, 'pending'),
-      lt(agentActions.created_at, new Date(Date.now() - 24 * 60 * 60 * 1000)),
-      visibleCaptureActionSql(user),
-    ))
-    .returning({ id: agentActions.id, params: agentActions.params });
-  await markWorkIntentsExpiredForActions({
-    orgId: user.org_id,
-    actions: expiredActions,
-  });
-
   const rows = await db
     .select({
       id: agentActions.id,
@@ -996,7 +1012,7 @@ agentRoutes.get('/actions/pending', async (c) => {
         // trigger, task assignment) that BYOA runtimes pull via MCP. Not
         // user-actionable — exclude from approvals view.
         inArray(agentActions.approval_tier, ['quick', 'full']),
-        visibleCaptureActionSql(user),
+        reviewableActionSql(user),
       ),
     )
     .orderBy(desc(agentActions.created_at))
@@ -1050,6 +1066,45 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
       AND a.source IS DISTINCT FROM 'defty_capture'
+      AND (
+        EXISTS (
+          SELECT 1 FROM agent_action_approvers action_approver
+          WHERE action_approver.action_id = a.id
+            AND action_approver.org_id = ${user.org_id}
+            AND action_approver.user_id = ${user.id}
+        )
+        OR (
+          NOT EXISTS (
+            SELECT 1 FROM agent_action_approvers existing_approver
+            WHERE existing_approver.action_id = a.id
+          )
+          AND (
+            COALESCE(
+              a.params->>'source_user_id',
+              a.params->>'origin_user_id',
+              a.user_id
+            ) = ${user.id}
+            OR (
+              ${user.role === 'owner' || user.role === 'admin'}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM users requester
+                INNER JOIN org_members requester_membership
+                  ON requester_membership.user_id = requester.id
+                  AND requester_membership.org_id = a.org_id
+                  AND requester_membership.is_active = true
+                WHERE requester.id = COALESCE(
+                  a.params->>'source_user_id',
+                  a.params->>'origin_user_id',
+                  a.user_id
+                )
+                  AND requester.is_agent = false
+                  AND requester.kind = 'human'
+              )
+            )
+          )
+        )
+      )
     ORDER BY a.created_at DESC
     LIMIT 100
   `);
@@ -1246,7 +1301,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
     .where(and(
       eq(agentActions.id, actionId),
       eq(agentActions.org_id, user.org_id),
-      visibleCaptureActionSql(user),
+      reviewableActionSql(user),
     ))
     .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
@@ -1269,6 +1324,14 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         statusCode,
       );
     }
+    if (action.approval_status === 'pending') {
+      await recordActionApproverDecision({
+        orgId: user.org_id,
+        actionId,
+        userId: user.id,
+        decision: 'approved',
+      });
+    }
     try {
       await maybePostApprovalConfirmation({
         orgId: user.org_id,
@@ -1281,6 +1344,13 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    await resolveAttentionBySource({
+      orgId: user.org_id,
+      sourceType: 'agent_action',
+      sourceId: actionId,
+      resolution: 'approved',
+      actorUserId: user.id,
+    });
     return c.json({
       status: result.status,
       message: 'message' in result ? result.message : undefined,
@@ -1382,6 +1452,12 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         error: null,
       })
       .where(eq(agentActions.id, actionId));
+    await recordActionApproverDecision({
+      orgId: user.org_id,
+      actionId,
+      userId: user.id,
+      decision: 'approved',
+    });
     if (action.source === 'defty_capture') {
       await generateReceipt({
         actionId,
@@ -1415,6 +1491,13 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    await resolveAttentionBySource({
+      orgId: user.org_id,
+      sourceType: 'agent_action',
+      sourceId: actionId,
+      resolution: 'approved',
+      actorUserId: user.id,
+    });
   } else {
     await db
       .update(agentActions)
@@ -1496,7 +1579,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     .where(and(
       eq(agentActions.id, actionId),
       eq(agentActions.org_id, user.org_id),
-      visibleCaptureActionSql(user),
+      reviewableActionSql(user),
     ))
     .limit(1);
 
@@ -1515,6 +1598,21 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
         : 400;
       return c.json({ error: result.message, code: result.code }, statusCode);
     }
+    if (action.approval_status === 'pending') {
+      await recordActionApproverDecision({
+        orgId: user.org_id,
+        actionId,
+        userId: user.id,
+        decision: 'rejected',
+      });
+    }
+    await resolveAttentionBySource({
+      orgId: user.org_id,
+      sourceType: 'agent_action',
+      sourceId: actionId,
+      resolution: 'rejected',
+      actorUserId: user.id,
+    });
     return c.json({ status: result.status });
   }
 
@@ -1543,6 +1641,19 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
   if (!updatedAction) {
     return c.json({ error: 'Action is no longer pending', code: 'INVALID_STATE' }, 409);
   }
+  await recordActionApproverDecision({
+    orgId: user.org_id,
+    actionId,
+    userId: user.id,
+    decision: 'rejected',
+  });
+  await resolveAttentionBySource({
+    orgId: user.org_id,
+    sourceType: 'agent_action',
+    sourceId: actionId,
+    resolution: 'rejected',
+    actorUserId: user.id,
+  });
 
   if (action.source === 'defty_capture') {
     await generateReceipt({
@@ -1708,21 +1819,6 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
 
 agentRoutes.get('/actions', async (c) => {
   const user = c.get('user');
-
-  // Auto-expire stale pending actions (older than 1 hour)
-  const expiredActions = await db.update(agentActions)
-    .set({ approval_status: 'expired' })
-    .where(and(
-      eq(agentActions.org_id, user.org_id),
-      eq(agentActions.approval_status, 'pending'),
-      lt(agentActions.created_at, new Date(Date.now() - 60 * 60 * 1000)),
-      visibleCaptureActionSql(user),
-    ))
-    .returning({ id: agentActions.id, params: agentActions.params });
-  await markWorkIntentsExpiredForActions({
-    orgId: user.org_id,
-    actions: expiredActions,
-  });
 
   // Phase 7 — LEFT JOIN action_receipts so the UI can show a "View receipt"
   // button only when there's something to show. We materialize has_receipt

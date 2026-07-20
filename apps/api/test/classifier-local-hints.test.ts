@@ -9,6 +9,8 @@ test('local classifier flags obvious blocked messages without an LLM', () => {
   assert.equal(result.intent, 'actionable');
   assert.ok(result.confidence >= 0.8);
   assert.deepEqual(result.task_refs, ['TOM-42']);
+  assert.equal(result.is_request, false, 'provider-free heuristics never invent named recipients');
+  assert.deepEqual(result.requested_people, []);
 });
 
 test('local classifier leaves ordinary discussion unblocked', () => {

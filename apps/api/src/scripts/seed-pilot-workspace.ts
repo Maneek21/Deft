@@ -2528,7 +2528,19 @@ async function seedTeamHealth(params: {
 function pilotNotificationPreferences(
   keywords: string[],
   channels: Partial<PilotNotificationChannels> = {},
-): { keywords: string[]; channels: PilotNotificationChannels } {
+): {
+  keywords: string[];
+  channels: PilotNotificationChannels;
+  push: {
+    enabled: boolean;
+    chat: boolean;
+    tasks: boolean;
+    approvals: boolean;
+    calendar: boolean;
+    agents: boolean;
+    quiet_hours: { enabled: boolean; start: string; end: string };
+  };
+} {
   return {
     keywords,
     channels: {
@@ -2538,6 +2550,15 @@ function pilotNotificationPreferences(
       calendar: true,
       agents: true,
       ...channels,
+    },
+    push: {
+      enabled: false,
+      chat: true,
+      tasks: true,
+      approvals: true,
+      calendar: true,
+      agents: true,
+      quiet_hours: { enabled: false, start: '22:00', end: '08:00' },
     },
   };
 }
@@ -3096,7 +3117,7 @@ async function seedAgentAndInboxActivity(params: {
       conversation_id: params.marketingSpaceId,
       agent_employee_id: tomEmployeeId,
       source: 'pilot-living',
-      action: 'send_message',
+      action: 'post_message',
       params: {
         space_name: 'marketing',
         content:
@@ -3116,12 +3137,13 @@ async function seedAgentAndInboxActivity(params: {
       conversation_id: params.marketingSpaceId,
       agent_employee_id: mayaEmployeeId,
       source: 'pilot-living',
-      action: 'record_decision',
+      action: 'add_knowledge',
       params: {
+        space_name: 'marketing',
+        type: 'decision',
         title: 'Hold Tuesday delivery promise until route capacity clears',
-        summary:
+        content:
           'Maya proposes saving the launch blocker as durable company memory before the buyer update goes out.',
-        tags: ['launch', 'route', 'buyer-facing'],
       },
       result: null,
       approval_tier: 'quick',

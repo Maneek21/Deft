@@ -15,6 +15,10 @@ export interface ClassificationResult {
   };
   memorable_facts: string[]; // e.g., ["Rahul prefers async standups", "team decided to use Stripe"]
   decision: string | null;   // e.g., "Using Postgres instead of MongoDB for the new service"
+  is_request: boolean;
+  requested_people: string[];
+  requested_action: string | null;
+  request_deadline: string | null;
 }
 
 const DEFAULT_RESULT: ClassificationResult = {
@@ -26,6 +30,10 @@ const DEFAULT_RESULT: ClassificationResult = {
   entities: {},
   memorable_facts: [],
   decision: null,
+  is_request: false,
+  requested_people: [],
+  requested_action: null,
+  request_deadline: null,
 };
 
 function plainText(content: string): string {
@@ -166,6 +174,13 @@ function mergeLocalHints(
     task_refs: Array.from(new Set([...(result.task_refs ?? []), ...(hints.task_refs ?? [])])),
     memorable_facts: Array.from(new Set([...(result.memorable_facts ?? []), ...(hints.memorable_facts ?? [])])),
     decision: result.decision || hints.decision || null,
+    is_request: result.is_request || Boolean(hints.is_request),
+    requested_people: Array.from(new Set([
+      ...(result.requested_people ?? []),
+      ...(hints.requested_people ?? []),
+    ])).slice(0, 3),
+    requested_action: result.requested_action || hints.requested_action || null,
+    request_deadline: result.request_deadline || hints.request_deadline || null,
   };
 }
 
@@ -187,6 +202,10 @@ Fields:
 - entities: { assignee?: string, project?: string, due_date?: string }
 - memorable_facts: array of strings — extract any memorable NON-DECISION facts worth remembering (team preferences, tool choices, personal preferences, workflow conventions, org/process details). Examples: "Rahul prefers async standups", "team uses Stripe for payments". Return empty array if nothing memorable. CRITICAL: If a clear team decision is present and you are setting the "decision" field, DO NOT also duplicate that same statement in "memorable_facts". The "decision" field and "memorable_facts" must describe DIFFERENT underlying content.
 - decision: string or null — if the message contains a clear team decision (e.g., "Let's go with Postgres instead of MongoDB"), extract it as a concise statement. Return null if no decision. When set, exclude this content from "memorable_facts".
+- is_request: boolean — true only when a named person is being asked for a concrete response, decision, review, or action. Do not mark broad announcements, status updates, rhetorical questions, social chatter, or requests addressed only to an AI agent.
+- requested_people: array of 1-3 human names exactly as written in the message. Never infer an approver or owner who was not addressed. Return [] when ownership is ambiguous.
+- requested_action: concise string describing what the addressed person must do. Return null unless is_request is true.
+- request_deadline: explicit deadline as written or an ISO timestamp when unambiguous; otherwise null. Never invent a deadline.
 
 Rules:
 - "task_create": message explicitly asks to create/add a task or todo
@@ -247,6 +266,18 @@ export async function classifyMessage(
       },
       memorable_facts: Array.isArray(parsed.memorable_facts) ? parsed.memorable_facts : [],
       decision: typeof parsed.decision === 'string' ? parsed.decision : null,
+      is_request: Boolean(parsed.is_request),
+      requested_people: Array.isArray(parsed.requested_people)
+        ? parsed.requested_people
+          .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+          .slice(0, 3)
+        : [],
+      requested_action: typeof parsed.requested_action === 'string' && parsed.requested_action.trim()
+        ? parsed.requested_action.trim()
+        : null,
+      request_deadline: typeof (parsed.request_deadline ?? parsed.deadline) === 'string'
+        ? String(parsed.request_deadline ?? parsed.deadline).trim() || null
+        : null,
     }, localHints);
     return applyBlockedSuppression(merged, content);
   } catch (err) {
