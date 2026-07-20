@@ -56,6 +56,7 @@ const NOTE_ID = `oauth-mcp-note-${TEST_ID}`;
 const EVENT_ID = `oauth-mcp-event-${TEST_ID}`;
 const NOTIFICATION_ID = `oauth-mcp-notification-${TEST_ID}`;
 const APPROVAL_ID = `oauth-mcp-approval-${TEST_ID}`;
+const ATTENTION_ID = `oauth-mcp-attention-${TEST_ID}`;
 
 let testApp: Hono;
 let helpers: typeof import('../src/lib/oauth-mcp.js');
@@ -83,6 +84,7 @@ async function cleanup() {
     await client.query(`DELETE FROM oauth_audit_events WHERE user_id = $1 OR org_id = $2`, [USER_ID, ORG_ID]);
     await client.query(`DELETE FROM oauth_clients WHERE client_name LIKE 'OAuth MCP Test%'`);
     await client.query(`DELETE FROM events WHERE org_id = $1`, [ORG_ID]);
+    await client.query(`DELETE FROM attention_items WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM notifications WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM action_receipts WHERE org_id = $1`, [ORG_ID]);
     await client.query(`DELETE FROM agent_actions WHERE org_id = $1`, [ORG_ID]);
@@ -328,6 +330,13 @@ async function seedWorkspace() {
       `INSERT INTO notifications (id, org_id, user_id, type, title, body, link)
        VALUES ($1, $2, $3, 'system', 'OAuth MCP attention item', 'Inspect this through MCP', '/inbox')`,
       [NOTIFICATION_ID, ORG_ID, USER_ID],
+    );
+    await client.query(
+      `INSERT INTO attention_items
+        (id, org_id, user_id, kind, lane, priority, state, dedupe_key, source_type, source_id, title, body, link)
+       VALUES ($1, $2, $3, 'system', 'updates', 'normal', 'open_unseen', $4, 'notification', $5,
+         'OAuth MCP durable attention item', 'Inspect durable attention through MCP', '/inbox?lane=updates')`,
+      [ATTENTION_ID, ORG_ID, USER_ID, `oauth-mcp-attention:${TEST_ID}`, NOTIFICATION_ID],
     );
     await client.query(
       `INSERT INTO agent_actions (id, org_id, user_id, agent_employee_id, action, params, approval_tier, approval_status)
@@ -1207,6 +1216,8 @@ test('OAuth tools/list read catalog only advertises callable tools', async () =>
     fetch: { id: `wiki:${WIKI_SLUG}` },
     platform_context: {},
     attention_digest: { limit: 5 },
+    attention_list: { lane: 'all', limit: 5 },
+    attention_get: { attention_id: ATTENTION_ID },
     memory_recall: { query: 'salsa tasting', limit: 5 },
     wiki_search: { query: 'salsa tasting', limit: 5 },
     memory_list: { limit: 5 },
