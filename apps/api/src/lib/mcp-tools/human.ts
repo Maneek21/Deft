@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   connectedAccounts,
   agentActions,
   agentEmployees,
+  attentionItems,
   events,
   messages,
   notes,
@@ -37,6 +38,14 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
+import {
+  ensureAttentionBackfillForUser,
+  filterVisibleAttentionItems,
+  visibleAttentionCondition,
+  transitionAttentionItem,
+  type AttentionLane,
+  type AttentionState,
+} from '../attention.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -199,6 +208,8 @@ export const HUMAN_READ_TOOLS = new Set([
   'inbox_get',
   'approval_list',
   'approval_get',
+  'attention_list',
+  'attention_get',
   'task_saved_view_list',
   'agent_employee_list',
   'agent_employee_get',
@@ -224,6 +235,9 @@ export const HUMAN_WRITE_TOOLS = new Set([
   'inbox_mark_all_read',
   'approval_approve',
   'approval_reject',
+  'attention_acknowledge',
+  'attention_snooze',
+  'attention_resolve',
   'project_create',
   'project_update',
   'project_archive',
@@ -292,6 +306,11 @@ export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
   approval_get: humanApprovalGet,
   approval_approve: humanApprovalApprove,
   approval_reject: humanApprovalReject,
+  attention_list: humanAttentionList,
+  attention_get: humanAttentionGet,
+  attention_acknowledge: humanAttentionAcknowledge,
+  attention_snooze: humanAttentionSnooze,
+  attention_resolve: humanAttentionResolve,
   project_create: humanProjectCreate,
   project_update: humanProjectUpdate,
   project_archive: humanProjectArchive,
@@ -394,6 +413,11 @@ function fallbackDedupeInput(toolName: string, args: Record<string, unknown>): R
       return { notification_id: args.notification_id ?? null };
     case 'inbox_mark_all_read':
       return { all: true };
+    case 'attention_acknowledge':
+    case 'attention_resolve':
+      return { attention_id: args.attention_id ?? null, resolution: normalizedText(args.resolution) };
+    case 'attention_snooze':
+      return { attention_id: args.attention_id ?? null, until: args.until ?? null };
     case 'approval_approve':
     case 'approval_reject':
       return { action_id: args.action_id ?? null, reason: normalizedText(args.reason) };
@@ -3047,6 +3071,140 @@ export async function humanCalendarEventCancel(args: Record<string, unknown>, ct
   });
 }
 
+const MCP_OPEN_ATTENTION_STATES: AttentionState[] = ['open_unseen', 'open_seen', 'acknowledged'];
+const MCP_ALL_ATTENTION_STATES: AttentionState[] = [
+  ...MCP_OPEN_ATTENTION_STATES,
+  'snoozed',
+  'resolved',
+  'expired',
+  'superseded',
+];
+
+function parseAttentionLane(value: unknown): AttentionLane | null | 'all' {
+  if (value === undefined || value === null || value === 'all') return 'all';
+  return value === 'needs_you' || value === 'updates' ? value : null;
+}
+
+function parseAttentionStates(value: unknown): AttentionState[] | null {
+  if (value === undefined || value === null || value === 'open') return MCP_OPEN_ATTENTION_STATES;
+  if (value === 'all') return MCP_ALL_ATTENTION_STATES;
+  return typeof value === 'string' && MCP_ALL_ATTENTION_STATES.includes(value as AttentionState)
+    ? [value as AttentionState]
+    : null;
+}
+
+export async function humanAttentionList(args: { lane?: string; state?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  const lane = parseAttentionLane(args.lane);
+  const states = parseAttentionStates(args.state);
+  if (!lane) return errorResult('lane must be needs_you, updates, or all');
+  if (!states) return errorResult('state must be open, all, or a valid attention lifecycle state');
+
+  await ensureAttentionBackfillForUser({ orgId: ctx.org_id, userId: ctx.user_id, role: ctx.role });
+  const rows = await db
+    .select()
+    .from(attentionItems)
+    .where(and(
+      eq(attentionItems.org_id, ctx.org_id),
+      eq(attentionItems.user_id, ctx.user_id),
+      lane === 'all' ? sql`true` : eq(attentionItems.lane, lane),
+      inArray(attentionItems.state, states),
+      visibleAttentionCondition(ctx.user_id),
+    ))
+    .orderBy(desc(attentionItems.last_event_at))
+    .limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const visibleRows = await filterVisibleAttentionItems(ctx.user_id, rows);
+  const counts = await db
+    .select({
+      lane: attentionItems.lane,
+      count: sql<number>`count(*)::int`,
+      unseen: sql<number>`count(*) FILTER (WHERE ${attentionItems.state} = 'open_unseen')::int`,
+    })
+    .from(attentionItems)
+    .where(and(
+      eq(attentionItems.org_id, ctx.org_id),
+      eq(attentionItems.user_id, ctx.user_id),
+      inArray(attentionItems.state, MCP_OPEN_ATTENTION_STATES),
+      visibleAttentionCondition(ctx.user_id),
+    ))
+    .groupBy(attentionItems.lane);
+  return textResult({
+    items: visibleRows.map((row) => ({ ...row, url: row.link ?? `/inbox?lane=${row.lane}` })),
+    counts: Object.fromEntries(counts.map((row) => [row.lane, { count: Number(row.count), unseen: Number(row.unseen) }])),
+  });
+}
+
+export async function humanAttentionGet(args: { attention_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'read:workspace');
+  if (scopeError) return scopeError;
+  if (!args.attention_id) return errorResult('attention_id is required');
+  const [row] = await db
+    .select()
+    .from(attentionItems)
+    .where(and(
+      eq(attentionItems.id, args.attention_id),
+      eq(attentionItems.org_id, ctx.org_id),
+      eq(attentionItems.user_id, ctx.user_id),
+      visibleAttentionCondition(ctx.user_id),
+    ))
+    .limit(1);
+  if (!row) return errorResult('Attention item not found');
+  const visible = await filterVisibleAttentionItems(ctx.user_id, [row]);
+  return visible[0]
+    ? textResult({ ...visible[0], url: visible[0].link ?? `/inbox?lane=${visible[0].lane}` })
+    : errorResult('Attention item not found');
+}
+
+async function transitionHumanAttention(
+  args: Record<string, unknown>,
+  ctx: HumanToolContext,
+  action: 'acknowledge' | 'snooze' | 'resolve',
+): Promise<ToolResult> {
+  const scopeError = requireScope(ctx, 'write:workspace');
+  if (scopeError) return scopeError;
+  if (typeof args.attention_id !== 'string') return errorResult('attention_id is required');
+  const until = action === 'snooze' && typeof args.until === 'string' ? new Date(args.until) : null;
+  if (action === 'snooze' && (!until || Number.isNaN(until.getTime()) || until <= new Date())) {
+    return errorResult('until must be a future ISO timestamp');
+  }
+  const [visible] = await db
+    .select({ id: attentionItems.id })
+    .from(attentionItems)
+    .where(and(
+      eq(attentionItems.id, args.attention_id as string),
+      eq(attentionItems.org_id, ctx.org_id),
+      eq(attentionItems.user_id, ctx.user_id),
+      visibleAttentionCondition(ctx.user_id),
+    ))
+    .limit(1);
+  if (!visible) return errorResult('Attention item not found');
+  return withIdempotency(`attention_${action}`, args, ctx, async () => {
+    const row = await transitionAttentionItem({
+      orgId: ctx.org_id,
+      userId: ctx.user_id,
+      itemId: args.attention_id as string,
+      state: action === 'acknowledge' ? 'acknowledged' : action === 'snooze' ? 'snoozed' : 'resolved',
+      snoozedUntil: until,
+      resolution: action === 'resolve' && typeof args.resolution === 'string' ? args.resolution.slice(0, 120) : action,
+      actorUserId: ctx.user_id,
+    });
+    return row ? textResult({ updated: true, item: row }) : errorResult('Attention item not found');
+  });
+}
+
+export function humanAttentionAcknowledge(args: Record<string, unknown>, ctx: HumanToolContext) {
+  return transitionHumanAttention(args, ctx, 'acknowledge');
+}
+
+export function humanAttentionSnooze(args: Record<string, unknown>, ctx: HumanToolContext) {
+  return transitionHumanAttention(args, ctx, 'snooze');
+}
+
+export function humanAttentionResolve(args: Record<string, unknown>, ctx: HumanToolContext) {
+  return transitionHumanAttention(args, ctx, 'resolve');
+}
+
 export async function humanInboxList(args: { unread_only?: boolean; type?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
@@ -3083,7 +3241,18 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
 }
 
 async function ownApproval(ctx: HumanToolContext, actionId: string) {
-  const [row] = await db.select().from(agentActions).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, ctx.org_id), eq(agentActions.user_id, ctx.user_id))).limit(1);
+  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
+    ? sql`true`
+    : sql`COALESCE(
+        ${agentActions.params}->>'source_user_id',
+        ${agentActions.params}->>'origin_user_id',
+        ${agentActions.user_id}
+      ) = ${ctx.user_id}`;
+  const [row] = await db.select().from(agentActions).where(and(
+    eq(agentActions.id, actionId),
+    eq(agentActions.org_id, ctx.org_id),
+    canReview,
+  )).limit(1);
   return row ?? null;
 }
 
@@ -3091,15 +3260,18 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   const status = args.status ?? 'pending';
   if (!['pending', 'approved', 'rejected', 'expired', 'all'].includes(status)) return errorResult('status must be pending, approved, rejected, expired, or all');
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), eq(agentActions.user_id, ctx.user_id), status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
-  return textResult(rows.map((row) => ({ ...row, url: '/inbox?tab=approvals' })));
+  const canReview = ctx.role === 'owner' || ctx.role === 'admin'
+    ? sql`true`
+    : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
 export async function humanApprovalGet(args: { action_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {
   const scopeError = requireScope(ctx, 'read:workspace'); if (scopeError) return scopeError;
   if (!args.action_id) return errorResult('action_id is required');
   const row = await ownApproval(ctx, args.action_id);
-  return row ? textResult({ ...row, url: '/inbox?tab=approvals' }) : errorResult('Approval not found');
+  return row ? textResult({ ...row, url: '/inbox?lane=needs_you' }) : errorResult('Approval not found');
 }
 
 export async function humanApprovalApprove(args: Record<string, unknown>, ctx: HumanToolContext): Promise<ToolResult> {
@@ -3226,6 +3398,7 @@ export const HUMAN_TOOL_SCOPES: Record<string, string> = {
   calendar_list: 'read:calendar', calendar_get: 'read:calendar', calendar_availability: 'read:calendar',
   calendar_event_create: 'write:calendar', calendar_event_update: 'write:calendar', calendar_event_cancel: 'write:calendar',
   inbox_list: 'read:workspace', inbox_get: 'read:workspace', inbox_mark_read: 'write:workspace', inbox_mark_all_read: 'write:workspace',
+  attention_list: 'read:workspace', attention_get: 'read:workspace', attention_acknowledge: 'write:workspace', attention_snooze: 'write:workspace', attention_resolve: 'write:workspace',
   approval_list: 'read:workspace', approval_get: 'read:workspace', approval_approve: 'write:workspace', approval_reject: 'write:workspace',
   project_create: 'write:workspace', project_update: 'write:workspace', project_archive: 'write:workspace',
   task_saved_view_list: 'read:tasks', task_saved_view_create: 'write:tasks',
@@ -3262,6 +3435,11 @@ function operationalHumanSchemas(): Array<Record<string, unknown>> {
     read('inbox_get', 'Get Deft Inbox Item', 'Read one notification owned by the connected user.', { notification_id: id('Notification id') }, ['notification_id']),
     write('inbox_mark_read', 'Mark Deft Inbox Item Read', 'Mark one owned notification read.', { notification_id: id('Notification id') }, ['notification_id']),
     write('inbox_mark_all_read', 'Mark Deft Inbox Read', 'Mark all unread notifications for the connected user read.'),
+    read('attention_list', 'List Deft Attention', 'List the connected user\'s durable Needs-you or Updates items with counts and lifecycle state.', { lane: { type: 'string', enum: ['needs_you', 'updates', 'all'] }, state: { type: 'string', enum: ['open', 'all', 'open_unseen', 'open_seen', 'acknowledged', 'snoozed', 'resolved', 'expired', 'superseded'] }, limit }),
+    read('attention_get', 'Get Deft Attention Item', 'Read one durable attention item owned by the connected user.', { attention_id: id('Attention item id') }, ['attention_id']),
+    write('attention_acknowledge', 'Acknowledge Deft Attention', 'Accept responsibility for an open item without claiming the underlying work is resolved.', { attention_id: id('Attention item id') }, ['attention_id']),
+    write('attention_snooze', 'Snooze Deft Attention', 'Hide an attention item until a future ISO timestamp.', { attention_id: id('Attention item id'), until: iso('Future ISO timestamp') }, ['attention_id', 'until']),
+    write('attention_resolve', 'Resolve Deft Attention', 'Clear an attention item without mutating its source object.', { attention_id: id('Attention item id'), resolution: { type: 'string' } }, ['attention_id']),
     read('approval_list', 'List Deft Approvals', 'List pending or historical approval actions assigned to the connected user.', { status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'expired', 'all'] }, limit }),
     read('approval_get', 'Get Deft Approval', 'Read one approval assigned to the connected user, including exact action parameters.', { action_id: id('Approval action id') }, ['action_id']),
     write('approval_approve', 'Approve Deft Action', 'Approve and execute one pending action assigned to the connected user through the canonical approval resolver.', { action_id: id('Approval action id') }, ['action_id']),

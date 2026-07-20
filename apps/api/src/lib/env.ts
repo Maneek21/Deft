@@ -82,4 +82,7 @@ export const env = {
   DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || '',
   // Phase 10 — Prometheus scraper bearer token. Unset = /api/metrics returns 503.
   METRICS_SCRAPE_TOKEN: process.env.METRICS_SCRAPE_TOKEN || '',
+  VAPID_PUBLIC_KEY: process.env.VAPID_PUBLIC_KEY || '',
+  VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY || '',
+  VAPID_SUBJECT: process.env.VAPID_SUBJECT || '',
 };

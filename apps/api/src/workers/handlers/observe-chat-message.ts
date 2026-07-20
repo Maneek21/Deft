@@ -1,13 +1,16 @@
 import { and, eq } from 'drizzle-orm';
 import {
+  orgMembers,
   messageClassifications,
   messageObservations,
   messages,
+  spaceMembers,
   users,
 } from '@deft/db/schema';
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
 import { classifyMessage } from '../../lib/classifier.js';
+import type { ClassificationResult } from '../../lib/classifier.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import {
   CHAT_OBSERVATION_VERSION,
@@ -16,6 +19,9 @@ import {
   hasNoTaskDirective,
 } from '../../lib/chat-observation.js';
 import { toPlainText } from '../../lib/plain-text.js';
+import { parseMentions } from '../../lib/mentions.js';
+import { explainNotificationPolicy } from '../../lib/notification-policy.js';
+import { upsertAttentionItem, type AttentionPriority } from '../../lib/attention.js';
 
 type ObserveChatMessageJobData = {
   messageId: string;
@@ -142,6 +148,124 @@ function looksLikeSocialTaskJoke(content: string): boolean {
     /\b(?:joke|joking|kidding|mostly|ban|constitution|debate|debates|drama)\b/i.test(plain);
 }
 
+function normalizedPersonName(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/^@/, '')
+    .replace(/[^a-zA-Z0-9\s'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export function boundedRequestPriority(
+  content: string,
+  deadline: string | null,
+  now = new Date(),
+): AttentionPriority {
+  if (hasConcreteBlockedSignal(content)) return 'high';
+  if (!deadline) return 'normal';
+  const deadlineAt = new Date(deadline);
+  const remainingMs = deadlineAt.getTime() - now.getTime();
+  return Number.isFinite(remainingMs) && remainingMs > 0 && remainingMs <= 4 * 60 * 60 * 1000
+    ? 'high'
+    : 'normal';
+}
+
+export function isBoundedRequestCandidate(
+  content: string,
+  classification: Pick<ClassificationResult,
+    'is_request' | 'agent_mentioned' | 'confidence' | 'requested_action' | 'requested_people'>,
+): boolean {
+  const structured = parseMentions(content);
+  return !(
+    structured.userIds.length > 0 || structured.here || structured.all ||
+    !classification.is_request || classification.agent_mentioned ||
+    classification.confidence < 0.85 ||
+    !classification.requested_action ||
+    classification.requested_people.length < 1 || classification.requested_people.length > 3 ||
+    looksLikeSocialChatter(content) || looksLikeSocialTaskJoke(content)
+  );
+}
+
+async function createBoundedRequestAttention(params: {
+  orgId: string;
+  spaceId: string;
+  messageId: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  classification: Awaited<ReturnType<typeof classifyMessage>>;
+}): Promise<number> {
+  const { classification } = params;
+  if (!isBoundedRequestCandidate(params.content, classification)) return 0;
+
+  const members = await db
+    .select({ id: users.id, name: users.name })
+    .from(orgMembers)
+    .innerJoin(users, eq(users.id, orgMembers.user_id))
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.user_id, users.id),
+      eq(spaceMembers.space_id, params.spaceId),
+    ))
+    .where(and(
+      eq(orgMembers.org_id, params.orgId),
+      eq(orgMembers.is_active, true),
+      eq(users.kind, 'human'),
+      eq(users.is_agent, false),
+    ));
+  const resolved = new Map<string, { id: string; name: string }>();
+  for (const requestedName of classification.requested_people) {
+    const normalized = normalizedPersonName(requestedName);
+    if (!normalized) return 0;
+    const exact = members.filter((member) => normalizedPersonName(member.name) === normalized);
+    const firstName = members.filter((member) => normalizedPersonName(member.name).split(' ')[0] === normalized);
+    const matches = exact.length === 1 ? exact : firstName.length === 1 ? firstName : [];
+    const match = matches[0];
+    if (!match || match.id === params.authorId) return 0;
+    resolved.set(match.id, match);
+  }
+  if (resolved.size !== classification.requested_people.length || resolved.size > 3) return 0;
+
+  const priority = boundedRequestPriority(params.content, classification.request_deadline);
+  let created = 0;
+  for (const recipient of resolved.values()) {
+    const policy = await explainNotificationPolicy({ user_id: recipient.id, type: 'message' }, {
+      channel: 'chat',
+      spaceId: params.spaceId,
+      isMention: true,
+    });
+    if (!policy.allowed) continue;
+    const item = await upsertAttentionItem({
+      orgId: params.orgId,
+      userId: recipient.id,
+      kind: 'human_request',
+      lane: 'needs_you',
+      priority,
+      dedupeKey: `ai-request:${params.messageId}:${recipient.id}`,
+      sourceType: 'message',
+      sourceId: params.messageId,
+      sourceEventId: `ai-request:${params.messageId}:${recipient.id}`,
+      title: `${params.authorName} needs your input`,
+      body: classification.requested_action,
+      link: `/chat?space=${encodeURIComponent(params.spaceId)}&message=${encodeURIComponent(params.messageId)}`,
+      metadata: {
+        classification_source: 'bounded_ai',
+        classification_confidence: classification.confidence,
+        requested_person: recipient.name,
+        requested_action: classification.requested_action,
+        request_deadline: classification.request_deadline,
+        source_message_id: params.messageId,
+        source_space_id: params.spaceId,
+        urgency_rule: priority === 'high' ? 'blocked_or_deadline_under_4h' : 'ordinary_request',
+      },
+    });
+    if (item) created += 1;
+  }
+  return created;
+}
+
 function statusContextFact(content: string): string | null {
   const plain = toPlainText(content)
     .replace(/^DENSE-[^:]+:\s*/i, '')
@@ -256,7 +380,7 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
   }
 
   const [author] = await db
-    .select({ is_agent: users.is_agent })
+    .select({ is_agent: users.is_agent, name: users.name })
     .from(users)
     .where(eq(users.id, message.user_id))
     .limit(1);
@@ -331,6 +455,23 @@ export async function handleObserveChatMessage(job: JobData): Promise<void> {
   });
 
   const downstreamJobs: Array<Record<string, unknown>> = [];
+  const requestAttentionCount = await createBoundedRequestAttention({
+    orgId,
+    spaceId: message.space_id,
+    messageId,
+    authorId: message.user_id,
+    authorName: author?.name ?? 'A teammate',
+    content: message.content,
+    classification,
+  });
+  if (requestAttentionCount > 0) {
+    downstreamJobs.push({
+      name: 'attention-request',
+      reason: 'bounded_ai',
+      recipients: requestAttentionCount,
+      confidence: classification.confidence,
+    });
+  }
   const resourceCapture = looksLikeResourceCapture(message.content);
   const explicitKnowledgeUpdate = hasExplicitKnowledgeUpdateSignal(message.content);
   const explicitDecision = extractExplicitDecision(message.content) || classification.decision;

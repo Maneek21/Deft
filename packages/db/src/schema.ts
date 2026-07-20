@@ -85,6 +85,19 @@ export type UserNotificationPreferences = {
     calendar: boolean;
     agents: boolean;
   };
+  push: {
+    enabled: boolean;
+    chat: boolean;
+    tasks: boolean;
+    approvals: boolean;
+    calendar: boolean;
+    agents: boolean;
+    quiet_hours: {
+      enabled: boolean;
+      start: string;
+      end: string;
+    };
+  };
 };
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: UserNotificationPreferences = {
@@ -95,6 +108,19 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: UserNotificationPreferences = {
     approvals: true,
     calendar: true,
     agents: true,
+  },
+  push: {
+    enabled: false,
+    chat: true,
+    tasks: true,
+    approvals: true,
+    calendar: true,
+    agents: true,
+    quiet_hours: {
+      enabled: false,
+      start: '22:00',
+      end: '08:00',
+    },
   },
 };
 export const notificationTypeEnum = pgEnum('notification_type', [
@@ -526,6 +552,113 @@ export const agentActions = pgTable('agent_actions', {
 }, (t) => [
   index('agent_action_org_idx').on(t.org_id),
   index('agent_action_user_idx').on(t.user_id),
+]);
+
+// ═══ ATTENTION + DELIVERY ═══
+// Durable user-facing attention is separate from legacy notifications. A
+// single item may absorb many source events while retaining a complete event
+// ledger and independent delivery attempts.
+export const attentionItems = pgTable('attention_items', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  lane: text('lane').notNull(),
+  priority: text('priority').default('normal').notNull(),
+  state: text('state').default('open_unseen').notNull(),
+  dedupe_key: text('dedupe_key').notNull(),
+  source_type: text('source_type').notNull(),
+  source_id: text('source_id').notNull(),
+  source_event_id: text('source_event_id'),
+  title: text('title').notNull(),
+  body: text('body'),
+  link: text('link'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  due_at: timestamp('due_at'),
+  urgent_at: timestamp('urgent_at'),
+  last_event_at: timestamp('last_event_at').defaultNow().notNull(),
+  event_count: integer('event_count').default(1).notNull(),
+  version: integer('version').default(1).notNull(),
+  seen_at: timestamp('seen_at'),
+  acknowledged_at: timestamp('acknowledged_at'),
+  snoozed_until: timestamp('snoozed_until'),
+  resolved_at: timestamp('resolved_at'),
+  resolution: text('resolution'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('attention_item_user_dedupe_unique').on(t.org_id, t.user_id, t.dedupe_key),
+  index('attention_item_user_state_idx').on(t.org_id, t.user_id, t.state, t.last_event_at),
+  index('attention_item_user_lane_idx').on(t.org_id, t.user_id, t.lane, t.last_event_at),
+  index('attention_item_source_idx').on(t.org_id, t.source_type, t.source_id),
+]);
+
+export const attentionEvents = pgTable('attention_events', {
+  ...id(),
+  ...orgId(),
+  attention_item_id: text('attention_item_id').notNull().references(() => attentionItems.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  event_type: text('event_type').notNull(),
+  source_event_id: text('source_event_id').notNull(),
+  actor_user_id: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('attention_event_item_idx').on(t.attention_item_id, t.created_at),
+  index('attention_event_user_idx').on(t.org_id, t.user_id, t.created_at),
+  uniqueIndex('attention_event_source_unique').on(t.org_id, t.user_id, t.source_event_id, t.event_type),
+]);
+
+export const attentionDeliveries = pgTable('attention_deliveries', {
+  ...id(),
+  ...orgId(),
+  attention_item_id: text('attention_item_id').notNull().references(() => attentionItems.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  channel: text('channel').notNull(),
+  status: text('status').default('queued').notNull(),
+  delivery_version: integer('delivery_version').default(1).notNull(),
+  attempt_count: integer('attempt_count').default(0).notNull(),
+  provider_message_id: text('provider_message_id'),
+  last_error: text('last_error'),
+  next_attempt_at: timestamp('next_attempt_at'),
+  sent_at: timestamp('sent_at'),
+  delivered_at: timestamp('delivered_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('attention_delivery_version_unique').on(t.attention_item_id, t.channel, t.delivery_version),
+  index('attention_delivery_queue_idx').on(t.status, t.next_attempt_at),
+  index('attention_delivery_user_idx').on(t.org_id, t.user_id, t.created_at),
+]);
+
+export const webPushSubscriptions = pgTable('web_push_subscriptions', {
+  ...id(),
+  ...orgId(),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  endpoint: text('endpoint').notNull(),
+  endpoint_hash: text('endpoint_hash').notNull(),
+  p256dh: text('p256dh').notNull(),
+  auth: text('auth').notNull(),
+  device_name: text('device_name'),
+  user_agent: text('user_agent'),
+  is_active: boolean('is_active').default(true).notNull(),
+  failure_count: integer('failure_count').default(0).notNull(),
+  last_used_at: timestamp('last_used_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('web_push_subscription_endpoint_hash_unique').on(t.endpoint_hash),
+  index('web_push_subscription_user_idx').on(t.org_id, t.user_id, t.is_active),
+]);
+
+export const agentActionApprovers = pgTable('agent_action_approvers', {
+  ...id(),
+  ...orgId(),
+  action_id: text('action_id').notNull().references(() => agentActions.id, { onDelete: 'cascade' }),
+  user_id: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  decision: text('decision').default('pending').notNull(),
+  decided_at: timestamp('decided_at'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('agent_action_approver_unique').on(t.action_id, t.user_id),
+  index('agent_action_approver_user_idx').on(t.org_id, t.user_id, t.decision),
 ]);
 
 // ═══ WORK INTENTS ═══

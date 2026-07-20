@@ -4,6 +4,7 @@ import { useRef, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Clock, KeyRound, Loader2, Save, X } from 'lucide-react';
+import { BrowserNotificationSettings } from '@/components/browser-notification-settings';
 
 const COMMON_TIMEZONES = [
   'UTC',
@@ -396,6 +397,7 @@ export default function ProfileSettingsPage() {
                     <input value={notificationKeywords} onChange={(e) => setNotificationKeywords(e.target.value)} placeholder="launch, buyer, blocker, invoice" className="w-full rounded-lg px-3 py-2 text-[14px] outline-none" style={{ background: 'var(--surface)', color: 'var(--foreground)', border: '1px solid var(--border)' }} />
                     <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>Comma separated. These add attention, they do not replace mentions or assignments.</span>
                   </label>
+                  <BrowserNotificationSettings />
                 </div>
                 <label className="flex items-center justify-between gap-3 rounded-lg px-3 py-3 md:col-span-2" style={{ background: 'var(--surface-container-low)', border: '1px solid var(--border)' }}>
                   <span>

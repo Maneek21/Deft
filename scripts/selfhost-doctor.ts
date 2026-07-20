@@ -60,6 +60,22 @@ function mark(check: Check) {
   console.log(`[${icon}] ${check.name}: ${check.detail}`);
 }
 
+function checkWebPushConfig(): Check {
+  const publicKey = process.env.VAPID_PUBLIC_KEY?.trim() ?? '';
+  const privateKey = process.env.VAPID_PRIVATE_KEY?.trim() ?? '';
+  const subject = process.env.VAPID_SUBJECT?.trim() ?? '';
+  if (!publicKey && !privateKey) {
+    return { name: 'Browser notifications', ok: true, warn: true, detail: 'VAPID keys are not configured; Inbox remains available but Web Push is disabled' };
+  }
+  if (!publicKey || !privateKey || !subject) {
+    return { name: 'Browser notifications', ok: false, detail: 'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT must be configured together' };
+  }
+  if (!/^(mailto:|https:\/\/)/i.test(subject)) {
+    return { name: 'Browser notifications', ok: false, detail: 'VAPID_SUBJECT must start with mailto: or https://' };
+  }
+  return { name: 'Browser notifications', ok: true, detail: 'VAPID keys and subject are configured' };
+}
+
 async function checkApi(): Promise<Check> {
   const res = await fetchStatus(`${API_URL}/health`);
   return {
@@ -220,6 +236,7 @@ async function main() {
 
   const checks = [
     await checkUrlAgreement(),
+    checkWebPushConfig(),
     await checkApi(),
     await checkWeb(),
     await checkCors(),

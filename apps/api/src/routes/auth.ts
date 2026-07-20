@@ -336,6 +336,19 @@ const notificationPreferencesSchema = z.object({
     calendar: z.boolean().optional(),
     agents: z.boolean().optional(),
   }).optional(),
+  push: z.object({
+    enabled: z.boolean().optional(),
+    chat: z.boolean().optional(),
+    tasks: z.boolean().optional(),
+    approvals: z.boolean().optional(),
+    calendar: z.boolean().optional(),
+    agents: z.boolean().optional(),
+    quiet_hours: z.object({
+      enabled: z.boolean().optional(),
+      start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+      end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    }).optional(),
+  }).optional(),
 });
 
 const profileUpdateSchema = z.object({
@@ -358,12 +371,25 @@ const passwordChangeSchema = z.object({
 function normalizeNotificationPreferences(
   input?: z.infer<typeof notificationPreferencesSchema>,
   fallbackKeywords?: string[],
+  previousValue?: unknown,
 ): UserNotificationPreferences {
+  const previous = (previousValue ?? {}) as Partial<UserNotificationPreferences>;
   return {
-    keywords: cleanStringArray(input?.keywords ?? fallbackKeywords) ?? [],
+    keywords: cleanStringArray(input?.keywords ?? fallbackKeywords ?? previous.keywords) ?? [],
     channels: {
       ...DEFAULT_NOTIFICATION_PREFERENCES.channels,
+      ...(previous.channels ?? {}),
       ...(input?.channels ?? {}),
+    },
+    push: {
+      ...DEFAULT_NOTIFICATION_PREFERENCES.push,
+      ...(previous.push ?? {}),
+      ...(input?.push ?? {}),
+      quiet_hours: {
+        ...DEFAULT_NOTIFICATION_PREFERENCES.push.quiet_hours,
+        ...(previous.push?.quiet_hours ?? {}),
+        ...(input?.push?.quiet_hours ?? {}),
+      },
     },
   };
 }
@@ -543,6 +569,11 @@ authRoutes.patch('/me', async (c) => {
     }
 
     const updates: Record<string, string | string[] | boolean | null | UserNotificationPreferences> = {};
+    const [existingProfile] = await db
+      .select({ notification_preferences: users.notification_preferences })
+      .from(users)
+      .where(eq(users.id, payload.id))
+      .limit(1);
     if (parsed.data.name !== undefined) updates.name = parsed.data.name;
     if (parsed.data.title !== undefined) updates.title = parsed.data.title || null;
     if (parsed.data.profile_summary !== undefined) updates.profile_summary = parsed.data.profile_summary || null;
@@ -550,13 +581,21 @@ authRoutes.patch('/me', async (c) => {
     if (parsed.data.timezone !== undefined) updates.timezone = parsed.data.timezone;
     if (parsed.data.avatar_url !== undefined) updates.avatar_url = parsed.data.avatar_url;
     if (parsed.data.notification_preferences !== undefined) {
-      const normalized = normalizeNotificationPreferences(parsed.data.notification_preferences, parsed.data.notification_keywords);
+      const normalized = normalizeNotificationPreferences(
+        parsed.data.notification_preferences,
+        parsed.data.notification_keywords,
+        existingProfile?.notification_preferences,
+      );
       updates.notification_preferences = normalized;
       updates.notification_keywords = normalized.keywords;
     } else if (parsed.data.notification_keywords !== undefined) {
       const keywords = cleanStringArray(parsed.data.notification_keywords) ?? [];
       updates.notification_keywords = keywords;
-      updates.notification_preferences = normalizeNotificationPreferences(undefined, keywords);
+      updates.notification_preferences = normalizeNotificationPreferences(
+        undefined,
+        keywords,
+        existingProfile?.notification_preferences,
+      );
     }
     if (parsed.data.show_read_receipts !== undefined) updates.show_read_receipts = parsed.data.show_read_receipts;
 

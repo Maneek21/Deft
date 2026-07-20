@@ -7,6 +7,7 @@ import {
   type UserNotificationPreferences,
 } from '@deft/db/schema';
 import { db } from './db.js';
+import { syncNotificationToAttention } from './attention.js';
 
 type NotificationChannel = keyof UserNotificationPreferences['channels'];
 type NotificationInsert = typeof notifications.$inferInsert;
@@ -48,6 +49,14 @@ function normalizePreferences(value: unknown): UserNotificationPreferences {
         candidate?.channels?.calendar ??
         DEFAULT_NOTIFICATION_PREFERENCES.channels.calendar,
       agents: candidate?.channels?.agents ?? DEFAULT_NOTIFICATION_PREFERENCES.channels.agents,
+    },
+    push: {
+      ...DEFAULT_NOTIFICATION_PREFERENCES.push,
+      ...(candidate?.push ?? {}),
+      quiet_hours: {
+        ...DEFAULT_NOTIFICATION_PREFERENCES.push.quiet_hours,
+        ...(candidate?.push?.quiet_hours ?? {}),
+      },
     },
   };
 }
@@ -178,6 +187,14 @@ export async function createNotificationIfAllowed(
       },
     },
   }).returning();
+  if (notification) {
+    await syncNotificationToAttention(notification).catch((error) => {
+      console.warn('[notification-policy] Attention dual-write failed', {
+        notificationId: notification.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
   return notification ?? null;
 }
 
@@ -241,7 +258,16 @@ export async function createNotificationsIfAllowed(
   });
 
   if (allowed.length === 0) return [];
-  return db.insert(notifications).values(allowed).returning();
+  const inserted = await db.insert(notifications).values(allowed).returning();
+  await Promise.all(inserted.map((notification) =>
+    syncNotificationToAttention(notification).catch((error) => {
+      console.warn('[notification-policy] Attention dual-write failed', {
+        notificationId: notification.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+  ));
+  return inserted;
 }
 
 // Drizzle requires an expression for a LEFT JOIN even when no space policy is

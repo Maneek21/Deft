@@ -29,6 +29,8 @@ const DEFTY_USER_ID = 'test-resolver-defty-user';
 const DEFTY_SLUG = 'defty-system';
 const APPROVER_USER_ID = 'test-resolver-approver';
 const APPROVER_EMAIL = 'resolver-approver@test.local';
+const REVIEWER_USER_ID = 'test-resolver-reviewer';
+const REVIEWER_EMAIL = 'resolver-reviewer@test.local';
 const OTHER_ORG_ID = '00000000-0000-0000-0000-000000000999';
 const OUTSIDER_USER_ID = 'test-resolver-outsider';
 const OUTSIDER_EMAIL = 'resolver-outsider@test.local';
@@ -74,7 +76,7 @@ async function seedFixtures() {
       [SHADOW_USER_ID, 'resolver-shadow@test.local', 'Resolver Shadow User'],
     );
 
-    // Approver — real user, member of ORG_ID.
+    // Approver — admin reviewer for the existing resolver matrix.
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
        VALUES ($1, $2, 'Resolver Approver', false)
@@ -83,9 +85,23 @@ async function seedFixtures() {
     );
     await c.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
-       ON CONFLICT (org_id, user_id) DO NOTHING`,
+       VALUES (gen_random_uuid()::text, $1, $2, 'admin', true)
+       ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'admin', is_active = true`,
       [ORG_ID, APPROVER_USER_ID],
+    );
+
+    // Ordinary org member used to prove cross-user approvals are forbidden.
+    await c.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, 'Resolver Reviewer', false)
+       ON CONFLICT (id) DO NOTHING`,
+      [REVIEWER_USER_ID, REVIEWER_EMAIL],
+    );
+    await c.query(
+      `INSERT INTO org_members (id, org_id, user_id, role, is_active)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'member', is_active = true`,
+      [ORG_ID, REVIEWER_USER_ID],
     );
 
     // Outsider — exists but is NOT a member of ORG_ID (will be added to
@@ -207,6 +223,25 @@ async function teardownFixtures() {
        WHERE action_id IN (SELECT id FROM agent_actions WHERE user_id = $1)
           OR action_id IN (SELECT id FROM agent_actions WHERE user_id = $2)
           OR employee_id IN ($3, $4, $5)`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
+    );
+    await c.query(
+      `DELETE FROM attention_items
+       WHERE source_type = 'approval'
+         AND source_id IN (
+           SELECT id FROM agent_actions
+           WHERE user_id IN ($1, $2)
+              OR agent_employee_id IN ($3, $4, $5)
+         )`,
+      [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
+    );
+    await c.query(
+      `DELETE FROM agent_action_approvers
+       WHERE action_id IN (
+         SELECT id FROM agent_actions
+         WHERE user_id IN ($1, $2)
+            OR agent_employee_id IN ($3, $4, $5)
+       )`,
       [SHADOW_USER_ID, DEFTY_USER_ID, EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     if (TEST_WIKI_PAGE_IDS.length > 0) {
@@ -362,16 +397,16 @@ async function teardownFixtures() {
       );
     }
     await c.query(
-      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4, $5)`,
-      [APPROVER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
+      `DELETE FROM org_members WHERE user_id IN ($1, $2, $3, $4, $5, $6)`,
+      [APPROVER_USER_ID, REVIEWER_USER_ID, OUTSIDER_USER_ID, SHADOW_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
     );
     await c.query(
       `DELETE FROM agent_employees WHERE id IN ($1, $2, $3)`,
       [EMP_ID, DEFTY_EMP_ID, FOREIGN_EMP_ID],
     );
     await c.query(
-      `DELETE FROM users WHERE id IN ($1, $2, $3, $4, $5)`,
-      [SHADOW_USER_ID, APPROVER_USER_ID, OUTSIDER_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
+      `DELETE FROM users WHERE id IN ($1, $2, $3, $4, $5, $6)`,
+      [SHADOW_USER_ID, APPROVER_USER_ID, REVIEWER_USER_ID, OUTSIDER_USER_ID, DEFTY_USER_ID, FOREIGN_USER_ID],
     );
     await c.query(
       `DELETE FROM orgs WHERE id = $1 AND slug = 'resolver-other-org'`,
@@ -1298,6 +1333,40 @@ test('4. approving by a user not in the org returns FORBIDDEN', async () => {
       'row must stay pending when approver is not in the org',
     );
   });
+});
+
+test('4a. an ordinary member cannot approve another requester\'s action', async () => {
+  const title = `resolver-test-4a-${Date.now()}`;
+  const actionId = await insertPendingTaskCreate(title, {
+    source_user_id: APPROVER_USER_ID,
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, REVIEWER_USER_ID);
+
+  assert.equal(result.status, 'error');
+  // @ts-expect-error narrowed by status above
+  assert.equal(result.code, 'FORBIDDEN');
+  const row = await withClient((c) =>
+    c.query(`SELECT approval_status FROM agent_actions WHERE id = $1`, [actionId]),
+  );
+  assert.equal(row.rows[0].approval_status, 'pending');
+});
+
+test('4aa. the effective requester can approve their own action', async () => {
+  const title = `resolver-test-4aa-${Date.now()}`;
+  const actionId = await insertPendingTaskCreate(title, {
+    source_user_id: REVIEWER_USER_ID,
+  });
+
+  const { approveAction } = await import('../src/lib/agent-approval-resolver.js');
+  const result = await approveAction(actionId, REVIEWER_USER_ID);
+
+  assert.equal(result.status, 'approved');
+  const task = await withClient((c) =>
+    c.query(`SELECT id FROM tasks WHERE title = $1`, [title]),
+  );
+  assert.equal(task.rows.length, 1);
 });
 
 test('4b. approving an action whose employee belongs to another org returns FORBIDDEN', async () => {

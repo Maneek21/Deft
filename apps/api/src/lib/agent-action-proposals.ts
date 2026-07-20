@@ -7,6 +7,7 @@ import { llm } from './llm.js';
 import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
 import { buildActionGraph, type ActionGraph } from './agent-action-graph.js';
+import { syncApprovalToAttention } from './attention.js';
 
 type ApprovalTier = 'auto' | 'quick' | 'full';
 
@@ -33,7 +34,7 @@ type PersistReplyWithActionsParams = {
 };
 
 export async function persistAgentReplyWithActions(params: PersistReplyWithActionsParams) {
-  return db.transaction(async (tx) => {
+  const persisted = await db.transaction(async (tx) => {
     const novelActions: ProposedAgentAction[] = [];
     const duplicateActions: Array<typeof agentActions.$inferSelect> = [];
     const seenKeys = new Set<string>();
@@ -108,6 +109,15 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
 
     return { message: agentMessage, actions, duplicates: duplicateActions };
   });
+  await Promise.all(persisted.actions.map((action) =>
+    syncApprovalToAttention(action).catch((error) => {
+      console.warn('[agent-action-proposals] Approval attention dual-write failed', {
+        actionId: action.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+  ));
+  return persisted;
 }
 
 function normalizeApprovalTier(action: ProposedAgentAction): ApprovalTier {

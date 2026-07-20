@@ -66,8 +66,8 @@ async function seedFixtures() {
     );
     await c.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
-       ON CONFLICT (org_id, user_id) DO NOTHING`,
+       VALUES (gen_random_uuid()::text, $1, $2, 'admin', true)
+       ON CONFLICT (org_id, user_id) DO UPDATE SET role = 'admin', is_active = true`,
       [ORG_ID, APPROVER_USER_ID],
     );
 
@@ -509,6 +509,7 @@ before(async () => {
       id: APPROVER_USER_ID,
       email: APPROVER_EMAIL,
       org_id: ORG_ID,
+      role: 'admin',
     } as any);
     await next();
   });
@@ -823,7 +824,7 @@ test('GET /api/agent expiry pass does not mutate hidden Defty captures', async (
   });
 });
 
-test('GET /api/agent/actions/pending expires linked proposed work intents', async () => {
+test('attention maintenance expires linked proposed work intents', async () => {
   const title = `routes-intent-expire-${Date.now()}`;
   const { actionId, intentId } = await insertDeftyTaskCreateWithIntent(title);
 
@@ -835,6 +836,9 @@ test('GET /api/agent/actions/pending expires linked proposed work intents', asyn
       [actionId],
     );
   });
+
+  const { maintainAttentionSystem } = await import('../src/lib/attention-maintenance.js');
+  await maintainAttentionSystem(new Date());
 
   const res = await app().request('/api/agent/actions/pending', { method: 'GET' });
   assert.equal(res.status, 200);

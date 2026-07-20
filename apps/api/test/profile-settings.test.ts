@@ -132,6 +132,19 @@ describe('profile settings', () => {
         calendar: false,
         agents: true,
       },
+      push: {
+        enabled: false,
+        chat: true,
+        tasks: true,
+        approvals: true,
+        calendar: true,
+        agents: true,
+        quiet_hours: {
+          enabled: false,
+          start: '22:00',
+          end: '08:00',
+        },
+      },
     });
     assert.equal(body.user.show_read_receipts, false);
 
