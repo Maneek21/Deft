@@ -388,6 +388,15 @@ try {
   const counters = connection.counters;
   results.phases.websocket_connect = { connected: sockets.length, seconds: Math.round((performance.now() - socketStart) / 100) / 10 };
 
+  const attentionBaseline = await pool.query(`
+    SELECT count(*)::int projected
+    FROM attention_events
+    WHERE org_id = $1
+      AND event_type = 'source_event'
+      AND source_event_id LIKE 'notification:%'
+  `, [orgId]);
+  const projectedBeforeLoad = attentionBaseline.rows[0].projected;
+
   process.stdout.write('[cert] Running simultaneous message + notification burst\n');
   const burst = await postMessages({ users, tokens, spaceId, count: BURST_MESSAGES, prefix: 'burst' });
   await sleep(1500);
@@ -413,27 +422,26 @@ try {
   await waitFor(async () => {
     const { rows } = await pool.query(`
       SELECT count(*)::int projected
-      FROM attention_events ae
-      INNER JOIN notifications n ON ae.source_event_id = 'notification:' || n.id
-      WHERE ae.event_type = 'source_event'
-        AND n.org_id = $1
-        AND n.body LIKE $2
-    `, [orgId, `[CERT:${runId}:%`]);
-    return rows[0].projected === expectedNotificationDeliveries ? rows[0].projected : false;
+      FROM attention_events
+      WHERE org_id = $1
+        AND event_type = 'source_event'
+        AND source_event_id LIKE 'notification:%'
+    `, [orgId]);
+    const projectedDuringLoad = rows[0].projected - projectedBeforeLoad;
+    return projectedDuringLoad === expectedNotificationDeliveries ? projectedDuringLoad : false;
   }, Math.max(5000, MAX_ATTENTION_PROJECTION_SECONDS * 1000), 250);
   const attentionProjectionSeconds = Math.round((performance.now() - attentionProjectionStarted) / 100) / 10;
   results.phases.notification_fanout_profile = parseCapacityProfiles(apiLog);
   const attentionProjectionProof = await pool.query(`
     SELECT count(*)::int projected
-    FROM attention_events ae
-    INNER JOIN notifications n ON ae.source_event_id = 'notification:' || n.id
-    WHERE ae.event_type = 'source_event'
-      AND n.org_id = $1
-      AND n.body LIKE $2
-  `, [orgId, `[CERT:${runId}:%`]);
+    FROM attention_events
+    WHERE org_id = $1
+      AND event_type = 'source_event'
+      AND source_event_id LIKE 'notification:%'
+  `, [orgId]);
   results.phases.attention_projection = {
     expected: expectedNotificationDeliveries,
-    actual: attentionProjectionProof.rows[0].projected,
+    actual: attentionProjectionProof.rows[0].projected - projectedBeforeLoad,
     post_load_drain_seconds: attentionProjectionSeconds,
     end_to_end_p95_ms: results.phases.notification_fanout_profile.attention_projection.end_to_end.p95_ms,
   };
