@@ -7,3 +7,10 @@ test('scheduled chat-knowledge-batch resolves to a real handler', async () => {
 
   assert.equal(typeof handler, 'function');
 });
+
+test('scheduled notification-attention-sync resolves to a real handler', async () => {
+  const workers = await import('../src/workers/index.js');
+  const handler = await workers._getScheduledJobHandlerForTest('notification-attention-sync');
+
+  assert.equal(typeof handler, 'function');
+});

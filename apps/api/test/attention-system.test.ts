@@ -7,6 +7,7 @@ import {
   attentionEvents,
   attentionItems,
   messages,
+  notifications,
   orgMembers,
   orgs,
   spaceMembers,
@@ -24,6 +25,7 @@ import {
   upsertAttentionItem,
   visibleAttentionCondition,
 } from '../src/lib/attention.js';
+import { handleNotificationAttentionSync } from '../src/workers/handlers/notification-attention-sync.js';
 
 let orgId: string;
 let authorId: string;
@@ -67,6 +69,7 @@ before(async () => {
 
 after(async () => {
   await db.delete(attentionItems).where(eq(attentionItems.org_id, orgId));
+  await db.delete(notifications).where(eq(notifications.org_id, orgId));
   await db.delete(agentActions).where(eq(agentActions.org_id, orgId));
   await db.delete(messages).where(eq(messages.org_id, orgId));
   await db.delete(spaceMembers).where(eq(spaceMembers.space_id, privateSpaceId));
@@ -155,6 +158,73 @@ test('attention dedupes source retries and appends distinct events', async () =>
   assert.equal(changed?.event_count, 2);
   const events = await db.select().from(attentionEvents).where(eq(attentionEvents.attention_item_id, first!.id));
   assert.equal(events.filter((event) => event.event_type === 'source_event').length, 2);
+});
+
+test('bulk notification projection is isolated, folded, and idempotent', async () => {
+  const inserted = await db.insert(notifications).values([
+    {
+      org_id: orgId,
+      user_id: recipientId,
+      type: 'message',
+      title: 'First update',
+      body: 'One durable source event',
+      link: `/chat?space=${privateSpaceId}&message=${privateMessageId}`,
+      metadata: { message_id: privateMessageId, space_id: privateSpaceId },
+    },
+    {
+      org_id: orgId,
+      user_id: recipientId,
+      type: 'message',
+      title: 'Updated summary',
+      body: 'A second event folded into the same item',
+      link: `/chat?space=${privateSpaceId}&message=${privateMessageId}`,
+      metadata: { message_id: privateMessageId, space_id: privateSpaceId },
+    },
+    {
+      org_id: orgId,
+      user_id: authorId,
+      type: 'message',
+      title: 'Separate recipient',
+      body: 'The same source remains user-isolated',
+      link: `/chat?space=${privateSpaceId}&message=${privateMessageId}`,
+      metadata: { message_id: privateMessageId, space_id: privateSpaceId },
+    },
+  ]).returning();
+
+  await handleNotificationAttentionSync({
+    id: 'attention-worker-test',
+    name: 'notification-attention-sync',
+    attempts: 1,
+    data: { orgId, notificationIds: inserted.map((notification) => notification.id) },
+  });
+  const projected = await db.select().from(attentionItems).where(and(
+    eq(attentionItems.org_id, orgId),
+    eq(attentionItems.dedupe_key, `message:${privateMessageId}`),
+    inArray(attentionItems.user_id, [recipientId, authorId]),
+  ));
+  assert.equal(projected.length, 2);
+  const recipientItem = projected.find((item) => item.user_id === recipientId);
+  const authorItem = projected.find((item) => item.user_id === authorId);
+  assert.equal(recipientItem?.event_count, 2);
+  assert.equal(authorItem?.event_count, 1);
+  assert.equal(recipientItem?.source_id, privateMessageId);
+  assert.equal(authorItem?.source_id, privateMessageId);
+  assert.equal((await filterVisibleAttentionItems(recipientId, [recipientItem!])).length, 1);
+
+  const eventRows = await db.select().from(attentionEvents).where(inArray(
+    attentionEvents.source_event_id,
+    inserted.map((notification) => `notification:${notification.id}`),
+  ));
+  assert.equal(eventRows.length, 3);
+  await handleNotificationAttentionSync({
+    id: 'attention-worker-replay-test',
+    name: 'notification-attention-sync',
+    attempts: 2,
+    data: { orgId, notificationIds: inserted.map((notification) => notification.id) },
+  });
+
+  const [unchanged] = await db.select().from(attentionItems).where(eq(attentionItems.id, recipientItem!.id));
+  assert.equal(unchanged?.event_count, 2);
 });
 
 test('seen, acknowledged, snoozed, reopened, and resolved are distinct states', async () => {
