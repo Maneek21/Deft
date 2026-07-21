@@ -7,7 +7,8 @@ import {
   type UserNotificationPreferences,
 } from '@deft/db/schema';
 import { db } from './db.js';
-import { syncNotificationToAttention } from './attention.js';
+import { syncNotificationToAttention, syncNotificationsToAttention } from './attention.js';
+import { enqueue, QUEUE_NAMES } from './queues.js';
 
 type NotificationChannel = keyof UserNotificationPreferences['channels'];
 type NotificationInsert = typeof notifications.$inferInsert;
@@ -207,6 +208,8 @@ export async function createNotificationsIfAllowed(
   options: NotificationPolicyOptions = {},
 ): Promise<Array<typeof notifications.$inferSelect>> {
   if (values.length === 0) return [];
+  const traceEnabled = process.env.DEFT_CAPACITY_TRACE === '1';
+  const startedAt = performance.now();
   const first = values[0]!;
 
   const inferredChannel = options.channel === undefined
@@ -229,6 +232,7 @@ export async function createNotificationsIfAllowed(
         : eq(spaceMembers.user_id, sqlNeverMatches()),
     )
     .where(inArray(users.id, userIds));
+  const policyReadAt = performance.now();
   const recipientById = new Map(recipients.map((recipient) => [recipient.id, recipient]));
   const evaluatedAt = new Date().toISOString();
 
@@ -257,16 +261,58 @@ export async function createNotificationsIfAllowed(
     }];
   });
 
-  if (allowed.length === 0) return [];
+  if (allowed.length === 0) {
+    if (traceEnabled) {
+      console.info(`[capacity-profile] ${JSON.stringify({
+        event: 'notification_fanout',
+        requested: values.length,
+        allowed: 0,
+        policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
+        notification_insert_ms: 0,
+        attention_sync_ms: 0,
+        total_ms: Math.round((performance.now() - startedAt) * 10) / 10,
+      })}`);
+    }
+    return [];
+  }
   const inserted = await db.insert(notifications).values(allowed).returning();
-  await Promise.all(inserted.map((notification) =>
-    syncNotificationToAttention(notification).catch((error) => {
-      console.warn('[notification-policy] Attention dual-write failed', {
-        notificationId: notification.id,
+  const insertedAt = performance.now();
+  const byOrg = new Map<string, Array<typeof notifications.$inferSelect>>();
+  for (const notification of inserted) {
+    const group = byOrg.get(notification.org_id) ?? [];
+    group.push(notification);
+    byOrg.set(notification.org_id, group);
+  }
+  let attentionMode = 'queued';
+  for (const [orgId, orgNotifications] of byOrg) {
+    try {
+      await enqueue(QUEUE_NAMES.SCHEDULED_JOBS, 'notification-attention-sync', {
+        orgId,
+        notificationIds: orgNotifications.map((notification) => notification.id),
+        enqueuedAt: new Date().toISOString(),
+      }, { maxAttempts: 5 });
+    } catch (error) {
+      attentionMode = 'synchronous_fallback';
+      console.warn('[notification-policy] Attention queue insert failed; projecting synchronously', {
+        notificationCount: orgNotifications.length,
         error: error instanceof Error ? error.message : String(error),
       });
-    })
-  ));
+      await syncNotificationsToAttention(orgNotifications);
+    }
+  }
+  const attentionQueuedAt = performance.now();
+  if (traceEnabled) {
+    console.info(`[capacity-profile] ${JSON.stringify({
+      event: 'notification_fanout',
+      requested: values.length,
+      allowed: inserted.length,
+      policy_read_ms: Math.round((policyReadAt - startedAt) * 10) / 10,
+      notification_insert_ms: Math.round((insertedAt - policyReadAt) * 10) / 10,
+      attention_enqueue_ms: Math.round((attentionQueuedAt - insertedAt) * 10) / 10,
+      attention_mode: attentionMode,
+      total_ms: Math.round((attentionQueuedAt - startedAt) * 10) / 10,
+    })}`);
+  }
   return inserted;
 }
 

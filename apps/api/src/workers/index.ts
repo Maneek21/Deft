@@ -53,6 +53,12 @@ const CRON_KEYS: Record<string, string> = {
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
 const WORKER_POLL_INTERVAL_MS = Number.parseInt(process.env.DEFT_WORKER_POLL_INTERVAL_MS ?? '1000', 10);
 const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.DEFT_WORKER_BATCH_SIZE ?? '5', 10));
+const ATTENTION_PROJECTION_BATCH_SIZE = Math.max(
+  WORKER_BATCH_SIZE,
+  Number.parseInt(process.env.DEFT_ATTENTION_PROJECTION_BATCH_SIZE ?? '25', 10),
+);
+
+type DequeuedJob = { id: string; name: string; data: any; attempts: number };
 
 function runWithTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   if (!Number.isFinite(JOB_TIMEOUT_MS) || JOB_TIMEOUT_MS <= 0) return promise;
@@ -231,6 +237,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       const mod = await import('./handlers/attention-delivery.js');
       return mod.handleAttentionDelivery;
     }
+    case 'notification-attention-sync': {
+      const mod = await import('./handlers/notification-attention-sync.js');
+      return mod.handleNotificationAttentionSync;
+    }
     default:
       return null;
   }
@@ -248,7 +258,7 @@ async function getHandler(queueName: string, jobName: string): Promise<JobHandle
 
 async function processDequeuedJob(
   queueName: string,
-  job: { id: string; name: string; data: any; attempts: number },
+  job: DequeuedJob,
 ): Promise<void> {
   const handler = await getHandler(queueName, job.name);
   if (!handler) {
@@ -281,20 +291,75 @@ async function processDequeuedJob(
   }
 }
 
+async function processAttentionProjectionGroup(queueName: string, jobs: DequeuedJob[]): Promise<void> {
+  const notificationIds = Array.from(new Set(jobs.flatMap((job) =>
+    Array.isArray(job.data?.notificationIds) ? job.data.notificationIds : [],
+  )));
+  const timestamps = jobs
+    .map((job) => typeof job.data?.enqueuedAt === 'string' ? Date.parse(job.data.enqueuedAt) : Number.NaN)
+    .filter(Number.isFinite);
+  const merged: DequeuedJob = {
+    id: jobs[0]!.id,
+    name: 'notification-attention-sync',
+    attempts: Math.max(...jobs.map((job) => job.attempts)),
+    data: {
+      orgId: jobs[0]!.data?.orgId,
+      notificationIds,
+      enqueuedAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : undefined,
+    },
+  };
+  const handler = await getHandler(queueName, merged.name);
+  if (!handler) {
+    await Promise.all(jobs.map((job) => completeJob(job.id)));
+    return;
+  }
+
+  try {
+    await runWithTimeout(
+      handler(merged),
+      `Job group ${merged.name} (${jobs.length} jobs)`,
+    );
+    await Promise.all(jobs.map((job) => completeJob(job.id)));
+    console.log(`[worker] Job group ${merged.name} (${jobs.length} jobs) completed`);
+  } catch (err) {
+    const message = (err as Error).message;
+    await Promise.all(jobs.map((job) => failJob(job.id, message)));
+    console.error(`[worker] Job group ${merged.name} failed:`, message);
+  }
+}
+
 async function pollQueueBatch(queueName: string): Promise<void> {
-  const jobs: Array<{ id: string; name: string; data: any; attempts: number }> = [];
-  for (let i = 0; i < WORKER_BATCH_SIZE; i += 1) {
+  const jobs: DequeuedJob[] = [];
+  const batchSize = queueName === QUEUE_NAMES.SCHEDULED_JOBS
+    ? ATTENTION_PROJECTION_BATCH_SIZE
+    : WORKER_BATCH_SIZE;
+  for (let i = 0; i < batchSize; i += 1) {
     const job = await dequeueJob(queueName as any);
     if (!job) break;
     jobs.push(job);
   }
   if (jobs.length === 0) return;
-  await Promise.all(jobs.map((job) => processDequeuedJob(queueName, job)));
+  const projectionGroups = new Map<string, DequeuedJob[]>();
+  const ordinaryJobs: DequeuedJob[] = [];
+  for (const job of jobs) {
+    if (job.name !== 'notification-attention-sync') {
+      ordinaryJobs.push(job);
+      continue;
+    }
+    const orgId = typeof job.data?.orgId === 'string' ? job.data.orgId : `invalid:${job.id}`;
+    const group = projectionGroups.get(orgId) ?? [];
+    group.push(job);
+    projectionGroups.set(orgId, group);
+  }
+  await Promise.all([
+    ...ordinaryJobs.map((job) => processDequeuedJob(queueName, job)),
+    ...Array.from(projectionGroups.values()).map((group) => processAttentionProjectionGroup(queueName, group)),
+  ]);
 }
 
 // ─── Public API ───
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
-let pollInFlight = false;
+const pollInFlight = new Set<string>();
 
 export function startWorkers(): void {
   if (pollingInterval) return;
@@ -318,16 +383,14 @@ export function startWorkers(): void {
   }, 60000);
 
   pollingInterval = setInterval(async () => {
-    if (pollInFlight) return;
-    pollInFlight = true;
-    try {
-      await Promise.all(
-        Object.values(QUEUE_NAMES).map((queueName) => pollQueueBatch(queueName)),
-      );
-    } catch {
-      // Don't crash the poller on individual errors.
-    } finally {
-      pollInFlight = false;
+    for (const queueName of Object.values(QUEUE_NAMES)) {
+      if (pollInFlight.has(queueName)) continue;
+      pollInFlight.add(queueName);
+      void pollQueueBatch(queueName)
+        .catch(() => {
+          // Don't crash the poller on individual errors.
+        })
+        .finally(() => pollInFlight.delete(queueName));
     }
   }, WORKER_POLL_INTERVAL_MS);
 
@@ -341,4 +404,5 @@ export function stopWorkers(): void {
     clearInterval(pollingInterval);
     pollingInterval = null;
   }
+  pollInFlight.clear();
 }

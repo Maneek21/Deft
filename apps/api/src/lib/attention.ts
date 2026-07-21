@@ -15,7 +15,7 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { getIO } from '../socket.js';
-import { scheduleAttentionDelivery } from './web-push.js';
+import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
 export type AttentionPriority = 'critical' | 'high' | 'normal' | 'low';
@@ -413,6 +413,122 @@ export async function syncNotificationToAttention(
     }
   }
   return upsertAttentionItem(draft, options);
+}
+
+function draftIdentity(draft: AttentionDraft) {
+  return `${draft.orgId}\u0000${draft.userId}\u0000${draft.dedupeKey}`;
+}
+
+/**
+ * Project freshly inserted notifications into attention with a bounded number
+ * of queries. The single-item path remains the fallback for callers that need
+ * legacy link resolution or isolated retries.
+ */
+export async function syncNotificationsToAttention(
+  sourceNotifications: LegacyNotification[],
+  options: { deliver?: boolean } = {},
+) {
+  if (sourceNotifications.length === 0) return [];
+  const drafts = sourceNotifications.map(notificationToAttentionDraft);
+  const sourceEventIds = drafts.map((draft) => draft.sourceEventId);
+
+  const items = await db.transaction(async (tx) => {
+    const existingEvents = await tx
+      .select({ source_event_id: attentionEvents.source_event_id })
+      .from(attentionEvents)
+      .where(and(
+        inArray(attentionEvents.source_event_id, sourceEventIds),
+        eq(attentionEvents.event_type, 'source_event'),
+      ));
+    const alreadyProjected = new Set(existingEvents.map((event) => event.source_event_id));
+    const pendingDrafts = drafts.filter((draft) => !alreadyProjected.has(draft.sourceEventId));
+    if (pendingDrafts.length === 0) return [];
+
+    const grouped = new Map<string, { draft: AttentionDraft; eventCount: number }>();
+    for (const draft of pendingDrafts) {
+      const key = draftIdentity(draft);
+      const existing = grouped.get(key);
+      grouped.set(key, { draft, eventCount: (existing?.eventCount ?? 0) + 1 });
+    }
+
+    const projected = await tx
+      .insert(attentionItems)
+      .values(Array.from(grouped.values()).map(({ draft, eventCount }) => ({
+        org_id: draft.orgId,
+        user_id: draft.userId,
+        kind: draft.kind,
+        lane: draft.lane,
+        priority: draft.priority,
+        state: 'open_unseen',
+        dedupe_key: draft.dedupeKey,
+        source_type: draft.sourceType,
+        source_id: draft.sourceId,
+        source_event_id: draft.sourceEventId,
+        title: draft.title,
+        body: draft.body ?? null,
+        link: draft.link ?? null,
+        metadata: draft.metadata ?? {},
+        due_at: draft.dueAt ?? null,
+        urgent_at: draft.urgentAt ?? null,
+        last_event_at: draft.occurredAt ?? new Date(),
+        event_count: eventCount,
+      })))
+      .onConflictDoUpdate({
+        target: [attentionItems.org_id, attentionItems.user_id, attentionItems.dedupe_key],
+        set: {
+          kind: sql`excluded.kind`,
+          lane: sql`excluded.lane`,
+          priority: sql`excluded.priority`,
+          state: 'open_unseen',
+          source_type: sql`excluded.source_type`,
+          source_id: sql`excluded.source_id`,
+          source_event_id: sql`excluded.source_event_id`,
+          title: sql`excluded.title`,
+          body: sql`excluded.body`,
+          link: sql`excluded.link`,
+          metadata: sql`excluded.metadata`,
+          due_at: sql`excluded.due_at`,
+          urgent_at: sql`excluded.urgent_at`,
+          last_event_at: sql`excluded.last_event_at`,
+          event_count: sql`${attentionItems.event_count} + excluded.event_count`,
+          version: sql`${attentionItems.version} + 1`,
+          seen_at: null,
+          acknowledged_at: null,
+          snoozed_until: null,
+          resolved_at: null,
+          resolution: null,
+          updated_at: new Date(),
+        },
+      })
+      .returning();
+    const itemByIdentity = new Map(projected.map((item) => [
+      `${item.org_id}\u0000${item.user_id}\u0000${item.dedupe_key}`,
+      item,
+    ]));
+
+    await tx
+      .insert(attentionEvents)
+      .values(pendingDrafts.map((draft) => ({
+        org_id: draft.orgId,
+        attention_item_id: itemByIdentity.get(draftIdentity(draft))!.id,
+        user_id: draft.userId,
+        event_type: 'source_event',
+        source_event_id: draft.sourceEventId,
+        payload: { source_type: draft.sourceType, source_id: draft.sourceId },
+      })))
+      .onConflictDoNothing();
+
+    return projected;
+  });
+
+  for (const item of items) emitAttention(item.event_count > 1 ? 'attention:updated' : 'attention:new', item);
+  if (options.deliver !== false) {
+    await scheduleAttentionDeliveries(items).catch((error) => {
+      console.warn('[attention] push scheduling failed:', error instanceof Error ? error.message : error);
+      return [];
+    });
+  }
+  return items;
 }
 
 export async function filterVisibleAttentionItems<T extends typeof attentionItems.$inferSelect>(

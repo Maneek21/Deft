@@ -1,5 +1,5 @@
 import webpush from 'web-push';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   attentionDeliveries,
   attentionItems,
@@ -166,6 +166,76 @@ export async function scheduleAttentionDelivery(item: AttentionItem) {
     { delay, maxAttempts: PUSH_MAX_ATTEMPTS },
   );
   return delivery;
+}
+
+export async function scheduleAttentionDeliveries(items: AttentionItem[]) {
+  if (!webPushConfigured()) return [];
+  const candidates = items.filter((item) => item.state === 'open_unseen' && item.priority !== 'low');
+  if (candidates.length === 0) return [];
+
+  const userIds = Array.from(new Set(candidates.map((item) => item.user_id)));
+  const userRows = await db
+    .select({ id: users.id, preferences: users.notification_preferences, timezone: users.timezone })
+    .from(users)
+    .where(inArray(users.id, userIds));
+  const userById = new Map(userRows.map((user) => [user.id, user]));
+  const preferenceByUser = new Map(userRows.map((user) => [user.id, normalizedPreferences(user.preferences)]));
+  const preferenceAllowed = candidates.filter((item) => {
+    const preferences = preferenceByUser.get(item.user_id);
+    return preferences ? preferenceAllows(item, preferences) : false;
+  });
+  if (preferenceAllowed.length === 0) return [];
+
+  const orgIds = Array.from(new Set(preferenceAllowed.map((item) => item.org_id)));
+  const subscribedRows = await db
+    .select({ org_id: webPushSubscriptions.org_id, user_id: webPushSubscriptions.user_id })
+    .from(webPushSubscriptions)
+    .where(and(
+      inArray(webPushSubscriptions.org_id, orgIds),
+      inArray(webPushSubscriptions.user_id, Array.from(new Set(preferenceAllowed.map((item) => item.user_id)))),
+      eq(webPushSubscriptions.is_active, true),
+    ));
+  const subscribed = new Set(subscribedRows.map((row) => `${row.org_id}\u0000${row.user_id}`));
+  const now = new Date();
+  const deliveryValues = preferenceAllowed.flatMap((item) => {
+    if (!subscribed.has(`${item.org_id}\u0000${item.user_id}`)) return [];
+    const user = userById.get(item.user_id);
+    const preferences = preferenceByUser.get(item.user_id)!;
+    const quietDelay = preferences.push.quiet_hours.enabled && item.priority !== 'critical'
+      ? quietHoursDelay(
+          now,
+          user?.timezone ?? 'UTC',
+          preferences.push.quiet_hours.start,
+          preferences.push.quiet_hours.end,
+        )
+      : 0;
+    const delay = Math.max(baseDelay(item), quietDelay);
+    return [{
+      org_id: item.org_id,
+      attention_item_id: item.id,
+      user_id: item.user_id,
+      channel: 'web_push',
+      status: 'queued',
+      delivery_version: item.version,
+      next_attempt_at: new Date(now.getTime() + delay),
+      delay,
+    }];
+  });
+  if (deliveryValues.length === 0) return [];
+
+  const deliveries = await db
+    .insert(attentionDeliveries)
+    .values(deliveryValues.map(({ delay: _delay, ...value }) => value))
+    .onConflictDoNothing()
+    .returning();
+  const delayByItem = new Map(deliveryValues.map((value) => [value.attention_item_id, value.delay]));
+  await Promise.all(deliveries.map((delivery) => enqueue(
+    QUEUE_NAMES.SCHEDULED_JOBS,
+    'attention-delivery',
+    { delivery_id: delivery.id },
+    { delay: delayByItem.get(delivery.attention_item_id) ?? 0, maxAttempts: PUSH_MAX_ATTEMPTS },
+  )));
+  return deliveries;
 }
 
 function safePayload(item: AttentionItem) {

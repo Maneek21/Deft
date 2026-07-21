@@ -18,15 +18,35 @@ const SUSTAINED_MESSAGES = Number(process.env.CERT_SUSTAINED_MESSAGES || USERS *
 const SUSTAINED_STAGGER_MS = Number(process.env.CERT_SUSTAINED_STAGGER_MS || 250);
 const QUEUE_JOBS = Number(process.env.CERT_QUEUE_JOBS || 120);
 const PORT = Number(process.env.CERT_API_PORT || 3391);
+const MAX_WRITE_P95_MS = Number(process.env.CERT_MAX_WRITE_P95_MS || 5000);
+const MAX_INBOX_READ_P95_MS = Number(process.env.CERT_MAX_INBOX_READ_P95_MS || 3000);
+const MAX_QUEUE_DRAIN_SECONDS = Number(process.env.CERT_MAX_QUEUE_DRAIN_SECONDS || 90);
+const MAX_RECOVERY_SECONDS = Number(process.env.CERT_MAX_RECOVERY_SECONDS || 45);
+const MAX_ATTENTION_PROJECTION_SECONDS = Number(process.env.CERT_MAX_ATTENTION_PROJECTION_SECONDS || 30);
+const MAX_ATTENTION_PROJECTION_P95_MS = Number(process.env.CERT_MAX_ATTENTION_PROJECTION_P95_MS || 5000);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PASSWORD = 'Certification-only-Password-42!';
-const runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+const runId = new Date().toISOString().replace(/[-:.TZ]/g, '');
 const databaseName = `deft_cert_${runId}_${process.pid}`.toLowerCase();
 const startedAt = Date.now();
 const results = {
   run_id: runId,
   started_at: new Date().toISOString(),
-  configuration: { users: USERS, burst_messages: BURST_MESSAGES, sustained_messages: SUSTAINED_MESSAGES, sustained_duration_seconds: Math.round(SUSTAINED_MESSAGES * SUSTAINED_STAGGER_MS / 1000), queue_jobs: QUEUE_JOBS },
+  configuration: {
+    users: USERS,
+    burst_messages: BURST_MESSAGES,
+    sustained_messages: SUSTAINED_MESSAGES,
+    sustained_duration_seconds: Math.round(SUSTAINED_MESSAGES * SUSTAINED_STAGGER_MS / 1000),
+    queue_jobs: QUEUE_JOBS,
+    budgets: {
+      message_write_p95_ms: MAX_WRITE_P95_MS,
+      inbox_read_p95_ms: MAX_INBOX_READ_P95_MS,
+      queue_drain_seconds: MAX_QUEUE_DRAIN_SECONDS,
+      recovery_seconds: MAX_RECOVERY_SECONDS,
+      attention_projection_seconds: MAX_ATTENTION_PROJECTION_SECONDS,
+      attention_projection_p95_ms: MAX_ATTENTION_PROJECTION_P95_MS,
+    },
+  },
   phases: {},
   findings: [],
   boundaries: [
@@ -35,6 +55,10 @@ const results = {
     'Browser rendering is outside this backend/realtime load run; product UI has separate dogfood coverage.',
   ],
 };
+
+if (!Number.isInteger(USERS) || USERS < 12) {
+  throw new Error('CERT_USERS must be an integer of at least 12 so policy and concurrency probes are valid');
+}
 
 function parseEnv(source) {
   const out = {};
@@ -59,6 +83,43 @@ function percentile(values, p) {
 
 function latencySummary(values) {
   return { count: values.length, min_ms: percentile(values, 0), p50_ms: percentile(values, 50), p95_ms: percentile(values, 95), p99_ms: percentile(values, 99), max_ms: percentile(values, 100) };
+}
+
+function parseCapacityProfiles(log) {
+  const allRows = log.split(/\r?\n/).flatMap((line) => {
+    const marker = line.indexOf('[capacity-profile] ');
+    if (marker < 0) return [];
+    try {
+      return [JSON.parse(line.slice(marker + '[capacity-profile] '.length))];
+    } catch {
+      return [];
+    }
+  });
+  const rows = allRows.filter((row) => row.event === 'notification_fanout');
+  const projectionRows = allRows.filter((row) => row.event === 'attention_projection');
+  const metric = (key) => latencySummary(rows.map((row) => Number(row[key]) || 0));
+  return {
+    samples: rows.length,
+    requested_notifications: rows.reduce((sum, row) => sum + Number(row.requested || 0), 0),
+    allowed_notifications: rows.reduce((sum, row) => sum + Number(row.allowed || 0), 0),
+    policy_read: metric('policy_read_ms'),
+    notification_insert: metric('notification_insert_ms'),
+    attention_enqueue: metric('attention_enqueue_ms'),
+    total: metric('total_ms'),
+    attention_projection: {
+      jobs: projectionRows.length,
+      notifications: projectionRows.reduce((sum, row) => sum + Number(row.notifications || 0), 0),
+      projected_items: projectionRows.reduce((sum, row) => sum + Number(row.projected_items || 0), 0),
+      queue_delay: latencySummary(projectionRows.flatMap((row) => row.queue_delay_ms === null ? [] : [Number(row.queue_delay_ms) || 0])),
+      projection: latencySummary(projectionRows.map((row) => Number(row.projection_ms) || 0)),
+      end_to_end: latencySummary(projectionRows.flatMap((row) => row.end_to_end_ms === null ? [] : [Number(row.end_to_end_ms) || 0])),
+    },
+  };
+}
+
+function addGateFinding(condition, title, detail) {
+  if (!condition) return;
+  results.findings.push({ severity: 'high', title, detail });
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -109,6 +170,52 @@ async function stopApi() {
   apiProcess = null;
 }
 
+async function waitForApiReady(timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastHealth = null;
+  while (Date.now() < deadline) {
+    if (apiProcess?.exitCode !== null && apiProcess?.exitCode !== undefined) {
+      throw new Error(`API exited before readiness with code ${apiProcess.exitCode}.\n${apiLog.slice(-4000)}`);
+    }
+    lastHealth = await timedFetch(`${BASE_URL}/health`);
+    if (lastHealth.ok) return;
+    await sleep(400);
+  }
+  throw new Error(`API readiness timed out after ${timeoutMs}ms. Last health=${JSON.stringify(lastHealth)}\n${apiLog.slice(-4000)}`);
+}
+
+async function assertCertificationSchema(connection) {
+  const requiredTables = [
+    'orgs',
+    'users',
+    'org_members',
+    'spaces',
+    'space_members',
+    'messages',
+    'notifications',
+    'attention_items',
+    'attention_events',
+    'attention_deliveries',
+    'job_queue',
+  ];
+  const tableRows = await connection.query(
+    "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name=ANY($1)",
+    [requiredTables],
+  );
+  const present = new Set(tableRows.rows.map((row) => row.table_name));
+  const missingTables = requiredTables.filter((table) => !present.has(table));
+  const columnRows = await connection.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name=ANY($1)",
+    [['profile_summary', 'notification_preferences']],
+  );
+  const columns = new Set(columnRows.rows.map((row) => row.column_name));
+  const missingColumns = ['profile_summary', 'notification_preferences'].filter((column) => !columns.has(column));
+  if (missingTables.length || missingColumns.length) {
+    throw new Error(`Certification schema is stale. Missing tables: ${missingTables.join(', ') || 'none'}; missing users columns: ${missingColumns.join(', ') || 'none'}`);
+  }
+  return { required_tables: requiredTables.length, required_user_columns: 2 };
+}
+
 async function timedFetch(url, init = {}) {
   const start = performance.now();
   try {
@@ -128,11 +235,16 @@ function authHeaders(token) {
 
 async function connectSockets(tokens, spaceId) {
   const counters = tokens.map(() => ({ messages: 0, notifications: 0, presence: 0 }));
+  const marker = `[CERT:${runId}:`;
   const sockets = await Promise.all(tokens.map((token, index) => new Promise((resolve, reject) => {
     const socket = io(BASE_URL, { auth: { token }, transports: ['websocket'], reconnection: false, timeout: 10000 });
     const timer = setTimeout(() => { socket.close(); reject(new Error(`socket ${index} timeout`)); }, 12000);
-    socket.on('message:new', () => { counters[index].messages += 1; });
-    socket.on('notification:new', () => { counters[index].notifications += 1; });
+    socket.on('message:new', (message) => {
+      if (String(message?.content ?? '').includes(marker)) counters[index].messages += 1;
+    });
+    socket.on('notification:new', (notification) => {
+      if (String(notification?.body ?? '').includes(marker)) counters[index].notifications += 1;
+    });
     socket.on('presence:update', () => { counters[index].presence += 1; });
     socket.on('connect_error', (error) => { clearTimeout(timer); reject(error); });
     socket.on('connect', () => {
@@ -173,8 +285,8 @@ function renderReport(report) {
   const phaseRows = Object.entries(report.phases).map(([name, value]) => `<tr><th>${htmlEscape(name.replaceAll('_', ' '))}</th><td><pre>${htmlEscape(JSON.stringify(value, null, 2))}</pre></td></tr>`).join('');
   const findingRows = report.findings.map((item) => `<li class="${item.severity}"><strong>${htmlEscape(item.severity.toUpperCase())}: ${htmlEscape(item.title)}</strong><p>${htmlEscape(item.detail)}</p></li>`).join('');
   const passed = report.verdict === 'PASS';
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deft 60-person certification</title><style>
-  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111114;color:#ececf1;font:15px/1.55 Inter,system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:48px 28px 80px}header{border-bottom:1px solid #303038;padding-bottom:28px;margin-bottom:28px}.eyebrow{color:#9b8cff;text-transform:uppercase;font-size:12px;font-weight:750;letter-spacing:.08em}h1{font-size:44px;line-height:1.06;margin:10px 0 14px;letter-spacing:0}h2{margin-top:38px}.verdict{display:inline-flex;padding:7px 13px;border-radius:999px;background:${passed ? '#123b2b' : '#442225'};color:${passed ? '#64e7a4' : '#ff8f98'};font-weight:800}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:#1b1b20;border:1px solid #303038;border-radius:8px;padding:16px}.metric b{font-size:24px;display:block}.metric span{color:#a6a6b1;font-size:12px}table{border-collapse:collapse;width:100%;background:#17171b;border:1px solid #303038}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #303038;padding:14px}th{width:210px;text-transform:capitalize}pre{white-space:pre-wrap;margin:0;color:#cfcfd8;font:12px/1.45 ui-monospace,monospace}.high strong{color:#ff8f98}.medium strong{color:#ffd36c}.low strong{color:#87d7ff}li{margin-bottom:16px}p{color:#b9b9c3}.boundary{border-left:3px solid #7b68ee;padding-left:14px}</style></head><body><main><header><div class="eyebrow">Deft capacity evidence</div><h1>30-60 person certification</h1><p>One disposable workspace, ${report.configuration.users} people, real HTTP + Socket.IO traffic, notification volume, queue pressure, forced restart, and recovery.</p><span class="verdict">${htmlEscape(report.verdict)}</span></header><section class="grid"><div class="metric"><b>${report.configuration.users}</b><span>connected people</span></div><div class="metric"><b>${report.summary?.messages_succeeded ?? 0}</b><span>messages accepted</span></div><div class="metric"><b>${report.summary?.socket_fanout_ratio ?? 0}%</b><span>message fanout</span></div><div class="metric"><b>${report.summary?.recovery_seconds ?? 'n/a'}s</b><span>service recovery</span></div></section><h2>Findings</h2><ul>${findingRows || '<li>No findings.</li>'}</ul><h2>Evidence</h2><table>${phaseRows}</table><h2>Proven boundary</h2>${report.boundaries.map((item) => `<p class="boundary">${htmlEscape(item)}</p>`).join('')}<p>Generated ${htmlEscape(report.completed_at)} in ${htmlEscape(report.duration_seconds)} seconds. Temporary database: removed.</p></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Deft ${report.configuration.users}-person certification</title><style>
+  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111114;color:#ececf1;font:15px/1.55 Inter,system-ui,sans-serif}main{max-width:1060px;margin:auto;padding:48px 28px 80px}header{border-bottom:1px solid #303038;padding-bottom:28px;margin-bottom:28px}.eyebrow{color:#9b8cff;text-transform:uppercase;font-size:12px;font-weight:750;letter-spacing:.08em}h1{font-size:44px;line-height:1.06;margin:10px 0 14px;letter-spacing:0}h2{margin-top:38px}.verdict{display:inline-flex;padding:7px 13px;border-radius:999px;background:${passed ? '#123b2b' : '#442225'};color:${passed ? '#64e7a4' : '#ff8f98'};font-weight:800}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:#1b1b20;border:1px solid #303038;border-radius:8px;padding:16px}.metric b{font-size:24px;display:block}.metric span{color:#a6a6b1;font-size:12px}table{border-collapse:collapse;width:100%;background:#17171b;border:1px solid #303038}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #303038;padding:14px}th{width:210px;text-transform:capitalize}pre{white-space:pre-wrap;margin:0;color:#cfcfd8;font:12px/1.45 ui-monospace,monospace}.high strong{color:#ff8f98}.medium strong{color:#ffd36c}.low strong{color:#87d7ff}li{margin-bottom:16px}p{color:#b9b9c3}.boundary{border-left:3px solid #7b68ee;padding-left:14px}</style></head><body><main><header><div class="eyebrow">Deft capacity evidence</div><h1>${report.configuration.users}-person certification</h1><p>One disposable workspace, ${report.configuration.users} people, real HTTP + Socket.IO traffic, notification volume, queue pressure, forced restart, and recovery.</p><span class="verdict">${htmlEscape(report.verdict)}</span></header><section class="grid"><div class="metric"><b>${report.configuration.users}</b><span>connected people</span></div><div class="metric"><b>${report.summary?.messages_succeeded ?? 0}</b><span>messages accepted</span></div><div class="metric"><b>${report.summary?.socket_fanout_ratio ?? 0}%</b><span>message fanout</span></div><div class="metric"><b>${report.summary?.recovery_seconds ?? 'n/a'}s</b><span>service recovery</span></div></section><h2>Findings</h2><ul>${findingRows || '<li>No findings.</li>'}</ul><h2>Evidence</h2><table>${phaseRows}</table><h2>Proven boundary</h2>${report.boundaries.map((item) => `<p class="boundary">${htmlEscape(item)}</p>`).join('')}<p>Generated ${htmlEscape(report.completed_at)} in ${htmlEscape(report.duration_seconds)} seconds. Temporary database removed: ${htmlEscape(report.cleanup?.database_removed ?? false)}.</p></main></body></html>`;
 }
 
 let admin = null;
@@ -182,6 +294,7 @@ let adminConnected = false;
 let pool = null;
 let sockets = [];
 let tempDbUrl = '';
+let databaseRemoved = false;
 try {
   const envFile = parseEnv(await readFile(path.join(root, '.env'), 'utf8'));
   const baseDbUrl = process.env.DATABASE_URL || envFile.DATABASE_URL;
@@ -208,6 +321,7 @@ try {
     DEFT_AUTH_RATE_LIMIT_PER_MINUTE: process.env.DEFT_AUTH_RATE_LIMIT_PER_MINUTE || '10',
     DEFT_LOGIN_IP_RATE_LIMIT_PER_MINUTE: process.env.DEFT_LOGIN_IP_RATE_LIMIT_PER_MINUTE || '120',
     DEFT_DEFAULT_RATE_LIMIT_PER_MINUTE: '5000', DEFT_WORKER_BATCH_SIZE: '10', DEFT_WORKER_POLL_INTERVAL_MS: '250',
+    DEFT_CAPACITY_TRACE: '1',
   };
   pool = new Pool({ connectionString: tempDbUrl, max: 20 });
   const schemaStart = performance.now();
@@ -215,23 +329,15 @@ try {
     const tableRows = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'");
     const tableNames = tableRows.rows.map((row) => `"${String(row.tablename).replaceAll('"', '""')}"`);
     if (tableNames.length) await pool.query(`TRUNCATE TABLE ${tableNames.join(', ')} RESTART IDENTITY CASCADE`);
-    // Some older local developer databases predate the users-table journal
-    // repair. Keep the disposable clone usable without mutating that source.
-    await pool.query(`CREATE TABLE IF NOT EXISTS users (
-      id text PRIMARY KEY, email text UNIQUE, name text NOT NULL,
-      kind user_kind NOT NULL DEFAULT 'human', is_agent boolean NOT NULL DEFAULT false,
-      agent_employee_id text, avatar_url text, title text, profile_summary text,
-      expertise_tags text[], timezone text DEFAULT 'UTC', status_emoji text,
-      status_text text, status_expires_at timestamp, password_hash text,
-      email_verified boolean NOT NULL DEFAULT false, last_seen_at timestamp,
-      notification_keywords text[], notification_preferences jsonb NOT NULL DEFAULT '{"keywords":[],"channels":{"chat":true,"tasks":true,"approvals":true,"calendar":true,"agents":true}}'::jsonb,
-      show_read_receipts boolean NOT NULL DEFAULT true, ics_publish_token text,
-      created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
-    )`);
   } else {
     await run('pnpm', ['db:push-full'], { env: certEnv });
   }
-  results.phases.database_bootstrap = { seconds: Math.round((performance.now() - schemaStart) / 100) / 10, method: templateDatabase ? `schema clone of ${templateDatabase}, all data truncated` : 'db:push-full' };
+  const schemaProof = await assertCertificationSchema(pool);
+  results.phases.database_bootstrap = {
+    seconds: Math.round((performance.now() - schemaStart) / 100) / 10,
+    method: templateDatabase ? `schema clone of ${templateDatabase}, all data truncated` : 'db:push-full',
+    schema_proof: schemaProof,
+  };
 
   const orgId = randomUUID();
   const spaceId = randomUUID();
@@ -239,7 +345,7 @@ try {
   const users = Array.from({ length: USERS }, (_, i) => ({ id: randomUUID(), name: `Cert User ${String(i + 1).padStart(2, '0')}`, email: `cert-${runId}-${i + 1}@deft.invalid` }));
   await pool.query('BEGIN');
   try {
-    await pool.query('INSERT INTO orgs (id,name,slug,agent_enabled,ai_config) VALUES ($1,$2,$3,false,$4)', [orgId, '60 Person Certification', `cert-${runId}`, {}]);
+    await pool.query('INSERT INTO orgs (id,name,slug,agent_enabled,ai_config) VALUES ($1,$2,$3,false,$4)', [orgId, `${USERS} Person Certification`, `cert-${runId}`, {}]);
     for (let i = 0; i < users.length; i += 1) {
       const user = users[i];
       await pool.query('INSERT INTO users (id,email,name,password_hash,email_verified,kind) VALUES ($1,$2,$3,$4,true,\'human\')', [user.id, user.email, user.name, passwordHash]);
@@ -254,7 +360,7 @@ try {
   process.stdout.write('[cert] Starting API and workers\n');
   startApi(certEnv);
   const bootStarted = performance.now();
-  await waitFor(async () => (await timedFetch(`${BASE_URL}/health`)).ok, 45000, 400);
+  await waitForApiReady();
   results.phases.initial_boot = { seconds: Math.round((performance.now() - bootStarted) / 100) / 10 };
 
   process.stdout.write('[cert] Measuring production login burst\n');
@@ -292,9 +398,46 @@ try {
     socket_message_deliveries: { expected: expectedMessageDeliveries, actual: actualMessageDeliveries, ratio: expectedMessageDeliveries ? Math.round(actualMessageDeliveries / expectedMessageDeliveries * 10000) / 100 : 0 },
     socket_notification_deliveries: { expected: expectedNotificationDeliveries, actual: actualNotificationDeliveries, ratio: expectedNotificationDeliveries ? Math.round(actualNotificationDeliveries / expectedNotificationDeliveries * 10000) / 100 : 0 },
   };
+  results.phases.notification_fanout_profile = parseCapacityProfiles(apiLog);
   if (burst.failed.length || sustained.failed.length) results.findings.push({ severity: 'high', title: 'Message writes failed under load', detail: `${burst.failed.length + sustained.failed.length} message writes failed.` });
-  if (actualMessageDeliveries < expectedMessageDeliveries) results.findings.push({ severity: 'high', title: 'Socket message fanout was incomplete', detail: `${actualMessageDeliveries}/${expectedMessageDeliveries} expected room deliveries arrived.` });
-  if (actualNotificationDeliveries < expectedNotificationDeliveries) results.findings.push({ severity: 'high', title: 'Realtime notification fanout was incomplete', detail: `${actualNotificationDeliveries}/${expectedNotificationDeliveries} expected user-room deliveries arrived.` });
+  if (actualMessageDeliveries !== expectedMessageDeliveries) results.findings.push({ severity: 'high', title: 'Socket message fanout was not exactly once', detail: `${actualMessageDeliveries}/${expectedMessageDeliveries} expected room deliveries arrived.` });
+  if (actualNotificationDeliveries !== expectedNotificationDeliveries) results.findings.push({ severity: 'high', title: 'Realtime notification fanout was not exactly once', detail: `${actualNotificationDeliveries}/${expectedNotificationDeliveries} expected user-room deliveries arrived.` });
+
+  process.stdout.write('[cert] Waiting for durable notification-to-attention projection\n');
+  const attentionProjectionStarted = performance.now();
+  await waitFor(async () => {
+    const { rows } = await pool.query(`
+      SELECT count(*)::int projected
+      FROM attention_events ae
+      INNER JOIN notifications n ON ae.source_event_id = 'notification:' || n.id
+      WHERE ae.event_type = 'source_event'
+        AND n.org_id = $1
+        AND n.body LIKE $2
+    `, [orgId, `[CERT:${runId}:%`]);
+    return rows[0].projected === expectedNotificationDeliveries ? rows[0].projected : false;
+  }, Math.max(5000, MAX_ATTENTION_PROJECTION_SECONDS * 1000), 250);
+  const attentionProjectionSeconds = Math.round((performance.now() - attentionProjectionStarted) / 100) / 10;
+  results.phases.notification_fanout_profile = parseCapacityProfiles(apiLog);
+  const attentionProjectionProof = await pool.query(`
+    SELECT count(*)::int projected
+    FROM attention_events ae
+    INNER JOIN notifications n ON ae.source_event_id = 'notification:' || n.id
+    WHERE ae.event_type = 'source_event'
+      AND n.org_id = $1
+      AND n.body LIKE $2
+  `, [orgId, `[CERT:${runId}:%`]);
+  results.phases.attention_projection = {
+    expected: expectedNotificationDeliveries,
+    actual: attentionProjectionProof.rows[0].projected,
+    post_load_drain_seconds: attentionProjectionSeconds,
+    end_to_end_p95_ms: results.phases.notification_fanout_profile.attention_projection.end_to_end.p95_ms,
+  };
+  addGateFinding(attentionProjectionSeconds > MAX_ATTENTION_PROJECTION_SECONDS, 'Attention projection exceeded the release budget', `Projection took ${attentionProjectionSeconds}s; the configured budget is ${MAX_ATTENTION_PROJECTION_SECONDS}s.`);
+  addGateFinding(
+    (results.phases.attention_projection.end_to_end_p95_ms ?? Number.POSITIVE_INFINITY) > MAX_ATTENTION_PROJECTION_P95_MS,
+    'Attention projection p95 exceeded the release budget',
+    `End-to-end p95 was ${results.phases.attention_projection.end_to_end_p95_ms ?? 'unavailable'}ms; the configured budget is ${MAX_ATTENTION_PROJECTION_P95_MS}ms.`,
+  );
 
   process.stdout.write('[cert] Verifying notification preference policy under the bulk path\n');
   const policyUsers = users.slice(0, 4);
@@ -326,7 +469,7 @@ try {
   await pool.query('UPDATE space_members SET is_muted=false WHERE space_id=$1 AND user_id=$2', [spaceId, policyUsers[2].id]);
   await pool.query("UPDATE space_members SET notification_level='all' WHERE space_id=$1 AND user_id=$2", [spaceId, policyUsers[3].id]);
 
-  process.stdout.write('[cert] Reading 60 inboxes concurrently\n');
+  process.stdout.write(`[cert] Reading ${USERS} inboxes concurrently\n`);
   const inboxReads = await Promise.all(tokens.map((token) => timedFetch(`${BASE_URL}/api/notifications`, { headers: authHeaders(token) })));
   results.phases.notification_inbox_reads = {
     succeeded: inboxReads.filter((row) => row.ok).length,
@@ -352,7 +495,7 @@ try {
   const restartStarted = performance.now();
   apiLog = '';
   startApi(certEnv);
-  await waitFor(async () => (await timedFetch(`${BASE_URL}/health`)).ok, 45000, 400);
+  await waitForApiReady();
   const healthRecoverySeconds = Math.round((performance.now() - restartStarted) / 100) / 10;
   const drainStarted = performance.now();
   await waitFor(async () => {
@@ -382,7 +525,11 @@ try {
   if (recoveryDeliveries !== USERS) results.findings.push({ severity: 'high', title: 'Post-restart socket proof was incomplete', detail: `${recoveryDeliveries}/${USERS} clients received the recovery message.` });
 
   const p95Write = Math.max(burst.latency.p95_ms || 0, sustained.latency.p95_ms || 0);
-  if (p95Write > 5000) results.findings.push({ severity: 'medium', title: 'Message write latency lacks comfortable headroom', detail: `Worst phase p95 was ${p95Write}ms. The target for a comfortable 60-person pilot is below 5000ms under this artificial all-hands fanout.` });
+  const inboxP95 = results.phases.notification_inbox_reads.latency.p95_ms || 0;
+  addGateFinding(p95Write > MAX_WRITE_P95_MS, 'Message write latency exceeded the release budget', `Worst phase p95 was ${p95Write}ms; the configured budget is ${MAX_WRITE_P95_MS}ms.`);
+  addGateFinding(inboxP95 > MAX_INBOX_READ_P95_MS, 'Inbox read latency exceeded the release budget', `Concurrent inbox-read p95 was ${inboxP95}ms; the configured budget is ${MAX_INBOX_READ_P95_MS}ms.`);
+  addGateFinding(queueDrainSeconds > MAX_QUEUE_DRAIN_SECONDS, 'Queue drain exceeded the release budget', `Queue drain took ${queueDrainSeconds}s; the configured budget is ${MAX_QUEUE_DRAIN_SECONDS}s.`);
+  addGateFinding(healthRecoverySeconds > MAX_RECOVERY_SECONDS, 'Service recovery exceeded the release budget', `Health recovery took ${healthRecoverySeconds}s; the configured budget is ${MAX_RECOVERY_SECONDS}s.`);
   results.summary = {
     messages_succeeded: totalSucceeded + proof.succeeded,
     socket_fanout_ratio: results.phases.message_and_notification_load.socket_message_deliveries.ratio,
@@ -391,6 +538,8 @@ try {
     notification_read_p95_ms: results.phases.notification_inbox_reads.latency.p95_ms,
     queue_drain_seconds: queueDrainSeconds,
     recovery_seconds: healthRecoverySeconds,
+    attention_projection_seconds: attentionProjectionSeconds,
+    attention_projection_p95_ms: results.phases.attention_projection.end_to_end_p95_ms,
   };
   const hardFailures = results.findings.filter((item) => item.severity === 'high').length;
   results.verdict = hardFailures === 0 ? 'PASS' : 'FAIL';
@@ -405,15 +554,23 @@ try {
   if (pool) await pool.end().catch(() => {});
   if (adminConnected && admin && databaseName) {
     await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1', [databaseName]).catch(() => {});
-    await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`).catch(() => {});
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      const proof = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [databaseName]);
+      databaseRemoved = proof.rowCount === 0;
+    } catch (error) {
+      results.findings.push({ severity: 'high', title: 'Disposable database cleanup failed', detail: String(error?.message || error) });
+    }
     await admin.end().catch(() => {});
   }
+  results.cleanup = { database_name: databaseName, database_removed: databaseRemoved };
+  if (!databaseRemoved) results.verdict = 'FAIL';
   results.completed_at = new Date().toISOString();
   results.duration_seconds = Math.round((Date.now() - startedAt) / 100) / 10;
   results.api_log_tail = apiLog.split(/\r?\n/).slice(-40).join('\n');
   const reportDir = path.join(root, 'reports');
   await mkdir(reportDir, { recursive: true });
-  const stem = `deft-60-person-certification-${new Date().toISOString().slice(0, 10)}`;
+  const stem = `deft-${USERS}-person-certification-${runId}`;
   await writeFile(path.join(reportDir, `${stem}.json`), JSON.stringify(results, null, 2));
   await writeFile(path.join(reportDir, `${stem}.html`), renderReport(results));
   process.stdout.write(`[cert] ${results.verdict} in ${results.duration_seconds}s\n[cert] Report: ${path.join(reportDir, `${stem}.html`)}\n`);

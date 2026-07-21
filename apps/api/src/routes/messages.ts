@@ -591,7 +591,7 @@ messageRoutes.post('/:spaceId', async (c) => {
         const title = isDm
           ? `${userData?.name ?? 'Someone'} sent you a message`
           : `${userData?.name ?? 'Someone'} in #${space.name}`;
-        const link = isDm ? `/chat` : `/chat?space=${spaceId}`;
+        const link = `/chat?space=${spaceId}&message=${message!.id}`;
         const recipientNotifications = await createNotificationsIfAllowed(
           members
             .filter((member) => !mentionedUserIds.includes(member.user_id))
@@ -602,6 +602,11 @@ messageRoutes.post('/:spaceId', async (c) => {
             title,
             body: plainContent,
             link,
+            metadata: {
+              message_id: message!.id,
+              space_id: spaceId,
+              is_direct_message: isDm,
+            },
           })),
           { channel: 'chat', spaceId, isMention: false, respectDnd: true },
         );
