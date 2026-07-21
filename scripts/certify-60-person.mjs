@@ -296,9 +296,14 @@ let sockets = [];
 let tempDbUrl = '';
 let databaseRemoved = false;
 try {
-  const envFile = parseEnv(await readFile(path.join(root, '.env'), 'utf8'));
+  let envFile = {};
+  try {
+    envFile = parseEnv(await readFile(path.join(root, '.env'), 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   const baseDbUrl = process.env.DATABASE_URL || envFile.DATABASE_URL;
-  if (!baseDbUrl) throw new Error('DATABASE_URL is required in .env');
+  if (!baseDbUrl) throw new Error('DATABASE_URL is required via the environment or .env');
   const parsed = new URL(baseDbUrl);
   const adminUrl = new URL(baseDbUrl);
   adminUrl.pathname = '/postgres';
