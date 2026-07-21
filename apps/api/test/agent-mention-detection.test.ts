@@ -225,6 +225,21 @@ test('structured mention of Defty user triggers agent-reply dispatch', async () 
   assert.ok(body.id, 'response should include message id');
   createdMessageIds.push(body.id!);
 
+  const [mentionNotification] = await db
+    .select({ link: notifications.link })
+    .from(notifications)
+    .where(and(
+      eq(notifications.user_id, deftyUserId),
+      eq(notifications.type, 'mention'),
+      eq(notifications.link, `/chat?space=${spaceId}&message=${body.id}`),
+    ))
+    .limit(1);
+  assert.equal(
+    mentionNotification?.link,
+    `/chat?space=${spaceId}&message=${body.id}`,
+    'mention notification should deep-link to the message on the chat surface',
+  );
+
   const dispatched = await findAgentReplyJob(body.id!);
   assert.ok(dispatched, 'agent-reply job should be enqueued for Defty mention');
   const employeeQueued = await findAgentEmployeeMessageJob(body.id!);

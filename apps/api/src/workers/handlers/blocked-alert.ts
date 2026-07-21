@@ -129,7 +129,7 @@ export async function handleBlockedAlert(job: JobData): Promise<void> {
         type: 'agent_suggestion',
         title: 'Blocked Team Member',
         body: message,
-        link: `/spaces/${spaceId}?message=${messageId}`,
+        link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(messageId)}`,
         metadata: {
           task_id: task.id,
           nudge_type: 'blocked',

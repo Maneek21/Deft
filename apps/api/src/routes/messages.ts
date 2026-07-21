@@ -515,7 +515,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           type: 'mention',
           title: `${userData?.name ?? 'Someone'} mentioned you`,
           body: normalizedContent.slice(0, 200),
-          link: `/spaces/${spaceId}?message=${message!.id}`,
+          link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(message!.id)}`,
         }, { channel: 'chat', spaceId, isMention: true });
 
         if (notification) {
@@ -543,7 +543,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             type: 'mention',
             title: `${userData?.name ?? 'Someone'} replied to your message`,
             body: normalizedContent.slice(0, 200),
-            link: `/spaces/${spaceId}?message=${parsed.data.parent_id}`,
+            link: `/chat?space=${encodeURIComponent(spaceId)}&message=${encodeURIComponent(parsed.data.parent_id)}`,
           }, { channel: 'chat', spaceId, isMention: true });
 
           if (notification) {
