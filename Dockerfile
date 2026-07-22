@@ -42,7 +42,11 @@ RUN pnpm --filter @deft/web build
 
 # Stage 3: Production
 FROM node:22-alpine AS runner
-RUN corepack enable && corepack prepare pnpm@9 --activate
+# Runtime maintenance commands still use pnpm. pnpm 10 carries the patched
+# node-tar release; npm is unused and is removed with its bundled dependencies.
+RUN corepack enable && corepack prepare pnpm@10.34.5 --activate \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 
 ENV NODE_ENV=production
