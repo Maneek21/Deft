@@ -38,6 +38,7 @@ import { bulkUpdateTasks, BulkTaskUpdateError, bulkTaskUpdateSchema } from '../t
 import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.js';
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
+import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
@@ -746,14 +747,17 @@ async function resolveProjectForHumanTask(
       ORDER BY updated_at DESC
       LIMIT 200
     `);
-    const projectsRows = ((rows as any).rows ?? []) as Array<{ id: string; name: string; prefix: string | null }>;
-    const ranked = rankResolverCandidates(lookupQuery, projectsRows, (row) => [
-      { value: row.name, reason: 'name' },
-      { value: row.prefix, reason: 'prefix', weight: 0.98 },
-    ]);
-    const response = buildResolverResponse(lookupQuery, ranked, { limit: 5, resolvedThreshold: 0.76 });
-    if (!response.selected) return { project: null, error: resolverError('task_create project', query, response) };
-    return { project: response.selected };
+    const projectsRows = (((rows as any).rows ?? []) as Array<{ id: string; name: string; prefix: string | null }>)
+      .map((project) => ({ ...project, is_archived: false, is_deleted: false }));
+    const resolution = resolveProjectTargetFromRows(projectsRows, { projectName: lookupQuery });
+    if (resolution.status === 'resolved') return { project: resolution.project };
+    if (resolution.status === 'ambiguous') {
+      return {
+        project: null,
+        error: errorResult(`task_create project: ambiguous target. Confirm one of: ${resolution.matches.map((project) => project.name).join(', ')}.`),
+      };
+    }
+    return { project: null, error: errorResult('task_create project: no active project matched that target.') };
   }
 
   const [fallback] = await db
@@ -1790,12 +1794,26 @@ export async function humanResolveProject(args: { query?: string; limit?: number
     ORDER BY p.updated_at DESC
     LIMIT 200
   `);
-  const projectsRows = ((rows as any).rows ?? []) as Array<Record<string, unknown>>;
-  const ranked = rankResolverCandidates(lookupQuery, projectsRows, (row) => [
-    { value: row.name, reason: 'name' },
-    { value: row.prefix, reason: 'prefix', weight: 0.98 },
-  ]);
-  return textResult(buildResolverResponse(query, ranked, { limit: args.limit, resolvedThreshold: 0.76 }));
+  const projectsRows = (((rows as any).rows ?? []) as Array<Record<string, unknown>>)
+    .map((project) => ({ ...project, is_deleted: false })) as Array<{
+      id: string;
+      name: string;
+      prefix: string | null;
+      is_archived: boolean;
+      is_deleted: boolean;
+      [key: string]: unknown;
+    }>;
+  const resolution = resolveProjectTargetFromRows(projectsRows, { projectName: lookupQuery });
+  const limit = Math.min(Math.max(1, args.limit ?? 5), 20);
+  const candidates = resolution.candidates.slice(0, limit);
+  return textResult({
+    query,
+    status: resolution.status === 'missing' ? 'not_found' : resolution.status,
+    selected: resolution.status === 'resolved' ? resolution.project : null,
+    candidates,
+    needs_confirmation: resolution.status !== 'resolved',
+    confidence: candidates[0]?.confidence ?? 0,
+  });
 }
 
 export async function humanProjectGet(args: { project_id?: string }, ctx: HumanToolContext): Promise<ToolResult> {

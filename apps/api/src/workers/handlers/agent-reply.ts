@@ -1,15 +1,16 @@
 // Handler: process @agent/@deft mentions in chat and generate AI replies in-thread
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { messages, users, spaces, spaceMembers, projects, projectSpaces, tasks, wikiPages, notes } from '@deft/db/schema';
+import { messages, users, spaces, spaceMembers, projects, tasks, wikiPages, notes } from '@deft/db/schema';
 import { getApprovalTier } from '../../lib/agent-approval.js';
-import { eq, and, desc, sql, ne, lt, ilike, inArray } from 'drizzle-orm';
+import { eq, and, desc, sql, ne, lt, inArray } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { runAgentQuery } from '../../lib/agent-runner.js';
 import { ensureDeftyMembership, DEFTY_NAME } from '../../lib/ensure-defty-membership.js';
 import { toPlainText, truncatePlainText } from '../../lib/plain-text.js';
 import { resolveSpaceTarget } from '../../lib/resolve-space-target.js';
 import { resolveAssigneeWithMatches } from '../../lib/resolve-assignee.js';
+import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
   persistAgentReplyWithActions,
@@ -171,32 +172,20 @@ async function resolvePendingActionTargets(
       const params = action.params;
       let projectName = typeof params.project_name === 'string' ? params.project_name.trim() : '';
       if (!projectName) {
-        projectName = await resolveProjectNameForMentionFallback(
-          orgId,
-          typeof params.source_space_id === 'string' ? params.source_space_id : sourceSpaceId,
+        projectName = extractExplicitProjectName(
           [params.title, params.description].filter(Boolean).join('\n'),
         ) ?? '';
       }
 
-      if (!projectName) {
-        warnings.push('I need the target project before I can create the task approval card.');
+      const projectResolution = await resolveProjectTarget(orgId, {
+        projectName,
+        sourceSpaceId: typeof params.source_space_id === 'string' ? params.source_space_id : sourceSpaceId,
+      });
+      if (projectResolution.status !== 'resolved') {
+        warnings.push(projectResolution.message);
         continue;
       }
-
-      const [project] = await db
-        .select({ id: projects.id, name: projects.name })
-        .from(projects)
-        .where(and(
-          eq(projects.org_id, orgId),
-          ilike(projects.name, projectName),
-          eq(projects.is_archived, false),
-          eq(projects.is_deleted, false),
-        ))
-        .limit(1);
-      if (!project) {
-        warnings.push(`I could not find an active project named "${projectName}".`);
-        continue;
-      }
+      const project = projectResolution.project;
 
       if (typeof params.assignee_name === 'string' && params.assignee_name.trim()) {
         const resolvedAssignee = await resolveAssigneeWithMatches(params.assignee_name.trim(), orgId);
@@ -982,40 +971,19 @@ async function resolveProjectNameForMentionFallback(
   spaceId: string,
   content: string,
 ): Promise<string | null> {
-  const explicitProjectName = content.match(/\bproject\s+"([^"]+)"/i)?.[1]
-    ?? content.match(/\bproject\s+'([^']+)'/i)?.[1]
-    ?? content.match(/\bin\s+(?:the\s+)?([A-Z][A-Za-z0-9 &+_-]{2,80})\s+project\b/i)?.[1];
+  const explicitProjectName = extractExplicitProjectName(content);
+  const resolution = await resolveProjectTarget(orgId, {
+    projectName: explicitProjectName,
+    sourceSpaceId: spaceId,
+  });
+  return resolution.status === 'resolved' ? resolution.project.name : null;
+}
 
-  if (explicitProjectName?.trim()) {
-    const [project] = await db
-      .select({ name: projects.name })
-      .from(projects)
-      .where(and(
-        eq(projects.org_id, orgId),
-        ilike(projects.name, explicitProjectName.trim()),
-        eq(projects.is_archived, false),
-        eq(projects.is_deleted, false),
-      ))
-      .limit(1);
-    if (project) return project.name;
-  }
-
-  const [linked] = await db
-    .select({ name: projects.name })
-    .from(projectSpaces)
-    .innerJoin(projects, and(
-      eq(projectSpaces.project_id, projects.id),
-      eq(projects.org_id, orgId),
-    ))
-    .where(and(
-      eq(projectSpaces.space_id, spaceId),
-      eq(projects.is_archived, false),
-      eq(projects.is_deleted, false),
-    ))
-    .limit(1);
-  if (linked) return linked.name;
-
-  return null;
+function extractExplicitProjectName(content: string): string | null {
+  return content.match(/\bproject\s+"([^"]+)"/i)?.[1]?.trim()
+    ?? content.match(/\bproject\s+'([^']+)'/i)?.[1]?.trim()
+    ?? content.match(/\bin\s+(?:the\s+)?([A-Z][A-Za-z0-9 &+_-]{2,80})\s+project\b/i)?.[1]?.trim()
+    ?? null;
 }
 
 function extractDiscussionTaskActionFromReply(replyText: string, sourceMessageId: string) {
