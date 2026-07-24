@@ -16,7 +16,7 @@
     "@deft/db": "workspace:*",
     "@deft/mcp": "workspace:*",
     "@deft/shared": "workspace:*",
-    "@hono/node-server": "^2.0.8",
+    "@hono/node-server": "^2.0.10",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.80.2",
     "dotenv": "^17.4.2",
