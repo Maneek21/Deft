@@ -12,20 +12,20 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
+    "@anthropic-ai/sdk": "^0.115.0",
     "@deft/db": "workspace:*",
     "@deft/mcp": "workspace:*",
     "@deft/shared": "workspace:*",
-    "@hono/node-server": "^2.0.8",
+    "@hono/node-server": "^2.0.12",
     "bcryptjs": "^3.0.3",
-    "bullmq": "^5.80.2",
+    "bullmq": "^5.81.2",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.30",
+    "hono": "^4.12.32",
     "hono-rate-limiter": "^0.5.3",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
-    "node-ical": "^0.26.1",
+    "node-ical": "^0.27.1",
     "pg": "^8.22.0",
     "socket.io": "^4.8.3",
     "tsx": "^4.23.1",
@@ -35,7 +35,7 @@
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
     "@types/web-push": "^3.6.4"
   }
