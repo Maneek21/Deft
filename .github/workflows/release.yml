@@ -102,7 +102,7 @@ jobs:
           JSON
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0.20.5
+        uses: anchore/sbom-action@v0.24.0
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
           format: spdx-json
