@@ -4,7 +4,7 @@
 
 # Stage 1: Dependencies
 FROM node:22-alpine AS deps
-RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json apps/web/
@@ -17,7 +17,7 @@ RUN --mount=type=cache,id=deft-pnpm-store,target=/root/.local/share/pnpm/store \
 
 # Stage 2: Build
 FROM node:22-alpine AS builder
-RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 WORKDIR /app
 
 # NEXT_PUBLIC_* values are compiled into the browser bundle by Next.js.
@@ -45,7 +45,7 @@ RUN pnpm --filter @deft/web build
 FROM node:22-alpine AS runner
 # Runtime maintenance commands still use pnpm. Keep the runtime aligned with
 # packageManager so Corepack never needs to download a different pnpm at boot.
-RUN corepack enable && corepack prepare pnpm@11.9.0 --activate \
+RUN corepack enable && corepack prepare pnpm@11.10.0 --activate \
     && rm -rf /usr/local/lib/node_modules/npm \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app

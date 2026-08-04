@@ -28,7 +28,21 @@ The new GitHub items are:
 
 The local remediation also includes newer patched floors for advisories discovered by `pnpm audit` before GitHub created alerts for them.
 
-The resumed local patch set now covers the original 54 alerts, the three new GitHub alerts, and the higher-priority authorization/privacy findings discovered during review. Both the production-only and full dependency audits currently report zero advisories. GitHub still shows every remote alert open because these changes are unpushed; fixed CodeQL and Dependabot dispositions can only be confirmed after a branch is pushed and GitHub completes its rescans.
+The resumed patch set covers the original 54 alerts, the three new GitHub alerts, and the higher-priority authorization/privacy findings discovered during review. It is published on draft [PR #198](https://github.com/Maneek21/Deft/pull/198). Both the production-only and full dependency audits report zero advisories. GitHub's default-branch alerts remain open until the fixes merge and the dependency graph and CodeQL results refresh.
+
+### Publication and CI loop — 4 August 2026
+
+The first PR run passed Type Check, Dependency Review, Dependency Audit, Test API, Versioned Upgrade, Build, and both CodeQL analyses. `Production Image + Browser Smoke` reached its final Trivy step after the image build and browser smoke, then found one critical toolchain vulnerability: CVE-2026-59873 in `tar@7.5.16`, vendored inside pnpm 11.9.0's Corepack cache rather than Deft's application lock graph.
+
+The follow-up pins pnpm 11.10.0 consistently in `packageManager`, every Docker stage, and both CI workflows. The official pnpm 11.10.0 package contains `tar@7.5.19`, the advisory's fixed floor. Local revalidation completed with the exact pnpm 11.10.0 binary and rebuilt final image:
+
+- frozen offline workspace install with no lockfile change;
+- full dependency audit: zero known vulnerabilities;
+- Linux/Alpine production build with 40/40 generated pages;
+- network-disabled final-image checks: pnpm 11.10.0, `tar@7.5.19`, no pnpm 11.9.0 cache, and Next.js 16.3.0 executable;
+- Trivy 0.70.0 with CI-equivalent `CRITICAL`, `ignore-unfixed`, and exit-code policy: zero critical findings.
+
+The GitHub rerun for this follow-up remains the clean-host confirmation before merge.
 
 ## Local remediation disposition
 
@@ -36,9 +50,9 @@ The resumed local patch set now covers the original 54 alerts, the three new Git
 
 | Area | Local disposition | Remaining closure step |
 |---|---|---|
-| Original 40 CodeQL alerts | All 40 alert locations are covered by shared parser, exact-match, command-boundary, path-containment, log-redaction, identity, socket-filter, or validation fixes and focused regressions. No alert was dismissed. | Push a reviewed branch and let CodeQL rescan it; investigate any residual alert individually. |
-| Original 14 Dependabot alerts | The final dependency graph resolves patched versions for every affected package. | Push and wait for GitHub's dependency-graph refresh. |
-| New Dependabot #23–#25 | Patched locally through split `brace-expansion` override floors and `ip-address@10.4.0`. | Push and wait for GitHub's dependency-graph refresh. |
+| Original 40 CodeQL alerts | All 40 alert locations are covered by shared parser, exact-match, command-boundary, path-containment, log-redaction, identity, socket-filter, or validation fixes and focused regressions. No alert was dismissed. The PR CodeQL checks passed. | Merge the reviewed branch, let CodeQL refresh the default branch, and investigate any residual alert individually. |
+| Original 14 Dependabot alerts | The final dependency graph resolves patched versions for every affected package. | Merge and wait for GitHub's dependency-graph refresh. |
+| New Dependabot #23–#25 | Patched locally through split `brace-expansion` override floors and `ip-address@10.4.0`. | Merge and wait for GitHub's dependency-graph refresh. |
 | Manual findings A1–A4 | Recap, cross-reference, runtime authorization, and report-path issues are fixed locally. Follow-up review also closed clone authorization, clip task-ID redaction, reminder visibility, and migration-correlation gaps. | Completed locally: 19/19 DB-backed authorization/privacy tests passed on a disposable PostgreSQL 16 + pgvector database. |
 | Historical cached content | Upgrade `0.2.0-preview.4` redacts legacy cross-reference excerpts, tightly correlated generated comments, cached message reminders/notifications, and restricted-task-derived clip summaries. | Deploy through `pnpm db:upgrade`; do not use raw `drizzle-kit push` for this upgrade. |
 
@@ -46,18 +60,19 @@ Resolved dependency versions in the local lockfile include Next.js / `eslint-con
 
 Verification completed locally:
 
-- frozen pnpm install;
+- frozen pnpm install, including an exact pnpm 11.10.0 offline verification;
 - production and full `pnpm audit --audit-level low`: zero known vulnerabilities;
 - API and web typechecks, web lint, and a production Next.js build with 40/40 static pages;
 - 63 focused parser, presentation, audit, path, reset, and upgrade regressions with zero failures;
 - 19/19 DB-backed authorization/privacy tests on a disposable PostgreSQL 16 + pgvector 0.8.2 database;
 - 8/8 direct `0.2.0-preview.4` redaction/preservation assertions inside a rolled-back transaction;
-- production Docker image build on Linux/Alpine with Next.js 16.3.0, TypeScript, and 40/40 generated pages;
+- production Docker image build on Linux/Alpine with pnpm 11.10.0, Next.js 16.3.0, TypeScript, and 40/40 generated pages;
+- CI-equivalent Trivy 0.70.0 critical-only image scan: zero critical findings;
 - isolated production runtime: API health and web login 200, Next image optimization 200 PNG, Sharp 0.35.3/libvips 8.18.3 native transform, and authenticated Socket.IO polling plus WebSocket connections;
 - the affected five-test upgrade subset re-passed after the final migration-correlation change;
 - final API typecheck and `git diff --check` passed.
 
-All planned local environment gates are now closed. The DB tests used a uniquely named `--rm` pgvector container with no shared network or volume. The Docker smoke exposed and fixed a Windows-checkout CRLF failure in `scripts/docker-entrypoint.sh`; a narrow `.gitattributes` rule now enforces LF for that entrypoint. The cold Docker dependency layer also gained a persistent BuildKit pnpm-store cache and extended fetch timeout after registry socket resets. Exact validation containers, networks, and anonymous volumes were removed after the run. CI remains the authoritative clean-host confirmation before merge.
+All planned local environment gates are now closed. The DB tests used a uniquely named `--rm` pgvector container with no shared network or volume. The Docker smoke exposed and fixed a Windows-checkout CRLF failure in `scripts/docker-entrypoint.sh`; a narrow `.gitattributes` rule now enforces LF for that entrypoint. The Docker dependency layer also gained a persistent BuildKit pnpm-store cache and extended fetch timeout, making interrupted installs cache-assisted and retry-resumable after registry socket resets. Exact validation containers, networks, and anonymous volumes were removed after the run. CI remains the authoritative clean-host confirmation before merge.
 
 ## Executive summary of the 30 July baseline
 

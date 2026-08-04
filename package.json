@@ -2,7 +2,7 @@
   "name": "deft",
   "version": "0.1.0-alpha",
   "private": true,
-  "packageManager": "pnpm@11.9.0",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
     "audit:session2": "tsx docs/superpowers/audits/agent-ui-session-2.audit.ts",
