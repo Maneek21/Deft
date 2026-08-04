@@ -15,16 +15,19 @@
 import { chromium, Page, Browser, BrowserContext } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isExpectedSocketIoResponse, socketHttpOrigin } from './socket-response-filter.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const EMAIL    = process.env.DEFT_TEST_EMAIL    || 'maneek@test.com';
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'test1234';
 const API_URL  = process.env.DEFT_API_URL       || 'http://localhost:3001';
 const WEB_URL  = process.env.DEFT_WEB_URL       || 'http://localhost:3000';
+const WS_URL   = process.env.NEXT_PUBLIC_WS_URL || API_URL;
 
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const VIEWPORT  = { width: 390, height: 844 };
 const OUT_DIR   = join(__dirname);
+const EXPECTED_SOCKET_ORIGIN = socketHttpOrigin(WS_URL);
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
 const logLines: string[] = [];
@@ -202,7 +205,7 @@ async function main() {
   });
 
   page.on('response', res => {
-    if (res.status() >= 400 && !res.url().includes('socket.io')) {
+    if (res.status() >= 400 && !isExpectedSocketIoResponse(res.url(), EXPECTED_SOCKET_ORIGIN)) {
       networkErrors.push(`${res.status()} ${res.url()}`);
       log(`[http:${res.status()}] ${res.url().slice(0, 100)}`);
     }

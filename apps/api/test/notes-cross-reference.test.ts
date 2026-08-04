@@ -4,10 +4,10 @@
  * Covers:
  *   1. A note containing PREFIX-N creates a cross_references row with
  *      source_type='note' pointing at the task.
- *   2. A task_comments row is written crediting the note by title
- *      ("Referenced in note ...").
+ *   2. Private source text is not copied into task comments.
  *   3. The handler is idempotent — same (note, task) pair does not
  *      insert a second row or duplicate comment.
+ *   4. A queued job cannot write after its human actor is offboarded.
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -79,6 +79,50 @@ before(async () => {
   });
 });
 
+test('cross-reference worker rejects a stale job after actor deactivation', async () => {
+  const { handleCrossReference } = await import('../src/workers/handlers/cross-reference.js');
+
+  await withClient(async (c) => {
+    await c.query(
+      `DELETE FROM cross_references WHERE source_type = 'note' AND source_id = $1`,
+      [noteId],
+    );
+    await c.query(
+      `UPDATE org_members SET is_active = false WHERE org_id = $1 AND user_id = $2`,
+      [ORG_ID, USER_ID],
+    );
+  });
+
+  try {
+    await handleCrossReference({
+      id: 'test-job-stale-actor',
+      name: 'cross-reference',
+      data: {
+        sourceType: 'note',
+        sourceId: noteId!,
+        content: `<p>see ${projectPrefix}-7 after offboarding</p>`,
+        orgId: ORG_ID,
+        userId: USER_ID,
+      },
+    });
+
+    await withClient(async (c) => {
+      const refs = await c.query(
+        `SELECT id FROM cross_references WHERE source_type = 'note' AND source_id = $1`,
+        [noteId],
+      );
+      assert.equal(refs.rows.length, 0, 'offboarded actor must not create a cross-reference');
+    });
+  } finally {
+    await withClient(async (c) => {
+      await c.query(
+        `UPDATE org_members SET is_active = true WHERE org_id = $1 AND user_id = $2`,
+        [ORG_ID, USER_ID],
+      );
+    });
+  }
+});
+
 after(async () => {
   await withClient(async (c) => {
     if (taskId) {
@@ -99,7 +143,7 @@ after(async () => {
   });
 });
 
-test('cross-reference worker resolves PREFIX-N from a note and writes xref + comment', async () => {
+test('cross-reference worker links a private note without leaking its content', async () => {
   const { handleCrossReference } = await import('../src/workers/handlers/cross-reference.js');
 
   await handleCrossReference({
@@ -116,23 +160,20 @@ test('cross-reference worker resolves PREFIX-N from a note and writes xref + com
 
   await withClient(async (c) => {
     const refs = await c.query(
-      `SELECT source_type, source_id, target_type, target_id
+      `SELECT source_type, source_id, target_type, target_id, context
        FROM cross_references
        WHERE source_type = 'note' AND source_id = $1 AND target_id = $2`,
       [noteId, taskId],
     );
     assert.equal(refs.rows.length, 1, 'expected exactly 1 xref row');
     assert.equal(refs.rows[0].target_type, 'task');
+    assert.equal(refs.rows[0].context, null, 'xref must not denormalize private note text');
 
     const comments = await c.query(
       `SELECT content FROM task_comments WHERE task_id = $1`,
       [taskId],
     );
-    assert.equal(comments.rows.length, 1, 'expected exactly 1 task comment');
-    assert.ok(
-      /Referenced in note "Design doc"/.test(comments.rows[0].content),
-      `comment should credit note title, got: ${comments.rows[0].content}`,
-    );
+    assert.equal(comments.rows.length, 0, 'private note must not create a task-visible comment');
   });
 });
 
@@ -162,6 +203,6 @@ test('cross-reference worker is idempotent — second call adds no new rows', as
       `SELECT id FROM task_comments WHERE task_id = $1`,
       [taskId],
     );
-    assert.equal(comments.rows.length, 1, 'comment should remain 1 after re-run');
+    assert.equal(comments.rows.length, 0, 'private note must remain absent from task comments');
   });
 });

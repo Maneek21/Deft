@@ -25,6 +25,8 @@ const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'DeftTest2026!';
 
 const log: Array<{ ok: boolean; m: string }> = [];
 const t = (cond: boolean, m: string) => { log.push({ ok: cond, m }); console.log(cond ? '✔' : '✖', m); };
+const GOOGLE_FONTS_CSP_WARNING =
+  /^Refused to load the stylesheet ['"]https:\/\/fonts\.googleapis\.com\/[^'"]*['"] because it violates the following Content Security Policy directive:/;
 
 async function login(page: Page) {
   await page.goto(`${WEB_URL}/login`);
@@ -112,7 +114,7 @@ async function main() {
     if (msg.type() === 'error') {
       const text = msg.text();
       // Skip noisy CSP font warnings + Next dev chunk reloads
-      if (!text.includes('fonts.googleapis.com') && !text.includes('Failed to load chunk')) {
+      if (!GOOGLE_FONTS_CSP_WARNING.test(text) && !text.includes('Failed to load chunk')) {
         console.log(`[browser err] ${text.slice(0, 200)}`);
       }
     }

@@ -24,6 +24,8 @@ const ok = (m: string) => { log.push({ level: 'ok', msg: m }); console.log('✔'
 const fail = (m: string) => { log.push({ level: 'fail', msg: m }); console.error('✖', m); };
 const info = (m: string) => { log.push({ level: 'info', msg: m }); console.log('ℹ', m); };
 const t = (cond: boolean, m: string) => { if (cond) ok(m); else fail(m); return cond; };
+const GOOGLE_FONTS_CSP_WARNING =
+  /^Refused to load the stylesheet ['"]https:\/\/fonts\.googleapis\.com\/[^'"]*['"] because it violates the following Content Security Policy directive:/;
 
 async function shot(page: Page, name: string) {
   const path = `${SHOT_DIR}/${name}.png`;
@@ -253,7 +255,7 @@ async function main() {
     if (msg.type() === 'error') {
       const text = msg.text();
       // Skip noisy CSP font warnings
-      if (!text.includes('fonts.googleapis.com')) {
+      if (!GOOGLE_FONTS_CSP_WARNING.test(text)) {
         info(`console.error: ${text.slice(0, 250)}`);
       }
     }

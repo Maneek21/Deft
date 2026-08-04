@@ -6,6 +6,7 @@ import { getIO } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../lib/wiki-visibility.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 export const knowledgeRoutes = new Hono();
 export const knowledgeAggRoutes = new Hono();
@@ -82,13 +83,6 @@ function sourceSpaceIdSql() {
 function cleanMetadata(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
-}
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 async function latestMessageCitation(pageId: string): Promise<{ source_message_id: string | null; source_space_id: string | null }> {
@@ -332,7 +326,7 @@ knowledgeRoutes.post('/:spaceId/knowledge', async (c) => {
 
       sourceMessageId = sourceMessage.id;
       sourceSpaceId = sourceMessage.space_id;
-      sourceMessageExcerpt = stripHtml(sourceMessage.content).slice(0, 200);
+      sourceMessageExcerpt = toPlainText(sourceMessage.content).slice(0, 200);
     }
 
     let slug = slugify(title);

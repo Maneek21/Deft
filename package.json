@@ -2,6 +2,7 @@
   "name": "deft",
   "version": "0.1.0-alpha",
   "private": true,
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
     "audit:session2": "tsx docs/superpowers/audits/agent-ui-session-2.audit.ts",
@@ -62,17 +63,7 @@
     "typecheck": "pnpm -r --parallel typecheck"
   },
   "engines": {
-    "node": ">=20"
-  },
-  "pnpm": {
-    "overrides": {
-      "esbuild": "^0.28.1",
-      "fast-uri": "^3.1.2",
-      "ip-address": "^10.1.1",
-      "postcss": "^8.5.10",
-      "qs": "^6.15.2",
-      "ws": "^8.21.0"
-    }
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "playwright": "^1.61.1",

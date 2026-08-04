@@ -17,6 +17,7 @@ import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
 import { resolveAttentionBySource } from '../lib/attention.js';
+import { toPlainText } from '../lib/plain-text.js';
 import {
   decodeTaskTableCursor,
   encodeTaskTableCursor,
@@ -246,7 +247,7 @@ async function resolveMentions(content: string | null | undefined, orgId: string
   if (!content) return [];
   // Strip HTML tags so `@name` mentions inside TipTap paragraph markup still
   // match the raw regex. TipTap wraps content in <p> / <span> / etc.
-  const plain = content.replace(/<[^>]+>/g, ' ');
+  const plain = toPlainText(content);
   const tokens = Array.from(plain.matchAll(/@([a-zA-Z0-9_.\-]+)/g))
     .map((m) => m[1])
     .filter((t): t is string => typeof t === 'string' && t.length > 0);
@@ -316,7 +317,7 @@ async function dispatchMentionNotifications(params: {
 
   const taskRef = `${taskPrefix}-${taskNumber}`;
   const link = `/tasks?task=${taskRef}`;
-  const plain = (content ?? '').replace(/<[^>]+>/g, ' ').trim();
+  const plain = toPlainText(content);
   const snippet = plain.slice(0, 200);
 
   for (const userId of mentionedIds) {

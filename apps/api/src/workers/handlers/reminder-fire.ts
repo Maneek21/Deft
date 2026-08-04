@@ -9,13 +9,14 @@
  *
  * Block 0 Task 0.4 of OpenClaw Unlock plan.
  */
-import { and, eq, isNull, or, gt, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
 import { reminders } from '@deft/db/schema';
 import { emitToUser } from '../../socket.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import type { JobData } from '../types.js';
 import { createNotificationIfAllowed } from '../../lib/notification-policy.js';
+import { loadVisibleReminderSource } from '../../lib/reminder-source.js';
 
 export type ReminderFirePayload = { reminderId: string };
 
@@ -37,15 +38,41 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
     return;
   }
 
+  let title = reminder.message.slice(0, 200);
+  let link: string | undefined;
+  if (reminder.source_message_id) {
+    const source = await loadVisibleReminderSource({
+      sourceMessageId: reminder.source_message_id,
+      orgId: reminder.org_id,
+      userId: reminder.user_id,
+    });
+    if (!source) {
+      // Access was revoked or the source was deleted after scheduling. Consume
+      // the reminder without surfacing its historical cached text.
+      await db
+        .update(reminders)
+        .set({ is_sent: true, message: 'Message reminder' })
+        .where(and(
+          eq(reminders.id, reminderId),
+          eq(reminders.org_id, reminder.org_id),
+          eq(reminders.user_id, reminder.user_id),
+          eq(reminders.is_sent, false),
+        ));
+      return;
+    }
+    // Notifications outlive source-space membership. Keep the durable
+    // notification generic and let the destination route enforce access.
+    title = 'Message reminder';
+    link = `/chat?message=${source.messageId}`;
+  }
+
   // Insert the notification.
   const notif = await createNotificationIfAllowed({
     org_id: reminder.org_id,
     user_id: reminder.user_id,
     type: 'reminder',
-    title: reminder.message.slice(0, 200),
-    link: reminder.source_message_id
-      ? `/chat?message=${reminder.source_message_id}`
-      : undefined,
+    title,
+    link,
     metadata: { reminder_id: reminder.id },
   }, { channel: 'calendar' });
 
@@ -53,7 +80,12 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
   await db
     .update(reminders)
     .set({ is_sent: true })
-    .where(eq(reminders.id, reminderId));
+    .where(and(
+      eq(reminders.id, reminderId),
+      eq(reminders.org_id, reminder.org_id),
+      eq(reminders.user_id, reminder.user_id),
+      eq(reminders.is_sent, false),
+    ));
 
   if (notif) {
     emitToUser(reminder.user_id, 'notification:new', notif);

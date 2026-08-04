@@ -13,6 +13,7 @@ import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membersh
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 export const messageRoutes = new Hono();
 
@@ -585,7 +586,7 @@ messageRoutes.post('/:spaceId', async (c) => {
             sql`${spaceMembers.user_id} != ${user.id}`,
           ));
 
-        const plainContent = normalizedContent.replace(/<[^>]+>/g, '').slice(0, 200);
+        const plainContent = toPlainText(normalizedContent).slice(0, 200);
 
         const isDm = space.type === 'dm' || space.type === 'group_dm';
         const title = isDm

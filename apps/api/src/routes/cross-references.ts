@@ -1,7 +1,19 @@
 import { Hono } from 'hono';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { crossReferences, messages, tasks, projects, users, spaces, notes } from '@deft/db/schema';
+import {
+  crossReferences,
+  messages,
+  tasks,
+  projects,
+  users,
+  spaces,
+  notes,
+  spaceMembers,
+} from '@deft/db/schema';
+import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 export const crossReferenceRoutes = new Hono();
 
@@ -11,6 +23,24 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
   try {
     const user = c.get('user');
     const taskId = c.req.param('taskId');
+
+    const [targetTask] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
+      .where(and(
+        eq(tasks.id, taskId),
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
+        eq(projects.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+        visibleTaskCondition(user.id),
+      ))
+      .limit(1);
+
+    if (!targetTask) {
+      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
 
     // Fetch raw refs (message + note). We join sources separately to keep the
     // query readable; note rows will have null message fields and vice versa.
@@ -35,8 +65,18 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
       .leftJoin(messages, and(
         eq(crossReferences.source_type, 'message'),
         eq(crossReferences.source_id, messages.id),
+        eq(messages.org_id, user.org_id),
+        eq(messages.is_deleted, false),
+        sql`exists (
+          select 1 from ${spaceMembers}
+          where ${spaceMembers.space_id} = ${messages.space_id}
+            and ${spaceMembers.user_id} = ${user.id}
+        )`,
       ))
-      .leftJoin(spaces, eq(messages.space_id, spaces.id))
+      .leftJoin(spaces, and(
+        eq(messages.space_id, spaces.id),
+        eq(spaces.org_id, user.org_id),
+      ))
       .leftJoin(users, eq(crossReferences.created_by, users.id))
       .where(
         and(
@@ -54,42 +94,49 @@ crossReferenceRoutes.get('/tasks/:taskId/references', async (c) => {
       const rows = await db
         .select({ id: notes.id, title: notes.title, content: notes.content, icon: notes.icon })
         .from(notes)
-        .where(inArray(notes.id, noteIds));
+        .where(and(
+          inArray(notes.id, noteIds),
+          eq(notes.org_id, user.org_id),
+          eq(notes.is_deleted, false),
+          visibleNoteCondition(user.id),
+        ));
       for (const r of rows) noteMap.set(r.id, { title: r.title, content: r.content, icon: r.icon });
     }
 
-    const result = rawRefs.map((r) => {
+    const result = rawRefs.flatMap<Record<string, unknown>>((r) => {
       if (r.source_type === 'note') {
         const note = noteMap.get(r.source_id);
-        return {
+        if (!note) return [];
+        return [{
           id: r.id,
           source_type: 'note' as const,
           source_id: r.source_id,
-          context: r.context,
+          // Historical rows may contain source excerpts written before source
+          // visibility was enforced. Never return that denormalized content.
+          context: null,
           created_at: r.created_at,
-          note_title: note?.title || null,
-          note_icon: note?.icon || null,
-          note_preview: note?.content
-            ? note.content.replace(/<[^>]+>/g, '').slice(0, 200)
+          note_title: note.title,
+          note_icon: note.icon,
+          note_preview: note.content
+            ? toPlainText(note.content).slice(0, 200)
             : null,
           author_name: r.author_name,
           author_avatar: r.author_avatar,
-        };
+        }];
       }
-      return {
+      if (r.source_type !== 'message' || !r.message_content) return [];
+      return [{
         id: r.id,
         source_type: 'message' as const,
         source_id: r.source_id,
-        context: r.context,
+        context: null,
         created_at: r.created_at,
-        message_preview: r.message_content
-          ? r.message_content.replace(/<[^>]+>/g, '').slice(0, 200)
-          : null,
+        message_preview: toPlainText(r.message_content).slice(0, 200),
         message_space_id: r.message_space_id,
         space_name: r.space_name,
         author_name: r.author_name,
         author_avatar: r.author_avatar,
-      };
+      }];
     });
 
     return c.json({ references: result });
@@ -105,6 +152,21 @@ crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
     const user = c.get('user');
     const noteId = c.req.param('noteId');
 
+    const [sourceNote] = await db
+      .select({ id: notes.id })
+      .from(notes)
+      .where(and(
+        eq(notes.id, noteId),
+        eq(notes.org_id, user.org_id),
+        eq(notes.is_deleted, false),
+        visibleNoteCondition(user.id),
+      ))
+      .limit(1);
+
+    if (!sourceNote) {
+      return c.json({ error: 'Note not found', code: 'NOT_FOUND' }, 404);
+    }
+
     const refs = await db
       .select({
         id: crossReferences.id,
@@ -119,15 +181,22 @@ crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
         project_prefix: projects.prefix,
       })
       .from(crossReferences)
-      .leftJoin(tasks, and(
+      .innerJoin(tasks, and(
         eq(crossReferences.target_type, 'task'),
         eq(crossReferences.target_id, tasks.id),
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
       ))
-      .leftJoin(projects, eq(tasks.project_id, projects.id))
+      .innerJoin(projects, and(
+        eq(tasks.project_id, projects.id),
+        eq(projects.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+      ))
       .where(and(
         eq(crossReferences.source_type, 'note'),
         eq(crossReferences.source_id, noteId),
         eq(crossReferences.org_id, user.org_id),
+        visibleTaskCondition(user.id),
       ))
       .orderBy(crossReferences.created_at);
 
@@ -135,7 +204,7 @@ crossReferenceRoutes.get('/notes/:noteId/references', async (c) => {
       id: r.id,
       target_type: r.target_type,
       target_id: r.target_id,
-      context: r.context,
+      context: null,
       created_at: r.created_at,
       task_title: r.task_title,
       task_identifier: r.project_prefix && r.task_number != null
@@ -158,6 +227,28 @@ crossReferenceRoutes.get('/messages/:messageId/references', async (c) => {
     const user = c.get('user');
     const messageId = c.req.param('messageId');
 
+    const [sourceMessage] = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .innerJoin(spaces, and(
+        eq(messages.space_id, spaces.id),
+        eq(spaces.org_id, user.org_id),
+      ))
+      .innerJoin(spaceMembers, and(
+        eq(spaceMembers.space_id, messages.space_id),
+        eq(spaceMembers.user_id, user.id),
+      ))
+      .where(and(
+        eq(messages.id, messageId),
+        eq(messages.org_id, user.org_id),
+        eq(messages.is_deleted, false),
+      ))
+      .limit(1);
+
+    if (!sourceMessage) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
+    }
+
     const refs = await db
       .select({
         id: crossReferences.id,
@@ -174,16 +265,23 @@ crossReferenceRoutes.get('/messages/:messageId/references', async (c) => {
         project_prefix: projects.prefix,
       })
       .from(crossReferences)
-      .leftJoin(tasks, and(
+      .innerJoin(tasks, and(
         eq(crossReferences.target_type, 'task'),
         eq(crossReferences.target_id, tasks.id),
+        eq(tasks.org_id, user.org_id),
+        eq(tasks.is_deleted, false),
       ))
-      .leftJoin(projects, eq(tasks.project_id, projects.id))
+      .innerJoin(projects, and(
+        eq(tasks.project_id, projects.id),
+        eq(projects.org_id, user.org_id),
+        eq(projects.is_deleted, false),
+      ))
       .where(
         and(
           eq(crossReferences.source_type, 'message'),
           eq(crossReferences.source_id, messageId),
           eq(crossReferences.org_id, user.org_id),
+          visibleTaskCondition(user.id),
         ),
       )
       .orderBy(crossReferences.created_at);
@@ -192,7 +290,7 @@ crossReferenceRoutes.get('/messages/:messageId/references', async (c) => {
       id: r.id,
       target_type: r.target_type,
       target_id: r.target_id,
-      context: r.context,
+      context: null,
       created_at: r.created_at,
       task_title: r.task_title,
       task_identifier: r.project_prefix && r.task_number != null

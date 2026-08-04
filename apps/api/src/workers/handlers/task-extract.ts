@@ -226,7 +226,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
         space_id: spaceId,
         author_user_id: userId,
         classification,
-        message_preview: content.replace(/<[^>]+>/g, '').slice(0, 500),
+        message_preview: toPlainText(content).slice(0, 500),
       },
       goal:
         'A new message looks actionable. Inspect it, decide whether to create a task, ' +
@@ -268,7 +268,7 @@ export async function handleTaskExtract(job: JobData): Promise<void> {
     const orgConfig = await getOrgAIConfig(orgId);
 
     // Strip HTML for the LLM
-    const plainContent = content.replace(/<[^>]+>/g, '');
+    const plainContent = toPlainText(content);
 
     const response = await llm({
       task: 'extract',

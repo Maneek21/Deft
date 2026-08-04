@@ -9,6 +9,7 @@ import { visibleWikiPageCondition, wikiPageRelevantToSpaceCondition } from '../l
 import { retrieveContext } from '../lib/retrieve-context.js';
 import { llm } from '../lib/llm.js';
 import { getOrgAIConfig, hasUsableReasonProvider } from '../lib/org-ai-config.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 /** Notify all org members about a wiki change (except the actor) */
 async function notifyWikiChange(orgId: string, actorId: string, title: string, body: string, slug: string) {
@@ -73,11 +74,7 @@ function visibleWikiCitationCondition(userId: string, orgId: string) {
 }
 
 function compactSourceText(value: string | null | undefined, max = 900) {
-  return (value ?? '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max);
+  return toPlainText(value).slice(0, max);
 }
 
 function askKnowledgeFallback(query: string, sourceCount: number, providerReady: boolean) {

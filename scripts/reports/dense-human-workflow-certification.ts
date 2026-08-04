@@ -1184,8 +1184,8 @@ async function writeReport() {
 </html>`;
 
   await fs.writeFile(HTML_REPORT, html);
-  console.log(`HTML_REPORT=${HTML_REPORT}`);
-  console.log(`JSON_REPORT=${JSON_REPORT}`);
+  console.log('HTML report written under the reports directory.');
+  console.log('JSON report written under the reports directory.');
 }
 
 let reportAlreadyWritten = false;

@@ -41,9 +41,12 @@ let restrictedTaskStorageKey: string;
 let taskWikiCitationId: string;
 let privateClipId: string;
 let privateClipFileKey: string;
+let restrictedTaskClipId: string;
 let privateDecisionId: string;
 let privateSpaceNoteId: string;
 let privateAgentPlanId: string;
+let hiddenSourceReminderId: string;
+let visibleSourceReminderId: string;
 
 async function withClient<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: DATABASE_URL });
@@ -212,6 +215,52 @@ before(async () => {
     );
     ids.push({ table: 'tasks', id: restrictedTaskId });
 
+    restrictedTaskClipId = `drp-restricted-task-clip-${stamp}`;
+    await c.query(
+      `INSERT INTO clips (id, org_id, space_id, context_type, context_id, mode, created_by, file_key, file_size, mime_type, status, is_deleted, created_at, updated_at)
+       VALUES ($1, $2, $3, 'task', $4, 'async', $5, $6, 18, 'audio/webm', 'ready', false, NOW(), NOW())`,
+      [restrictedTaskClipId, ORG_ID, visibleSpaceId, restrictedTaskId, OTHER_USER_ID, privateClipFileKey],
+    );
+    ids.push({ table: 'clips', id: restrictedTaskClipId });
+
+    const privateMessageRefId = `drp-message-ref-${stamp}`;
+    await c.query(
+      `INSERT INTO cross_references
+         (id, org_id, source_type, source_id, target_type, target_id, context, created_by, created_at, updated_at)
+       VALUES ($1, $2, 'message', $3, 'task', $4, $5, $6, NOW(), NOW())`,
+      [privateMessageRefId, ORG_ID, privateMessageId, visibleTaskId, `${SECRET_TERM} stored message excerpt`, OTHER_USER_ID],
+    );
+    ids.push({ table: 'cross_references', id: privateMessageRefId });
+
+    const privateNoteRefId = `drp-note-ref-${stamp}`;
+    await c.query(
+      `INSERT INTO cross_references
+         (id, org_id, source_type, source_id, target_type, target_id, context, created_by, created_at, updated_at)
+       VALUES ($1, $2, 'note', $3, 'task', $4, $5, $6, NOW(), NOW())`,
+      [privateNoteRefId, ORG_ID, privateSpaceNoteId, visibleTaskId, `${SECRET_TERM} stored note excerpt`, OTHER_USER_ID],
+    );
+    ids.push({ table: 'cross_references', id: privateNoteRefId });
+
+    hiddenSourceReminderId = `drp-hidden-reminder-${stamp}`;
+    visibleSourceReminderId = `drp-visible-reminder-${stamp}`;
+    await c.query(
+      `INSERT INTO reminders
+         (id, org_id, user_id, message, remind_at, source_message_id, is_sent, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, NOW() + interval '1 hour', $5, false, NOW(), NOW()),
+              ($6, $2, $7, 'Message reminder', NOW() + interval '1 hour', $5, false, NOW(), NOW())`,
+      [
+        hiddenSourceReminderId,
+        ORG_ID,
+        USER_ID,
+        `${SECRET_TERM} historical cached reminder`,
+        privateMessageId,
+        visibleSourceReminderId,
+        OTHER_USER_ID,
+      ],
+    );
+    ids.push({ table: 'reminders', id: hiddenSourceReminderId });
+    ids.push({ table: 'reminders', id: visibleSourceReminderId });
+
     restrictedTaskFileId = `drp-task-file-${stamp}`;
     restrictedTaskStorageKey = `drp-task-file-${stamp}.txt`;
     await writeFile(join(uploadDir, restrictedTaskStorageKey), 'restricted task file');
@@ -265,7 +314,7 @@ after(async () => {
   await rm(join(process.cwd(), '..', '..', 'uploads', 'clips', privateClipFileKey), { force: true });
 });
 
-async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowledge' | 'files' | 'tasks' | 'clips' | 'decisions' | 'daily-notes' | 'agent-plans', path: string, userId = USER_ID, init?: RequestInit) {
+async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowledge' | 'files' | 'tasks' | 'clips' | 'decisions' | 'daily-notes' | 'agent-plans' | 'recap' | 'reminders' | 'cross-references', path: string, userId = USER_ID, init?: RequestInit) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('user', { id: userId, org_id: ORG_ID, email: USER_EMAIL, name: 'Direct Privacy User' });
@@ -282,6 +331,9 @@ async function routeResponse(routeName: 'messages' | 'spaces' | 'wiki' | 'knowle
   if (routeName === 'decisions') app.route('/api/decisions', (await import('../src/routes/decisions.js')).decisionRoutes);
   if (routeName === 'daily-notes') app.route('/api/daily-notes', (await import('../src/routes/daily-notes.js')).dailyNoteRoutes);
   if (routeName === 'agent-plans') app.route('/api/agent-plans', (await import('../src/routes/agent-plans.js')).agentPlanRoutes);
+  if (routeName === 'recap') app.route('/api/spaces', (await import('../src/routes/recap.js')).recapRoutes);
+  if (routeName === 'reminders') app.route('/api/reminders', (await import('../src/routes/reminders.js')).reminderRoutes);
+  if (routeName === 'cross-references') app.route('/api', (await import('../src/routes/cross-references.js')).crossReferenceRoutes);
 
   return app.request(path, init);
 }
@@ -359,10 +411,44 @@ test('clip detail, audio, and space listing require clip context visibility', as
   assert.equal((await routeResponse('clips', `/api/clips/${privateClipId}`, OTHER_USER_ID)).status, 200);
   const audio = await routeResponse('clips', `/api/clips/${privateClipId}/audio`, OTHER_USER_ID);
   assert.equal(audio.status, 200);
+  assert.equal(audio.headers.get('cache-control'), 'private, no-store');
   assert.equal(await audio.text(), 'private clip audio');
   const list = await routeResponse('clips', `/api/clips/space/${privateSpaceId}`, OTHER_USER_ID);
   assert.equal(list.status, 200);
   assert.ok((await list.json() as any[]).some((clip: any) => clip.id === privateClipId));
+});
+
+test('space-visible clip summaries omit restricted task context', async () => {
+  const { loadShareableClipContext } = await import('../src/workers/handlers/clip-process.js');
+
+  const restricted = await loadShareableClipContext({
+    contextType: 'task',
+    contextId: restrictedTaskId,
+    orgId: ORG_ID,
+    userId: OTHER_USER_ID,
+  });
+  assert.deepEqual(restricted, { title: '', description: '' });
+
+  const unrestricted = await loadShareableClipContext({
+    contextType: 'task',
+    contextId: visibleTaskId,
+    orgId: ORG_ID,
+    userId: USER_ID,
+  });
+  assert.equal(unrestricted.title, `${SECRET_TERM} visible task`);
+  assert.equal(unrestricted.description, `${SECRET_TERM} visible task`);
+});
+
+test('space-visible clip responses redact restricted task identifiers', async () => {
+  const detail = await routeResponse('clips', `/api/clips/${restrictedTaskClipId}`);
+  assert.equal(detail.status, 200);
+  assert.equal((await detail.json() as any).context_id, null);
+
+  const list = await routeResponse('clips', `/api/clips/space/${visibleSpaceId}`);
+  assert.equal(list.status, 200);
+  const clip = (await list.json() as any[]).find((item: any) => item.id === restrictedTaskClipId);
+  assert.ok(clip);
+  assert.equal(clip.context_id, null);
 });
 
 test('decisions inherit wiki page visibility', async () => {
@@ -402,4 +488,87 @@ test('space-visible notes require membership and agent plans are owner-scoped', 
   assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}`)).status, 404);
   assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}/approve`, USER_ID, { method: 'POST' })).status, 404);
   assert.equal((await routeResponse('agent-plans', `/api/agent-plans/${privateAgentPlanId}`, OTHER_USER_ID)).status, 200);
+});
+
+test('recap and message-derived reminders require source-space membership', async () => {
+  const recap = await routeResponse('recap', `/api/spaces/${privateSpaceId}/recap`, USER_ID, {
+    method: 'POST',
+  });
+  assert.equal(recap.status, 404);
+
+  const reminder = await routeResponse('reminders', '/api/reminders', USER_ID, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // This must be ignored whenever source_message_id is supplied; the
+      // server derives reminder text from an authorized source message.
+      content: 'attacker-controlled substitute',
+      source_message_id: privateMessageId,
+      remind_at: new Date(Date.now() + 60_000).toISOString(),
+    }),
+  });
+  assert.equal(reminder.status, 404);
+
+  const hiddenList = await routeResponse('reminders', '/api/reminders', USER_ID);
+  assert.equal(hiddenList.status, 200);
+  const hiddenBody = await hiddenList.json() as any[];
+  assert.ok(!hiddenBody.some((row) => row.id === hiddenSourceReminderId));
+  assert.ok(!JSON.stringify(hiddenBody).includes('historical cached reminder'));
+
+  const visibleList = await routeResponse('reminders', '/api/reminders', OTHER_USER_ID);
+  assert.equal(visibleList.status, 200);
+  const visibleBody = await visibleList.json() as any[];
+  const visibleReminder = visibleBody.find((row) => row.id === visibleSourceReminderId);
+  assert.ok(visibleReminder);
+  assert.equal(visibleReminder.message, `${SECRET_TERM} private message`);
+
+  const { reminderFireHandler } = await import('../src/workers/handlers/reminder-fire.js');
+  await reminderFireHandler({
+    id: `drp-reminder-job-${stamp}`,
+    name: 'reminder-fire',
+    data: { reminderId: hiddenSourceReminderId },
+  });
+  await withClient(async (c) => {
+    const fired = await c.query(
+      `SELECT is_sent, message FROM reminders WHERE id = $1`,
+      [hiddenSourceReminderId],
+    );
+    assert.equal(fired.rows[0].is_sent, true);
+    assert.equal(fired.rows[0].message, 'Message reminder');
+  });
+});
+
+test('cross-reference routes apply current source and target visibility', async () => {
+  assert.equal(
+    (await routeResponse('cross-references', `/api/messages/${privateMessageId}/references`)).status,
+    404,
+  );
+  assert.equal(
+    (await routeResponse('cross-references', `/api/notes/${privateSpaceNoteId}/references`)).status,
+    404,
+  );
+  assert.equal(
+    (await routeResponse('cross-references', `/api/tasks/${restrictedTaskId}/references`)).status,
+    404,
+  );
+
+  const hiddenSources = await routeResponse(
+    'cross-references',
+    `/api/tasks/${visibleTaskId}/references`,
+  );
+  assert.equal(hiddenSources.status, 200);
+  assert.deepEqual((await hiddenSources.json() as any).references, []);
+
+  const visibleSources = await routeResponse(
+    'cross-references',
+    `/api/tasks/${visibleTaskId}/references`,
+    OTHER_USER_ID,
+  );
+  assert.equal(visibleSources.status, 200);
+  const visibleBody = await visibleSources.json() as any;
+  assert.equal(visibleBody.references.length, 2);
+  assert.ok(visibleBody.references.every((reference: any) => reference.context === null));
+  assert.ok(JSON.stringify(visibleBody).includes(SECRET_TERM));
+  assert.ok(!JSON.stringify(visibleBody).includes('stored message excerpt'));
+  assert.ok(!JSON.stringify(visibleBody).includes('stored note excerpt'));
 });

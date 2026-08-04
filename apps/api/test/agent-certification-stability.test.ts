@@ -10,6 +10,11 @@ const EMPLOYEE_ID = `employee-${SUFFIX}`;
 const EMPLOYEE_SLUG = `employee-${SUFFIX}`;
 const SHADOW_USER_ID = `shadow-${SUFFIX}`;
 const ADMIN_USER_ID = `admin-${SUFFIX}`;
+const MEMBER_USER_ID = `member-${SUFFIX}`;
+const AUTH_SHADOW_USER_ID = `auth-shadow-${SUFFIX}`;
+const AUTH_EMPLOYEE_ID = `auth-employee-${SUFFIX}`;
+const AUTH_EMPLOYEE_SLUG = `auth-employee-${SUFFIX}`;
+const AUTH_EMPLOYEE_NAME = 'Runtime $(touch /tmp/deft-pwn) \\"; whoami; #';
 const CHALLENGE_ID = `challenge-${SUFFIX}`;
 const NONCE = `nonce-${SUFFIX}`;
 const REQUIRED_TOOLS = [
@@ -41,9 +46,16 @@ before(async () => {
       [SHADOW_USER_ID, `${SHADOW_USER_ID}@test.local`, ADMIN_USER_ID, `${ADMIN_USER_ID}@test.local`],
     );
     await client.query(
+      `INSERT INTO users (id, email, name, is_agent)
+       VALUES ($1, $2, 'Certification Member', false),
+              ($3, $4, 'Authorization Runtime', true)`,
+      [MEMBER_USER_ID, `${MEMBER_USER_ID}@test.local`, AUTH_SHADOW_USER_ID, `${AUTH_SHADOW_USER_ID}@test.local`],
+    );
+    await client.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'owner', true)`,
-      [ORG_ID, ADMIN_USER_ID],
+       VALUES (gen_random_uuid()::text, $1, $2, 'owner', true),
+              (gen_random_uuid()::text, $1, $3, 'member', true)`,
+      [ORG_ID, ADMIN_USER_ID, MEMBER_USER_ID],
     );
     await client.query(
       `INSERT INTO agent_employees
@@ -53,6 +65,21 @@ before(async () => {
        VALUES ($1, $2, $3, 'Certification Runtime', $4, 'project_manager', 'test', 'standard',
          'hermes', 'verified', now(), now(), true, true, $3)`,
       [EMPLOYEE_ID, ORG_ID, SHADOW_USER_ID, EMPLOYEE_SLUG],
+    );
+    await client.query(
+      `INSERT INTO agent_employees
+         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+          runtime_kind, certification_status, is_byoa, is_active, created_by)
+       VALUES ($1, $2, $3, $4, $5, 'project_manager', 'test', 'standard',
+         'hermes', 'token_issued', true, true, $6)`,
+      [
+        AUTH_EMPLOYEE_ID,
+        ORG_ID,
+        AUTH_SHADOW_USER_ID,
+        AUTH_EMPLOYEE_NAME,
+        AUTH_EMPLOYEE_SLUG,
+        ADMIN_USER_ID,
+      ],
     );
     await client.query(
       `INSERT INTO agent_certification_challenges
@@ -99,9 +126,11 @@ before(async () => {
   const { agentEmployeeRoutes } = await import('../src/routes/agent-employees.js');
   testApp = new Hono();
   testApp.use('*', async (c, next) => {
+    const asMember = c.req.header('x-test-user') === 'member';
+    const userId = asMember ? MEMBER_USER_ID : ADMIN_USER_ID;
     c.set('user', {
-      id: ADMIN_USER_ID,
-      email: `${ADMIN_USER_ID}@test.local`,
+      id: userId,
+      email: `${userId}@test.local`,
       org_id: ORG_ID,
     } as any);
     await next();
@@ -111,12 +140,16 @@ before(async () => {
 
 after(async () => {
   await withClient(async (client) => {
+    await client.query('DELETE FROM agent_channel_events WHERE agent_employee_id = $1', [AUTH_EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_cooperative_log WHERE employee_id = $1', [EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_mcp_call_audit WHERE employee_id = $1', [EMPLOYEE_ID]);
-    await client.query('DELETE FROM agent_certification_challenges WHERE employee_id = $1', [EMPLOYEE_ID]);
-    await client.query('DELETE FROM agent_employees WHERE id = $1', [EMPLOYEE_ID]);
-    await client.query('DELETE FROM org_members WHERE user_id = $1', [ADMIN_USER_ID]);
-    await client.query('DELETE FROM users WHERE id IN ($1, $2)', [SHADOW_USER_ID, ADMIN_USER_ID]);
+    await client.query('DELETE FROM agent_certification_challenges WHERE employee_id IN ($1, $2)', [EMPLOYEE_ID, AUTH_EMPLOYEE_ID]);
+    await client.query('DELETE FROM agent_employees WHERE id IN ($1, $2)', [EMPLOYEE_ID, AUTH_EMPLOYEE_ID]);
+    await client.query('DELETE FROM org_members WHERE user_id IN ($1, $2)', [ADMIN_USER_ID, MEMBER_USER_ID]);
+    await client.query(
+      'DELETE FROM users WHERE id IN ($1, $2, $3, $4)',
+      [SHADOW_USER_ID, ADMIN_USER_ID, MEMBER_USER_ID, AUTH_SHADOW_USER_ID],
+    );
   });
 });
 
@@ -147,4 +180,104 @@ test('certification detail endpoint uses the same stable evidence', async () => 
   assert.equal(stages.get('required_tools_called'), 'pass');
   assert.equal(stages.get('cooperative_nonce_seen'), 'pass');
   assert.equal(stages.get('verified'), 'pass');
+});
+
+test('member cannot access developer, certification, or channel-test routes', async () => {
+  const routes: Array<{ method: 'GET' | 'POST'; path: string }> = [
+    { method: 'GET', path: 'developer' },
+    { method: 'GET', path: 'certification' },
+    { method: 'POST', path: 'certification/start' },
+    { method: 'POST', path: 'certification/check' },
+    { method: 'POST', path: 'certification/reset' },
+    { method: 'POST', path: 'channel-test/start' },
+    { method: 'POST', path: 'regenerate-token' },
+    { method: 'POST', path: 'regenerate-channel-token' },
+    { method: 'POST', path: 'clone' },
+  ];
+
+  for (const route of routes) {
+    const response = await app().request(
+      `/api/agent-employees/${AUTH_EMPLOYEE_ID}/${route.path}`,
+      {
+        method: route.method,
+        headers: { 'x-test-user': 'member' },
+      },
+    );
+    assert.equal(response.status, 403, `${route.method} ${route.path}`);
+    assert.equal((await response.json() as any).code, 'FORBIDDEN');
+  }
+
+  const createResponse = await app().request('/api/agent-employees', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-test-user': 'member' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(createResponse.status, 403);
+  assert.equal((await createResponse.json() as any).code, 'FORBIDDEN');
+
+  const updateResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-test-user': 'member' },
+      body: JSON.stringify({ name: 'Unauthorized rename' }),
+    },
+  );
+  assert.equal(updateResponse.status, 403);
+  assert.equal((await updateResponse.json() as any).code, 'FORBIDDEN');
+});
+
+test('owner can use guarded routes without exposing a prompt-bearing shell command', async () => {
+  const developerResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/developer`,
+  );
+  assert.equal(developerResponse.status, 200);
+  const developerBody = (await developerResponse.json()) as any;
+  const interactiveCommand = developerBody.runtime_setup.commands.find(
+    (command: any) => command.label === 'Open an interactive certification chat',
+  );
+  assert.equal(interactiveCommand?.command, 'hermes chat --cli --max-turns 20');
+  assert.ok(!interactiveCommand.command.includes(AUTH_EMPLOYEE_NAME));
+  assert.ok(!interactiveCommand.command.includes('$('));
+  assert.ok(developerBody.runtime_setup.certification_prompt.includes(AUTH_EMPLOYEE_NAME));
+
+  const certificationResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification`,
+  );
+  assert.equal(certificationResponse.status, 200);
+
+  const startResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/start`,
+    { method: 'POST' },
+  );
+  assert.equal(startResponse.status, 201);
+
+  const checkResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/check`,
+    { method: 'POST' },
+  );
+  assert.equal(checkResponse.status, 200);
+
+  const resetResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/reset`,
+    { method: 'POST' },
+  );
+  assert.equal(resetResponse.status, 200);
+
+  const channelTestResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/channel-test/start`,
+    { method: 'POST' },
+  );
+  assert.equal(channelTestResponse.status, 201);
+
+  const invalidTenantReference = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ space_ids: ['space-outside-current-org'] }),
+    },
+  );
+  assert.equal(invalidTenantReference.status, 400);
+  assert.equal((await invalidTenantReference.json() as any).code, 'VALIDATION_ERROR');
 });

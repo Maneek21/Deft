@@ -1,6 +1,7 @@
 // Shared Haiku message classifier — classifies chat messages for the agent pipeline
 import { llm } from './llm.js';
 import { getOrgAIConfig, hasAnyAIProvider } from './org-ai-config.js';
+import { toPlainText } from './plain-text.js';
 
 export interface ClassificationResult {
   intent: 'task_create' | 'question' | 'discussion' | 'actionable' | 'none';
@@ -37,10 +38,7 @@ const DEFAULT_RESULT: ClassificationResult = {
 };
 
 function plainText(content: string): string {
-  return content
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return toPlainText(content);
 }
 
 function trimMemoryText(value: string): string {

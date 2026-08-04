@@ -6,6 +6,7 @@ import { notes, noteFolders, noteVersions, noteShares, users } from '@deft/db/sc
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleNoteCondition } from '../lib/note-visibility.js';
+import { toPlainText } from '../lib/plain-text.js';
 
 const TASK_ID_PATTERN = /([A-Z]+-\d+)/;
 
@@ -16,7 +17,7 @@ async function enqueueNoteCrossReference(
   userId: string,
 ): Promise<void> {
   if (!content) return;
-  const plain = content.replace(/<[^>]+>/g, '');
+  const plain = toPlainText(content);
   if (!TASK_ID_PATTERN.test(plain)) return;
   try {
     await enqueue(QUEUE_NAMES.AGENT_JOBS, 'cross-reference', {

@@ -101,17 +101,18 @@ function makeFakeOpenAIResponse(jsonPayload: string) {
 
 before(() => {
   originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
+  globalThis.fetch = async (url: string | URL | Request, _opts?: RequestInit) => {
     const urlStr =
       typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
-    if (urlStr.includes('anthropic.com')) {
+    const requestUrl = new URL(urlStr);
+    if (requestUrl.hostname === 'api.anthropic.com') {
       // Return a minimal valid prep JSON so generateOneOnePrep doesn't throw.
       return makeFakeAnthropicResponse(MOCK_PREP_JSON) as unknown as Response;
     }
-    if (urlStr.includes('api.openai.com') || urlStr.includes('openrouter.ai')) {
+    if (requestUrl.hostname === 'api.openai.com' || requestUrl.hostname === 'openrouter.ai') {
       return makeFakeOpenAIResponse(MOCK_PREP_JSON) as unknown as Response;
     }
-    return originalFetch(url as any, opts);
+    throw new Error(`Unexpected fetch in oneone-prep test: ${requestUrl.origin}`);
   };
 });
 

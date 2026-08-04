@@ -39,6 +39,7 @@ import { PageHeader } from '@/components/page-header';
 import { useSetPageContext } from '@/components/app-header-context';
 import { OverflowMenu } from '@/components/overflow-menu';
 import { AppBottomSheet } from '@/components/overlay-primitives';
+import { stripHtml } from '@/lib/strip-html';
 
 // Register built-in slash menu commands (idempotent).
 registerBuiltInCommands();
@@ -70,18 +71,6 @@ type Note = {
   created_at: string;
   updated_at: string;
 };
-
-function stripHtml(html: string): string {
-  // First, add space before closing block-level tags to prevent concatenation
-  let text = html.replace(/<\/(h[1-6]|p|div|li|blockquote)>/gi, ' </$1>');
-  // Remove all HTML tags
-  text = text.replace(/<[^>]*>/g, '');
-  // Replace HTML entities
-  text = text.replace(/&nbsp;/g, ' ');
-  // Normalize whitespace
-  text = text.replace(/\s+/g, ' ').trim();
-  return text;
-}
 
 /**
  * Walk a TipTap JSON doc and collect raw text nodes only, ignoring

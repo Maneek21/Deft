@@ -392,8 +392,7 @@ async function writeBackup(options: ResetOptions) {
   return backupPath;
 }
 
-function printTarget(options: ResetOptions, env: EnvMap) {
-  const urls = [env.NEXT_PUBLIC_APP_URL, env.NEXT_PUBLIC_API_URL, env.NEXT_PUBLIC_WS_URL].filter(Boolean);
+function printTarget(options: ResetOptions) {
   console.log(options.backupOnly ? 'Deft self-host backup' : 'Deft self-host reset');
   console.log(`  compose: ${composeArgs(options).slice(1).join(' ')}`);
   console.log(`  mode: ${options.backupOnly ? 'backup only' : options.mode}`);
@@ -405,13 +404,13 @@ function printTarget(options: ResetOptions, env: EnvMap) {
     console.log(`  validation: doctor=${options.skipDoctor ? 'skipped' : 'on'}, smoke=${options.skipSmoke ? 'skipped' : 'on'}`);
   }
   console.log(`  execute: ${options.dryRun ? 'dry run' : 'yes'}`);
-  if (urls.length > 0) console.log(`  urls: ${urls.join(', ')}`);
+  console.log('  public URL values: redacted');
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseResetArgs(argv);
   const env = loadRuntimeEnv('.env');
-  printTarget(options, env);
+  printTarget(options);
   validateResetSafety(options, env);
 
   if (options.backup) {
@@ -429,9 +428,8 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  const appUrl = env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   console.log('');
-  console.log(`[OK] Reset complete. Open ${appUrl}/signup to create the owner account.`);
+  console.log('[OK] Reset complete. Open /signup on the configured application URL to create the owner account.');
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';

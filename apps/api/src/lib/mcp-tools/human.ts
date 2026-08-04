@@ -39,6 +39,7 @@ import { queryCompactTasks, type CompactTaskQuery } from '../task-compact-query.
 import { visibleNoteCondition } from '../note-visibility.js';
 import { approveAction, rejectAction } from '../agent-approval-resolver.js';
 import { resolveProjectTargetFromRows } from '../resolve-project-target.js';
+import { toPlainText } from '../plain-text.js';
 import {
   ensureAttentionBackfillForUser,
   filterVisibleAttentionItems,
@@ -531,10 +532,7 @@ function parseOptionalDate(value: unknown, field: string): Date | null | ToolRes
 }
 
 function cleanSnippet(value: unknown, max = 240): string {
-  const text = String(value ?? '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const text = toPlainText(String(value ?? ''));
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 

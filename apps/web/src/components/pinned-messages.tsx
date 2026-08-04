@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { formatShortDate } from '@/lib/time';
 import { X, Pin, ChevronDown } from 'lucide-react';
+import { stripHtml } from '@/lib/strip-html';
 
 type PinnedMessage = {
   id: string;
@@ -71,7 +72,7 @@ export function PinnedBar({ spaceId }: Props) {
   if (loading || pins.length === 0) return null;
 
   const latest = pins[0]!;
-  const plainContent = latest.content.replace(/<[^>]+>/g, '').replace(/\[\[file:[^\]]+\]\]/g, '').trim();
+  const plainContent = stripHtml(latest.content).replace(/\[\[file:[^\]]+\]\]/g, '').trim();
 
   return (
     <>
@@ -114,7 +115,7 @@ export function PinnedBar({ spaceId }: Props) {
           }}
         >
           {pins.map((pin, i) => {
-            const text = pin.content.replace(/<[^>]+>/g, '').replace(/\[\[file:[^\]]+\]\]/g, '').trim();
+            const text = stripHtml(pin.content).replace(/\[\[file:[^\]]+\]\]/g, '').trim();
             return (
               <div
                 key={pin.id}

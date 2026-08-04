@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { URL } from 'node:url';
 import pg from 'pg';
 import Redis from 'ioredis';
+import { buildWindowsPnpmCommandArgs } from './windows-pnpm-command.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -338,10 +339,13 @@ function startDevStack(): ReturnType<typeof spawn>[] {
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || WEB_URL,
   };
   const spawnPnpm = (args: string[], env: NodeJS.ProcessEnv) => {
-    const childOptions = { stdio: ['ignore', 'pipe', 'pipe'] as const, env };
+    const childOptions = {
+      stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
+      env,
+    };
     if (process.platform !== 'win32') return spawn('pnpm', args, childOptions);
-    const command = ['pnpm.cmd', ...args].map((arg) => (arg.includes(' ') ? `"${arg.replace(/"/g, '\\"')}"` : arg)).join(' ');
-    return spawn('cmd.exe', ['/d', '/s', '/c', command], childOptions);
+
+    return spawn('cmd.exe', buildWindowsPnpmCommandArgs(args), childOptions);
   };
   const api = spawnPnpm(['--filter', '@deft/api', 'dev'], {
     ...baseEnv,

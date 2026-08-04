@@ -1,17 +1,13 @@
+import { htmlToText } from '@deft/shared/rich-text';
+
 /**
  * Convert TipTap/HTML-ish user text into a plain preview string.
- * This is intentionally small and dependency-free for workers/routes.
+ * Entity decoding is intentionally one-layer only: nested entity-shaped text
+ * remains text instead of being reinterpreted as markup after tags are removed.
  */
 export function toPlainText(value: string | null | undefined): string {
   if (!value) return '';
-  return value
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+  return htmlToText(value)
     .replace(/\s+/g, ' ')
     .trim();
 }
