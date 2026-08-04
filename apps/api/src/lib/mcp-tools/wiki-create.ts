@@ -22,6 +22,7 @@ import { invalidatePlatformContextCacheFor } from './context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { generateReceipt } from '../receipts.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
+import { toPlainText } from '../plain-text.js';
 
 const VALID_WIKI_TYPES = new Set([
   'concept',
@@ -91,17 +92,6 @@ async function verifyMessageVisibleToUser(
     ))
     .limit(1);
   return row ?? null;
-}
-
-function stripHtml(input: string): string {
-  return input
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function slugify(title: string): string {
@@ -177,7 +167,7 @@ export async function executeWikiCreate(
     sourceReaderUserId?: string | null;
   },
 ): Promise<ToolResult> {
-  const title = stripHtml(args.title ?? '').slice(0, 160);
+  const title = toPlainText(args.title ?? '').slice(0, 160);
   const content = String(args.content ?? '').trim();
   if (!title) return errorResult('wiki_create requires title');
   if (!content) return errorResult('wiki_create requires content');
@@ -237,7 +227,7 @@ export async function executeWikiCreate(
         );
       }
       sourceUserId = source.user_id;
-      sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
+      sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
     }
     sourceUserId = sourceUserId ?? shadowUserId;
 
@@ -271,7 +261,7 @@ export async function executeWikiCreate(
           type: wikiType,
           title,
           slug,
-          summary: args.summary?.trim() || stripHtml(content).slice(0, 240),
+          summary: args.summary?.trim() || toPlainText(content).slice(0, 240),
           content,
           metadata,
           confidence: 0.9,
@@ -289,7 +279,7 @@ export async function executeWikiCreate(
           source_id: args.source_message_id,
           source_space_id: sourceSpaceId,
           source_user_id: sourceUserId,
-          excerpt: sourceMessageExcerpt ?? stripHtml(content).slice(0, 200),
+          excerpt: sourceMessageExcerpt ?? toPlainText(content).slice(0, 200),
         });
       }
 
@@ -508,7 +498,7 @@ export async function executeWikiUpdate(
     const changedFields: string[] = [];
 
     if (typeof patch.title === 'string') {
-      const title = stripHtml(patch.title).slice(0, 160);
+      const title = toPlainText(patch.title).slice(0, 160);
       if (!title) return errorResult('wiki_update: title cannot be empty');
       if (title !== existingPage.title) {
         update.title = title;
@@ -627,7 +617,7 @@ export async function executeWikiUpdate(
         );
       }
       sourceUserId = source.user_id;
-      sourceMessageExcerpt = stripHtml(source.content).slice(0, 200);
+      sourceMessageExcerpt = toPlainText(source.content).slice(0, 200);
     }
     sourceUserId = sourceUserId ?? shadowUserId;
 
@@ -674,7 +664,7 @@ export async function executeWikiUpdate(
           source_id: args.source_message_id,
           source_space_id: sourceSpaceId,
           source_user_id: sourceUserId,
-          excerpt: sourceMessageExcerpt ?? stripHtml(updatedPage.content).slice(0, 200),
+          excerpt: sourceMessageExcerpt ?? toPlainText(updatedPage.content).slice(0, 200),
         });
       }
 

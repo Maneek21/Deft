@@ -79,8 +79,9 @@ before(() => {
   // Default mock: return a CREATE response.
   globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
     const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+    const requestUrl = new URL(urlStr);
 
-    if (urlStr.includes('anthropic.com')) {
+    if (requestUrl.hostname === 'api.anthropic.com') {
       // Return whatever the current test has set as the response.
       return (globalThis as any).__mockAnthropicResponse?.(urlStr, opts)
         ?? makeFakeAnthropicResponse(JSON.stringify({
@@ -94,8 +95,7 @@ before(() => {
         })) as unknown as Response;
     }
 
-    // Let non-Anthropic requests through (or also mock them).
-    return originalFetch(url as any, opts);
+    throw new Error(`Unexpected fetch in memory-extract test: ${requestUrl.origin}`);
   };
 });
 

@@ -1,6 +1,6 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, or, isNull, asc, gte } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc, gte, inArray } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -23,6 +23,8 @@ import {
   agentChannelConnections,
   agentChannelEvents,
   agentChannelTokens,
+  projects,
+  mcpConnections,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
@@ -836,9 +838,9 @@ function buildRuntimeSetup(
           description: 'Consumes the durable Agent Channel inbox, asks Hermes, and posts exactly one reply through Deft.',
         },
         {
-          label: 'Run certification prompt',
-          command: `hermes chat -q "${certificationPrompt.replace(/"/g, '\\"')}" --cli --max-turns 20`,
-          description: 'Confirms the Hermes model loop can call Deft tools, not just discover them.',
+          label: 'Open an interactive certification chat',
+          command: 'hermes chat --cli --max-turns 20',
+          description: 'Starts Hermes without embedding the prompt in an executable shell string. Paste the separate certification prompt into the chat.',
         },
       ],
       config_snippet: [
@@ -1057,6 +1059,9 @@ async function installRequiredWorkspaceSkill(employeeId: string) {
 
 agentEmployeeRoutes.post('/', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const currentUser = c.get('user');
     const body = await c.req.json();
     const parsed = createSchema.safeParse(body);
@@ -1066,6 +1071,15 @@ agentEmployeeRoutes.post('/', async (c) => {
     }
 
     const data = parsed.data;
+    const invalidReference = await validateAgentTenantReferences({
+      orgId: currentUser.org_id,
+      spaceIds: data.space_ids,
+      projectIds: data.project_ids,
+      mcpConnectionIds: data.mcp_connection_ids,
+    });
+    if (invalidReference) {
+      return c.json({ error: invalidReference, code: 'VALIDATION_ERROR' }, 400);
+    }
 
     // 1. Create user record with is_agent: true
     const title = data.job_title?.trim() || roleToTitle(data.role);
@@ -1095,7 +1109,11 @@ agentEmployeeRoutes.post('/', async (c) => {
       const publicSpaces = await db
         .select({ id: spaces.id })
         .from(spaces)
-        .where(and(eq(spaces.org_id, currentUser.org_id), eq(spaces.type, 'public')));
+        .where(and(
+          eq(spaces.org_id, currentUser.org_id),
+          eq(spaces.type, 'public'),
+          eq(spaces.is_archived, false),
+        ));
       spaceIdsToJoin = publicSpaces.map((s) => s.id);
     }
 
@@ -1212,6 +1230,9 @@ const updateSchema = z.object({
 
 agentEmployeeRoutes.put('/:id', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
     const body = await c.req.json();
@@ -1232,6 +1253,15 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     }
 
     const data = parsed.data;
+    const invalidReference = await validateAgentTenantReferences({
+      orgId: user.org_id,
+      spaceIds: data.space_ids,
+      projectIds: data.project_ids,
+      mcpConnectionIds: data.mcp_connection_ids,
+    });
+    if (invalidReference) {
+      return c.json({ error: invalidReference, code: 'VALIDATION_ERROR' }, 400);
+    }
     const updates: Record<string, any> = {};
 
     if (data.name !== undefined) updates.name = data.name;
@@ -1315,9 +1345,75 @@ async function getOrgRole(userId: string, orgId: string): Promise<string | null>
   const [m] = await db
     .select({ role: orgMembers.role })
     .from(orgMembers)
-    .where(and(eq(orgMembers.user_id, userId), eq(orgMembers.org_id, orgId)))
+    .where(and(
+      eq(orgMembers.user_id, userId),
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.is_active, true),
+    ))
     .limit(1);
   return m?.role ?? null;
+}
+
+async function requireOwnerOrAdmin(c: Context): Promise<Response | null> {
+  const user = c.get('user') as { id: string; org_id: string };
+  const role = await getOrgRole(user.id, user.org_id);
+  if (role === 'owner' || role === 'admin') return null;
+  return c.json(
+    {
+      error: 'Only owners or admins can manage agent employees and runtime diagnostics',
+      code: 'FORBIDDEN',
+    },
+    403,
+  );
+}
+
+async function validateAgentTenantReferences(params: {
+  orgId: string;
+  spaceIds?: string[] | null;
+  projectIds?: string[] | null;
+  mcpConnectionIds?: string[] | null;
+}): Promise<string | null> {
+  const spaceIds = [...new Set(params.spaceIds ?? [])];
+  if (spaceIds.length > 0) {
+    const rows = await db
+      .select({ id: spaces.id })
+      .from(spaces)
+      .where(and(
+        eq(spaces.org_id, params.orgId),
+        eq(spaces.is_archived, false),
+        inArray(spaces.id, spaceIds),
+      ));
+    if (rows.length !== spaceIds.length) return 'Every space_id must reference an active space in this organization';
+  }
+
+  const projectIds = [...new Set(params.projectIds ?? [])];
+  if (projectIds.length > 0) {
+    const rows = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(
+        eq(projects.org_id, params.orgId),
+        eq(projects.is_archived, false),
+        eq(projects.is_deleted, false),
+        inArray(projects.id, projectIds),
+      ));
+    if (rows.length !== projectIds.length) return 'Every project_id must reference an active project in this organization';
+  }
+
+  const mcpConnectionIds = [...new Set(params.mcpConnectionIds ?? [])];
+  if (mcpConnectionIds.length > 0) {
+    const rows = await db
+      .select({ id: mcpConnections.id })
+      .from(mcpConnections)
+      .where(and(
+        eq(mcpConnections.org_id, params.orgId),
+        eq(mcpConnections.is_active, true),
+        inArray(mcpConnections.id, mcpConnectionIds),
+      ));
+    if (rows.length !== mcpConnectionIds.length) return 'Every mcp_connection_id must reference an active connection in this organization';
+  }
+
+  return null;
 }
 
 agentEmployeeRoutes.patch('/:id', async (c) => {
@@ -1866,6 +1962,9 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/cancel', async (c) => {
 // caller needs a fresh token, regenerate.
 agentEmployeeRoutes.get('/:id/developer', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2056,6 +2155,9 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
 // ─── Block 3.1 — POST /:id/clone  → duplicates an employee ────────────
 agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2104,6 +2206,9 @@ agentEmployeeRoutes.post('/:id/channel-test/start', async (c) => {
 
 agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2145,6 +2250,9 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
 
 agentEmployeeRoutes.get('/:id/certification', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2202,6 +2310,9 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
 
 agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2285,6 +2396,9 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
 
 agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2319,6 +2433,9 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
 
 agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2328,15 +2445,6 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
       .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
-
-    const role = await getOrgRole(user.id, user.org_id);
-    const isCreator = employee.created_by === user.id;
-    if (role !== 'owner' && role !== 'admin' && !isCreator) {
-      return c.json(
-        { error: 'Only owners, admins, or the employee creator can regenerate an employee token', code: 'FORBIDDEN' },
-        403,
-      );
-    }
 
     const rawApiKey = await issueMcpToken({
       orgId: user.org_id,
@@ -2363,6 +2471,9 @@ agentEmployeeRoutes.post('/:id/regenerate-token', async (c) => {
 
 agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
 
@@ -2372,15 +2483,6 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
       .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
-
-    const role = await getOrgRole(user.id, user.org_id);
-    const isCreator = employee.created_by === user.id;
-    if (role !== 'owner' && role !== 'admin' && !isCreator) {
-      return c.json(
-        { error: 'Only owners, admins, or the employee creator can regenerate a channel token', code: 'FORBIDDEN' },
-        403,
-      );
-    }
 
     const channelToken = await issueAgentChannelToken({
       orgId: user.org_id,
@@ -2408,6 +2510,9 @@ agentEmployeeRoutes.post('/:id/regenerate-channel-token', async (c) => {
 
 agentEmployeeRoutes.post('/:id/clone', async (c) => {
   try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
     const user = c.get('user');
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));

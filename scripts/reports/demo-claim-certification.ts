@@ -1,17 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, type Page } from 'playwright';
+import { createDemoCertificationReportPaths } from './demo-claim-certification-paths.js';
 
 const WEB_URL = (process.env.DEFT_WEB_URL || 'https://demo.deft.ing').replace(/\/$/, '');
 const API_URL = (process.env.DEFT_API_URL || WEB_URL).replace(/\/$/, '');
 const EMAIL = process.env.DEFT_TEST_EMAIL || 'diego@testers-tomatoes.com';
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'tomato123';
-const RUN_ID = process.env.DEFT_DEMO_CERT_RUN_ID || new Date().toISOString().replace(/[:.]/g, '-');
-const RUN_MARKER = `DEMO-CERT-${RUN_ID.replace(/[^a-zA-Z0-9]/g, '').slice(-10)}`;
+const reportPaths = createDemoCertificationReportPaths(
+  process.env.DEFT_DEMO_CERT_RUN_ID,
+);
+const RUN_ID = reportPaths.runId;
+const RUN_MARKER = reportPaths.runMarker;
 const args = new Set(process.argv.slice(2));
-const OUT_DIR = path.resolve('reports', 'demo-claim-certification', RUN_ID);
-const HTML_REPORT = path.resolve('reports', `demo-claim-certification-${RUN_ID}.html`);
-const JSON_REPORT = path.resolve('reports', `demo-claim-certification-${RUN_ID}.json`);
+const OUT_DIR = reportPaths.outDir;
+const HTML_REPORT = reportPaths.htmlReport;
+const JSON_REPORT = reportPaths.jsonReport;
 
 type Auth = {
   accessToken: string;
@@ -604,8 +608,8 @@ async function writeReport() {
 </html>`;
 
   await fs.writeFile(HTML_REPORT, html);
-  console.log(`HTML_REPORT=${HTML_REPORT}`);
-  console.log(`JSON_REPORT=${JSON_REPORT}`);
+  console.log('HTML report written under the reports directory.');
+  console.log('JSON report written under the reports directory.');
 }
 
 async function main() {

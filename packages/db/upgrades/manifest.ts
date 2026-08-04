@@ -47,6 +47,11 @@ export const upgradeManifest = {
       file: '0.2.0-preview.3-attention-notifications.sql',
       description: 'Add durable attention lifecycle, delivery ledger, approvers, and browser subscriptions',
     },
+    {
+      version: '0.2.0-preview.4',
+      file: '0.2.0-preview.4-security-content-redaction.sql',
+      description: 'Redact legacy cross-reference, reminder, notification, and restricted clip-derived text',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

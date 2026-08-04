@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { sanitizeHtml } from '@/lib/sanitize';
-import { stripHtml } from '@/lib/strip-html';
+import { htmlToText, stripHtml } from '@/lib/strip-html';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -432,18 +432,10 @@ function CustomFieldRow({
  */
 function htmlToLines(html: string | null): string[] {
   if (!html) return [];
-  // Strip tags; preserve paragraph/line breaks as newlines.
-  const withBreaks = html
-    .replace(/<br\s*\/?>(?=)/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '');
-  const decoded = withBreaks
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  const decoded = htmlToText(html, {
+    blockSeparator: '\n',
+    inlineSeparator: '',
+  });
   return decoded.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
 }
 

@@ -64,7 +64,8 @@ before(() => {
   globalThis.fetch = async (url: string | URL | Request, opts?: RequestInit) => {
     const urlStr =
       typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
-    if (urlStr.includes('anthropic.com')) {
+    const requestUrl = new URL(urlStr);
+    if (requestUrl.hostname === 'api.anthropic.com') {
       return (globalThis as any).__mockAnthropicResponseNoAgMem?.(urlStr, opts)
         ?? makeFakeAnthropicResponse(JSON.stringify({
           action: 'create',
@@ -76,7 +77,7 @@ before(() => {
           related_slugs: [],
         })) as unknown as Response;
     }
-    return originalFetch(url as any, opts);
+    throw new Error(`Unexpected fetch in memory-extract test: ${requestUrl.origin}`);
   };
 });
 

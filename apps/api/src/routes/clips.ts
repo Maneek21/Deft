@@ -2,14 +2,13 @@
 import { Hono } from 'hono';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { clips, messages, projects, spaceMembers, tasks, users } from '@deft/db/schema';
+import { clips, messages, projects, spaceMembers, spaces, tasks, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { getIO } from '../socket.js';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { requireSpaceMembership } from '../lib/space-membership.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 
 export const clipRoutes = new Hono();
@@ -23,10 +22,15 @@ async function canAccessMessage(messageId: string, orgId: string, userId: string
       eq(messages.space_id, spaceMembers.space_id),
       eq(spaceMembers.user_id, userId),
     ))
+    .innerJoin(spaces, and(
+      eq(messages.space_id, spaces.id),
+      eq(spaces.org_id, orgId),
+    ))
     .where(and(
       eq(messages.id, messageId),
       eq(messages.org_id, orgId),
       eq(messages.is_deleted, false),
+      eq(spaces.is_archived, false),
     ))
     .limit(1);
   return row ?? null;
@@ -40,7 +44,27 @@ async function canAccessTask(taskId: string, orgId: string, userId: string) {
       eq(tasks.id, taskId),
       eq(tasks.org_id, orgId),
       eq(tasks.is_deleted, false),
+      eq(projects.org_id, orgId),
+      eq(projects.is_deleted, false),
+      eq(projects.is_archived, false),
       visibleTaskCondition(userId),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+async function canAccessSpace(spaceId: string, orgId: string, userId: string) {
+  const [row] = await db
+    .select({ id: spaces.id })
+    .from(spaces)
+    .innerJoin(spaceMembers, and(
+      eq(spaceMembers.space_id, spaces.id),
+      eq(spaceMembers.user_id, userId),
+    ))
+    .where(and(
+      eq(spaces.id, spaceId),
+      eq(spaces.org_id, orgId),
+      eq(spaces.is_archived, false),
     ))
     .limit(1);
   return Boolean(row);
@@ -53,6 +77,7 @@ async function projectExists(projectId: string, orgId: string) {
       eq(projects.id, projectId),
       eq(projects.org_id, orgId),
       eq(projects.is_deleted, false),
+      eq(projects.is_archived, false),
     ))
     .limit(1);
   return Boolean(row);
@@ -61,12 +86,27 @@ async function projectExists(projectId: string, orgId: string) {
 async function canAccessClip(clip: typeof clips.$inferSelect, orgId: string, userId: string) {
   if (clip.org_id !== orgId || clip.is_deleted) return false;
   if (clip.message_id) return Boolean(await canAccessMessage(clip.message_id, orgId, userId));
-  if (clip.space_id) return requireSpaceMembership(clip.space_id, userId);
-  if (clip.context_type === 'space') return requireSpaceMembership(clip.context_id, userId);
+  if (clip.space_id) return canAccessSpace(clip.space_id, orgId, userId);
+  if (clip.context_type === 'space') return canAccessSpace(clip.context_id, orgId, userId);
   if (clip.context_type === 'thread') return Boolean(await canAccessMessage(clip.context_id, orgId, userId));
   if (clip.context_type === 'task') return canAccessTask(clip.context_id, orgId, userId);
   if (clip.context_type === 'project') return projectExists(clip.context_id, orgId);
   return clip.created_by === userId;
+}
+
+async function serializeClipForViewer(
+  clip: typeof clips.$inferSelect,
+  orgId: string,
+  userId: string,
+) {
+  if (clip.context_type !== 'task' || await canAccessTask(clip.context_id, orgId, userId)) {
+    return clip;
+  }
+
+  // A clip can be visible through its destination space even when its linked
+  // task is restricted. Keep the playable clip visible without exposing the
+  // restricted task's direct identifier.
+  return { ...clip, context_id: null };
 }
 
 // POST /api/clips — upload a clip recording
@@ -102,7 +142,7 @@ clipRoutes.post('/', async (c) => {
     if (!targetSpaceId) {
       return c.json({ error: 'space_id is required for this clip context', code: 'VALIDATION_ERROR' }, 400);
     }
-    const isMember = await requireSpaceMembership(targetSpaceId, user.id);
+    const isMember = await canAccessSpace(targetSpaceId, user.org_id, user.id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -231,7 +271,7 @@ clipRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Clip not found', code: 'NOT_FOUND' }, 404);
     }
 
-    return c.json(clip);
+    return c.json(await serializeClipForViewer(clip, user.org_id, user.id));
   } catch (err) {
     console.error('[clips] Get failed:', err);
     return c.json({ error: 'Failed to get clip', code: 'INTERNAL_ERROR' }, 500);
@@ -261,7 +301,9 @@ clipRoutes.get('/:id/audio', async (c) => {
         headers: {
           'Content-Type': clip.mime_type,
           'Content-Disposition': `inline; filename="clip-${clipId}.webm"`,
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          // Clip visibility follows mutable space membership. Never allow an
+          // authenticated response to become a shared/public cache entry.
+          'Cache-Control': 'private, no-store',
         },
       });
     } catch {
@@ -279,7 +321,7 @@ clipRoutes.get('/space/:spaceId', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('spaceId');
 
-    const isMember = await requireSpaceMembership(spaceId, user.id);
+    const isMember = await canAccessSpace(spaceId, user.org_id, user.id);
     if (!isMember) {
       return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
     }
@@ -294,7 +336,9 @@ clipRoutes.get('/space/:spaceId', async (c) => {
       .orderBy(desc(clips.created_at))
       .limit(50);
 
-    return c.json(result);
+    return c.json(await Promise.all(
+      result.map((clip) => serializeClipForViewer(clip, user.org_id, user.id)),
+    ));
   } catch (err) {
     console.error('[clips] List failed:', err);
     return c.json({ error: 'Failed to list clips', code: 'INTERNAL_ERROR' }, 500);

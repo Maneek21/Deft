@@ -2,8 +2,23 @@
 // (e.g. PROJ-42) and creates cross_references + task comments linking them.
 import type { JobData } from '../types.js';
 import { db } from '../../lib/db.js';
-import { crossReferences, tasks, projects, taskComments, spaces, notes } from '@deft/db/schema';
+import {
+  crossReferences,
+  tasks,
+  projects,
+  taskComments,
+  spaces,
+  notes,
+  messages,
+  spaceMembers,
+  orgMembers,
+  agentEmployees,
+  users,
+} from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { visibleNoteCondition } from '../../lib/note-visibility.js';
+import { visibleTaskCondition } from '../../lib/task-visibility.js';
+import { toPlainText } from '../../lib/plain-text.js';
 
 interface CrossReferenceJobData {
   // Message-sourced (legacy shape)
@@ -22,7 +37,7 @@ const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;
 
 export async function handleCrossReference(job: JobData): Promise<void> {
   const data = job.data as CrossReferenceJobData;
-  const { content, orgId, userId } = data;
+  const { orgId, userId } = data;
 
   // Resolve source: explicit sourceType takes priority, else fall back to
   // messageId (legacy enqueue shape from messages.ts).
@@ -35,38 +50,91 @@ export async function handleCrossReference(job: JobData): Promise<void> {
   }
   if (!sourceId) return;
 
-  // Strip HTML tags for scanning
-  const plainContent = content.replace(/<[^>]+>/g, '');
+  // Jobs may execute after a member is offboarded or an employee is paused.
+  // Re-authorize the queued actor before performing any durable write.
+  const [activeHuman] = await db
+    .select({ id: orgMembers.id })
+    .from(orgMembers)
+    .innerJoin(users, and(
+      eq(users.id, orgMembers.user_id),
+      eq(users.is_agent, false),
+    ))
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.user_id, userId),
+      eq(orgMembers.is_active, true),
+    ))
+    .limit(1);
+  let activeEmployee: { id: string } | undefined;
+  if (!activeHuman) {
+    [activeEmployee] = await db
+      .select({ id: agentEmployees.id })
+      .from(agentEmployees)
+      .where(and(
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.user_id, userId),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
+      ))
+      .limit(1);
+  }
+  if (!activeHuman && !activeEmployee) return;
+
+  // Reload the source from the database instead of trusting queued content.
+  // This both closes stale-job leaks and proves the actor may still see it.
+  let plainContent: string;
+  let sourceMayCreateComment = false;
+  if (sourceType === 'note') {
+    const [note] = await db
+      .select({
+        content: notes.content,
+        visibility: notes.visibility,
+      })
+      .from(notes)
+      .where(and(
+        eq(notes.id, sourceId),
+        eq(notes.org_id, orgId),
+        eq(notes.is_deleted, false),
+        visibleNoteCondition(userId),
+      ))
+      .limit(1);
+    if (!note) return;
+
+    plainContent = toPlainText(note.content);
+    sourceMayCreateComment = note.visibility === 'org';
+  } else {
+    const [message] = await db
+      .select({
+        content: messages.content,
+        space_type: spaces.type,
+      })
+      .from(messages)
+      .innerJoin(spaces, and(
+        eq(messages.space_id, spaces.id),
+        eq(spaces.org_id, orgId),
+      ))
+      .innerJoin(spaceMembers, and(
+        eq(spaceMembers.space_id, messages.space_id),
+        eq(spaceMembers.user_id, userId),
+      ))
+      .where(and(
+        eq(messages.id, sourceId),
+        eq(messages.org_id, orgId),
+        eq(messages.is_deleted, false),
+        eq(spaces.is_archived, false),
+      ))
+      .limit(1);
+    if (!message) return;
+
+    plainContent = toPlainText(message.content);
+    sourceMayCreateComment = message.space_type === 'public';
+  }
+
   const matches = plainContent.match(TASK_ID_PATTERN);
   if (!matches) return;
 
   // De-duplicate identifiers in the same source
   const uniqueRefs = [...new Set(matches)];
-
-  // Resolve source context label (space name for messages, note title for notes)
-  let sourceLabel: string;
-  if (sourceType === 'note') {
-    const [n] = await db
-      .select({ title: notes.title })
-      .from(notes)
-      .where(eq(notes.id, sourceId))
-      .limit(1);
-    sourceLabel = n?.title || 'note';
-  } else {
-    const spaceId = data.spaceId;
-    if (!spaceId) {
-      sourceLabel = 'chat';
-    } else {
-      const [space] = await db
-        .select({ name: spaces.name })
-        .from(spaces)
-        .where(eq(spaces.id, spaceId))
-        .limit(1);
-      sourceLabel = space?.name || 'chat';
-    }
-  }
-
-  const contextSnippet = plainContent.slice(0, 100);
 
   for (const ref of uniqueRefs) {
     try {
@@ -76,20 +144,21 @@ export async function handleCrossReference(job: JobData): Promise<void> {
 
       if (isNaN(number)) continue;
 
-      // Look up the project by prefix
-      const [project] = await db
-        .select({ id: projects.id })
-        .from(projects)
-        .where(and(eq(projects.org_id, orgId), eq(projects.prefix, prefix)))
-        .limit(1);
-
-      if (!project) continue;
-
-      // Look up the task by project + number
+      // Resolve only a live task in this org that the source actor can see.
       const [task] = await db
         .select({ id: tasks.id })
         .from(tasks)
-        .where(and(eq(tasks.project_id, project.id), eq(tasks.number, number)))
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
+        .where(and(
+          eq(projects.org_id, orgId),
+          eq(projects.prefix, prefix),
+          eq(projects.is_deleted, false),
+          eq(projects.is_archived, false),
+          eq(tasks.org_id, orgId),
+          eq(tasks.number, number),
+          eq(tasks.is_deleted, false),
+          visibleTaskCondition(userId),
+        ))
         .limit(1);
 
       if (!task) {
@@ -109,7 +178,9 @@ export async function handleCrossReference(job: JobData): Promise<void> {
           source_id: sourceId,
           target_type: 'task',
           target_id: task.id,
-          context: contextSnippet,
+          // Do not denormalize source text into an edge. Access to the source
+          // can change independently from access to the target.
+          context: null,
           created_by: userId,
         })
         .onConflictDoNothing({
@@ -124,16 +195,18 @@ export async function handleCrossReference(job: JobData): Promise<void> {
 
       if (inserted.length === 0) continue;
 
-      // Add a comment on the task
-      const excerpt = plainContent.slice(0, 120);
+      // A task comment is visible to every viewer of the target. Only leave a
+      // generic pointer for org-wide sources; never copy private/shared note or
+      // private/DM message text into the target.
+      if (!sourceMayCreateComment) continue;
       const commentLabel = sourceType === 'note'
-        ? `Referenced in note "${sourceLabel}"`
-        : `Discussed in #${sourceLabel}`;
+        ? 'Referenced from an org-visible note'
+        : 'Referenced from a public-space message';
       await db.insert(taskComments).values({
         org_id: orgId,
         task_id: task.id,
         user_id: userId,
-        content: `${commentLabel}: "${excerpt}"`,
+        content: commentLabel,
       });
 
       console.log(`[cross-reference] Linked ${sourceType} ${sourceId} -> task ${ref} (${task.id})`);

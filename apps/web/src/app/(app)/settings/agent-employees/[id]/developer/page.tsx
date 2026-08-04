@@ -616,6 +616,18 @@ export default function DeveloperPage() {
             ))}
           </div>
         )}
+        {data.runtime_setup.certification_prompt && (
+          <div className="mt-3">
+            <div className="mb-1 text-xs text-muted-foreground">Certification prompt</div>
+            <p className="mb-1 text-[11px] text-muted-foreground">
+              Paste this prompt into the interactive runtime chat; it is intentionally kept separate from executable commands.
+            </p>
+            <CodeBlock
+              value={data.runtime_setup.certification_prompt}
+              onCopy={() => copy('certification prompt', data.runtime_setup.certification_prompt)}
+            />
+          </div>
+        )}
         {data.runtime_setup.bridge_script && (
           <div className="mt-3">
             <div className="mb-1 text-xs text-muted-foreground">Hermes stdio bridge script</div>

@@ -108,10 +108,11 @@ test('1. writes a 1536-dim embedding to the target wiki page', async () => {
         // pgvector env: column returns a parsed number[] or vector string.
         const parsed: number[] =
           typeof raw === 'string'
-            ? JSON.parse(raw.replace(/^\[/, '[').replace(/\]$/, ']'))
+            ? JSON.parse(raw)
             : Array.isArray(raw)
             ? raw
             : Object.values(raw);
+        assert.ok(Array.isArray(parsed), 'pgvector embedding should deserialize to an array');
         assert.equal(parsed.length, 1536, 'embedding should have 1536 dimensions');
       } else {
         // BYTEA fallback env: column is Buffer containing JSON-encoded float array.

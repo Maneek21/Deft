@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { formatDateTime } from '@/lib/time';
 import { X, Clock, Trash2 } from 'lucide-react';
+import { stripHtml } from '@/lib/strip-html';
 
 type ScheduledMsg = {
   id: string;
@@ -51,7 +52,7 @@ export function ScheduledPanel({ onClose }: Props) {
             <div key={item.id} className="flex items-start gap-3 py-2">
               <div className="flex-1 min-w-0">
                 <p className="text-[0.8125rem] truncate" style={{ color: 'var(--on-surface)' }}>
-                  {item.content.replace(/<[^>]+>/g, '').slice(0, 80)}
+                  {stripHtml(item.content).slice(0, 80)}
                 </p>
                 <p className="text-[0.6875rem] mt-0.5" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
                   {formatDateTime(item.scheduled_for)}

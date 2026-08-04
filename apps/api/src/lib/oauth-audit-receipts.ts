@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { projects, spaces, tasks } from '@deft/db/schema';
 import { db } from './db.js';
+import { toPlainText } from './plain-text.js';
 
 export type AuditReceipt = {
   title: string;
@@ -41,7 +42,7 @@ function asNumber(value: unknown): number | null {
 function cleanPreview(value: unknown, max = 110): string | null {
   const raw = asString(value);
   if (!raw) return null;
-  const compact = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const compact = toPlainText(raw);
   if (!compact) return null;
   return compact.length > max ? `${compact.slice(0, max - 1)}...` : compact;
 }

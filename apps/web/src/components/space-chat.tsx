@@ -60,6 +60,8 @@ import { UserProfileCard } from './user-profile-card';
 import { parseReminderTime } from './slash-command-autocomplete';
 import ConfirmDialog from './confirm-dialog';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
+import { stripHtml } from '@/lib/strip-html';
+import { isTrustedSystemMessage, serializeQuotedMessage } from '@/lib/message-presentation';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -732,13 +734,11 @@ export function SpaceChat({
     }
   };
 
-  const plainMessageText = (content: string) => content.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  const plainMessageText = (content: string) => stripHtml(content);
 
   const openTaskFromMessage = (msg: Message) => {
-    let title = msg.content
-      .replace(/<@[^>]+>/g, '')
+    let title = stripHtml(msg.content.replace(/<@[^>]+>/g, ' '))
       .replace(/\[\[file:[^\]]+\]\]/g, '')
-      .replace(/<[^>]+>/g, ' ')
       .replace(/\*\*|__|~~|`|#/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -1072,7 +1072,7 @@ export function SpaceChat({
     let content = serializeMentions(html);
     // Prepend quoted message if present
     if (quotedMessage) {
-      const quoteHtml = `<blockquote style="border-left:3px solid var(--primary-container);padding-left:12px;margin:0 0 8px 0;color:var(--on-surface-variant)"><strong>${quotedMessage.userName}</strong><br/>${quotedMessage.content}</blockquote>`;
+      const quoteHtml = serializeQuotedMessage(quotedMessage);
       content = quoteHtml + content;
       setQuotedMessage(null);
     }
@@ -1403,9 +1403,7 @@ export function SpaceChat({
 
             // Detect system messages (task status changes, BYOA mention notices, etc.)
             const msgMeta = ((msg as any).metadata ?? {}) as Record<string, unknown>;
-            const isSystemMessage = msgMeta.kind === 'system_note'
-              || msg.user_id === 'system'
-              || /^[\u2713\u2714\u2716\u26A0]/.test(msg.content.replace(/<[^>]*>/g, '').trim());
+            const isSystemMessage = isTrustedSystemMessage(msgMeta);
             const isBot = msg.user_name === 'Defty' || msg.user_name === 'Deft' || (msg as any).metadata?.is_agent_reply;
 
             // Show "New messages" divider after the last-read message
@@ -1557,13 +1555,11 @@ export function SpaceChat({
                         style={{ color: 'var(--muted)' }}
                         title="Create task"
                         onClick={() => {
-                          // Strip mentions and file markers first (before HTML stripping),
-                          // then replace HTML tags with spaces to avoid concatenating words,
-                          // then strip markdown formatting, and collapse whitespace.
-                          let title = msg.content
-                            .replace(/<@[^>]+>/g, '') // strip mentions
-                            .replace(/\[\[file:[^\]]+\]\]/g, '') // strip file markers
-                            .replace(/<[^>]+>/g, ' ') // replace HTML tags with spaces (not empty string)
+                          // Strip mention/file markers, then use the shared
+                          // parser so quoted ">" characters cannot evade tag handling.
+                          let title = stripHtml(msg.content
+                            .replace(/<@[^>]+>/g, ' ')
+                            .replace(/\[\[file:[^\]]+\]\]/g, ' '))
                             .replace(/\*\*|__|~~|`|#/g, '') // strip markdown
                             .replace(/\s+/g, ' ') // collapse whitespace
                             .trim();
@@ -1632,7 +1628,7 @@ export function SpaceChat({
                               <MailOpen size={13} strokeWidth={1.5} /> Mark unread
                             </button>
                             <button onClick={() => {
-                              const plain = msg.content.replace(/<[^>]+>/g, '').slice(0, 200);
+                              const plain = plainMessageText(msg.content).slice(0, 200);
                               setQuotedMessage({ userName: msg.user_name, content: plain });
                               setMoreMenuId(null);
                             }} className="w-full text-left px-3.5 py-2 text-[0.8125rem] flex items-center gap-2.5"
@@ -1684,7 +1680,6 @@ export function SpaceChat({
                                         ? new Date(Date.now() + opt.mins * 60000)
                                         : (() => { const d = new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return d; })();
                                       await api.post('/api/reminders', {
-                                        content: msg.content.replace(/<[^>]+>/g, '').slice(0, 100),
                                         remind_at: time.toISOString(),
                                         source_message_id: msg.id,
                                       });
@@ -2566,7 +2561,7 @@ function EditedIndicator({ messageId }: { messageId: string }) {
             <div key={v.id} className="border-b last:border-b-0 py-1.5" style={{ borderColor: 'var(--border-default, var(--outline-variant))' }}>
               <div className="text-[10px]" style={{ color: 'var(--outline)' }}>{formatMessageTime(v.edited_at)}</div>
               <div className="text-[11px] mt-0.5 line-clamp-3" style={{ color: 'var(--on-surface-variant)' }}>
-                {v.content.replace(/<[^>]+>/g, '').slice(0, 150)}
+                {stripHtml(v.content).slice(0, 150)}
               </div>
             </div>
           ))}

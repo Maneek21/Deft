@@ -233,8 +233,7 @@ test('closeTasksForMergedPR closes closable statuses, skips done/cancelled, writ
     );
     assert.equal(cm.rows.length, 1);
     const content = cm.rows[0].content as string;
-    assert.ok(content.startsWith('Closed by merging PR #99:'), `got: ${content}`);
-    assert.ok(content.includes(url), `expected url in comment body: ${content}`);
+    assert.equal(content, `Closed by merging PR #99: ${title}\n\n${url}`);
     // Comment author must be the same agent user as the activity author.
     assert.equal(cm.rows[0].user_id, authorId);
   });

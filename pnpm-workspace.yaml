@@ -2,10 +2,38 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - '!apps/web-demo'
+overrides:
+  '@hono/node-server': ^2.0.12
+  body-parser: ^2.3.0
+  'brace-expansion@<2.0.0': ^1.1.18
+  'brace-expansion@>=4.0.0 <6.0.0': ^5.0.9
+  engine.io: ^6.6.7
+  esbuild: ^0.28.1
+  fast-uri: ^3.1.5
+  hono: ^4.12.34
+  ip-address: ^10.3.1
+  postcss: ^8.5.23
+  qs: ^6.15.2
+  sharp: ^0.35.3
+  socket.io-parser: ^4.2.7
+  ws: ^8.21.0
 allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  sharp: true
   unrs-resolver: true
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
-  - msgpackr-extract
-approveBuildsAutomatically: true
+# This exact release is the audited security update that brings native Sharp
+# 0.35 support and patched PostCSS. Permit it through pnpm release-age gates.
+minimumReleaseAgeExclude:
+  - '@next/env@16.3.0'
+  - '@next/eslint-plugin-next@16.3.0'
+  - '@next/swc-darwin-arm64@16.3.0'
+  - '@next/swc-darwin-x64@16.3.0'
+  - '@next/swc-linux-arm64-gnu@16.3.0'
+  - '@next/swc-linux-arm64-musl@16.3.0'
+  - '@next/swc-linux-x64-gnu@16.3.0'
+  - '@next/swc-linux-x64-musl@16.3.0'
+  - '@next/swc-win32-arm64-msvc@16.3.0'
+  - '@next/swc-win32-x64-msvc@16.3.0'
+  - eslint-config-next@16.3.0
+  - next@16.3.0

@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { formatShortDate } from '@/lib/time';
 import { Bookmark, X, Hash } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { stripHtml } from '@/lib/strip-html';
 
 type SavedMessage = {
   id: string;
@@ -40,9 +41,6 @@ export function SavedMessages({ onClose }: { onClose: () => void }) {
     router.push(`/chat?space=${item.space_id}&message=${item.message_id}`);
     onClose();
   };
-
-  const stripHtml = (html: string) =>
-    html.replace(/<[^>]+>/g, '').replace(/\[\[file:[^\]]+\]\]/g, '').trim();
 
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center"
@@ -89,7 +87,7 @@ export function SavedMessages({ onClose }: { onClose: () => void }) {
             </div>
           ) : (
             items.map(item => {
-              const text = stripHtml(item.message_content);
+              const text = stripHtml(item.message_content).replace(/\[\[file:[^\]]+\]\]/g, '').trim();
               return (
                 <div key={item.id}
                   className="px-5 py-3 flex gap-3 group cursor-pointer"

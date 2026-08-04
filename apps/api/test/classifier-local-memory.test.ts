@@ -28,6 +28,14 @@ test('local classifier strips chat HTML before extracting decisions', () => {
   assert.equal(result.decision, 'use cold room target 52 F for packed tomatoes');
 });
 
+test('local classifier preserves inline words and canonical mention labels', () => {
+  const result = classifyMessageLocally(
+    '<p>Decision: Use PRO<strong>J</strong>-42 with <@user-1|Riya>.</p>',
+  );
+
+  assert.equal(result.decision, 'Use PROJ-42 with @Riya');
+});
+
 test('local classifier does not manufacture memory from ordinary chatter', () => {
   const result = classifyMessageLocally('I think the tomatoes look nice today.');
 
