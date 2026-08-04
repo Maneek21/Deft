@@ -42,7 +42,7 @@ The follow-up pins pnpm 11.10.0 consistently in `packageManager`, every Docker s
 - network-disabled final-image checks: pnpm 11.10.0, `tar@7.5.19`, no pnpm 11.9.0 cache, and Next.js 16.3.0 executable;
 - Trivy 0.70.0 with CI-equivalent `CRITICAL`, `ignore-unfixed`, and exit-code policy: zero critical findings.
 
-The GitHub rerun for this follow-up remains the clean-host confirmation before merge.
+The clean-host rerun at code-bearing commit `2ae2a6bab36f896829ed1079980b77c09aa2d011` passed all nine reported checks: Type Check, Dependency Audit, Dependency Review, Test API, Versioned Upgrade, Build, both CodeQL results, and Production Image + Browser Smoke (including Trivy). GitHub's code-scanning API reports **0 open CodeQL alerts on the remediation branch** and **40 on unchanged `master`**. Dependabot still reports **17 open default-branch alerts**, which is expected until merge and dependency-graph refresh. Draft PR #198 is cleanly mergeable; no alert was dismissed.
 
 ## Local remediation disposition
 

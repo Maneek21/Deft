@@ -95,10 +95,11 @@ Completed locally:
 - all 17 currently open Dependabot alerts represented by patched versions in the final dependency graph, with both full and production audits reporting zero advisories;
 - authorization, tenant isolation, current-visibility, trusted-presentation, command construction, path/log safety, and historical content-redaction fixes implemented;
 - frozen install, API/web typechecks, web lint, production web build, 63 focused regressions, 19/19 DB-backed privacy tests, 8/8 direct migration data assertions, a Linux/Alpine production image build, API/web/Sharp/image/Socket.IO runtime smokes, the final five-test migration subset, and `git diff --check` passed;
-- Docker validation also fixed and reverified the production entrypoint's LF contract and made interrupted pnpm image installs cache-assisted and retry-resumable through a BuildKit store cache and extended fetch timeout.
-- the first draft-PR run passed every check except the final Trivy image gate; its pnpm-Corepack `tar@7.5.16` finding was remediated with the minimum pnpm 11.10.0 bump, then revalidated through an exact frozen install, zero-advisory audit, rebuilt 40-page image, network-disabled runtime checks, and a zero-critical Trivy 0.70.0 scan.
+- Docker validation also fixed and reverified the production entrypoint's LF contract and made interrupted pnpm image installs cache-assisted and retry-resumable through a BuildKit store cache and extended fetch timeout;
+- the first draft-PR run passed every check except the final Trivy image gate; its pnpm-Corepack `tar@7.5.16` finding was remediated with the minimum pnpm 11.10.0 bump, then revalidated through an exact frozen install, zero-advisory audit, rebuilt 40-page image, network-disabled runtime checks, and a zero-critical Trivy 0.70.0 scan;
+- the follow-up GitHub run passed all nine reported checks, and GitHub's code-scanning API reports zero open alerts on the remediation branch. Draft PR #198 is cleanly mergeable; unchanged `master` retains 40 CodeQL and 17 Dependabot alerts pending merge and graph refresh.
 
 Remaining before remote closure:
 
 1. Deploy upgrade `0.2.0-preview.4` through `pnpm db:upgrade` on applicable installations.
-2. Complete the follow-up CI run on draft [PR #198](https://github.com/Maneek21/Deft/pull/198), then merge after review and wait for CodeQL and GitHub's dependency-graph refresh. GitHub still reports 40 CodeQL and 17 Dependabot alerts on unchanged remote `master`; no alert has been dismissed.
+2. Review and merge draft [PR #198](https://github.com/Maneek21/Deft/pull/198), then wait for CodeQL and GitHub's dependency-graph refresh. GitHub still reports 40 CodeQL and 17 Dependabot alerts on unchanged remote `master`; no alert has been dismissed.
