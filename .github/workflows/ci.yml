@@ -245,7 +245,9 @@ jobs:
           POSTGRES_PASSWORD: browser-smoke-postgres
           JWT_SECRET: browser-smoke-jwt-secret
           JWT_REFRESH_SECRET: browser-smoke-refresh-secret
-          ENCRYPTION_KEY: 12345678901234567890123456789012
+          # Quote this value: otherwise YAML parses the digits as a number and
+          # exports it in scientific notation, shortening it below 32 chars.
+          ENCRYPTION_KEY: "ci-browser-smoke-encryption-key-32"
           NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
           NEXT_PUBLIC_API_URL: http://127.0.0.1:3001
           NEXT_PUBLIC_WS_URL: http://127.0.0.1:3001
