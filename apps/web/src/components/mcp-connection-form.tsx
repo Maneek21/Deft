@@ -11,8 +11,13 @@ type McpConnection = {
   server_url: string | null;
   stdio_command: string | null;
   stdio_args: string[] | null;
-  auth_type: string;
-  auth_config_encrypted: Record<string, unknown> | null;
+  auth_type: 'none' | 'api_key';
+  has_credentials: boolean;
+  credential_settings: {
+    header_name: string;
+    scheme: string | null;
+    env_var: string;
+  } | null;
   default_trust_tier: 'auto' | 'quick' | 'full';
 };
 
@@ -26,7 +31,7 @@ type Props = {
     server_url?: string;
     stdio_command?: string;
     stdio_args?: string[];
-    auth_type?: string;
+    auth_type?: 'none' | 'api_key';
     default_trust_tier?: 'auto' | 'quick' | 'full';
   } | null;
 };
@@ -40,21 +45,32 @@ const TRUST_TIERS = [
 const isSelfHosted = process.env.NEXT_PUBLIC_DEFT_SELF_HOSTED === 'true';
 
 const TRANSPORT_OPTIONS = isSelfHosted
-  ? (['sse', 'streamable-http', 'stdio'] as const)
-  : (['sse', 'streamable-http'] as const);
+  ? (['streamable-http', 'sse', 'stdio'] as const)
+  : (['streamable-http', 'sse'] as const);
 
 export default function McpConnectionForm({ connection, onClose, onSaved, prefill }: Props) {
   const isEdit = !!connection;
 
   const [name, setName] = useState(connection?.name || prefill?.name || '');
   const [transport, setTransport] = useState<'sse' | 'streamable-http' | 'stdio'>(
-    connection?.transport || prefill?.transport || 'sse'
+    connection?.transport || prefill?.transport || 'streamable-http'
   );
   const [serverUrl, setServerUrl] = useState(connection?.server_url || prefill?.server_url || '');
   const [stdioCommand, setStdioCommand] = useState(connection?.stdio_command || prefill?.stdio_command || '');
   const [stdioArgs, setStdioArgs] = useState(connection?.stdio_args?.join(' ') || prefill?.stdio_args?.join(' ') || '');
-  const [authType, setAuthType] = useState(connection?.auth_type || prefill?.auth_type || 'none');
+  const [authType, setAuthType] = useState<'none' | 'api_key'>(
+    connection?.auth_type === 'api_key' || prefill?.auth_type === 'api_key' ? 'api_key' : 'none'
+  );
   const [apiKey, setApiKey] = useState('');
+  const [headerName, setHeaderName] = useState(
+    connection?.credential_settings?.header_name || 'Authorization'
+  );
+  const [authScheme, setAuthScheme] = useState(
+    connection?.credential_settings?.scheme ?? 'Bearer'
+  );
+  const [envVar, setEnvVar] = useState(
+    connection?.credential_settings?.env_var || 'MCP_API_KEY'
+  );
   const [defaultTrustTier, setDefaultTrustTier] = useState<'auto' | 'quick' | 'full'>(
     connection?.default_trust_tier || prefill?.default_trust_tier || 'full'
   );
@@ -96,7 +112,12 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
     }
 
     if (authType === 'api_key' && apiKey) {
-      payload.auth_config_encrypted = { api_key: apiKey };
+      payload.credential = {
+        secret: apiKey,
+        header_name: headerName,
+        scheme: authScheme.trim() || null,
+        env_var: envVar,
+      };
     }
 
     return payload;
@@ -237,7 +258,7 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
                 type="url"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="https://mcp.example.com/sse"
+                placeholder="https://mcp.example.com/mcp"
                 required
                 className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
@@ -284,7 +305,7 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
               Authentication
             </label>
             <div className="flex gap-2">
-              {(['none', 'api_key', 'oauth'] as const).map((a) => (
+              {(['none', 'api_key'] as const).map((a) => (
                 <button
                   key={a}
                   type="button"
@@ -296,7 +317,7 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
                     border: `1px solid ${authType === a ? 'var(--accent)' : 'var(--border)'}`,
                   }}
                 >
-                  {a === 'none' ? 'None' : a === 'api_key' ? 'API Key' : 'OAuth'}
+                  {a === 'none' ? 'None' : 'API Key'}
                 </button>
               ))}
             </div>
@@ -313,9 +334,60 @@ export default function McpConnectionForm({ connection, onClose, onSaved, prefil
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={isEdit ? '(unchanged)' : 'Enter API key'}
+                required={!isEdit || !connection?.has_credentials}
                 className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
                 style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
               />
+              <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
+                Stored encrypted and never returned by the API.
+              </p>
+
+              {transport === 'stdio' ? (
+                <div className="mt-3">
+                  <label className="block text-[12px] font-medium mb-1.5" style={{ color: 'var(--foreground-secondary)' }}>
+                    Environment variable
+                  </label>
+                  <input
+                    type="text"
+                    value={envVar}
+                    onChange={(e) => setEnvVar(e.target.value)}
+                    placeholder="MCP_API_KEY"
+                    required
+                    className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div>
+                    <label className="block text-[12px] font-medium mb-1.5" style={{ color: 'var(--foreground-secondary)' }}>
+                      Header name
+                    </label>
+                    <input
+                      type="text"
+                      value={headerName}
+                      onChange={(e) => setHeaderName(e.target.value)}
+                      placeholder="Authorization"
+                      required
+                      className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] font-medium mb-1.5" style={{ color: 'var(--foreground-secondary)' }}>
+                      Scheme (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={authScheme}
+                      onChange={(e) => setAuthScheme(e.target.value)}
+                      placeholder="Bearer"
+                      className="w-full h-9 px-3 text-[13px] rounded-md outline-none"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)' }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

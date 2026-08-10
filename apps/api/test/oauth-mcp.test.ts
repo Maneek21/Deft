@@ -385,11 +385,12 @@ async function jsonPost(path: string, body: unknown, bearer?: string) {
 async function registerClient() {
   const res = await jsonPost('/oauth/register', {
     client_name: `OAuth MCP Test ${TEST_ID}`,
+    application_type: 'native',
     redirect_uris: ['http://localhost:3999/callback'],
     scope: 'read:workspace read:wiki write:tasks',
   });
   assert.equal(res.status, 201);
-  return (await res.json()) as { client_id: string; scope: string };
+  return (await res.json()) as { client_id: string; scope: string; application_type: string };
 }
 
 async function issueOAuthToken(clientId: string, scopes = ['read:workspace', 'read:wiki'], userId = USER_ID) {
@@ -432,12 +433,14 @@ test('OAuth metadata and dynamic client registration describe the remote MCP con
   const authBody = (await authServer.json()) as any;
   assert.equal(authBody.registration_endpoint, 'http://localhost:3301/oauth/register');
   assert.equal(authBody.authorization_endpoint, 'http://localhost:3012/oauth/authorize');
+  assert.equal(authBody.authorization_response_iss_parameter_supported, true);
   assert.ok(authBody.scopes_supported.includes('write:wiki'));
   assert.ok(authBody.scopes_supported.includes('offline_access'));
 
   const client = await registerClient();
   assert.ok(client.client_id.startsWith('deft_dcr_'));
   assert.equal(client.scope, 'read:workspace read:wiki write:tasks');
+  assert.equal(client.application_type, 'native');
 
   const wikiClientRes = await jsonPost('/oauth/register', {
     client_name: `OAuth MCP Wiki Writer ${TEST_ID}`,
@@ -542,10 +545,14 @@ test('OAuth bearer can use JSON-RPC MCP read tools but not ungranted write tools
       arguments: { title: 'Should not be created' },
     },
   }, token.access_token);
-  assert.equal(writeRes.status, 200);
+  assert.equal(writeRes.status, 403);
+  assert.match(writeRes.headers.get('www-authenticate') ?? '', /error="insufficient_scope"/);
+  assert.match(writeRes.headers.get('www-authenticate') ?? '', /scope="write:tasks"/);
+  assert.match(writeRes.headers.get('www-authenticate') ?? '', /resource_metadata=/);
   const writeBody = (await writeRes.json()) as any;
-  assert.equal(writeBody.result.isError, true);
-  assert.match(writeBody.result.content[0].text, /Missing MCP scope: write:tasks/);
+  assert.equal(writeBody.error.code, -32002);
+  assert.equal(writeBody.error.data.code, 'insufficient_scope');
+  assert.match(writeBody.error.message, /Missing MCP scope: write:tasks/);
 });
 
 test('OAuth task-helper profile can comment on and update visible tasks', async () => {

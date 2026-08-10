@@ -29,7 +29,7 @@
  * happened when the row was queued, and re-gating here would bounce
  * every conservative-trust employee's approved writes.
  */
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, or, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentActions,
@@ -68,6 +68,9 @@ import {
   MCP_ACTION_KINDS,
   normalizeMcpApprovalAction,
 } from './mcp-approval-actions.js';
+import { executeAction as executeAgentAction } from './agent-actions.js';
+import { ACTION_TOOLS } from './agent-tools.js';
+import { isAgentToolDisabled } from './agent-tool-policy.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 
 export type ApprovalResolverError =
@@ -124,9 +127,17 @@ async function loadEmployeeForAction(employeeId: string) {
       org_id: agentEmployees.org_id,
       slug: agentEmployees.slug,
       trust_level: agentEmployees.trust_level,
+      disabled_tools: agentEmployees.disabled_tools,
     })
     .from(agentEmployees)
-    .where(eq(agentEmployees.id, employeeId))
+    .where(and(
+      eq(agentEmployees.id, employeeId),
+      eq(agentEmployees.is_active, true),
+      or(
+        eq(agentEmployees.is_deleted, false),
+        eq(agentEmployees.runtime_kind, 'defty_system'),
+      ),
+    ))
     .limit(1);
   return row ?? null;
 }
@@ -136,6 +147,7 @@ function buildCtxFromEmployee(emp: {
   org_id: string;
   slug: string;
   trust_level: string;
+  disabled_tools: string[] | null;
 }): ToolContext {
   return {
     org_id: emp.org_id,
@@ -150,7 +162,7 @@ async function dispatchAction(
   params: Record<string, unknown>,
   ctx: ToolContext,
   actionId?: string,
-  dispatchOpts?: { sourceReaderUserId?: string | null },
+  dispatchOpts?: { sourceReaderUserId?: string | null; requesterUserId?: string },
 ): Promise<ToolResult> {
   // Phase 7 — skipReceipt=true: the approval resolver owns receipt
   // generation for approved actions (it knows the approver_id). The inner
@@ -160,6 +172,38 @@ async function dispatchAction(
     actionId,
     sourceReaderUserId: dispatchOpts?.sourceReaderUserId ?? null,
   } as const;
+
+  // Outbound connector tools use the same execution boundary as the web
+  // approval surface. That boundary rechecks the employee, assignment,
+  // connection allowlist, per-tool disable, and transport policy at the
+  // instant of execution.
+  if (actionName.startsWith('mcp__')) {
+    if (!actionId) {
+      return {
+        content: [{ type: 'text', text: 'Outbound MCP approval is missing an action id' }],
+        isError: true,
+      };
+    }
+    const executed = await executeAgentAction(
+      actionId,
+      actionName,
+      params,
+      ctx.org_id,
+      dispatchOpts?.requesterUserId ?? ctx.employee_id,
+      { agentEmployeeId: ctx.employee_id },
+    );
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(executed.success ? executed.result : {
+          error: executed.error ?? 'MCP tool execution failed',
+          result: executed.result,
+        }),
+      }],
+      isError: !executed.success,
+    };
+  }
+
   const normalized = normalizeMcpApprovalAction(
     actionName,
     params,
@@ -315,7 +359,7 @@ export async function approveAction(
     };
   }
 
-  if (!MCP_ACTION_KINDS.has(row.action)) {
+  if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
     return {
       status: 'error',
       code: 'UNSUPPORTED_ACTION',
@@ -323,7 +367,8 @@ export async function approveAction(
     };
   }
 
-  if (!row.agent_employee_id) {
+  const requiresEmployee = MCP_ACTION_KINDS.has(row.action) || row.action.startsWith('mcp__');
+  if (!row.agent_employee_id && requiresEmployee) {
     return {
       status: 'error',
       code: 'EMPLOYEE_MISSING',
@@ -331,15 +376,15 @@ export async function approveAction(
     };
   }
 
-  const emp = await loadEmployeeForAction(row.agent_employee_id);
-  if (!emp) {
+  const emp = row.agent_employee_id ? await loadEmployeeForAction(row.agent_employee_id) : null;
+  if (row.agent_employee_id && !emp) {
     return {
       status: 'error',
       code: 'EMPLOYEE_MISSING',
       message: `agent_employee ${row.agent_employee_id} not found`,
     };
   }
-  if (emp.org_id !== row.org_id) {
+  if (emp && emp.org_id !== row.org_id) {
     return {
       status: 'error',
       code: 'FORBIDDEN',
@@ -347,7 +392,15 @@ export async function approveAction(
     };
   }
 
-  const ctx = buildCtxFromEmployee(emp);
+  if (emp && isAgentToolDisabled(emp.disabled_tools, row.action)) {
+    return {
+      status: 'error',
+      code: 'FORBIDDEN',
+      message: `tool '${row.action}' is disabled for this agent employee`,
+    };
+  }
+
+  const ctx = emp ? buildCtxFromEmployee(emp) : null;
 
   // Phase 12 review fix — atomic claim. Two concurrent callers could both
   // pass the `status === 'pending'` read above; the UPDATE … WHERE … AND
@@ -403,13 +456,34 @@ export async function approveAction(
             ? actionParams.origin_user_id
             : null
         : null;
-    toolResult = await dispatchAction(
-      row.action,
-      actionParams,
-      ctx,
-      row.id,
-      { sourceReaderUserId },
-    );
+    if (ACTION_TOOLS.has(row.action) && !MCP_ACTION_KINDS.has(row.action)) {
+      const executed = await executeAgentAction(
+        row.id,
+        row.action,
+        actionParams,
+        row.org_id,
+        row.user_id,
+        { agentEmployeeId: row.agent_employee_id ?? undefined },
+      );
+      toolResult = {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(executed.success ? executed.result : {
+            error: executed.error ?? 'Action execution failed',
+            result: executed.result,
+          }),
+        }],
+        isError: !executed.success,
+      };
+    } else {
+      toolResult = await dispatchAction(
+        row.action,
+        actionParams,
+        ctx!,
+        row.id,
+        { sourceReaderUserId, requesterUserId: row.user_id },
+      );
+    }
   } catch (err) {
     caughtError = err instanceof Error ? err : new Error(String(err));
     toolResult = {
@@ -446,7 +520,7 @@ export async function approveAction(
     const { invalidatePlatformContextCacheFor } = await import(
       './mcp-tools/context.js'
     );
-    invalidatePlatformContextCacheFor(ctx.employee_id);
+    if (ctx) invalidatePlatformContextCacheFor(ctx.employee_id);
   } catch {
     // best-effort
   }
@@ -460,9 +534,9 @@ export async function approveAction(
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
-    employeeId: ctx.employee_id,
+    employeeId: ctx?.employee_id ?? null,
     proposer: isDeftyCapture ? 'defty' : 'employee',
-    proposerId: isDeftyCapture ? row.user_id : ctx.employee_id,
+    proposerId: isDeftyCapture ? row.user_id : ctx?.employee_id ?? null,
     approverId: approverUserId,
     decision: 'approved',
     decisionReason: isError

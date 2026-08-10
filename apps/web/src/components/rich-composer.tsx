@@ -96,8 +96,8 @@ type PendingFile = { id: string; url: string; name: string; type: string; size: 
 
 type Props = {
   placeholder: string;
-  onSend: (html: string, text: string) => void;
-  onScheduleSend?: (isoTime: string, html: string, text: string) => void;
+  onSend: (html: string, text: string) => Promise<void>;
+  onScheduleSend?: (isoTime: string, html: string, text: string) => Promise<void>;
   pendingFiles: PendingFile[];
   onRemovePendingFile: (id: string) => void;
   onFileSelect: () => void;
@@ -108,7 +108,7 @@ type Props = {
   onEditLastMessage?: () => void;
   onViewScheduled?: () => void;
   onClipRecord?: () => void;
-  onSlashCommand?: (command: string, args: string) => void;
+  onSlashCommand?: (command: string, args: string) => void | Promise<void>;
   onAskDefty?: () => void;
   spaceId?: string;
 };
@@ -184,6 +184,8 @@ export function RichComposer({
   const [showTaskAutocomplete, setShowTaskAutocomplete] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [showMentions, setShowMentions] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const [, setContentVersion] = useState(0);
   // Anchor (start of @) + end (current cursor) at the moment the mention
   // autocomplete opened. Captured in onUpdate so handleMentionSelect can
@@ -306,8 +308,13 @@ export function RichComposer({
     },
   });
 
-  const handleSend = useCallback(() => {
+  useEffect(() => {
     if (!editor) return;
+    editor.setEditable(!disabled && !sending);
+  }, [disabled, editor, sending]);
+
+  const handleSend = useCallback(async () => {
+    if (!editor || sending || disabled) return;
     const html = editor.getHTML();
     const text = editor.getText();
     if (!text.trim() && pendingFiles.length === 0) return;
@@ -319,8 +326,16 @@ export function RichComposer({
       const args = cmdMatch[2]!.trim();
       const known = ['remind', 'task', 'status', 'note', 'mute', 'unmute', 'dnd', 'search'];
       if (known.includes(cmdName)) {
-        editor.commands.clearContent();
-        onSlashCommand(cmdName, args);
+        setSending(true);
+        setSendError('');
+        try {
+          await onSlashCommand(cmdName, args);
+          if (!editor.isDestroyed && editor.getHTML() === html) editor.commands.clearContent();
+        } catch (error) {
+          setSendError(error instanceof Error ? error.message : 'Failed to run command');
+        } finally {
+          setSending(false);
+        }
         return;
       }
     }
@@ -331,15 +346,55 @@ export function RichComposer({
       const cmdName = bareCmd[1]!.toLowerCase();
       const noArgCmds = ['mute', 'unmute', 'dnd', 'search'];
       if (noArgCmds.includes(cmdName)) {
-        editor.commands.clearContent();
-        onSlashCommand(cmdName, '');
+        setSending(true);
+        setSendError('');
+        try {
+          await onSlashCommand(cmdName, '');
+          if (!editor.isDestroyed && editor.getHTML() === html) editor.commands.clearContent();
+        } catch (error) {
+          setSendError(error instanceof Error ? error.message : 'Failed to run command');
+        } finally {
+          setSending(false);
+        }
         return;
       }
     }
 
-    onSend(html, text);
-    editor.commands.clearContent();
-  }, [editor, onSend, onSlashCommand, pendingFiles.length]);
+    setSending(true);
+    setSendError('');
+    try {
+      await onSend(html, text);
+      if (!editor.isDestroyed && editor.getHTML() === html) {
+        editor.commands.clearContent();
+      }
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Failed to send message');
+    } finally {
+      setSending(false);
+    }
+  }, [disabled, editor, onSend, onSlashCommand, pendingFiles.length, sending]);
+
+  const handleScheduleSend = useCallback(async (isoTime: string) => {
+    if (!editor || !onScheduleSend || sending || disabled) return;
+    const html = editor.getHTML();
+    const text = editor.getText();
+    if (!text.trim() && pendingFiles.length === 0) return;
+
+    setSending(true);
+    setSendError('');
+    try {
+      await onScheduleSend(isoTime, html, text);
+      if (!editor.isDestroyed && editor.getHTML() === html) {
+        editor.commands.clearContent();
+      }
+      setCustomScheduleTime('');
+      setScheduleOpen(false);
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Failed to schedule message');
+    } finally {
+      setSending(false);
+    }
+  }, [disabled, editor, onScheduleSend, pendingFiles.length, sending]);
 
   // Cmd+K for link
   useEffect(() => {
@@ -409,13 +464,17 @@ export function RichComposer({
   if (!editor) return null;
 
   const hasContent = editor.getText().trim().length > 0 || pendingFiles.length > 0;
-  const runSheetAction = (action: () => void) => {
+  const runSheetAction = (action: () => void | Promise<void>) => {
     setFormatSheetOpen(false);
-    action();
+    void Promise.resolve().then(action).catch((error) => {
+      setSendError(error instanceof Error ? error.message : 'Failed to run command');
+    });
   };
-  const runDesktopAction = (action: () => void) => {
+  const runDesktopAction = (action: () => void | Promise<void>) => {
     setDesktopActionsOpen(false);
-    action();
+    void Promise.resolve().then(action).catch((error) => {
+      setSendError(error instanceof Error ? error.message : 'Failed to run command');
+    });
   };
 
   return (
@@ -773,7 +832,7 @@ export function RichComposer({
           <button
             type="button"
             onClick={hasContent ? handleSend : onClipRecord}
-            disabled={!hasContent && !onClipRecord}
+            disabled={sending || disabled || (!hasContent && !onClipRecord)}
             aria-label={hasContent ? 'Send message' : 'Record voice memo'}
             className="md:hidden flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-full text-white disabled:opacity-40 transition-transform active:scale-95 self-center"
             style={{
@@ -785,6 +844,12 @@ export function RichComposer({
             {hasContent ? <Send size={17} strokeWidth={2.2} /> : <Mic size={17} strokeWidth={1.8} />}
           </button>
         </div>
+
+        {sendError && (
+          <div className="px-4 pt-1 text-[11px]" role="alert" style={{ color: 'var(--error, #ef4444)' }}>
+            {sendError} Your draft and attachments are still here.
+          </div>
+        )}
 
         {/* Upload progress */}
         {uploading && (
@@ -989,9 +1054,9 @@ export function RichComposer({
           </div>
           </div>
           <div className="flex items-center gap-1.5">
-            {hasContent && (
+            {onScheduleSend && hasContent && (
               <div className="relative">
-                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)}
+                <button ref={scheduleBtnRef} onClick={() => setScheduleOpen(!scheduleOpen)} disabled={sending || disabled}
                   className="flex h-8 w-8 items-center justify-center rounded-full" style={{ color: 'var(--outline)', background: 'var(--surface-container-high)' }} title="Schedule send">
                   <Clock size={14} strokeWidth={1.5} />
                 </button>
@@ -1032,12 +1097,9 @@ export function RichComposer({
                                 d.setHours(9, 0, 0, 0);
                                 return d;
                               })();
-                          const html = editor.getHTML();
-                          const text = editor.getText();
-                          onScheduleSend?.(time.toISOString(), html, text);
-                          editor.commands.clearContent();
-                          setScheduleOpen(false);
+                          void handleScheduleSend(time.toISOString());
                         }}
+                        disabled={sending || disabled}
                         className="w-full text-left px-3 py-1.5 text-[12px]"
                         style={{ color: 'var(--on-surface)' }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
@@ -1068,16 +1130,11 @@ export function RichComposer({
                           }}
                         />
                         <button
-                          disabled={!customScheduleTime}
+                          disabled={!customScheduleTime || sending || disabled}
                           onClick={() => {
                             const time = new Date(customScheduleTime);
                             if (isNaN(time.getTime()) || time.getTime() <= Date.now()) return;
-                            const html = editor.getHTML();
-                            const text = editor.getText();
-                            onScheduleSend?.(time.toISOString(), html, text);
-                            editor.commands.clearContent();
-                            setCustomScheduleTime('');
-                            setScheduleOpen(false);
+                            void handleScheduleSend(time.toISOString());
                           }}
                           className="text-[11px] font-medium px-2 py-1 rounded-md disabled:opacity-40"
                           style={{ background: 'var(--primary-container)', color: 'var(--on-primary-container)' }}
@@ -1112,7 +1169,7 @@ export function RichComposer({
             <button
               type="button"
               onClick={handleSend}
-              disabled={!hasContent}
+              disabled={!hasContent || sending || disabled}
               aria-label="Send message from composer toolbar"
               className="flex h-9 min-w-12 items-center justify-center rounded-full text-white disabled:opacity-40 hover:opacity-90 transition-opacity"
               style={{ background: 'var(--primary-container)' }}

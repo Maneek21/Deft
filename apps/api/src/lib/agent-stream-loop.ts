@@ -16,7 +16,7 @@ import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
-import { getApprovalTier, shouldAutoExecute, type TrustLevel } from './agent-approval.js';
+import { getApprovalTier, shouldAutoExecute, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { createAgentMessage } from './agent-llm.js';
 import type { ResolvedReasonProvider } from './org-ai-config.js';
 
@@ -29,6 +29,7 @@ export interface StreamLoopParams {
   systemPrompt: string;
   tools: Anthropic.Tool[];
   allActionTools: Set<string>;
+  actionApprovalTiers: Map<string, ApprovalTier>;
   trustLevel: TrustLevel;
   apiMessages: Anthropic.MessageParam[];
   write: (data: any) => Promise<void>;
@@ -159,30 +160,46 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       const isAction = p.allActionTools.has(tool.name);
 
       if (isAction) {
-        if (shouldAutoExecute(tool.name, p.trustLevel, tool.input)) {
-          const approvalTier = getApprovalTier(tool.name);
-          const { success, result, error } = await executeActionDirect(
+        const approvalTier = getApprovalTier(tool.name, p.actionApprovalTiers.get(tool.name));
+        if (shouldAutoExecute(tool.name, p.trustLevel, tool.input, approvalTier)) {
+          const { actionId, success, result, error, requiresApproval } = await executeActionDirect(
             tool.name,
             tool.input as any,
             p.orgId,
             p.userId,
             p.convoId,
             approvalTier,
-            { agentEmployeeId: p.agentEmployeeId, source: 'auto_execute' },
+            {
+              agentEmployeeId: p.agentEmployeeId,
+              source: 'auto_execute',
+              messageId: assistantRow!.id,
+              toolUseId: tool.id,
+            },
           );
           if (success) {
             await p.write({ type: 'tool_result', tool: tool.name, count: Array.isArray(result) ? result.length : 1 });
             toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result) });
+          } else if (requiresApproval) {
+            pendingActions.push({ id: actionId, action: tool.name, params: tool.input });
+            await p.write({ type: 'pending_action', id: actionId, action: tool.name, params: tool.input });
+            haltAfterThisIteration = true;
           } else {
             const errorMsg = error ?? 'Tool execution failed';
+            const errorPayload = result !== null && typeof result === 'object' && !Array.isArray(result)
+              ? { ...result, error: errorMsg }
+              : { result: result ?? null, error: errorMsg };
             await p.write({ type: 'tool_result', tool: tool.name, error: errorMsg });
-            toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify({ error: errorMsg }), is_error: true });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: JSON.stringify(errorPayload),
+              is_error: true,
+            });
           }
           continue;
         }
 
         // Needs approval — create the action row and halt.
-        const approvalTier = getApprovalTier(tool.name);
         const [actionRecord] = await db
           .insert(agentActions)
           .values({

@@ -27,8 +27,9 @@ import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS, MANAGER_TOOLS, SUPERINT
 import { executeToolCall } from '../lib/agent-context.js';
 import { executeAction, executeActionDirect } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
-import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
+import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier } from '../lib/agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
+import { getActiveAgentToolPolicy, isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
 import {
@@ -347,6 +348,7 @@ type StreamContextOk = {
   systemPrompt: string;
   tools: Anthropic.Tool[];
   allActionTools: Set<string>;
+  actionApprovalTiers: Map<string, ApprovalTier>;
   trustLevel: TrustLevel;
   resolved: ResolvedReasonProvider;
   agentEmployeeId: string | undefined;
@@ -399,6 +401,18 @@ async function buildStreamContext(
   // Build dynamic tool list — always include manager tools (privacy enforced at execution time)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS, ...MANAGER_TOOLS];
   const allActionTools = new Set([...ACTION_TOOLS]);
+  const actionApprovalTiers = new Map<string, ApprovalTier>();
+
+  if (agentEmployeeId) {
+    const employeePolicy = await getActiveAgentToolPolicy(user.org_id, agentEmployeeId);
+    if (!employeePolicy) {
+      return { _kind: 'error', error: 'Agent employee is inactive or unavailable', code: 'FORBIDDEN', status: 403 };
+    }
+    tools = tools.filter((tool) => !isAgentToolDisabled(employeePolicy.disabledTools, tool.name));
+    for (const actionName of [...allActionTools]) {
+      if (isAgentToolDisabled(employeePolicy.disabledTools, actionName)) allActionTools.delete(actionName);
+    }
+  }
 
   // MCP tools — discover from active connections and auto-classify tiers.
   const mcpToolsBySlug = new Map<string, { originalName: string; tier: string }[]>();
@@ -407,8 +421,9 @@ async function buildStreamContext(
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
     tools = [...tools, ...mcpAnthropicTools];
     mcpTools.forEach(t => {
-      if (t.approvalTierMapped !== 'auto') {
+      if (t.isWrite || t.approvalTierMapped !== 'auto' || isDestructiveAction(t.name)) {
         allActionTools.add(t.name);
+        actionApprovalTiers.set(t.name, t.approvalTierMapped);
       }
       const slug = t.connectionSlug;
       const existing = mcpToolsBySlug.get(slug) || [];
@@ -425,7 +440,12 @@ async function buildStreamContext(
 
   if (agentEmployeeId) {
     const [emp] = await db.select().from(agentEmployees)
-      .where(and(eq(agentEmployees.id, agentEmployeeId), eq(agentEmployees.is_active, true)))
+      .where(and(
+        eq(agentEmployees.id, agentEmployeeId),
+        eq(agentEmployees.org_id, user.org_id),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
+      ))
       .limit(1);
     if (emp) {
       employeeTrustLevel = emp.trust_level;
@@ -590,6 +610,7 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
     systemPrompt,
     tools,
     allActionTools,
+    actionApprovalTiers,
     trustLevel: (employeeTrustLevel ?? trustLevel) as TrustLevel,
     resolved,
     agentEmployeeId,
@@ -901,6 +922,7 @@ agentRoutes.post('/conversations/:id/messages', async (c) => {
         systemPrompt: ctx.systemPrompt,
         tools: ctx.tools,
         allActionTools: ctx.allActionTools,
+        actionApprovalTiers: ctx.actionApprovalTiers,
         trustLevel: ctx.trustLevel,
         apiMessages: ctx.apiMessages,
         write,
@@ -957,6 +979,7 @@ agentRoutes.post('/conversations/:id/continue', async (c) => {
         systemPrompt: ctx.systemPrompt,
         tools: ctx.tools,
         allActionTools: ctx.allActionTools,
+        actionApprovalTiers: ctx.actionApprovalTiers,
         trustLevel: ctx.trustLevel,
         apiMessages: ctx.apiMessages,
         write,
@@ -1499,12 +1522,18 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       actorUserId: user.id,
     });
   } else {
+    const preservedFailureResult = execResult.result
+      && typeof execResult.result === 'object'
+      && !Array.isArray(execResult.result)
+      ? execResult.result as Record<string, unknown>
+      : { upstream_result: execResult.result ?? null };
     await db
       .update(agentActions)
       .set({
         approval_status: 'pending',
         approved_at: null,
         result: {
+          ...preservedFailureResult,
           lifecycle_state: 'failed',
           failed_at: new Date().toISOString(),
           retryable: true,
@@ -1525,13 +1554,18 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
   // tool_result pair. This eliminates the "messages repeated over and over"
   // disclaimers — the model can see its own prior call and its real result.
   if (action.tool_use_id && action.conversation_id) {
+    const preservedToolFailure = execResult.result
+      && typeof execResult.result === 'object'
+      && !Array.isArray(execResult.result)
+      ? execResult.result as Record<string, unknown>
+      : { upstream_result: execResult.result ?? null };
     const toolResultBlock = {
       type: 'tool_result' as const,
       tool_use_id: action.tool_use_id,
       content: JSON.stringify(
         execResult.success
           ? execResult.result
-          : { error: execResult.error || 'Action failed' }
+          : { ...preservedToolFailure, error: execResult.error || 'Action failed' }
       ),
       ...(execResult.success ? {} : { is_error: true }),
     };

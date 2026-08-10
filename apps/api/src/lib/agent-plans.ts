@@ -13,12 +13,13 @@ import { db } from './db.js';
 import { agentPlans, agentEmployees, orgs, tasks, messages } from '@deft/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
-import { shouldAutoExecute, getApprovalTier } from './agent-approval.js';
+import { shouldAutoExecute, getApprovalTier, isDestructiveAction } from './agent-approval.js';
 import { executeActionDirect } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import type { TrustLevel } from './agent-approval.js';
 import { getIO } from '../socket.js';
+import { getMCPToolsForAgent } from './mcp-tools.js';
 
 // ─── Types ───
 
@@ -275,11 +276,15 @@ export async function executePlan(
     const [employee] = await db
       .select({ trust_level: agentEmployees.trust_level })
       .from(agentEmployees)
-      .where(eq(agentEmployees.id, plan.agent_employee_id))
+      .where(and(
+        eq(agentEmployees.id, plan.agent_employee_id),
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
+      ))
       .limit(1);
-    if (employee?.trust_level) {
-      trustLevel = employee.trust_level as TrustLevel;
-    }
+    if (!employee) throw new Error('Plan agent employee is inactive, deleted, or outside this organization');
+    trustLevel = employee.trust_level as TrustLevel;
   } else {
     const [org] = await db
       .select({ trust_level: orgs.trust_level })
@@ -374,8 +379,22 @@ export async function executePlan(
     onEvent?.({ type: 'step:start', stepId: step.id });
     emitTaskProgress(i, step.description, 'started');
 
-    const resolvedParams = resolveStepReferences(step.params, context);
-    const isWriteAction = ACTION_TOOLS.has(step.tool);
+    try {
+      const resolvedParams = resolveStepReferences(step.params, context);
+      const mcpToolPolicy = step.tool.startsWith('mcp__')
+        ? (await getMCPToolsForAgent(orgId, plan.agent_employee_id ?? undefined))
+          .find((tool) => tool.name === step.tool)
+        : undefined;
+      if (step.tool.startsWith('mcp__') && !mcpToolPolicy) {
+        throw new Error(`MCP tool '${step.tool}' is unavailable or disabled`);
+      }
+      const isWriteAction = ACTION_TOOLS.has(step.tool)
+        || Boolean(mcpToolPolicy && (
+          mcpToolPolicy.isWrite
+          || mcpToolPolicy.approvalTierMapped !== 'auto'
+          || isDestructiveAction(mcpToolPolicy.name)
+        ));
+      const approvalTierOverride = mcpToolPolicy?.approvalTierMapped;
 
     // Task 3.2 — if the plan was created in response to a chat message,
     // the triggering message id was stashed in context at createPlanRow
@@ -390,10 +409,16 @@ export async function executePlan(
       resolvedParams.source_message_id = planSourceMessageId;
     }
 
-    try {
       if (!isWriteAction) {
         // Read-only tool — execute directly
-        const { result } = await executeToolCall(step.tool, resolvedParams, orgId, userId);
+        const { result } = await executeToolCall(
+          step.tool,
+          resolvedParams,
+          orgId,
+          userId,
+          plan.conversation_id ?? undefined,
+          plan.agent_employee_id ?? undefined,
+        );
         step.status = 'completed';
         step.result = result;
         context[step.id] = { result };
@@ -402,11 +427,11 @@ export async function executePlan(
         const isDependency = steps.some(
           (s, idx) => idx > i && s.depends_on?.includes(step.id),
         );
-        const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams);
+        const autoExec = shouldAutoExecute(step.tool, trustLevel, resolvedParams, approvalTierOverride);
 
         if (autoExec || !isDependency) {
           // Auto-execute or non-blocking write
-          const tier = getApprovalTier(step.tool);
+          const tier = getApprovalTier(step.tool, approvalTierOverride);
           const execResult = await executeActionDirect(
             step.tool,
             resolvedParams,
@@ -426,6 +451,20 @@ export async function executePlan(
             step.status = 'completed';
             step.result = execResult.result;
             context[step.id] = { result: execResult.result };
+          } else if (execResult.requiresApproval) {
+            step.status = 'waiting_approval';
+            step.error = execResult.error;
+            await updatePlanProgress(planId, steps, context, i, 'paused');
+            onEvent?.({
+              type: 'plan:pause',
+              stepId: step.id,
+              data: {
+                reason: 'approval_policy_changed',
+                action_id: execResult.actionId,
+                approval_tier: execResult.approvalTier,
+              },
+            });
+            return;
           } else {
             throw new Error(execResult.error || 'Action execution failed');
           }
@@ -446,12 +485,6 @@ export async function executePlan(
       onEvent?.({ type: 'step:complete', stepId: step.id, data: step.result });
       emitTaskProgress(i, step.description, 'completed');
 
-      // Increment daily action count for employee
-      if (plan.agent_employee_id) {
-        await db.execute(
-          sql`UPDATE agent_employees SET daily_action_count = daily_action_count + 1, last_active_at = now() WHERE id = ${plan.agent_employee_id}`,
-        );
-      }
     } catch (err) {
       const errorMsg = (err as Error).message;
       emitTaskProgress(i, step.description, 'failed', errorMsg);
@@ -505,6 +538,8 @@ export async function executePlan(
           userId,
           orgName: orgRow[0]?.name ?? 'Unknown',
           mode: 'background',
+          agentEmployeeId: plan.agent_employee_id ?? undefined,
+          trustLevelOverride: trustLevel,
         });
 
         if (recovery.text.includes('ESCALATE')) {

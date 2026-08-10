@@ -1,4 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { agentActions, messages, projects, projectSpaces, spaces, tasks, wikiPages, workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 import { approveAction } from './agent-approval-resolver.js';
@@ -27,6 +28,48 @@ type TaskUpdatePatch = {
   description?: string;
 };
 type TaskCaptureApprovalMode = 'approval' | 'passive';
+
+function batchEvidenceMessageIds(
+  messageId: string,
+  metadata: Record<string, unknown>,
+): string[] {
+  const metadataIds = Array.isArray(metadata.batch_message_ids)
+    ? metadata.batch_message_ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : [];
+  return [...new Set([messageId, ...metadataIds])].sort();
+}
+
+function batchEvidenceDedupeKey(messageIds: string[]): string {
+  const fingerprint = createHash('sha256')
+    .update(messageIds.join('\u0000'))
+    .digest('hex');
+  return `defty_capture:knowledge_batch:${fingerprint}`;
+}
+
+async function isSettledBatchEvidenceAlreadyCaptured(params: {
+  orgId: string;
+  messageIds: string[];
+}): Promise<boolean> {
+  if (params.messageIds.length === 0) return false;
+  const messageIdList = sql.join(params.messageIds.map((id) => sql`${id}`), sql`, `);
+  const result = await db.execute(sql<{ message_id: string }>`
+    SELECT candidate.message_id
+    FROM unnest(ARRAY[${messageIdList}]::text[]) AS candidate(message_id)
+    WHERE EXISTS (
+      SELECT 1
+      FROM work_intents wi
+      WHERE wi.org_id = ${params.orgId}
+        AND wi.status IN ('proposed', 'converted')
+        AND wi.metadata->>'source' = 'chat_knowledge_batch'
+        AND (
+          wi.source_message_id = candidate.message_id
+          OR COALESCE(wi.metadata->'batch_message_ids', '[]'::jsonb) ? candidate.message_id
+        )
+    )
+  `);
+  const rows = ((result as any).rows ?? result) as Array<{ message_id: string }>;
+  return new Set(rows.map((row) => row.message_id)).size === params.messageIds.length;
+}
 
 async function resolveProjectForCapture(
   orgId: string,
@@ -630,6 +673,7 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
   metadata?: Record<string, unknown>;
   autoApprove?: boolean;
   preferUpdate?: boolean;
+  dedupeKeyOverride?: string;
 }): Promise<{ queued: boolean; actionId?: string; skippedReason?: string }> {
   const {
     orgId,
@@ -643,12 +687,14 @@ async function queueDeftyKnowledgeUpdateCapture(params: {
     extraction,
     metadata = {},
     autoApprove = false,
+    dedupeKeyOverride,
   } = params;
   const defty = await ensureDeftyEmployee(orgId);
   const updatedBody = stripKnowledgeUpdatePrefix(content);
   if (!updatedBody) return { queued: false, skippedReason: 'empty_update' };
 
-  const dedupeKey = `defty_capture:${captureKind}:wiki_update:${messageId}:${targetPage.slug}`;
+  const dedupeKey = dedupeKeyOverride
+    ?? `defty_capture:${captureKind}:wiki_update:${messageId}:${targetPage.slug}`;
   const title = `Update knowledge: ${targetPage.title}`;
   const summary = truncatePlainText(updatedBody, 240);
 
@@ -808,6 +854,18 @@ export async function queueDeftyKnowledgeCapture(params: {
   const plainContent = toPlainText(content);
   if (!plainContent) return { queued: false, skippedReason: 'empty_content' };
   const rawPlainContent = toPlainText(rawContent || content);
+  const evidenceMessageIds = metadata.batch_capture === true
+    ? batchEvidenceMessageIds(messageId, metadata)
+    : [];
+  const batchDedupeKey = evidenceMessageIds.length > 0
+    ? batchEvidenceDedupeKey(evidenceMessageIds)
+    : undefined;
+
+  if (metadata.batch_capture === true) {
+    if (await isSettledBatchEvidenceAlreadyCaptured({ orgId, messageIds: evidenceMessageIds })) {
+      return { queued: false, skippedReason: 'knowledge_batch_already_captured' };
+    }
+  }
 
   const [sourceMessage] = await db
     .select({ id: messages.id, spaceType: spaces.type })
@@ -853,10 +911,12 @@ export async function queueDeftyKnowledgeCapture(params: {
         extraction,
         metadata: {
           ...metadata,
+          ...(batchDedupeKey ? { batch_evidence_dedupe_key: batchDedupeKey } : {}),
           update_request: true,
           extracted_content: plainContent,
         },
         autoApprove: forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope }),
+        dedupeKeyOverride: batchDedupeKey,
       });
     }
     if (metadata.batch_capture !== true) {
@@ -898,16 +958,19 @@ export async function queueDeftyKnowledgeCapture(params: {
         extraction,
         metadata: {
           ...metadata,
+          ...(batchDedupeKey ? { batch_evidence_dedupe_key: batchDedupeKey } : {}),
           related_wiki_update: true,
           extracted_title: finalTitle,
           extracted_summary: finalSummary,
         },
         autoApprove: forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope }),
+        dedupeKeyOverride: batchDedupeKey,
       });
     }
   }
 
-  const dedupeKey = `defty_capture:${captureKind}:wiki_create:${messageId}`;
+  const dedupeKey = batchDedupeKey
+    ?? `defty_capture:${captureKind}:wiki_create:${messageId}`;
   const [existingIntent] = await db
     .select({ id: workIntents.id })
     .from(workIntents)
@@ -952,6 +1015,7 @@ export async function queueDeftyKnowledgeCapture(params: {
   const finalMetadata = {
     extraction,
     ...metadata,
+    ...(batchDedupeKey ? { batch_evidence_dedupe_key: batchDedupeKey } : {}),
   };
 
   const autoApprove = forceAutoApprove ?? shouldAutoApproveKnowledgeCapture({ captureKind, targetScope });

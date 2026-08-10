@@ -36,6 +36,14 @@ export interface MCPTool {
   description: string;
   /** JSON Schema for tool input parameters */
   inputSchema: Record<string, unknown>;
+  /** JSON Schema for structured tool output, when declared by the server */
+  outputSchema?: Record<string, unknown>;
+  /** Human-friendly title from the protocol tool definition */
+  title?: string;
+  /** Icons advertised by the server */
+  icons?: unknown[];
+  /** Execution metadata advertised by modern MCP servers */
+  execution?: Record<string, unknown>;
   /** Connection ID this tool belongs to */
   connectionId: string;
   /** Connection slug used in the name prefix */
@@ -50,6 +58,8 @@ export interface MCPTool {
    * See https://modelcontextprotocol.io/specification/server/tools
    */
   annotations?: Record<string, unknown> | null;
+  /** Complete protocol definition so new MCP fields are not discarded */
+  rawTool: Record<string, unknown>;
 }
 
 /**
@@ -60,6 +70,12 @@ export interface MCPResult {
   success: boolean;
   /** Result content from the MCP server */
   content: unknown;
+  /** Machine-readable structured output from the MCP server */
+  structuredContent?: unknown;
+  /** Protocol result metadata, when present */
+  meta?: Record<string, unknown>;
+  /** Complete protocol result so new MCP fields are not discarded */
+  rawResult?: Record<string, unknown>;
   /** Error message if execution failed */
   error?: string;
   /** Execution duration in milliseconds */

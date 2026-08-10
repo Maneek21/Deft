@@ -1,7 +1,8 @@
 {$DEFT_PUBLIC_HOST:demo.example.com} {
   encode zstd gzip
 
-  handle /health {
+  @public_health path /health /health/queue
+  handle @public_health {
     reverse_proxy deft:3001
   }
 

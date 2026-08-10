@@ -201,6 +201,14 @@ test('all proposal paths share one fail-closed registered action validator', () 
     { ok: false, message: 'The link decision to tasks draft needs task ids.' },
   );
   assert.equal(validateRegisteredProposalAction({ action: 'unknown', params: {} }).ok, false);
+  assert.deepEqual(
+    validateRegisteredProposalAction({ action: 'mcp__crm__create_contact', params: { name: 'Ada' } }),
+    { ok: true },
+  );
+  assert.equal(
+    validateRegisteredProposalAction({ action: 'mcp__crm__create_contact', params: null }).ok,
+    false,
+  );
 });
 
 test('semantic alignment blocks negated writes and object-family substitution', () => {

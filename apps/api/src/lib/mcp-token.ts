@@ -24,6 +24,7 @@ export type GatewayEmployee = {
   employee_id: string;
   slug: string;
   trust_level: TrustLevel;
+  disabled_tools: string[];
 };
 
 export type ResolvedGateway = {
@@ -55,6 +56,7 @@ export class McpAuthError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    public readonly scope?: string,
   ) {
     super(message);
     this.name = 'McpAuthError';
@@ -141,6 +143,7 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
       slug: agentEmployees.slug,
       mcp_token_hash: agentEmployees.mcp_token_hash,
       trust_level: agentEmployees.trust_level,
+      disabled_tools: agentEmployees.disabled_tools,
       is_active: agentEmployees.is_active,
     })
     .from(agentEmployees)
@@ -148,6 +151,7 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
       and(
         isNotNull(agentEmployees.mcp_token_hash),
         eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
       ),
     );
 
@@ -163,6 +167,7 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
           employee_id: row.id,
           slug: row.slug,
           trust_level: row.trust_level as TrustLevel,
+          disabled_tools: row.disabled_tools ?? [],
         },
       ],
     };
@@ -176,16 +181,22 @@ export async function resolveMcpPrincipal(bearer: string): Promise<ResolvedMcpPr
     throw new McpAuthError(401, 'unauthorized', 'Missing or malformed bearer token');
   }
 
-  const personalCandidates = await db
-    .select({
-      id: mcpTokens.id,
-      org_id: mcpTokens.org_id,
-      user_id: mcpTokens.user_id,
-      token_hash: mcpTokens.token_hash,
-      scopes: mcpTokens.scopes,
-    })
-    .from(mcpTokens)
-    .where(and(eq(mcpTokens.principal_kind, 'human'), isNull(mcpTokens.revoked_at)));
+  const personalCandidates = bearer.startsWith('deft_mcp_')
+    ? await db
+      .select({
+        id: mcpTokens.id,
+        org_id: mcpTokens.org_id,
+        user_id: mcpTokens.user_id,
+        token_hash: mcpTokens.token_hash,
+        scopes: mcpTokens.scopes,
+      })
+      .from(mcpTokens)
+      .where(and(
+        eq(mcpTokens.principal_kind, 'human'),
+        eq(mcpTokens.token_prefix, bearer.slice(0, 18)),
+        isNull(mcpTokens.revoked_at),
+      ))
+    : [];
 
   for (const row of personalCandidates) {
     if (!row.user_id) continue;

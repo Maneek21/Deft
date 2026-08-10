@@ -60,6 +60,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pendingChord = useRef<string | null>(null);
   const chordTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const unreadMutationVersions = useRef<Map<string, number>>(new Map());
+  const pendingReadRequests = useRef<Map<string, number>>(new Map());
+  const spacesLoadGeneration = useRef(0);
   const huddleState = useHuddle();
   const huddleStreams = huddleState.getStreams();
   const speakingMap = useAudioLevels(huddleStreams.localStream, user?.id || null, huddleStreams.peers);
@@ -103,23 +106,51 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const loadSpaces = useCallback(async () => {
     if (!user) return;
+    const loadGeneration = ++spacesLoadGeneration.current;
+    const unreadVersionsAtStart = new Map(unreadMutationVersions.current);
+    const pendingReadsAtStart = new Map(pendingReadRequests.current);
     const res = await api.get('/api/spaces');
-    if (res.ok) {
-      const data = await res.json();
-      setSpaces(data);
-      setActiveSpaceId((prev) => {
-        if (prev && data.some((s: Space) => s.id === prev)) return prev;
-        const defaultSpace = data.find((s: Space) => s.is_default);
-        return defaultSpace?.id || data[0]?.id || null;
-      });
-    }
+    if (!res.ok || loadGeneration !== spacesLoadGeneration.current) return;
+    const loadedSpaces: Space[] = await res.json();
+    if (loadGeneration !== spacesLoadGeneration.current) return;
+
+    const loadedSpaceIds = new Set(loadedSpaces.map((space) => space.id));
+    setSpaces(loadedSpaces);
+    setActiveSpaceId((prev) => {
+      if (prev && loadedSpaceIds.has(prev)) return prev;
+      const defaultSpace = loadedSpaces.find((space) => space.is_default);
+      return defaultSpace?.id || loadedSpaces[0]?.id || null;
+    });
+    setUnreadCounts((previous) => new Map(
+      [...previous].filter(([spaceId]) => loadedSpaceIds.has(spaceId)),
+    ));
+    setMentionCounts((previous) => new Map(
+      [...previous].filter(([spaceId]) => loadedSpaceIds.has(spaceId)),
+    ));
+
     // Fetch initial unread counts from DB
     const unreadRes = await api.get('/api/spaces/unread');
-    if (unreadRes.ok) {
+    if (unreadRes.ok && loadGeneration === spacesLoadGeneration.current) {
       const counts: { space_id: string; unread: number }[] = await unreadRes.json();
-      const map = new Map<string, number>();
-      for (const c of counts) map.set(c.space_id, c.unread);
-      setUnreadCounts(map);
+      if (loadGeneration !== spacesLoadGeneration.current) return;
+      const serverCounts = new Map(counts.map((count) => [count.space_id, count.unread]));
+      setUnreadCounts((previous) => {
+        const next = new Map<string, number>();
+        for (const space of loadedSpaces) {
+          const versionAtStart = unreadVersionsAtStart.get(space.id) ?? 0;
+          const currentVersion = unreadMutationVersions.current.get(space.id) ?? 0;
+          if (versionAtStart !== currentVersion || pendingReadsAtStart.has(space.id)) {
+            const currentUnread = previous.get(space.id) ?? 0;
+            if (currentUnread > 0) next.set(space.id, currentUnread);
+            continue;
+          }
+
+          const unread = serverCounts.get(space.id) ?? 0;
+          if (unread > 0) next.set(space.id, unread);
+          else next.delete(space.id);
+        }
+        return next;
+      });
     }
   }, [user]);
 
@@ -139,6 +170,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const markSpaceRead = useCallback(
     async (spaceId: string) => {
+      const mutationVersion = (unreadMutationVersions.current.get(spaceId) ?? 0) + 1;
+      unreadMutationVersions.current.set(spaceId, mutationVersion);
+      pendingReadRequests.current.set(spaceId, mutationVersion);
       setUnreadCounts((prev) => {
         const next = new Map(prev);
         next.delete(spaceId);
@@ -149,10 +183,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         next.delete(spaceId);
         return next;
       });
-      // Fire and forget
-      api.post(`/api/spaces/${spaceId}/read`).catch(() => {});
+      let shouldReload = false;
+      try {
+        const response = await api.post(`/api/spaces/${spaceId}/read`);
+        shouldReload = !response.ok;
+      } catch {
+        shouldReload = true;
+      } finally {
+        if (pendingReadRequests.current.get(spaceId) === mutationVersion) {
+          pendingReadRequests.current.delete(spaceId);
+        }
+        if (shouldReload) void loadSpaces();
+      }
     },
-    []
+    [loadSpaces]
   );
 
   const refreshSpaces = useCallback(() => {
@@ -196,6 +240,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       setActiveSpaceId((currentActive) => {
         if (data.space_id !== currentActive || !pathname.startsWith('/chat')) {
+          unreadMutationVersions.current.set(
+            data.space_id!,
+            (unreadMutationVersions.current.get(data.space_id!) ?? 0) + 1,
+          );
           setUnreadCounts((prev) => {
             const next = new Map(prev);
             next.set(data.space_id!, (prev.get(data.space_id!) || 0) + 1);
@@ -275,14 +323,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       if (e.key === 'Escape' && e.shiftKey) {
         e.preventDefault();
         // Mark all notifications as read
-        api.post('/api/notifications/read-all');
-        // Mark all spaces as read on the backend
-        spaces.forEach((space) => {
-          api.post(`/api/spaces/${space.id}/read`).catch(() => {});
-        });
-        // Clear all unread counts
-        setUnreadCounts(new Map());
-        setMentionCounts(new Map());
+        void api.post('/api/notifications/read-all').catch(() => {});
+        // Use the same optimistic mutation/version tracking as a single-space
+        // read so an older unread refresh cannot repopulate cleared badges.
+        void Promise.allSettled(spaces.map((space) => markSpaceRead(space.id)));
         return;
       }
 

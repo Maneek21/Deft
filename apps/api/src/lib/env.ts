@@ -54,6 +54,23 @@ function resolveDockerDatabaseUrl(): string | null {
   }
 }
 
+export const DEVELOPMENT_ENCRYPTION_KEY = 'deft-dev-encryption-key-32ch';
+
+export function resolveEncryptionKey(
+  configured = process.env.ENCRYPTION_KEY,
+  nodeEnv = process.env.NODE_ENV,
+): string {
+  const value = configured?.trim();
+  const insecure = !value
+    || value === DEVELOPMENT_ENCRYPTION_KEY
+    || value.includes('CHANGE_ME')
+    || value.length < 32;
+  if (nodeEnv === 'production' && insecure) {
+    throw new Error('ENCRYPTION_KEY must be a non-default secret of at least 32 characters in production');
+  }
+  return value || DEVELOPMENT_ENCRYPTION_KEY;
+}
+
 export const env = {
   DATABASE_URL: resolveDatabaseUrl(),
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
@@ -70,7 +87,7 @@ export const env = {
   // Empty by default so a copied .env.example does not make fresh installs
   // look AI-ready when no local Ollama server is actually running.
   OLLAMA_URL: process.env.OLLAMA_URL || '',
-  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || 'deft-dev-encryption-key-32ch',
+  ENCRYPTION_KEY: resolveEncryptionKey(),
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || '',
   GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET || '',
   GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',

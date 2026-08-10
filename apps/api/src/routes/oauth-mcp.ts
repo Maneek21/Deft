@@ -29,6 +29,7 @@ export const oauthProtectedRoutes = new Hono();
 
 const dcrSchema = z.object({
   client_name: z.string().min(1).max(160).default('Remote AI app'),
+  application_type: z.enum(['native', 'web']).optional(),
   client_uri: z.string().url().optional(),
   logo_uri: z.string().url().optional(),
   redirect_uris: z.array(z.string().url()).min(1).max(20),
@@ -89,6 +90,7 @@ oauthWellKnownRoutes.get('/oauth-authorization-server', (c) => {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
+    authorization_response_iss_parameter_supported: true,
     scopes_supported: REMOTE_MCP_AUTHORIZATION_SCOPES,
   });
 });
@@ -133,6 +135,9 @@ oauthPublicRoutes.post('/register', async (c) => {
       grant_types: grantTypes,
       response_types: responseTypes,
       token_endpoint_auth_method: authMethod,
+      ...(parsed.data.application_type
+        ? { application_type: parsed.data.application_type }
+        : {}),
       ...(parsed.data.scope?.trim()
         ? { scope: normalizeScopes(parsed.data.scope).join(' ') }
         : {}),
@@ -222,6 +227,7 @@ oauthProtectedRoutes.get('/authorize/preview', async (c) => {
       client.metadata as Record<string, unknown>,
     );
     return c.json({
+      issuer: metadataUrls().issuer,
       client: {
         client_id: client.client_id,
         client_name: client.client_name,
@@ -276,6 +282,7 @@ oauthProtectedRoutes.post('/authorize', async (c) => {
     });
     const redirect = new URL(parsed.data.redirect_uri);
     redirect.searchParams.set('code', code);
+    redirect.searchParams.set('iss', metadataUrls().issuer);
     if (parsed.data.state) redirect.searchParams.set('state', parsed.data.state);
     return c.json({ redirect_to: redirect.toString() });
   } catch (err) {

@@ -14,7 +14,6 @@ import {
   wikiPages,
   wikiLinks,
   wikiOpsLog,
-  mcpConnections,
   reminders,
   notes,
   canvases,
@@ -25,7 +24,13 @@ import { eq, and, sql, ilike, desc, inArray } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
 import { mcpClientManager } from '@deft/mcp';
-import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
+import {
+  getExecutableMcpConnection,
+  getMCPToolsForAgent,
+  mcpResultPayload,
+  parseMCPToolName,
+  toConnectionConfig,
+} from './mcp-tools.js';
 import { resolveAssigneeWithMatches } from './resolve-assignee.js';
 import { detectBlocksCycle } from './task-dependency.js';
 import { dispatchAgentEmployeeTask } from './dispatch-agent-task.js';
@@ -34,6 +39,12 @@ import { DEFTY_NAME } from './ensure-defty-membership.js';
 import { resolveSpaceTarget } from './resolve-space-target.js';
 import { createTaskBundle } from './task-bundle.js';
 import { bulkUpdateTasks, BulkTaskUpdateError } from './task-bulk-update.js';
+import {
+  agentToolPolicyError,
+  consumeAgentDailyActionBudget,
+  getActiveAgentToolPolicy,
+} from './agent-tool-policy.js';
+import { shouldAutoExecute } from './agent-approval.js';
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -83,28 +94,40 @@ export async function executeAction(
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
   try {
+    const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
+    if (policyError) return { success: false, result: null, error: policyError };
+    if (agentEmployeeId) {
+      const budget = await consumeAgentDailyActionBudget(orgId, agentEmployeeId);
+      if (!budget.allowed) {
+        await db.update(agentActions).set({ error: budget.error }).where(eq(agentActions.id, actionId));
+        return { success: false, result: null, error: budget.error };
+      }
+    }
+
     // MCP tool execution — handle before the native action switch
     if (action.startsWith('mcp__')) {
       const { connectionSlug, toolName } = parseMCPToolName(action);
-      const [conn] = await db
-        .select()
-        .from(mcpConnections)
-        .where(and(eq(mcpConnections.org_id, orgId), eq(mcpConnections.slug, connectionSlug)))
-        .limit(1);
-      if (!conn) {
-        return { success: false, result: null, error: `MCP connection '${connectionSlug}' not found` };
+      const resolved = await getExecutableMcpConnection(orgId, connectionSlug, toolName, agentEmployeeId);
+      if (!resolved.connection) {
+        return { success: false, result: null, error: resolved.error };
       }
-      const config = toConnectionConfig(conn);
+      const config = toConnectionConfig(resolved.connection);
       const mcpResult = await mcpClientManager.executeTool(config, toolName, params);
+      const resultPayload = mcpResultPayload(mcpResult);
       if (!mcpResult.success) {
-        return { success: false, result: null, error: mcpResult.error || 'MCP tool error' };
+        const error = mcpResult.error || 'MCP tool error';
+        await db.update(agentActions).set({
+          result: resultPayload as any,
+          error,
+        }).where(eq(agentActions.id, actionId));
+        return { success: false, result: resultPayload, error };
       }
       // Update the action record with result
       await db.update(agentActions).set({
         executed_at: new Date(),
-        result: mcpResult.content as any,
+        result: resultPayload as any,
       }).where(eq(agentActions.id, actionId));
-      return { success: true, result: mcpResult.content };
+      return { success: true, result: resultPayload };
     }
 
     // Task 3.5 — close_task / reopen_task are thin wrappers over
@@ -1858,8 +1881,54 @@ export async function executeActionDirect(
     mcpConnectionId?: string;
     planId?: string;
     planStepId?: string;
+    messageId?: string;
+    toolUseId?: string;
   },
-): Promise<{ actionId: string; success: boolean; result: any; error?: string }> {
+): Promise<{
+  actionId: string;
+  success: boolean;
+  result: any;
+  error?: string;
+  requiresApproval?: boolean;
+  approvalTier?: 'auto' | 'quick' | 'full';
+}> {
+  let effectiveApprovalTier = approvalTier;
+  let effectiveMcpConnectionId = options?.mcpConnectionId;
+  let requiresFreshApproval = false;
+  let executionBlockedError: string | null = null;
+
+  // Re-resolve outbound MCP policy immediately before an auto/direct write.
+  // Discovery can precede execution by an entire model turn (or by a saved
+  // plan), so a connection owner may have raised the tier in the meantime.
+  // In that race, persist a pending action at the stricter current tier and
+  // do not execute it under the stale, weaker decision.
+  if (action.startsWith('mcp__')) {
+    const currentTool = (await getMCPToolsForAgent(orgId, options?.agentEmployeeId))
+      .find((tool) => tool.name === action);
+    if (!currentTool) {
+      effectiveApprovalTier = 'full';
+      executionBlockedError = `MCP tool '${action}' is unavailable, disabled, or could not be classified safely`;
+    } else {
+      const tierRank = { auto: 0, quick: 1, full: 2 } as const;
+      effectiveMcpConnectionId = currentTool.connectionId;
+      if (tierRank[currentTool.approvalTierMapped] > tierRank[approvalTier]) {
+        effectiveApprovalTier = currentTool.approvalTierMapped;
+        requiresFreshApproval = true;
+      }
+    }
+  }
+
+  if (options?.agentEmployeeId && options.source !== 'plan') {
+    const employeePolicy = await getActiveAgentToolPolicy(orgId, options.agentEmployeeId);
+    if (
+      !employeePolicy
+      || !shouldAutoExecute(action, employeePolicy.trustLevel, params, effectiveApprovalTier)
+    ) {
+      effectiveApprovalTier = employeePolicy ? effectiveApprovalTier : 'full';
+      requiresFreshApproval = true;
+    }
+  }
+
   const [actionRecord] = await db
     .insert(agentActions)
     .values({
@@ -1868,16 +1937,45 @@ export async function executeActionDirect(
       conversation_id: conversationId,
       action,
       params,
-      approval_tier: approvalTier,
-      approval_status: 'approved',
-      approved_at: new Date(),
+      approval_tier: effectiveApprovalTier,
+      approval_status: requiresFreshApproval ? 'pending' : 'approved',
+      approved_at: requiresFreshApproval ? null : new Date(),
       ...(options?.agentEmployeeId ? { agent_employee_id: options.agentEmployeeId } : {}),
       ...(options?.source ? { source: options.source } : {}),
-      ...(options?.mcpConnectionId ? { mcp_connection_id: options.mcpConnectionId } : {}),
+      ...(effectiveMcpConnectionId ? { mcp_connection_id: effectiveMcpConnectionId } : {}),
       ...(options?.planId ? { plan_id: options.planId } : {}),
       ...(options?.planStepId ? { plan_step_id: options.planStepId } : {}),
+      ...(options?.messageId ? { message_id: options.messageId } : {}),
+      ...(options?.toolUseId ? { tool_use_id: options.toolUseId } : {}),
     })
     .returning();
+
+  if (executionBlockedError) {
+    await db.update(agentActions).set({ error: executionBlockedError }).where(eq(agentActions.id, actionRecord!.id));
+    return { actionId: actionRecord!.id, success: false, result: null, error: executionBlockedError };
+  }
+
+  if (requiresFreshApproval) {
+    const error = `Approval policy changed to '${effectiveApprovalTier}'; action queued for fresh review`;
+    await db.update(agentActions).set({ error }).where(eq(agentActions.id, actionRecord!.id));
+    try {
+      const { syncApprovalToAttention } = await import('./attention.js');
+      await syncApprovalToAttention(actionRecord!);
+    } catch (syncError) {
+      console.warn('[agent-actions] Failed to surface re-gated action in attention inbox', {
+        actionId: actionRecord!.id,
+        error: syncError instanceof Error ? syncError.message : String(syncError),
+      });
+    }
+    return {
+      actionId: actionRecord!.id,
+      success: false,
+      result: null,
+      error,
+      requiresApproval: true,
+      approvalTier: effectiveApprovalTier,
+    };
+  }
 
   const result = await executeAction(actionRecord!.id, action, params, orgId, userId, {
     agentEmployeeId: options?.agentEmployeeId,

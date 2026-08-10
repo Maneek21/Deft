@@ -20,6 +20,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Lint web
+        run: pnpm --filter @deft/web lint
       - name: Type check API
         run: cd apps/api && npx tsc --noEmit
       - name: Type check Web

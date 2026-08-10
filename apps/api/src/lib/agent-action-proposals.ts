@@ -17,6 +17,9 @@ export type ProposedAgentAction = {
   approval_tier?: ApprovalTier;
   tool_use_id?: string | null;
   source?: string | null;
+  agent_employee_id?: string | null;
+  mcp_connection_id?: string | null;
+  existing_action_id?: string;
   node_id?: string;
   depends_on?: string[];
   idempotency_key?: string;
@@ -39,6 +42,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     const duplicateActions: Array<typeof agentActions.$inferSelect> = [];
     const seenKeys = new Set<string>();
     for (const action of params.pendingActions) {
+      if (action.existing_action_id) continue;
       const key = typeof action.params.idempotency_key === 'string' ? action.params.idempotency_key : '';
       if (!key) {
         novelActions.push(action);
@@ -85,8 +89,28 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
 
     if (!agentMessage) throw new Error('Failed to create agent reply message');
 
+    const linkedActions: Array<typeof agentActions.$inferSelect> = [];
+    for (const proposal of params.pendingActions) {
+      if (!proposal.existing_action_id) continue;
+      const [linked] = await tx
+        .update(agentActions)
+        .set({
+          conversation_id: params.spaceId,
+          message_id: agentMessage.id,
+          tool_use_id: proposal.tool_use_id ?? null,
+        })
+        .where(and(
+          eq(agentActions.id, proposal.existing_action_id),
+          eq(agentActions.org_id, params.orgId),
+          eq(agentActions.user_id, params.userId),
+          eq(agentActions.approval_status, 'pending'),
+        ))
+        .returning();
+      if (linked) linkedActions.push(linked);
+    }
+
     if (novelActions.length === 0) {
-      return { message: agentMessage, actions: [], duplicates: duplicateActions };
+      return { message: agentMessage, actions: linkedActions, duplicates: duplicateActions };
     }
 
     const actions = await tx
@@ -103,11 +127,13 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
           approval_status: 'pending' as const,
           source: p.source ?? 'mention',
           tool_use_id: p.tool_use_id ?? null,
+          agent_employee_id: p.agent_employee_id ?? null,
+          mcp_connection_id: p.mcp_connection_id ?? null,
         })),
       )
       .returning();
 
-    return { message: agentMessage, actions, duplicates: duplicateActions };
+    return { message: agentMessage, actions: [...linkedActions, ...actions], duplicates: duplicateActions };
   });
   await Promise.all(persisted.actions.map((action) =>
     syncApprovalToAttention(action).catch((error) => {
@@ -424,6 +450,11 @@ export function validateRegisteredProposalAction(action: {
   params?: unknown;
 }): { ok: true } | { ok: false; message: string } {
   const name = typeof action.action === 'string' ? action.action : '';
+  if (name.startsWith('mcp__')) {
+    return isRecord(action.params)
+      ? { ok: true }
+      : { ok: false, message: `The ${humanizeAction(name)} draft is missing its parameters.` };
+  }
   if (!ACTION_TOOLS.has(name)) {
     return { ok: false, message: `The requested action "${name || 'unknown'}" is not a registered approval action.` };
   }

@@ -130,6 +130,42 @@ async function mcpPost(path: string, body: unknown, bearer?: string) {
   });
 }
 
+async function modernMcpPost(
+  method: string,
+  params: Record<string, unknown>,
+  bearer?: string,
+) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'MCP-Protocol-Version': '2026-07-28',
+    'Mcp-Method': method,
+  };
+  if (method === 'tools/call' && typeof params.name === 'string') {
+    headers['Mcp-Name'] = params.name;
+  }
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  return app().request('/api/mcp/v1', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: `modern-${Date.now()}`,
+      method,
+      params: {
+        ...params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': {
+            name: 'deft-mcp-server-test',
+            version: '1.0.0',
+          },
+          'io.modelcontextprotocol/clientCapabilities': {},
+        },
+      },
+    }),
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('1. POST /initialize returns MCP handshake without bearer', async () => {
@@ -373,4 +409,106 @@ test('10. platform_context second call within 60s hits LRU cache', async () => {
     p2.generated_at,
     'second call within 60s should return the cached generated_at'
   );
+});
+
+test('11. modern tools/list is deterministic, private, and self-describing', async () => {
+  const response = await modernMcpPost('tools/list', {}, RAW_TOKEN!);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.equal(body.result.resultType, 'complete');
+  assert.equal(body.result.ttlMs, 0);
+  assert.equal(body.result.cacheScope, 'private');
+  assert.equal(
+    body.result._meta?.['io.modelcontextprotocol/serverInfo']?.name,
+    'deft-mcp',
+  );
+
+  const names = body.result.tools.map((tool: any) => tool.name);
+  assert.deepEqual(
+    names,
+    [...names].sort((left, right) => left < right ? -1 : left > right ? 1 : 0),
+    'modern tool catalog order is deterministic',
+  );
+
+  await withClient(async (c) => {
+    const result = await c.query(
+      `SELECT metadata
+       FROM agent_mcp_call_audit
+       WHERE employee_id = $1 AND tool_name = 'tools/list'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [TEST_EMPLOYEE_ID],
+    );
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].metadata?.protocol_version, '2026-07-28');
+    assert.equal(result.rows[0].metadata?.client_info?.name, 'deft-mcp-server-test');
+  });
+});
+
+test('12. modern tools/call returns a complete result with server metadata', async () => {
+  const response = await modernMcpPost(
+    'tools/call',
+    {
+      name: 'platform_context',
+      arguments: { caller_employee_slug: TEST_EMPLOYEE_SLUG },
+    },
+    RAW_TOKEN!,
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.equal(body.result.resultType, 'complete');
+  assert.equal(body.result.isError, false);
+  assert.equal(
+    body.result._meta?.['io.modelcontextprotocol/serverInfo']?.name,
+    'deft-mcp',
+  );
+});
+
+test('13. modern unknown tools return InvalidParams while retaining the audit row', async () => {
+  const toolName = 'no_such_modern_tool';
+  const response = await modernMcpPost(
+    'tools/call',
+    {
+      name: toolName,
+      arguments: { caller_employee_slug: TEST_EMPLOYEE_SLUG },
+    },
+    RAW_TOKEN!,
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.equal(body.error.code, -32602);
+  assert.match(body.error.message, /Unknown tool/);
+
+  await withClient(async (c) => {
+    const result = await c.query(
+      `SELECT success, error, metadata
+       FROM agent_mcp_call_audit
+       WHERE employee_id = $1 AND tool_name = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [TEST_EMPLOYEE_ID, toolName],
+    );
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].success, false);
+    assert.match(result.rows[0].error, /Unknown tool/);
+    assert.equal(result.rows[0].metadata?.protocol_version, '2026-07-28');
+  });
+});
+
+test('14. legacy JSON-RPC tools/list remains free of modern result fields', async () => {
+  const response = await app().request('/api/mcp/v1', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${RAW_TOKEN}`,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 14, method: 'tools/list', params: {} }),
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(Array.isArray(body.result.tools));
+  assert.equal(body.result.resultType, undefined);
+  assert.equal(body.result.ttlMs, undefined);
+  assert.equal(body.result.cacheScope, undefined);
+  assert.equal(body.result._meta, undefined);
 });
