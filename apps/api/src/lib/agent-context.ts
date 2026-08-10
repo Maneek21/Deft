@@ -23,11 +23,10 @@ import {
   wikiLinks,
   wikiCitations,
   wikiOpsLog,
-  mcpConnections,
   agentEmployees,
   agentActions,
 } from '@deft/db/schema';
-import { parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
+import { getExecutableMcpConnection, mcpResultPayload, parseMCPToolName, toConnectionConfig } from './mcp-tools.js';
 import { mcpClientManager } from '@deft/mcp';
 import { eq, and, ilike, desc, sql, lt, gte, inArray, or } from 'drizzle-orm';
 import { retrieveContext } from './retrieve-context.js';
@@ -37,6 +36,7 @@ import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssignee } from './resolve-assignee.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { agentToolPolicyError } from './agent-tool-policy.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -48,10 +48,18 @@ export async function executeToolCall(
   conversationId?: string,
   agentEmployeeId?: string,
 ): Promise<{ result: any; citations: Citation[] }> {
+  const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
+  if (policyError) return { result: { error: policyError }, citations: [] };
+
   // Check daily action limit for agent employees
   if (agentEmployeeId) {
     const [emp] = await db.select().from(agentEmployees)
-      .where(eq(agentEmployees.id, agentEmployeeId))
+      .where(and(
+        eq(agentEmployees.id, agentEmployeeId),
+        eq(agentEmployees.org_id, orgId),
+        eq(agentEmployees.is_active, true),
+        eq(agentEmployees.is_deleted, false),
+      ))
       .limit(1);
     if (emp && emp.daily_action_count >= emp.max_daily_actions) {
       return {
@@ -66,17 +74,15 @@ export async function executeToolCall(
   // Route MCP tool calls to the MCP client manager
   if (toolName.startsWith('mcp__')) {
     const { connectionSlug, toolName: actualToolName } = parseMCPToolName(toolName);
-    const conn = await db.select().from(mcpConnections)
-      .where(and(eq(mcpConnections.org_id, orgId), eq(mcpConnections.slug, connectionSlug)))
-      .limit(1);
-    if (!conn[0]) return { result: { error: `MCP connection '${connectionSlug}' not found` }, citations: [] };
+    const resolved = await getExecutableMcpConnection(orgId, connectionSlug, actualToolName, agentEmployeeId);
+    if (!resolved.connection) return { result: { error: resolved.error }, citations: [] };
 
-    const config = toConnectionConfig(conn[0]);
+    const config = toConnectionConfig(resolved.connection);
     const mcpResult = await mcpClientManager.executeTool(config, actualToolName, params);
 
     return {
-      result: mcpResult.success ? mcpResult.content : { error: mcpResult.error },
-      citations: [{ type: 'mcp', id: conn[0].id, title: `${conn[0].name}: ${actualToolName}` }],
+      result: mcpResultPayload(mcpResult),
+      citations: [{ type: 'mcp', id: resolved.connection.id, title: `${resolved.connection.name}: ${actualToolName}` }],
     };
   }
 

@@ -63,6 +63,7 @@ import {
   loginIpLimiter,
   agentLimiter,
   agentChannelLimiter,
+  mcpLimiter,
   uploadLimiter,
   defaultLimiter,
   webhookLimiter,
@@ -79,7 +80,14 @@ app.use('*', cors({
     'http://127.0.0.1:3000',
   ],
   credentials: true,
-  allowHeaders: ['Content-Type', 'Authorization', 'x-deft-audit-token'],
+  allowHeaders: [
+    'Content-Type',
+    'Authorization',
+    'x-deft-audit-token',
+    'MCP-Protocol-Version',
+    'Mcp-Method',
+    'Mcp-Name',
+  ],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
@@ -111,9 +119,12 @@ app.use('/api/auth/onboarding', defaultLimiter);
 app.route('/api/auth', authRoutes);
 
 // MCP server — own API key auth, mounted before auth middleware
+app.use('/mcp/*', mcpLimiter);
 app.route('/mcp', mcpServerRoutes);
 
 // Phase 3 MCP server v1 — Gateway bearer auth, mounted before authMiddleware
+app.use('/api/mcp/v1', mcpLimiter);
+app.use('/api/mcp/v1/*', mcpLimiter);
 app.route('/api/mcp/v1', mcpServerV1Routes);
 app.use('/api/agent-channel/v1/*', agentChannelLimiter);
 app.route('/api/agent-channel/v1', agentChannelRoutes);

@@ -16,6 +16,27 @@ const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
 const server = serve({ fetch: app.fetch, port }, async (info) => {
   console.log(`Deft API running on http://localhost:${info.port}`);
 
+  // Historical MCP connection forms wrote credentials into a JSONB column in
+  // plaintext. Encrypt those rows before any worker can construct a runtime
+  // transport. This migration is idempotent and never logs credential data.
+  try {
+    const { migrateLegacyMcpConnectionCredentials } = await import('./lib/mcp-credential-migration.js');
+    const result = await migrateLegacyMcpConnectionCredentials();
+    if (result.migrated > 0) {
+      console.log(`[startup] Encrypted ${result.migrated} legacy MCP credential row(s)`);
+    }
+    if (result.disabledUnsupportedAuth > 0) {
+      console.warn(
+        `[startup] Disabled ${result.disabledUnsupportedAuth} MCP connection(s) using unsupported external OAuth`,
+      );
+    }
+    if (result.disabledUnsafeTarget > 0) {
+      console.warn(`[startup] Disabled ${result.disabledUnsafeTarget} MCP connection(s) blocked by host transport policy`);
+    }
+  } catch (err) {
+    console.warn('[startup] MCP credential migration failed:', (err as Error).message);
+  }
+
   // Start background job workers — uses Postgres, no Redis needed
   try {
     const { startWorkers } = await import('./workers/index.js');

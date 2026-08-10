@@ -169,6 +169,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const repliesEndRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
+  const activeMessageIdRef = useRef(messageId);
+  activeMessageIdRef.current = messageId;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { uploadFile, uploading, progress: uploadProgress } = useFileUpload();
 
@@ -221,25 +223,35 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   useEffect(() => {
     setLoading(true);
     setReplies([]);
+    setPendingFiles([]);
+    let cancelled = false;
 
     async function load() {
       try {
         const threadRes = await api.get(`/api/messages/${messageId}/thread`);
 
-        if (threadRes.ok) {
+        if (threadRes.ok && !cancelled && activeMessageIdRef.current === messageId) {
           const data = await threadRes.json();
+          if (cancelled || activeMessageIdRef.current !== messageId) return;
           setReplies(data.replies || data.messages || []);
         }
         // Mark thread as read
-        api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
+        if (!cancelled && activeMessageIdRef.current === messageId) {
+          void api.post(`/api/messages/${messageId}/thread-read`).catch(() => {});
+        }
       } catch {
         // ignore
       } finally {
-        setLoading(false);
-        setTimeout(scrollToBottom, 100);
+        if (!cancelled && activeMessageIdRef.current === messageId) {
+          setLoading(false);
+          setTimeout(() => {
+            if (!cancelled && activeMessageIdRef.current === messageId) scrollToBottom();
+          }, 100);
+        }
       }
     }
-    load();
+    void load();
+    return () => { cancelled = true; };
   }, [messageId, scrollToBottom]);
 
   // Socket listeners
@@ -250,7 +262,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
 
     const onNewMessage = (msg: Message & { parent_id?: string }) => {
       if (msg.parent_id === messageId) {
-        setReplies((prev) => [...prev, msg]);
+        setReplies((prev) => (
+          prev.some((reply) => reply.id === msg.id) ? prev : [...prev, msg]
+        ));
         if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
         setTimeout(scrollToBottom, 50);
       }
@@ -316,15 +330,28 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   }, [closeThread]);
 
   const handleRichSend = async (html: string, _text: string) => {
+    const requestMessageId = messageId;
+    const pendingFilesToSend = [...pendingFiles];
     let content = html;
-    if (pendingFiles.length > 0) {
-      const fileLines = pendingFiles.map(
+    if (pendingFilesToSend.length > 0) {
+      const fileLines = pendingFilesToSend.map(
         (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
       );
       content = fileLines.join('\n') + '\n' + content;
     }
-    setPendingFiles([]);
-    await api.post(`/api/messages/${spaceId}`, { content, parent_id: messageId });
+    const response = await api.post(`/api/messages/${spaceId}`, { content, parent_id: requestMessageId });
+    if (!response.ok) {
+      throw new Error(await apiErrorMessage(response, 'Failed to send reply'));
+    }
+    const createdReply = await response.json() as Message;
+    if (activeMessageIdRef.current !== requestMessageId) return;
+    const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
+    setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
+    setReplies((prev) => (
+      prev.some((reply) => reply.id === createdReply.id) ? prev : [...prev, createdReply]
+    ));
+    if (pendingBySpaceKey) swrMutate(pendingBySpaceKey);
+    setTimeout(scrollToBottom, 50);
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {

@@ -7,6 +7,7 @@ import { executeToolCall } from '../lib/agent-context.js';
 import { shouldAutoExecute, getApprovalTier } from '../lib/agent-approval.js';
 import { executeActionDirect } from '../lib/agent-actions.js';
 import { ACTION_TOOLS } from '../lib/agent-tools.js';
+import { isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 
 export const mcpServerRoutes = new Hono();
 
@@ -85,6 +86,43 @@ async function authenticateApiKey(authorization: string | undefined): Promise<Ap
   return keyRecord;
 }
 
+type ApiKeyActor = {
+  userId: string;
+  trustLevel: 'conservative' | 'standard' | 'autonomous';
+  agentEmployeeId?: string;
+  disabledTools: string[];
+};
+
+async function resolveActiveApiKeyActor(keyRecord: ApiKeyRecord): Promise<ApiKeyActor | null> {
+  if (!keyRecord.agent_employee_id) {
+    return { userId: keyRecord.created_by, trustLevel: 'conservative', disabledTools: [] };
+  }
+
+  const [employee] = await db
+    .select({
+      id: agentEmployees.id,
+      user_id: agentEmployees.user_id,
+      trust_level: agentEmployees.trust_level,
+      disabled_tools: agentEmployees.disabled_tools,
+    })
+    .from(agentEmployees)
+    .where(and(
+      eq(agentEmployees.id, keyRecord.agent_employee_id),
+      eq(agentEmployees.org_id, keyRecord.org_id),
+      eq(agentEmployees.is_active, true),
+      eq(agentEmployees.is_deleted, false),
+    ))
+    .limit(1);
+
+  if (!employee) return null;
+  return {
+    userId: employee.user_id,
+    trustLevel: employee.trust_level,
+    agentEmployeeId: employee.id,
+    disabledTools: employee.disabled_tools ?? [],
+  };
+}
+
 // ═══ RATE LIMITING (in-memory) ═══
 
 interface RateWindow {
@@ -146,8 +184,15 @@ mcpServerRoutes.get('/tools', async (c) => {
   if (!keyRecord) {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
+  const actor = await resolveActiveApiKeyActor(keyRecord);
+  if (!actor) {
+    return c.json({ error: { code: 'forbidden', message: 'Agent employee is inactive or unavailable' } }, 403);
+  }
 
-  const tools = ALL_TOOLS.filter((t) => keyGrantsPermission(keyRecord.permissions, t.permission));
+  const tools = ALL_TOOLS.filter((tool) => (
+    keyGrantsPermission(keyRecord.permissions, tool.permission)
+    && !isAgentToolDisabled(actor.disabledTools, tool.name.replace(/^deft_/, ''))
+  ));
 
   return c.json({ tools });
 });
@@ -186,23 +231,16 @@ mcpServerRoutes.post('/call', async (c) => {
   const params = body.params || {};
   const orgId = keyRecord.org_id;
 
-  // 5. Resolve agent employee for trust level
-  let userId = keyRecord.created_by; // fallback
-  let trustLevel: 'conservative' | 'standard' | 'autonomous' = 'conservative';
-  let agentEmployeeId: string | undefined;
-
-  if (keyRecord.agent_employee_id) {
-    const [employee] = await db
-      .select()
-      .from(agentEmployees)
-      .where(and(eq(agentEmployees.id, keyRecord.agent_employee_id), eq(agentEmployees.org_id, orgId)))
-      .limit(1);
-
-    if (employee) {
-      userId = employee.user_id;
-      trustLevel = employee.trust_level;
-      agentEmployeeId = employee.id;
-    }
+  // 5. Resolve agent employee for trust level. This repeats the check on
+  // every endpoint so pausing/deleting an employee revokes its legacy key
+  // immediately without waiting for token expiry.
+  const actor = await resolveActiveApiKeyActor(keyRecord);
+  if (!actor) {
+    return c.json({ error: { code: 'forbidden', message: 'Agent employee is inactive or unavailable' } }, 403);
+  }
+  const { userId, trustLevel, agentEmployeeId } = actor;
+  if (isAgentToolDisabled(actor.disabledTools, internalToolName)) {
+    return c.json({ error: { code: 'forbidden', message: `Tool '${internalToolName}' is disabled for this agent employee` } }, 403);
   }
 
   let result: any;
@@ -243,7 +281,14 @@ mcpServerRoutes.post('/call', async (c) => {
     }
   } else {
     // 7. Read tools — execute directly
-    const toolResult = await executeToolCall(internalToolName, params, orgId, userId);
+    const toolResult = await executeToolCall(
+      internalToolName,
+      params,
+      orgId,
+      userId,
+      undefined,
+      agentEmployeeId,
+    );
     result = toolResult.result;
   }
 
@@ -265,6 +310,10 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
   if (!keyRecord) {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
+  const actor = await resolveActiveApiKeyActor(keyRecord);
+  if (!actor) {
+    return c.json({ error: { code: 'forbidden', message: 'Agent employee is inactive or unavailable' } }, 403);
+  }
 
   const actionId = c.req.param('id');
   const [action] = await db
@@ -278,7 +327,13 @@ mcpServerRoutes.get('/actions/:id/status', async (c) => {
       created_at: agentActions.created_at,
     })
     .from(agentActions)
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, keyRecord.org_id)))
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, keyRecord.org_id),
+      actor.agentEmployeeId
+        ? eq(agentActions.agent_employee_id, actor.agentEmployeeId)
+        : eq(agentActions.user_id, actor.userId),
+    ))
     .limit(1);
 
   if (!action) {

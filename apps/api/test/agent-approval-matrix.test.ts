@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldAutoExecute, isDestructiveAction } from '../src/lib/agent-approval.js';
+import { shouldAutoExecute, isDestructiveAction, getApprovalTier } from '../src/lib/agent-approval.js';
 
 // ─── 1. Trust × tier matrix ──────────────────────────────────────────────────
 // We use real tool names from TOOL_APPROVAL_TIERS:
@@ -143,6 +143,17 @@ test('isDestructiveAction: remove_member → true', () => {
 
 test('isDestructiveAction: delete_project → true (prefix match)', () => {
   assert.equal(isDestructiveAction('delete_project'), true);
+});
+
+test('isDestructiveAction: prefixed MCP delete tool → true', () => {
+  assert.equal(isDestructiveAction('mcp__crm__delete_contact'), true);
+  assert.equal(shouldAutoExecute('mcp__crm__delete_contact', 'autonomous'), false);
+});
+
+test('dynamic MCP quick tier is preserved for Standard execution and receipts', () => {
+  assert.equal(getApprovalTier('mcp__crm__create_contact', 'quick'), 'quick');
+  assert.equal(shouldAutoExecute('mcp__crm__create_contact', 'standard', {}, 'quick'), true);
+  assert.equal(shouldAutoExecute('mcp__crm__create_contact', 'conservative', {}, 'quick'), false);
 });
 
 test('isDestructiveAction: post_message → false (no guard triggers)', () => {

@@ -53,10 +53,10 @@ function validateEnv() {
   for (const key of ['POSTGRES_PASSWORD', 'JWT_SECRET', 'JWT_REFRESH_SECRET']) {
     if (isMissingOrPlaceholder(env[key])) failures.push(`${key} is missing or still uses a placeholder.`);
   }
-  if (!env.ENCRYPTION_KEY || env.ENCRYPTION_KEY.length !== 32) {
-    failures.push('ENCRYPTION_KEY must be exactly 32 characters.');
-  } else if (env.ENCRYPTION_KEY === 'deft-dev-encryption-key-32ch') {
-    warnings.push('ENCRYPTION_KEY is still the dev value. Rotate it before real production data.');
+  if (env.ENCRYPTION_KEY === 'deft-dev-encryption-key-32ch') {
+    failures.push('ENCRYPTION_KEY must not use the public development value.');
+  } else if (isMissingOrPlaceholder(env.ENCRYPTION_KEY) || (env.ENCRYPTION_KEY?.length ?? 0) < 32) {
+    failures.push('ENCRYPTION_KEY must be a non-placeholder secret of at least 32 characters.');
   }
 
   for (const key of ['NEXT_PUBLIC_APP_URL', 'NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_WS_URL']) {

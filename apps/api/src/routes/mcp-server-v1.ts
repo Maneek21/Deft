@@ -49,8 +49,109 @@ import {
   type HumanToolContext,
 } from '../lib/mcp-tools/human.js';
 import { auditOAuth, metadataUrls } from '../lib/oauth-mcp.js';
+import {
+  consumeAgentDailyActionBudget,
+  isAgentToolDisabled,
+} from '../lib/agent-tool-policy.js';
 
 export const mcpServerV1Routes = new Hono();
+
+const MODERN_PROTOCOL_VERSION = '2026-07-28';
+const LEGACY_PROTOCOL_VERSIONS = [
+  '2025-11-25',
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+] as const;
+const DEFAULT_LEGACY_PROTOCOL_VERSION = '2024-11-05';
+const LATEST_LEGACY_PROTOCOL_VERSION = LEGACY_PROTOCOL_VERSIONS[0];
+const SERVER_INFO = {
+  name: 'deft-mcp',
+  version: '1.0.0',
+  description: 'Deft workspace tools for people and agent employees.',
+} as const;
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+
+type JsonRpcId = string | number | null;
+type JsonRpcRequestBody = {
+  jsonrpc?: unknown;
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+};
+
+type ClientInfo = {
+  name: string;
+  version: string;
+  [key: string]: unknown;
+};
+
+type RequestProtocolMetadata = {
+  era: 'legacy' | 'modern';
+  protocolVersion?: string;
+  clientInfo?: ClientInfo;
+  clientCapabilities?: Record<string, unknown>;
+};
+
+class McpJsonRpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+    readonly status: 200 | 400 = 200,
+    readonly data?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'McpJsonRpcError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizedOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function allowedMcpOrigins(): Set<string> {
+  const candidates = [
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.NEXT_PUBLIC_API_URL,
+    process.env.DEFT_PUBLIC_URL,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ];
+  return new Set(
+    candidates
+      .filter((value): value is string => Boolean(value))
+      .map(normalizedOrigin)
+      .filter((value): value is string => value !== null),
+  );
+}
+
+// Streamable HTTP requires Origin validation to prevent DNS rebinding. Keep
+// the guard local to the MCP surface so regular API routes retain their
+// existing CORS behavior. Non-browser MCP clients normally omit Origin.
+mcpServerV1Routes.use('*', async (c, next) => {
+  const origin = c.req.header('Origin');
+  if (origin) {
+    const normalized = normalizedOrigin(origin);
+    if (!normalized || !allowedMcpOrigins().has(normalized)) {
+      return c.json(
+        { error: { code: 'invalid_origin', message: 'Origin is not allowed for this MCP endpoint' } },
+        403,
+      );
+    }
+  }
+  return next();
+});
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -83,11 +184,219 @@ function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 500, code: st
   return c.json({ error: { code, message } }, status);
 }
 
-function setOAuthChallenge(c: Context, scope = 'read:workspace') {
+function jsonRpcErrorResponse(
+  c: Context,
+  id: JsonRpcId,
+  code: number,
+  message: string,
+  status: 200 | 400 | 401 | 403 | 404 | 500,
+  data?: Record<string, unknown>,
+) {
+  const error = data ? { code, message, data } : { code, message };
+  return c.json({ jsonrpc: '2.0', id, error }, status);
+}
+
+function legacyProtocolVersion(params: unknown): string {
+  const requested = isRecord(params) ? params.protocolVersion : undefined;
+  if (typeof requested !== 'string' || requested.length === 0) {
+    return DEFAULT_LEGACY_PROTOCOL_VERSION;
+  }
+  if ((LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(requested)) {
+    return requested;
+  }
+  return LATEST_LEGACY_PROTOCOL_VERSION;
+}
+
+function legacyInitializeResult(params: unknown) {
+  return {
+    serverInfo: SERVER_INFO,
+    protocolVersion: legacyProtocolVersion(params),
+    capabilities: { tools: {} },
+  };
+}
+
+function sortedCatalog<T extends { name?: unknown }>(catalog: readonly T[]): T[] {
+  return [...catalog].sort((left, right) => {
+    const leftName = String(left.name ?? '');
+    const rightName = String(right.name ?? '');
+    return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+  });
+}
+
+function completeModernResult(result: unknown): Record<string, unknown> {
+  const source = isRecord(result) ? result : {};
+  const resultMeta = isRecord(source._meta) ? source._meta : {};
+  return {
+    ...source,
+    resultType: 'complete',
+    _meta: {
+      ...resultMeta,
+      [SERVER_INFO_META_KEY]: SERVER_INFO,
+    },
+  };
+}
+
+function decodeMirroredHeader(value: string): string | null {
+  const hasSentinelStart = value.startsWith('=?base64?');
+  const hasSentinelEnd = value.endsWith('?=');
+  if (hasSentinelStart || hasSentinelEnd) {
+    const match = value.match(/^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$/);
+    if (!match) return null;
+    try {
+      const encoded = match[1]!;
+      const decoded = Buffer.from(encoded, 'base64');
+      if (decoded.toString('base64') !== encoded) return null;
+      const text = decoded.toString('utf8');
+      if (Buffer.from(text, 'utf8').compare(decoded) !== 0) return null;
+      return text;
+    } catch {
+      return null;
+    }
+  }
+
+  if (!/^[\x20-\x7E\t]*$/.test(value)) return null;
+  if (value !== value.trim()) return null;
+  return value;
+}
+
+function hasModernEnvelopeClaim(c: Context, method: string, body: JsonRpcRequestBody): boolean {
+  const params = isRecord(body.params) ? body.params : undefined;
+  const meta = params && isRecord(params._meta) ? params._meta : undefined;
+  const bodyProtocolVersion = meta?.[PROTOCOL_VERSION_META_KEY];
+  const headerProtocolVersion = c.req.header('MCP-Protocol-Version');
+
+  if (method === 'server/discover') return true;
+  if (typeof bodyProtocolVersion === 'string') return true;
+  if (c.req.header('Mcp-Method') || c.req.header('Mcp-Name')) return true;
+  return Boolean(
+    headerProtocolVersion &&
+      !(LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(headerProtocolVersion),
+  );
+}
+
+function validateRequestProtocolMetadata(
+  c: Context,
+  body: JsonRpcRequestBody,
+  method: string,
+): RequestProtocolMetadata {
+  if (!hasModernEnvelopeClaim(c, method, body)) {
+    return {
+      era: 'legacy',
+      protocolVersion: c.req.header('MCP-Protocol-Version'),
+    };
+  }
+
+  const params = isRecord(body.params) ? body.params : undefined;
+  const meta = params && isRecord(params._meta) ? params._meta : undefined;
+  const bodyProtocolVersion = meta?.[PROTOCOL_VERSION_META_KEY];
+  const headerProtocolVersion = c.req.header('MCP-Protocol-Version');
+  const headerMethod = c.req.header('Mcp-Method');
+
+  if (!headerProtocolVersion) {
+    throw new McpJsonRpcError(-32020, 'Header mismatch: missing MCP-Protocol-Version header', 400);
+  }
+  if (typeof bodyProtocolVersion !== 'string' || bodyProtocolVersion.length === 0) {
+    throw new McpJsonRpcError(
+      -32020,
+      `Header mismatch: MCP-Protocol-Version header value '${headerProtocolVersion}' has no matching request metadata`,
+      400,
+    );
+  }
+  if (headerProtocolVersion !== bodyProtocolVersion) {
+    throw new McpJsonRpcError(
+      -32020,
+      `Header mismatch: MCP-Protocol-Version header value '${headerProtocolVersion}' does not match body value '${bodyProtocolVersion}'`,
+      400,
+    );
+  }
+  if (!headerMethod) {
+    throw new McpJsonRpcError(-32020, 'Header mismatch: missing Mcp-Method header', 400);
+  }
+  if (headerMethod !== method) {
+    throw new McpJsonRpcError(
+      -32020,
+      `Header mismatch: Mcp-Method header value '${headerMethod}' does not match body value '${method}'`,
+      400,
+    );
+  }
+
+  if (method === 'tools/call') {
+    const headerName = c.req.header('Mcp-Name');
+    if (!headerName) {
+      throw new McpJsonRpcError(-32020, 'Header mismatch: missing Mcp-Name header', 400);
+    }
+    const decodedHeaderName = decodeMirroredHeader(headerName);
+    if (decodedHeaderName === null) {
+      throw new McpJsonRpcError(-32020, 'Header mismatch: malformed Mcp-Name header', 400);
+    }
+    const bodyName = params?.name;
+    if (typeof bodyName !== 'string' || decodedHeaderName !== bodyName) {
+      throw new McpJsonRpcError(
+        -32020,
+        `Header mismatch: Mcp-Name header value '${headerName}' does not match body value '${String(bodyName ?? '')}'`,
+        400,
+      );
+    }
+  }
+
+  if (bodyProtocolVersion !== MODERN_PROTOCOL_VERSION) {
+    throw new McpJsonRpcError(
+      -32022,
+      `Unsupported protocol version: ${bodyProtocolVersion}`,
+      400,
+      { supported: [MODERN_PROTOCOL_VERSION], requested: bodyProtocolVersion },
+    );
+  }
+
+  const clientCapabilities = meta?.[CLIENT_CAPABILITIES_META_KEY];
+  if (!isRecord(clientCapabilities)) {
+    throw new McpJsonRpcError(
+      -32602,
+      `Invalid params: missing ${CLIENT_CAPABILITIES_META_KEY} request metadata`,
+      400,
+    );
+  }
+
+  const rawClientInfo = meta?.[CLIENT_INFO_META_KEY];
+  let clientInfo: ClientInfo | undefined;
+  if (rawClientInfo !== undefined) {
+    if (
+      !isRecord(rawClientInfo) ||
+      typeof rawClientInfo.name !== 'string' ||
+      rawClientInfo.name.length === 0 ||
+      typeof rawClientInfo.version !== 'string' ||
+      rawClientInfo.version.length === 0
+    ) {
+      throw new McpJsonRpcError(
+        -32602,
+        `Invalid params: malformed ${CLIENT_INFO_META_KEY} request metadata`,
+        400,
+      );
+    }
+    clientInfo = rawClientInfo as ClientInfo;
+  }
+
+  return {
+    era: 'modern',
+    protocolVersion: bodyProtocolVersion,
+    clientInfo,
+    clientCapabilities,
+  };
+}
+
+function requestAuditMetadata(metadata: RequestProtocolMetadata): Record<string, unknown> {
+  return {
+    protocol_version: metadata.protocolVersion ?? null,
+    client_info: metadata.clientInfo ?? null,
+  };
+}
+
+function setOAuthChallenge(c: Context, scope = 'read:workspace', error?: string) {
   const urls = metadataUrls();
+  const errorParameter = error ? `error="${error}", ` : '';
   c.header(
     'WWW-Authenticate',
-    `Bearer resource_metadata="${urls.protectedResourceMetadata}", scope="${scope}"`,
+    `Bearer ${errorParameter}resource_metadata="${urls.protectedResourceMetadata}", scope="${scope}"`,
   );
 }
 
@@ -182,6 +491,23 @@ async function dispatchTool(
   }
 
   try {
+    if (WRITE_TOOLS[canonicalToolName]) {
+      const budget = await consumeAgentDailyActionBudget(ctx.org_id, ctx.employee_id);
+      if (!budget.allowed) {
+        const result = {
+          isError: true,
+          content: [{ type: 'text', text: budget.error }],
+        } satisfies ToolResult;
+        await auditMcpCall({
+          ctx,
+          toolName,
+          success: false,
+          error: budget.error,
+          metadata: { ...auditMetadata, budget_blocked: true },
+        });
+        return result;
+      }
+    }
     const result = await handler(args, ctx);
     const success = !result.isError;
     await auditMcpCall({
@@ -241,17 +567,38 @@ async function dispatchHumanTool(
 // callers that happen to target them directly — they're not MCP-spec
 // but harmless.
 mcpServerV1Routes.post('/', async (c) => {
-  let body: { jsonrpc?: string; id?: number | string | null; method?: string; params?: unknown };
+  const contentType = c.req.header('Content-Type') ?? '';
+  if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) {
+    return c.json(
+      { error: { code: 'unsupported_media_type', message: 'MCP POST requests require application/json' } },
+      415,
+    );
+  }
+
+  let body: JsonRpcRequestBody;
   try {
     body = await c.req.json();
   } catch {
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400);
   }
 
-  const id = body.id ?? null;
+  const id =
+    typeof body.id === 'string' || typeof body.id === 'number' || body.id === null
+      ? body.id
+      : null;
   const method = body.method;
-  if (!method || typeof method !== 'string') {
+  if (body.jsonrpc !== '2.0' || !method || typeof method !== 'string') {
     return c.json({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid Request: missing method' } }, 400);
+  }
+
+  let requestMetadata: RequestProtocolMetadata;
+  try {
+    requestMetadata = validateRequestProtocolMetadata(c, body, method);
+  } catch (err) {
+    if (err instanceof McpJsonRpcError) {
+      return jsonRpcErrorResponse(c, id, err.code, err.message, err.status, err.data);
+    }
+    return jsonRpcErrorResponse(c, id, -32603, 'Protocol metadata validation failed', 500);
   }
 
   // Helper: run a thunk, wrap success in { jsonrpc, id, result }, errors
@@ -259,28 +606,52 @@ mcpServerV1Routes.post('/', async (c) => {
   const wrap = async <T>(fn: () => Promise<T>): Promise<Response> => {
     try {
       const result = await fn();
-      return c.json({ jsonrpc: '2.0', id, result });
+      return c.json({
+        jsonrpc: '2.0',
+        id,
+        result: requestMetadata.era === 'modern' ? completeModernResult(result) : result,
+      });
     } catch (err) {
+      if (err instanceof McpJsonRpcError) {
+        return jsonRpcErrorResponse(c, id, err.code, err.message, err.status, err.data);
+      }
       if (err instanceof McpAuthError) {
         // JSON-RPC error codes: -32001 for auth, -32002 for forbidden.
         const code = err.status === 401 ? -32001 : err.status === 403 ? -32002 : -32000;
         if (err.status === 401) setOAuthChallenge(c);
-        return c.json({ jsonrpc: '2.0', id, error: { code, message: err.message, data: { status: err.status, code: err.code } } }, err.status as 400 | 401 | 403);
+        if (err.status === 403 && err.code === 'insufficient_scope') {
+          setOAuthChallenge(c, err.scope ?? 'read:workspace', 'insufficient_scope');
+        }
+        return jsonRpcErrorResponse(
+          c,
+          id,
+          code,
+          err.message,
+          err.status as 400 | 401 | 403,
+          { status: err.status, code: err.code },
+        );
       }
       const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ jsonrpc: '2.0', id, error: { code: -32603, message: msg } }, 500);
+      return jsonRpcErrorResponse(c, id, -32603, msg, 500);
     }
   };
 
-  if (method === 'initialize') {
+  if (method === 'server/discover') {
     return wrap(async () => ({
-      serverInfo: { name: 'deft-mcp', version: '1.0.0' },
-      protocolVersion: '2024-11-05',
+      supportedVersions: [MODERN_PROTOCOL_VERSION],
       capabilities: { tools: {} },
+      instructions:
+        'Use tools/list to discover Deft workspace tools. Agent employee calls must include caller_employee_slug.',
+      ttlMs: 0,
+      cacheScope: 'private',
     }));
   }
 
-  if (method === 'notifications/initialized') {
+  if (method === 'initialize' && requestMetadata.era === 'legacy') {
+    return wrap(async () => legacyInitializeResult(body.params));
+  }
+
+  if (method === 'notifications/initialized' && requestMetadata.era === 'legacy') {
     // MCP clients send this post-initialize handshake as a JSON-RPC
     // notification. Notifications do not receive JSON-RPC responses; Codex's
     // streamable HTTP client treats a response object here as a handshake
@@ -288,7 +659,7 @@ mcpServerV1Routes.post('/', async (c) => {
     return c.body(null, 202);
   }
 
-  if (method === 'ping') {
+  if (method === 'ping' && requestMetadata.era === 'legacy') {
     return wrap(async () => {
       const bearer = extractBearer(c.req.header('Authorization'));
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
@@ -306,17 +677,39 @@ mcpServerV1Routes.post('/', async (c) => {
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
       const principal = await resolveMcpPrincipal(bearer);
       if (principal.kind === 'human' || principal.kind === 'oauth') {
-        return { tools: humanCatalog(principal.scopes) };
+        return {
+          tools: sortedCatalog(humanCatalog(principal.scopes)),
+          ...(requestMetadata.era === 'modern'
+            ? { ttlMs: 0, cacheScope: 'private' as const }
+            : {}),
+        };
       }
       const resolved = principal as ResolvedGateway;
       const allConservative = resolved.gateway_employees.every((e) => e.trust_level === 'conservative');
       const writeNames = new Set(Object.keys(WRITE_TOOLS));
-      const catalog = toolSchemas.filter((t) => (allConservative ? !writeNames.has(t.name) : true));
+      const catalog = sortedCatalog(
+        toolSchemas.filter((t) => (
+          (allConservative ? !writeNames.has(t.name) : true)
+          && resolved.gateway_employees.every((employee) => (
+            !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
+          ))
+        )),
+      );
       await auditMcpDiscovery({
         resolved,
-        metadata: { surface: 'jsonrpc', request_id: id, method: 'tools/list' },
+        metadata: {
+          surface: 'jsonrpc',
+          request_id: id,
+          method: 'tools/list',
+          ...requestAuditMetadata(requestMetadata),
+        },
       });
-      return { tools: catalog };
+      return {
+        tools: catalog,
+        ...(requestMetadata.era === 'modern'
+          ? { ttlMs: 0, cacheScope: 'private' as const }
+          : {}),
+      };
     });
   }
 
@@ -325,13 +718,27 @@ mcpServerV1Routes.post('/', async (c) => {
       const bearer = extractBearer(c.req.header('Authorization'));
       if (!bearer) throw new McpAuthError(401, 'unauthorized', 'Missing bearer token');
       const principal = await resolveMcpPrincipal(bearer);
-      const params = (body.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
+      const params = isRecord(body.params) ? body.params : {};
       const toolName = params.name;
-      const args = params.arguments ?? {};
       if (!toolName || typeof toolName !== 'string') {
-        throw new McpAuthError(400, 'bad_request', 'Missing params.name');
+        throw new McpJsonRpcError(-32602, 'Invalid params: missing tools/call name');
       }
+      if (params.arguments !== undefined && !isRecord(params.arguments)) {
+        throw new McpJsonRpcError(-32602, 'Invalid params: tools/call arguments must be an object');
+      }
+      const args = (params.arguments ?? {}) as Record<string, unknown>;
+      const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
       if (principal.kind === 'human' || principal.kind === 'oauth') {
+        const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
+        if (principal.kind === 'oauth' && requiredScope && !principal.scopes.includes(requiredScope)) {
+          throw new McpAuthError(
+            403,
+            'insufficient_scope',
+            `Missing MCP scope: ${requiredScope}`,
+            requiredScope,
+          );
+        }
+        const knownTool = Boolean(HUMAN_TOOLS[canonicalToolName]);
         const result = await dispatchHumanTool(toolName, args, {
           org_id: principal.org_id,
           user_id: principal.user_id,
@@ -352,6 +759,7 @@ mcpServerV1Routes.post('/', async (c) => {
               tool_name: toolName,
               success: !result.isError,
               surface: 'jsonrpc',
+              ...requestAuditMetadata(requestMetadata),
               grant_id: principal.grant_id ?? null,
               idempotency_key: typeof args.idempotency_key === 'string' ? args.idempotency_key : null,
               target_id: typeof args.task_id === 'string'
@@ -364,40 +772,62 @@ mcpServerV1Routes.post('/', async (c) => {
             },
           });
         }
+        if (requestMetadata.era === 'modern' && !knownTool) {
+          throw new McpJsonRpcError(
+            -32602,
+            `Unknown tool: ${toolName}`,
+            200,
+            { name: toolName },
+          );
+        }
         return result;
       }
       const resolved = principal as ResolvedGateway;
       const employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
+      if (isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
+        throw new McpAuthError(403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
+      }
       const ctx: ToolContext = {
         org_id: resolved.org_id,
         employee_id: employee.employee_id,
         employee_slug: employee.slug,
         trust_level: employee.trust_level,
       };
-      return await dispatchTool(toolName, args, ctx, {
+      const knownTool = Boolean(ALL_TOOLS[canonicalToolName]);
+      const result = await dispatchTool(toolName, args, ctx, {
         surface: 'jsonrpc',
         caller_employee_slug: employee.slug,
         request_id: id,
+        ...requestAuditMetadata(requestMetadata),
       });
+      if (requestMetadata.era === 'modern' && !knownTool) {
+        throw new McpJsonRpcError(
+          -32602,
+          `Unknown tool: ${toolName}`,
+          200,
+          { name: toolName },
+        );
+      }
+      return result;
     });
   }
 
-  return c.json({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } }, 404);
+  return jsonRpcErrorResponse(c, id, -32601, `Method not found: ${method}`, 404);
 });
 
 // ─── Legacy sub-path endpoints (kept for pre-JSON-RPC callers) ───────────
 
 mcpServerV1Routes.post('/initialize', async (c) => {
-  return c.json({
-    serverInfo: {
-      name: 'deft-mcp',
-      version: '1.0.0',
-    },
-    protocolVersion: '2024-11-05',
-    capabilities: {
-      tools: {},
-    },
-  });
+  let requestBody: unknown;
+  try {
+    requestBody = await c.req.json();
+  } catch {
+    requestBody = undefined;
+  }
+  const params = isRecord(requestBody) && 'params' in requestBody
+    ? requestBody.params
+    : requestBody;
+  return c.json(legacyInitializeResult(params));
 });
 
 mcpServerV1Routes.get('/sse', async (c) => {
@@ -452,7 +882,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
-    return c.json({ tools: humanCatalog(principal.scopes) });
+    return c.json({ tools: sortedCatalog(humanCatalog(principal.scopes)) });
   }
 
   const resolved = principal as ResolvedGateway;
@@ -464,8 +894,13 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
     (e) => e.trust_level === 'conservative',
   );
   const writeNames = new Set(Object.keys(WRITE_TOOLS));
-  const catalog = toolSchemas.filter((t) =>
-    allConservative ? !writeNames.has(t.name) : true,
+  const catalog = sortedCatalog(
+    toolSchemas.filter((t) => (
+      (allConservative ? !writeNames.has(t.name) : true)
+      && resolved.gateway_employees.every((employee) => (
+        !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
+      ))
+    )),
   );
 
   await auditMcpDiscovery({
@@ -509,6 +944,12 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   }
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
+    const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+    const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
+    if (principal.kind === 'oauth' && requiredScope && !principal.scopes.includes(requiredScope)) {
+      setOAuthChallenge(c, requiredScope, 'insufficient_scope');
+      return errorResponse(c, 403, 'insufficient_scope', `Missing MCP scope: ${requiredScope}`);
+    }
     const result = await dispatchHumanTool(toolName, args, {
       org_id: principal.org_id,
       user_id: principal.user_id,
@@ -554,6 +995,9 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
       return errorResponse(c, err.status as 400 | 403, err.code, err.message);
     }
     return errorResponse(c, 500, 'internal', 'Slug validation error');
+  }
+  if (isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
+    return errorResponse(c, 403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
   }
 
   // 4. Tool dispatch — unknown tool => MCP-level error content (isError)

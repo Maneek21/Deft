@@ -1,8 +1,14 @@
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+  type Transport,
+} from "@modelcontextprotocol/client";
+import {
+  StdioClientTransport,
+  getDefaultEnvironment,
+} from "@modelcontextprotocol/client/stdio";
 import type { MCPConnectionConfig } from "./types.js";
+import { createSecureMcpFetch, isStdioCommandAllowed } from "./transport-security.js";
 
 /**
  * Creates the appropriate MCP transport based on connection config.
@@ -19,10 +25,17 @@ export function createTransport(config: MCPConnectionConfig): Transport {
       if (!config.command) {
         throw new Error("Stdio transport requires a command");
       }
+      if (!isStdioCommandAllowed(config.command)) {
+        throw new Error(
+          "Stdio command is not allowed by the host MCP_STDIO_ALLOWED_COMMANDS policy"
+        );
+      }
       return new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: config.env,
+        env: config.env
+          ? { ...getDefaultEnvironment(), ...config.env }
+          : undefined,
       });
     }
 
@@ -31,6 +44,7 @@ export function createTransport(config: MCPConnectionConfig): Transport {
         throw new Error("SSE transport requires a url");
       }
       return new SSEClientTransport(new URL(config.url), {
+        fetch: createSecureMcpFetch(config.url),
         requestInit: config.headers
           ? { headers: config.headers }
           : undefined,
@@ -42,6 +56,7 @@ export function createTransport(config: MCPConnectionConfig): Transport {
         throw new Error("Streamable HTTP transport requires a url");
       }
       return new StreamableHTTPClientTransport(new URL(config.url), {
+        fetch: createSecureMcpFetch(config.url),
         requestInit: config.headers
           ? { headers: config.headers }
           : undefined,

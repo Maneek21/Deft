@@ -67,7 +67,8 @@ before(async () => {
       [ORG_ID, CALLER_USER_ID],
     );
 
-    // Shadow user + agent employee (for attribution test)
+    // Shadow user + Standard-trust agent employee. These tests exercise the
+    // mutation mechanics; approval-matrix tests cover Conservative queuing.
     await c.query(
       `INSERT INTO users (id, email, name, is_agent)
        VALUES ($1, $2, 'Agent Mut Shadow', true)
@@ -79,7 +80,7 @@ before(async () => {
          id, org_id, user_id, name, slug, role, system_prompt, trust_level,
          max_daily_actions, created_by, is_active, is_byoa
        ) VALUES ($1, $2, $3, 'Mut Agent', 'mut-agent', 'project_manager',
-                 'you are mut', 'conservative', 50, $3, true, true)
+                 'you are mut', 'standard', 50, $3, true, true)
        ON CONFLICT (id) DO NOTHING`,
       [EMP_ID, ORG_ID, EMP_SHADOW_USER_ID],
     );

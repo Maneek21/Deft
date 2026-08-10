@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Logo } from '@/components/brand/logo';
 
 type Preview = {
+  issuer: string;
   client: {
     client_id: string;
     client_name: string;
@@ -122,6 +123,7 @@ function OAuthAuthorizeContent() {
     const url = new URL(redirectUri);
     url.searchParams.set('error', 'access_denied');
     url.searchParams.set('error_description', 'The user denied Deft access');
+    if (preview?.issuer) url.searchParams.set('iss', preview.issuer);
     if (authorizeParams.state) url.searchParams.set('state', authorizeParams.state);
     window.location.href = url.toString();
   }

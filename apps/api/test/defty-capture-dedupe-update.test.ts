@@ -514,6 +514,121 @@ test('fresh knowledge capture skips when equivalent wiki knowledge already exist
   assert.equal(Number(actionCount.rows[0]?.count ?? 0), 0);
 });
 
+test('settled batch evidence is captured once even when a later classifier changes its kind', async () => {
+  const content = 'Chef Amara confirmed the 12-count sample format and dependable Tuesday arrival.';
+  const messageId = await seedMessage(content);
+  const firstIntentId = `defty-capture-intent-${crypto.randomUUID()}`;
+  await db.insert(workIntents).values({
+    id: firstIntentId,
+    org_id: ORG_ID,
+    space_id: SPACE_ID,
+    source_message_id: messageId,
+    source_user_id: USER_ID,
+    kind: 'note_candidate',
+    status: 'converted',
+    title: 'Chef Amara trial preferences',
+    proposed_action: 'wiki_create',
+    dedupe_key: `defty_capture:note_candidate:wiki_create:${messageId}`,
+    metadata: {
+      source: 'chat_knowledge_batch',
+      batch_capture: true,
+      batch_message_ids: [messageId],
+      converted_wiki_slug: `chef-amara-trial-${RUN_ID}`,
+    },
+  });
+
+  const second = await queueDeftyKnowledgeCapture({
+    orgId: ORG_ID,
+    sourceUserId: USER_ID,
+    spaceId: SPACE_ID,
+    messageId,
+    content,
+    title: 'Chef Amara trial preferences',
+    wikiType: 'decision',
+    captureKind: 'decision_candidate',
+    extraction: 'llm',
+    metadata: {
+      source: 'chat_knowledge_batch',
+      batch_capture: true,
+      batch_message_ids: [messageId],
+    },
+    preferUpdate: true,
+    autoApprove: true,
+  });
+
+  assert.equal(second.queued, false);
+  assert.equal(second.skippedReason, 'knowledge_batch_already_captured');
+
+  const intents = await db
+    .select({ id: workIntents.id })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ));
+  assert.deepEqual(intents, [{ id: firstIntentId }]);
+});
+
+test('concurrent batch classifiers share one evidence-level intent and approval', async () => {
+  const reference = `BATCH-${crypto.randomUUID().slice(0, 8)}`;
+  const content = `The tasting team settled ${reference} as the single launch packing reference.`;
+  const messageId = await seedMessage(content);
+  const metadata = {
+    source: 'chat_knowledge_batch',
+    batch_capture: true,
+    batch_message_ids: [messageId],
+  };
+
+  const [decisionResult, noteResult] = await Promise.all([
+    queueDeftyKnowledgeCapture({
+      orgId: ORG_ID,
+      sourceUserId: USER_ID,
+      spaceId: SPACE_ID,
+      messageId,
+      content,
+      title: `${reference} launch packing decision`,
+      wikiType: 'decision',
+      captureKind: 'decision_candidate',
+      extraction: 'llm',
+      metadata,
+    }),
+    queueDeftyKnowledgeCapture({
+      orgId: ORG_ID,
+      sourceUserId: USER_ID,
+      spaceId: SPACE_ID,
+      messageId,
+      content,
+      title: `${reference} launch packing note`,
+      wikiType: 'fact',
+      captureKind: 'note_candidate',
+      extraction: 'classifier',
+      metadata,
+    }),
+  ]);
+
+  assert.equal([decisionResult, noteResult].filter((result) => result.queued).length, 1);
+
+  const intents = await db
+    .select({ id: workIntents.id, dedupeKey: workIntents.dedupe_key })
+    .from(workIntents)
+    .where(and(
+      eq(workIntents.org_id, ORG_ID),
+      eq(workIntents.source_message_id, messageId),
+    ));
+  assert.equal(intents.length, 1);
+  assert.match(intents[0]!.dedupeKey, /^defty_capture:knowledge_batch:[a-f0-9]{64}$/);
+
+  const actions = await db
+    .select({ id: agentActions.id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.org_id, ORG_ID),
+      eq(agentActions.message_id, messageId),
+      eq(agentActions.source, 'defty_capture'),
+    ));
+  assert.equal(actions.length, 1);
+});
+
 test('similar knowledge with a different reference code still queues a fresh proposal', async () => {
   await db.insert(wikiPages).values({
     id: `defty-capture-wiki-${crypto.randomUUID()}`,

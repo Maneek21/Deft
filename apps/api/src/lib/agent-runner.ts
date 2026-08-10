@@ -14,9 +14,10 @@ import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
 import { executeActionDirect } from './agent-actions.js';
-import { shouldAutoExecute, getApprovalTier, type TrustLevel } from './agent-approval.js';
+import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
+import { getActiveAgentToolPolicy, isAgentToolDisabled } from './agent-tool-policy.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -168,15 +169,30 @@ export async function runAgentQuery(params: {
   // Build dynamic tool list (read-only tools only — no write actions in chat mentions)
   let tools: Anthropic.Tool[] = [...AGENT_TOOLS, ...CALENDAR_READ_TOOLS];
   const allActionTools = new Set([...ACTION_TOOLS]);
+  const actionApprovalTiers = new Map<string, ApprovalTier>();
+  const mcpConnectionIds = new Map<string, string>();
 
-  // MCP tools
-  try {
-    const mcpTools = await getMCPToolsForAgent(orgId);
+  if (agentEmployeeId) {
+    const employeePolicy = await getActiveAgentToolPolicy(orgId, agentEmployeeId);
+    if (!employeePolicy) throw new Error('Agent employee is inactive, deleted, or outside this organization');
+    tools = tools.filter((tool) => !isAgentToolDisabled(employeePolicy.disabledTools, tool.name));
+    for (const actionName of [...allActionTools]) {
+      if (isAgentToolDisabled(employeePolicy.disabledTools, actionName)) allActionTools.delete(actionName);
+    }
+  }
+
+  // Outbound MCP connectors are employee capabilities. A generic Defty chat
+  // mention has no employee assignment/trust identity to bind an eventual
+  // approval to, so it must not advertise org-wide connectors.
+  if (agentEmployeeId) try {
+    const mcpTools = await getMCPToolsForAgent(orgId, agentEmployeeId);
     const mcpAnthropicTools = mcpTools.map(mcpToolToAnthropicFormat);
     tools = [...tools, ...mcpAnthropicTools];
     mcpTools.forEach(t => {
-      if (t.approvalTierMapped !== 'auto') {
+      if (t.isWrite || t.approvalTierMapped !== 'auto' || isDestructiveAction(t.name)) {
         allActionTools.add(t.name);
+        actionApprovalTiers.set(t.name, t.approvalTierMapped);
+        mcpConnectionIds.set(t.name, t.connectionId);
       }
     });
   } catch (err) {
@@ -441,8 +457,8 @@ export async function runAgentQuery(params: {
       const isAction = allActionTools.has(tool.name);
 
       if (isAction) {
-        const approvalTier = getApprovalTier(tool.name);
-        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input)) {
+        const approvalTier = getApprovalTier(tool.name, actionApprovalTiers.get(tool.name));
+        if (mode === 'background' && shouldAutoExecute(tool.name, trustLevel, tool.input, approvalTier)) {
           // Background mode: auto-execute if trust level permits
           // Thread the triggering message id into write actions that understand
           // source_message_id. The LLM never has to know about it — we inject
@@ -451,23 +467,42 @@ export async function runAgentQuery(params: {
           if (params.sourceMessageId && !toolInput.source_message_id) {
             toolInput.source_message_id = params.sourceMessageId;
           }
-          const { actionId, success, result, error } = await executeActionDirect(
+          const { actionId, success, result, error, requiresApproval, approvalTier: currentTier } = await executeActionDirect(
             tool.name,
             toolInput,
             orgId,
             userId,
             null, // no conversation_id for background actions
             approvalTier,
+            { agentEmployeeId, source: 'background' },
           );
           executedActions.push({ actionId, action: tool.name, params: tool.input, success, result, error });
+          if (requiresApproval) {
+            pendingActions.push({
+              action: tool.name,
+              params: toolInput,
+              tool_use_id: tool.id,
+              approval_tier: currentTier ?? approvalTier,
+              agent_employee_id: agentEmployeeId ?? null,
+              mcp_connection_id: mcpConnectionIds.get(tool.name) ?? null,
+              existing_action_id: actionId,
+            });
+          }
+          const errorMsg = error ?? 'Tool execution failed';
+          const failureResult = result !== null && typeof result === 'object' && !Array.isArray(result)
+            ? result
+            : { result: result ?? null };
           toolResults.push({
             type: 'tool_result' as const,
             tool_use_id: tool.id,
             content: JSON.stringify(
               success
                 ? { status: 'auto_executed', ...result }
-                : { status: 'auto_execute_failed', error },
+                : requiresApproval
+                  ? { status: 'approval_required', action_id: actionId, approval_tier: currentTier ?? approvalTier }
+                  : { status: 'auto_execute_failed', ...failureResult, error: errorMsg },
             ),
+            ...(success || requiresApproval ? {} : { is_error: true }),
           });
         } else {
           // Chat mention mode or trust level requires approval: skip write actions.
@@ -482,6 +517,8 @@ export async function runAgentQuery(params: {
             params: pendingParams,
             tool_use_id: tool.id,
             approval_tier: approvalTier,
+            agent_employee_id: agentEmployeeId ?? null,
+            mcp_connection_id: mcpConnectionIds.get(tool.name) ?? null,
           });
           toolResults.push({
             type: 'tool_result' as const,

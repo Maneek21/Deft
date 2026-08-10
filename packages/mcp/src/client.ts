@@ -1,4 +1,9 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+  Client,
+  type CallToolResult,
+  type ClientOptions,
+  type Tool,
+} from "@modelcontextprotocol/client";
 import { createTransport } from "./transports.js";
 import { ToolCache } from "./cache.js";
 import type {
@@ -138,6 +143,9 @@ interface PoolEntry {
   client: Client;
   config: MCPConnectionConfig;
   lastUsed: number;
+}
+
+interface HealthEntry {
   failureCount: number;
   firstFailureAt: number;
   backoffUntil: number;
@@ -152,6 +160,43 @@ const HEALTH_FAILURE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const BACKOFF_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
+ * The 2026 MCP protocol is opt-in in the v2 SDK. Streamable HTTP and stdio
+ * connections negotiate automatically; deprecated HTTP+SSE stays on the
+ * byte-compatible legacy handshake.
+ */
+export function clientOptionsForTransport(
+  transport: MCPConnectionConfig["transport"]
+): ClientOptions {
+  return {
+    capabilities: {},
+    ...(transport !== "sse"
+      ? { versionNegotiation: { mode: "auto" as const } }
+      : {}),
+  };
+}
+
+function isAuthenticationError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("401") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("authentication") ||
+    normalized.includes("invalid token")
+  );
+}
+
+function toolErrorMessage(result: CallToolResult): string {
+  const text = result.content
+    .filter((item): item is Extract<(typeof result.content)[number], { type: "text" }> =>
+      item.type === "text"
+    )
+    .map((item) => item.text)
+    .filter(Boolean)
+    .join("\n");
+  return text || "MCP tool reported an error";
+}
+
+/**
  * Manages MCP client connections with pooling, caching, and health tracking.
  *
  * - Connection pool is per-org, max connections controlled by MCP_MAX_CONNECTIONS_PER_ORG env
@@ -161,6 +206,7 @@ const BACKOFF_DURATION_MS = 10 * 60 * 1000; // 10 minutes
  */
 export class MCPClientManager {
   private pool = new Map<string, PoolEntry>();
+  private health = new Map<string, HealthEntry>();
   private orgConnectionCount = new Map<string, Set<string>>();
   private toolCache = new ToolCache();
   private idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -184,38 +230,39 @@ export class MCPClientManager {
    * Evicts LRU connection if org is at max capacity.
    */
   async connect(config: MCPConnectionConfig): Promise<Client> {
+    const health = this.health.get(config.connectionId);
+    if (health && Date.now() < health.backoffUntil) {
+      throw new Error(
+        `Connection ${config.connectionId} is in backoff until ${new Date(health.backoffUntil).toISOString()}`
+      );
+    }
+    if (health?.backoffUntil && Date.now() >= health.backoffUntil) {
+      this.health.delete(config.connectionId);
+    }
+
     const existing = this.pool.get(config.connectionId);
     if (existing) {
       existing.lastUsed = Date.now();
       return existing.client;
     }
 
-    // Check backoff
-    const backoffEntry = this.findBackoffEntry(config.connectionId);
-    if (backoffEntry && Date.now() < backoffEntry.backoffUntil) {
-      throw new Error(
-        `Connection ${config.connectionId} is in backoff until ${new Date(backoffEntry.backoffUntil).toISOString()}`
-      );
-    }
-
     // Enforce per-org limit, evict LRU if needed
     await this.enforceOrgLimit(config.orgId);
 
-    const transport = createTransport(config);
-    const client = new Client(
-      { name: `deft-mcp-${config.connectionSlug}`, version: "0.0.1" },
-      { capabilities: {} }
-    );
-
-    await client.connect(transport);
+    let client: Client;
+    try {
+      client = await this.connectFreshClient(
+        config,
+        `deft-mcp-${config.connectionSlug}`
+      );
+    } catch (error) {
+      throw error;
+    }
 
     const entry: PoolEntry = {
       client,
       config,
       lastUsed: Date.now(),
-      failureCount: 0,
-      firstFailureAt: 0,
-      backoffUntil: 0,
     };
 
     this.pool.set(config.connectionId, entry);
@@ -227,9 +274,13 @@ export class MCPClientManager {
   /**
    * Disconnect a specific connection and remove from pool.
    */
-  async disconnect(connectionId: string): Promise<void> {
+  async disconnect(connectionId: string, clearHealth = true): Promise<void> {
     const entry = this.pool.get(connectionId);
-    if (!entry) return;
+    if (!entry) {
+      this.toolCache.invalidate(connectionId);
+      if (clearHealth) this.health.delete(connectionId);
+      return;
+    }
 
     try {
       await entry.client.close();
@@ -240,6 +291,7 @@ export class MCPClientManager {
     this.pool.delete(connectionId);
     this.removeOrgConnection(entry.config.orgId, connectionId);
     this.toolCache.invalidate(connectionId);
+    if (clearHealth) this.health.delete(connectionId);
   }
 
   /**
@@ -247,14 +299,12 @@ export class MCPClientManager {
    * Returns the list of discovered tools on success.
    */
   async testConnection(config: MCPConnectionConfig): Promise<MCPTool[]> {
-    const transport = createTransport(config);
-    const client = new Client(
-      { name: `deft-mcp-test-${config.connectionSlug}`, version: "0.0.1" },
-      { capabilities: {} }
+    const client = await this.connectFreshClient(
+      config,
+      `deft-mcp-test-${config.connectionSlug}`
     );
 
     try {
-      await client.connect(transport);
       const result = await client.listTools();
       return result.tools.map((tool) =>
         this.mapTool(tool, config, [])
@@ -276,8 +326,16 @@ export class MCPClientManager {
     config: MCPConnectionConfig,
     overrides: MCPToolOverride[] = []
   ): Promise<MCPTool[]> {
-    const client = await this.connect(config);
-    const result = await client.listTools();
+    let result;
+    try {
+      const client = await this.connect(config);
+      result = await client.listTools({}, { cacheMode: "refresh" });
+      this.clearFailures(config.connectionId);
+    } catch (error) {
+      this.recordFailure(config.connectionId);
+      await this.disconnect(config.connectionId, false);
+      throw error;
+    }
 
     const tools = result.tools
       .map((tool) => this.mapTool(tool, config, overrides))
@@ -304,8 +362,9 @@ export class MCPClientManager {
   }
 
   /**
-   * Execute a tool on an MCP server. Retries once on failure.
-   * Times out after 30 seconds.
+   * Execute a tool on an MCP server once. The v2 SDK owns the cancellable
+   * request timeout, so there is no orphaned Promise.race timer and no blind
+   * replay of potentially non-idempotent writes.
    */
   async executeTool(
     config: MCPConnectionConfig,
@@ -314,84 +373,63 @@ export class MCPClientManager {
   ): Promise<MCPResult> {
     const startTime = Date.now();
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const client = await this.connect(config);
-        const entry = this.pool.get(config.connectionId);
-        if (entry) entry.lastUsed = Date.now();
+    try {
+      const client = await this.connect(config);
+      const entry = this.pool.get(config.connectionId);
+      if (entry) entry.lastUsed = Date.now();
 
-        const result = await Promise.race([
-          client.callTool({ name: toolName, arguments: params }),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Tool execution timed out after 30s")),
-              EXECUTE_TIMEOUT_MS
-            )
-          ),
-        ]);
+      const result = await client.callTool(
+        { name: toolName, arguments: params },
+        { timeout: EXECUTE_TIMEOUT_MS }
+      );
 
-        // Reset failure tracking on success
-        if (entry) {
-          entry.failureCount = 0;
-          entry.firstFailureAt = 0;
-        }
+      // The connection itself worked even when the tool returned isError.
+      this.clearFailures(config.connectionId);
 
+      return {
+        success: result.isError !== true,
+        content: result.content,
+        ...(result.structuredContent !== undefined
+          ? { structuredContent: result.structuredContent }
+          : {}),
+        ...(result._meta ? { meta: result._meta } : {}),
+        rawResult: result as unknown as Record<string, unknown>,
+        ...(result.isError === true ? { error: toolErrorMessage(result) } : {}),
+        durationMs: Date.now() - startTime,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+
+      // Authentication failures are never retried and immediately enter backoff.
+      if (isAuthenticationError(message)) {
+        this.health.set(config.connectionId, {
+          failureCount: 0,
+          firstFailureAt: 0,
+          backoffUntil: Date.now() + BACKOFF_DURATION_MS,
+        });
+        await this.disconnect(config.connectionId, false);
+        this.onAuthError?.(
+          config.connectionId,
+          "Auth token expired — reconnect required"
+        );
         return {
-          success: true,
-          content: result.content,
+          success: false,
+          content: null,
+          error:
+            "MCP connection auth expired. Please reconnect in Settings > Integrations.",
           durationMs: Date.now() - startTime,
         };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-
-        // Detect auth errors — no retry, immediately mark as errored
-        if (
-          message.includes("401") ||
-          message.includes("Unauthorized") ||
-          message.includes("auth")
-        ) {
-          const entry = this.pool.get(config.connectionId);
-          if (entry) {
-            entry.failureCount = HEALTH_FAILURE_THRESHOLD;
-            entry.firstFailureAt = Date.now();
-            entry.backoffUntil = Date.now() + BACKOFF_DURATION_MS;
-          }
-          this.onAuthError?.(
-            config.connectionId,
-            "Auth token expired — reconnect required"
-          );
-          return {
-            success: false,
-            content: null,
-            error:
-              "MCP connection auth expired. Please reconnect in Settings > Integrations.",
-            durationMs: Date.now() - startTime,
-          };
-        }
-
-        if (attempt === 1) {
-          this.recordFailure(config.connectionId);
-          return {
-            success: false,
-            content: null,
-            error: message,
-            durationMs: Date.now() - startTime,
-          };
-        }
-
-        // First attempt failed, disconnect and retry
-        await this.disconnect(config.connectionId);
       }
-    }
 
-    // Unreachable, but TypeScript needs it
-    return {
-      success: false,
-      content: null,
-      error: "Unexpected execution path",
-      durationMs: Date.now() - startTime,
-    };
+      this.recordFailure(config.connectionId);
+      await this.disconnect(config.connectionId, false);
+      return {
+        success: false,
+        content: null,
+        error: message,
+        durationMs: Date.now() - startTime,
+      };
+    }
   }
 
   /**
@@ -410,12 +448,39 @@ export class MCPClientManager {
 
     this.toolCache.clear();
     this.orgConnectionCount.clear();
+    this.health.clear();
   }
 
   // --- Private helpers ---
 
+  /**
+   * Connect a new client. Streamable HTTP and stdio opt into 2026 version
+   * negotiation; legacy SSE remains available only when explicitly selected.
+   * An outage or malformed HTTP response is not evidence of SSE support.
+   */
+  private async connectFreshClient(
+    config: MCPConnectionConfig,
+    clientName: string
+  ): Promise<Client> {
+    const client = new Client(
+      { name: clientName, version: "0.0.1" },
+      clientOptionsForTransport(config.transport)
+    );
+    try {
+      await client.connect(createTransport(config));
+      return client;
+    } catch (error) {
+      try {
+        await client.close();
+      } catch {
+        // Ignore teardown errors from a connection that never completed.
+      }
+      throw error;
+    }
+  }
+
   private mapTool(
-    tool: { name: string; description?: string; inputSchema?: unknown; annotations?: unknown },
+    tool: Tool,
     config: MCPConnectionConfig,
     overrides: MCPToolOverride[]
   ): MCPTool {
@@ -429,11 +494,20 @@ export class MCPClientManager {
       originalName: tool.name,
       description: override?.description ?? tool.description ?? "",
       inputSchema: (tool.inputSchema as Record<string, unknown>) ?? {},
+      ...(tool.outputSchema
+        ? { outputSchema: tool.outputSchema as Record<string, unknown> }
+        : {}),
+      ...(tool.title ? { title: tool.title } : {}),
+      ...(tool.icons ? { icons: tool.icons } : {}),
+      ...(tool.execution
+        ? { execution: tool.execution as Record<string, unknown> }
+        : {}),
       connectionId: config.connectionId,
       connectionSlug: config.connectionSlug,
       isWrite: override?.isWrite ?? classified.isWrite,
       approvalTier: override?.approvalTier ?? classified.approvalTier,
       annotations,
+      rawTool: tool as unknown as Record<string, unknown>,
     };
   }
 
@@ -478,10 +552,12 @@ export class MCPClientManager {
   }
 
   private recordFailure(connectionId: string): void {
-    const entry = this.pool.get(connectionId);
-    if (!entry) return;
-
     const now = Date.now();
+    const entry = this.health.get(connectionId) ?? {
+      failureCount: 0,
+      firstFailureAt: 0,
+      backoffUntil: 0,
+    };
 
     // Reset failure window if first failure is too old
     if (
@@ -503,12 +579,11 @@ export class MCPClientManager {
       entry.failureCount = 0;
       entry.firstFailureAt = 0;
     }
+    this.health.set(connectionId, entry);
   }
 
-  private findBackoffEntry(
-    connectionId: string
-  ): PoolEntry | undefined {
-    return this.pool.get(connectionId);
+  private clearFailures(connectionId: string): void {
+    this.health.delete(connectionId);
   }
 
   private startIdleCleanup(): void {

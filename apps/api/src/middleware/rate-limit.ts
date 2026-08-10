@@ -29,6 +29,10 @@ const AGENT_CHANNEL_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_AGENT_CHANNEL_RATE_LIMIT_PER_MINUTE',
   isProduction ? 180 : 600,
 );
+const MCP_LIMIT_PER_MINUTE = positiveIntFromEnv(
+  'DEFT_MCP_RATE_LIMIT_PER_MINUTE',
+  isProduction ? 120 : 600,
+);
 const UPLOAD_LIMIT_PER_MINUTE = positiveIntFromEnv(
   'DEFT_UPLOAD_RATE_LIMIT_PER_MINUTE',
   isProduction ? 20 : 120,
@@ -142,6 +146,20 @@ export const agentChannelLimiter = withAuditBypass(rateLimiter({
   handler: (c) => c.json({
     error: 'Agent Channel rate limit hit. Retry shortly.',
     code: 'AGENT_CHANNEL_RATE_LIMITED',
+  }, 429),
+}));
+
+// MCP bearer authentication may require bcrypt verification for legacy
+// employee tokens. Apply an IP budget before authentication so callers cannot
+// bypass the CPU guard by rotating random bearer strings.
+export const mcpLimiter = withAuditBypass(rateLimiter({
+  windowMs: 60 * 1000,
+  limit: MCP_LIMIT_PER_MINUTE,
+  standardHeaders: 'draft-7',
+  keyGenerator: ipKey,
+  handler: (c) => c.json({
+    error: 'MCP rate limit hit. Retry shortly.',
+    code: 'MCP_RATE_LIMITED',
   }, 429),
 }));
 

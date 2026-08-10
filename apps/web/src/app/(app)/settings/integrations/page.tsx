@@ -9,6 +9,7 @@ import McpConnectionForm from '@/components/mcp-connection-form';
 
 type McpTool = {
   name: string;
+  originalName?: string;
   description?: string;
 };
 
@@ -26,8 +27,13 @@ type McpConnection = {
   server_url: string | null;
   stdio_command: string | null;
   stdio_args: string[] | null;
-  auth_type: string;
-  auth_config_encrypted: Record<string, unknown> | null;
+  auth_type: 'none' | 'api_key';
+  has_credentials: boolean;
+  credential_settings: {
+    header_name: string;
+    scheme: string | null;
+    env_var: string;
+  } | null;
   is_active: boolean;
   last_connected_at: string | null;
   connection_error: string | null;
@@ -81,7 +87,7 @@ export default function IntegrationsPage() {
     server_url?: string;
     stdio_command?: string;
     stdio_args?: string[];
-    auth_type?: string;
+    auth_type?: 'none' | 'api_key';
     default_trust_tier?: 'auto' | 'quick' | 'full';
   } | null>(null);
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({});
@@ -414,7 +420,9 @@ export default function IntegrationsPage() {
                       ) : (
                         <div className="space-y-1">
                           {tools.map((tool) => {
-                            const override = conn.tool_overrides?.find(o => o.tool_name === tool.name);
+                            const override = conn.tool_overrides?.find(
+                              (item) => item.tool_name === (tool.originalName ?? tool.name) || item.tool_name === tool.name,
+                            );
                             const isDisabled = override?.is_disabled ?? false;
                             const tierOverride = override?.trust_tier_override ?? null;
 
@@ -426,7 +434,7 @@ export default function IntegrationsPage() {
                               >
                                 {/* Enable/disable toggle */}
                                 <button
-                                  onClick={() => handleToolOverride(conn.id, tool.name, { is_disabled: !isDisabled })}
+                                  onClick={() => handleToolOverride(conn.id, tool.originalName ?? tool.name, { is_disabled: !isDisabled })}
                                   className="flex-shrink-0 rounded-full relative"
                                   style={{
                                     width: 32,
@@ -466,7 +474,7 @@ export default function IntegrationsPage() {
                                   value={tierOverride || conn.default_trust_tier}
                                   onChange={(e) => {
                                     const val = e.target.value as 'auto' | 'quick' | 'full';
-                                    handleToolOverride(conn.id, tool.name, {
+                                    handleToolOverride(conn.id, tool.originalName ?? tool.name, {
                                       trust_tier_override: val === conn.default_trust_tier ? null : val,
                                     });
                                   }}

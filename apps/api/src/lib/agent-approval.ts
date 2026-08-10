@@ -151,7 +151,13 @@ const DESTRUCTIVE_ADMIN_TOOLS = new Set([
  */
 export function isDestructiveAction(toolName: string, params?: unknown): boolean {
   if (DESTRUCTIVE_ADMIN_TOOLS.has(toolName)) return true;
-  if (toolName.startsWith('delete_')) return true;
+  // MCP tools are exposed to the model as mcp__<connection>__<tool>. Apply
+  // destructive-name policy to the server's original tool name as well as to
+  // native tool names so prefixing cannot bypass Autonomous review.
+  const effectiveToolName = toolName.startsWith('mcp__')
+    ? toolName.split('__').slice(2).join('__')
+    : toolName;
+  if (effectiveToolName.startsWith('delete_')) return true;
   if (
     params !== null &&
     typeof params === 'object' &&
@@ -169,8 +175,9 @@ export function shouldAutoExecute(
   action: string,
   trustLevel: TrustLevel,
   params?: unknown,
+  approvalTierOverride?: ApprovalTier,
 ): boolean {
-  const tier = TOOL_APPROVAL_TIERS[action] || 'full';
+  const tier = getApprovalTier(action, approvalTierOverride);
 
   if (trustLevel === 'conservative') return tier === 'auto';
   if (trustLevel === 'standard') return tier === 'auto' || tier === 'quick';
@@ -183,8 +190,8 @@ export function shouldAutoExecute(
 }
 
 /** Returns the approval tier for an action tool. */
-export function getApprovalTier(action: string): ApprovalTier {
-  return TOOL_APPROVAL_TIERS[action] || 'full';
+export function getApprovalTier(action: string, approvalTierOverride?: ApprovalTier): ApprovalTier {
+  return approvalTierOverride ?? TOOL_APPROVAL_TIERS[action] ?? 'full';
 }
 
 /**

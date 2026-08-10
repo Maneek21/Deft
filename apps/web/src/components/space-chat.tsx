@@ -260,36 +260,45 @@ function WorkIntentReceiptChips({
 }) {
   const knowledgeReceipts = (intents ?? []).filter((intent) => {
     const metadata = intent.metadata ?? {};
-    return intent.status === 'converted' && typeof metadata.converted_wiki_slug === 'string';
+    return intent.status === 'converted'
+      && typeof metadata.converted_wiki_slug === 'string'
+      && metadata.converted_wiki_slug.trim().length > 0;
   });
   if (knowledgeReceipts.length === 0) return null;
 
+  const receiptsByDestination = new Map<string, { intent: WorkIntentReceipt; count: number }>();
+  for (const intent of knowledgeReceipts) {
+    const metadata = intent.metadata ?? {};
+    const wikiPageId = typeof metadata.converted_wiki_page_id === 'string' ? metadata.converted_wiki_page_id : null;
+    const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
+    if (!wikiSlug) continue;
+    const key = wikiPageId || wikiSlug;
+    const existing = receiptsByDestination.get(key);
+    receiptsByDestination.set(key, existing
+      ? { intent: existing.intent, count: existing.count + 1 }
+      : { intent, count: 1 });
+  }
+
+  const destinations = [...receiptsByDestination.values()];
+  const primary = destinations.reduce((best, candidate) => candidate.count > best.count ? candidate : best);
+  const primaryMetadata = primary.intent.metadata ?? {};
+  const wikiSlug = primaryMetadata.converted_wiki_slug as string;
+  const title = primary.intent.title ?? 'Work capture';
+  const isWikiUpdate = primary.intent.proposed_action === 'wiki_update' || primaryMetadata.update_kind === 'wiki_content';
+  const relatedLabel = destinations.length > 1 ? `, plus ${destinations.length - 1} related knowledge page${destinations.length === 2 ? '' : 's'}` : '';
+  const label = `${isWikiUpdate ? 'Knowledge updated' : 'Added to knowledge'}: ${compactReceiptTitle(title)}${relatedLabel}`;
+
   return (
-    <div className={`${inline ? 'inline-flex' : 'mt-1 flex'} ${className} items-center gap-1.5`} aria-label="Knowledge receipts">
-      {knowledgeReceipts.slice(0, 3).map((intent) => {
-        const metadata = intent.metadata ?? {};
-        const wikiSlug = typeof metadata.converted_wiki_slug === 'string' ? metadata.converted_wiki_slug : null;
-        const title = intent.title ?? 'Work capture';
-        const isWikiUpdate = intent.proposed_action === 'wiki_update' || metadata.update_kind === 'wiki_content';
-        const label = `${isWikiUpdate ? 'Knowledge updated' : 'Added to knowledge'}: ${compactReceiptTitle(title)}`;
-        return (
-          <a
-            key={intent.id}
-            href={`/knowledge?slug=${encodeURIComponent(wikiSlug!)}`}
-            className={`${inline ? 'h-3.5 w-3.5' : 'h-4 w-4'} inline-flex items-center justify-center rounded-full opacity-70 transition hover:opacity-100`}
-            style={{ color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 11%, transparent)' }}
-            title={label}
-            aria-label={label}
-          >
-            <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
-          </a>
-        );
-      })}
-      {knowledgeReceipts.length > 3 && (
-        <span className="text-[10px]" style={{ color: 'var(--muted)' }} title={`${knowledgeReceipts.length - 3} more knowledge receipts`}>
-          +{knowledgeReceipts.length - 3}
-        </span>
-      )}
+    <div className={`${inline ? 'inline-flex' : 'mt-1 flex'} ${className} items-center`} aria-label="Knowledge receipt">
+      <a
+        href={`/knowledge?slug=${encodeURIComponent(wikiSlug)}`}
+        className={`${inline ? 'h-3.5 w-3.5' : 'h-4 w-4'} inline-flex items-center justify-center rounded-full opacity-70 transition hover:opacity-100`}
+        style={{ color: 'var(--success)', background: 'color-mix(in srgb, var(--success) 11%, transparent)' }}
+        title={label}
+        aria-label={label}
+      >
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
+      </a>
     </div>
   );
 }
@@ -625,6 +634,8 @@ export function SpaceChat({
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [forwardMsgId, setForwardMsgId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ id: string; url: string; name: string; type: string; size: number }[]>([]);
+  const activeSpaceIdRef = useRef(spaceId);
+  activeSpaceIdRef.current = spaceId;
   const [linkPreviews, setLinkPreviews] = useState<Map<string, LinkPreview[]>>(new Map());
   const [renamingSpace, setRenamingSpace] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -813,6 +824,7 @@ export function SpaceChat({
     setShowScheduled(false);
     setCreateTaskMsg(null);
     setQuotedMessage(null);
+    setPendingFiles([]);
     setMoreMenuId(null);
     setMobileActionMsg(null);
     setEmojiPickerMsgId(null);
@@ -827,12 +839,26 @@ export function SpaceChat({
 
   // Fetch member count and pin count for header
   useEffect(() => {
-    api.get(`/api/spaces/${spaceId}/members`).then(async res => {
-      if (res.ok) { const data = await res.json(); setMemberCount(Array.isArray(data) ? data.length : 0); }
+    let cancelled = false;
+    setMemberCount(0);
+    setPinCount(0);
+
+    void api.get(`/api/spaces/${spaceId}/members`).then(async (res) => {
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!cancelled && activeSpaceIdRef.current === spaceId) {
+        setMemberCount(Array.isArray(data) ? data.length : 0);
+      }
     }).catch(() => {});
-    api.get(`/api/spaces/${spaceId}/pins`).then(async res => {
-      if (res.ok) { const data = await res.json(); setPinCount(Array.isArray(data) ? data.length : 0); }
+    void api.get(`/api/spaces/${spaceId}/pins`).then(async (res) => {
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!cancelled && activeSpaceIdRef.current === spaceId) {
+        setPinCount(Array.isArray(data) ? data.length : 0);
+      }
     }).catch(() => {});
+
+    return () => { cancelled = true; };
   }, [spaceId]);
 
   // Fetch default project for task creation
@@ -872,28 +898,36 @@ export function SpaceChat({
 
   useEffect(() => {
     setMessages([]);
+    let cancelled = false;
     async function load() {
       const res = await api.get(`/api/messages/${spaceId}`);
-      if (res.ok) {
+      if (res.ok && !cancelled && activeSpaceIdRef.current === spaceId) {
         const data = await res.json();
+        if (cancelled || activeSpaceIdRef.current !== spaceId) return;
         setMessages(data.messages || data || []);
         if (highlightMessageId) {
           // Scroll to the highlighted message after render
           setTimeout(() => {
+            if (cancelled || activeSpaceIdRef.current !== spaceId) return;
             const el = document.querySelector(`[data-message-id="${highlightMessageId}"]`);
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
               setHighlightedId(highlightMessageId);
               // Clear highlight after animation
-              setTimeout(() => setHighlightedId(null), 3000);
+              setTimeout(() => {
+                if (!cancelled && activeSpaceIdRef.current === spaceId) setHighlightedId(null);
+              }, 3000);
             }
           }, 200);
         } else {
-          setTimeout(scrollToBottom, 100);
+          setTimeout(() => {
+            if (!cancelled && activeSpaceIdRef.current === spaceId) scrollToBottom();
+          }, 100);
         }
       }
     }
-    load();
+    void load().catch(() => {});
+    return () => { cancelled = true; };
   }, [spaceId, scrollToBottom, highlightMessageId]);
 
   useEffect(() => {
@@ -932,10 +966,18 @@ export function SpaceChat({
         }
         return;
       }
-      if (!msg.reactions) msg.reactions = [];
-      if (!msg.reply_count) msg.reply_count = 0;
-      if (!msg.file_ids) msg.file_ids = [];
-      setMessages((prev) => [...prev, msg]);
+      const normalizedMessage: Message = {
+        ...msg,
+        reactions: msg.reactions ?? [],
+        reply_count: msg.reply_count ?? 0,
+        latest_reply_at: msg.latest_reply_at ?? null,
+        file_ids: msg.file_ids ?? [],
+      };
+      setMessages((prev) => (
+        prev.some((message) => message.id === normalizedMessage.id)
+          ? prev
+          : [...prev, normalizedMessage]
+      ));
       setTimeout(scrollToBottom, 50);
     };
     const onThreadUpdated = (data: { parent_id: string; reply_count: number; latest_reply_at: string }) => {
@@ -1052,44 +1094,74 @@ export function SpaceChat({
   );
 
   const handleScheduleSend = async (scheduledFor: string, html: string, text: string) => {
+    const requestSpaceId = spaceId;
+    const pendingFilesToSend = [...pendingFiles];
     let content = serializeMentions(html);
     // Embed file references as markers in the content
-    if (pendingFiles.length > 0) {
-      const fileLines = pendingFiles.map(
+    if (pendingFilesToSend.length > 0) {
+      const fileLines = pendingFilesToSend.map(
         (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
       );
       content = content + '\n' + fileLines.join('\n');
     }
-    setPendingFiles([]);
-    await api.post('/api/scheduled-messages', {
-      space_id: spaceId,
+    const response = await api.post('/api/scheduled-messages', {
+      space_id: requestSpaceId,
       content: content || '(attached files)',
       scheduled_for: scheduledFor,
     });
+    if (!response.ok) {
+      throw new Error(await apiErrorMessage(response, 'Failed to schedule message'));
+    }
+    if (activeSpaceIdRef.current !== requestSpaceId) return;
+    const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
+    setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
   };
 
   const handleRichSend = async (html: string, text: string) => {
+    const requestSpaceId = spaceId;
+    const quotedMessageToSend = quotedMessage;
+    const pendingFilesToSend = [...pendingFiles];
     let content = serializeMentions(html);
     // Prepend quoted message if present
-    if (quotedMessage) {
-      const quoteHtml = serializeQuotedMessage(quotedMessage);
+    if (quotedMessageToSend) {
+      const quoteHtml = serializeQuotedMessage(quotedMessageToSend);
       content = quoteHtml + content;
-      setQuotedMessage(null);
     }
     // Embed file references as markers in the content
-    if (pendingFiles.length > 0) {
-      const fileLines = pendingFiles.map(
+    if (pendingFilesToSend.length > 0) {
+      const fileLines = pendingFilesToSend.map(
         (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
       );
       content = content + '\n' + fileLines.join('\n');
     }
-    setPendingFiles([]);
     const token = localStorage.getItem('deft-access-token');
-    if (token) getSocket(token).emit('typing:stop', { space_id: spaceId });
+    if (token) getSocket(token).emit('typing:stop', { space_id: requestSpaceId });
     isTyping.current = false;
-    await api.post(`/api/messages/${spaceId}`, {
+    const response = await api.post(`/api/messages/${requestSpaceId}`, {
       content: content || '(attached files)',
     });
+    if (!response.ok) {
+      throw new Error(await apiErrorMessage(response, 'Failed to send message'));
+    }
+    const createdMessage = await response.json() as Message;
+    if (activeSpaceIdRef.current !== requestSpaceId) return;
+    const sentFileIds = new Set(pendingFilesToSend.map((file) => file.id));
+    setPendingFiles((current) => current.filter((file) => !sentFileIds.has(file.id)));
+    if (quotedMessageToSend) {
+      setQuotedMessage((current) => current === quotedMessageToSend ? null : current);
+    }
+    setMessages((prev) => (
+      prev.some((message) => message.id === createdMessage.id)
+        ? prev
+        : [...prev, {
+            ...createdMessage,
+            reactions: createdMessage.reactions ?? [],
+            reply_count: createdMessage.reply_count ?? 0,
+            latest_reply_at: createdMessage.latest_reply_at ?? null,
+            file_ids: createdMessage.file_ids ?? [],
+          }]
+    ));
+    setTimeout(scrollToBottom, 50);
   };
 
   const handleEditLastMessage = useCallback(() => {
@@ -2177,7 +2249,8 @@ export function SpaceChat({
                 const ms = parsed?.ms || 20 * 60000;
                 const label = parsed?.label || 'in 20m';
                 const remindAt = new Date(Date.now() + ms).toISOString();
-                await api.post('/api/reminders', { content: text, remind_at: remindAt });
+                const response = await api.post('/api/reminders', { content: text, remind_at: remindAt });
+                if (!response.ok) throw new Error(await apiErrorMessage(response, 'Failed to set reminder'));
                 setCmdToast(`Reminder set ${label}: "${text}"`);
                 break;
               }
@@ -2187,7 +2260,8 @@ export function SpaceChat({
                 const emojiMatch = args.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F?)\s*(.*)/u);
                 const emoji = emojiMatch?.[1] || '💬';
                 const text = emojiMatch?.[2]?.trim() || args || 'Busy';
-                await api.patch('/api/users/status', { emoji, text });
+                const response = await api.patch('/api/users/status', { emoji, text });
+                if (!response.ok) throw new Error(await apiErrorMessage(response, 'Failed to update status'));
                 setCmdToast(`Status set: ${emoji} ${text}`);
                 break;
               }
@@ -2195,26 +2269,32 @@ export function SpaceChat({
               case 'dnd': {
                 const isDndNow = user?.status_text === 'Do Not Disturb';
                 if (isDndNow) {
-                  await api.delete('/api/users/status');
+                  const response = await api.delete('/api/users/status');
+                  if (!response.ok) throw new Error(await apiErrorMessage(response, 'Failed to disable Do Not Disturb'));
                   setCmdToast('Do Not Disturb disabled');
                 } else {
-                  await api.patch('/api/users/dnd', { enabled: true });
+                  const response = await api.patch('/api/users/dnd', { enabled: true });
+                  if (!response.ok) throw new Error(await apiErrorMessage(response, 'Failed to enable Do Not Disturb'));
                   setCmdToast('Do Not Disturb enabled');
                 }
                 break;
               }
 
-              case 'mute':
+              case 'mute': {
+                const response = await api.patch(`/api/spaces/${spaceId}/mute`, { muted: true });
+                if (!response.ok) throw new Error(await apiErrorMessage(response, `Failed to mute #${spaceName}`));
                 setIsMuted(true);
-                await api.patch(`/api/spaces/${spaceId}/mute`, { muted: true });
                 setCmdToast(`#${spaceName} muted`);
                 break;
+              }
 
-              case 'unmute':
+              case 'unmute': {
+                const response = await api.patch(`/api/spaces/${spaceId}/mute`, { muted: false });
+                if (!response.ok) throw new Error(await apiErrorMessage(response, `Failed to unmute #${spaceName}`));
                 setIsMuted(false);
-                await api.patch(`/api/spaces/${spaceId}/mute`, { muted: false });
                 setCmdToast(`#${spaceName} unmuted`);
                 break;
+              }
 
               case 'search':
                 document.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT));
@@ -2228,7 +2308,7 @@ export function SpaceChat({
                   // Navigate to the newly created note
                   setTimeout(() => router.push(`/notes?id=${note.id}`), 500);
                 } else {
-                  setCmdToast('Failed to create note');
+                  throw new Error(await apiErrorMessage(res, 'Failed to create note'));
                 }
                 break;
               }
