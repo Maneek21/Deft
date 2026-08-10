@@ -590,16 +590,14 @@ function DashboardBody() {
           <EditBar onAdd={() => setAddOpen(true)} onReset={handleReset} />
         )}
 
-        <div className="dashboard4-grid" data-edit={editMode || undefined}>
-          <DashboardGrid
-            layout={layout}
-            ctx={widgetContext}
-            editMode={editMode}
-            onLayoutChange={handleLayoutChange}
-            onRemove={handleRemove}
-            onConfigChange={handleConfigChange}
-          />
-        </div>
+        <DashboardGrid
+          layout={layout}
+          ctx={widgetContext}
+          editMode={editMode}
+          onLayoutChange={handleLayoutChange}
+          onRemove={handleRemove}
+          onConfigChange={handleConfigChange}
+        />
       </div>
 
       <AddWidgetDrawer

@@ -12,15 +12,14 @@
  * the registry + contract, not RGL. Swapping the engine later is contained
  * to this file.
  */
-import { useMemo } from 'react';
-import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Responsive, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { getWidget } from '../lib/registry';
 import { WidgetShell } from './widget-shell';
+import { buildStackedLayout, type StackedLayoutSource } from './responsive-layout';
 import type { BreakpointLayoutEntry, DashboardLayout, WidgetContext } from '../lib/widget-types';
-
-const ResponsiveGridLayout = WidthProvider(Responsive);
 
 type ViewLinkResolver = (widgetId: string) => string | undefined;
 
@@ -49,6 +48,30 @@ export type DashboardGridProps = {
 export function DashboardGrid({
   layout, ctx, editMode = false, onLayoutChange, onRemove, onConfigChange, viewLink,
 }: DashboardGridProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+
+    const measure = () => {
+      const nextWidth = node.getBoundingClientRect().width;
+      if (nextWidth > 0) {
+        setContainerWidth((current) => Math.abs(current - nextWidth) < 0.5 ? current : nextWidth);
+      }
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+
   const placements = useMemo(() => layout.placements.filter(p => {
     const def = getWidget(p.widgetId);
     if (!def) return false;
@@ -97,13 +120,25 @@ export function DashboardGrid({
       }
       return out;
     };
+    const stackedSources: StackedLayoutSource[] = placements.map(p => {
+      const def = getWidget(p.widgetId)!;
+      return {
+        i: p.instanceId,
+        x: p.x,
+        y: p.y,
+        w: p.w,
+        h: p.h,
+        minH: def.minSize.h,
+        maxH: def.maxSize?.h,
+      };
+    });
     const overrides = layout.responsiveLayouts ?? {};
     return {
       lg,
       md: fromOverride(overrides.md) ?? lg,
-      sm: fromOverride(overrides.sm) ?? lg,
-      xs: fromOverride(overrides.xs) ?? lg,
-      xxs: fromOverride(overrides.xxs) ?? lg,
+      sm: buildStackedLayout(stackedSources, 6, overrides.sm),
+      xs: buildStackedLayout(stackedSources, 4, overrides.xs),
+      xxs: buildStackedLayout(stackedSources, 2, overrides.xxs),
     };
   }, [placements, layout.responsiveLayouts]);
 
@@ -132,45 +167,50 @@ export function DashboardGrid({
   };
 
   return (
-    <ResponsiveGridLayout
-      className="dashboard4-grid"
-      layouts={layouts}
-      breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-      cols={{ lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 }}
-      rowHeight={60}
-      margin={[16, 16]}
-      containerPadding={[0, 0]}
-      compactType="vertical"
-      preventCollision={false}
-      isDraggable={editMode}
-      isResizable={editMode}
-      resizeHandles={['se', 'e', 's']}
-      draggableHandle=".widget-drag-handle"
-      onLayoutChange={handleChange}
-    >
-      {placements.map(p => {
-        const def = getWidget(p.widgetId)!;
-        const Component = def.Component;
-        const hrefResolved = viewLink?.(p.widgetId) ?? DEFAULT_VIEW_LINKS[p.widgetId];
-        return (
-          <div key={p.instanceId}>
-            <WidgetShell
-              title={def.title}
-              href={hrefResolved || undefined}
-              editMode={editMode}
-              onRemove={onRemove ? () => onRemove(p.instanceId) : undefined}
-            >
-              <Component
-                instanceId={p.instanceId}
-                size={{ w: p.w, h: p.h }}
-                config={(p.config ?? null) as any}
-                onConfigChange={onConfigChange ? (c: unknown) => onConfigChange(p.instanceId, c) : undefined}
-                editMode={editMode}
-              />
-            </WidgetShell>
-          </div>
-        );
-      })}
-    </ResponsiveGridLayout>
+    <div ref={containerRef} className="dashboard4-grid" data-edit={editMode || undefined}>
+      {containerWidth > 0 && (
+        <Responsive
+          className="dashboard4-responsive-grid"
+          width={containerWidth}
+          layouts={layouts}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+          cols={{ lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 }}
+          rowHeight={60}
+          margin={[16, 16]}
+          containerPadding={[0, 0]}
+          compactType="vertical"
+          preventCollision={false}
+          isDraggable={editMode}
+          isResizable={editMode}
+          resizeHandles={['se', 'e', 's']}
+          draggableHandle=".widget-drag-handle"
+          onLayoutChange={handleChange}
+        >
+          {placements.map(p => {
+            const def = getWidget(p.widgetId)!;
+            const Component = def.Component;
+            const hrefResolved = viewLink?.(p.widgetId) ?? DEFAULT_VIEW_LINKS[p.widgetId];
+            return (
+              <div key={p.instanceId}>
+                <WidgetShell
+                  title={def.title}
+                  href={hrefResolved || undefined}
+                  editMode={editMode}
+                  onRemove={onRemove ? () => onRemove(p.instanceId) : undefined}
+                >
+                  <Component
+                    instanceId={p.instanceId}
+                    size={{ w: p.w, h: p.h }}
+                    config={(p.config ?? null) as any}
+                    onConfigChange={onConfigChange ? (c: unknown) => onConfigChange(p.instanceId, c) : undefined}
+                    editMode={editMode}
+                  />
+                </WidgetShell>
+              </div>
+            );
+          })}
+        </Responsive>
+      )}
+    </div>
   );
 }
