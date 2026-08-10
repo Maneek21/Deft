@@ -29,6 +29,7 @@ import {
 import { env } from '../lib/env.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 import { OrgMembershipError, requireOrgAdminOrOwner } from '../lib/org-membership.js';
+import { evictActiveHuddleParticipants } from '../socket.js';
 
 const INVITE_TTL = '7d';
 const RECOVERY_TTL = '24h';
@@ -124,6 +125,12 @@ async function revokeMemberWorkspaceAccess(orgId: string, memberId: string, deac
         WHERE ${spaces.org_id} = ${orgId}
       )
   `);
+
+  await evictActiveHuddleParticipants({
+    orgId,
+    userId: memberId,
+    reason: 'org_membership_revoked',
+  });
 
   await db.delete(teamMembers)
     .where(and(eq(teamMembers.org_id, orgId), eq(teamMembers.user_id, memberId)));

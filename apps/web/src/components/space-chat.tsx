@@ -620,7 +620,7 @@ export function SpaceChat({
 }) {
   const { user } = useAuth();
   const router = useRouter();
-  const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, activeHuddles, openDmWith } = useChatContext();
+  const { setThreadMessage, markSpaceRead, presence, spaces, orgMembers, startHuddle, joinHuddleBySpace, huddleSpaceId, huddleBusy, activeHuddles, openDmWith } = useChatContext();
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   // presence is provided by ChatContext — no local state needed
@@ -1348,7 +1348,8 @@ export function SpaceChat({
 
               if (inThisHuddle) {
                 return (
-                  <button className="deft-pill min-h-[38px] md:min-h-[30px]"
+                  <button type="button" disabled aria-label={`You are in the huddle in ${displayName}`}
+                    className="deft-pill min-h-[44px] md:min-h-[30px]"
                     style={{ background: '#22c55e', color: 'white' }} title="You're in this huddle">
                     <Mic size={13} strokeWidth={1.5} />
                     <span className="hidden md:inline">In Huddle</span>
@@ -1357,22 +1358,28 @@ export function SpaceChat({
               }
               if (othersInHuddle) {
                 return (
-                  <button onClick={() => joinHuddleBySpace?.(spaceId)}
-                    className="deft-pill min-h-[38px] animate-pulse md:min-h-[30px]"
+                  <button type="button" onClick={() => joinHuddleBySpace?.(spaceId)}
+                    disabled={huddleBusy}
+                    aria-label={`Join huddle in ${displayName} with ${huddleHere!.participants.length} participants`}
+                    aria-busy={huddleBusy}
+                    className="deft-pill min-h-[44px] animate-pulse disabled:cursor-wait disabled:opacity-60 md:min-h-[30px]"
                     style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                     title={`${huddleHere!.participants.length} in huddle — click to join`}>
                     <Mic size={13} strokeWidth={1.5} />
-                    <span className="hidden md:inline">Join ({huddleHere!.participants.length})</span>
+                    <span className="hidden md:inline">{huddleBusy ? 'Connecting…' : `Join (${huddleHere!.participants.length})`}</span>
                   </button>
                 );
               }
               return (
-                <button onClick={() => startHuddle?.(spaceId)}
-                  className="deft-pill min-h-[38px] md:min-h-[30px]"
+                <button type="button" onClick={() => startHuddle?.(spaceId)}
+                  disabled={huddleBusy}
+                  aria-label={`Start a huddle in ${displayName}`}
+                  aria-busy={huddleBusy}
+                  className="deft-pill min-h-[44px] disabled:cursor-wait disabled:opacity-60 md:min-h-[30px]"
                   style={{ color: 'var(--on-surface-variant)' }}
                   title="Start a huddle">
                   <Mic size={13} strokeWidth={1.5} />
-                  <span className="hidden md:inline">Huddle</span>
+                  <span className="hidden md:inline">{huddleBusy ? 'Connecting…' : 'Huddle'}</span>
                 </button>
               );
             })()}

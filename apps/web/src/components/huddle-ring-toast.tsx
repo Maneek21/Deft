@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Headphones, X } from 'lucide-react';
+import { AlertCircle, Headphones, X } from 'lucide-react';
 import type { HuddleRing } from '@/hooks/use-huddle';
+import type { HuddleClientError } from '@/lib/huddle-types';
 
 const AUTO_DISMISS_MS = 15000;
 
@@ -46,10 +47,9 @@ function sendBrowserNotification(ring: HuddleRing) {
   if (document.hasFocus()) return;
   if (typeof Notification === 'undefined') return;
 
-  if (Notification.permission === 'default') {
-    Notification.requestPermission();
-    return;
-  }
+  // A background socket event is not a user gesture. Browsers may suppress or
+  // penalize unsolicited permission prompts, so permission is requested only
+  // from an explicit settings/user flow elsewhere.
   if (Notification.permission !== 'granted') return;
 
   const notif = new Notification(`Huddle in #${ring.space_name}`, {
@@ -60,25 +60,32 @@ function sendBrowserNotification(ring: HuddleRing) {
 }
 
 export function HuddleRingToast({
-  rings, onJoin, onDismiss,
+  rings, busy, onJoin, onDismiss,
 }: {
   rings: HuddleRing[];
+  busy: boolean;
   onJoin: (spaceId: string) => void;
   onDismiss: (ringId: string) => void;
 }) {
   return (
-    <div className="fixed top-4 right-4 z-[70] flex flex-col gap-2" style={{ maxWidth: 360 }}>
+    <div
+      className="fixed left-4 right-4 top-4 z-[70] flex flex-col gap-2 sm:left-auto sm:w-[360px]"
+      role="region"
+      aria-label="Huddle invitations"
+      aria-live="polite"
+    >
       {rings.map((ring) => (
-        <RingCard key={ring.id} ring={ring} onJoin={onJoin} onDismiss={onDismiss} />
+        <RingCard key={ring.id} ring={ring} busy={busy} onJoin={onJoin} onDismiss={onDismiss} />
       ))}
     </div>
   );
 }
 
 function RingCard({
-  ring, onJoin, onDismiss,
+  ring, busy, onJoin, onDismiss,
 }: {
   ring: HuddleRing;
+  busy: boolean;
   onJoin: (spaceId: string) => void;
   onDismiss: (ringId: string) => void;
 }) {
@@ -119,12 +126,14 @@ function RingCard({
   }, [ring.id, onDismiss]);
 
   const handleJoin = () => {
+    if (busy) return;
     onJoin(ring.space_id);
     onDismiss(ring.id);
   };
 
   return (
     <div
+      role="status"
       className="rounded-xl overflow-hidden"
       style={{
         background: 'var(--surface-container-highest, #1e1e2e)',
@@ -162,12 +171,14 @@ function RingCard({
           {/* Actions */}
           <div className="flex items-center gap-2 mt-2.5">
             <button onClick={handleJoin}
-              className="px-3.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors hover:opacity-90"
+              disabled={busy}
+              aria-busy={busy}
+              className="min-h-[44px] px-3.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
               style={{ background: '#22c55e', color: 'white' }}>
-              Join
+              {busy ? 'Connecting…' : 'Join'}
             </button>
             <button onClick={() => onDismiss(ring.id)}
-              className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors hover:opacity-80"
+              className="min-h-[44px] px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors hover:opacity-80"
               style={{ color: 'var(--text-secondary)', background: 'var(--surface-container-low)' }}>
               Dismiss
             </button>
@@ -176,7 +187,8 @@ function RingCard({
 
         {/* Close */}
         <button onClick={() => onDismiss(ring.id)}
-          className="p-1 rounded hover:opacity-70 flex-shrink-0"
+          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded hover:opacity-70 flex-shrink-0"
+          aria-label={`Dismiss huddle invitation from ${ring.created_by_name}`}
           style={{ color: 'var(--text-tertiary)' }}>
           <X size={14} />
         </button>
@@ -194,6 +206,49 @@ function RingCard({
           to { transform: translateX(0); opacity: 1; }
         }
       `}</style>
+    </div>
+  );
+}
+
+export function HuddleErrorToast({
+  error,
+  onDismiss,
+}: {
+  error: HuddleClientError;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      key={error.id}
+      className="fixed bottom-4 left-4 right-4 z-[72] rounded-xl p-3 sm:left-auto sm:w-[360px]"
+      style={{
+        background: 'var(--surface-container-highest, #1e1e2e)',
+        border: '1px solid var(--status-red, #ef4444)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+      }}
+      role="alert"
+      aria-live="assertive"
+    >
+      <div className="flex items-start gap-3">
+        <AlertCircle size={20} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--status-red, #ef4444)' }} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Huddle unavailable
+          </p>
+          <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+            {error.message}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="flex min-h-[44px] min-w-[44px] flex-shrink-0 items-center justify-center rounded hover:opacity-70"
+          style={{ color: 'var(--text-tertiary)' }}
+          aria-label="Dismiss huddle error"
+        >
+          <X size={16} />
+        </button>
+      </div>
     </div>
   );
 }

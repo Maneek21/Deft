@@ -76,6 +76,10 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # NEXT_PUBLIC feature flags are compiled into the browser bundle;
+          # setting this only on the running container is too late.
+          build-args: |
+            NEXT_PUBLIC_FEATURE_HUDDLES=true
 
       - name: Attest image provenance
         uses: actions/attest-build-provenance@v4

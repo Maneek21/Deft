@@ -15,7 +15,7 @@ import { getSocket } from '@/lib/socket';
 import { useHuddle } from '@/hooks/use-huddle';
 import { useAudioLevels } from '@/hooks/use-audio-levels';
 import { HuddleOverlay } from '@/components/huddle-overlay';
-import { HuddleRingToast } from '@/components/huddle-ring-toast';
+import { HuddleErrorToast, HuddleRingToast } from '@/components/huddle-ring-toast';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { Logo } from '@/components/brand/logo';
 
@@ -63,7 +63,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const unreadMutationVersions = useRef<Map<string, number>>(new Map());
   const pendingReadRequests = useRef<Map<string, number>>(new Map());
   const spacesLoadGeneration = useRef(0);
-  const huddleState = useHuddle();
+  // Preserve hook ordering while keeping disabled builds free of huddle socket work.
+  const huddleState = useHuddle(HUDDLES_ENABLED);
   const huddleStreams = huddleState.getStreams();
   const speakingMap = useAudioLevels(huddleStreams.localStream, user?.id || null, huddleStreams.peers);
 
@@ -486,6 +487,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         startHuddle: huddleState.startHuddle,
         joinHuddleBySpace: huddleState.joinHuddleBySpace,
         huddleSpaceId: huddleState.active ? huddleState.spaceId : null,
+        huddleBusy: huddleState.busy,
+        huddleError: huddleState.error,
+        clearHuddleError: huddleState.clearError,
         activeHuddles: huddleState.activeHuddles,
       }}
     >
@@ -522,9 +526,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {HUDDLES_ENABLED && huddleState.pendingRings.length > 0 && (
             <HuddleRingToast
               rings={huddleState.pendingRings}
+              busy={huddleState.busy}
               onJoin={huddleState.joinHuddleBySpace}
               onDismiss={huddleState.dismissRing}
             />
+          )}
+          {HUDDLES_ENABLED && huddleState.error && (
+            <HuddleErrorToast error={huddleState.error} onDismiss={huddleState.clearError} />
           )}
         </div>
       </AppHeaderProvider>

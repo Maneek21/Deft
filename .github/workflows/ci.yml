@@ -22,6 +22,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Lint web
         run: pnpm --filter @deft/web lint
+      - name: Test web huddle lifecycle state
+        run: pnpm --filter @deft/web exec tsx --test src/lib/huddle-state.test.ts
       - name: Type check API
         run: cd apps/api && npx tsc --noEmit
       - name: Type check Web
@@ -221,10 +223,13 @@ jobs:
           tags: deft:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Huddles are a compile-time Next.js flag. Keep this image aligned
+          # with the official release contract exercised by the smoke below.
           build-args: |
             NEXT_PUBLIC_APP_URL=http://localhost:3000
             NEXT_PUBLIC_API_URL=http://localhost:3001
             NEXT_PUBLIC_WS_URL=http://localhost:3001
+            NEXT_PUBLIC_FEATURE_HUDDLES=true
       - name: Smoke-test the image (binaries resolve)
         # Catches the "next CLI not on PATH from apps/web" and
         # "pnpm not in runner stage" classes of bug — both real bugs we hit
