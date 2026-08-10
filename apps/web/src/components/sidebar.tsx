@@ -109,7 +109,7 @@ function ChatSidebarContent({
   onOpenCreateSpace: () => void;
 }) {
   const { user } = useAuth();
-  const { unreadCounts, mentionCounts, orgMembers, openDmWith, activeHuddles, joinHuddleBySpace } = useChatContext();
+  const { unreadCounts, mentionCounts, orgMembers, openDmWith, activeHuddles, huddleBusy, joinHuddleBySpace } = useChatContext();
   const pathname = usePathname();
   const router = useRouter();
   const [createDmOpen, setCreateDmOpen] = useState(false);
@@ -233,7 +233,11 @@ function ChatSidebarContent({
               {HUDDLES_ENABLED && activeHuddles.has(space.id) && (
                 <button
                   onClick={(e) => { e.stopPropagation(); joinHuddleBySpace?.(space.id); }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[9px] font-medium flex-shrink-0 px-1.5 py-0.5 rounded-full hover:opacity-80"
+                  type="button"
+                  disabled={huddleBusy}
+                  aria-busy={huddleBusy}
+                  aria-label={`Join huddle in ${space.name} with ${activeHuddles.get(space.id)!.participants.length} participants`}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 flex min-h-[32px] min-w-[44px] items-center justify-center gap-1 text-[9px] font-medium flex-shrink-0 px-1.5 py-0.5 rounded-full hover:opacity-80 disabled:cursor-wait disabled:opacity-60"
                   style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}
                   title="Join huddle"
                 >

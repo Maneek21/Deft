@@ -25,6 +25,15 @@ async function settle(page, path) {
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await context.addInitScript(() => {
+    window.__deftGetUserMediaCalls = 0;
+    const originalGetUserMedia = navigator.mediaDevices?.getUserMedia;
+    if (!originalGetUserMedia) return;
+    navigator.mediaDevices.getUserMedia = (...args) => {
+      window.__deftGetUserMediaCalls += 1;
+      return originalGetUserMedia.apply(navigator.mediaDevices, args);
+    };
+  });
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -42,6 +51,14 @@ async function main() {
     await settle(page, '/chat');
     const general = page.getByText('general', { exact: true }).first();
     await general.click();
+    const huddleControl = page.locator('button[title="Start a huddle"]');
+    await huddleControl.waitFor({ state: 'visible', timeout: 10_000 });
+    const mediaRequests = await page.evaluate(() => window.__deftGetUserMediaCalls ?? 0);
+    if (mediaRequests !== 0) {
+      throw new Error(`Rendering the huddle control requested microphone access ${mediaRequests} time(s)`);
+    }
+    record('Expose the huddle start control without requesting microphone access', '#general');
+
     const composer = page.locator('[contenteditable="true"]').last();
     await composer.waitFor({ state: 'visible', timeout: 10_000 });
     await composer.fill(chatMarker);

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { spaces, spaceMembers, users, messages, agentEmployees, orgMembers } from '@deft/db/schema';
-import { getIO } from '../socket.js';
+import { evictActiveHuddleParticipants, getIO } from '../socket.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { DEFTY_EMAIL } from '../lib/ensure-defty-membership.js';
 
@@ -541,6 +541,13 @@ spaceRoutes.delete('/:id/members/:userId', async (c) => {
       return c.json({ error: 'User is not a member of this space', code: 'NOT_FOUND' }, 404);
     }
 
+    await evictActiveHuddleParticipants({
+      orgId: user.org_id,
+      spaceId,
+      userId,
+      reason: 'space_membership_revoked',
+    });
+
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to remove space member:', err);
@@ -554,6 +561,14 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
     const user = c.get('user');
     const spaceId = c.req.param('id');
 
+    const [space] = await db.select({ id: spaces.id })
+      .from(spaces)
+      .where(and(eq(spaces.id, spaceId), eq(spaces.org_id, user.org_id)))
+      .limit(1);
+    if (!space) {
+      return c.json({ error: 'Space not found', code: 'NOT_FOUND' }, 404);
+    }
+
     const deleted = await db.delete(spaceMembers)
       .where(
         and(
@@ -566,6 +581,13 @@ spaceRoutes.delete('/:id/members/me', async (c) => {
     if (deleted.length === 0) {
       return c.json({ error: 'Not a member of this space', code: 'NOT_FOUND' }, 404);
     }
+
+    await evictActiveHuddleParticipants({
+      orgId: user.org_id,
+      spaceId,
+      userId: user.id,
+      reason: 'space_membership_revoked',
+    });
 
     return c.json({ success: true });
   } catch (err) {
@@ -601,6 +623,12 @@ spaceRoutes.delete('/:id', async (c) => {
     await db.update(spaces)
       .set({ is_archived: true })
       .where(eq(spaces.id, spaceId));
+
+    await evictActiveHuddleParticipants({
+      orgId: user.org_id,
+      spaceId,
+      reason: 'space_archived',
+    });
 
     // Notify connected clients
     try {

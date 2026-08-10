@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext } from 'react';
+import type { ActiveHuddleInfo, HuddleClientError } from './huddle-types';
 
 type Space = {
   id: string;
@@ -57,10 +58,13 @@ type ChatContextType = {
   refreshSpaces: () => void;
   orgMembers: OrgMember[];
   openDmWith: (memberId: string) => Promise<void>;
-  startHuddle?: (spaceId: string) => void;
-  joinHuddleBySpace?: (spaceId: string) => void;
+  startHuddle?: (spaceId: string) => Promise<void>;
+  joinHuddleBySpace?: (spaceId: string) => Promise<void>;
   huddleSpaceId?: string | null;
-  activeHuddles: Map<string, { huddle_id: string; participants: { user_id: string; user_name: string; muted: boolean }[] }>;
+  huddleBusy: boolean;
+  huddleError: HuddleClientError | null;
+  clearHuddleError: () => void;
+  activeHuddles: Map<string, ActiveHuddleInfo>;
 };
 
 export const ChatContext = createContext<ChatContextType>({
@@ -79,6 +83,9 @@ export const ChatContext = createContext<ChatContextType>({
   openDmWith: async () => {},
   startHuddle: async () => {},
   joinHuddleBySpace: async () => {},
+  huddleBusy: false,
+  huddleError: null,
+  clearHuddleError: () => {},
   activeHuddles: new Map(),
 });
 

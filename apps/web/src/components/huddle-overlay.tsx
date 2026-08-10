@@ -475,16 +475,18 @@ function CompactBarDesktop({
         )}
       </div>
 
-      <button onClick={onToggleMute}
+      <button type="button" onClick={onToggleMute}
         className="p-1.5 rounded-full transition-colors flex-shrink-0"
         style={{ background: muted ? '#ef4444' : 'var(--surface-container-low)', color: muted ? 'white' : 'var(--text-primary)' }}
+        aria-label={muted ? 'Unmute huddle microphone' : 'Mute huddle microphone'}
         title={muted ? 'Unmute' : 'Mute'}>
         {muted ? <MicOff size={13} /> : <Mic size={13} />}
       </button>
 
-      <button onClick={onToggleExpanded}
+      <button type="button" onClick={onToggleExpanded}
         className="p-1 rounded-full flex-shrink-0"
         style={{ color: 'var(--text-tertiary)' }}
+        aria-label={expanded ? 'Minimize huddle' : 'Expand huddle'}
         title={expanded ? 'Minimize' : 'Expand'}>
         {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
       </button>
@@ -538,7 +540,8 @@ function ExpandedPanelDesktop({
             {formatDuration(duration)} &middot; {participants.length} {participants.length === 1 ? 'person' : 'people'}
           </div>
         </div>
-        <button onClick={onMinimize} className="p-1.5 rounded-md hover:opacity-70"
+        <button type="button" onClick={onMinimize} className="p-1.5 rounded-md hover:opacity-70"
+          aria-label="Minimize huddle"
           style={{ color: 'var(--text-tertiary)' }} title="Minimize">
           <ChevronDown size={16} />
         </button>
@@ -572,28 +575,32 @@ function ExpandedPanelDesktop({
 
       <div className="flex items-center justify-center gap-3 px-4 py-3"
         style={{ borderTop: '1px solid var(--border-default)' }}>
-        <button onClick={onToggleMute}
+        <button type="button" onClick={onToggleMute}
           className="p-2.5 rounded-full transition-colors"
           style={{ background: muted ? '#ef4444' : 'var(--surface-container-low)', color: muted ? 'white' : 'var(--text-primary)' }}
+          aria-label={muted ? 'Unmute huddle microphone' : 'Mute huddle microphone'}
           title={muted ? 'Unmute' : 'Mute'}>
           {muted ? <MicOff size={18} /> : <Mic size={18} />}
         </button>
 
-        <button className="p-2.5 rounded-full opacity-40 cursor-not-allowed"
+        <button type="button" className="p-2.5 rounded-full opacity-40 cursor-not-allowed"
+          aria-label="Screen share coming soon"
           style={{ background: 'var(--surface-container-low)', color: 'var(--text-tertiary)' }}
           title="Screen share (coming soon)" disabled>
           <Monitor size={18} />
         </button>
 
-        <button className="p-2.5 rounded-full opacity-40 cursor-not-allowed"
+        <button type="button" className="p-2.5 rounded-full opacity-40 cursor-not-allowed"
+          aria-label="Invite to huddle coming soon"
           style={{ background: 'var(--surface-container-low)', color: 'var(--text-tertiary)' }}
           title="Invite (coming soon)" disabled>
           <UserPlus size={18} />
         </button>
 
-        <button onClick={onLeave}
+        <button type="button" onClick={onLeave}
           className="p-2.5 rounded-full transition-colors hover:opacity-90"
           style={{ background: '#ef4444', color: 'white' }}
+          aria-label="Leave huddle"
           title="Leave huddle">
           <PhoneOff size={18} />
         </button>
