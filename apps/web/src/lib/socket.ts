@@ -18,7 +18,9 @@ function notifyConnectionChange(connected: boolean) {
 }
 
 export function getSocket(token: string): Socket {
-  if (socket?.connected) return socket;
+  // Reuse a disconnected socket while Socket.IO performs its configured
+  // reconnect cycle. Replacing it would strand listeners on the old instance.
+  if (socket) return socket;
 
   socket = io(WS_URL, {
     auth: { token },

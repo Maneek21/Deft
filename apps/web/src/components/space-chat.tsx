@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { openDeftyDm } from '@/lib/quick-actions';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
+import { subscribeToSpace } from '@/lib/space-socket';
 import { useAuth } from '@/lib/auth-context';
 import { useChatContext } from '@/lib/chat-context';
 import { HUDDLES_ENABLED } from '@/lib/feature-flags';
@@ -934,7 +935,7 @@ export function SpaceChat({
     const token = localStorage.getItem('deft-access-token');
     if (!token) return;
     const socket = getSocket(token);
-    socket.emit('space:join', spaceId);
+    const unsubscribeFromSpace = subscribeToSpace(socket, spaceId);
 
     const onNew = (msg: Message & { parent_id?: string | null; metadata?: { is_agent_reply?: boolean } }) => {
       // Thread replies should NOT appear in the main message list
@@ -1069,7 +1070,7 @@ export function SpaceChat({
     socket.on('message:unpinned', onMessageUnpinned);
 
     return () => {
-      socket.emit('space:leave', spaceId);
+      unsubscribeFromSpace();
       socket.off('message:new', onNew);
       socket.off('message:edited', onEdited);
       socket.off('message:deleted', onDeleted);
