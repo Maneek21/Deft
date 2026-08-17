@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -68,7 +68,7 @@ jobs:
       ANTHROPIC_API_KEY: sk-ant-ci-dummy-not-a-real-key
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -102,7 +102,7 @@ jobs:
     needs: [typecheck, test]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -136,7 +136,7 @@ jobs:
       BASELINE_IMAGE: ghcr.io/maneek21/deft:0.2.0-preview.1
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
@@ -205,7 +205,7 @@ jobs:
     needs: typecheck
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
         with:
           version: 11.10.0
       - uses: actions/setup-node@v7
