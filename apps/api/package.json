@@ -23,7 +23,7 @@
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.1",
     "hono-rate-limiter": "^0.5.3",
-    "ioredis": "^5.11.1",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "node-ical": "^0.27.1",
     "pg": "^8.22.0",
