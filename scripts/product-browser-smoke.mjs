@@ -63,7 +63,12 @@ async function main() {
     await composer.waitFor({ state: 'visible', timeout: 10_000 });
     await composer.fill(chatMarker);
     await composer.press('Enter');
-    await page.getByText(chatMarker, { exact: true }).waitFor({ timeout: 10_000 });
+    const renderedMessages = page.locator('[data-message-id]').filter({ hasText: chatMarker });
+    await renderedMessages.first().waitFor({ timeout: 10_000 });
+    const renderedMessageCount = await renderedMessages.count();
+    if (renderedMessageCount !== 1) {
+      throw new Error(`Expected one rendered chat message, found ${renderedMessageCount}`);
+    }
     record('Post and render a chat message', '#general');
 
     await settle(page, '/tasks');
