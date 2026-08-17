@@ -4,7 +4,9 @@
  * `packages/db/seed-demo.ts` builds the core Testers Tomatoes workspace. This
  * script makes the clean local pilot state match the current self-hostable
  * direction: Defty + BYOA employees, no stale unread/audit noise, and a fresh
- * chat-to-wiki proof surface.
+ * chat-to-wiki proof surface. Chat messages, conversions, and citations marked
+ * as simulated history are intentionally synthetic demo records, not evidence
+ * that the live observation runtime executed them.
  *
  * Run:
  *   pnpm --filter @deft/api exec tsx src/scripts/seed-pilot-workspace.ts
@@ -15,6 +17,13 @@ import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { generateReceipt } from '../lib/receipts.js';
 import { reconcileProjectTaskCountersForOrg } from '../lib/task-numbering.js';
+import {
+  buildPilotKnowledgeReceiptPlan,
+  isReusablePilotProofMessage,
+  PILOT_KNOWLEDGE_PAGE_SLUGS,
+  PILOT_SIMULATED_HISTORY_METADATA,
+  pilotProofMessageMetadata,
+} from './pilot-knowledge-receipts.js';
 import {
   actionReceipts,
   agentEmployees,
@@ -1848,16 +1857,35 @@ async function seedMarketingMessage(params: { orgId: string; spaceId: string; di
   const existing = await db
     .select({
       id: messages.id,
+      org_id: messages.org_id,
       space_id: messages.space_id,
       user_id: messages.user_id,
+      content: messages.content,
+      is_deleted: messages.is_deleted,
+      metadata: messages.metadata,
       created_at: messages.created_at,
     })
     .from(messages)
-    .where(and(eq(messages.org_id, params.orgId), eq(messages.space_id, params.spaceId), eq(messages.content, content)))
-    .limit(1);
+    .where(and(
+      eq(messages.org_id, params.orgId),
+      eq(messages.space_id, params.spaceId),
+      eq(messages.user_id, params.diegoId),
+      eq(messages.content, content),
+      eq(messages.is_deleted, false),
+    ));
 
-  if (existing.length > 0) {
-    return expectOne(existing, 'existing pilot knowledge proof message');
+  const reusable = existing.find((candidate) => isReusablePilotProofMessage(candidate, {
+    orgId: params.orgId,
+    spaceId: params.spaceId,
+    userId: params.diegoId,
+    content,
+    proofPhrase: PROOF_PHRASE,
+  }));
+
+  if (reusable) {
+    const metadata = pilotProofMessageMetadata(PROOF_PHRASE);
+    await db.update(messages).set({ metadata }).where(eq(messages.id, reusable.id));
+    return { ...reusable, metadata };
   }
 
   return expectOne(await db.insert(messages).values({
@@ -1865,11 +1893,15 @@ async function seedMarketingMessage(params: { orgId: string; spaceId: string; di
     space_id: params.spaceId,
     user_id: params.diegoId,
     content,
-    metadata: { seed: 'pilot-polish', knowledge_marker: PROOF_PHRASE },
+    metadata: pilotProofMessageMetadata(PROOF_PHRASE),
   }).returning({
     id: messages.id,
+    org_id: messages.org_id,
     space_id: messages.space_id,
     user_id: messages.user_id,
+    content: messages.content,
+    is_deleted: messages.is_deleted,
+    metadata: messages.metadata,
     created_at: messages.created_at,
   }), 'seeded pilot knowledge proof message');
 }
@@ -1924,8 +1956,9 @@ async function seedLivedInConversations(params: {
       parent_id: input.parentId ?? null,
       is_pinned: input.pinned ?? false,
       metadata: {
-        seed: 'pilot-living',
         ...input.metadata,
+        seed: 'pilot-living',
+        ...PILOT_SIMULATED_HISTORY_METADATA,
       },
       created_at: createdAt,
       updated_at: createdAt,
@@ -2173,146 +2206,67 @@ async function seedLivedInConversations(params: {
 async function seedPilotKnowledgeReceipts(params: {
   orgId: string;
   convertedBy: string;
-  pilotProof: {
-    id: string;
-    space_id: string;
-    user_id: string;
-    created_at: Date;
-  };
+  pilotProof: Awaited<ReturnType<typeof seedMarketingMessage>>;
   livedIn: Awaited<ReturnType<typeof seedLivedInConversations>>;
 }) {
-  const receiptSpecs = [
-    {
-      message: params.pilotProof,
-      kind: 'decision_candidate' as const,
-      title: 'Company Memory Proof Protocol',
-      slug: 'company-memory-proof-protocol',
-      action: 'wiki_create',
-      summary: 'The clean pilot assigns clear agent ownership and defines the shared-memory proof marker.',
-    },
-    {
-      message: params.livedIn.marketingDecision,
-      kind: 'decision_candidate' as const,
-      title: 'Sun Gold Trial Launch Decision',
-      slug: 'sun-gold-trial-launch-decision',
-      action: 'wiki_create',
-      summary: 'Launch copy can proceed while delivery language remains gated by route confirmation.',
-    },
-    {
-      message: params.livedIn.blockerMessage,
-      kind: 'decision_candidate' as const,
-      title: 'Tuesday Route Promise Gate',
-      slug: 'tuesday-route-promise-gate',
-      action: 'wiki_create',
-      summary: 'Buyer-facing Tuesday delivery language remains blocked until route capacity is confirmed.',
-    },
-    {
-      message: params.livedIn.opsUpdate,
-      kind: 'resource_candidate' as const,
-      title: 'Update knowledge: Tuesday Route Promise Gate',
-      slug: 'tuesday-route-promise-gate',
-      action: 'wiki_update',
-      summary: 'The northern route remains the constraint and requires the 11:30 operating check.',
-    },
-    {
-      message: params.livedIn.buyerUpdate,
-      kind: 'resource_candidate' as const,
-      title: 'Update knowledge: Chef Amara Account Brief',
-      slug: 'chef-amara-account-brief',
-      action: 'wiki_update',
-      summary: 'Chef Amara values practical prep notes while route promises remain conditional.',
-    },
-    {
-      message: params.livedIn.fieldUpdate,
-      kind: 'resource_candidate' as const,
-      title: 'Update knowledge: Cold-room Handoff SOP',
-      slug: 'cold-room-handoff-sop',
-      action: 'wiki_update',
-      summary: 'The credible launch image is the harvest bin beside the cold-room handoff.',
-    },
-  ];
-
   const seededPages = await db
     .select({ id: wikiPages.id, slug: wikiPages.slug, title: wikiPages.title, type: wikiPages.type })
     .from(wikiPages)
     .where(and(
       eq(wikiPages.org_id, params.orgId),
-      inArray(wikiPages.slug, [...new Set(receiptSpecs.map((receipt) => receipt.slug))]),
+      eq(wikiPages.is_deleted, false),
+      inArray(wikiPages.slug, PILOT_KNOWLEDGE_PAGE_SLUGS),
     ));
-  const pageBySlug = new Map(seededPages.map((page) => [page.slug, page]));
 
-  const rows = receiptSpecs.flatMap((receipt) => {
-    const page = pageBySlug.get(receipt.slug);
-    if (!page) return [];
-    const isUpdate = receipt.action === 'wiki_update';
-    return [{
-      org_id: params.orgId,
-      space_id: receipt.message.space_id,
-      source_message_id: receipt.message.id,
-      source_user_id: receipt.message.user_id,
-      kind: receipt.kind,
-      status: 'converted' as const,
-      title: receipt.title,
-      summary: receipt.summary,
-      proposed_action: receipt.action,
-      proposed_params: {
-        source_message_id: receipt.message.id,
-        source_space_id: receipt.message.space_id,
-        source_user_id: receipt.message.user_id,
-        target_wiki_page_id: page.id,
-        target_wiki_slug: page.slug,
-        target_wiki_title: page.title,
-      },
-      dedupe_key: `pilot_seed:knowledge_receipt:${receipt.message.id}:${page.slug}`,
-      converted_by: params.convertedBy,
-      converted_at: receipt.message.created_at,
-      metadata: {
-        seed: 'pilot-living',
-        extraction: 'seeded_episode',
-        batch_capture: true,
-        episode_capture: true,
-        batch_message_ids: [receipt.message.id],
-        converted_wiki_slug: page.slug,
-        converted_wiki_page_id: page.id,
-        converted_wiki_title: page.title,
-        converted_wiki_type: page.type,
-        ...(isUpdate ? { update_kind: 'wiki_content' } : {}),
-      },
-      created_at: receipt.message.created_at,
-      updated_at: receipt.message.created_at,
-    }];
+  const plan = buildPilotKnowledgeReceiptPlan({
+    orgId: params.orgId,
+    convertedBy: params.convertedBy,
+    sources: {
+      pilotProof: params.pilotProof,
+      marketingDecision: params.livedIn.marketingDecision,
+      blockerMessage: params.livedIn.blockerMessage,
+      opsUpdate: params.livedIn.opsUpdate,
+      buyerUpdate: params.livedIn.buyerUpdate,
+      fieldUpdate: params.livedIn.fieldUpdate,
+    },
+    pages: seededPages,
   });
 
-  if (rows.length !== receiptSpecs.length) {
-    const missing = receiptSpecs
-      .filter((receipt) => !pageBySlug.has(receipt.slug))
-      .map((receipt) => receipt.slug);
-    throw new Error(`Missing seeded wiki pages for knowledge receipts: ${missing.join(', ')}`);
+  if (plan.missingSlugs.length > 0) {
+    throw new Error(`Missing seeded wiki pages for knowledge receipts: ${plan.missingSlugs.join(', ')}`);
   }
 
-  await db.insert(workIntents).values(rows).onConflictDoNothing({
-    target: [workIntents.org_id, workIntents.dedupe_key],
-  });
+  const citationIdentityScope = or(...plan.citationRows.map((citation) => and(
+    eq(wikiCitations.page_id, citation.page_id),
+    eq(wikiCitations.source_type, citation.source_type),
+    eq(wikiCitations.source_id, citation.source_id),
+  )));
 
-  await db.delete(wikiCitations).where(and(
-    eq(wikiCitations.source_type, 'message'),
-    eq(wikiCitations.source_id, 'pilot-marketing-decision-thread'),
-    inArray(wikiCitations.page_id, [...pageBySlug.values()].map((page) => page.id)),
-  ));
-  await db.insert(wikiCitations).values(receiptSpecs.flatMap((receipt) => {
-    const page = pageBySlug.get(receipt.slug);
-    if (!page) return [];
-    return [{
-      org_id: params.orgId,
-      page_id: page.id,
-      source_type: 'message',
-      source_id: receipt.message.id,
-      source_space_id: receipt.message.space_id,
-      source_user_id: receipt.message.user_id,
-      excerpt: receipt.summary,
-      created_at: receipt.message.created_at,
-    }];
-  }));
+  // Replace this seed-owned ledger atomically. Retrying after any failure leaves
+  // exactly one intent and citation for each simulated source-to-page receipt.
+  await db.transaction(async (tx) => {
+    await tx.delete(workIntents).where(and(
+      eq(workIntents.org_id, params.orgId),
+      inArray(workIntents.dedupe_key, plan.intentRows.map((row) => row.dedupe_key)),
+    ));
+    await tx.insert(workIntents).values(plan.intentRows);
+
+    // The legacy placeholder predates citation org attribution and can have a
+    // null org_id. The page ids above are already scoped to this org.
+    await tx.delete(wikiCitations).where(and(
+      eq(wikiCitations.source_type, 'message'),
+      eq(wikiCitations.source_id, 'pilot-marketing-decision-thread'),
+      inArray(wikiCitations.page_id, seededPages.map((page) => page.id)),
+    ));
+
+    if (citationIdentityScope) {
+      await tx.delete(wikiCitations).where(and(
+        eq(wikiCitations.org_id, params.orgId),
+        citationIdentityScope,
+      ));
+    }
+    await tx.insert(wikiCitations).values(plan.citationRows);
+  });
 }
 
 async function seedRecordingNotes(params: {
