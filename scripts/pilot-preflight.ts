@@ -3,7 +3,6 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { URL } from 'node:url';
 import pg from 'pg';
-import Redis from 'ioredis';
 import { buildWindowsPnpmCommandArgs } from './windows-pnpm-command.js';
 
 const execFileAsync = promisify(execFile);
@@ -149,28 +148,6 @@ async function checkDb(): Promise<Check> {
   return { name: 'Postgres', ok: false, detail: errors.join(' | ') || `no database URL candidates found; last ${lastUrl}` };
 }
 
-async function checkRedis(): Promise<Check> {
-  if (!process.env.REDIS_URL) {
-    return { name: 'Redis', ok: true, warn: true, detail: 'REDIS_URL not configured; skipped' };
-  }
-
-  const redis = new Redis(process.env.REDIS_URL, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 0,
-    enableOfflineQueue: false,
-  });
-  try {
-    await redis.connect();
-    const pong = await redis.ping();
-    return { name: 'Redis', ok: pong === 'PONG', detail: `PING ${pong}` };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { name: 'Redis', ok: false, detail: message };
-  } finally {
-    redis.disconnect();
-  }
-}
-
 async function checkSeedLogin(): Promise<Check> {
   const res = await fetchStatus(`${API_URL}/api/auth/login`);
   if (res.status === 0) {
@@ -303,7 +280,6 @@ async function runChecks(): Promise<{ ok: boolean; blockingFailure: boolean }> {
     await checkApi(),
     await checkWeb(),
     await checkDb(),
-    await checkRedis(),
     await checkSeedLogin(),
   ];
 

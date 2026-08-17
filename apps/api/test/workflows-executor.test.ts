@@ -8,7 +8,7 @@
  *      workflow_runs row was written with status='success'.
  *
  * Invoking the handler directly (rather than going through the
- * BullMQ queue poller) keeps this focused: the status-change enqueue
+ * PostgreSQL queue poller) keeps this focused: the status-change enqueue
  * path is covered by typecheck + schema contracts.
  */
 import { test, before, after } from 'node:test';

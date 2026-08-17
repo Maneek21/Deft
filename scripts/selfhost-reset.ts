@@ -17,7 +17,6 @@ export type ResetOptions = {
   backup: boolean;
   backupOnly: boolean;
   backupDir: string;
-  keepRedis: boolean;
   keepUploads: boolean;
   skipBuild: boolean;
   skipDoctor: boolean;
@@ -54,7 +53,6 @@ export function parseResetArgs(argv: string[]): ResetOptions {
     backup: true,
     backupOnly: false,
     backupDir: DEFAULT_BACKUP_DIR,
-    keepRedis: false,
     keepUploads: false,
     skipBuild: false,
     skipDoctor: false,
@@ -102,9 +100,6 @@ export function parseResetArgs(argv: string[]): ResetOptions {
         i += 1;
         break;
       }
-      case '--keep-redis':
-        options.keepRedis = true;
-        break;
       case '--keep-uploads':
         options.keepUploads = true;
         break;
@@ -244,14 +239,6 @@ export function buildResetPlan(options: ResetOptions, env: EnvMap = {}): Command
     ],
   });
 
-  if (!options.keepRedis) {
-    steps.push({
-      label: 'Flush Redis runtime state',
-      command: 'docker',
-      args: [...compose, 'exec', '-T', 'redis', 'redis-cli', 'FLUSHALL'],
-    });
-  }
-
   if (!options.keepUploads) {
     steps.push({
       label: 'Clear local uploads volume',
@@ -331,7 +318,6 @@ Options:
   --backup / --no-backup        Take or skip pg_dump before reset (default: backup)
   --backup-only                 Only write a backup; do not reset
   --backup-dir <dir>            Backup output directory (default: backups)
-  --keep-redis                  Do not flush Redis
   --keep-uploads                Do not clear local uploads
   --skip-build                  Do not rebuild app/tool images before reset
   --skip-doctor                 Skip docker compose run --rm doctor
@@ -399,7 +385,6 @@ function printTarget(options: ResetOptions) {
   console.log(`  backup: ${options.backup ? options.backupDir : 'disabled'}`);
   if (!options.backupOnly) {
     console.log(`  build: ${options.skipBuild ? 'skipped' : 'current images before reset'}`);
-    console.log(`  redis: ${options.keepRedis ? 'kept' : 'flushed'}`);
     console.log(`  uploads: ${options.keepUploads ? 'kept' : 'cleared'}`);
     console.log(`  validation: doctor=${options.skipDoctor ? 'skipped' : 'on'}, smoke=${options.skipSmoke ? 'skipped' : 'on'}`);
   }

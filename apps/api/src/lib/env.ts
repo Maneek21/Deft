@@ -73,7 +73,6 @@ export function resolveEncryptionKey(
 
 export const env = {
   DATABASE_URL: resolveDatabaseUrl(),
-  REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret-change-me',
   RESEND_API_KEY: process.env.RESEND_API_KEY || '',

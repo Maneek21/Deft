@@ -234,7 +234,7 @@ const SEED_WIKI: SeedWiki[] = [
     title: 'Postgres job queue instead of Redis',
     slug: 'decision-postgres-job-queue',
     summary: 'Background workers poll a Postgres table instead of Redis/BullMQ for the trusted-tester scale.',
-    content: '# Postgres Job Queue\n\n**Status:** Accepted for pre-launch.\n\nWe have BullMQ wired but the default queue runs against Postgres. At tester scale (5 users) a 3-second poll interval on a single-row-lock table is fine. Revisit when we hit ~50 concurrent users or when Socket.io needs a Redis adapter for multi-instance horizontal scaling.\n\n**Cost:** $0 (no Redis add-on needed)\n**Cron jobs:** registered in `apps/api/src/workers/scheduler.ts`',
+    content: '# Postgres Job Queue\n\n**Status:** Accepted for launch.\n\nBackground workers claim jobs from the Postgres `job_queue` table. Redis and BullMQ are not runtime dependencies. Revisit the queue backend only when measured throughput, ready-job lag, database pressure, or multi-worker features justify a migration.\n\n**Cost:** no separate queue datastore\n**Scheduled jobs:** registered and processed by the API worker runtime',
     confidence: 0.88,
     daysAgo: 10,
   },

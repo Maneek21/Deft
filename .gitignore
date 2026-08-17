@@ -109,3 +109,7 @@ reports/*/
 tmp/
 .codex-site-review/
 .agents/
+
+# Local package-manager cache and manually managed Git worktrees.
+.pnpm-store/
+.worktrees/

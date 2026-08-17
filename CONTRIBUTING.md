@@ -17,7 +17,6 @@ Deft welcomes focused bug fixes, tests, documentation, accessibility improvement
 - Node.js 20 or newer (22 recommended)
 - pnpm 9 or newer
 - PostgreSQL 16 with pgvector
-- Redis 7
 
 ```bash
 git clone https://github.com/Maneek21/Deft.git

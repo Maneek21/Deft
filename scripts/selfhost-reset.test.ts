@@ -88,11 +88,10 @@ test('reset recreates the app container so current env takes effect', () => {
   assert.ok(start?.args.includes('--force-recreate'));
 });
 
-test('keep flags omit Redis flush and upload clear steps', () => {
-  const options = parseResetArgs(['--force', '--keep-redis', '--keep-uploads']);
+test('keep-uploads omits the upload clear step', () => {
+  const options = parseResetArgs(['--force', '--keep-uploads']);
   const labels = buildResetPlan(options).map((step) => step.label);
 
-  assert.equal(labels.some((label) => label.includes('Redis')), false);
   assert.equal(labels.some((label) => label.includes('uploads')), false);
 });
 

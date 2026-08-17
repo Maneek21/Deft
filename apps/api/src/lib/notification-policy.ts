@@ -19,6 +19,11 @@ export type NotificationPolicyOptions = {
   isMention?: boolean;
   respectDnd?: boolean;
   bypassUserPreferences?: boolean;
+  /**
+   * Use for delivery paths backed by a database uniqueness invariant. A
+   * duplicate becomes a null result so callers can suppress duplicate emits.
+   */
+  onConflictDoNothing?: boolean;
 };
 
 export type NotificationPolicyDecision = {
@@ -176,7 +181,7 @@ export async function createNotificationIfAllowed(
     values.metadata && typeof values.metadata === 'object' && !Array.isArray(values.metadata)
       ? values.metadata as Record<string, unknown>
       : {};
-  const [notification] = await db.insert(notifications).values({
+  const insert = db.insert(notifications).values({
     ...values,
     metadata: {
       ...existingMetadata,
@@ -187,7 +192,10 @@ export async function createNotificationIfAllowed(
         evaluated_at: new Date().toISOString(),
       },
     },
-  }).returning();
+  });
+  const [notification] = options.onConflictDoNothing
+    ? await insert.onConflictDoNothing().returning()
+    : await insert.returning();
   if (notification) {
     await syncNotificationToAttention(notification).catch((error) => {
       console.warn('[notification-policy] Attention dual-write failed', {

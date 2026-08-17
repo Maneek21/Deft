@@ -24,6 +24,7 @@ const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 const EMAIL = process.env.DEFT_TEST_EMAIL || 'maneek@test.com';
 const PASSWORD = process.env.DEFT_TEST_PASSWORD || 'test1234';
+const METRICS_SCRAPE_TOKEN = process.env.METRICS_SCRAPE_TOKEN || '';
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const OUT_DIR = 'docs/superpowers/audits/release-readiness';
 
@@ -822,14 +823,20 @@ async function auditApiEndpoints(token: string): Promise<void> {
 
   // GET /health/queue
   {
-    const r = await fetch(`${API_URL}/health/queue`).catch(() => null);
-    if (!r || !r.ok) {
-      finding({ severity: 'P1', area: 'API /health/queue', description: `GET /health/queue returned ${r?.status ?? 'no response'}` });
+    if (!METRICS_SCRAPE_TOKEN) {
+      log('  GET /health/queue → skipped (METRICS_SCRAPE_TOKEN is unset)');
     } else {
-      const body = await r.json().catch(() => null);
-      log(`  GET /health/queue → ${r.status} ${JSON.stringify(body)}`);
-      if (!body || typeof body !== 'object') {
-        finding({ severity: 'P1', area: 'API /health/queue', description: 'GET /health/queue returned non-object body' });
+      const r = await fetch(`${API_URL}/health/queue`, {
+        headers: { Authorization: `Bearer ${METRICS_SCRAPE_TOKEN}` },
+      }).catch(() => null);
+      if (!r || !r.ok) {
+        finding({ severity: 'P1', area: 'API /health/queue', description: `Authenticated GET /health/queue returned ${r?.status ?? 'no response'}` });
+      } else {
+        const body = await r.json().catch(() => null);
+        log(`  GET /health/queue → ${r.status} ${JSON.stringify(body)}`);
+        if (!body || typeof body !== 'object') {
+          finding({ severity: 'P1', area: 'API /health/queue', description: 'GET /health/queue returned non-object body' });
+        }
       }
     }
   }

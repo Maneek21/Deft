@@ -2,10 +2,11 @@ import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { app } from './index.js';
-import { setupSocket } from './socket.js';
+import { getIO, setupSocket } from './socket.js';
 
 // Prefer Railway/Fly's PORT env, then API_PORT, then local default.
 const port = parseInt(process.env.PORT || process.env.API_PORT || '3001');
+let shuttingDown = false;
 
 // index.ts only defines and exports the Hono app so tests can import it
 // without binding a port. This file is the actual entry point —
@@ -39,10 +40,22 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 
   // Start background job workers — uses Postgres, no Redis needed
   try {
-    const { startWorkers } = await import('./workers/index.js');
+    const { startWorkers, stopWorkers } = await import('./workers/index.js');
     const { initScheduler } = await import('./lib/job-scheduler.js');
-    startWorkers();
+    if (shuttingDown) return;
+    await startWorkers();
+    // SIGTERM can arrive while startup recovery/rehydration is awaiting the
+    // database. If shutdown already drained an as-yet-unstarted worker, stop
+    // the worker that just came online instead of leaving new timers behind.
+    if (shuttingDown) {
+      await stopWorkers({ timeoutMs: 10_000 });
+      return;
+    }
     await initScheduler();
+    if (shuttingDown) {
+      await stopWorkers({ timeoutMs: 10_000 });
+      return;
+    }
     console.log('[startup] Job workers and scheduler started');
   } catch (err) {
     console.warn('[startup] Job workers failed to start:', (err as Error).message);
@@ -69,3 +82,49 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 });
 
 setupSocket(server as unknown as Server);
+
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received; draining HTTP and job workers`);
+
+  const httpServer = server as unknown as Server;
+  const socketClosed = getIO()?.close() ?? Promise.resolve();
+  const httpClosed = new Promise<void>((resolve) => {
+    httpServer.close(() => resolve());
+  });
+  const forceHttpClose = setTimeout(() => {
+    httpServer.closeAllConnections?.();
+  }, 10_000);
+  const forceProcessExit = setTimeout(() => {
+    console.error('[shutdown] Hard deadline reached; forcing process exit');
+    process.exit(1);
+  }, 15_000);
+
+  try {
+    const { stopWorkers } = await import('./workers/index.js');
+    const results = await Promise.allSettled([
+      stopWorkers({ timeoutMs: 10_000 }),
+      socketClosed,
+      httpClosed,
+    ]);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (rejected) throw rejected.reason;
+    const { closeDb } = await import('./lib/db.js');
+    await closeDb();
+  } catch (err) {
+    process.exitCode = 1;
+    console.error('[shutdown] Graceful shutdown failed:', (err as Error).message);
+  } finally {
+    clearTimeout(forceHttpClose);
+    clearTimeout(forceProcessExit);
+    // A signal is a terminal process request. Exit explicitly after bounded
+    // drains so an ignored AbortSignal or third-party handle cannot keep the
+    // container alive beyond its stop grace period.
+    const exitCode = process.exitCode ?? 0;
+    setImmediate(() => process.exit(exitCode));
+  }
+}
+
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));

@@ -8,8 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { db } from '../src/lib/db.js';
-import { reminders, notifications } from '@deft/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { jobQueue, reminders, notifications } from '@deft/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
 import {
   reminderFireHandler,
   rehydratePendingReminders,
@@ -23,6 +23,7 @@ function fakeJob(reminderId: string) {
     id: 'test-job-' + Math.random().toString(36).slice(2, 8),
     name: 'reminder-fire',
     data: { reminderId },
+    attempts: 1,
   };
 }
 
@@ -92,13 +93,47 @@ test('reminderFireHandler fires once, then no-ops on second call', async () => {
       ).length;
     assert.equal(sameCount, 1, 'second fire must not produce a duplicate notification');
   } finally {
-    // Cleanup
-    await db.delete(notifications).where(
-      and(
-        eq(notifications.user_id, USER_ID),
+    await db.delete(notifications).where(and(
+      eq(notifications.user_id, USER_ID),
+      eq(notifications.type, 'reminder'),
+      sql`${notifications.metadata}->>'reminder_id' = ${inserted.id}`,
+    ));
+    await db.delete(reminders).where(eq(reminders.id, inserted.id));
+  }
+});
+
+test('concurrent reminder delivery creates exactly one durable notification', async () => {
+  const [inserted] = await db.insert(reminders).values({
+    org_id: ORG_ID,
+    user_id: USER_ID,
+    message: `concurrent-reminder-${crypto.randomUUID()}`,
+    remind_at: new Date(Date.now() - 1_000),
+  }).returning();
+  if (!inserted) throw new Error('failed to insert concurrent reminder fixture');
+
+  try {
+    await Promise.all(Array.from({ length: 12 }, () =>
+      reminderFireHandler(fakeJob(inserted.id))));
+
+    const rows = await db.select({ id: notifications.id })
+      .from(notifications)
+      .where(and(
+        eq(notifications.org_id, ORG_ID),
         eq(notifications.type, 'reminder'),
-      ),
-    );
+        sql`${notifications.metadata}->>'reminder_id' = ${inserted.id}`,
+      ));
+    assert.equal(rows.length, 1);
+
+    const [fired] = await db.select({ isSent: reminders.is_sent })
+      .from(reminders)
+      .where(eq(reminders.id, inserted.id));
+    assert.equal(fired?.isSent, true);
+  } finally {
+    await db.delete(notifications).where(and(
+      eq(notifications.org_id, ORG_ID),
+      eq(notifications.type, 'reminder'),
+      sql`${notifications.metadata}->>'reminder_id' = ${inserted.id}`,
+    ));
     await db.delete(reminders).where(eq(reminders.id, inserted.id));
   }
 });
@@ -106,4 +141,39 @@ test('reminderFireHandler fires once, then no-ops on second call', async () => {
 test('rehydratePendingReminders scans and returns a count without throwing', async () => {
   const count = await rehydratePendingReminders();
   assert.ok(typeof count === 'number' && count >= 0);
+});
+
+test('concurrent reminder rehydration leaves one deduplicated queue row', async () => {
+  const [inserted] = await db.insert(reminders).values({
+    org_id: ORG_ID,
+    user_id: USER_ID,
+    message: `rehydrate-dedupe-${crypto.randomUUID()}`,
+    // Deliberately beyond the old 30-day horizon: every durable pending
+    // reminder must be recoverable after restart.
+    remind_at: new Date(Date.now() + 45 * 24 * 60 * 60_000),
+  }).returning();
+  if (!inserted) throw new Error('failed to insert reminder rehydration fixture');
+  const dedupeKey = `reminder:${inserted.id}`;
+
+  try {
+    await Promise.all([
+      rehydratePendingReminders(),
+      rehydratePendingReminders(),
+      rehydratePendingReminders(),
+    ]);
+
+    const rows = await db.select({
+      id: jobQueue.id,
+      orgId: jobQueue.org_id,
+      status: jobQueue.status,
+    })
+      .from(jobQueue)
+      .where(eq(jobQueue.dedupe_key, dedupeKey));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.orgId, ORG_ID);
+    assert.equal(rows[0]?.status, 'pending');
+  } finally {
+    await db.delete(jobQueue).where(eq(jobQueue.dedupe_key, dedupeKey));
+    await db.delete(reminders).where(eq(reminders.id, inserted.id));
+  }
 });

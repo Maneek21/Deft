@@ -53,7 +53,7 @@ import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
 import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
-import { metricsRoutes } from './routes/metrics.js';
+import { metricsRoutes, requireMetricsBearer } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
@@ -218,20 +218,15 @@ app.route('/api/work-intents', workIntentRoutes);
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
 app.get('/health/queue', async (c) => {
+  const authError = requireMetricsBearer(c);
+  if (authError) return authError;
+
   try {
-    const { db } = await import('./lib/db.js');
-    const { sql } = await import('drizzle-orm');
-    const result = await db.execute(sql`
-      SELECT status, count(*)::int as count
-      FROM job_queue
-      GROUP BY status
-    `);
-    const rows = (result as any).rows || result;
-    const counts: Record<string, number> = { pending: 0, running: 0, failed: 0, completed: 0 };
-    for (const row of rows) {
-      counts[row.status] = row.count;
-    }
-    return c.json(counts);
+    const [{ getQueueHealthSnapshot }, { getWorkerStatus }] = await Promise.all([
+      import('./lib/queue-health.js'),
+      import('./workers/index.js'),
+    ]);
+    return c.json(await getQueueHealthSnapshot(getWorkerStatus()));
   } catch (err) {
     return c.json({ error: 'Failed to query queue health', code: 'INTERNAL_ERROR' }, 500);
   }

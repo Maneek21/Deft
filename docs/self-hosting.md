@@ -5,8 +5,8 @@ operator tasks for a self-hosted Deft workspace.
 
 ## Overview
 
-Self-hosted Deft is a single-workspace deployment. You run the database, Redis,
-and application stack yourself. Your data stays on your infrastructure.
+Self-hosted Deft is a single-workspace deployment. You run the PostgreSQL
+database and application stack yourself. Your data stays on your infrastructure.
 
 Each deployment supports one organisation. The first user to sign up becomes
 the workspace owner; everyone else joins through invite links generated from
@@ -15,6 +15,10 @@ is outside the Business Source License 1.1 terms.
 
 AI is bring-your-own-provider. Deft can use Anthropic, OpenAI, OpenRouter, or a
 local Ollama server, but the core workspace works without any AI provider.
+
+Background and scheduled work runs through Deft's PostgreSQL-backed job queue;
+Redis and BullMQ are not runtime dependencies. See the
+[job queue architecture decision](./decisions/2026-08-17-postgres-job-queue.md).
 
 ## Prerequisites
 
@@ -48,7 +52,7 @@ Use the release overlay in every application/tool command:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres redis
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
@@ -133,8 +137,8 @@ docker compose build deft init doctor smoke
 docker compose up -d
 ```
 
-This builds the app and one-shot tool images, then starts Postgres with pgvector
-plus Redis. The first build can take a few minutes. Building `init`, `doctor`,
+This builds the app and one-shot tool images, then starts Postgres with pgvector.
+The first build can take a few minutes. Building `init`, `doctor`,
 and `smoke` alongside `deft` matters on updates because those services run
 schema and verification code from the image.
 
@@ -163,7 +167,7 @@ docker compose run --rm doctor
 ```
 
 The doctor checks API health, web reachability, browser/API origin agreement,
-Postgres schema, Redis, and the platform seed.
+the Postgres schema, and the platform seed.
 
 Then run the public connector smoke test:
 
@@ -185,8 +189,8 @@ the owner/admin seat.
 
 Use `selfhost:reset` when the stack already exists and you want to return it to
 a clean first-user experience. The command takes a Postgres backup by default,
-stops only the app container, drops and recreates the application schema, flushes
-Redis, clears the local uploads volume, runs the supported `init` path, restarts
+stops only the app container, drops and recreates the application schema, clears
+the local uploads volume, runs the supported `init` path, restarts
 the app, and then runs doctor + smoke. It rebuilds the app and tool images before
 the destructive reset so the validation containers match the checked-out code.
 
@@ -236,13 +240,11 @@ Reset safety notes:
 - Use `--skip-build` only when you intentionally want to reuse the existing
   Docker images.
 - The command never deletes Docker volumes or reverse-proxy state.
-- Use `--keep-redis` or `--keep-uploads` only when you intentionally want stale
-  runtime state or files to survive.
+- Use `--keep-uploads` only when you intentionally want files to survive.
 
 ## Production Overlay
 
-For production, use the overlay that does not publish Postgres or Redis to host
-ports:
+For production, use the overlay that does not publish Postgres to host ports:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.prod.yml build deft init doctor smoke
@@ -260,7 +262,6 @@ DEFT_WEB_PORT=3000
 DEFT_API_PORT=3001
 DEFT_BIND_HOST=127.0.0.1
 DEFT_POSTGRES_PORT=5432
-DEFT_REDIS_PORT=6379
 ```
 
 The app still listens on ports 3000 and 3001 inside the container. These values
@@ -356,22 +357,20 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `JWT_REFRESH_SECRET` | Yes | Signs refresh tokens | none |
 | `ENCRYPTION_KEY` | Production | Encrypts provider keys at rest; exactly 32 chars | dev value |
 | `DATABASE_URL` | No for Compose | External Postgres URL for non-Compose installs | derived |
-| `REDIS_URL` | No for Compose | External Redis URL for non-Compose installs | derived |
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_WS_URL` | Recommended | Public WebSocket/API URL seen by browser | `http://localhost:3001` |
 | `API_PORT` | No | API port inside the app container | `3001` |
 | `DEFT_WEB_PORT` | No | Host port for web | `3000` |
 | `DEFT_API_PORT` | No | Host port for API | `3001` |
-| `DEFT_BIND_HOST` | No | Host address for local DB/Redis publishing | `127.0.0.1` |
+| `DEFT_BIND_HOST` | No | Host address for local database publishing | `127.0.0.1` |
 | `DEFT_POSTGRES_PORT` | No | Host Postgres port in local compose | `5432` |
-| `DEFT_REDIS_PORT` | No | Host Redis port in local compose | `6379` |
 | `ANTHROPIC_API_KEY` | No | Optional AI provider fallback | none |
 | `OPENAI_API_KEY` | No | Optional AI provider/embedding/transcription fallback | none |
 | `OPENROUTER_API_KEY` | No | Optional AI provider fallback | none |
 | `OLLAMA_URL` | No | Optional local Ollama endpoint; set only when running | none |
 | `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | No | Cloudflare R2 uploads | local uploads volume |
-| `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics`; unset disables metrics | none |
+| `METRICS_SCRAPE_TOKEN` | No | Bearer token for `/api/metrics` and `/health/queue`; unset disables detailed telemetry | none |
 
 ## Backups
 
@@ -380,8 +379,13 @@ Persistent data lives in Docker volumes:
 | Volume | Contents |
 |---|---|
 | `pgdata` | PostgreSQL data |
-| `redisdata` | Redis data |
 | `uploads` | User-uploaded files |
+
+Upgrades from a release that bundled Redis may leave an orphaned Redis
+container and `redisdata` volume. Deft does not remove either automatically.
+After confirming no other workload uses them, an operator may identify the
+exact Compose project resources with `docker ps -a` and `docker volume ls`, then
+remove those exact resources manually. Back up anything uncertain first.
 
 Postgres backup:
 

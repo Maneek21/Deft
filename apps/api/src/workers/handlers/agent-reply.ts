@@ -1870,6 +1870,6 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     console.log(`[agent-reply] Posted agent reply ${agentMessage.id} in space ${spaceId}${threadParentId ? ` thread ${threadParentId}` : ' (flat)'}`);
   } catch (err) {
     console.error('[agent-reply] Failed to generate agent reply:', err);
-    throw err; // Re-throw so BullMQ can retry
+    throw err; // Re-throw so the PostgreSQL queue worker can retry.
   }
 }

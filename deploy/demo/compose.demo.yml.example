@@ -3,7 +3,6 @@ services:
     ports: []
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       API_PORT: 3001
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL required}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL required}

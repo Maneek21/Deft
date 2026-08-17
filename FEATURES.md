@@ -165,11 +165,11 @@ Provider keys are optional. Core workspace functionality remains available witho
 
 ## Self-hosting and operations
 
-- Docker Compose stack for web, API, PostgreSQL, Redis, initialization, doctor, and smoke checks
+- Docker Compose stack for web, API, PostgreSQL, initialization, doctor, and smoke checks
 - Environment validation and one-command bootstrap helpers
 - Health endpoints for application and dependency checks
 - Backup and reset scripts with explicit safety gates
-- PostgreSQL 16, pgvector, Drizzle ORM, Redis, BullMQ, and Socket.io
+- PostgreSQL 16, pgvector, Drizzle ORM, a PostgreSQL-backed job queue, and Socket.io
 - Local file storage with R2-compatible configuration paths
 - Production guidance for VPS, domain, HTTPS, and reverse proxy setup
 - Synthetic 60-person certification tooling for isolation, bulk operations, job backlog, notification volume, and recovery exercises

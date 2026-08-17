@@ -45,26 +45,35 @@ reminderRoutes.post('/', async (c) => {
     reminderContent = parsed.data.content!;
   }
 
-  const [reminder] = await db.insert(reminders).values({
-    org_id: user.org_id,
-    user_id: user.id,
-    // Never persist a copy of source message text. Resolve it against current
-    // membership and deletion state whenever it is read or fired.
-    message: parsed.data.source_message_id ? 'Message reminder' : reminderContent,
-    remind_at: remindAt,
-    source_message_id: parsed.data.source_message_id || undefined,
-  }).returning();
+  const reminder = await db.transaction(async (tx) => {
+    const [created] = await tx.insert(reminders).values({
+      org_id: user.org_id,
+      user_id: user.id,
+      // Never persist a copy of source message text. Resolve it against current
+      // membership and deletion state whenever it is read or fired.
+      message: parsed.data.source_message_id ? 'Message reminder' : reminderContent,
+      remind_at: remindAt,
+      source_message_id: parsed.data.source_message_id || undefined,
+    }).returning();
 
-  // Schedule firing via the scheduled-jobs queue. The Postgres-backed queue
-  // persists across restarts, and rehydratePendingReminders() at boot
-  // re-enqueues anything missed. Handler is idempotent (no-op when is_sent=true).
-  const delay = Math.max(0, remindAt.getTime() - Date.now());
-  await enqueue(
-    QUEUE_NAMES.SCHEDULED_JOBS,
-    'reminder-fire',
-    { reminderId: reminder!.id },
-    { delay },
-  );
+    if (!created) throw new Error('Failed to create reminder');
+
+    // Commit the reminder and its durable job together. The stable dedupe key
+    // also makes boot-time rehydration safe to repeat.
+    await enqueue(
+      QUEUE_NAMES.SCHEDULED_JOBS,
+      'reminder-fire',
+      { reminderId: created.id },
+      {
+        delay: Math.max(0, remindAt.getTime() - Date.now()),
+        orgId: user.org_id,
+        dedupeKey: `reminder:${created.id}`,
+        executor: tx,
+      },
+    );
+
+    return created;
+  });
 
   return c.json({ ...reminder, message: reminderContent }, 201);
 });

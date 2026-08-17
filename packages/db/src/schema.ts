@@ -495,6 +495,9 @@ export const notifications = pgTable('notifications', {
   ...timestamps(),
 }, (t) => [
   index('notification_user_idx').on(t.user_id),
+  uniqueIndex('notification_reminder_unique')
+    .on(t.org_id, sql`(${t.metadata}->>'reminder_id')`)
+    .where(sql`${t.type} = 'reminder' AND ${t.metadata} ? 'reminder_id'`),
 ]);
 
 // ═══ SAVED VIEWS ═══
@@ -942,7 +945,7 @@ export const scheduledMessages = pgTable('scheduled_messages', {
   space_id: text('space_id').notNull().references(() => spaces.id),
   content: text('content').notNull(),
   scheduled_for: timestamp('scheduled_for').notNull(),
-  status: text('status').default('pending').notNull(), // 'pending', 'sent', 'cancelled'
+  status: text('status').default('pending').notNull(), // 'pending', 'sending', 'sent', 'cancelled'
   sent_at: timestamp('sent_at'),
   ...timestamps(),
 });
@@ -1240,6 +1243,9 @@ export const agentNudges = pgTable('agent_nudges', {
 // ═══ JOB QUEUE (Postgres-based background jobs) ═══
 export const jobQueue = pgTable('job_queue', {
   ...id(),
+  // System-wide jobs (for example cron scans) intentionally have no org.
+  // Product jobs should set this so queue health and dedupe remain tenant-aware.
+  org_id: text('org_id'),
   queue: text('queue').notNull(), // 'agent-jobs' | 'scheduled-jobs'
   name: text('name').notNull(), // job name like 'agent-reply', 'standup-generate'
   data: jsonb('data').notNull(), // job payload
@@ -1251,10 +1257,26 @@ export const jobQueue = pgTable('job_queue', {
   completed_at: timestamp('completed_at'),
   error: text('error'), // last error message
   cron_key: text('cron_key'), // for repeatable jobs, prevents duplicates
+  // Idempotency is retention-bound: terminal rows keep their key until the
+  // queue retention sweep removes them.
+  dedupe_key: text('dedupe_key'),
+  locked_by: text('locked_by'),
+  lock_token: text('lock_token'),
+  lock_expires_at: timestamp('lock_expires_at'),
   created_at: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   index('job_queue_poll_idx').on(t.status, t.queue, t.run_at),
-  index('job_queue_cron_idx').on(t.cron_key),
+  index('job_queue_org_idx').on(t.org_id),
+  index('job_queue_lease_idx').on(t.status, t.lock_expires_at),
+  // Drizzle cannot currently express PostgreSQL's NULLS NOT DISTINCT index
+  // option. COALESCE gives fresh `db:push-full` installs the same semantics as
+  // the supported upgrade migration's (org_id, dedupe_key) index.
+  uniqueIndex('job_queue_dedupe_unique')
+    .on(sql`COALESCE(${t.org_id}, '')`, t.dedupe_key)
+    .where(sql`${t.dedupe_key} IS NOT NULL`),
+  uniqueIndex('job_queue_active_cron_unique')
+    .on(t.cron_key)
+    .where(sql`${t.cron_key} IS NOT NULL AND ${t.status} IN ('pending', 'running')`),
 ]);
 
 // ═══ MEETING BRIEFS ═══
