@@ -22,8 +22,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Lint web
         run: pnpm --filter @deft/web lint
-      - name: Test web huddle lifecycle state
-        run: pnpm --filter @deft/web exec tsx --test src/lib/huddle-state.test.ts
+      - name: Test web realtime lifecycle state
+        run: >-
+          pnpm --filter @deft/web exec tsx --test
+          src/lib/huddle-state.test.ts
+          src/lib/socket.test.ts
+          src/lib/space-socket.test.ts
       - name: Type check API
         run: cd apps/api && npx tsc --noEmit
       - name: Type check Web
