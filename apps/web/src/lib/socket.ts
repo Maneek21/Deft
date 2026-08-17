@@ -17,12 +17,26 @@ function notifyConnectionChange(connected: boolean) {
   connectionListeners.forEach(l => l(connected));
 }
 
+/** Update a shared socket without interrupting an in-progress reconnect cycle. */
+export function prepareSocketForUse(existing: Socket, token: string): Socket {
+  // Socket.IO reads `auth` for every new connection attempt, so keep it current
+  // even when the singleton was created with an older access token.
+  existing.auth = { token };
+
+  // `active` means Socket.IO is connected or will reconnect automatically.
+  // An inactive socket (for example after a denied namespace connection) needs
+  // an explicit connect, while calling connect during backoff would race it.
+  if (!existing.active) existing.connect();
+
+  return existing;
+}
+
 export function getSocket(token: string): Socket {
   // Reuse a disconnected socket while Socket.IO performs its configured
   // reconnect cycle. Replacing it would strand listeners on the old instance.
-  if (socket) return socket;
+  if (socket) return prepareSocketForUse(socket, token);
 
-  socket = io(WS_URL, {
+  const createdSocket = io(WS_URL, {
     auth: { token },
     transports: ['websocket', 'polling'],
     reconnection: true,
@@ -30,44 +44,51 @@ export function getSocket(token: string): Socket {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 10000,
   });
+  socket = createdSocket;
 
-  socket.on('connect', () => {
+  createdSocket.on('connect', () => {
+    if (socket !== createdSocket) return;
     notifyConnectionChange(true);
   });
 
-  socket.on('disconnect', (reason) => {
+  createdSocket.on('disconnect', (reason) => {
+    if (socket !== createdSocket) return;
     notifyConnectionChange(false);
     if (reason === 'io server disconnect') {
       // Server forced disconnect — likely auth failure, don't auto-reconnect
-      socket?.connect();
+      createdSocket.connect();
     }
   });
 
-  socket.on('reconnect', () => {
+  createdSocket.on('reconnect', () => {
+    if (socket !== createdSocket) return;
     notifyConnectionChange(true);
   });
 
-  socket.on('connect_error', async (err) => {
+  createdSocket.on('connect_error', async (err) => {
     const msg = err?.message ?? '';
     if (/invalid token|expired|unauthori[sz]ed/i.test(msg)) {
       // Auth-shaped error: attempt a silent token refresh and reconnect once.
       // The server key for socket auth is `token` (confirmed via socket.handshake.auth.token).
       const fresh = await refreshAccessToken();
-      if (fresh && socket) {
-        socket.auth = { token: fresh };
-        socket.connect();
+      // A logout/login may have replaced the singleton while refresh was in
+      // flight. Never mutate or disconnect that newer socket from this handler.
+      if (socket !== createdSocket) return;
+      if (fresh) {
+        createdSocket.auth = { token: fresh };
+        createdSocket.connect();
         return;
       }
       // Refresh failed — stop reconnect attempts to avoid a login-redirect loop.
       console.warn('[socket] auth refresh failed; stopping reconnect attempts');
-      socket?.disconnect();
+      createdSocket.disconnect();
       return;
     }
     // Non-auth errors fall through and use Socket.io's built-in reconnection backoff.
     console.warn('[socket] Connection error:', msg);
   });
 
-  return socket;
+  return createdSocket;
 }
 
 export function disconnectSocket() {
