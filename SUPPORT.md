@@ -18,7 +18,7 @@ Deft is an alpha, source-available self-hosted project. Community support is bes
 - Redacted environment details relevant to the failure
 - Exact command or user workflow
 - Expected and actual behavior
-- Browser console, API, worker, Postgres, or Redis errors where relevant
+- Browser console, API, worker, or Postgres errors where relevant
 - Whether the issue reproduces on a fresh workspace
 
 Never post API keys, passwords, MCP tokens, OAuth credentials, database dumps, or private workspace content in an issue.

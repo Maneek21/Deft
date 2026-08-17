@@ -10,3 +10,8 @@ const pool = new Pool({
 });
 
 export const db = drizzle(pool, { schema });
+
+/** Drain the shared PostgreSQL pool during process shutdown. */
+export async function closeDb(): Promise<void> {
+  await pool.end();
+}

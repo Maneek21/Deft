@@ -1,5 +1,16 @@
-// Postgres-based job workers — polls job_queue table and dispatches to handlers
-import { dequeueJob, completeJob, failJob, ensureCronJob, cleanupStaleJobs, QUEUE_NAMES } from '../lib/queues.js';
+// PostgreSQL job workers — poll job_queue and dispatch leased jobs to handlers.
+import {
+  dequeueJob,
+  completeJob,
+  failJob,
+  ensureCronJob,
+  cleanupStaleJobs,
+  pruneFinishedJobs,
+  renewJobLease,
+  QUEUE_NAMES,
+  type DequeuedJob,
+  type QueueName,
+} from '../lib/queues.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -53,25 +64,116 @@ const CRON_KEYS: Record<string, string> = {
 const JOB_TIMEOUT_MS = Number.parseInt(process.env.DEFT_JOB_TIMEOUT_MS ?? '120000', 10);
 const WORKER_POLL_INTERVAL_MS = Number.parseInt(process.env.DEFT_WORKER_POLL_INTERVAL_MS ?? '1000', 10);
 const WORKER_BATCH_SIZE = Math.max(1, Number.parseInt(process.env.DEFT_WORKER_BATCH_SIZE ?? '5', 10));
+const JOB_LEASE_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.DEFT_JOB_LEASE_MS ?? '60000', 10),
+);
+const LEASE_RENEW_INTERVAL_MS = Math.max(1_000, Math.floor(JOB_LEASE_MS / 3));
+const STALE_CLEANUP_INTERVAL_MS = Math.max(5_000, Math.min(60_000, Math.floor(JOB_LEASE_MS / 2)));
+const RETENTION_SWEEP_INTERVAL_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.DEFT_JOB_RETENTION_SWEEP_MS ?? '3600000', 10),
+);
+const JOB_RETENTION_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.DEFT_JOB_RETENTION_MS ?? String(7 * 24 * 60 * 60_000), 10),
+);
+const WORKER_SHUTDOWN_TIMEOUT_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.DEFT_WORKER_SHUTDOWN_TIMEOUT_MS ?? '10000', 10),
+);
 const ATTENTION_PROJECTION_BATCH_SIZE = Math.max(
   WORKER_BATCH_SIZE,
   Number.parseInt(process.env.DEFT_ATTENTION_PROJECTION_BATCH_SIZE ?? '25', 10),
 );
 
-type DequeuedJob = { id: string; name: string; data: any; attempts: number };
+type HandlerResolver = (queueName: string, jobName: string) => Promise<JobHandler | null>;
 
-function runWithTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  if (!Number.isFinite(JOB_TIMEOUT_MS) || JOB_TIMEOUT_MS <= 0) return promise;
+export type WorkerProcessOverrides = {
+  resolveHandler?: HandlerResolver;
+  timeoutMs?: number;
+  leaseMs?: number;
+  renewIntervalMs?: number;
+  recurrence?: { cronKey: string; delayMs: number } | null;
+};
+
+class JobTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JobTimeoutError';
+  }
+}
+
+const activeControllers = new Map<string, {
+  controller: AbortController;
+  jobs: number;
+  settled: Promise<void>;
+}>();
+
+async function runClaimedWork<T>(
+  jobs: DequeuedJob[],
+  label: string,
+  work: (signal: AbortSignal) => Promise<T>,
+  overrides?: WorkerProcessOverrides,
+): Promise<T> {
+  const timeoutMs = overrides?.timeoutMs ?? JOB_TIMEOUT_MS;
+  const leaseMs = overrides?.leaseMs ?? JOB_LEASE_MS;
+  const renewIntervalMs = overrides?.renewIntervalMs
+    ?? Math.max(1_000, Math.min(LEASE_RENEW_INTERVAL_MS, Math.floor(leaseMs / 3)));
+  const executionId = crypto.randomUUID();
+  const controller = new AbortController();
+  // Keep tracking the underlying handler after Promise.race returns. Most
+  // handlers are not cancellation-aware yet, so shutdown health must not call
+  // an ignored AbortSignal "finished".
+  const workPromise = Promise.resolve().then(() => work(controller.signal));
+  const settled = workPromise.then(
+    () => undefined,
+    () => undefined,
+  ).finally(() => {
+    activeControllers.delete(executionId);
+  });
+  activeControllers.set(executionId, { controller, jobs: jobs.length, settled });
+
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const guard = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`${label} timed out after ${JOB_TIMEOUT_MS}ms`)),
-      JOB_TIMEOUT_MS,
-    );
+  let renewalInFlight = false;
+  const renewal = setInterval(() => {
+    if (renewalInFlight || controller.signal.aborted) return;
+    renewalInFlight = true;
+    void Promise.all(jobs.map((job) => renewJobLease(job.id, job.lockToken, leaseMs)))
+      .then((renewed) => {
+        if (renewed.some((owned) => !owned) && !controller.signal.aborted) {
+          controller.abort(new Error(`${label} lost its job lease`));
+        }
+      })
+      .catch((err) => {
+        console.warn(`[worker] Lease renewal failed for ${label}:`, (err as Error).message);
+      })
+      .finally(() => {
+        renewalInFlight = false;
+      });
+  }, renewIntervalMs);
+  renewal.unref?.();
+
+  const aborted = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener('abort', () => {
+      const reason = controller.signal.reason;
+      reject(reason instanceof Error ? reason : new Error(`${label} aborted`));
+    }, { once: true });
   });
-  return Promise.race([promise, guard]).finally(() => {
+
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeout = setTimeout(() => {
+      controller.abort(new JobTimeoutError(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timeout.unref?.();
+  }
+
+  try {
+    return await Promise.race([workPromise, aborted]);
+  } finally {
     if (timeout) clearTimeout(timeout);
-  });
+    clearInterval(renewal);
+  }
 }
 
 // ─── Lazy-loaded handler registry ───
@@ -151,6 +253,11 @@ async function getAgentJobHandler(jobName: string): Promise<JobHandler | null> {
       const mod = await import('./handlers/workflow-execute.js');
       return mod.handleWorkflowExecute;
     }
+    case 'certification-noop': {
+      // Synthetic 60-person certification intentionally measures queue claim,
+      // completion, and recovery without invoking a product side effect.
+      return async () => {};
+    }
     default:
       return null;
   }
@@ -204,6 +311,10 @@ async function getScheduledJobHandler(jobName: string): Promise<JobHandler | nul
       // startup for reminders that survived a restart.
       const mod = await import('./handlers/reminder-fire.js');
       return mod.reminderFireHandler;
+    }
+    case 'scheduled-message-send': {
+      const mod = await import('./handlers/scheduled-message-send.js');
+      return mod.handleScheduledMessageSend;
     }
     case 'agent-heartbeat':
     case 'heartbeat-native': {
@@ -259,46 +370,84 @@ async function getHandler(queueName: string, jobName: string): Promise<JobHandle
 async function processDequeuedJob(
   queueName: string,
   job: DequeuedJob,
+  overrides?: WorkerProcessOverrides,
 ): Promise<void> {
-  const handler = await getHandler(queueName, job.name);
-  if (!handler) {
-    await completeJob(job.id);
-    return;
-  }
-
   try {
-    await runWithTimeout(
-      handler({ id: job.id, name: job.name, data: job.data, attempts: job.attempts }),
-      `Job ${job.name} (${job.id.slice(0, 8)})`,
-    );
-    await completeJob(job.id);
-    console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
+    const handler = await (overrides?.resolveHandler ?? getHandler)(queueName, job.name);
+    if (!handler) {
+      const reason = `Unknown ${queueName} job: ${job.name}`;
+      const settled = await failJob(job.id, job.lockToken, reason, { terminal: true });
+      if (settled) console.error(`[worker] ${reason}; terminal-failed ${job.id.slice(0, 8)}`);
+      return;
+    }
 
-    const cronKey = CRON_KEYS[job.name];
-    const cronDelay = CRON_DELAYS[job.name];
-    if (cronKey && cronDelay) {
-      await ensureCronJob(
-        queueName as any,
-        job.name,
-        cronKey,
-        {},
-        cronDelay,
-      );
+    await runClaimedWork(
+      [job],
+      `Job ${job.name} (${job.id.slice(0, 8)})`,
+      async (signal) => {
+        const runtimeJob = {
+          id: job.id,
+          name: job.name,
+          data: job.data,
+          attempts: job.attempts,
+          signal,
+        };
+        await handler(runtimeJob);
+      },
+      overrides,
+    );
+    const settled = await completeJob(job.id, job.lockToken);
+    if (settled) {
+      console.log(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) completed`);
+    } else {
+      console.warn(`[worker] Job ${job.name} (${job.id.slice(0, 8)}) finished after losing its lease`);
     }
   } catch (err) {
-    await failJob(job.id, (err as Error).message);
-    console.error(`[worker] Job ${job.name} failed:`, (err as Error).message);
+    const message = err instanceof Error ? err.message : String(err);
+    // Until every handler cooperatively cancels its I/O, retrying immediately
+    // after a timeout can overlap with the still-running original promise.
+    // Terminal-fail the occurrence; operators can inspect/replay it explicitly.
+    const settled = await failJob(job.id, job.lockToken, message, {
+      terminal: err instanceof JobTimeoutError,
+    });
+    if (settled) console.error(`[worker] Job ${job.name} failed:`, message);
+  } finally {
+    // A terminally failed occurrence must not stop its recurring chain. If the
+    // failure is retryable, the active-cron constraint leaves the retry as the
+    // sole occurrence and this insert becomes a no-op.
+    const recurrence = overrides?.recurrence !== undefined
+      ? overrides.recurrence
+      : job.cronKey && CRON_DELAYS[job.name]
+        ? { cronKey: job.cronKey, delayMs: CRON_DELAYS[job.name]! }
+        : null;
+    if (recurrence) {
+      try {
+        await ensureCronJob(
+          queueName as QueueName,
+          job.name,
+          recurrence.cronKey,
+          {},
+          recurrence.delayMs,
+        );
+      } catch (err) {
+        console.warn(`[worker] Could not schedule the next ${job.name} occurrence:`, (err as Error).message);
+      }
+    }
   }
 }
 
-async function processAttentionProjectionGroup(queueName: string, jobs: DequeuedJob[]): Promise<void> {
+async function processAttentionProjectionGroup(
+  queueName: string,
+  jobs: DequeuedJob[],
+  overrides?: WorkerProcessOverrides,
+): Promise<void> {
   const notificationIds = Array.from(new Set(jobs.flatMap((job) =>
     Array.isArray(job.data?.notificationIds) ? job.data.notificationIds : [],
   )));
   const timestamps = jobs
     .map((job) => typeof job.data?.enqueuedAt === 'string' ? Date.parse(job.data.enqueuedAt) : Number.NaN)
     .filter(Number.isFinite);
-  const merged: DequeuedJob = {
+  const merged = {
     id: jobs[0]!.id,
     name: 'notification-attention-sync',
     attempts: Math.max(...jobs.map((job) => job.attempts)),
@@ -308,33 +457,50 @@ async function processAttentionProjectionGroup(queueName: string, jobs: Dequeued
       enqueuedAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : undefined,
     },
   };
-  const handler = await getHandler(queueName, merged.name);
-  if (!handler) {
-    await Promise.all(jobs.map((job) => completeJob(job.id)));
-    return;
-  }
-
   try {
-    await runWithTimeout(
-      handler(merged),
+    const handler = await (overrides?.resolveHandler ?? getHandler)(queueName, merged.name);
+    if (!handler) {
+      await Promise.all(jobs.map((job) => failJob(
+        job.id,
+        job.lockToken,
+        `Unknown ${queueName} job: ${merged.name}`,
+        { terminal: true },
+      )));
+      return;
+    }
+
+    await runClaimedWork(
+      jobs,
       `Job group ${merged.name} (${jobs.length} jobs)`,
+      async (signal) => {
+        const runtimeJob = { ...merged, signal };
+        await handler(runtimeJob);
+      },
+      overrides,
     );
-    await Promise.all(jobs.map((job) => completeJob(job.id)));
-    console.log(`[worker] Job group ${merged.name} (${jobs.length} jobs) completed`);
+    const settled = await Promise.all(jobs.map((job) => completeJob(job.id, job.lockToken)));
+    const settledCount = settled.filter(Boolean).length;
+    console.log(`[worker] Job group ${merged.name} settled ${settledCount}/${jobs.length} jobs`);
   } catch (err) {
-    const message = (err as Error).message;
-    await Promise.all(jobs.map((job) => failJob(job.id, message)));
+    const message = err instanceof Error ? err.message : String(err);
+    await Promise.all(jobs.map((job) => failJob(job.id, job.lockToken, message, {
+      terminal: err instanceof JobTimeoutError,
+    })));
     console.error(`[worker] Job group ${merged.name} failed:`, message);
   }
 }
 
-async function pollQueueBatch(queueName: string): Promise<void> {
+async function pollQueueBatch(
+  queueName: QueueName,
+  opts?: { claimWhenStopped?: boolean; processOverrides?: WorkerProcessOverrides },
+): Promise<void> {
   const jobs: DequeuedJob[] = [];
   const batchSize = queueName === QUEUE_NAMES.SCHEDULED_JOBS
     ? ATTENTION_PROJECTION_BATCH_SIZE
     : WORKER_BATCH_SIZE;
   for (let i = 0; i < batchSize; i += 1) {
-    const job = await dequeueJob(queueName as any);
+    if (!workersRunning && !opts?.claimWhenStopped) break;
+    const job = await dequeueJob(queueName, { leaseMs: opts?.processOverrides?.leaseMs ?? JOB_LEASE_MS });
     if (!job) break;
     jobs.push(job);
   }
@@ -352,57 +518,240 @@ async function pollQueueBatch(queueName: string): Promise<void> {
     projectionGroups.set(orgId, group);
   }
   await Promise.all([
-    ...ordinaryJobs.map((job) => processDequeuedJob(queueName, job)),
-    ...Array.from(projectionGroups.values()).map((group) => processAttentionProjectionGroup(queueName, group)),
+    ...ordinaryJobs.map((job) => processDequeuedJob(queueName, job, opts?.processOverrides)),
+    ...Array.from(projectionGroups.values()).map((group) =>
+      processAttentionProjectionGroup(queueName, group, opts?.processOverrides)),
   ]);
 }
 
-// ─── Public API ───
+export async function _processDequeuedJobForTest(
+  queueName: QueueName,
+  job: DequeuedJob,
+  overrides?: WorkerProcessOverrides,
+): Promise<void> {
+  await processDequeuedJob(queueName, job, overrides);
+}
+
+export async function _pollQueueBatchForTest(
+  queueName: QueueName,
+  overrides?: WorkerProcessOverrides,
+): Promise<void> {
+  await pollQueueBatch(queueName, { claimWhenStopped: true, processOverrides: overrides });
+}
+
+// ─── Lifecycle ───
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
-const pollInFlight = new Set<string>();
+let staleCleanupInterval: ReturnType<typeof setInterval> | null = null;
+let retentionInterval: ReturnType<typeof setInterval> | null = null;
+let workersRunning = false;
+let workerStartedAt: Date | null = null;
+let lastPollAt: Date | null = null;
+let startingPromise: Promise<void> | null = null;
+let stoppingPromise: Promise<void> | null = null;
+const pollInFlight = new Map<QueueName, Promise<void>>();
+const backgroundInFlight = new Set<Promise<unknown>>();
 
-export function startWorkers(): void {
-  if (pollingInterval) return;
+function trackBackground<T>(promise: Promise<T>): Promise<T> {
+  backgroundInFlight.add(promise);
+  void promise.finally(() => backgroundInFlight.delete(promise));
+  return promise;
+}
 
-  // Cleanup stale jobs on startup
-  cleanupStaleJobs().then(count => {
-    if (count > 0) console.log(`[workers] Recovered ${count} stale job(s) on startup`);
-  }).catch(() => {});
+async function reconcileRecurringJobs(): Promise<void> {
+  await Promise.all(Object.entries(CRON_KEYS)
+    .filter(([jobName]) => jobName !== 'agent-heartbeat')
+    .map(([jobName, cronKey]) => ensureCronJob(
+      QUEUE_NAMES.SCHEDULED_JOBS,
+      jobName,
+      cronKey,
+      {},
+      CRON_DELAYS[jobName],
+    )));
+}
 
-  // Block 0.4 — rehydrate pending reminders into the scheduled-jobs queue
-  // so sub-24h reminders scheduled before a restart still fire.
-  import('./handlers/reminder-fire.js')
-    .then((mod) => mod.rehydratePendingReminders())
-    .catch((err) => console.warn('[workers] reminder rehydrate failed:', err));
+async function runStaleMaintenance(): Promise<void> {
+  const count = await cleanupStaleJobs();
+  if (count > 0) console.log(`[workers] Recovered ${count} expired job lease(s)`);
+  // This also repairs a recurrence whose prior occurrence terminal-failed in
+  // cleanup or whose post-settlement registration hit a transient DB error.
+  await reconcileRecurringJobs();
+}
 
-  // Run stale cleanup every 60 seconds
-  setInterval(() => {
-    cleanupStaleJobs().then(count => {
-      if (count > 0) console.log(`[workers] Recovered ${count} stale job(s)`);
-    }).catch(() => {});
-  }, 60000);
+function dispatchPolls(): void {
+  if (!workersRunning) return;
+  for (const queueName of Object.values(QUEUE_NAMES)) {
+    if (pollInFlight.has(queueName)) continue;
+    let promise!: Promise<void>;
+    promise = pollQueueBatch(queueName)
+      .then(() => {
+        // A heartbeat means a queue poll actually reached settlement. Do not
+        // refresh it merely because the timer fired while prior polls hang.
+        lastPollAt = new Date();
+      })
+      .catch((err) => {
+        console.warn(`[workers] ${queueName} poll failed:`, (err as Error).message);
+      })
+      .finally(() => {
+        if (pollInFlight.get(queueName) === promise) pollInFlight.delete(queueName);
+      });
+    pollInFlight.set(queueName, promise);
+  }
+}
 
-  pollingInterval = setInterval(async () => {
-    for (const queueName of Object.values(QUEUE_NAMES)) {
-      if (pollInFlight.has(queueName)) continue;
-      pollInFlight.add(queueName);
-      void pollQueueBatch(queueName)
-        .catch(() => {
-          // Don't crash the poller on individual errors.
-        })
-        .finally(() => pollInFlight.delete(queueName));
+export type WorkerStatus = {
+  running: boolean;
+  startedAt: string | null;
+  lastPollAt: string | null;
+  inFlight: number;
+};
+
+export function getWorkerStatus(): WorkerStatus {
+  return {
+    running: workersRunning,
+    startedAt: workerStartedAt?.toISOString() ?? null,
+    lastPollAt: lastPollAt?.toISOString() ?? null,
+    inFlight: Array.from(activeControllers.values())
+      .reduce((total, active) => total + active.jobs, 0),
+  };
+}
+
+async function startWorkersInternal(opts?: {
+  skipStartupWork?: boolean;
+  disableWorkDispatch?: boolean;
+}): Promise<void> {
+  if (workersRunning) return;
+  if (stoppingPromise) await stoppingPromise;
+
+  // Cleanup must finish before server.ts registers cron jobs. Otherwise an
+  // exhausted legacy running occurrence can block registration and then be
+  // terminal-failed after the scheduler has already moved on.
+  if (!opts?.skipStartupWork) {
+    const recovered = await cleanupStaleJobs();
+    if (recovered > 0) console.log(`[workers] Recovered ${recovered} stale job(s) on startup`);
+    const pruned = await pruneFinishedJobs(JOB_RETENTION_MS);
+    if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s) on startup`);
+
+    const hydrationResults = await Promise.allSettled([
+      import('./handlers/reminder-fire.js').then((mod) => mod.rehydratePendingReminders()),
+      import('./handlers/scheduled-message-send.js')
+        .then((mod) => mod.rehydratePendingScheduledMessages()),
+    ]);
+    for (const result of hydrationResults) {
+      if (result.status === 'rejected') {
+        console.warn('[workers] scheduled work rehydrate failed:', result.reason);
+      }
     }
+  }
+
+  workersRunning = true;
+  workerStartedAt = new Date();
+  lastPollAt = null;
+
+  staleCleanupInterval = setInterval(() => {
+    if (opts?.disableWorkDispatch) return;
+    void trackBackground(runStaleMaintenance().catch((err) => {
+      console.warn('[workers] stale lease maintenance failed:', (err as Error).message);
+    }));
+  }, STALE_CLEANUP_INTERVAL_MS);
+  staleCleanupInterval.unref?.();
+
+  retentionInterval = setInterval(() => {
+    if (opts?.disableWorkDispatch) return;
+    void trackBackground(pruneFinishedJobs(JOB_RETENTION_MS)
+      .then((count) => {
+        if (count > 0) console.log(`[workers] Pruned ${count} expired terminal job(s)`);
+      })
+      .catch((err) => console.warn('[workers] retention sweep failed:', (err as Error).message)));
+  }, RETENTION_SWEEP_INTERVAL_MS);
+  retentionInterval.unref?.();
+
+  pollingInterval = setInterval(() => {
+    if (!opts?.disableWorkDispatch) dispatchPolls();
   }, WORKER_POLL_INTERVAL_MS);
+  pollingInterval.unref?.();
+  if (!opts?.disableWorkDispatch) dispatchPolls();
 
   console.log(
-    `[workers] Postgres job poller started (${WORKER_POLL_INTERVAL_MS}ms interval, batch ${WORKER_BATCH_SIZE})`,
+    `[workers] PostgreSQL job poller started (${WORKER_POLL_INTERVAL_MS}ms interval, batch ${WORKER_BATCH_SIZE})`,
   );
 }
 
-export function stopWorkers(): void {
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
-    pollingInterval = null;
+export async function startWorkers(): Promise<void> {
+  if (workersRunning) return;
+  if (!startingPromise) {
+    startingPromise = startWorkersInternal().finally(() => {
+      startingPromise = null;
+    });
   }
-  pollInFlight.clear();
+  await startingPromise;
+}
+
+/** Lifecycle-only seam: starts/clears real timers without touching queue data. */
+export async function _startWorkersForTest(): Promise<void> {
+  if (workersRunning) return;
+  if (!startingPromise) {
+    startingPromise = startWorkersInternal({ skipStartupWork: true, disableWorkDispatch: true })
+      .finally(() => {
+        startingPromise = null;
+      });
+  }
+  await startingPromise;
+}
+
+export async function stopWorkers(opts?: { timeoutMs?: number }): Promise<void> {
+  if (stoppingPromise) return stoppingPromise;
+  if (startingPromise) await startingPromise;
+  if (!workersRunning && !pollingInterval && !staleCleanupInterval && !retentionInterval) return;
+
+  const timeoutMs = Math.max(1, opts?.timeoutMs ?? WORKER_SHUTDOWN_TIMEOUT_MS);
+  stoppingPromise = (async () => {
+    workersRunning = false;
+    if (pollingInterval) clearInterval(pollingInterval);
+    if (staleCleanupInterval) clearInterval(staleCleanupInterval);
+    if (retentionInterval) clearInterval(retentionInterval);
+    pollingInterval = null;
+    staleCleanupInterval = null;
+    retentionInterval = null;
+
+    const inFlight = Promise.allSettled([
+      ...pollInFlight.values(),
+      ...backgroundInFlight.values(),
+      ...Array.from(activeControllers.values(), (active) => active.settled),
+    ]);
+    let drainTimedOut = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const abortAfterMs = Math.max(1, Math.floor(timeoutMs * 0.8));
+    await Promise.race([
+      inFlight,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          drainTimedOut = true;
+          resolve();
+        }, abortAfterMs);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+
+    if (drainTimedOut) {
+      const reason = new Error(`Worker shutdown exceeded ${timeoutMs}ms`);
+      for (const { controller } of activeControllers.values()) controller.abort(reason);
+      const postAbortMs = Math.max(1, timeoutMs - abortAfterMs);
+      let postAbortTimeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        inFlight,
+        new Promise<void>((resolve) => {
+          postAbortTimeout = setTimeout(resolve, postAbortMs);
+        }),
+      ]);
+      if (postAbortTimeout) clearTimeout(postAbortTimeout);
+      if (activeControllers.size > 0) {
+        console.warn(`[workers] Shutdown deadline reached with ${activeControllers.size} execution(s) still active`);
+      }
+    }
+    workerStartedAt = null;
+  })().finally(() => {
+    stoppingPromise = null;
+  });
+
+  return stoppingPromise;
 }

@@ -683,7 +683,7 @@ messageRoutes.post('/:spaceId', async (c) => {
           content: normalizedContent,
         });
       } catch (err) {
-        // Don't block message sending if Redis/queue is down
+        // Don't block message sending if the background queue enqueue fails.
         console.error('Failed to enqueue agent reply:', err);
       }
     } else if (agentMentioned && deftyProviderReason) {

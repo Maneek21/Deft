@@ -1,6 +1,6 @@
 # Use this overlay with docker-compose.yml to run a named GHCR release without
 # compiling the monorepo locally. Keep compose.prod.yml in the stack for public
-# deployments so Postgres and Redis are not published to the host.
+# deployments so Postgres is not published to the host.
 x-deft-release-image: &deft-release-image
   image: ${DEFT_IMAGE:-ghcr.io/maneek21/deft:0.2.0-preview.1}
   pull_policy: always

@@ -19,7 +19,7 @@ deft/
 │   ├── db/           # Drizzle ORM schema + client + migrations
 │   ├── mcp/          # MCP server SDK + tool definitions for BYOA agents
 │   └── shared/       # Shared types, Zod schemas, constants
-├── docker-compose.yml  # Self-host: postgres + redis + app
+├── docker-compose.yml  # Self-host: postgres + app
 ├── .env.example
 ├── LICENSE             # BSL 1.1
 └── pnpm-workspace.yaml
@@ -29,9 +29,9 @@ deft/
 - Frontend: Next.js 14, App Router, TypeScript, Tailwind CSS, TipTap (editor)
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
-- Real-time: Socket.io with Redis adapter
+- Real-time: Socket.io in-process (single app instance; no cross-instance adapter)
 - Auth: Custom JWT + bcrypt (jsonwebtoken + bcryptjs, Google OAuth)
-- Background jobs: BullMQ with Redis
+- Background jobs: PostgreSQL `job_queue` with in-process workers
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: Anthropic Claude API (Sonnet for reasoning, Haiku for classification)
 - Email: none. Invites and password recovery are admin-generated one-time URLs (`apps/api/src/routes/invites.ts`, `POST /api/members/:id/recovery-url`), shared out-of-band. Self-hosted Deft never sends mail.
@@ -163,7 +163,7 @@ into `apps/web/src/components/ai-badge.tsx` and reused by both
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions (API):** Create calendar events and read connected work events
 
-**Event-driven triggers (BullMQ crons):**
+**Event-driven triggers (PostgreSQL scheduled jobs):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
 - PR merged → parse `PREFIX-N` refs in title/body, move each matched task (in `todo`, `in_progress`, or `in_review`) to `done` and leave an attribution comment linking the PR. Wired into the GitHub sync path (`apps/api/src/workers/github-sync.ts` → `closeTasksForMergedPR`); runs only on the `pr_opened|pr_closed → pr_merged` transition so re-syncs don't re-fire. Tasks already `done` or `cancelled` are never touched.
@@ -176,7 +176,7 @@ Tasks are the agent's primary output surface and the product's action surface. P
 
 - **Fixed project defaults.** Every project uses the 6-status engineering vocabulary (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`), p0–p3 priority, and Kanban default view. View switcher (Board / List / Timeline / Calendar / Pipeline) remains a per-user selection. Per-project customization (`project_skills`, `skills.project_config`, first-attached-wins resolution, custom fields, allowed-transitions overrides) was retired 2026-04-18 — see `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 - **Recurrence UI + clone fix** (Task 4.12) — recurring task pattern stored on `tasks.recurrence` (`daily` | `weekly` | `biweekly` | `monthly`) with `recurrence_source_id` linking generated copies.
-- **Workflow executor (basic)** — BullMQ-backed runner supporting the `task.status_changed` trigger with four actions: `add_comment`, `assign_to`, `add_label`, `notify` (Task 5.7). Broader trigger coverage + skill-defined triggers land in Phase 8.
+- **Workflow executor (basic)** — PostgreSQL-queue-backed runner supporting the `task.status_changed` trigger with four actions: `add_comment`, `assign_to`, `add_label`, `notify` (Task 5.7). Broader trigger coverage + skill-defined triggers land in Phase 8.
 - **Task reactions** (Task 6.3) — emoji reactions on task cards/detail (`task_reactions` table, upsert/delete endpoints).
 - **@mentions in description + comments** (Task 6.4) — autocomplete + notification dispatch mirrors chat mentions.
 - **Activity diff view** (Task 6.2) — inline old→new rendering in the task activity log, replacing flat "changed status" strings.
@@ -196,7 +196,7 @@ The original Phase 8 plan was OpenClaw autonomy inside an in-process gateway. Ph
 
 Tasks 8.1–8.6 shipped on the heartbeat worker:
 
-- **Heartbeat lifecycle** (Task 8.1) — BullMQ cron dispatches due employees based on `heartbeat_interval_min`. Post-Phase-9, all employees are BYOA; heartbeat ticks queue pending work for MCP polling.
+- **Heartbeat lifecycle** (Task 8.1) — PostgreSQL scheduled jobs dispatch due employees based on `heartbeat_interval_min`. Post-Phase-9, all employees are BYOA; heartbeat ticks queue pending work for MCP polling.
 - **Per-tick logging** (Task 8.4) — every tick writes to `agent_heartbeat_turns` (fired_at, prompt_sha, action_count, tokens_in/out, cost_cents, outcome, summary) and broadcasts `agent:heartbeat:turn` via Socket.io.
 - **Cost guardrails** (Task 8.5) — `daily_budget_cents` per employee (default $100/day), reset at UTC midnight. Circuit breaker: `unhealthy` flag tripped after 3 consecutive errors, blocks all autonomous dispatch until manually cleared via `PATCH /api/agent-employees/:id { mark_healthy: true }`.
 - **Loop detection** (Task 8.6) — prompt_sha idempotency skips re-dispatch when nothing changed since last no_op tick. Consecutive identical action detector trips the circuit breaker.

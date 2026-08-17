@@ -52,6 +52,11 @@ export const upgradeManifest = {
       file: '0.2.0-preview.4-security-content-redaction.sql',
       description: 'Redact legacy cross-reference, reminder, notification, and restricted clip-derived text',
     },
+    {
+      version: '0.2.0-preview.5',
+      file: '0.2.0-preview.5-job-queue-hardening.sql',
+      description: 'Add tenant-aware dedupe, renewable leases, and race-safe recurring jobs',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

@@ -1,7 +1,8 @@
-// Postgres-based job queue for Deft background jobs - replaces BullMQ/Redis
+// Durable PostgreSQL job queue. Delivery is at-least-once: handlers that
+// perform side effects must be idempotent, because a worker can lose its lease
+// after the side effect commits but before it settles the queue row.
+import { sql } from 'drizzle-orm';
 import { db } from './db.js';
-import { jobQueue } from '@deft/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
 import { OBSERVE_CHAT_MESSAGE_JOB, markObservationFailedFromJobData } from './chat-observation.js';
 
 export const QUEUE_NAMES = {
@@ -10,6 +11,62 @@ export const QUEUE_NAMES = {
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
+
+export type QueueExecutor = {
+  execute: typeof db.execute;
+};
+
+export type EnqueueOptions = {
+  delay?: number;
+  maxAttempts?: number;
+  orgId?: string | null;
+  dedupeKey?: string | null;
+  /** Use a Drizzle transaction to atomically commit domain state + its job. */
+  executor?: QueueExecutor;
+};
+
+export type DequeuedJob = {
+  id: string;
+  name: string;
+  data: Record<string, any>;
+  attempts: number;
+  cronKey: string | null;
+  lockedBy: string;
+  lockToken: string;
+  lockExpiresAt: Date;
+};
+
+export type DequeueOptions = {
+  lockedBy?: string;
+  leaseMs?: number;
+};
+
+export type FailJobOptions = {
+  /** Terminal failures are never retried, regardless of max_attempts. */
+  terminal?: boolean;
+};
+
+const DEFAULT_LEASE_MS = 60_000;
+const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const DEFAULT_WORKER_ID = `deft:${process.pid}:${crypto.randomUUID()}`;
+
+function resultRows(result: unknown): Array<Record<string, any>> {
+  return ((result as { rows?: Array<Record<string, any>> }).rows ??
+    (Array.isArray(result) ? result : [])) as Array<Record<string, any>>;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value! > 0
+    ? Math.max(1, Math.floor(value!))
+    : fallback;
+}
+
+function inferOrgId(data: Record<string, unknown>, explicit: string | null | undefined): string | null {
+  if (explicit !== undefined) return explicit;
+  if (typeof data.orgId === 'string' && data.orgId) return data.orgId;
+  if (typeof data.org_id === 'string' && data.org_id) return data.org_id;
+  return null;
+}
 
 export function jobPriorityRank(queueName: QueueName | string, jobName: string): number {
   if (queueName !== QUEUE_NAMES.AGENT_JOBS) return 3;
@@ -20,45 +77,61 @@ export function jobPriorityRank(queueName: QueueName | string, jobName: string):
 }
 
 /**
- * Enqueue a job onto a named queue.
- *
- * @param queueName - Which queue to add the job to
- * @param jobName   - Logical job name (dispatched to a handler in the worker)
- * @param data      - Arbitrary JSON payload
- * @param opts      - Optional: delay (ms), maxAttempts
+ * Enqueue a job. Existing callers can omit opts; producers that need durable
+ * idempotency should provide a deterministic dedupeKey. A dedupe key remains
+ * reserved until its terminal queue row is pruned by retention.
  */
 export async function enqueue(
   queueName: QueueName,
   jobName: string,
   data: Record<string, unknown>,
-  opts?: { delay?: number; maxAttempts?: number },
+  opts?: EnqueueOptions,
 ): Promise<void> {
-  const runAt = opts?.delay
-    ? new Date(Date.now() + opts.delay)
-    : new Date();
+  const executor = opts?.executor ?? db;
+  const delay = Math.max(0, opts?.delay ?? 0);
+  const runAt = new Date(Date.now() + delay);
+  const maxAttempts = positiveInteger(opts?.maxAttempts, 3);
+  const orgId = inferOrgId(data, opts?.orgId);
+  const dedupeKey = opts?.dedupeKey?.trim() || null;
 
-  await db.insert(jobQueue).values({
-    queue: queueName,
-    name: jobName,
-    data,
-    status: 'pending',
-    max_attempts: opts?.maxAttempts ?? 3,
-    run_at: runAt,
-  });
+  // A bare ON CONFLICT handles both the tenant-aware dedupe constraint and any
+  // future producer-specific uniqueness without requiring executor metadata.
+  await executor.execute(sql`
+    INSERT INTO job_queue (
+      id, org_id, queue, name, data, status, max_attempts, run_at, dedupe_key
+    ) VALUES (
+      ${crypto.randomUUID()},
+      ${orgId},
+      ${queueName},
+      ${jobName},
+      ${JSON.stringify(data)}::jsonb,
+      'pending',
+      ${maxAttempts},
+      ${runAt},
+      ${dedupeKey}
+    )
+    ON CONFLICT DO NOTHING
+  `);
 }
 
-/**
- * Dequeue the next available job using SELECT ... FOR UPDATE SKIP LOCKED.
- * Atomically claims the job by setting status='running'.
- */
+/** Atomically claim the next due job and establish a renewable ownership lease. */
 export async function dequeueJob(
   queueName: QueueName,
-): Promise<{ id: string; name: string; data: any; attempts: number } | null> {
+  opts?: DequeueOptions,
+): Promise<DequeuedJob | null> {
+  const lockedBy = opts?.lockedBy?.trim() || DEFAULT_WORKER_ID;
+  const lockToken = crypto.randomUUID();
+  const leaseMs = positiveInteger(opts?.leaseMs, DEFAULT_LEASE_MS);
   const result = await db.execute(sql`
     UPDATE job_queue
     SET status = 'running',
         started_at = now(),
-        attempts = attempts + 1
+        completed_at = NULL,
+        error = NULL,
+        attempts = attempts + 1,
+        locked_by = ${lockedBy},
+        lock_token = ${lockToken},
+        lock_expires_at = now() + (${leaseMs} * interval '1 millisecond')
     WHERE id = (
       SELECT id FROM job_queue
       WHERE status = 'pending'
@@ -75,77 +148,120 @@ export async function dequeueJob(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, name, data, attempts
+    RETURNING id, name, data, attempts, cron_key, locked_by, lock_token, lock_expires_at
   `);
 
-  const row = (result as any).rows?.[0] ?? (result as any)[0];
+  const row = resultRows(result)[0];
   if (!row) return null;
 
   return {
-    id: row.id,
-    name: row.name,
+    id: String(row.id),
+    name: String(row.name),
     data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
-    attempts: row.attempts,
+    attempts: Number(row.attempts),
+    cronKey: typeof row.cron_key === 'string' ? row.cron_key : null,
+    lockedBy: String(row.locked_by),
+    lockToken: String(row.lock_token),
+    lockExpiresAt: row.lock_expires_at instanceof Date
+      ? row.lock_expires_at
+      : new Date(String(row.lock_expires_at)),
   };
 }
 
-/**
- * Mark a job as completed.
- */
-export async function completeJob(jobId: string): Promise<void> {
-  await db
-    .update(jobQueue)
-    .set({ status: 'completed', completed_at: new Date() })
-    .where(eq(jobQueue.id, jobId));
+/** Extend a live lease. An expired lease cannot be resurrected by its old owner. */
+export async function renewJobLease(
+  jobId: string,
+  lockToken: string,
+  leaseMs = DEFAULT_LEASE_MS,
+): Promise<boolean> {
+  const normalizedLeaseMs = positiveInteger(leaseMs, DEFAULT_LEASE_MS);
+  const result = await db.execute(sql`
+    UPDATE job_queue
+    SET lock_expires_at = now() + (${normalizedLeaseMs} * interval '1 millisecond')
+    WHERE id = ${jobId}
+      AND status = 'running'
+      AND lock_token = ${lockToken}
+      AND lock_expires_at > now()
+    RETURNING id
+  `);
+  return resultRows(result).length === 1;
+}
+
+/** Settle a job only if this worker still owns its current claim token. */
+export async function completeJob(jobId: string, lockToken: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    UPDATE job_queue
+    SET status = 'completed',
+        completed_at = now(),
+        error = NULL,
+        locked_by = NULL,
+        lock_token = NULL,
+        lock_expires_at = NULL
+    WHERE id = ${jobId}
+      AND status = 'running'
+      AND lock_token = ${lockToken}
+      AND lock_expires_at > now()
+    RETURNING id
+  `);
+  return resultRows(result).length === 1;
 }
 
 /**
- * Mark a job as failed. If attempts < max_attempts, requeue with exponential backoff.
+ * Fail a claimed job. Retry state and exponential backoff are decided in the
+ * same token-guarded UPDATE, so an expired owner cannot overwrite a reclaim.
  */
-export async function failJob(jobId: string, error: string): Promise<void> {
-  // Fetch current state
-  const [job] = await db
-    .select({
-      attempts: jobQueue.attempts,
-      max_attempts: jobQueue.max_attempts,
-      name: jobQueue.name,
-      data: jobQueue.data,
-    })
-    .from(jobQueue)
-    .where(eq(jobQueue.id, jobId))
-    .limit(1);
+export async function failJob(
+  jobId: string,
+  lockToken: string,
+  error: string,
+  opts?: FailJobOptions,
+): Promise<boolean> {
+  const terminal = opts?.terminal === true;
+  const result = await db.execute(sql`
+    UPDATE job_queue
+    SET status = CASE
+          WHEN ${terminal} OR attempts >= max_attempts THEN 'failed'
+          ELSE 'pending'
+        END,
+        run_at = CASE
+          WHEN ${terminal} OR attempts >= max_attempts THEN run_at
+          ELSE now() + (
+            LEAST(1000 * power(2, GREATEST(attempts - 1, 0)), 60000)
+            * interval '1 millisecond'
+          )
+        END,
+        started_at = CASE
+          WHEN ${terminal} OR attempts >= max_attempts THEN started_at
+          ELSE NULL
+        END,
+        completed_at = CASE
+          WHEN ${terminal} OR attempts >= max_attempts THEN now()
+          ELSE NULL
+        END,
+        error = ${error},
+        locked_by = NULL,
+        lock_token = NULL,
+        lock_expires_at = NULL
+    WHERE id = ${jobId}
+      AND status = 'running'
+      AND lock_token = ${lockToken}
+      AND lock_expires_at > now()
+    RETURNING name, data, status
+  `);
 
-  if (!job) return;
-
-  if (job.attempts < job.max_attempts) {
-    if (job.name === OBSERVE_CHAT_MESSAGE_JOB) {
-      await markObservationFailedFromJobData({ data: job.data, retrying: true, error });
-    }
-    // Exponential backoff: 1s, 2s, 4s, 8s, ...
-    const backoffMs = Math.min(1000 * Math.pow(2, job.attempts - 1), 60000);
-    await db
-      .update(jobQueue)
-      .set({
-        status: 'pending',
-        run_at: new Date(Date.now() + backoffMs),
-        error,
-      })
-      .where(eq(jobQueue.id, jobId));
-  } else {
-    if (job.name === OBSERVE_CHAT_MESSAGE_JOB) {
-      await markObservationFailedFromJobData({ data: job.data, retrying: false, error });
-    }
-    await db
-      .update(jobQueue)
-      .set({ status: 'failed', error })
-      .where(eq(jobQueue.id, jobId));
+  const row = resultRows(result)[0];
+  if (!row) return false;
+  if (row.name === OBSERVE_CHAT_MESSAGE_JOB) {
+    await markObservationFailedFromJobData({
+      data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
+      retrying: row.status === 'pending',
+      error,
+    });
   }
+  return true;
 }
 
-/**
- * Ensure a cron job exists (idempotent).
- * If no pending job with this cron_key exists, insert one.
- */
+/** Atomically register at most one pending/running occurrence per cron key. */
 export async function ensureCronJob(
   queueName: QueueName,
   jobName: string,
@@ -153,50 +269,70 @@ export async function ensureCronJob(
   data?: Record<string, unknown>,
   delay?: number,
 ): Promise<void> {
-  // Check if a pending job with this cron_key already exists
-  const [existing] = await db
-    .select({ id: jobQueue.id })
-    .from(jobQueue)
-    .where(and(eq(jobQueue.cron_key, cronKey), eq(jobQueue.status, 'pending')))
-    .limit(1);
-
-  if (existing) return;
-
-  const runAt = delay ? new Date(Date.now() + delay) : new Date();
-
-  await db.insert(jobQueue).values({
-    queue: queueName,
-    name: jobName,
-    data: data ?? {},
-    status: 'pending',
-    max_attempts: 2,
-    run_at: runAt,
-    cron_key: cronKey,
-  });
+  const runAt = new Date(Date.now() + Math.max(0, delay ?? 0));
+  await db.execute(sql`
+    INSERT INTO job_queue (
+      id, queue, name, data, status, max_attempts, run_at, cron_key
+    ) VALUES (
+      ${crypto.randomUUID()},
+      ${queueName},
+      ${jobName},
+      ${JSON.stringify(data ?? {})}::jsonb,
+      'pending',
+      2,
+      ${runAt},
+      ${cronKey}
+    )
+    ON CONFLICT DO NOTHING
+  `);
 }
 
-/**
- * Reset stale jobs stuck in 'running' status (worker crash recovery).
- * Jobs running for more than 5 minutes are considered stale.
- */
+/** Recover only jobs whose ownership lease has expired (or legacy rows lacked one). */
 export async function cleanupStaleJobs(): Promise<number> {
   const result = await db.execute(sql`
     UPDATE job_queue
     SET status = CASE
-      WHEN attempts < max_attempts THEN 'pending'
-      ELSE 'failed'
-    END,
-    error = 'stale: worker timeout after 5 minutes',
-    run_at = CASE
-      WHEN attempts < max_attempts THEN now() + interval '5 seconds'
-      ELSE run_at
-    END
+          WHEN attempts < max_attempts THEN 'pending'
+          ELSE 'failed'
+        END,
+        error = 'stale: worker lease expired before settlement',
+        run_at = CASE
+          WHEN attempts < max_attempts THEN now() + interval '5 seconds'
+          ELSE run_at
+        END,
+        started_at = CASE WHEN attempts < max_attempts THEN NULL ELSE started_at END,
+        completed_at = CASE WHEN attempts < max_attempts THEN NULL ELSE now() END,
+        locked_by = NULL,
+        lock_token = NULL,
+        lock_expires_at = NULL
     WHERE status = 'running'
-      AND started_at < now() - interval '5 minutes'
+      AND (lock_expires_at IS NULL OR lock_expires_at <= now())
+    RETURNING name, data, status, error
+  `);
+  const rows = resultRows(result);
+  for (const row of rows) {
+    if (row.name !== OBSERVE_CHAT_MESSAGE_JOB) continue;
+    await markObservationFailedFromJobData({
+      data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
+      retrying: row.status === 'pending',
+      error: String(row.error),
+    });
+  }
+  return rows.length;
+}
+
+/** Remove terminal queue history after the configured retention period. */
+export async function pruneFinishedJobs(retentionMs = DEFAULT_RETENTION_MS): Promise<number> {
+  const normalizedRetentionMs = positiveInteger(retentionMs, DEFAULT_RETENTION_MS);
+  const cutoff = new Date(Date.now() - normalizedRetentionMs);
+  const result = await db.execute(sql`
+    DELETE FROM job_queue
+    WHERE status IN ('completed', 'failed')
+      AND completed_at IS NOT NULL
+      AND completed_at < ${cutoff}
     RETURNING id
   `);
-  const rows = (result as any).rows ?? (result as any);
-  return Array.isArray(rows) ? rows.length : 0;
+  return resultRows(result).length;
 }
 
 export { QUEUE_NAMES as default };

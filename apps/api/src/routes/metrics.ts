@@ -10,21 +10,22 @@
  *
  * Returns: Prometheus text format 0.0.4, `text/plain; version=0.0.4`.
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { db } from '../lib/db.js';
 import { collectMetrics } from '../lib/otel-metrics.js';
 
 export const metricsRoutes = new Hono();
 
-metricsRoutes.get('/', async (c) => {
+/** Authenticate machine-facing operational telemetry with one static bearer. */
+export function requireMetricsBearer(c: Context): Response | null {
   const expected = process.env.METRICS_SCRAPE_TOKEN;
   if (!expected) {
     // Fail closed — no token configured means scraping is disabled.
     return c.json(
       {
         error:
-          'METRICS_SCRAPE_TOKEN is not configured — set it in .env to enable /api/metrics',
+          'METRICS_SCRAPE_TOKEN is not configured — set it in .env to enable operator telemetry',
         code: 'METRICS_DISABLED',
       },
       503,
@@ -43,6 +44,12 @@ metricsRoutes.get('/', async (c) => {
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return c.json({ error: 'Unauthorized', code: 'BAD_TOKEN' }, 401);
   }
+  return null;
+}
+
+metricsRoutes.get('/', async (c) => {
+  const authError = requireMetricsBearer(c);
+  if (authError) return authError;
 
   try {
     const body = await collectMetrics(db as any);

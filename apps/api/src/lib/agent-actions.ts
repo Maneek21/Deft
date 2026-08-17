@@ -1293,30 +1293,40 @@ export async function executeAction(
           };
         }
 
-        const [inserted] = await db
-          .insert(reminders)
-          .values({
-            org_id: orgId,
-            user_id: userId,
-            message: content,
-            remind_at: remindAt,
-          })
-          .returning();
+        const inserted = await db.transaction(async (tx) => {
+          const [created] = await tx
+            .insert(reminders)
+            .values({
+              org_id: orgId,
+              user_id: userId,
+              message: content,
+              remind_at: remindAt,
+            })
+            .returning();
 
-        const delay = Math.max(0, remindAt.getTime() - Date.now());
-        await enqueue(
-          QUEUE_NAMES.SCHEDULED_JOBS,
-          'reminder-fire',
-          { reminderId: inserted!.id },
-          { delay },
-        );
+          if (!created) throw new Error('Failed to create reminder');
+
+          await enqueue(
+            QUEUE_NAMES.SCHEDULED_JOBS,
+            'reminder-fire',
+            { reminderId: created.id },
+            {
+              delay: Math.max(0, remindAt.getTime() - Date.now()),
+              orgId,
+              dedupeKey: `reminder:${created.id}`,
+              executor: tx,
+            },
+          );
+
+          return created;
+        });
 
         await db
           .update(agentActions)
           .set({
-            result: { reminder_id: inserted!.id, fire_at: remindAt.toISOString() },
+            result: { reminder_id: inserted.id, fire_at: remindAt.toISOString() },
             before_state: null,
-            after_state: { reminder_id: inserted!.id, content, fire_at: remindAt.toISOString() },
+            after_state: { reminder_id: inserted.id, content, fire_at: remindAt.toISOString() },
             executed_at: new Date(),
           })
           .where(eq(agentActions.id, actionId));
@@ -1327,7 +1337,7 @@ export async function executeAction(
           actorId: userId,
           action: 'create_reminder',
           entityType: 'reminder',
-          entityId: inserted!.id,
+          entityId: inserted.id,
           beforeState: null,
           afterState: { content, fire_at: remindAt.toISOString() },
           metadata: { action_id: actionId },
@@ -1336,7 +1346,7 @@ export async function executeAction(
         return {
           success: true,
           result: {
-            reminder_id: inserted!.id,
+            reminder_id: inserted.id,
             fire_at: remindAt.toISOString(),
           },
         };

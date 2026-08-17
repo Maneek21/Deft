@@ -87,7 +87,7 @@ The Connections page guides each user through the setup required by their client
 ### Requirements
 
 - Docker Desktop or Docker Engine with Compose
-- A machine capable of running PostgreSQL, Redis, the API, and the web app
+- A machine capable of running PostgreSQL, the API, and the web app
 - Optional: an AI provider key or local model endpoint for agent features
 
 ```bash
@@ -127,7 +127,7 @@ URLs, then run:
 ```bash
 export DEFT_IMAGE=ghcr.io/maneek21/deft:0.2.0-preview.1
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
-docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres redis
+docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d deft
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm doctor
@@ -142,7 +142,7 @@ guide. Historical pre-preview databases are not automatically adopted.
 
 ## Local development
 
-Requirements: Node.js 20+, pnpm, PostgreSQL 16, and Redis.
+Requirements: Node.js 22.13+, pnpm, and PostgreSQL 16 with pgvector.
 
 ```bash
 git clone https://github.com/Maneek21/Deft.git
@@ -170,7 +170,7 @@ Both development seeds reset the database. Never run them against a production w
 deft/
 |-- apps/
 |   |-- web/       Next.js 16, React 19, Tailwind CSS, TipTap
-|   `-- api/       Hono, Socket.io, BullMQ, agent and MCP runtime
+|   `-- api/       Hono, Socket.io, PostgreSQL job workers, agent and MCP runtime
 |-- packages/
 |   |-- db/        PostgreSQL, pgvector, Drizzle schema and migrations
 |   `-- shared/    Shared types, schemas, and constants
@@ -183,8 +183,8 @@ deft/
 | Web | Next.js 16, React 19, TypeScript, Tailwind CSS v4, TipTap |
 | API | Hono on Node.js |
 | Data | PostgreSQL 16, pgvector, Drizzle ORM |
-| Realtime | Socket.io with Redis adapter |
-| Jobs | BullMQ and Redis |
+| Realtime | Socket.io in-process (single app instance) |
+| Jobs | PostgreSQL `job_queue` and in-process workers |
 | Auth | better-auth with JWT and refresh tokens |
 | AI | Provider-neutral routing plus MCP |
 | Storage | Local disk with R2-compatible paths |

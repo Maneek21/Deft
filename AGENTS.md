@@ -18,7 +18,7 @@ deft/
 ├── packages/
 │   ├── db/           # Drizzle ORM schema + client + migrations
 │   └── shared/       # Shared types, Zod schemas, constants
-├── docker-compose.yml  # Self-host: postgres + redis + app
+├── docker-compose.yml  # Self-host: postgres + app
 ├── .env.example
 ├── LICENSE             # BSL 1.1
 └── pnpm-workspace.yaml
@@ -28,9 +28,9 @@ deft/
 - Frontend: Next.js 14, App Router, TypeScript, Tailwind CSS, TipTap (editor)
 - API: Hono on Node.js, TypeScript
 - Database: PostgreSQL + pgvector (Drizzle ORM)
-- Real-time: Socket.io with Redis adapter
+- Real-time: Socket.io in-process (single app instance; no cross-instance adapter)
 - Auth: better-auth (JWT + refresh tokens). Google OAuth is retired from the self-hosted v1 product contract.
-- Background jobs: BullMQ with Redis
+- Background jobs: PostgreSQL `job_queue` with in-process workers
 - File storage: Cloudflare R2 or local (presigned uploads)
 - AI: provider-neutral LLM routing. Anthropic, OpenAI/OpenAI-compatible, OpenRouter, and local Ollama-style providers are optional; core workspace flows must run without any provider key.
 - Email: Resend (transactional)
@@ -86,7 +86,7 @@ Agent engine lives in `apps/api/src/lib/` (agent-context, agent-plans, agent-too
 **Native actions (direct SQL):** Create/update/assign tasks, post messages, set reminders
 **Connected actions:** Read/write native calendar events, ingest ICS calendar subscriptions, and call BYOA/MCP tools that the agent runtime brings with it.
 
-**Event-driven triggers (BullMQ crons):**
+**Event-driven triggers (PostgreSQL scheduled jobs):**
 - Task overdue → DM assignee + alert lead
 - Task stalled 48h → ask for update
 - BYOA/runtime trigger → a connected employee can react to external tool events it owns and use Deft-native task/message/wiki tools under org trust and approval rules.
@@ -99,7 +99,7 @@ Tasks are the agent's primary output surface and the product's action surface. P
 
 - **Fixed project defaults.** Every project uses the 6-status engineering vocabulary (`backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`), p0–p3 priority, and Kanban default view. View switcher (Board / List / Timeline / Calendar / Pipeline) remains a per-user selection. Per-project customization (`project_skills`, `skills.project_config`, first-attached-wins resolution, custom fields, allowed-transitions overrides) was retired 2026-04-18 — see `docs/superpowers/specs/2026-04-18-simplify-skills-templates-design.md`.
 - **Recurrence UI + clone fix** (Task 4.12) — recurring task pattern stored on `tasks.recurrence` (`daily` | `weekly` | `biweekly` | `monthly`) with `recurrence_source_id` linking generated copies.
-- **Workflow executor (basic)** — BullMQ-backed runner supporting the `task.status_changed` trigger with four actions: `add_comment`, `assign_to`, `add_label`, `notify` (Task 5.7). Broader trigger coverage + skill-defined triggers land in Phase 8.
+- **Workflow executor (basic)** — PostgreSQL-queue-backed runner supporting the `task.status_changed` trigger with four actions: `add_comment`, `assign_to`, `add_label`, `notify` (Task 5.7). Broader trigger coverage + skill-defined triggers land in Phase 8.
 - **Task reactions** (Task 6.3) — emoji reactions on task cards/detail (`task_reactions` table, upsert/delete endpoints).
 - **@mentions in description + comments** (Task 6.4) — autocomplete + notification dispatch mirrors chat mentions.
 - **Activity diff view** (Task 6.2) — inline old→new rendering in the task activity log, replacing flat "changed status" strings.

@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import pg from 'pg';
-import Redis from 'ioredis';
 
 const { Client } = pg;
 
@@ -181,25 +180,6 @@ async function checkPlatformSeed(): Promise<Check> {
   }
 }
 
-async function checkRedis(): Promise<Check> {
-  const redisUrl = process.env.REDIS_URL;
-  if (!redisUrl) return { name: 'Redis', ok: true, warn: true, detail: 'REDIS_URL not configured; skipped' };
-  const redis = new Redis(redisUrl, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 0,
-    enableOfflineQueue: false,
-  });
-  try {
-    await redis.connect();
-    const pong = await redis.ping();
-    return { name: 'Redis', ok: pong === 'PONG', detail: `PING ${pong}` };
-  } catch (err) {
-    return { name: 'Redis', ok: false, detail: err instanceof Error ? err.message : String(err) };
-  } finally {
-    redis.disconnect();
-  }
-}
-
 async function checkUrlAgreement(): Promise<Check> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || '';
@@ -241,7 +221,6 @@ async function main() {
     await checkWeb(),
     await checkCors(),
     await checkDb(),
-    await checkRedis(),
     await checkPlatformSeed(),
   ];
 

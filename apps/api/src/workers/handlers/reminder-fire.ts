@@ -9,7 +9,7 @@
  *
  * Block 0 Task 0.4 of OpenClaw Unlock plan.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../lib/db.js';
 import { reminders } from '@deft/db/schema';
 import { emitToUser } from '../../socket.js';
@@ -74,7 +74,7 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
     title,
     link,
     metadata: { reminder_id: reminder.id },
-  }, { channel: 'calendar' });
+  }, { channel: 'calendar', onConflictDoNothing: true });
 
   // Mark the reminder fired.
   await db
@@ -94,22 +94,15 @@ export async function reminderFireHandler(job: JobData): Promise<void> {
 
 /**
  * Rehydrate pending reminders on server start. Scans for is_sent=false rows
- * with remind_at in the future (up to 30 days ahead — arbitrary but large
- * enough that scheduled-jobs catches up) and enqueues each as a delayed job.
- * Idempotent: handler no-ops on is_sent=true so duplicate enqueues are safe.
+ * and enqueues each as a delayed job. Stable queue dedupe keys make this safe
+ * to repeat on every boot, including for reminders more than 30 days away.
  */
 export async function rehydratePendingReminders(): Promise<number> {
   const now = Date.now();
-  const horizon = new Date(now + 30 * 24 * 60 * 60 * 1000);
   const pending = await db
     .select()
     .from(reminders)
-    .where(
-      and(
-        eq(reminders.is_sent, false),
-        sql`${reminders.remind_at} <= ${horizon}`,
-      ),
-    );
+    .where(eq(reminders.is_sent, false));
 
   for (const r of pending) {
     const delay = Math.max(0, r.remind_at.getTime() - now);
@@ -117,7 +110,11 @@ export async function rehydratePendingReminders(): Promise<number> {
       QUEUE_NAMES.SCHEDULED_JOBS,
       'reminder-fire',
       { reminderId: r.id },
-      { delay },
+      {
+        delay,
+        orgId: r.org_id,
+        dedupeKey: `reminder:${r.id}`,
+      },
     );
   }
 

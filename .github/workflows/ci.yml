@@ -47,18 +47,8 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_test
-      REDIS_URL: redis://localhost:6379
       JWT_SECRET: ci-test-secret-not-for-prod
       JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-prod
       # Fake, non-functional key. The memory-extract tests mock the Anthropic
@@ -234,7 +224,7 @@ jobs:
         # Catches the "next CLI not on PATH from apps/web" and
         # "pnpm not in runner stage" classes of bug — both real bugs we hit
         # on the first deploy. Doesn't start the actual servers (that'd need
-        # postgres+redis sidecars and would dup the `test` job's work).
+        # a Postgres sidecar and would duplicate the `test` job's work).
         run: |
           docker run --rm --entrypoint sh deft:ci -c '
             set -e
@@ -264,16 +254,13 @@ jobs:
             -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             -e POSTGRES_DB=deft \
             pgvector/pgvector:pg16
-          docker run -d --name deft-browser-redis --network deft-browser-smoke redis:7-alpine
           for attempt in $(seq 1 30); do
-            docker exec deft-browser-postgres pg_isready -U postgres >/dev/null 2>&1 && \
-              docker exec deft-browser-redis redis-cli ping >/dev/null 2>&1 && break
-            if [ "$attempt" = 30 ]; then echo 'database services did not become ready'; exit 1; fi
+            docker exec deft-browser-postgres pg_isready -U postgres >/dev/null 2>&1 && break
+            if [ "$attempt" = 30 ]; then echo 'database did not become ready'; exit 1; fi
             sleep 2
           done
           docker run --rm --network deft-browser-smoke \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
-            -e REDIS_URL=redis://deft-browser-redis:6379 \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
             --entrypoint sh deft:ci -c 'pnpm db:push-full && pnpm db:seed:demo'
           docker run --rm --network deft-browser-smoke \
@@ -284,7 +271,6 @@ jobs:
           docker run -d --name deft-browser-app --network deft-browser-smoke \
             -p 3000:3000 -p 3001:3001 \
             -e DATABASE_URL="postgres://postgres:$POSTGRES_PASSWORD@deft-browser-postgres:5432/deft" \
-            -e REDIS_URL=redis://deft-browser-redis:6379 \
             -e JWT_SECRET="$JWT_SECRET" \
             -e JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET" \
             -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
@@ -321,5 +307,5 @@ jobs:
       - name: Stop product test stack
         if: always()
         run: |
-          docker rm -f deft-browser-app deft-browser-postgres deft-browser-redis 2>/dev/null || true
+          docker rm -f deft-browser-app deft-browser-postgres 2>/dev/null || true
           docker network rm deft-browser-smoke 2>/dev/null || true

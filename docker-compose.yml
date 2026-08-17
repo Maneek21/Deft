@@ -16,7 +16,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       API_PORT: 3001
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
@@ -27,8 +26,6 @@ services:
       MCP_STDIO_ALLOWED_COMMANDS: ${MCP_STDIO_ALLOWED_COMMANDS:-}
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     volumes:
       - uploads:/app/uploads
@@ -45,12 +42,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       NODE_ENV: production
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     command: sh -c "pnpm db:assert-fresh && pnpm db:push-full && pnpm db:seed"
     profiles: ['tools']
@@ -66,7 +60,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - generate with `openssl rand -hex 32`}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       NODE_ENV: production
     depends_on:
       postgres:
@@ -85,7 +78,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — generate with `openssl rand -hex 32`}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       DEFT_API_URL: http://deft:3001
       DEFT_WEB_URL: http://deft:3000
       DEFT_SELFHOST_INTERNAL_CHECK: 1
@@ -93,8 +85,6 @@ services:
       deft:
         condition: service_started
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     command: sh -c "pnpm selfhost:doctor"
     profiles: ['tools']
@@ -110,7 +100,6 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required - generate with `openssl rand -hex 32`}@postgres:5432/deft
-      REDIS_URL: redis://redis:6379
       DEFT_API_URL: http://deft:3001
       DEFT_WEB_URL: http://deft:3000
       DEFT_SELFHOST_INTERNAL_CHECK: 1
@@ -118,8 +107,6 @@ services:
       deft:
         condition: service_started
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     command: sh -c "pnpm selfhost:smoke"
     profiles: ['tools']
@@ -158,23 +145,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      # SECURITY: see the postgres `ports` comment above. Redis with no
-      # password (default) plus public exposure is an instant
-      # cryptojacking on-ramp via `CONFIG SET dir / SAVE` shell escapes.
-      # Loopback-only binding keeps it reachable for host-side dev tools.
-      - '${DEFT_BIND_HOST:-127.0.0.1}:${DEFT_REDIS_PORT:-6379}:6379'
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
 volumes:
   pgdata:
-  redisdata:
   uploads:
