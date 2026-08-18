@@ -851,8 +851,8 @@ async function auditApiEndpoints(token: string): Promise<void> {
     if (r?.status === 403) {
       const body = await r.json().catch(() => null);
       log(`  POST /api/auth/signup → 403 SINGLE_ORG_LIMIT ✓ (body: ${JSON.stringify(body)})`);
-      if (!JSON.stringify(body ?? '').includes('SINGLE_ORG_LIMIT') && !JSON.stringify(body ?? '').includes('LICENSE') && !JSON.stringify(body ?? '').includes('single')) {
-        finding({ severity: 'P1', area: 'API /signup', description: 'Signup returns 403 but body does not mention SINGLE_ORG_LIMIT or license pointer' });
+      if (!JSON.stringify(body ?? '').includes('SINGLE_ORG_LIMIT') && !JSON.stringify(body ?? '').includes('single')) {
+        finding({ severity: 'P1', area: 'API /signup', description: 'Signup returns 403 but body does not explain the supported single-workspace product limit' });
       }
     } else {
       const sf_name = 'api-signup-not-403.txt';

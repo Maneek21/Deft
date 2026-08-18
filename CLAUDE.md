@@ -6,7 +6,7 @@ Deft is an open-source AI-native workspace. Native chat + tasks + an AI agent th
 
 One Next.js app. One Postgres database. Multi-tenant SaaS with org_id on every table.
 
-Licensed under BSL 1.1: use for any purpose except hosting as a service for third parties. Mandatory attribution in forks.
+Licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). Network deployments of modified versions must offer their users the corresponding source under AGPL section 13.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ deft/
 │   └── shared/       # Shared types, Zod schemas, constants
 ├── docker-compose.yml  # Self-host: postgres + app
 ├── .env.example
-├── LICENSE             # BSL 1.1
+├── LICENSE             # GNU AGPL v3.0 only
 └── pnpm-workspace.yaml
 ```
 

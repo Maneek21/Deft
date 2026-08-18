@@ -1,0 +1,23 @@
+# Deft
+
+Copyright (C) 2026 Maneek Mohan
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Deft is free software licensed under the GNU Affero General Public License,
+version 3 only (`AGPL-3.0-only`). The complete license terms are in
+`LICENSE`.
+
+The official source repository is:
+
+https://github.com/Maneek21/Deft
+
+If you modify Deft and let users interact with that version remotely through
+a computer network, GNU AGPL v3 section 13 requires you to offer those users
+the Corresponding Source of your version. Set `DEFT_SOURCE_CODE_URL`
+to the public URL for that exact source so Deft's License and source page can
+present the offer.
+
+This notice does not add to or replace the license terms. Third-party software
+included with or referenced by Deft remains governed by its own license; see
+`THIRD-PARTY-LICENSES.md` and dependency metadata for attribution.

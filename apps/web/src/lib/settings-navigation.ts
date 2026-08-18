@@ -23,6 +23,7 @@ export const settingsNavGroups: SettingsNavGroup[] = [
     items: [
       { name: 'General', href: '/settings', description: 'Theme and settings overview.' },
       { name: 'Profile', href: '/settings/profile', description: 'Identity, status, notifications, and security.' },
+      { name: 'License & source', href: '/license', description: 'View Deft\'s AGPL license and Corresponding Source.' },
     ],
   },
   {

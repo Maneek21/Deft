@@ -2,6 +2,11 @@
   "name": "deft",
   "version": "0.1.0-alpha",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maneek21/Deft.git"
+  },
   "packageManager": "pnpm@11.10.0",
   "scripts": {
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",

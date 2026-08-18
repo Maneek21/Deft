@@ -205,7 +205,7 @@ Native Slack, Gmail, GitHub, Google Calendar OAuth, Linear, Notion, and similar 
 
 ## Deliberate non-goals for the current alpha
 
-- Hosted multi-customer SaaS operation under the current BSL license
+- First-party managed multi-customer hosting as a supported product offering
 - Native iOS, Android, Electron, or Tauri apps
 - Offline-first operation
 - Enterprise compliance certification or uptime SLA
@@ -215,4 +215,4 @@ Native Slack, Gmail, GitHub, Google Calendar OAuth, Linear, Notion, and similar 
 
 ## Source and license
 
-Deft is source-available under the [Business Source License 1.1](LICENSE). It is not OSI open source today. The license permits use, modification, distribution, and self-hosting, but prohibits offering Deft as a hosted or managed service to third parties during the BSL term. Each release converts to Apache License 2.0 four years after its release date.
+Deft is open source under the [GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). The license permits commercial and non-commercial use, modification, and distribution under its terms. Operators who modify Deft and let users interact with that version over a network must offer those users the Corresponding Source as required by section 13.

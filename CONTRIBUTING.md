@@ -120,4 +120,4 @@ If a broad command cannot run in your environment, say so in the pull request an
 - Link an issue when one exists.
 - Keep generated certification artifacts out of the repository unless maintainers explicitly request them.
 
-By contributing, you agree that your contribution is licensed under the repository's [Business Source License 1.1](LICENSE) terms and retains the required project attribution.
+By contributing, you agree that your contribution is licensed under the repository's [GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`) terms.
