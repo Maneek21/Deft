@@ -184,6 +184,48 @@ async function readModuleLock(lockPath: string): Promise<ModuleLock> {
   return { schema_version: '1', modules: value.modules };
 }
 
+export async function verifyVendoredModules(
+  rootDirectory = process.cwd(),
+): Promise<ModuleLockEntry[]> {
+  const root = resolve(rootDirectory);
+  const lockPath = join(root, 'modules', 'modules.lock.json');
+  const lock = await readModuleLock(lockPath);
+  const moduleIds = new Set<string>();
+  const slugs = new Set<string>();
+  const verified: ModuleLockEntry[] = [];
+
+  for (const rawEntry of lock.modules) {
+    if (!rawEntry || typeof rawEntry !== 'object') {
+      throw new Error(`Invalid module lock entry in ${lockPath}`);
+    }
+    const entry = rawEntry as ModuleLockEntry;
+    if (moduleIds.has(entry.module_id)) throw new Error(`Duplicate locked module id: ${entry.module_id}`);
+    if (slugs.has(entry.slug)) throw new Error(`Duplicate locked module slug: ${entry.slug}`);
+    moduleIds.add(entry.module_id);
+    slugs.add(entry.slug);
+
+    validateSourceRepository(entry.source_repository);
+    validateSourceCommit(entry.source_commit);
+    validateLicense(entry.license);
+    const expectedPath = `modules/bundled/${entry.slug}/${DEFT_MODULE_MANIFEST_FILENAME}`;
+    if (entry.manifest_path !== expectedPath) {
+      throw new Error(`Locked manifest path must be ${expectedPath}`);
+    }
+    const checked = await checkModule(join(root, ...entry.manifest_path.split('/')));
+    if (checked.manifest.id !== entry.module_id || checked.manifest.slug !== entry.slug) {
+      throw new Error(`Locked identity does not match ${entry.manifest_path}`);
+    }
+    if (checked.manifest.version !== entry.version) {
+      throw new Error(`Locked version does not match ${entry.manifest_path}`);
+    }
+    if (checked.digest !== entry.manifest_digest) {
+      throw new Error(`Locked digest does not match ${entry.manifest_path}`);
+    }
+    verified.push(entry);
+  }
+  return verified;
+}
+
 export async function vendorModule(
   inputPath: string,
   options: {
@@ -237,7 +279,7 @@ function argumentValue(args: string[], name: string): string | null {
 async function main(): Promise<void> {
   const [command, input, ...args] = process.argv.slice(2);
   if (!command || !input) {
-    throw new Error('Usage: modules-cli <init|check|format|vendor> <path> [options]');
+    throw new Error('Usage: modules-cli <init|check|format|vendor|verify-lock> <path> [options]');
   }
 
   if (command === 'init') {
@@ -268,6 +310,11 @@ async function main(): Promise<void> {
     const entry = await vendorModule(input, { sourceRepository, sourceCommit, license });
     console.log(`Vendored ${entry.module_id}@${entry.version}`);
     console.log(entry.manifest_digest);
+    return;
+  }
+  if (command === 'verify-lock') {
+    const verified = await verifyVendoredModules(input);
+    console.log(`Verified ${verified.length} vendored module${verified.length === 1 ? '' : 's'}`);
     return;
   }
   throw new Error(`Unknown module command: ${command}`);

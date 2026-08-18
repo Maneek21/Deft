@@ -45,6 +45,7 @@
     "module:init": "tsx scripts/modules-cli.ts init",
     "module:test": "tsx --test scripts/modules-cli.test.ts",
     "module:vendor": "tsx scripts/modules-cli.ts vendor",
+    "module:verify": "tsx scripts/modules-cli.ts verify-lock .",
     "pilot:dev": "tsx scripts/pilot-preflight.ts --start",
     "pilot:clean-agent-queue": "tsx scripts/agent-demo-queue-cleanup.ts",
     "pilot:cracks:battery": "node scripts/pilot-cracks-clearance-battery.mjs",

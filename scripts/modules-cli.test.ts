@@ -8,6 +8,7 @@ import {
   formatModule,
   initModuleProject,
   vendorModule,
+  verifyVendoredModules,
 } from './modules-cli.js';
 
 async function sandbox(): Promise<string> {
@@ -62,6 +63,12 @@ test('vendor pins a canonical offline artifact and exact source provenance', asy
   assert.equal(pinned.digest, checked.digest);
   const lock = JSON.parse(await readFile(join(root, 'modules', 'modules.lock.json'), 'utf8'));
   assert.deepEqual(lock.modules, [entry]);
+  assert.deepEqual(await verifyVendoredModules(root), [entry]);
+  const pinnedPath = join(root, entry.manifest_path);
+  const tampered = JSON.parse(await readFile(pinnedPath, 'utf8'));
+  tampered.description = 'Tampered after the lock was written.';
+  await writeFile(pinnedPath, JSON.stringify(tampered), 'utf8');
+  await assert.rejects(() => verifyVendoredModules(root), /Locked digest does not match/);
   await assert.rejects(
     () => vendorModule(project, {
       rootDirectory: root,
