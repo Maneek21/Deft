@@ -30,7 +30,7 @@
  * every conservative-trust employee's approved writes.
  */
 import { eq, and, or, sql } from 'drizzle-orm';
-import { db } from './db.js';
+import { db, withDbAdvisoryLock } from './db.js';
 import {
   agentActions,
   agentEmployees,
@@ -63,15 +63,324 @@ import {
   markWorkIntentConvertedForAction,
   markWorkIntentDismissedForAction,
   markWorkIntentFailedForAction,
+  markWorkIntentsExpiredForActions,
 } from './work-intents.js';
 import {
   MCP_ACTION_KINDS,
   normalizeMcpApprovalAction,
 } from './mcp-approval-actions.js';
-import { executeAction as executeAgentAction } from './agent-actions.js';
+import {
+  executeAction as executeAgentAction,
+  preflightAgentModuleAction,
+} from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
+import {
+  MODULE_OPERATION_DEFINITIONS,
+  MODULE_OPERATION_NAMES,
+} from '@deft/shared/modules';
+import {
+  employeeModuleActor,
+  moduleIdempotencyDigest,
+  moduleMutationInputDigest,
+  recoverModuleMutationByAgentActionId,
+  sanitizeModuleActionParamsForHistory,
+} from './module-service.js';
+import { resolveAttentionBySource } from './attention.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
+
+const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
+  MODULE_OPERATION_NAMES.filter(
+    (operation) => MODULE_OPERATION_DEFINITIONS[operation].mode === 'write',
+  ),
+);
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+/**
+ * Module record values remain in the narrowly-authorized agent_actions row
+ * while a proposal is pending, but must not be copied into the broad signed
+ * receipt store. Receipts retain only concurrency, identity, and field-name
+ * metadata needed to audit the decision.
+ */
+export function sanitizeModuleActionParamsForReceipt(
+  action: string,
+  paramsValue: unknown,
+): Record<string, unknown> {
+  const params = recordValue(paramsValue);
+  if (!MODULE_MUTATION_ACTIONS.has(action)) return params;
+  const sanitized = sanitizeModuleActionParamsForHistory(action, params);
+  // Retry repair reads an already-scrubbed terminal action. Preserve only
+  // the safe field-name/digest evidence that the first terminalization wrote;
+  // never reintroduce record values or the raw idempotency key.
+  const hasRawMutationPayload = (
+    (params.data !== null && typeof params.data === 'object')
+    || (params.patch !== null && typeof params.patch === 'object')
+    || Array.isArray(params.unset_fields)
+  );
+  if (!hasRawMutationPayload && Array.isArray(params.changed_fields)) {
+    sanitized.changed_fields = [...new Set(
+      params.changed_fields.filter((field): field is string => typeof field === 'string'),
+    )].sort();
+  }
+  for (const key of ['idempotency_digest', 'input_digest'] as const) {
+    const value = params[key];
+    if (typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
+function terminalModuleActionParams(
+  action: string,
+  paramsValue: unknown,
+  ctx?: ToolContext | null,
+): Record<string, unknown> | null {
+  if (!MODULE_MUTATION_ACTIONS.has(action)) return null;
+  const params = recordValue(paramsValue);
+  const sanitized = sanitizeModuleActionParamsForHistory(action, params);
+  if (typeof params.idempotency_key !== 'string') return sanitized;
+  const inputDigest = moduleMutationInputDigest(
+    action === 'module_record_create'
+      ? 'create'
+      : action === 'module_record_update'
+        ? 'update'
+        : 'archive',
+    params,
+  );
+  if (!ctx) return { ...sanitized, input_digest: inputDigest };
+  const actor = employeeModuleActor({
+    orgId: ctx.org_id,
+    employeeId: ctx.employee_id,
+    trustLevel: ctx.trust_level,
+    source: 'mcp',
+  });
+  return {
+    ...sanitized,
+    idempotency_digest: moduleIdempotencyDigest(actor, params.idempotency_key),
+    input_digest: inputDigest,
+  };
+}
+
+const TERMINAL_REVIEWER_USER_ID = 'terminal_reviewer_user_id';
+const TERMINAL_ATTENTION_RESOLUTION = 'terminal_attention_resolution';
+
+function terminalReviewerUserId(paramsValue: unknown): string | null {
+  const value = recordValue(paramsValue)[TERMINAL_REVIEWER_USER_ID];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function terminalAttentionResolution(
+  paramsValue: unknown,
+  fallback: string,
+): string {
+  const value = recordValue(paramsValue)[TERMINAL_ATTENTION_RESOLUTION];
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+function moduleProposer(row: typeof agentActions.$inferSelect): {
+  proposer: 'defty' | 'employee';
+  proposerId: string | null;
+} {
+  const isDefty = !row.agent_employee_id;
+  return {
+    proposer: isDefty ? 'defty' : 'employee',
+    proposerId: isDefty ? row.user_id : row.agent_employee_id,
+  };
+}
+
+async function repairRejectedModuleTerminalState(
+  row: typeof agentActions.$inferSelect,
+  options: { repairWorkIntent?: boolean } = {},
+): Promise<void> {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return;
+  const reviewerId = terminalReviewerUserId(row.params);
+  const proposer = moduleProposer(row);
+  const postcommit: Array<Promise<unknown>> = [
+    generateReceipt({
+      actionId: row.id,
+      orgId: row.org_id,
+      employeeId: row.agent_employee_id ?? null,
+      proposer: proposer.proposer,
+      proposerId: proposer.proposerId,
+      // Legacy rejected rows may pre-date durable reviewer attribution. Do
+      // not misattribute a retrying caller as the original reviewer.
+      approverId: reviewerId,
+      decision: 'rejected',
+      decisionReason: row.error,
+      actionName: row.action,
+      actionParams: sanitizeModuleActionParamsForReceipt(row.action, row.params),
+      resultJson: null,
+    }),
+    resolveAttentionBySource({
+      orgId: row.org_id,
+      sourceType: 'agent_action',
+      sourceId: row.id,
+      resolution: terminalAttentionResolution(row.params, 'rejected'),
+      ...(reviewerId ? { actorUserId: reviewerId } : {}),
+    }),
+  ];
+  if (options.repairWorkIntent !== false && reviewerId) {
+    postcommit.push(markWorkIntentDismissedForAction({
+      actionId: row.id,
+      orgId: row.org_id,
+      actionParams: row.params,
+      dismissedBy: reviewerId,
+      reason: row.error,
+    }));
+  }
+  await Promise.all(postcommit);
+}
+
+async function repairExpiredModuleTerminalState(
+  row: typeof agentActions.$inferSelect,
+  options: { repairWorkIntent?: boolean } = {},
+): Promise<void> {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return;
+  const proposer = moduleProposer(row);
+  const postcommit: Array<Promise<unknown>> = [
+    generateReceipt({
+      actionId: row.id,
+      orgId: row.org_id,
+      employeeId: row.agent_employee_id ?? null,
+      proposer: proposer.proposer,
+      proposerId: proposer.proposerId,
+      approverId: row.approved_by_user_id ?? null,
+      decision: 'expired',
+      decisionReason: row.error,
+      actionName: row.action,
+      actionParams: sanitizeModuleActionParamsForReceipt(row.action, row.params),
+      resultJson: null,
+    }),
+    resolveAttentionBySource({
+      orgId: row.org_id,
+      sourceType: 'agent_action',
+      sourceId: row.id,
+      resolution: terminalAttentionResolution(row.params, 'expired'),
+    }),
+  ];
+  if (options.repairWorkIntent !== false) {
+    postcommit.push(markWorkIntentsExpiredForActions({
+      orgId: row.org_id,
+      actions: [{ id: row.id, params: row.params }],
+      reason: row.error,
+    }));
+  }
+  await Promise.all(postcommit);
+}
+
+async function ensureApprovedModuleReceipt(
+  row: typeof agentActions.$inferSelect,
+): Promise<void> {
+  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return;
+  const approverId = row.approved_by_user_id ?? null;
+  const decision = row.approved_by_user_id ? 'approved' : 'auto_executed';
+  const isDefty = !row.agent_employee_id;
+  await generateReceipt({
+    actionId: row.id,
+    orgId: row.org_id,
+    employeeId: row.agent_employee_id ?? null,
+    proposer: isDefty ? 'defty' : 'employee',
+    proposerId: isDefty ? row.user_id : row.agent_employee_id,
+    approverId,
+    decision,
+    decisionReason: row.error ? `execution failed: ${row.error}`.slice(0, 2_000) : null,
+    actionName: row.action,
+    actionParams: sanitizeModuleActionParamsForReceipt(row.action, row.params),
+    resultJson: row.error ? null : row.result,
+  });
+}
+
+async function expireModuleActionForEmployeePolicy(params: {
+  row: typeof agentActions.$inferSelect;
+  reason: string;
+  ctx?: ToolContext | null;
+}): Promise<boolean> {
+  const terminalParams = terminalModuleActionParams(
+    params.row.action,
+    params.row.params,
+    params.ctx,
+  ) ?? sanitizeModuleActionParamsForHistory(params.row.action, params.row.params);
+  terminalParams[TERMINAL_ATTENTION_RESOLUTION] = 'employee_policy_invalidated';
+  const expired = await db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .update(agentActions)
+      .set({
+        approval_status: 'expired',
+        error: params.reason.slice(0, 2_000),
+        params: terminalParams,
+        executed_at: new Date(),
+      })
+      .where(and(
+        eq(agentActions.id, params.row.id),
+        eq(agentActions.org_id, params.row.org_id),
+        or(
+          eq(agentActions.approval_status, 'pending'),
+          and(
+            eq(agentActions.approval_status, 'approved'),
+            sql`${agentActions.executed_at} IS NULL`,
+          ),
+        ),
+      ))
+      .returning();
+    if (!claimed) return null;
+    // Keep the raw work_intent_id available only until its terminal state is
+    // committed atomically with the scrubbed action row.
+    await markWorkIntentsExpiredForActions({
+      orgId: params.row.org_id,
+      actions: [{ id: params.row.id, params: params.row.params }],
+      reason: params.reason,
+    }, tx);
+    return claimed;
+  });
+  if (!expired) {
+    const [terminal] = await db
+      .select()
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.id, params.row.id),
+        eq(agentActions.org_id, params.row.org_id),
+      ))
+      .limit(1);
+    if (terminal?.approval_status === 'rejected') {
+      await repairRejectedModuleTerminalState(terminal);
+    } else if (terminal?.approval_status === 'expired') {
+      await repairExpiredModuleTerminalState(terminal);
+    }
+    return false;
+  }
+
+  await Promise.all([
+    generateReceipt({
+      actionId: params.row.id,
+      orgId: params.row.org_id,
+      employeeId: params.row.agent_employee_id ?? null,
+      proposer: params.row.agent_employee_id ? 'employee' : 'defty',
+      proposerId: params.row.agent_employee_id ?? params.row.user_id,
+      // If the process died after the human approval claim but before the
+      // module mutation completed, preserve the reviewer who made that
+      // decision even when a later policy change terminalizes the action.
+      approverId: params.row.approved_by_user_id ?? null,
+      decision: 'expired',
+      decisionReason: params.reason,
+      actionName: params.row.action,
+      actionParams: sanitizeModuleActionParamsForReceipt(params.row.action, terminalParams),
+      resultJson: null,
+    }),
+    resolveAttentionBySource({
+      orgId: params.row.org_id,
+      sourceType: 'agent_action',
+      sourceId: params.row.id,
+      resolution: 'employee_policy_invalidated',
+    }),
+  ]);
+  return true;
+}
 
 export type ApprovalResolverError =
   | { status: 'error'; code: 'NOT_FOUND'; message: string }
@@ -128,16 +437,14 @@ async function loadEmployeeForAction(employeeId: string) {
       slug: agentEmployees.slug,
       trust_level: agentEmployees.trust_level,
       disabled_tools: agentEmployees.disabled_tools,
+      unhealthy: agentEmployees.unhealthy,
+      unhealthy_reason: agentEmployees.unhealthy_reason,
+      is_active: agentEmployees.is_active,
+      is_deleted: agentEmployees.is_deleted,
+      runtime_kind: agentEmployees.runtime_kind,
     })
     .from(agentEmployees)
-    .where(and(
-      eq(agentEmployees.id, employeeId),
-      eq(agentEmployees.is_active, true),
-      or(
-        eq(agentEmployees.is_deleted, false),
-        eq(agentEmployees.runtime_kind, 'defty_system'),
-      ),
-    ))
+    .where(eq(agentEmployees.id, employeeId))
     .limit(1);
   return row ?? null;
 }
@@ -148,6 +455,11 @@ function buildCtxFromEmployee(emp: {
   slug: string;
   trust_level: string;
   disabled_tools: string[] | null;
+  unhealthy: boolean;
+  unhealthy_reason: string | null;
+  is_active: boolean;
+  is_deleted: boolean;
+  runtime_kind: string;
 }): ToolContext {
   return {
     org_id: emp.org_id,
@@ -197,6 +509,40 @@ async function dispatchAction(
         type: 'text',
         text: JSON.stringify(executed.success ? executed.result : {
           error: executed.error ?? 'MCP tool execution failed',
+          result: executed.result,
+        }),
+      }],
+      isError: !executed.success,
+    };
+  }
+
+  // Dedicated module tools validate + preflight before queueing. Keep these
+  // out of normalizeMcpApprovalAction (and therefore out of the generic
+  // request_human_approval tool), while still resolving them through this
+  // signed approval boundary.
+  if (MODULE_MUTATION_ACTIONS.has(actionName)) {
+    if (!actionId) {
+      return {
+        content: [{
+          type: 'text',
+          text: `${actionName} approval is missing an action id`,
+        }],
+        isError: true,
+      };
+    }
+    const executed = await executeAgentAction(
+      actionId,
+      actionName,
+      params,
+      ctx.org_id,
+      dispatchOpts?.requesterUserId ?? ctx.employee_id,
+      { agentEmployeeId: ctx.employee_id },
+    );
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(executed.success ? executed.result : {
+          error: executed.error ?? 'Module mutation execution failed',
           result: executed.result,
         }),
       }],
@@ -296,6 +642,17 @@ export async function approveAction(
   approverUserId: string,
   options: { internal?: boolean } = {},
 ): Promise<ApprovalResolverResult> {
+  return withDbAdvisoryLock(
+    `agent-approval:${actionId}`,
+    () => approveActionLocked(actionId, approverUserId, options),
+  );
+}
+
+async function approveActionLocked(
+  actionId: string,
+  approverUserId: string,
+  options: { internal?: boolean },
+): Promise<ApprovalResolverResult> {
   // Pre-checks read immutable fields so they are safe to run before the
   // atomic claim. If any pre-check fails we return without ever flipping
   // the row.
@@ -313,36 +670,11 @@ export async function approveAction(
     };
   }
 
-  // Idempotency: already in a terminal state.
-  if (row.approval_status === 'approved') {
-    return {
-      status: 'approved',
-      message: 'already approved',
-      result: row.result ?? undefined,
-    };
-  }
-  if (row.approval_status === 'rejected') {
-    return {
-      status: 'rejected',
-      message: 'already rejected',
-    };
-  }
-  if (row.approval_status === 'expired') {
-    return {
-      status: 'error',
-      code: 'NOT_FOUND',
-      message: `action ${actionId} has expired`,
-    };
-  }
-  if (row.approval_status !== 'pending') {
-    return {
-      status: 'error',
-      code: 'INVALID_STATE',
-      message: `action ${actionId} is not pending`,
-    };
-  }
+  const isModuleMutation = MODULE_MUTATION_ACTIONS.has(row.action);
 
-  // Permission check.
+  // Authorize before returning or repairing any durable terminal state. A
+  // terminal retry may create missing receipts/attention artifacts, so it is
+  // not a side-effect-free read and must not be reachable cross-org.
   const membership = await loadReviewMembership(approverUserId, row.org_id);
   const canReview = options.internal || (
     membership !== null && (
@@ -359,6 +691,44 @@ export async function approveAction(
     };
   }
 
+  const resumesApprovedModule = isModuleMutation
+    && row.approval_status === 'approved'
+    && row.executed_at === null;
+
+  // A module mutation is durable/idempotent, so approved-but-unexecuted rows
+  // are safe to resume after a process crash. Completed approvals also retry
+  // receipt generation, which is itself idempotent.
+  if (row.approval_status === 'approved' && !resumesApprovedModule) {
+    if (isModuleMutation) await ensureApprovedModuleReceipt(row);
+    return {
+      status: 'approved',
+      message: 'already approved',
+      result: row.result ?? undefined,
+    };
+  }
+  if (row.approval_status === 'rejected') {
+    if (isModuleMutation) await repairRejectedModuleTerminalState(row);
+    return {
+      status: 'rejected',
+      message: 'already rejected',
+    };
+  }
+  if (row.approval_status === 'expired') {
+    if (isModuleMutation) await repairExpiredModuleTerminalState(row);
+    return {
+      status: 'error',
+      code: 'NOT_FOUND',
+      message: `action ${actionId} has expired`,
+    };
+  }
+  if (row.approval_status !== 'pending' && !resumesApprovedModule) {
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: `action ${actionId} is not pending`,
+    };
+  }
+
   if (!MCP_ACTION_KINDS.has(row.action) && !row.action.startsWith('mcp__') && !ACTION_TOOLS.has(row.action)) {
     return {
       status: 'error',
@@ -367,7 +737,9 @@ export async function approveAction(
     };
   }
 
-  const requiresEmployee = MCP_ACTION_KINDS.has(row.action) || row.action.startsWith('mcp__');
+  const requiresEmployee = row.action.startsWith('mcp__') || (
+    MCP_ACTION_KINDS.has(row.action) && !isModuleMutation
+  );
   if (!row.agent_employee_id && requiresEmployee) {
     return {
       status: 'error',
@@ -376,8 +748,57 @@ export async function approveAction(
     };
   }
 
+  if (resumesApprovedModule) {
+    const committed = await recoverModuleMutationByAgentActionId(row.org_id, row.id);
+    if (committed) {
+      const recoveredParams = {
+        ...sanitizeModuleActionParamsForHistory(row.action, row.params),
+        idempotency_digest: committed.idempotencyDigest,
+        input_digest: committed.inputDigest,
+      };
+      const recoveredRow = await db.transaction(async (tx) => {
+        const [stamped] = await tx
+          .update(agentActions)
+          .set({
+            executed_at: new Date(),
+            result: committed.mutation,
+            after_state: committed.mutation,
+            error: null,
+            params: recoveredParams,
+          })
+          .where(and(
+            eq(agentActions.id, row.id),
+            eq(agentActions.org_id, row.org_id),
+            eq(agentActions.approval_status, 'approved'),
+            sql`${agentActions.executed_at} IS NULL`,
+          ))
+          .returning();
+        if (!stamped) return null;
+        // The terminal action payload is scrubbed, so use the original
+        // proposal params while atomically closing its linked WorkIntent.
+        await markWorkIntentConvertedForAction({
+          actionId: row.id,
+          orgId: row.org_id,
+          actionParams: row.params,
+          result: committed.mutation,
+          convertedBy: row.approved_by_user_id ?? approverUserId,
+        }, tx);
+        return stamped;
+      });
+      if (recoveredRow) {
+        await ensureApprovedModuleReceipt(recoveredRow);
+        return { status: 'approved', result: committed.mutation };
+      }
+    }
+  }
+
   const emp = row.agent_employee_id ? await loadEmployeeForAction(row.agent_employee_id) : null;
   if (row.agent_employee_id && !emp) {
+    if (isModuleMutation) {
+      const reason = 'Agent employee no longer exists; module action expired before approval';
+      await expireModuleActionForEmployeePolicy({ row, reason });
+      return { status: 'error', code: 'INVALID_STATE', message: reason };
+    }
     return {
       status: 'error',
       code: 'EMPLOYEE_MISSING',
@@ -392,7 +813,35 @@ export async function approveAction(
     };
   }
 
+  const ctx = emp ? buildCtxFromEmployee(emp) : null;
+  const employeeOperational = emp
+    ? emp.is_active && (!emp.is_deleted || emp.runtime_kind === 'defty_system')
+    : false;
+  if (emp && !employeeOperational) {
+    if (isModuleMutation) {
+      const reason = 'Agent employee was paused or deleted; module action expired before approval';
+      await expireModuleActionForEmployeePolicy({ row, reason, ctx });
+      return { status: 'error', code: 'INVALID_STATE', message: reason };
+    }
+    return {
+      status: 'error',
+      code: 'EMPLOYEE_MISSING',
+      message: `agent_employee ${row.agent_employee_id} is inactive or deleted`,
+    };
+  }
+
+  if (emp?.unhealthy && isModuleMutation) {
+    const reason = `Agent employee became unhealthy before approval${emp.unhealthy_reason ? `: ${emp.unhealthy_reason}` : ''}`;
+    await expireModuleActionForEmployeePolicy({ row, reason, ctx });
+    return { status: 'error', code: 'INVALID_STATE', message: reason };
+  }
+
   if (emp && isAgentToolDisabled(emp.disabled_tools, row.action)) {
+    if (isModuleMutation) {
+      const reason = `Tool '${row.action}' was disabled before approval`;
+      await expireModuleActionForEmployeePolicy({ row, reason, ctx });
+      return { status: 'error', code: 'INVALID_STATE', message: reason };
+    }
     return {
       status: 'error',
       code: 'FORBIDDEN',
@@ -400,48 +849,78 @@ export async function approveAction(
     };
   }
 
-  const ctx = emp ? buildCtxFromEmployee(emp) : null;
+  if (isModuleMutation) {
+    try {
+      await preflightAgentModuleAction(
+        row.action,
+        recordValue(row.params),
+        row.org_id,
+        row.user_id,
+        row.agent_employee_id ?? undefined,
+      );
+    } catch (error) {
+      const reason = `Module action no longer passes execution policy: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      await expireModuleActionForEmployeePolicy({ row, reason, ctx });
+      return { status: 'error', code: 'INVALID_STATE', message: reason };
+    }
+  }
 
   // Phase 12 review fix — atomic claim. Two concurrent callers could both
   // pass the `status === 'pending'` read above; the UPDATE … WHERE … AND
   // approval_status = 'pending' only succeeds for one of them. If this
   // returns zero rows, we lost the race and return the idempotent result.
-  const claimed = await db.execute(
-    sql`UPDATE agent_actions
-           SET approval_status = 'approved', approved_at = NOW()
-         WHERE id = ${actionId} AND approval_status = 'pending'
-         RETURNING id`,
-  );
-  const claimedRows =
-    (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
-  if (claimedRows.length === 0) {
-    const [winner] = await db
-      .select()
-      .from(agentActions)
-      .where(eq(agentActions.id, actionId))
-      .limit(1);
-    if (winner?.approval_status === 'approved') {
-      return {
-        status: 'approved',
-        message: 'already approved (lost race)',
-        result: winner.result ?? undefined,
-      };
-    }
-    if (winner?.approval_status === 'rejected') {
-      return { status: 'rejected', message: 'already rejected (lost race)' };
-    }
-    if (winner?.approval_status === 'expired') {
+  if (!resumesApprovedModule) {
+    const claimed = await db.execute(
+      sql`UPDATE agent_actions
+             SET approval_status = 'approved',
+                 approved_at = NOW(),
+                 approved_by_user_id = ${approverUserId}
+           WHERE id = ${actionId} AND approval_status = 'pending'
+           RETURNING id`,
+    );
+    const claimedRows =
+      (claimed as { rows?: any[] }).rows ?? (claimed as unknown as any[]);
+    if (claimedRows.length === 0) {
+      const [winner] = await db
+        .select()
+        .from(agentActions)
+        .where(eq(agentActions.id, actionId))
+        .limit(1);
+      if (winner?.approval_status === 'approved') {
+        if (isModuleMutation && winner.executed_at === null) {
+          return {
+            status: 'error',
+            code: 'INVALID_STATE',
+            message: `action ${actionId} approval changed while it was being claimed; retry to resume`,
+          };
+        }
+        if (isModuleMutation) await ensureApprovedModuleReceipt(winner);
+        return {
+          status: 'approved',
+          message: 'already approved (lost race)',
+          result: winner.result ?? undefined,
+        };
+      }
+      if (winner?.approval_status === 'rejected') {
+        if (isModuleMutation) await repairRejectedModuleTerminalState(winner);
+        return { status: 'rejected', message: 'already rejected (lost race)' };
+      }
+      if (winner?.approval_status === 'expired') {
+        if (isModuleMutation) await repairExpiredModuleTerminalState(winner);
+        return {
+          status: 'error',
+          code: 'NOT_FOUND',
+          message: `action ${actionId} has expired`,
+        };
+      }
       return {
         status: 'error',
-        code: 'NOT_FOUND',
-        message: `action ${actionId} has expired`,
+        code: 'INVALID_STATE',
+        message: `action ${actionId} is no longer pending`,
       };
     }
-    return {
-      status: 'error',
-      code: 'INVALID_STATE',
-      message: `action ${actionId} is no longer pending`,
-    };
   }
 
   let toolResult: ToolResult;
@@ -456,7 +935,10 @@ export async function approveAction(
             ? actionParams.origin_user_id
             : null
         : null;
-    if (ACTION_TOOLS.has(row.action) && !MCP_ACTION_KINDS.has(row.action)) {
+    if (
+      ACTION_TOOLS.has(row.action)
+      && (!MCP_ACTION_KINDS.has(row.action) || (isModuleMutation && !ctx))
+    ) {
       const executed = await executeAgentAction(
         row.id,
         row.action,
@@ -504,14 +986,58 @@ export async function approveAction(
   // Stamp exec outcome on the row. approval_status is already 'approved'
   // from the atomic claim; we only touch executed_at + result/error here.
   const now = new Date();
-  await db
-    .update(agentActions)
-    .set({
-      executed_at: now,
-      result: (isError ? null : parsedResult) as any,
-      error: isError ? String(resultText).slice(0, 2000) : null,
-    })
-    .where(eq(agentActions.id, actionId));
+  const terminalParams = terminalModuleActionParams(row.action, row.params, ctx);
+  const stampedAction = await db.transaction(async (tx) => {
+    const [stamped] = await tx
+      .update(agentActions)
+      .set({
+        executed_at: now,
+        result: (isError ? null : parsedResult) as any,
+        error: isError ? String(resultText).slice(0, 2000) : null,
+        ...(terminalParams ? { params: terminalParams } : {}),
+      })
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.org_id, row.org_id),
+        eq(agentActions.approval_status, 'approved'),
+      ))
+      .returning({ id: agentActions.id });
+    if (!stamped) return null;
+    if (isError) {
+      await markWorkIntentFailedForAction({
+        actionId: row.id,
+        orgId: row.org_id,
+        actionParams: row.params,
+        reason: resultText || caughtError?.message || 'execution failed',
+      }, tx);
+    } else {
+      await markWorkIntentConvertedForAction({
+        actionId: row.id,
+        orgId: row.org_id,
+        actionParams: row.params,
+        result: parsedResult,
+        convertedBy: row.approved_by_user_id ?? approverUserId,
+      }, tx);
+    }
+    return stamped;
+  });
+
+  // Installation disable/write-revoke may have terminalized this action while
+  // the executor was waiting for the same installation lock. In that case the
+  // lifecycle decision won: do not overwrite its history, emit a contradictory
+  // approval receipt, or change the linked WorkIntent a second time.
+  if (!stampedAction) {
+    const [terminal] = await db
+      .select({ approval_status: agentActions.approval_status, error: agentActions.error })
+      .from(agentActions)
+      .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, row.org_id)))
+      .limit(1);
+    return {
+      status: 'error',
+      code: 'INVALID_STATE',
+      message: terminal?.error ?? `action ${actionId} was terminalized while execution was in progress`,
+    };
+  }
 
   // Invalidate platform_context cache for the employee so the next turn
   // sees the new state. executeTaskCreate etc. already do this, but we
@@ -531,38 +1057,23 @@ export async function approveAction(
   // message so a compliance officer can read "approved but execution
   // failed: X" instead of silently losing the decision.
   const isDeftyCapture = row.source === 'defty_capture';
+  const isDeftyModuleAction = isModuleMutation && !row.agent_employee_id;
+  const isDeftyProposer = isDeftyCapture || isDeftyModuleAction;
   await generateReceipt({
     actionId: row.id,
     orgId: row.org_id,
     employeeId: ctx?.employee_id ?? null,
-    proposer: isDeftyCapture ? 'defty' : 'employee',
-    proposerId: isDeftyCapture ? row.user_id : ctx?.employee_id ?? null,
-    approverId: approverUserId,
+    proposer: isDeftyProposer ? 'defty' : 'employee',
+    proposerId: isDeftyProposer ? row.user_id : ctx?.employee_id ?? null,
+    approverId: row.approved_by_user_id ?? approverUserId,
     decision: 'approved',
     decisionReason: isError
       ? `execution failed: ${resultText || caughtError?.message || 'unknown'}`.slice(0, 2000)
       : null,
     actionName: row.action,
-    actionParams: (row.params ?? {}) as Record<string, unknown>,
+    actionParams: sanitizeModuleActionParamsForReceipt(row.action, row.params),
     resultJson: isError ? null : parsedResult,
   });
-
-  if (isError) {
-    await markWorkIntentFailedForAction({
-      actionId: row.id,
-      orgId: row.org_id,
-      actionParams: row.params,
-      reason: resultText || caughtError?.message || 'execution failed',
-    });
-  } else {
-    await markWorkIntentConvertedForAction({
-      actionId: row.id,
-      orgId: row.org_id,
-      actionParams: row.params,
-      result: parsedResult,
-      convertedBy: approverUserId,
-    });
-  }
 
   if (isError) {
     return {
@@ -604,25 +1115,10 @@ export async function rejectAction(
     };
   }
 
-  if (row.approval_status === 'rejected') {
-    return { status: 'rejected', message: 'already rejected' };
-  }
-  if (row.approval_status === 'approved') {
-    return {
-      status: 'approved',
-      message: 'already approved — cannot reject after approval',
-      result: row.result ?? undefined,
-    };
-  }
-  if (row.approval_status === 'expired') {
-    return {
-      status: 'error',
-      code: 'NOT_FOUND',
-      message: `action ${actionId} has expired`,
-    };
-  }
+  const isModuleMutation = MODULE_MUTATION_ACTIONS.has(row.action);
 
-  // Permission check.
+  // Terminal-state repair can write receipts and attention state. Apply the
+  // same reviewer boundary before any early return or repair side effect.
   const membership = await loadReviewMembership(rejecterUserId, row.org_id);
   const canReview = membership !== null && (
     actionRequesterId(row) === rejecterUserId ||
@@ -637,6 +1133,26 @@ export async function rejectAction(
     };
   }
 
+  if (row.approval_status === 'rejected') {
+    if (isModuleMutation) await repairRejectedModuleTerminalState(row);
+    return { status: 'rejected', message: 'already rejected' };
+  }
+  if (row.approval_status === 'approved') {
+    return {
+      status: 'approved',
+      message: 'already approved — cannot reject after approval',
+      result: row.result ?? undefined,
+    };
+  }
+  if (row.approval_status === 'expired') {
+    if (isModuleMutation) await repairExpiredModuleTerminalState(row);
+    return {
+      status: 'error',
+      code: 'NOT_FOUND',
+      message: `action ${actionId} has expired`,
+    };
+  }
+
   if (row.agent_employee_id) {
     const emp = await loadEmployeeForAction(row.agent_employee_id);
     if (!emp || emp.org_id !== row.org_id) {
@@ -648,17 +1164,39 @@ export async function rejectAction(
     }
   }
 
-  const [updated] = await db
-    .update(agentActions)
-    .set({
-      approval_status: 'rejected',
-      error: reason ? reason.slice(0, 2000) : null,
-    })
-    .where(and(
-      eq(agentActions.id, actionId),
-      eq(agentActions.approval_status, 'pending'),
-    ))
-    .returning({ id: agentActions.id });
+  const rejectionReason = reason ? reason.slice(0, 2_000) : null;
+  const rejectedParams = isModuleMutation
+    ? {
+      ...sanitizeModuleActionParamsForHistory(row.action, row.params),
+      [TERMINAL_REVIEWER_USER_ID]: rejecterUserId,
+      [TERMINAL_ATTENTION_RESOLUTION]: 'rejected',
+    }
+    : null;
+  const updated = await db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .update(agentActions)
+      .set({
+        approval_status: 'rejected',
+        error: rejectionReason,
+        ...(rejectedParams ? { params: rejectedParams } : {}),
+      })
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.approval_status, 'pending'),
+      ))
+      .returning();
+    if (!claimed) return null;
+    // The module row is scrubbed by this same commit, so the WorkIntent must
+    // consume the original proposal params inside the transaction.
+    await markWorkIntentDismissedForAction({
+      actionId: row.id,
+      orgId: row.org_id,
+      actionParams: row.params,
+      dismissedBy: rejecterUserId,
+      reason: rejectionReason,
+    }, tx);
+    return claimed;
+  });
 
   if (!updated) {
     const [winner] = await db
@@ -674,9 +1212,11 @@ export async function rejectAction(
       };
     }
     if (winner?.approval_status === 'rejected') {
+      if (isModuleMutation) await repairRejectedModuleTerminalState(winner);
       return { status: 'rejected', message: 'already rejected' };
     }
     if (winner?.approval_status === 'expired') {
+      if (isModuleMutation) await repairExpiredModuleTerminalState(winner);
       return {
         status: 'error',
         code: 'NOT_FOUND',
@@ -690,29 +1230,35 @@ export async function rejectAction(
     };
   }
 
-  // ── Phase 7 — signed rejection receipt ───────────────────────────────
-  const isDeftyCapture = row.source === 'defty_capture';
-  await generateReceipt({
-    actionId: row.id,
-    orgId: row.org_id,
-    employeeId: row.agent_employee_id ?? null,
-    proposer: isDeftyCapture ? 'defty' : 'employee',
-    proposerId: isDeftyCapture ? row.user_id : row.agent_employee_id ?? null,
-    approverId: rejecterUserId,
-    decision: 'rejected',
-    decisionReason: reason ?? null,
-    actionName: row.action,
-    actionParams: (row.params ?? {}) as Record<string, unknown>,
-    resultJson: null,
-  });
-
-  await markWorkIntentDismissedForAction({
-    actionId: row.id,
-    orgId: row.org_id,
-    actionParams: row.params,
-    dismissedBy: rejecterUserId,
-    reason: reason ?? null,
-  });
+  // Receipts and Attention are post-commit and independently idempotent. A
+  // retry of a terminal module row repairs either artifact after a crash.
+  if (isModuleMutation) {
+    await repairRejectedModuleTerminalState(updated, { repairWorkIntent: false });
+  } else {
+    const isDeftyCapture = row.source === 'defty_capture';
+    await Promise.all([
+      generateReceipt({
+        actionId: row.id,
+        orgId: row.org_id,
+        employeeId: row.agent_employee_id ?? null,
+        proposer: isDeftyCapture ? 'defty' : 'employee',
+        proposerId: isDeftyCapture ? row.user_id : row.agent_employee_id ?? null,
+        approverId: rejecterUserId,
+        decision: 'rejected',
+        decisionReason: rejectionReason,
+        actionName: row.action,
+        actionParams: sanitizeModuleActionParamsForReceipt(row.action, row.params),
+        resultJson: null,
+      }),
+      resolveAttentionBySource({
+        orgId: row.org_id,
+        sourceType: 'agent_action',
+        sourceId: row.id,
+        resolution: 'rejected',
+        actorUserId: rejecterUserId,
+      }),
+    ]);
+  }
 
   return { status: 'rejected', message: reason };
 }

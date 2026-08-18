@@ -39,6 +39,7 @@ import {
   BookOpen,
   Smile,
   Inbox,
+  Boxes,
   ChevronDown,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
@@ -91,6 +92,7 @@ const navItems = [
   { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
   { name: 'Calendar', href: '/calendar', icon: CalendarDays },
   { name: 'Notes', href: '/notes', icon: FileText },
+  { name: 'Modules', href: '/modules', icon: Boxes },
   { name: 'Inbox', href: '/inbox', icon: Inbox },
 ];
 
@@ -724,6 +726,7 @@ export function Sidebar({
   const { unreadCounts } = useChatContext();
   const pathname = usePathname();
   const router = useRouter();
+  const visibleNavItems = navItems.filter((item) => item.href !== '/modules' || user?.role !== 'guest');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   // Create-space modal lifted from ChatSidebarContent — the parent Sidebar
@@ -820,7 +823,7 @@ export function Sidebar({
     if (pathname.startsWith('/tasks')) {
       return <TasksSidebarContent onNav={handleNav} />;
     }
-    if (pathname.startsWith('/notes') || pathname.startsWith('/dashboard')) {
+    if (pathname.startsWith('/notes') || pathname.startsWith('/modules') || pathname.startsWith('/dashboard')) {
       return null;
     }
     if (pathname.startsWith('/settings')) {
@@ -870,7 +873,7 @@ export function Sidebar({
 
       {/* Nav items — vertical list */}
       <div className="px-3 py-1 flex-shrink-0">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const active = pathname.startsWith(item.href);
           return (
             <Link
@@ -1010,7 +1013,7 @@ export function Sidebar({
 
 
       {/* Nav icons */}
-      {navItems.map((item) => {
+      {visibleNavItems.map((item) => {
         const active = pathname.startsWith(item.href);
         return (
           <Link key={item.href} href={item.href} title={item.name}

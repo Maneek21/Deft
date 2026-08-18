@@ -46,6 +46,8 @@ import {
 import { getIO } from '../socket.js';
 import { formatApprovalConfirmation } from '../lib/agent-action-confirmation.js';
 import { recordActionApproverDecision, resolveAttentionBySource } from '../lib/attention.js';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
+import { sanitizeAgentMetadataForStorage } from '../lib/module-agent-history.js';
 
 export const agentRoutes = new Hono();
 
@@ -207,10 +209,17 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
   )`;
 }
 
+function visibleActionSql(user: { id: string; org_id: string; role?: string }) {
+  return and(
+    visibleCaptureActionSql(user),
+    visibleModuleActionSql(user.role),
+  );
+}
+
 function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
   const canReviewOrgActions = user.role === 'owner' || user.role === 'admin';
   return and(
-    visibleCaptureActionSql(user),
+    visibleActionSql(user),
     sql`(
       EXISTS (
         SELECT 1 FROM ${agentActionApprovers}
@@ -593,8 +602,9 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   // Rows with metadata.hidden=true are tool_use iterations that should stay in the
   // message history so the model sees its previous reasoning (just not shown in UI).
   const apiMessages: Anthropic.MessageParam[] = [];
+  const historyToolNames = new Map<string, string>();
   for (const m of history) {
-    const meta = (m.metadata as any) ?? {};
+    const meta = sanitizeAgentMetadataForStorage(m.metadata, historyToolNames);
     const role: 'user' | 'assistant' = m.user_id === resolvedAgentUserId ? 'assistant' : 'user';
     const blocks = meta.agent_blocks;
     if (blocks && Array.isArray(blocks) && blocks.length > 0) {
@@ -831,11 +841,16 @@ agentRoutes.get('/conversations/:id/messages', async (c) => {
   const actionList = await db
     .select()
     .from(agentActions)
-    .where(eq(agentActions.conversation_id, id));
+    .where(and(
+      eq(agentActions.conversation_id, id),
+      eq(agentActions.org_id, user.org_id),
+      visibleActionSql(user),
+    ));
 
   // Map to the shape AgentChat expects and attach pending_actions.
+  const visibleToolNames = new Map<string, string>();
   const messagesWithActions = visible.map((r) => {
-    const m = (r.metadata as any) || {};
+    const m = sanitizeAgentMetadataForStorage(r.metadata, visibleToolNames);
     const role = (agentUserId && r.user_id === agentUserId) ? 'assistant' : 'user';
     return {
       id: r.id,
@@ -1089,6 +1104,11 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.approval_status = 'pending'
       AND a.approval_tier IN ('quick', 'full')
       AND a.source IS DISTINCT FROM 'defty_capture'
+      AND (${user.role !== 'guest'} OR a.action NOT IN (
+        'module_record_create',
+        'module_record_update',
+        'module_record_archive'
+      ))
       AND (
         EXISTS (
           SELECT 1 FROM agent_action_approvers action_approver
@@ -1209,8 +1229,9 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
     ));
   const traceAgentUserId = traceOtherMembers[0]?.user_id ?? null;
 
+  const traceToolNames = new Map<string, string>();
   const msgs = msgRows.map((r) => {
-    const m = (r.metadata as any) || {};
+    const m = sanitizeAgentMetadataForStorage(r.metadata, traceToolNames);
     const role = (traceAgentUserId && r.user_id === traceAgentUserId) ? 'assistant' : 'user';
     return {
       id: r.id,
@@ -1244,6 +1265,7 @@ agentRoutes.get('/conversations/:id/trace.json', async (c) => {
     .where(and(
       eq(agentActions.conversation_id, convoId),
       eq(agentActions.org_id, user.org_id),
+      visibleActionSql(user),
     ))
     .orderBy(agentActions.created_at);
 
@@ -1278,6 +1300,11 @@ agentRoutes.get('/actions/recent', async (c) => {
   const limitParam = parseInt(c.req.query('limit') ?? '5', 10);
   const limit = Math.min(Math.max(isNaN(limitParam) ? 5 : limitParam, 1), 50);
 
+  const visibilityConditions = [
+    eq(agentActions.org_id, user.org_id),
+    visibleActionSql(user),
+  ];
+
   const rows = await db
     .select({
       id: agentActions.id,
@@ -1299,10 +1326,7 @@ agentRoutes.get('/actions/recent', async (c) => {
       eq(agentActions.agent_employee_id, agentEmployees.id),
       eq(agentEmployees.org_id, user.org_id),
     ))
-    .where(and(
-      eq(agentActions.org_id, user.org_id),
-      visibleCaptureActionSql(user),
-    ))
+    .where(and(...visibilityConditions))
     .orderBy(desc(agentActions.created_at))
     .limit(limit);
 
@@ -1569,6 +1593,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       ),
       ...(execResult.success ? {} : { is_error: true }),
     };
+    const toolResultNames = new Map([[action.tool_use_id, action.action]]);
     await db.insert(messages).values({
       org_id: action.org_id,
       space_id: action.conversation_id,
@@ -1577,7 +1602,10 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       metadata: {
         kind: 'tool_result',
         hidden: true,
-        agent_blocks: [toolResultBlock],
+        agent_blocks: sanitizeAgentMetadataForStorage(
+          { agent_blocks: [toolResultBlock] },
+          toolResultNames,
+        ).agent_blocks,
       } as any,
     });
   }
@@ -1720,7 +1748,11 @@ agentRoutes.post('/actions/:id/undo', async (c) => {
   const [action] = await db
     .select()
     .from(agentActions)
-    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, user.org_id)))
+    .where(and(
+      eq(agentActions.id, actionId),
+      eq(agentActions.org_id, user.org_id),
+      visibleActionSql(user),
+    ))
     .limit(1);
   if (!action) return c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
   if (action.undone_at) {
@@ -1863,7 +1895,7 @@ agentRoutes.get('/actions', async (c) => {
            EXISTS (SELECT 1 FROM action_receipts r WHERE r.action_id = agent_actions.id) AS has_receipt
     FROM agent_actions
     WHERE agent_actions.org_id = ${user.org_id}
-      AND ${visibleCaptureActionSql(user)}
+      AND ${visibleActionSql(user)}
     ORDER BY agent_actions.created_at DESC
     LIMIT 100
   `);
@@ -1887,17 +1919,14 @@ agentRoutes.get('/actions/:id/receipt', async (c) => {
     .from(agentActions)
     .where(and(
       eq(agentActions.id, actionId),
-      visibleCaptureActionSql(user),
+      eq(agentActions.org_id, user.org_id),
+      visibleActionSql(user),
     ))
     .limit(1);
 
   if (!action) {
     return c.json({ error: 'action not found', code: 'NOT_FOUND' }, 404);
   }
-  if (action.org_id !== user.org_id) {
-    return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
-  }
-
   const [receipt] = await db
     .select()
     .from(actionReceipts)

@@ -15,6 +15,7 @@ import {
 } from '@deft/db/schema';
 import { db } from './db.js';
 import { getIO } from '../socket.js';
+import { sanitizeModuleActionParamsForHistory } from './module-service.js';
 import { scheduleAttentionDeliveries, scheduleAttentionDelivery } from './web-push.js';
 
 export type AttentionLane = 'needs_you' | 'updates';
@@ -85,6 +86,20 @@ export function visibleAttentionCondition(userId: string) {
         FROM ${agentActions}
         WHERE ${agentActions.id} = ${attentionItems.source_id}
           AND ${agentActions.org_id} = ${attentionItems.org_id}
+          AND (
+            ${agentActions.action} NOT IN (
+              'module_record_create',
+              'module_record_update',
+              'module_record_archive'
+            )
+            OR NOT EXISTS (
+              SELECT 1 FROM ${orgMembers} module_attention_member
+              WHERE module_attention_member.org_id = ${attentionItems.org_id}
+                AND module_attention_member.user_id = ${userId}
+                AND module_attention_member.is_active = true
+                AND module_attention_member.role = 'guest'
+            )
+          )
       )
     )
   )`;
@@ -240,13 +255,23 @@ function actionRequesterId(action: AgentAction): string {
 }
 
 function approvalActionLabel(action: AgentAction): string {
+  if (isModuleWriteAction(action.action)) return action.action.replaceAll('_', ' ');
   const params = objectMetadata(action.params);
   return metadataString(params, 'summary', 'title', 'task_title', 'page_title', 'content')
     ?? action.action.replaceAll('_', ' ');
 }
 
+function isModuleWriteAction(action: string): boolean {
+  return action === 'module_record_create'
+    || action === 'module_record_update'
+    || action === 'module_record_archive';
+}
+
 export function approvalToAttentionDraft(action: AgentAction, userId: string): AttentionDraft {
   const params = objectMetadata(action.params);
+  const attentionParams = isModuleWriteAction(action.action)
+    ? sanitizeModuleActionParamsForHistory(action.action, params)
+    : params;
   const sourceSpaceId = metadataString(params, 'source_space_id', 'origin_space_id', 'space_id')
     ?? action.conversation_id;
   const sourceMessageId = metadataString(params, 'source_message_id') ?? action.message_id;
@@ -271,7 +296,7 @@ export function approvalToAttentionDraft(action: AgentAction, userId: string): A
     metadata: {
       action_id: action.id,
       action: action.action,
-      params,
+      params: attentionParams,
       approval_tier: action.approval_tier,
       agent_employee_id: action.agent_employee_id,
       source: action.source,
@@ -557,7 +582,23 @@ export async function filterVisibleAttentionItems<T extends typeof attentionItem
     ? await db
       .select({ id: agentActions.id })
       .from(agentActions)
-      .where(inArray(agentActions.id, actionIds))
+      .where(and(
+        inArray(agentActions.id, actionIds),
+        sql`(
+          ${agentActions.action} NOT IN (
+            'module_record_create',
+            'module_record_update',
+            'module_record_archive'
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM ${orgMembers} module_attention_member
+            WHERE module_attention_member.org_id = ${agentActions.org_id}
+              AND module_attention_member.user_id = ${userId}
+              AND module_attention_member.is_active = true
+              AND module_attention_member.role = 'guest'
+          )
+        )`,
+      ))
     : [];
   const allowedMessages = new Set(visibleMessages.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
   const allowedSpaces = new Set(visibleSpaces.filter((row) => row.type === 'public' || row.member_id).map((row) => row.id));
@@ -695,6 +736,13 @@ export async function ensureAttentionBackfillForUser(params: { orgId: string; us
       eq(agentActions.org_id, params.orgId),
       eq(agentActions.approval_status, 'pending'),
       inArray(agentActions.approval_tier, ['quick', 'full']),
+      params.role === 'guest'
+        ? sql`${agentActions.action} NOT IN (
+          'module_record_create',
+          'module_record_update',
+          'module_record_archive'
+        )`
+        : sql`true`,
       sql`(
         EXISTS (
           SELECT 1 FROM ${agentActionApprovers}

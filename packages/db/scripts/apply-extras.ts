@@ -16,6 +16,10 @@ const files = [
   '0020_wiki_search_vector.sql',
   '0033_tasks_embedding.sql',
   '0074_wiki_provenance_graph_scope.sql',
+  // drizzle-kit cannot express the immutable module-version trigger. The SQL
+  // is idempotent and also carries the expression/partial indexes that a
+  // fresh push must share with the supported upgrade path.
+  '0081_modules_v1.sql',
 ];
 
 async function main() {
@@ -36,6 +40,19 @@ async function main() {
          ON agent_employee_templates (COALESCE(org_id, ''), slug)`,
     );
     console.log('[apply-extras] ensured agent_employee_templates_org_slug_uniq');
+
+    const moduleVersionTrigger = await client.query<{ installed: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'module_versions_immutable_fields_trigger'
+          AND NOT tgisinternal
+      ) AS installed
+    `);
+    if (!moduleVersionTrigger.rows[0]?.installed) {
+      throw new Error('module_versions immutability trigger was not installed');
+    }
+    console.log('[apply-extras] verified module_versions_immutable_fields_trigger');
   } finally {
     await client.end();
   }

@@ -25,6 +25,8 @@ export type GatewayEmployee = {
   slug: string;
   trust_level: TrustLevel;
   disabled_tools: string[];
+  unhealthy: boolean;
+  unhealthy_reason: string | null;
 };
 
 export type ResolvedGateway = {
@@ -144,6 +146,8 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
       mcp_token_hash: agentEmployees.mcp_token_hash,
       trust_level: agentEmployees.trust_level,
       disabled_tools: agentEmployees.disabled_tools,
+      unhealthy: agentEmployees.unhealthy,
+      unhealthy_reason: agentEmployees.unhealthy_reason,
       is_active: agentEmployees.is_active,
     })
     .from(agentEmployees)
@@ -168,6 +172,8 @@ export async function resolveGatewayToken(bearer: string): Promise<ResolvedGatew
           slug: row.slug,
           trust_level: row.trust_level as TrustLevel,
           disabled_tools: row.disabled_tools ?? [],
+          unhealthy: row.unhealthy,
+          unhealthy_reason: row.unhealthy_reason,
         },
       ],
     };

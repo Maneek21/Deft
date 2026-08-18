@@ -1,7 +1,7 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey, numeric } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
@@ -10,6 +10,11 @@ const orgId = () => ({ org_id: text('org_id').notNull() });
 const timestamps = () => ({
   created_at: timestamp('created_at').defaultNow().notNull(),
   updated_at: timestamp('updated_at').defaultNow().notNull().$onUpdate(() => new Date()),
+});
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
 });
 
 // ═══ ENUMS ═══
@@ -546,6 +551,7 @@ export const agentActions = pgTable('agent_actions', {
   approval_tier: approvalTierEnum('approval_tier').notNull(),
   approval_status: approvalStatusEnum('approval_status').default('pending').notNull(),
   approved_at: timestamp('approved_at'),
+  approved_by_user_id: text('approved_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   executed_at: timestamp('executed_at'),
   error: text('error'),
   before_state: jsonb('before_state'),
@@ -786,6 +792,260 @@ export const taskTemplates = pgTable('task_templates', {
   uniqueIndex('task_templates_source_org_slug_idx').on(t.source, t.org_id, t.slug),
   index('task_templates_org_idx').on(t.org_id),
   index('task_templates_source_idx').on(t.source),
+]);
+
+// ═══ MODULES ═══
+// Declarative workspace modules are intentionally separate from agent skills.
+// An installation is the stable tenant-local identity, versions are immutable
+// manifest artifacts underneath it, and records retain the version that last
+// validated their data. Composite foreign keys make cross-tenant and
+// cross-installation references impossible even when callers pass valid IDs.
+export const moduleInstallations = pgTable('module_installations', {
+  ...id(),
+  org_id: text('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  module_id: text('module_id').notNull(),
+  slug: text('slug').notNull(),
+  source: text('source').$type<'bundled' | 'sideloaded' | 'registry'>().notNull(),
+  is_enabled: boolean('is_enabled').default(true).notNull(),
+  disabled_at: timestamp('disabled_at'),
+  // Manifests never grant agent access. An org admin chooses this installation
+  // policy independently; the service still applies principal trust/approval.
+  agent_access: text('agent_access').$type<'none' | 'read' | 'write'>().default('none').notNull(),
+  installed_by_user_id: text('installed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  installed_by_actor_type: text('installed_by_actor_type').notNull(),
+  installed_by_actor_id: text('installed_by_actor_id').notNull(),
+  updated_by_actor_type: text('updated_by_actor_type').notNull(),
+  updated_by_actor_id: text('updated_by_actor_id').notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
+  deleted_by_actor_type: text('deleted_by_actor_type'),
+  deleted_by_actor_id: text('deleted_by_actor_id'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('module_installations_org_id_id_unique').on(t.org_id, t.id),
+  uniqueIndex('module_installations_org_module_id_unique').on(t.org_id, t.module_id),
+  uniqueIndex('module_installations_org_slug_unique').on(t.org_id, t.slug),
+  index('module_installations_org_visibility_idx').on(t.org_id, t.is_enabled, t.is_deleted),
+  check('module_installations_module_id_not_empty', sql`length(btrim(${t.module_id})) > 0`),
+  check('module_installations_slug_not_empty', sql`length(btrim(${t.slug})) > 0`),
+  check('module_installations_source_check', sql`${t.source} IN ('bundled', 'sideloaded', 'registry')`),
+  check('module_installations_agent_access_check', sql`${t.agent_access} IN ('none', 'read', 'write')`),
+  check(
+    'module_installations_enabled_state_check',
+    sql`(${t.is_enabled} AND ${t.disabled_at} IS NULL) OR (NOT ${t.is_enabled} AND ${t.disabled_at} IS NOT NULL)`,
+  ),
+  check(
+    'module_installations_deleted_state_check',
+    sql`(
+      NOT ${t.is_deleted}
+      AND ${t.deleted_at} IS NULL
+      AND ${t.deleted_by_actor_type} IS NULL
+      AND ${t.deleted_by_actor_id} IS NULL
+    ) OR (
+      ${t.is_deleted}
+      AND ${t.deleted_at} IS NOT NULL
+      AND ${t.deleted_by_actor_type} IS NOT NULL
+      AND ${t.deleted_by_actor_id} IS NOT NULL
+    )`,
+  ),
+]);
+
+export const moduleVersions = pgTable('module_versions', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  version: text('version').notNull(),
+  manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  manifest_digest: text('manifest_digest').notNull(),
+  is_active: boolean('is_active').default(false).notNull(),
+  activated_at: timestamp('activated_at'),
+  created_by_actor_type: text('created_by_actor_type').notNull(),
+  created_by_actor_id: text('created_by_actor_id').notNull(),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'module_versions_org_installation_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('module_versions_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  uniqueIndex('module_versions_org_installation_version_unique').on(t.org_id, t.installation_id, t.version),
+  uniqueIndex('module_versions_one_active_unique')
+    .on(t.org_id, t.installation_id)
+    .where(sql`${t.is_active} = true`),
+  index('module_versions_installation_digest_idx').on(t.org_id, t.installation_id, t.manifest_digest),
+  check(
+    'module_versions_version_semver_check',
+    sql`${t.version} ~ '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$'`,
+  ),
+  check('module_versions_manifest_object_check', sql`jsonb_typeof(${t.manifest}) = 'object'`),
+  check(
+    'module_versions_manifest_digest_sha256_check',
+    sql`${t.manifest_digest} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+  check(
+    'module_versions_active_state_check',
+    sql`(NOT ${t.is_active}) OR ${t.activated_at} IS NOT NULL`,
+  ),
+]);
+
+export const moduleRecords = pgTable('module_records', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  collection_key: text('collection_key').notNull(),
+  validated_version_id: text('validated_version_id').notNull(),
+  data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+  revision: integer('revision').default(1).notNull(),
+  // Durable create dedupe. Update/archive safety is provided by revision CAS;
+  // storing only a mutable "last request" key would make old retries unsafe.
+  create_idempotency_key: text('create_idempotency_key'),
+  // Only manifest-declared fields are projected into these columns by the
+  // module service. Source JSON remains untouched and is never blanket-indexed.
+  search_title: text('search_title').notNull(),
+  search_subtitle: text('search_subtitle'),
+  search_text: text('search_text').notNull().default(''),
+  search_vector: tsvector('search_vector').generatedAlwaysAs(sql`
+    setweight(to_tsvector('simple'::regconfig, COALESCE("search_title", '')), 'A') ||
+    setweight(to_tsvector('simple'::regconfig, COALESCE("search_subtitle", '')), 'B') ||
+    setweight(to_tsvector('simple'::regconfig, COALESCE("search_text", '')), 'C')
+  `),
+  created_by_actor_type: text('created_by_actor_type').notNull(),
+  created_by_actor_id: text('created_by_actor_id').notNull(),
+  updated_by_actor_type: text('updated_by_actor_type').notNull(),
+  updated_by_actor_id: text('updated_by_actor_id').notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
+  deleted_by_actor_type: text('deleted_by_actor_type'),
+  deleted_by_actor_id: text('deleted_by_actor_id'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'module_records_org_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.installation_id, t.validated_version_id],
+    foreignColumns: [moduleVersions.org_id, moduleVersions.installation_id, moduleVersions.id],
+    name: 'module_records_validated_version_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('module_records_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  uniqueIndex('module_records_create_idempotency_unique')
+    .on(
+      t.org_id,
+      t.installation_id,
+      t.created_by_actor_type,
+      t.created_by_actor_id,
+      t.create_idempotency_key,
+    )
+    .where(sql`${t.create_idempotency_key} IS NOT NULL`),
+  index('module_records_org_collection_idx').on(
+    t.org_id,
+    t.installation_id,
+    t.collection_key,
+    t.is_deleted,
+    t.updated_at,
+  ),
+  index('module_records_validated_version_idx').on(t.org_id, t.installation_id, t.validated_version_id),
+  index('module_records_search_idx').using('gin', t.search_vector),
+  check('module_records_collection_key_not_empty', sql`length(btrim(${t.collection_key})) > 0`),
+  check('module_records_data_object_check', sql`jsonb_typeof(${t.data}) = 'object'`),
+  check('module_records_revision_positive_check', sql`${t.revision} >= 1`),
+  check(
+    'module_records_create_idempotency_digest_check',
+    sql`${t.create_idempotency_key} IS NULL OR ${t.create_idempotency_key} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+  check(
+    'module_records_deleted_state_check',
+    sql`(
+      NOT ${t.is_deleted}
+      AND ${t.deleted_at} IS NULL
+      AND ${t.deleted_by_actor_type} IS NULL
+      AND ${t.deleted_by_actor_id} IS NULL
+    ) OR (
+      ${t.is_deleted}
+      AND ${t.deleted_at} IS NOT NULL
+      AND ${t.deleted_by_actor_type} IS NOT NULL
+      AND ${t.deleted_by_actor_id} IS NOT NULL
+    )`,
+  ),
+]);
+
+// PII-free replay ledger for module writes. A completed mutation can be
+// replayed after a lost MCP response without retaining record values or raw
+// request/result JSON. The input digest proves whether a reused key represents
+// the same request; changed_fields contains names only.
+export const moduleMutationReceipts = pgTable('module_mutation_receipts', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  agent_action_id: text('agent_action_id').references(() => agentActions.id, { onDelete: 'restrict' }),
+  actor_type: text('actor_type').$type<'human' | 'defty' | 'agent_employee' | 'system'>().notNull(),
+  actor_id: text('actor_id').notNull(),
+  operation: text('operation').$type<'create' | 'update' | 'archive'>().notNull(),
+  idempotency_key: text('idempotency_key').notNull(),
+  input_digest: text('input_digest').notNull(),
+  record_id: text('record_id').notNull(),
+  result_revision: integer('result_revision').notNull(),
+  result_manifest_digest: text('result_manifest_digest').notNull(),
+  result_archived: boolean('result_archived').notNull(),
+  changed_fields: text('changed_fields').array().notNull().default(sql`ARRAY[]::text[]`),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'module_mutation_receipts_org_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.installation_id, t.record_id],
+    foreignColumns: [moduleRecords.org_id, moduleRecords.installation_id, moduleRecords.id],
+    name: 'module_mutation_receipts_record_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('module_mutation_receipts_idempotency_unique').on(
+    t.org_id,
+    t.actor_type,
+    t.actor_id,
+    t.operation,
+    t.idempotency_key,
+  ),
+  uniqueIndex('module_mutation_receipts_agent_action_unique')
+    .on(t.org_id, t.agent_action_id)
+    .where(sql`${t.agent_action_id} IS NOT NULL`),
+  index('module_mutation_receipts_record_idx').on(
+    t.org_id,
+    t.installation_id,
+    t.record_id,
+    t.created_at,
+  ),
+  check(
+    'module_mutation_receipts_actor_type_check',
+    sql`${t.actor_type} IN ('human', 'defty', 'agent_employee', 'system')`,
+  ),
+  check('module_mutation_receipts_actor_id_not_empty', sql`length(btrim(${t.actor_id})) > 0`),
+  check(
+    'module_mutation_receipts_operation_check',
+    sql`${t.operation} IN ('create', 'update', 'archive')`,
+  ),
+  check(
+    'module_mutation_receipts_idempotency_key_digest_check',
+    sql`${t.idempotency_key} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+  check(
+    'module_mutation_receipts_input_digest_check',
+    sql`${t.input_digest} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+  check('module_mutation_receipts_result_revision_check', sql`${t.result_revision} >= 1`),
+  check(
+    'module_mutation_receipts_result_manifest_digest_check',
+    sql`${t.result_manifest_digest} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+  check(
+    'module_mutation_receipts_result_state_check',
+    sql`(${t.operation} = 'archive' AND ${t.result_archived})
+      OR (${t.operation} IN ('create', 'update') AND NOT ${t.result_archived})`,
+  ),
 ]);
 
 // org_spend_caps + clawhub_allowlist retired in self-hosted v1 delete
@@ -2298,6 +2558,7 @@ export const actionReceipts = pgTable('action_receipts', {
 }, (t) => [
   index('receipt_org_idx').on(t.org_id, t.created_at),
   index('receipt_action_idx').on(t.action_id),
+  uniqueIndex('receipt_action_decision_unique').on(t.action_id, t.decision),
 ]);
 
 // ═══ SPACE MEMORY (Phase 2) ═══

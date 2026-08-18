@@ -38,13 +38,17 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=deps /app/packages/mcp/node_modules ./packages/mcp/node_modules
-# packages/shared has no external deps, so pnpm doesn't create a node_modules
-# dir for it — nothing to copy.
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 RUN pnpm --filter @deft/web build
 
 # Stage 3: Production
 FROM node:22-alpine AS runner
+ARG VCS_REF=unknown
+ARG SOURCE_URL=https://github.com/Maneek21/Deft
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source=$SOURCE_URL \
+      org.opencontainers.image.revision=$VCS_REF
 # Runtime maintenance commands still use pnpm. Keep the runtime aligned with
 # packageManager so Corepack never needs to download a different pnpm at boot.
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate \
@@ -54,6 +58,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV API_PORT=3001
+ENV DEFT_BUILD_SOURCE_URL=$SOURCE_URL
 
 # Copy built artifacts
 COPY --from=builder /app/node_modules ./node_modules
@@ -70,6 +75,9 @@ COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/pnpm-lock.yaml ./
+COPY --from=builder /app/LICENSE ./
+COPY --from=builder /app/NOTICE ./
+COPY --from=builder /app/THIRD-PARTY-LICENSES.md ./
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

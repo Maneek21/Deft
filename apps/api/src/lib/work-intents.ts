@@ -2,6 +2,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { workIntents } from '@deft/db/schema';
 import { db } from './db.js';
 
+type WorkIntentExecutor = Pick<typeof db, 'update'>;
+
 function getWorkIntentIdFromParams(params: unknown): string | null {
   if (!params || typeof params !== 'object') return null;
   const value = (params as Record<string, unknown>).work_intent_id;
@@ -35,12 +37,12 @@ export async function markWorkIntentConvertedForAction(params: {
   actionParams: unknown;
   result: unknown;
   convertedBy: string;
-}): Promise<void> {
+}, executor: WorkIntentExecutor = db): Promise<void> {
   const workIntentId = getWorkIntentIdFromParams(params.actionParams);
   if (!workIntentId) return;
   const wikiResult = getWikiResultFromResult(params.result);
 
-  await db
+  await executor
     .update(workIntents)
     .set({
       status: 'converted',
@@ -65,11 +67,11 @@ export async function markWorkIntentDismissedForAction(params: {
   actionParams: unknown;
   dismissedBy: string;
   reason?: string | null;
-}): Promise<void> {
+}, executor: WorkIntentExecutor = db): Promise<void> {
   const workIntentId = getWorkIntentIdFromParams(params.actionParams);
   if (!workIntentId) return;
 
-  await db
+  await executor
     .update(workIntents)
     .set({
       status: 'dismissed',
@@ -89,11 +91,11 @@ export async function markWorkIntentFailedForAction(params: {
   orgId: string;
   actionParams: unknown;
   reason?: string | null;
-}): Promise<void> {
+}, executor: WorkIntentExecutor = db): Promise<void> {
   const workIntentId = getWorkIntentIdFromParams(params.actionParams);
   if (!workIntentId) return;
 
-  await db
+  await executor
     .update(workIntents)
     .set({
       status: 'failed',
@@ -110,7 +112,7 @@ export async function markWorkIntentsExpiredForActions(params: {
   orgId: string;
   actions: Array<{ id?: string | null; params: unknown }>;
   reason?: string | null;
-}): Promise<number> {
+}, executor: WorkIntentExecutor = db): Promise<number> {
   const actionByIntentId = new Map<string, string | null>();
   for (const action of params.actions) {
     const workIntentId = getWorkIntentIdFromParams(action.params);
@@ -123,7 +125,7 @@ export async function markWorkIntentsExpiredForActions(params: {
   const reason = params.reason?.slice(0, 2000) ?? 'Approval expired';
   let count = 0;
   for (const workIntentId of workIntentIds) {
-    const updated = await db
+    const updated = await executor
       .update(workIntents)
       .set({
         status: 'expired',

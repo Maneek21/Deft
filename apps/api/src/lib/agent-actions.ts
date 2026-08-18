@@ -1,4 +1,4 @@
-import { db } from './db.js';
+import { db, withDbAdvisoryLock } from './db.js';
 import {
   tasks,
   projects,
@@ -18,9 +18,10 @@ import {
   notes,
   canvases,
   crossReferences,
+  agentEmployees,
 } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
-import { eq, and, sql, ilike, desc, inArray } from 'drizzle-orm';
+import { eq, and, sql, ilike, desc, inArray, or } from 'drizzle-orm';
 import { getIO } from '../socket.js';
 import { logAuditEvent } from './audit.js';
 import { mcpClientManager } from '@deft/mcp';
@@ -43,8 +44,556 @@ import {
   agentToolPolicyError,
   consumeAgentDailyActionBudget,
   getActiveAgentToolPolicy,
+  isAgentToolDisabled,
 } from './agent-tool-policy.js';
-import { shouldAutoExecute } from './agent-approval.js';
+import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
+import {
+  MODULE_OPERATION_REQUEST_SCHEMAS,
+  ModuleMutationResultSchema,
+  type ModuleActor,
+  type ModuleMutationResult,
+} from '@deft/shared/modules';
+import {
+  archiveModuleRecord,
+  createModuleRecord,
+  deftyModuleActor,
+  employeeModuleActor,
+  moduleIdempotencyDigest,
+  moduleMutationInputDigest,
+  preflightModuleMutation,
+  preflightModuleMutationWithExecutor,
+  type ModuleDbExecutor,
+  recoverModuleMutationByAgentActionId,
+  sanitizeModuleActionParamsForHistory,
+  updateModuleRecord,
+} from './module-service.js';
+import { requireActiveOrgMembership } from './org-membership.js';
+import { generateReceipt } from './receipts.js';
+
+type ModuleEmployeeActionPolicy = {
+  id: string;
+  trustLevel: 'conservative' | 'standard' | 'autonomous';
+  disabledTools: string[];
+  unhealthy: boolean;
+  unhealthyReason: string | null;
+};
+
+function assertModuleEmployeeActionPolicy(
+  policy: ModuleEmployeeActionPolicy,
+  action: ModuleWriteAction,
+): void {
+  if (policy.unhealthy) {
+    throw new Error(
+      `Agent employee is unhealthy and cannot execute module writes${policy.unhealthyReason ? `: ${policy.unhealthyReason}` : ''}`,
+    );
+  }
+  if (isAgentToolDisabled(policy.disabledTools, action)) {
+    throw new Error(`Tool '${action}' is disabled for this agent employee`);
+  }
+}
+
+function employeeModuleActionActor(
+  policy: ModuleEmployeeActionPolicy,
+  orgId: string,
+  action: ModuleWriteAction,
+  actionId?: string,
+) {
+  assertModuleEmployeeActionPolicy(policy, action);
+  return employeeModuleActor({
+    orgId,
+    employeeId: policy.id,
+    trustLevel: policy.trustLevel,
+    source: 'mcp',
+    ...(actionId ? { actionId } : {}),
+  });
+}
+
+async function buildModuleActionActor(
+  action: ModuleWriteAction,
+  orgId: string,
+  userId: string,
+  actionId?: string,
+  agentEmployeeId?: string,
+) {
+  if (agentEmployeeId) {
+    const policy = await getActiveAgentToolPolicy(orgId, agentEmployeeId);
+    if (!policy) {
+      throw new Error('Agent employee is inactive, deleted, or outside this organization');
+    }
+    return employeeModuleActionActor({
+      id: policy.employeeId,
+      trustLevel: policy.trustLevel,
+      disabledTools: policy.disabledTools,
+      unhealthy: policy.unhealthy,
+      unhealthyReason: policy.unhealthyReason,
+    }, orgId, action, actionId);
+  }
+  const membership = await requireActiveOrgMembership(orgId, userId);
+  return deftyModuleActor({
+    orgId,
+    userId,
+    role: membership.role,
+    ...(actionId ? { actionId } : {}),
+  });
+}
+
+async function buildModuleActionActorWithExecutor(
+  executor: ModuleDbExecutor,
+  action: ModuleWriteAction,
+  orgId: string,
+  userId: string,
+  actionId?: string,
+  agentEmployeeId?: string,
+) {
+  if (!agentEmployeeId) {
+    return buildModuleActionActor(action, orgId, userId, actionId);
+  }
+
+  let query = executor
+    .select({
+      id: agentEmployees.id,
+      trust_level: agentEmployees.trust_level,
+      disabled_tools: agentEmployees.disabled_tools,
+      unhealthy: agentEmployees.unhealthy,
+      unhealthy_reason: agentEmployees.unhealthy_reason,
+    })
+    .from(agentEmployees)
+    .where(and(
+      eq(agentEmployees.id, agentEmployeeId),
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_active, true),
+      or(
+        eq(agentEmployees.is_deleted, false),
+        eq(agentEmployees.runtime_kind, 'defty_system'),
+      ),
+    ))
+    .limit(1);
+  if ('for' in query) {
+    query = (query as typeof query & { for: (strength: 'update') => typeof query }).for('update');
+  }
+  const [policy] = await query;
+  if (!policy) {
+    throw new Error('Agent employee is inactive, deleted, or outside this organization');
+  }
+  return employeeModuleActionActor({
+    id: policy.id,
+    trustLevel: policy.trust_level,
+    disabledTools: policy.disabled_tools ?? [],
+    unhealthy: policy.unhealthy,
+    unhealthyReason: policy.unhealthy_reason,
+  }, orgId, action, actionId);
+}
+
+const MODULE_WRITE_ACTIONS = new Set([
+  'module_record_create',
+  'module_record_update',
+  'module_record_archive',
+] as const);
+
+type ModuleWriteAction = 'module_record_create' | 'module_record_update' | 'module_record_archive';
+
+export function isModuleWriteAction(action: string): action is ModuleWriteAction {
+  return MODULE_WRITE_ACTIONS.has(action as ModuleWriteAction);
+}
+
+/**
+ * Agent orchestration adds message/graph provenance to ordinary action params.
+ * Module tool schemas are deliberately strict, and their provenance already has
+ * dedicated agent_actions columns, so keep it outside the canonical tool input.
+ */
+export function normalizeAgentModuleActionParams(
+  action: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isModuleWriteAction(action)) return params;
+  const {
+    source_message_id: _sourceMessageId,
+    proposal_node_id: _proposalNodeId,
+    proposal_depends_on: _proposalDependsOn,
+    ...canonical
+  } = params;
+  return MODULE_OPERATION_REQUEST_SCHEMAS[action].parse(canonical) as Record<string, unknown>;
+}
+
+function stableModuleActionValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableModuleActionValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableModuleActionValue(item)]),
+    );
+  }
+  return value;
+}
+
+export function sameModuleActionInput(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableModuleActionValue(left)) === JSON.stringify(stableModuleActionValue(right));
+}
+
+export function agentModuleActionClaimKey(
+  orgId: string,
+  action: string,
+  idempotencyDigest: string,
+): string {
+  return `agent-action:${orgId}:${action}:${idempotencyDigest}`;
+}
+
+export function agentModuleExecutionLockKey(
+  orgId: string,
+  action: string,
+  idempotencyDigest: string,
+): string {
+  return `agent-module-execution:${orgId}:${action}:${idempotencyDigest}`;
+}
+
+/** Reject invalid or unauthorized module proposals before agent_actions stores
+ * their parameters. The actual executor repeats the checks after approval. */
+export async function preflightAgentModuleAction(
+  action: string,
+  params: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Promise<Record<string, unknown>> {
+  if (!isModuleWriteAction(action)) {
+    return params;
+  }
+  const normalized = normalizeAgentModuleActionParams(action, params);
+  const actor = await buildModuleActionActor(action, orgId, userId, undefined, agentEmployeeId);
+  if (action === 'module_record_create') {
+    const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_create.parse(normalized);
+    await preflightModuleMutation(actor, action, input);
+    return normalized;
+  }
+  if (action === 'module_record_update') {
+    const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_update.parse(normalized);
+    await preflightModuleMutation(actor, action, input);
+    return normalized;
+  }
+  const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_archive.parse(normalized);
+  await preflightModuleMutation(actor, 'module_record_archive', input);
+  return normalized;
+}
+
+export async function preflightAgentModuleActionWithExecutor(
+  executor: ModuleDbExecutor,
+  action: string,
+  params: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Promise<Record<string, unknown>> {
+  if (!isModuleWriteAction(action)) return params;
+  const normalized = normalizeAgentModuleActionParams(action, params);
+  const actor = await buildModuleActionActorWithExecutor(
+    executor,
+    action,
+    orgId,
+    userId,
+    undefined,
+    agentEmployeeId,
+  );
+  const input = MODULE_OPERATION_REQUEST_SCHEMAS[action].parse(normalized);
+  await preflightModuleMutationWithExecutor(executor, actor, action, input, true);
+  return normalized;
+}
+
+export async function agentModuleActionIdempotencyDigest(
+  action: string,
+  params: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Promise<string | null> {
+  if (!isModuleWriteAction(action) || typeof params.idempotency_key !== 'string') return null;
+  const actor = agentModuleDigestActor(orgId, userId, agentEmployeeId);
+  return moduleIdempotencyDigest(actor, params.idempotency_key);
+}
+
+/** Build only the stable actor identity used by the idempotency digest. This
+ * deliberately does not consult live employee or membership policy: retries
+ * must still be able to find and reconcile an action whose mutation already
+ * committed before the principal was paused or downgraded. New inserts are
+ * separately preflighted immediately before persistence. */
+function agentModuleDigestActor(
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): ModuleActor {
+  return agentEmployeeId
+    ? employeeModuleActor({
+      orgId,
+      employeeId: agentEmployeeId,
+      trustLevel: 'conservative',
+      source: 'mcp',
+    })
+    : deftyModuleActor({ orgId, userId, role: 'member' });
+}
+
+export async function claimModuleAgentAction(params: {
+  action: ModuleWriteAction;
+  input: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  agentEmployeeId?: string;
+  values: typeof agentActions.$inferInsert;
+}): Promise<{ action: typeof agentActions.$inferSelect; reused: boolean }> {
+  const idempotencyKey = params.input.idempotency_key;
+  if (typeof idempotencyKey !== 'string') {
+    throw new Error('Module mutations require an idempotency key');
+  }
+  const actor = agentModuleDigestActor(params.orgId, params.userId, params.agentEmployeeId);
+  const idempotencyDigest = moduleIdempotencyDigest(actor, idempotencyKey);
+
+  return db.transaction(async (tx) => {
+    const lockKey = agentModuleActionClaimKey(params.orgId, params.action, idempotencyDigest);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const actorScope = params.agentEmployeeId
+      ? eq(agentActions.agent_employee_id, params.agentEmployeeId)
+      : and(
+        eq(agentActions.user_id, params.userId),
+        sql`${agentActions.agent_employee_id} IS NULL`,
+      );
+    const [existing] = await tx
+      .select()
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, params.orgId),
+        eq(agentActions.action, params.action),
+        actorScope,
+        inArray(agentActions.approval_status, ['pending', 'approved']),
+        or(
+          sql`${agentActions.params}->>'idempotency_key' = ${idempotencyKey}`,
+          sql`${agentActions.params}->>'idempotency_digest' = ${idempotencyDigest}`,
+        ),
+      ))
+      .orderBy(desc(agentActions.created_at))
+      .limit(1);
+    if (existing) {
+      const existingParams = existing.params && typeof existing.params === 'object'
+        ? existing.params as Record<string, unknown>
+        : {};
+      if (
+        existingParams.idempotency_key === idempotencyKey
+        && !sameModuleActionInput(existingParams, params.input)
+      ) {
+        throw new Error('Idempotency key was already used for a different module mutation');
+      }
+      const expectedInputDigest = moduleMutationInputDigest(
+        params.action === 'module_record_create' ? 'create'
+          : params.action === 'module_record_update' ? 'update'
+            : 'archive',
+        params.input,
+      );
+      if (
+        existingParams.idempotency_digest === idempotencyDigest
+        && typeof existingParams.input_digest === 'string'
+        && existingParams.input_digest !== expectedInputDigest
+      ) {
+        throw new Error('Idempotency key was already used for a different module mutation');
+      }
+      return { action: existing, reused: true };
+    }
+
+
+    // Only a genuinely new action reaches this point. Validate live module,
+    // membership, employee-health and access policy before raw proposal values
+    // are ever inserted. Existing retries skip this check only so they can
+    // reconcile already-committed truth; they never perform a new mutation
+    // without the executor's own policy check.
+    const liveActor = await buildModuleActionActorWithExecutor(
+      tx,
+      params.action,
+      params.orgId,
+      params.userId,
+      undefined,
+      params.agentEmployeeId,
+    );
+    const mutationOperation = params.action === 'module_record_create'
+      ? 'module_record_create'
+      : params.action === 'module_record_update'
+        ? 'module_record_update'
+        : 'module_record_archive';
+    const mutationInput = MODULE_OPERATION_REQUEST_SCHEMAS[params.action].parse(params.input);
+    await preflightModuleMutationWithExecutor(
+      tx,
+      liveActor,
+      mutationOperation,
+      mutationInput,
+      true,
+    );
+
+    // The employee row lock above is also the approval-policy linearization
+    // point for a new direct action. Discovery may have seen Standard before
+    // an admin downgraded the employee to Conservative. Recompute under the
+    // lock and queue the same review payload when live trust no longer permits
+    // auto-execution. A plan action keeps its already-reviewed provenance, and
+    // existing pending rows returned above are never auto-promoted on upgrade.
+    const approvalTier = params.values.approval_tier === 'auto'
+      || params.values.approval_tier === 'quick'
+      || params.values.approval_tier === 'full'
+      ? params.values.approval_tier
+      : getApprovalTier(params.action);
+    const liveTrustRequiresReview = liveActor.kind === 'agent_employee'
+      && params.values.approval_status === 'approved'
+      && params.values.source !== 'plan'
+      && !shouldAutoExecute(
+        params.action,
+        liveActor.trust_level,
+        params.input,
+        approvalTier,
+      );
+    const liveActionValues = liveTrustRequiresReview
+      ? {
+        ...params.values,
+        approval_status: 'pending' as const,
+        approved_at: null,
+      }
+      : params.values;
+
+    let persistedParams = params.input;
+    if (liveActionValues.approval_status === 'approved') {
+      const terminalParams = sanitizeModuleActionParamsForHistory(params.action, params.input);
+      terminalParams.idempotency_digest = idempotencyDigest;
+      terminalParams.input_digest = moduleMutationInputDigest(
+        params.action === 'module_record_create' ? 'create'
+          : params.action === 'module_record_update' ? 'update'
+            : 'archive',
+        params.input,
+      );
+      persistedParams = terminalParams;
+    }
+
+    const [inserted] = await tx
+      .insert(agentActions)
+      .values({
+        ...liveActionValues,
+        org_id: params.orgId,
+        user_id: params.userId,
+        action: params.action,
+        // Pending proposals retain their review payload. Direct approved
+        // actions have the live input in memory already, so persist only a
+        // digest-bearing terminal envelope from the first durable write. A
+        // process death before execution therefore cannot strand module data
+        // or a raw idempotency key in broad action history.
+        params: persistedParams,
+        ...(params.agentEmployeeId ? { agent_employee_id: params.agentEmployeeId } : {}),
+      })
+      .returning();
+    if (!inserted) throw new Error('Failed to create module action log');
+    return { action: inserted, reused: false };
+  });
+}
+
+function toModuleMutationResult(
+  operationResult: { mutation: ModuleMutationResult },
+): ModuleMutationResult {
+  return ModuleMutationResultSchema.parse(operationResult.mutation);
+}
+
+async function terminalizeModuleActionFailure(params: {
+  actionId: string;
+  action: ModuleWriteAction;
+  actionParams: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  agentEmployeeId?: string;
+  error: string;
+}): Promise<void> {
+  const terminalParams = sanitizeModuleActionParamsForHistory(params.action, params.actionParams);
+  if (typeof params.actionParams.idempotency_key === 'string') {
+    const actor = agentModuleDigestActor(
+      params.orgId,
+      params.userId,
+      params.agentEmployeeId,
+    );
+    terminalParams.idempotency_digest = moduleIdempotencyDigest(
+      actor,
+      params.actionParams.idempotency_key,
+    );
+    terminalParams.input_digest = moduleMutationInputDigest(
+      params.action === 'module_record_create' ? 'create'
+        : params.action === 'module_record_update' ? 'update'
+          : 'archive',
+      params.actionParams,
+    );
+  }
+  await db
+    .update(agentActions)
+    .set({
+      result: null,
+      after_state: null,
+      error: params.error.slice(0, 2_000),
+      params: terminalParams,
+      executed_at: new Date(),
+    })
+    .where(and(
+      eq(agentActions.id, params.actionId),
+      eq(agentActions.org_id, params.orgId),
+      eq(agentActions.approval_status, 'approved'),
+      sql`${agentActions.executed_at} IS NULL`,
+    ));
+}
+
+async function persistModuleMutationAction(
+  actionId: string,
+  action: 'module_record_create' | 'module_record_update' | 'module_record_archive',
+  params: Record<string, unknown>,
+  actor: ModuleActor,
+  result: ModuleMutationResult,
+): Promise<void> {
+  // Deliberately persist only the shared minimal mutation result. Record data
+  // belongs in module_records and must not be duplicated into broad action
+  // history or signed receipts.
+  const terminalParams = sanitizeModuleActionParamsForHistory(action, params);
+  if (typeof params.idempotency_key === 'string') {
+    terminalParams.idempotency_digest = moduleIdempotencyDigest(actor, params.idempotency_key);
+    terminalParams.input_digest = moduleMutationInputDigest(
+      action === 'module_record_create' ? 'create'
+        : action === 'module_record_update' ? 'update'
+          : 'archive',
+      params,
+    );
+  }
+  try {
+    await db
+      .update(agentActions)
+      .set({
+        result,
+        error: null,
+        params: terminalParams,
+        after_state: {
+          resource_id: result.resource_id,
+          record_id: result.record_id,
+          installation_id: result.installation_id,
+          module_id: result.module_id,
+          collection_key: result.collection_key,
+          manifest_digest: result.manifest_digest,
+          revision: result.revision,
+          archived: result.archived,
+          changed_fields: result.changed_fields,
+          replayed: result.replayed,
+        },
+        executed_at: new Date(),
+      })
+      .where(and(
+        eq(agentActions.id, actionId),
+        eq(agentActions.org_id, actor.org_id),
+        eq(agentActions.approval_status, 'approved'),
+      ));
+  } catch (error) {
+    // ModuleService has already committed the record, audit row, and durable
+    // mutation receipt. Never reinterpret a failure to stamp the broad action
+    // history as a failed mutation. The same-key retry can recover the exact
+    // PII-free outcome through module_mutation_receipts.agent_action_id.
+    console.error('[agent-actions] module mutation committed but action history stamp failed', {
+      actionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /**
  * Resolve a task identifier (either "PREFIX-N" shorthand or a raw uuid) to
@@ -95,11 +644,40 @@ export async function executeAction(
   const agentEmployeeId = options?.agentEmployeeId ?? null;
   try {
     const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
-    if (policyError) return { success: false, result: null, error: policyError };
+    if (policyError) {
+      if (isModuleWriteAction(action)) {
+        await terminalizeModuleActionFailure({
+          actionId,
+          action,
+          actionParams: params,
+          orgId,
+          userId,
+          ...(agentEmployeeId ? { agentEmployeeId } : {}),
+          error: policyError,
+        });
+      }
+      return { success: false, result: null, error: policyError };
+    }
     if (agentEmployeeId) {
-      const budget = await consumeAgentDailyActionBudget(orgId, agentEmployeeId);
+      const budget = await consumeAgentDailyActionBudget(
+        orgId,
+        agentEmployeeId,
+        { requireHealthy: isModuleWriteAction(action) },
+      );
       if (!budget.allowed) {
-        await db.update(agentActions).set({ error: budget.error }).where(eq(agentActions.id, actionId));
+        if (isModuleWriteAction(action)) {
+          await terminalizeModuleActionFailure({
+            actionId,
+            action,
+            actionParams: params,
+            orgId,
+            userId,
+            agentEmployeeId,
+            error: budget.error,
+          });
+        } else {
+          await db.update(agentActions).set({ error: budget.error }).where(eq(agentActions.id, actionId));
+        }
         return { success: false, result: null, error: budget.error };
       }
     }
@@ -143,6 +721,60 @@ export async function executeAction(
     }
 
     switch (action) {
+      case 'module_record_create': {
+        const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_create.parse({
+          ...params,
+          idempotency_key: params.idempotency_key ?? `agent-action:${actionId}`,
+        });
+        const actor = await buildModuleActionActor(
+          action,
+          orgId,
+          userId,
+          actionId,
+          agentEmployeeId ?? undefined,
+        );
+        const created = await createModuleRecord(actor, input);
+        const result = toModuleMutationResult(created);
+        await persistModuleMutationAction(actionId, 'module_record_create', params, actor, result);
+        return { success: true, result };
+      }
+
+      case 'module_record_update': {
+        const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_update.parse({
+          ...params,
+          idempotency_key: params.idempotency_key ?? `agent-action:${actionId}`,
+        });
+        const actor = await buildModuleActionActor(
+          action,
+          orgId,
+          userId,
+          actionId,
+          agentEmployeeId ?? undefined,
+        );
+        const updated = await updateModuleRecord(actor, input);
+        const result = toModuleMutationResult(updated);
+        await persistModuleMutationAction(actionId, 'module_record_update', params, actor, result);
+        return { success: true, result };
+      }
+
+      case 'module_record_archive': {
+        const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_archive.parse({
+          ...params,
+          idempotency_key: params.idempotency_key ?? `agent-action:${actionId}`,
+        });
+        const actor = await buildModuleActionActor(
+          action,
+          orgId,
+          userId,
+          actionId,
+          agentEmployeeId ?? undefined,
+        );
+        const archived = await archiveModuleRecord(actor, input);
+        const result = toModuleMutationResult(archived);
+        await persistModuleMutationAction(actionId, 'module_record_archive', params, actor, result);
+        return { success: true, result };
+      }
+
       case 'create_task': {
         const projectQuery = typeof params.resolved_project_id === 'string' && params.resolved_project_id.trim()
           ? db
@@ -1869,7 +2501,19 @@ export async function executeAction(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
-    await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
+    if (isModuleWriteAction(action)) {
+      await terminalizeModuleActionFailure({
+        actionId,
+        action,
+        actionParams: params,
+        orgId,
+        userId,
+        ...(agentEmployeeId ? { agentEmployeeId } : {}),
+        error: msg,
+      });
+    } else {
+      await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
+    }
     return { success: false, result: null, error: msg };
   }
 }
@@ -1878,6 +2522,25 @@ export async function executeAction(
  * Create an action record and execute it immediately (for auto-approved actions).
  * Unlike executeAction(), this creates the agentActions row as already approved.
  */
+type ExecuteActionDirectOptions = {
+  agentEmployeeId?: string;
+  source?: string;
+  mcpConnectionId?: string;
+  planId?: string;
+  planStepId?: string;
+  messageId?: string;
+  toolUseId?: string;
+};
+
+type ExecuteActionDirectResult = {
+  actionId: string;
+  success: boolean;
+  result: any;
+  error?: string;
+  requiresApproval?: boolean;
+  approvalTier?: 'auto' | 'quick' | 'full';
+};
+
 export async function executeActionDirect(
   action: string,
   params: Record<string, any>,
@@ -1885,23 +2548,49 @@ export async function executeActionDirect(
   userId: string,
   conversationId: string | null,
   approvalTier: 'auto' | 'quick' | 'full',
-  options?: {
-    agentEmployeeId?: string;
-    source?: string;
-    mcpConnectionId?: string;
-    planId?: string;
-    planStepId?: string;
-    messageId?: string;
-    toolUseId?: string;
-  },
-): Promise<{
-  actionId: string;
-  success: boolean;
-  result: any;
-  error?: string;
-  requiresApproval?: boolean;
-  approvalTier?: 'auto' | 'quick' | 'full';
-}> {
+  options?: ExecuteActionDirectOptions,
+): Promise<ExecuteActionDirectResult> {
+  if (isModuleWriteAction(action) && typeof params.idempotency_key === 'string') {
+    const actor = agentModuleDigestActor(orgId, userId, options?.agentEmployeeId);
+    const lockDigest = moduleIdempotencyDigest(actor, params.idempotency_key);
+    return withDbAdvisoryLock(
+      agentModuleExecutionLockKey(orgId, action, lockDigest),
+      () => executeActionDirectLocked(
+        action,
+        params,
+        orgId,
+        userId,
+        conversationId,
+        approvalTier,
+        options,
+      ),
+    );
+  }
+  return executeActionDirectLocked(
+    action,
+    params,
+    orgId,
+    userId,
+    conversationId,
+    approvalTier,
+    options,
+  );
+}
+
+async function executeActionDirectLocked(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  userId: string,
+  conversationId: string | null,
+  approvalTier: 'auto' | 'quick' | 'full',
+  options?: ExecuteActionDirectOptions,
+): Promise<ExecuteActionDirectResult> {
+  // This is the common safety net for every direct execution path (streaming,
+  // background runner, plans, and MCP). Invalid/disabled module writes must not
+  // create even a pending agent_actions row containing record values.
+  params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
+
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;
   let requiresFreshApproval = false;
@@ -1939,46 +2628,167 @@ export async function executeActionDirect(
     }
   }
 
-  const [actionRecord] = await db
-    .insert(agentActions)
-    .values({
-      org_id: orgId,
-      user_id: userId,
-      conversation_id: conversationId,
+  const actionValues = {
+    org_id: orgId,
+    user_id: userId,
+    conversation_id: conversationId,
+    action,
+    params,
+    approval_tier: effectiveApprovalTier,
+    approval_status: requiresFreshApproval ? 'pending' as const : 'approved' as const,
+    approved_at: requiresFreshApproval ? null : new Date(),
+    ...(options?.agentEmployeeId ? { agent_employee_id: options.agentEmployeeId } : {}),
+    ...(options?.source ? { source: options.source } : {}),
+    ...(effectiveMcpConnectionId ? { mcp_connection_id: effectiveMcpConnectionId } : {}),
+    ...(options?.planId ? { plan_id: options.planId } : {}),
+    ...(options?.planStepId ? { plan_step_id: options.planStepId } : {}),
+    ...(options?.messageId ? { message_id: options.messageId } : {}),
+    ...(options?.toolUseId ? { tool_use_id: options.toolUseId } : {}),
+  };
+
+  let actionRecord: typeof agentActions.$inferSelect;
+  let reusedModuleAction = false;
+  if (isModuleWriteAction(action)) {
+    const claimed = await claimModuleAgentAction({
       action,
-      params,
-      approval_tier: effectiveApprovalTier,
-      approval_status: requiresFreshApproval ? 'pending' : 'approved',
-      approved_at: requiresFreshApproval ? null : new Date(),
-      ...(options?.agentEmployeeId ? { agent_employee_id: options.agentEmployeeId } : {}),
-      ...(options?.source ? { source: options.source } : {}),
-      ...(effectiveMcpConnectionId ? { mcp_connection_id: effectiveMcpConnectionId } : {}),
-      ...(options?.planId ? { plan_id: options.planId } : {}),
-      ...(options?.planStepId ? { plan_step_id: options.planStepId } : {}),
-      ...(options?.messageId ? { message_id: options.messageId } : {}),
-      ...(options?.toolUseId ? { tool_use_id: options.toolUseId } : {}),
-    })
-    .returning();
+      input: params,
+      orgId,
+      userId,
+      ...(options?.agentEmployeeId ? { agentEmployeeId: options.agentEmployeeId } : {}),
+      values: actionValues,
+    });
+    actionRecord = claimed.action;
+    reusedModuleAction = claimed.reused;
+  } else {
+    const [inserted] = await db.insert(agentActions).values(actionValues).returning();
+    if (!inserted) throw new Error('Failed to create action log');
+    actionRecord = inserted;
+  }
+
+  if (isModuleWriteAction(action) && actionRecord.approval_status === 'pending') {
+    const error = reusedModuleAction
+      ? actionRecord.error ?? 'Action already requires human approval'
+      : `Approval policy changed to '${actionRecord.approval_tier}'; action queued for fresh review`;
+    if (!reusedModuleAction) {
+      await db
+        .update(agentActions)
+        .set({ error })
+        .where(and(eq(agentActions.id, actionRecord.id), eq(agentActions.org_id, orgId)));
+      try {
+        const { syncApprovalToAttention } = await import('./attention.js');
+        await syncApprovalToAttention(actionRecord);
+      } catch (syncError) {
+        console.warn('[agent-actions] Failed to surface re-gated module action in attention inbox', {
+          actionId: actionRecord.id,
+          error: syncError instanceof Error ? syncError.message : String(syncError),
+        });
+      }
+    }
+    return {
+      actionId: actionRecord.id,
+      success: false,
+      result: null,
+      error,
+      requiresApproval: true,
+      approvalTier: actionRecord.approval_tier,
+    };
+  }
+  if (reusedModuleAction && actionRecord.approval_status === 'approved') {
+    requiresFreshApproval = false;
+    effectiveApprovalTier = actionRecord.approval_tier;
+    const receiptDecision = actionRecord.approved_by_user_id ? 'approved' : 'auto_executed';
+    if (actionRecord.executed_at) {
+      const storedMutation = ModuleMutationResultSchema.safeParse(actionRecord.result);
+      const replayResult = storedMutation.success
+        ? { ...storedMutation.data, replayed: true }
+        : actionRecord.result;
+      await generateReceipt({
+        actionId: actionRecord.id,
+        orgId,
+        employeeId: options?.agentEmployeeId ?? null,
+        proposer: options?.agentEmployeeId ? 'employee' : 'defty',
+        proposerId: options?.agentEmployeeId ?? userId,
+        approverId: actionRecord.approved_by_user_id ?? null,
+        decision: receiptDecision,
+        actionName: action,
+        actionParams: sanitizeModuleActionParamsForHistory(action, params),
+        resultJson: actionRecord.error ? null : actionRecord.result,
+        ...(actionRecord.error
+          ? { decisionReason: `execution failed: ${actionRecord.error}`.slice(0, 2_000) }
+          : {}),
+      });
+      return {
+        actionId: actionRecord.id,
+        success: !actionRecord.error,
+        result: replayResult,
+        ...(actionRecord.error ? { error: actionRecord.error } : {}),
+      };
+    }
+
+
+    const committed = await recoverModuleMutationByAgentActionId(orgId, actionRecord.id);
+    if (committed) {
+      const terminalParams = {
+        ...sanitizeModuleActionParamsForHistory(action, params),
+        idempotency_digest: committed.idempotencyDigest,
+        input_digest: committed.inputDigest,
+      };
+      const [recoveredAction] = await db
+        .update(agentActions)
+        .set({
+          result: committed.mutation,
+          after_state: committed.mutation,
+          error: null,
+          params: terminalParams,
+          executed_at: new Date(),
+        })
+        .where(and(
+          eq(agentActions.id, actionRecord.id),
+          eq(agentActions.org_id, orgId),
+          eq(agentActions.approval_status, 'approved'),
+          sql`${agentActions.executed_at} IS NULL`,
+        ))
+        .returning();
+      const terminalAction = recoveredAction ?? actionRecord;
+      await generateReceipt({
+        actionId: actionRecord.id,
+        orgId,
+        employeeId: options?.agentEmployeeId ?? null,
+        proposer: options?.agentEmployeeId ? 'employee' : 'defty',
+        proposerId: options?.agentEmployeeId ?? userId,
+        approverId: terminalAction.approved_by_user_id ?? null,
+        decision: terminalAction.approved_by_user_id ? 'approved' : 'auto_executed',
+        actionName: action,
+        actionParams: terminalParams,
+        resultJson: committed.mutation,
+      });
+      return {
+        actionId: actionRecord.id,
+        success: true,
+        result: committed.mutation,
+      };
+    }
+  }
 
   if (executionBlockedError) {
-    await db.update(agentActions).set({ error: executionBlockedError }).where(eq(agentActions.id, actionRecord!.id));
-    return { actionId: actionRecord!.id, success: false, result: null, error: executionBlockedError };
+    await db.update(agentActions).set({ error: executionBlockedError }).where(eq(agentActions.id, actionRecord.id));
+    return { actionId: actionRecord.id, success: false, result: null, error: executionBlockedError };
   }
 
   if (requiresFreshApproval) {
     const error = `Approval policy changed to '${effectiveApprovalTier}'; action queued for fresh review`;
-    await db.update(agentActions).set({ error }).where(eq(agentActions.id, actionRecord!.id));
+    await db.update(agentActions).set({ error }).where(eq(agentActions.id, actionRecord.id));
     try {
       const { syncApprovalToAttention } = await import('./attention.js');
-      await syncApprovalToAttention(actionRecord!);
+      await syncApprovalToAttention(actionRecord);
     } catch (syncError) {
       console.warn('[agent-actions] Failed to surface re-gated action in attention inbox', {
-        actionId: actionRecord!.id,
+        actionId: actionRecord.id,
         error: syncError instanceof Error ? syncError.message : String(syncError),
       });
     }
     return {
-      actionId: actionRecord!.id,
+      actionId: actionRecord.id,
       success: false,
       result: null,
       error,
@@ -1987,9 +2797,43 @@ export async function executeActionDirect(
     };
   }
 
-  const result = await executeAction(actionRecord!.id, action, params, orgId, userId, {
+  const result = await executeAction(actionRecord.id, action, params, orgId, userId, {
     agentEmployeeId: options?.agentEmployeeId,
   });
 
-  return { actionId: actionRecord!.id, ...result };
+  if (isModuleWriteAction(action)) {
+    const [terminalAction] = await db
+      .select({
+        approval_status: agentActions.approval_status,
+        approved_by_user_id: agentActions.approved_by_user_id,
+        error: agentActions.error,
+      })
+      .from(agentActions)
+      .where(and(eq(agentActions.id, actionRecord.id), eq(agentActions.org_id, orgId)))
+      .limit(1);
+    if (!terminalAction || terminalAction.approval_status !== 'approved') {
+      return {
+        actionId: actionRecord.id,
+        success: false,
+        result: null,
+        error: terminalAction?.error ?? 'Module action was terminalized before execution completed',
+      };
+    }
+    const reviewedBy = terminalAction.approved_by_user_id ?? null;
+    await generateReceipt({
+      actionId: actionRecord.id,
+      orgId,
+      employeeId: options?.agentEmployeeId ?? null,
+      proposer: options?.agentEmployeeId ? 'employee' : 'defty',
+      proposerId: options?.agentEmployeeId ?? userId,
+      approverId: reviewedBy,
+      decision: reviewedBy ? 'approved' : 'auto_executed',
+      decisionReason: result.success ? null : `execution failed: ${result.error ?? 'unknown'}`.slice(0, 2_000),
+      actionName: action,
+      actionParams: sanitizeModuleActionParamsForHistory(action, params),
+      resultJson: result.success ? result.result : null,
+    });
+  }
+
+  return { actionId: actionRecord.id, ...result };
 }

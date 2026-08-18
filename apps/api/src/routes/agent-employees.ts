@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, or, isNull, asc, gte, inArray } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc, gte, inArray, notInArray } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -33,6 +33,8 @@ import {
   publishAgentChannelEvent,
 } from '../lib/agent-channel.js';
 import { markWorkIntentsExpiredForActions } from '../lib/work-intents.js';
+import { terminalizePendingModuleActions } from '../lib/module-action-terminalization.js';
+import { MODULE_WRITE_ACTION_NAMES } from '../lib/module-action-visibility.js';
 import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '../lib/agent-channel-lifecycle.js';
 import { loadAgentActivity } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
@@ -1747,7 +1749,17 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
       .set({ is_active: false, updated_at: new Date() })
       .where(and(eq(orgMembers.org_id, user.org_id), eq(orgMembers.user_id, existing.user_id)));
 
-    // Expire pending agent actions
+    // Module proposals temporarily contain record values for review. Close
+    // those through the module-aware terminal path before the legacy generic
+    // expiry so deletion cannot strand raw values or idempotency keys.
+    await terminalizePendingModuleActions({
+      orgId: user.org_id,
+      employeeId: id,
+      reason: 'Agent employee removed',
+      attentionResolution: 'employee_removed',
+    });
+
+    // Preserve the existing status-only lifecycle for non-module actions.
     const expiredActions = await db
       .update(agentActions)
       .set({ approval_status: 'expired' })
@@ -1756,6 +1768,7 @@ agentEmployeeRoutes.delete('/:id', async (c) => {
           eq(agentActions.org_id, user.org_id),
           eq(agentActions.agent_employee_id, id),
           eq(agentActions.approval_status, 'pending'),
+          notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
         ),
       )
       .returning({ id: agentActions.id, params: agentActions.params });

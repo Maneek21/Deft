@@ -2,10 +2,24 @@
   "name": "@deft/shared",
   "version": "0.0.1",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
+  "scripts": {
+    "test": "tsx --test test/modules.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "exports": {
     ".": "./src/index.ts",
+    "./modules": "./src/modules.ts",
     "./schemas": "./src/schemas.ts",
     "./rich-text": "./src/rich-text.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3"
   }
 }

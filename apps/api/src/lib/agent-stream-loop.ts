@@ -15,10 +15,19 @@ import { db } from './db.js';
 import { agentActions, messages, spaces } from '@deft/db/schema';
 import { eq } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
-import { executeActionDirect } from './agent-actions.js';
+import {
+  claimModuleAgentAction,
+  executeActionDirect,
+  isModuleWriteAction,
+  preflightAgentModuleAction,
+} from './agent-actions.js';
 import { getApprovalTier, shouldAutoExecute, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { createAgentMessage } from './agent-llm.js';
 import type { ResolvedReasonProvider } from './org-ai-config.js';
+import {
+  sanitizeAgentBlocksForStorage,
+  sanitizeAgentToolCallsForStorage,
+} from './module-agent-history.js';
 
 export interface StreamLoopParams {
   convoId: string;
@@ -116,6 +125,11 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
     // cards and broke post-approval confidence inference.
     const hasAnyActionToolUse = toolUseBlocks.some((tu) => p.allActionTools.has(tu.name));
     const isTerminalIteration = toolUseBlocks.length === 0;
+    const persistedToolNames = new Map<string, string>();
+    const persistedAssistantBlocks = sanitizeAgentBlocksForStorage(
+      response.content,
+      persistedToolNames,
+    );
     // totalTokensIn / totalTokensOut already include this iteration's usage
     // (accumulated at line 74 above after response.usage is read). The terminal
     // row gets the cumulative running sum so history reload can show the full
@@ -127,10 +141,10 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       content: iterText,
       metadata: {
         is_agent_reply: true,
-        agent_blocks: response.content as any,
+        agent_blocks: persistedAssistantBlocks as any,
         hidden: toolUseBlocks.length > 0 && !hasAnyActionToolUse,
         tool_calls: (isTerminalIteration && cumulativeToolCalls.length > 0)
-          ? (cumulativeToolCalls as any)
+          ? (sanitizeAgentToolCallsForStorage(cumulativeToolCalls) as any)
           : null,
         model: p.resolved.model ?? null,
         tokens_in: isTerminalIteration ? totalTokensIn : (response.usage?.input_tokens ?? null),
@@ -160,11 +174,31 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
       const isAction = p.allActionTools.has(tool.name);
 
       if (isAction) {
+        let actionInput = tool.input as Record<string, unknown>;
+        try {
+          actionInput = await preflightAgentModuleAction(
+            tool.name,
+            actionInput,
+            p.orgId,
+            p.userId,
+            p.agentEmployeeId ?? undefined,
+          );
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Module action preflight failed';
+          await p.write({ type: 'tool_result', tool: tool.name, error: errorMsg });
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: tool.id,
+            content: JSON.stringify({ error: errorMsg }),
+            is_error: true,
+          });
+          continue;
+        }
         const approvalTier = getApprovalTier(tool.name, p.actionApprovalTiers.get(tool.name));
-        if (shouldAutoExecute(tool.name, p.trustLevel, tool.input, approvalTier)) {
+        if (shouldAutoExecute(tool.name, p.trustLevel, actionInput, approvalTier)) {
           const { actionId, success, result, error, requiresApproval } = await executeActionDirect(
             tool.name,
-            tool.input as any,
+            actionInput as any,
             p.orgId,
             p.userId,
             p.convoId,
@@ -180,8 +214,8 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
             await p.write({ type: 'tool_result', tool: tool.name, count: Array.isArray(result) ? result.length : 1 });
             toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: JSON.stringify(result) });
           } else if (requiresApproval) {
-            pendingActions.push({ id: actionId, action: tool.name, params: tool.input });
-            await p.write({ type: 'pending_action', id: actionId, action: tool.name, params: tool.input });
+            pendingActions.push({ id: actionId, action: tool.name, params: actionInput });
+            await p.write({ type: 'pending_action', id: actionId, action: tool.name, params: actionInput });
             haltAfterThisIteration = true;
           } else {
             const errorMsg = error ?? 'Tool execution failed';
@@ -199,25 +233,66 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
           continue;
         }
 
-        // Needs approval — create the action row and halt.
-        const [actionRecord] = await db
-          .insert(agentActions)
-          .values({
-            org_id: p.orgId,
-            user_id: p.userId,
-            conversation_id: p.convoId,
-            agent_employee_id: p.agentEmployeeId ?? null,
+        // Needs approval. Module writes use the same scoped advisory-lock claim
+        // as every other proposal/direct path so retries cannot create a second
+        // card or receipt for the same mutation.
+        let actionRecord: typeof agentActions.$inferSelect;
+        if (isModuleWriteAction(tool.name)) {
+          const claimed = await claimModuleAgentAction({
             action: tool.name,
-            params: tool.input as any,
-            approval_tier: approvalTier,
-            approval_status: 'pending',
-            message_id: assistantRow!.id,
-            tool_use_id: tool.id,
-          })
-          .returning();
+            input: actionInput,
+            orgId: p.orgId,
+            userId: p.userId,
+            ...(p.agentEmployeeId ? { agentEmployeeId: p.agentEmployeeId } : {}),
+            values: {
+              org_id: p.orgId,
+              user_id: p.userId,
+              conversation_id: p.convoId,
+              agent_employee_id: p.agentEmployeeId ?? null,
+              action: tool.name,
+              params: actionInput as any,
+              approval_tier: approvalTier,
+              approval_status: 'pending',
+              message_id: assistantRow!.id,
+              tool_use_id: tool.id,
+            },
+          });
+          actionRecord = claimed.action;
+          if (claimed.reused && actionRecord.approval_status === 'approved') {
+            const priorResult = actionRecord.result ?? {
+              status: 'already_approved',
+              action_id: actionRecord.id,
+            };
+            await p.write({ type: 'tool_result', tool: tool.name, count: 1 });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: JSON.stringify(priorResult),
+            });
+            continue;
+          }
+        } else {
+          const [inserted] = await db
+            .insert(agentActions)
+            .values({
+              org_id: p.orgId,
+              user_id: p.userId,
+              conversation_id: p.convoId,
+              agent_employee_id: p.agentEmployeeId ?? null,
+              action: tool.name,
+              params: actionInput as any,
+              approval_tier: approvalTier,
+              approval_status: 'pending',
+              message_id: assistantRow!.id,
+              tool_use_id: tool.id,
+            })
+            .returning();
+          if (!inserted) throw new Error('Failed to create pending action');
+          actionRecord = inserted;
+        }
 
-        pendingActions.push({ id: actionRecord!.id, action: tool.name, params: tool.input });
-        await p.write({ type: 'pending_action', id: actionRecord!.id, action: tool.name, params: tool.input });
+        pendingActions.push({ id: actionRecord.id, action: tool.name, params: actionInput });
+        await p.write({ type: 'pending_action', id: actionRecord.id, action: tool.name, params: actionInput });
         haltAfterThisIteration = true;
       } else {
         // Read-only tool — execute now.
@@ -239,6 +314,10 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
 
     // Persist the tool_result user turn (only if we produced results this iteration).
     if (toolResults.length > 0) {
+      const persistedToolResults = sanitizeAgentBlocksForStorage(
+        toolResults,
+        persistedToolNames,
+      );
       await db.insert(messages).values({
         org_id: p.orgId,
         space_id: p.convoId,
@@ -246,7 +325,7 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
         content: '',
         metadata: {
           kind: 'tool_result',
-          agent_blocks: toolResults as any,
+          agent_blocks: persistedToolResults as any,
           hidden: true,
         },
       });

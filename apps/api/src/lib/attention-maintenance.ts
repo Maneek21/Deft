@@ -1,8 +1,12 @@
-import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, lt, notInArray, sql } from 'drizzle-orm';
 import { agentActions, attentionItems } from '@deft/db/schema';
 import { db } from './db.js';
 import { markWorkIntentsExpiredForActions } from './work-intents.js';
 import { resolveAttentionBySource, transitionAttentionItem } from './attention.js';
+import {
+  MODULE_WRITE_ACTION_NAMES,
+} from './module-action-visibility.js';
+import { terminalizePendingModuleActions } from './module-action-terminalization.js';
 
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -10,12 +14,36 @@ export async function maintainAttentionSystem(
   now = new Date(),
 ): Promise<{ expired: number; unsnoozed: number; redacted: number; cleaned: number }> {
   const cutoff = new Date(now.getTime() - APPROVAL_TTL_MS);
+
+  // Module proposals carry record values until a reviewer decides. Their TTL
+  // path therefore needs the same terminal sanitation, receipt, and lifecycle
+  // closure as an explicit approval decision. Keep each pass org-scoped.
+  const staleModuleOrgs = await db
+    .selectDistinct({ org_id: agentActions.org_id })
+    .from(agentActions)
+    .where(and(
+      eq(agentActions.approval_status, 'pending'),
+      lt(agentActions.created_at, cutoff),
+      inArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
+    ));
+  let expiredModuleActionCount = 0;
+  for (const { org_id: orgId } of staleModuleOrgs) {
+    expiredModuleActionCount += (await terminalizePendingModuleActions({
+      orgId,
+      createdBefore: cutoff,
+      reason: 'Approval expired',
+      attentionResolution: 'expired',
+    })).length;
+  }
+
+  // Preserve the legacy status-only behavior for every non-module action.
   const expired = await db
     .update(agentActions)
     .set({ approval_status: 'expired' })
     .where(and(
       eq(agentActions.approval_status, 'pending'),
       lt(agentActions.created_at, cutoff),
+      notInArray(agentActions.action, [...MODULE_WRITE_ACTION_NAMES]),
     ))
     .returning({
       id: agentActions.id,
@@ -85,7 +113,12 @@ export async function maintainAttentionSystem(
     ))
     .returning({ id: attentionItems.id });
 
-  return { expired: expired.length, unsnoozed: dueSnoozes.length, redacted: redacted.length, cleaned: cleaned.length };
+  return {
+    expired: expired.length + expiredModuleActionCount,
+    unsnoozed: dueSnoozes.length,
+    redacted: redacted.length,
+    cleaned: cleaned.length,
+  };
 }
 
 export const expireStaleApprovalActions = maintainAttentionSystem;

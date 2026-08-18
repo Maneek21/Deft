@@ -57,6 +57,11 @@ export const upgradeManifest = {
       file: '0.2.0-preview.5-job-queue-hardening.sql',
       description: 'Add tenant-aware dedupe, renewable leases, and race-safe recurring jobs',
     },
+    {
+      version: '0.2.0-preview.6',
+      file: '0.2.0-preview.6-modules-v1.sql',
+      description: 'Add declarative module installations, immutable versions, records, and native search',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

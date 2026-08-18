@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { agentActions, messages, orgs, projects } from '@deft/db/schema';
 import { getApprovalTier } from './agent-approval.js';
 import { db } from './db.js';
@@ -8,6 +8,19 @@ import { truncatePlainText } from './plain-text.js';
 import { ACTION_TOOLS, AGENT_TOOLS } from './agent-tools.js';
 import { buildActionGraph, type ActionGraph } from './agent-action-graph.js';
 import { syncApprovalToAttention } from './attention.js';
+import {
+  agentModuleActionClaimKey,
+  agentModuleActionIdempotencyDigest,
+  isModuleWriteAction,
+  preflightAgentModuleAction,
+  preflightAgentModuleActionWithExecutor,
+  sameModuleActionInput,
+} from './agent-actions.js';
+import {
+  moduleMutationInputDigest,
+  sanitizeModuleActionParamsForHistory,
+} from './module-service.js';
+import { sanitizeAgentMetadataForStorage } from './module-agent-history.js';
 
 type ApprovalTier = 'auto' | 'quick' | 'full';
 
@@ -36,44 +49,204 @@ type PersistReplyWithActionsParams = {
   pendingActions: ProposedAgentAction[];
 };
 
+function safeActionParamsForMessage(action: string, actionParams: unknown): unknown {
+  if (!isModuleWriteAction(action) || !isRecord(actionParams)) return actionParams;
+  return sanitizeModuleActionParamsForHistory(action, actionParams);
+}
+
+export function sanitizeAgentReplyActionMetadata(metadata: Record<string, any>): Record<string, any> {
+  const { pending_actions: _pendingActions, action_graph: graph, ...safe } = metadata;
+  const safeMetadata = sanitizeAgentMetadataForStorage(safe);
+  if (!isRecord(graph) || !Array.isArray(graph.actions)) {
+    return { ...safeMetadata, ...(graph === undefined ? {} : { action_graph: graph }) };
+  }
+  return {
+    ...safeMetadata,
+    action_graph: {
+      ...graph,
+      actions: graph.actions.map((node: unknown) => {
+        if (!isRecord(node) || typeof node.tool !== 'string') return node;
+        return {
+          ...node,
+          params: safeActionParamsForMessage(node.tool, node.params),
+        };
+      }),
+    },
+  };
+}
+
 export async function persistAgentReplyWithActions(params: PersistReplyWithActionsParams) {
+  const preparedPendingActions: ProposedAgentAction[] = [];
+  const rejectedModuleActions: string[] = [];
+  for (const proposal of params.pendingActions) {
+    if (proposal.existing_action_id) {
+      preparedPendingActions.push(proposal);
+      continue;
+    }
+    try {
+      const canonicalParams = await preflightAgentModuleAction(
+        proposal.action,
+        proposal.params,
+        params.orgId,
+        params.userId,
+        proposal.agent_employee_id ?? undefined,
+      );
+      preparedPendingActions.push({ ...proposal, params: canonicalParams });
+    } catch (error) {
+      if (!isModuleWriteAction(proposal.action)) throw error;
+      rejectedModuleActions.push(proposal.action);
+      console.warn('[agent-action-proposals] Rejected module proposal before persistence', {
+        action: proposal.action,
+        orgId: params.orgId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const moduleIdempotencyDigests = new Map<ProposedAgentAction, string>();
+  for (const proposal of preparedPendingActions) {
+    const digest = await agentModuleActionIdempotencyDigest(
+      proposal.action,
+      proposal.params,
+      params.orgId,
+      params.userId,
+      proposal.agent_employee_id ?? undefined,
+    );
+    if (digest) moduleIdempotencyDigests.set(proposal, digest);
+  }
+
   const persisted = await db.transaction(async (tx) => {
+    const moduleClaimKeys = preparedPendingActions
+      .flatMap((proposal) => {
+        const digest = moduleIdempotencyDigests.get(proposal);
+        return digest ? [agentModuleActionClaimKey(params.orgId, proposal.action, digest)] : [];
+      });
+    for (const lockKey of [...new Set(moduleClaimKeys)].sort()) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    }
+
+    // Repeat module authorization inside the action-insert transaction while
+    // holding the installation row lock. A concurrent disable/write-revoke
+    // must therefore either see and expire this proposal, or commit first and
+    // make this preflight reject before raw review values are persisted.
+    const rejectedAtBoundary = new Set<ProposedAgentAction>();
+    const modulePreflightOrder = preparedPendingActions
+      .filter((proposal) => !proposal.existing_action_id && isModuleWriteAction(proposal.action))
+      .sort((left, right) => {
+        const leftIdentity = String(left.params.module_id ?? left.params.record_id ?? '');
+        const rightIdentity = String(right.params.module_id ?? right.params.record_id ?? '');
+        return `${left.action}:${leftIdentity}`.localeCompare(`${right.action}:${rightIdentity}`);
+      });
+    for (const proposal of modulePreflightOrder) {
+      try {
+        const canonicalParams = await preflightAgentModuleActionWithExecutor(
+          tx,
+          proposal.action,
+          proposal.params,
+          params.orgId,
+          params.userId,
+          proposal.agent_employee_id ?? undefined,
+        );
+        proposal.params = canonicalParams as Record<string, any>;
+      } catch (error) {
+        rejectedAtBoundary.add(proposal);
+        rejectedModuleActions.push(proposal.action);
+        console.warn('[agent-action-proposals] Rejected module proposal at transaction boundary', {
+          action: proposal.action,
+          orgId: params.orgId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    const readyActions = preparedPendingActions.filter(
+      (proposal) => !rejectedAtBoundary.has(proposal),
+    );
+
     const novelActions: ProposedAgentAction[] = [];
     const duplicateActions: Array<typeof agentActions.$inferSelect> = [];
     const seenKeys = new Set<string>();
-    for (const action of params.pendingActions) {
+    const seenModuleClaims = new Map<string, ProposedAgentAction>();
+    for (const action of readyActions) {
       if (action.existing_action_id) continue;
       const key = typeof action.params.idempotency_key === 'string' ? action.params.idempotency_key : '';
       if (!key) {
         novelActions.push(action);
         continue;
       }
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
+      const digest = moduleIdempotencyDigests.get(action);
+      if (digest) {
+        const claimKey = agentModuleActionClaimKey(params.orgId, action.action, digest);
+        const inBatch = seenModuleClaims.get(claimKey);
+        if (inBatch) {
+          if (!sameModuleActionInput(inBatch.params, action.params)) {
+            throw new Error('Idempotency key was already used for a different module mutation');
+          }
+          continue;
+        }
+        seenModuleClaims.set(claimKey, action);
+      } else {
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+      }
+      const actorScope = action.agent_employee_id
+        ? eq(agentActions.agent_employee_id, action.agent_employee_id)
+        : and(
+          eq(agentActions.user_id, params.userId),
+          sql`${agentActions.agent_employee_id} IS NULL`,
+        );
       const [existing] = await tx
         .select()
         .from(agentActions)
         .where(and(
           eq(agentActions.org_id, params.orgId),
-          eq(agentActions.user_id, params.userId),
+          digest ? eq(agentActions.action, action.action) : sql`true`,
+          digest ? actorScope : eq(agentActions.user_id, params.userId),
           inArray(agentActions.approval_status, ['pending', 'approved']),
-          sql`${agentActions.params}->>'idempotency_key' = ${key}`,
+          digest
+            ? or(
+              sql`${agentActions.params}->>'idempotency_key' = ${key}`,
+              sql`${agentActions.params}->>'idempotency_digest' = ${digest}`,
+            )
+            : sql`${agentActions.params}->>'idempotency_key' = ${key}`,
         ))
         .limit(1);
-      if (existing) duplicateActions.push(existing);
-      else novelActions.push(action);
+      if (existing) {
+        if (digest) {
+          const existingParams = isRecord(existing.params) ? existing.params : {};
+          if (
+            existingParams.idempotency_key === key
+            && !sameModuleActionInput(existingParams, action.params)
+          ) {
+            throw new Error('Idempotency key was already used for a different module mutation');
+          }
+          const inputDigest = moduleMutationInputDigest(
+            action.action === 'module_record_create' ? 'create'
+              : action.action === 'module_record_update' ? 'update'
+                : 'archive',
+            action.params,
+          );
+          if (
+            existingParams.idempotency_digest === digest
+            && typeof existingParams.input_digest === 'string'
+            && existingParams.input_digest !== inputDigest
+          ) {
+            throw new Error('Idempotency key was already used for a different module mutation');
+          }
+        }
+        duplicateActions.push(existing);
+      } else novelActions.push(action);
     }
 
-    const duplicateOnly = params.pendingActions.length > 0 && novelActions.length === 0 && duplicateActions.length > 0;
+    const duplicateOnly = readyActions.length > 0 && novelActions.length === 0 && duplicateActions.length > 0;
     const messageContent = duplicateOnly
       ? duplicateActions.every((action) => action.approval_status === 'approved')
         ? 'This request was already approved and completed.'
         : 'I already drafted this request. Use the existing approval card to review it.'
       : params.content;
     const messageMetadata = {
-      ...params.metadata,
-      pending_actions: novelActions.length > 0 ? novelActions : undefined,
+      ...sanitizeAgentReplyActionMetadata(params.metadata),
       duplicate_action_ids: duplicateActions.length > 0 ? duplicateActions.map((action) => action.id) : undefined,
+      rejected_module_actions: rejectedModuleActions.length > 0 ? rejectedModuleActions : undefined,
     };
     const [agentMessage] = await tx
       .insert(messages)
@@ -90,7 +263,7 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     if (!agentMessage) throw new Error('Failed to create agent reply message');
 
     const linkedActions: Array<typeof agentActions.$inferSelect> = [];
-    for (const proposal of params.pendingActions) {
+    for (const proposal of readyActions) {
       if (!proposal.existing_action_id) continue;
       const [linked] = await tx
         .update(agentActions)
@@ -110,7 +283,25 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     }
 
     if (novelActions.length === 0) {
-      return { message: agentMessage, actions: linkedActions, duplicates: duplicateActions };
+      const inlineActions = linkedActions.map((action) => ({
+        id: action.id,
+        action: action.action,
+        params: safeActionParamsForMessage(action.action, action.params),
+        approval_tier: action.approval_tier,
+        status: action.approval_status,
+      }));
+      const finalMetadata = {
+        ...messageMetadata,
+        pending_actions: inlineActions.length > 0 ? inlineActions : undefined,
+      };
+      if (inlineActions.length > 0) {
+        await tx.update(messages).set({ metadata: finalMetadata as never }).where(eq(messages.id, agentMessage.id));
+      }
+      return {
+        message: { ...agentMessage, metadata: finalMetadata as never },
+        actions: linkedActions,
+        duplicates: duplicateActions,
+      };
     }
 
     const actions = await tx
@@ -133,7 +324,25 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
       )
       .returning();
 
-    return { message: agentMessage, actions: [...linkedActions, ...actions], duplicates: duplicateActions };
+    const persistedActions = [...linkedActions, ...actions];
+    const inlineActions = persistedActions.map((action) => ({
+      id: action.id,
+      action: action.action,
+      params: safeActionParamsForMessage(action.action, action.params),
+      approval_tier: action.approval_tier,
+      status: action.approval_status,
+    }));
+    const finalMetadata = {
+      ...messageMetadata,
+      pending_actions: inlineActions,
+    };
+    await tx.update(messages).set({ metadata: finalMetadata as never }).where(eq(messages.id, agentMessage.id));
+
+    return {
+      message: { ...agentMessage, metadata: finalMetadata as never },
+      actions: persistedActions,
+      duplicates: duplicateActions,
+    };
   });
   await Promise.all(persisted.actions.map((action) =>
     syncApprovalToAttention(action).catch((error) => {

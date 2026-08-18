@@ -48,6 +48,23 @@ import {
   type AttentionLane,
   type AttentionState,
 } from '../attention.js';
+import {
+  MODULE_OPERATION_DEFINITIONS,
+  MODULE_OPERATION_NAMES,
+  parseModuleRecordResourceId,
+  type ModuleOperationName,
+} from '@deft/shared/modules';
+import { humanModuleActor, getModuleRecord, searchModuleRecords } from '../module-service.js';
+import {
+  visibleModuleActionScopeSql,
+  visibleModuleActionSql,
+  visibleModuleAttentionScopeSql,
+} from '../module-action-visibility.js';
+import {
+  executeModuleOperationForActor,
+  moduleOperationErrorResult,
+  parseModuleOperationArgs,
+} from './modules.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -169,6 +186,7 @@ function retrievalResultToSearchResult(row: ContextResult): Record<string, unkno
 }
 
 export const HUMAN_READ_TOOLS = new Set([
+  ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'read'),
   'search',
   'fetch',
   'platform_context',
@@ -218,6 +236,7 @@ export const HUMAN_READ_TOOLS = new Set([
 ]);
 
 export const HUMAN_WRITE_TOOLS = new Set([
+  ...MODULE_OPERATION_NAMES.filter((name) => MODULE_OPERATION_DEFINITIONS[name].mode === 'write'),
   'memory_write',
   'wiki_upsert',
   'task_create',
@@ -248,6 +267,10 @@ export const HUMAN_WRITE_TOOLS = new Set([
 ]);
 
 export const HUMAN_TOOLS: Record<string, HumanToolHandler> = {
+  ...Object.fromEntries(MODULE_OPERATION_NAMES.map((name) => [
+    name,
+    (args: Record<string, unknown>, ctx: HumanToolContext) => humanModuleOperation(name, args, ctx),
+  ])),
   search: humanSearch,
   fetch: humanFetch,
   platform_context: humanPlatformContext,
@@ -1204,14 +1227,61 @@ export async function humanPlatformContext(args: { trigger?: HumanTriggerDescrip
   });
 }
 
+export async function humanModuleOperation(
+  operation: ModuleOperationName,
+  args: Record<string, unknown>,
+  ctx: HumanToolContext,
+): Promise<ToolResult> {
+  const requiredScope = MODULE_OPERATION_DEFINITIONS[operation].mode === 'read'
+    ? 'read:modules'
+    : 'write:modules';
+  const scopeError = requireScope(ctx, requiredScope);
+  if (scopeError) return scopeError;
+  if (
+    MODULE_OPERATION_DEFINITIONS[operation].mode === 'write'
+    && (typeof args.idempotency_key !== 'string' || !args.idempotency_key.trim())
+  ) {
+    return errorResult(`${operation} requires idempotency_key for retry-safe human writes`);
+  }
+  try {
+    const input = parseModuleOperationArgs(operation, args);
+    const actor = humanModuleActor({
+      orgId: ctx.org_id,
+      userId: ctx.user_id,
+      role: ctx.role,
+      source: 'mcp',
+      scopes: ctx.scopes,
+    });
+    return textResult(await executeModuleOperationForActor(operation, actor, input));
+  } catch (error) {
+    return moduleOperationErrorResult(operation, error);
+  }
+}
+
 export async function humanSearch(args: { query?: string; limit?: number }, ctx: HumanToolContext): Promise<ToolResult> {
-  const scopeError = requireAnyScope(ctx, ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar']);
+  const scopeError = requireAnyScope(ctx, ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules']);
   if (scopeError) return scopeError;
   const query = (args.query ?? '').trim();
   if (!query) return errorResult('search requires query');
   const pattern = `%${query.toLowerCase()}%`;
   const limit = Math.min(Math.max(1, args.limit ?? 10), 20);
   const results: Array<Record<string, unknown>> = [];
+
+  if (hasScope(ctx, 'read:modules')) {
+    const actor = humanModuleActor({
+      orgId: ctx.org_id,
+      userId: ctx.user_id,
+      role: ctx.role,
+      source: 'mcp',
+      scopes: ctx.scopes,
+    });
+    const moduleResults = await searchModuleRecords(actor, { query, limit });
+    results.push(...moduleResults.items.map((item) => ({
+      ...item,
+      id: item.resource_id,
+      type: 'module_record',
+    })));
+  }
 
   const retrievalTypes: Array<'wiki' | 'decisions' | 'tasks'> = [];
   if (hasScope(ctx, 'read:wiki')) retrievalTypes.push('wiki', 'decisions');
@@ -1331,6 +1401,29 @@ export async function humanFetch(args: { id?: string }, ctx: HumanToolContext): 
     `);
     const row = ((rows as any).rows ?? [])[0];
     return row ? textResult(row) : errorResult('fetch: event not found');
+  }
+
+  if (kind === 'module_record') {
+    const scopeError = requireScope(ctx, 'read:modules');
+    if (scopeError) return scopeError;
+    let recordId: string;
+    try {
+      recordId = parseModuleRecordResourceId(id);
+    } catch {
+      return errorResult('fetch received an invalid module_record id');
+    }
+    try {
+      const actor = humanModuleActor({
+        orgId: ctx.org_id,
+        userId: ctx.user_id,
+        role: ctx.role,
+        source: 'mcp',
+        scopes: ctx.scopes,
+      });
+      return textResult(await getModuleRecord(actor, recordId));
+    } catch (error) {
+      return moduleOperationErrorResult('module_record_get', error);
+    }
   }
 
   return errorResult(`fetch: unsupported id type ${kind}`);
@@ -2504,6 +2597,8 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       WHERE org_id = ${ctx.org_id}
         AND user_id = ${ctx.user_id}
         AND approval_status = 'pending'
+        AND ${visibleModuleActionSql(ctx.role)}
+        AND ${visibleModuleActionScopeSql(ctx.scopes, 'read')}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `);
@@ -2895,8 +2990,7 @@ export async function humanWorkspaceCapabilities(_args: Record<string, never>, c
   const scopeError = requireScope(ctx, 'read:workspace');
   if (scopeError) return scopeError;
   const available = [...HUMAN_READ_TOOLS, ...HUMAN_WRITE_TOOLS].filter((name) => {
-    const required = HUMAN_TOOL_SCOPES[name];
-    if (required && !ctx.scopes.includes(required)) return false;
+    if (!humanToolHasRequiredScope(ctx.scopes, name)) return false;
     if (name === 'agent_employee_update_state' && !canManageWorkspace(ctx)) return false;
     return true;
   });
@@ -3127,6 +3221,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
       lane === 'all' ? sql`true` : eq(attentionItems.lane, lane),
       inArray(attentionItems.state, states),
       visibleAttentionCondition(ctx.user_id),
+      visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .orderBy(desc(attentionItems.last_event_at))
     .limit(Math.min(Math.max(1, args.limit ?? 50), 100));
@@ -3143,6 +3238,7 @@ export async function humanAttentionList(args: { lane?: string; state?: string; 
       eq(attentionItems.user_id, ctx.user_id),
       inArray(attentionItems.state, MCP_OPEN_ATTENTION_STATES),
       visibleAttentionCondition(ctx.user_id),
+      visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .groupBy(attentionItems.lane);
   return textResult({
@@ -3163,6 +3259,7 @@ export async function humanAttentionGet(args: { attention_id?: string }, ctx: Hu
       eq(attentionItems.org_id, ctx.org_id),
       eq(attentionItems.user_id, ctx.user_id),
       visibleAttentionCondition(ctx.user_id),
+      visibleModuleAttentionScopeSql(ctx.scopes, 'read'),
     ))
     .limit(1);
   if (!row) return errorResult('Attention item not found');
@@ -3192,6 +3289,7 @@ async function transitionHumanAttention(
       eq(attentionItems.org_id, ctx.org_id),
       eq(attentionItems.user_id, ctx.user_id),
       visibleAttentionCondition(ctx.user_id),
+      visibleModuleAttentionScopeSql(ctx.scopes, 'write'),
     ))
     .limit(1);
   if (!visible) return errorResult('Attention item not found');
@@ -3256,7 +3354,11 @@ export async function humanInboxMarkAllRead(args: Record<string, unknown>, ctx: 
   });
 }
 
-async function ownApproval(ctx: HumanToolContext, actionId: string) {
+async function ownApproval(
+  ctx: HumanToolContext,
+  actionId: string,
+  access: 'read' | 'write' = 'read',
+) {
   const canReview = ctx.role === 'owner' || ctx.role === 'admin'
     ? sql`true`
     : sql`COALESCE(
@@ -3267,6 +3369,8 @@ async function ownApproval(ctx: HumanToolContext, actionId: string) {
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
+    visibleModuleActionSql(ctx.role),
+    visibleModuleActionScopeSql(ctx.scopes, access),
     canReview,
   )).limit(1);
   return row ?? null;
@@ -3279,7 +3383,7 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const canReview = ctx.role === 'owner' || ctx.role === 'admin'
     ? sql`true`
     : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 
@@ -3294,7 +3398,7 @@ export async function humanApprovalApprove(args: Record<string, unknown>, ctx: H
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
   return withIdempotency('approval_approve', args, ctx, async () => {
-    if (!(await ownApproval(ctx, args.action_id as string))) return errorResult('Approval not found');
+    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
     const result = await approveAction(args.action_id as string, ctx.user_id);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });
@@ -3304,7 +3408,7 @@ export async function humanApprovalReject(args: Record<string, unknown>, ctx: Hu
   const scopeError = requireScope(ctx, 'write:workspace'); if (scopeError) return scopeError;
   if (typeof args.action_id !== 'string') return errorResult('action_id is required');
   return withIdempotency('approval_reject', args, ctx, async () => {
-    if (!(await ownApproval(ctx, args.action_id as string))) return errorResult('Approval not found');
+    if (!(await ownApproval(ctx, args.action_id as string, 'write'))) return errorResult('Approval not found');
     const result = await rejectAction(args.action_id as string, ctx.user_id, typeof args.reason === 'string' ? args.reason : undefined);
     return result.status === 'error' ? errorResult(`${result.code}: ${result.message}`) : textResult(result);
   });
@@ -3399,8 +3503,12 @@ export async function humanAgentEmployeeUpdateState(args: Record<string, unknown
   });
 }
 
-export const HUMAN_TOOL_SCOPES: Record<string, string> = {
-  search: 'read:workspace', fetch: 'read:workspace', platform_context: 'read:workspace', attention_digest: 'read:workspace',
+export type HumanToolScopeRequirement = string | readonly string[];
+
+export const HUMAN_TOOL_SCOPES: Record<string, HumanToolScopeRequirement> = {
+  search: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
+  fetch: ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'],
+  platform_context: 'read:workspace', attention_digest: 'read:workspace',
   member_list: 'read:workspace', resolve_member: 'read:workspace', resolve_targets: 'read:workspace', member_get: 'read:workspace', activity_query: 'read:workspace',
   events_query: 'read:calendar', memory_recall: 'read:wiki', wiki_search: 'read:wiki', memory_list: 'read:wiki',
   list_my_tasks: 'read:tasks', task_get: 'read:tasks', task_query: 'read:tasks', task_saved_view_get: 'read:tasks',
@@ -3419,7 +3527,32 @@ export const HUMAN_TOOL_SCOPES: Record<string, string> = {
   project_create: 'write:workspace', project_update: 'write:workspace', project_archive: 'write:workspace',
   task_saved_view_list: 'read:tasks', task_saved_view_create: 'write:tasks',
   agent_employee_list: 'read:workspace', agent_employee_get: 'read:workspace', agent_employee_update_state: 'write:workspace',
+  module_list: 'read:modules', module_schema_get: 'read:modules', module_record_search: 'read:modules', module_record_query: 'read:modules', module_record_get: 'read:modules',
+  module_record_create: 'write:modules', module_record_update: 'write:modules', module_record_archive: 'write:modules',
 };
+
+/** Array requirements are alternatives (any one scope is sufficient). */
+export function humanToolHasRequiredScope(scopes: readonly string[], toolName: string): boolean {
+  const requirement = HUMAN_TOOL_SCOPES[toolName];
+  if (!requirement) return true;
+  return Array.isArray(requirement)
+    ? requirement.some((scope) => scopes.includes(scope))
+    : scopes.includes(requirement as string);
+}
+
+export function humanToolScopeError(toolName: string): string | null {
+  const requirement = HUMAN_TOOL_SCOPES[toolName];
+  if (!requirement) return null;
+  return Array.isArray(requirement)
+    ? `Missing MCP scope: one of ${requirement.join(', ')}`
+    : `Missing MCP scope: ${requirement}`;
+}
+
+export function humanToolChallengeScope(toolName: string): string | undefined {
+  const requirement = HUMAN_TOOL_SCOPES[toolName];
+  if (!requirement) return undefined;
+  return typeof requirement === 'string' ? requirement : requirement[0];
+}
 
 function operationalHumanSchemas(): Array<Record<string, unknown>> {
   const read = (name: string, title: string, description: string, properties: Record<string, unknown> = {}, required?: string[]) => ({
@@ -3486,7 +3619,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     {
       name: 'search',
       title: 'Search Deft',
-      description: 'Search Deft wiki, tasks, visible messages, and calendar context. Human personal-MCP read: scoped to the token owner.',
+      description: 'Search Deft wiki, tasks, visible messages, calendar context, and module records. Each source is included only when its matching read scope is granted.',
       annotations: { readOnlyHint: true },
       inputSchema: {
         type: 'object',
@@ -3500,7 +3633,7 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     {
       name: 'fetch',
       title: 'Fetch Deft Result',
-      description: 'Fetch a result returned by search by stable id, such as wiki:slug, task:id, message:id, or event:id. Human personal-MCP read: scoped to the token owner.',
+      description: 'Fetch a result returned by search by stable id, such as wiki:slug, task:id, message:id, event:id, or module_record:id. The matching source read scope is required.',
       annotations: { readOnlyHint: true },
       inputSchema: {
         type: 'object',
@@ -3818,14 +3951,26 @@ export function buildHumanToolSchemas(agentSchemas: Array<Record<string, unknown
     .map((schema) => {
       const next = withoutCallerSlug(schema);
       if (HUMAN_WRITE_TOOLS.has(String(next.name))) {
+        const operationName = String(next.name) as ModuleOperationName;
+        const isModuleWrite = MODULE_OPERATION_NAMES.includes(operationName)
+          && MODULE_OPERATION_DEFINITIONS[operationName].mode === 'write';
         next.description = `${next.description ?? ''} Human personal-MCP write: executes as the token owner and requires a matching write scope. Always include idempotency_key for retry-safe writes; if you retry the same user intent, reuse the same key.`;
-        next.annotations = { ...(next.annotations as Record<string, unknown> | undefined), readOnlyHint: false, destructiveHint: false };
-        const inputSchema = next.inputSchema as { properties?: Record<string, unknown> } | undefined;
+        next.annotations = {
+          ...(next.annotations as Record<string, unknown> | undefined),
+          readOnlyHint: false,
+          destructiveHint: isModuleWrite
+            ? MODULE_OPERATION_DEFINITIONS[operationName].destructive
+            : false,
+        };
+        const inputSchema = next.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
         if (inputSchema?.properties && !inputSchema.properties.idempotency_key) {
           inputSchema.properties.idempotency_key = {
             type: 'string',
             description: 'Stable key for retry-safe writes. Reusing the same key returns the first successful result.',
           };
+        }
+        if (isModuleWrite && inputSchema) {
+          inputSchema.required = [...new Set([...(inputSchema.required ?? []), 'idempotency_key'])];
         }
         if (String(next.name) === 'memory_write') {
           next.description = `${next.description ?? ''} Prefer wiki_upsert for durable company knowledge because wiki_upsert can update an existing page by slug/title and keeps better receipts.`;
