@@ -109,6 +109,15 @@ jobs:
           }
           JSON
 
+      - name: Attach exact corresponding source
+        shell: bash
+        run: |
+          git archive \
+            --format=tar.gz \
+            --prefix="deft-${{ steps.release.outputs.version }}/" \
+            --output="dist/deft-${{ steps.release.outputs.version }}-source.tar.gz" \
+            "${{ steps.release.outputs.sha }}"
+
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.0
         with:

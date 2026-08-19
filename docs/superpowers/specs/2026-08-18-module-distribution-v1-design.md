@@ -127,6 +127,23 @@ used by the server:
 The validator also publishes a JSON Schema for editor completion. The Zod
 contract remains authoritative.
 
+`module:init` accepts only a nonexistent or completely empty destination and
+uses create-only writes; it never mixes a scaffold into an existing project.
+`module:vendor` accepts only a tracked `deft.module.json` in a completely clean
+local Git worktree. The supplied repository must match `origin`, the supplied
+full commit must be `HEAD`, and the canonical manifest digest must match the
+exact blob at that commit. Updates preserve module id, slug, repository, and
+license, require a strictly newer semantic version, and require the new commit
+to descend from the previously locked commit.
+
+Vendoring rejects symlinked distribution paths, holds an exclusive writer lock,
+stages and fsyncs both files, then replaces the manifest before using the lock
+as the commit point. An interrupted two-file replacement therefore fails
+closed under `module:verify` rather than silently accepting mixed provenance.
+The verifier checks both directions: every offline artifact and every runtime
+bundled manifest needs the same lock entry, version, and canonical digest, and
+every lock entry must be represented by both.
+
 ## Install and upgrade semantics
 
 Installation is keyed by organisation plus both module id and slug. Concurrent

@@ -33,7 +33,7 @@ export default function LicensePage() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--text-tertiary)' }}>Free software</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">License and source</h1>
           <p className="mt-4 text-[14px] leading-6" style={{ color: 'var(--text-secondary)' }}>
-            Deft is Copyright © 2026 Maneek Mohan and is licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only).
+            Deft is Copyright © 2026 Maneek Mohan and Deft contributors and is licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only).
           </p>
           <p className="mt-3 text-[14px] leading-6" style={{ color: 'var(--text-secondary)' }}>
             Deft is provided without warranty. You may run, study, modify, and redistribute it under the license terms. If this server runs a modified version, the source link below is the operator&apos;s offer of the Corresponding Source required by AGPL section 13.

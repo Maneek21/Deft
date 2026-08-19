@@ -66,6 +66,10 @@ function compileSort(field: string) {
   );
 }
 
+function compileSearch(value: string) {
+  return dialect.sqlToQuery(_moduleQueryCompilerForTest.searchCondition(value));
+}
+
 describe('module query compiler', () => {
   test('enforces manifest field types and operator compatibility', () => {
     assert.throws(
@@ -160,5 +164,14 @@ describe('module query compiler', () => {
     assert.match(compileSort('met_at').sql, /::timestamptz/);
     assert.doesNotMatch(compileSort('name').sql, /::date|::timestamptz/);
     assert.throws(() => compileSort('tags'), /Cannot sort by a multi-select/);
+  });
+
+  test('parameterizes full-collection search and keeps LIKE wildcards literal', () => {
+    const compiled = compileSearch('Ada 100%_');
+    assert.match(compiled.sql, /websearch_to_tsquery/i);
+    assert.match(compiled.sql, /search_vector/i);
+    assert.equal(compiled.params.includes('Ada 100%_'), true);
+    assert.equal(compiled.params.includes('%Ada 100\\%\\_%'), true);
+    assert.doesNotMatch(compiled.sql, /Ada 100/);
   });
 });

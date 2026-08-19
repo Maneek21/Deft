@@ -2597,7 +2597,7 @@ export async function humanAttentionDigest(args: HumanAttentionDigestArgs, ctx: 
       WHERE org_id = ${ctx.org_id}
         AND user_id = ${ctx.user_id}
         AND approval_status = 'pending'
-        AND ${visibleModuleActionSql(ctx.role)}
+        AND ${visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id })}
         AND ${visibleModuleActionScopeSql(ctx.scopes, 'read')}
       ORDER BY created_at DESC
       LIMIT ${limit}
@@ -3369,7 +3369,7 @@ async function ownApproval(
   const [row] = await db.select().from(agentActions).where(and(
     eq(agentActions.id, actionId),
     eq(agentActions.org_id, ctx.org_id),
-    visibleModuleActionSql(ctx.role),
+    visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }),
     visibleModuleActionScopeSql(ctx.scopes, access),
     canReview,
   )).limit(1);
@@ -3383,7 +3383,7 @@ export async function humanApprovalList(args: { status?: string; limit?: number 
   const canReview = ctx.role === 'owner' || ctx.role === 'admin'
     ? sql`true`
     : sql`COALESCE(${agentActions.params}->>'source_user_id', ${agentActions.params}->>'origin_user_id', ${agentActions.user_id}) = ${ctx.user_id}`;
-  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
+  const rows = await db.select().from(agentActions).where(and(eq(agentActions.org_id, ctx.org_id), visibleModuleActionSql(ctx.role, { userId: ctx.user_id, orgId: ctx.org_id }), visibleModuleActionScopeSql(ctx.scopes, 'read'), canReview, status === 'all' ? sql`true` : eq(agentActions.approval_status, status as any))).orderBy(desc(agentActions.created_at)).limit(Math.min(Math.max(1, args.limit ?? 50), 100));
   return textResult(rows.map((row) => ({ ...row, url: '/inbox?lane=needs_you' })));
 }
 

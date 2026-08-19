@@ -17,7 +17,9 @@ import { eq } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import {
   claimModuleAgentAction,
+  claimModuleTaskLinkAgentAction,
   executeActionDirect,
+  isModuleTaskLinkWriteAction,
   isModuleWriteAction,
   preflightAgentModuleAction,
 } from './agent-actions.js';
@@ -239,6 +241,40 @@ export async function runAgentStreamingLoop(p: StreamLoopParams): Promise<Stream
         let actionRecord: typeof agentActions.$inferSelect;
         if (isModuleWriteAction(tool.name)) {
           const claimed = await claimModuleAgentAction({
+            action: tool.name,
+            input: actionInput,
+            orgId: p.orgId,
+            userId: p.userId,
+            ...(p.agentEmployeeId ? { agentEmployeeId: p.agentEmployeeId } : {}),
+            values: {
+              org_id: p.orgId,
+              user_id: p.userId,
+              conversation_id: p.convoId,
+              agent_employee_id: p.agentEmployeeId ?? null,
+              action: tool.name,
+              params: actionInput as any,
+              approval_tier: approvalTier,
+              approval_status: 'pending',
+              message_id: assistantRow!.id,
+              tool_use_id: tool.id,
+            },
+          });
+          actionRecord = claimed.action;
+          if (claimed.reused && actionRecord.approval_status === 'approved') {
+            const priorResult = actionRecord.result ?? {
+              status: 'already_approved',
+              action_id: actionRecord.id,
+            };
+            await p.write({ type: 'tool_result', tool: tool.name, count: 1 });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: JSON.stringify(priorResult),
+            });
+            continue;
+          }
+        } else if (isModuleTaskLinkWriteAction(tool.name)) {
+          const claimed = await claimModuleTaskLinkAgentAction({
             action: tool.name,
             input: actionInput,
             orgId: p.orgId,

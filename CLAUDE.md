@@ -341,7 +341,7 @@ See plan: `docs/superpowers/plans/2026-04-28-phase9-simplify-agents.md` (this pr
 
 ## What NOT To Do
 
-- Don't build features we don't need yet (sprints, burndown, Gantt, huddles, CRM)
+- Don't put domain-specific CRM logic in core. CRM capabilities belong in declarative modules; core stays generic.
 - Don't over-abstract. Build for the current scope, refactor when needed
 - Don't cache prematurely. Postgres is fast enough for our scale
 - Don't replace the existing auth system without a migration plan. It's custom JWT + bcrypt, not a library — changes affect every authenticated route.

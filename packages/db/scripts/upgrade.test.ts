@@ -14,8 +14,11 @@ import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
   moduleInstallations,
   moduleMutationReceipts,
+  moduleRecordRelations,
   moduleRecords,
+  moduleSavedViews,
   moduleVersions,
+  orgMembers,
 } from '../src/schema.ts';
 
 test('parseUpgradeArgs recognizes status and dry run', () => {
@@ -80,10 +83,16 @@ test('security redaction upgrade removes every legacy cached excerpt surface', (
 });
 
 test('module schema keeps tenant and installation lineage in composite foreign keys', () => {
+  const orgMemberConfig = getTableConfig(orgMembers);
   const installationConfig = getTableConfig(moduleInstallations);
   const versionConfig = getTableConfig(moduleVersions);
   const recordConfig = getTableConfig(moduleRecords);
   const mutationReceiptConfig = getTableConfig(moduleMutationReceipts);
+
+  assert.ok(
+    orgMemberConfig.uniqueConstraints.some((item) => item.name === 'org_member_unique'),
+    'org membership composite identity must be an inline unique constraint',
+  );
 
   assert.deepEqual(
     installationConfig.columns.map((column) => column.name),
@@ -155,8 +164,22 @@ test('module schema keeps tenant and installation lineage in composite foreign k
     'search_vector must be generated rather than supplied by callers',
   );
   assert.ok(
-    recordConfig.indexes.some((item) => item.config.name === 'module_records_org_installation_id_unique'),
+    recordConfig.uniqueConstraints.some(
+      (item) => item.name === 'module_records_org_installation_id_unique',
+    ),
     'receipts need a tenant- and installation-bound record reference target',
+  );
+  assert.ok(
+    installationConfig.uniqueConstraints.some(
+      (item) => item.name === 'module_installations_org_id_id_unique',
+    ),
+    'installation composite FK targets must be inline unique constraints',
+  );
+  assert.ok(
+    versionConfig.uniqueConstraints.some(
+      (item) => item.name === 'module_versions_org_installation_id_unique',
+    ),
+    'version composite FK targets must be inline unique constraints',
   );
   assert.deepEqual(
     mutationReceiptConfig.columns.map((column) => column.name),
@@ -327,4 +350,101 @@ test('module fresh-install and supported-upgrade SQL stay identical and enforce 
   const receiptSql = upgradeSql.slice(upgradeSql.indexOf('CREATE TABLE IF NOT EXISTS module_mutation_receipts'));
   assert.doesNotMatch(receiptSql, /\bjsonb\b|request_json|result_json|record_data/i);
   assert.doesNotMatch(upgradeSql, /search_manifest_digest/i);
+});
+
+test('module relation and saved-view schema keeps tenant and installation boundaries', () => {
+  const relationConfig = getTableConfig(moduleRecordRelations);
+  const savedViewConfig = getTableConfig(moduleSavedViews);
+  const relationForeignKeys = relationConfig.foreignKeys.map((key) => ({
+    name: key.getName(),
+    columns: key.reference().columns.map((column) => column.name),
+    foreignColumns: key.reference().foreignColumns.map((column) => column.name),
+  }));
+
+  assert.deepEqual(relationForeignKeys, [
+    {
+      name: 'module_record_relations_org_installation_fk',
+      columns: ['org_id', 'installation_id'],
+      foreignColumns: ['org_id', 'id'],
+    },
+    {
+      name: 'module_record_relations_source_record_fk',
+      columns: ['org_id', 'installation_id', 'source_record_id'],
+      foreignColumns: ['org_id', 'installation_id', 'id'],
+    },
+    {
+      name: 'module_record_relations_target_record_fk',
+      columns: ['org_id', 'installation_id', 'target_record_id'],
+      foreignColumns: ['org_id', 'installation_id', 'id'],
+    },
+  ]);
+  assert.ok(
+    relationConfig.indexes.some((item) => item.config.name === 'module_record_relations_active_unique'),
+    'active relation targets must be unique per source field',
+  );
+  assert.ok(
+    savedViewConfig.columns.some((column) => column.name === 'owner_user_id' && column.notNull),
+    'v1 saved views must always have a personal owner',
+  );
+  assert.ok(
+    savedViewConfig.foreignKeys.some((key) => {
+      const reference = key.reference();
+      return key.getName() === 'module_saved_views_owner_member_fk'
+        && reference.columns.map((column) => column.name).join(',') === 'org_id,owner_user_id'
+        && reference.foreignColumns.map((column) => column.name).join(',') === 'org_id,user_id';
+    }),
+    'saved-view owners must be active identities in the same organization boundary',
+  );
+  assert.ok(
+    savedViewConfig.checks.some((item) => item.name === 'module_saved_views_config_type_check'),
+    'saved view config type and indexed view_type must agree',
+  );
+});
+
+test('module relations/views fresh-install and supported-upgrade SQL stay identical', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.2.0-preview.7',
+  );
+  assert.ok(migration, 'module relations/views migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0082_module_relations_views.sql'), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0082_module_relations_views\.sql'/);
+  assert.match(
+    upgradeSql,
+    /FOREIGN KEY \(org_id, installation_id, source_record_id\)[\s\S]*REFERENCES module_records \(org_id, installation_id, id\)/i,
+  );
+  assert.match(
+    upgradeSql,
+    /FOREIGN KEY \(org_id, installation_id, target_record_id\)[\s\S]*REFERENCES module_records \(org_id, installation_id, id\)/i,
+  );
+  assert.match(
+    upgradeSql,
+    /module_record_relations_active_unique[\s\S]*WHERE is_deleted = false/i,
+  );
+  assert.match(upgradeSql, /owner_user_id text NOT NULL REFERENCES users\(id\)/i);
+  assert.match(
+    upgradeSql,
+    /FOREIGN KEY \(org_id, owner_user_id\)[\s\S]*REFERENCES org_members \(org_id, user_id\)/i,
+  );
+  for (const constraint of [
+    'org_member_unique',
+    'module_installations_org_id_id_unique',
+    'module_versions_org_installation_id_unique',
+    'module_records_org_installation_id_unique',
+  ]) {
+    assert.match(
+      upgradeSql,
+      new RegExp(`ADD CONSTRAINT ${constraint}[\\s\\S]*UNIQUE USING INDEX ${constraint}`, 'i'),
+      `${constraint} must converge from an 0081 index to a fresh-schema constraint`,
+    );
+  }
+  assert.match(upgradeSql, /config->>'type' = view_type/i);
+  assert.match(
+    upgradeSql,
+    /module_saved_views_active_name_unique[\s\S]*owner_user_id,[\s\S]*name[\s\S]*WHERE is_deleted = false/i,
+  );
 });

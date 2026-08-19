@@ -24,6 +24,9 @@ export const MODULE_LIMITS = Object.freeze({
   fields_per_collection: 64,
   field_key_chars: 48,
   select_options_per_field: 50,
+  relation_values_per_field: 100,
+  tags_per_field: 50,
+  tag_value_chars: 80,
   views_per_collection: 8,
   fields_per_view: 32,
   search_fields_per_collection: 16,
@@ -181,6 +184,21 @@ export const ModuleFieldSchema = z.discriminatedUnion('type', [
       .max(MODULE_LIMITS.select_options_per_field)
       .optional(),
   }),
+  z.strictObject({
+    ...fieldCommonShape,
+    type: z.literal('member'),
+    multiple: z.boolean().default(false),
+  }),
+  z.strictObject({
+    ...fieldCommonShape,
+    type: z.literal('tags'),
+  }),
+  z.strictObject({
+    ...fieldCommonShape,
+    type: z.literal('relation'),
+    target_collection: ModuleKeySchema,
+    multiple: z.boolean().default(false),
+  }),
 ]);
 
 export const ModuleSearchSchema = z.strictObject({
@@ -195,11 +213,32 @@ export const ModuleSearchSchema = z.strictObject({
     .max(MODULE_LIMITS.search_fields_per_collection),
 });
 
-export const ModuleViewSchema = z.strictObject({
+const moduleViewCommonShape = {
   key: ModuleKeySchema,
   name: ModuleDisplayNameSchema,
-  type: z.enum(['table', 'form', 'detail']),
   fields: z.array(ModuleFieldKeySchema).min(1).max(MODULE_LIMITS.fields_per_view),
+};
+
+export const ModuleViewSchema = z.discriminatedUnion('type', [
+  z.strictObject({ ...moduleViewCommonShape, type: z.literal('table') }),
+  z.strictObject({
+    ...moduleViewCommonShape,
+    type: z.literal('board'),
+    group_by: ModuleFieldKeySchema,
+  }),
+  z.strictObject({
+    ...moduleViewCommonShape,
+    type: z.literal('timeline'),
+    start_field: ModuleFieldKeySchema,
+    end_field: ModuleFieldKeySchema.optional(),
+  }),
+  z.strictObject({ ...moduleViewCommonShape, type: z.literal('form') }),
+  z.strictObject({ ...moduleViewCommonShape, type: z.literal('detail') }),
+]);
+
+export const ModuleNavigationSchema = z.strictObject({
+  default_collection: ModuleKeySchema,
+  default_view: ModuleKeySchema.optional(),
 });
 
 function addDuplicateIssues(
@@ -277,7 +316,7 @@ function validateManifestDefault(
   path: (string | number)[],
   ctx: z.RefinementCtx,
 ): void {
-  if (field.default === undefined) return;
+  if (!('default' in field) || field.default === undefined) return;
 
   let valid = true;
   switch (field.type) {
@@ -356,6 +395,15 @@ export const ModuleCollectionSchema = z
     });
 
     const fieldByKey = new Map(collection.fields.map((field) => [field.key, field]));
+    collection.fields.forEach((field, fieldIndex) => {
+      if (field.type === 'relation' && field.required) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['fields', fieldIndex, 'required'],
+          message: 'Relation fields must be optional in schema version 1',
+        });
+      }
+    });
     if (collection.search) {
       const search = collection.search;
       const allReferences = [search.title_field, ...search.subtitle_fields, ...search.fields];
@@ -388,12 +436,26 @@ export const ModuleCollectionSchema = z
         }
       }
       const titleField = fieldByKey.get(search.title_field);
-      if (titleField && !titleField.required && titleField.default === undefined) {
+      if (
+        titleField
+        && !titleField.required
+        && (!('default' in titleField) || titleField.default === undefined)
+      ) {
         ctx.addIssue({
           code: 'custom',
           path: ['search', 'title_field'],
           message: 'Search title_field must be required or have a default',
         });
+      }
+      for (const searchableField of allReferences) {
+        const field = fieldByKey.get(searchableField);
+        if (field?.type === 'relation' || field?.type === 'member') {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['search'],
+            message: `Search cannot directly index ${field.type} field: ${searchableField}`,
+          });
+        }
       }
     }
 
@@ -415,6 +477,43 @@ export const ModuleCollectionSchema = z
             });
           }
         });
+
+        if (view.type === 'board') {
+          const groupField = fieldByKey.get(view.group_by);
+          if (!groupField) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['views', viewIndex, 'group_by'],
+              message: `Board references unknown field: ${view.group_by}`,
+            });
+          } else if (!['single_select', 'member', 'tags'].includes(groupField.type)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['views', viewIndex, 'group_by'],
+              message: 'Board group_by must reference a select, member, or tags field',
+            });
+          }
+        }
+
+        if (view.type === 'timeline') {
+          const timelineFields = [view.start_field, ...(view.end_field ? [view.end_field] : [])];
+          timelineFields.forEach((fieldKey) => {
+            const field = fieldByKey.get(fieldKey);
+            if (!field) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['views', viewIndex],
+                message: `Timeline references unknown field: ${fieldKey}`,
+              });
+            } else if (field.type !== 'date' && field.type !== 'datetime') {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['views', viewIndex],
+                message: `Timeline field must be a date or datetime: ${fieldKey}`,
+              });
+            }
+          });
+        }
       });
     }
   });
@@ -432,6 +531,7 @@ export const DeftModuleManifestV1Schema = z
       .array(ModuleCollectionSchema)
       .min(1)
       .max(MODULE_LIMITS.collections_per_module),
+    navigation: ModuleNavigationSchema.optional(),
   })
   .superRefine((manifest, ctx) => {
     addDuplicateIssues(
@@ -440,6 +540,41 @@ export const DeftModuleManifestV1Schema = z
       ctx,
       'Collection keys',
     );
+
+    const collectionByKey = new Map(
+      manifest.collections.map((collection) => [collection.key, collection]),
+    );
+    manifest.collections.forEach((collection, collectionIndex) => {
+      collection.fields.forEach((field, fieldIndex) => {
+        if (field.type === 'relation' && !collectionByKey.has(field.target_collection)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['collections', collectionIndex, 'fields', fieldIndex, 'target_collection'],
+            message: `Relation target collection does not exist: ${field.target_collection}`,
+          });
+        }
+      });
+    });
+
+    if (manifest.navigation) {
+      const defaultCollection = collectionByKey.get(manifest.navigation.default_collection);
+      if (!defaultCollection) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['navigation', 'default_collection'],
+          message: 'Default collection must reference a declared collection',
+        });
+      } else if (
+        manifest.navigation.default_view
+        && !defaultCollection.views?.some((view) => view.key === manifest.navigation?.default_view)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['navigation', 'default_view'],
+          message: 'Default view must belong to the default collection',
+        });
+      }
+    }
   });
 
 export type DeftModuleManifestV1 = z.infer<typeof DeftModuleManifestV1Schema>;
@@ -449,7 +584,12 @@ export type ModuleField = z.infer<typeof ModuleFieldSchema>;
 export type ModuleView = z.infer<typeof ModuleViewSchema>;
 
 export function parseDeftModuleManifest(value: unknown): DeftModuleManifestV1 {
-  return DeftModuleManifestV1Schema.parse(value);
+  const parsed = DeftModuleManifestV1Schema.parse(value);
+  const serialized = JSON.stringify(parsed);
+  if (new TextEncoder().encode(serialized).byteLength > MODULE_LIMITS.manifest_bytes) {
+    throw new Error(`Manifest exceeds ${MODULE_LIMITS.manifest_bytes} bytes`);
+  }
+  return parsed;
 }
 
 export function parseDeftModuleManifestJson(value: string): DeftModuleManifestV1 {
@@ -630,6 +770,52 @@ export function validateModuleFieldValue(
         ? null
         : validationIssue(field.key, 'invalid_value', 'Every item must match a declared option value');
     }
+    case 'member': {
+      const values = field.multiple ? value : [value];
+      if (
+        (field.multiple && !Array.isArray(value))
+        || (!field.multiple && typeof value !== 'string')
+        || !Array.isArray(values)
+        || !values.every((item) => typeof item === 'string')
+      ) {
+        return validationIssue(
+          field.key,
+          'invalid_type',
+          field.multiple ? 'Must be an array of member IDs' : 'Must be one member ID',
+        );
+      }
+      if (
+        values.length > MODULE_LIMITS.relation_values_per_field
+        || new Set(values).size !== values.length
+        || !values.every((item) => OPAQUE_ID_PATTERN.test(item))
+      ) {
+        return validationIssue(field.key, 'invalid_value', 'Member IDs must be unique valid identifiers within the field limit');
+      }
+      return null;
+    }
+    case 'tags': {
+      if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+        return validationIssue(field.key, 'invalid_type', 'Must be an array of tags');
+      }
+      if (
+        value.length > MODULE_LIMITS.tags_per_field
+        || new Set(value).size !== value.length
+        || value.some((item) => item.trim().length === 0 || item.length > MODULE_LIMITS.tag_value_chars)
+      ) {
+        return validationIssue(
+          field.key,
+          'invalid_value',
+          `Tags must be unique non-empty strings of at most ${MODULE_LIMITS.tag_value_chars} characters`,
+        );
+      }
+      return null;
+    }
+    case 'relation':
+      return validationIssue(
+        field.key,
+        'invalid_value',
+        'Relations must be managed through the relation endpoint, not record data',
+      );
   }
 }
 
@@ -664,7 +850,7 @@ export function validateModuleRecordData(
   const output: ModuleRecordData = {};
   for (const field of collection.fields) {
     let value = dataValue[field.key];
-    if (value === undefined && field.default !== undefined) {
+    if (value === undefined && 'default' in field && field.default !== undefined) {
       value = Array.isArray(field.default) ? [...field.default] : field.default;
     }
     if (value === undefined) {
@@ -894,7 +1080,7 @@ export const ModuleRecordFieldValueSchema = z.union([
   z.string(),
   z.number().finite(),
   z.boolean(),
-  z.array(z.string()).max(MODULE_LIMITS.select_options_per_field),
+  z.array(z.string()).max(MODULE_LIMITS.relation_values_per_field),
 ]);
 
 export const ModuleRecordDataSchema = z.record(ModuleFieldKeySchema, ModuleRecordFieldValueSchema);
@@ -970,9 +1156,67 @@ export const ModuleQuerySortSchema = z.strictObject({
   direction: z.enum(['asc', 'desc']).default('asc'),
 });
 
+const moduleSavedViewCommonShape = {
+  fields: z
+    .array(ModuleFieldKeySchema)
+    .min(1)
+    .max(MODULE_LIMITS.fields_per_view)
+    .refine((fields) => new Set(fields).size === fields.length, 'View fields must be unique'),
+  filters: z.array(ModuleQueryFilterSchema).max(16).default([]),
+  sort: ModuleQuerySortSchema.optional(),
+};
+
+export const ModuleSavedViewConfigSchema = z.discriminatedUnion('type', [
+  z.strictObject({ ...moduleSavedViewCommonShape, type: z.literal('table') }),
+  z.strictObject({
+    ...moduleSavedViewCommonShape,
+    type: z.literal('board'),
+    group_by: ModuleFieldKeySchema,
+  }),
+  z.strictObject({
+    ...moduleSavedViewCommonShape,
+    type: z.literal('timeline'),
+    start_field: ModuleFieldKeySchema,
+    end_field: ModuleFieldKeySchema.optional(),
+  }),
+]);
+
+export const ModuleSavedViewCreateRequestSchema = z.strictObject({
+  collection_key: ModuleKeySchema,
+  name: ModuleDisplayNameSchema,
+  config: ModuleSavedViewConfigSchema,
+});
+
+export const ModuleSavedViewUpdateRequestSchema = z
+  .strictObject({
+    name: ModuleDisplayNameSchema.optional(),
+    config: ModuleSavedViewConfigSchema.optional(),
+  })
+  .refine((value) => value.name !== undefined || value.config !== undefined, {
+    message: 'Saved view update must include a name or config',
+  });
+
+export const ModuleRelationRecordIdsSchema = z
+  .array(z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN))
+  .max(MODULE_LIMITS.relation_values_per_field)
+  .refine((ids) => new Set(ids).size === ids.length, 'Relation record IDs must be unique');
+
+export const ModuleRelationPatchSchema = z.record(
+  ModuleFieldKeySchema,
+  ModuleRelationRecordIdsSchema,
+);
+
+export const ModuleRelationReplaceRequestSchema = z.strictObject({
+  record_ids: ModuleRelationRecordIdsSchema,
+  expected_revision: ModuleExpectedRevisionSchema,
+  expected_manifest_digest: ModuleManifestDigestSchema,
+  idempotency_key: ModuleIdempotencyKeySchema,
+});
+
 export const ModuleRecordQueryRequestSchema = z.strictObject({
   module_id: ModuleIdSchema,
   collection_key: ModuleKeySchema,
+  search: z.string().trim().min(1).max(500).optional(),
   filters: z.array(ModuleQueryFilterSchema).max(16).default([]),
   sort: ModuleQuerySortSchema.optional(),
   limit: PageLimitSchema,
@@ -992,16 +1236,21 @@ export const ModuleRecordUpdateRequestSchema = z
     record_id: OpaqueIdSchema,
     patch: ModuleRecordDataSchema.default({}),
     unset_fields: z.array(ModuleFieldKeySchema).max(MODULE_LIMITS.fields_per_collection).default([]),
+    relations: ModuleRelationPatchSchema.default({}),
     expected_revision: ModuleExpectedRevisionSchema,
     expected_manifest_digest: ModuleManifestDigestSchema,
     idempotency_key: ModuleIdempotencyKeySchema.optional(),
   })
   .superRefine((input, ctx) => {
-    if (Object.keys(input.patch).length === 0 && input.unset_fields.length === 0) {
+    if (
+      Object.keys(input.patch).length === 0
+      && input.unset_fields.length === 0
+      && Object.keys(input.relations).length === 0
+    ) {
       ctx.addIssue({
         code: 'custom',
         path: ['patch'],
-        message: 'Update must patch or unset at least one field',
+        message: 'Update must patch, unset, or replace at least one field',
       });
     }
     addDuplicateIssues(input.unset_fields, ['unset_fields'], ctx, 'Unset fields');
@@ -1035,6 +1284,39 @@ export const MODULE_OPERATION_REQUEST_SCHEMAS = Object.freeze({
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
 
+export const ModuleSavedViewSchema = z.strictObject({
+  id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
+  installation_id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
+  module_id: ModuleIdSchema,
+  collection_key: ModuleKeySchema,
+  owner_user_id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
+  name: ModuleDisplayNameSchema,
+  config: ModuleSavedViewConfigSchema,
+  created_at: IsoTimestampSchema,
+  updated_at: IsoTimestampSchema,
+});
+
+export const ModuleRecordReferenceSchema = z.strictObject({
+  id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
+  collection_key: ModuleKeySchema,
+  label: z.string().max(MODULE_LIMITS.search_title_chars),
+});
+
+export const ModuleRelationGroupSchema = z.strictObject({
+  field_key: ModuleFieldKeySchema,
+  records: z.array(ModuleRecordReferenceSchema).max(MODULE_LIMITS.relation_values_per_field),
+});
+
+export const ModuleMemberReferenceSchema = z.strictObject({
+  id: z.string().min(1).max(128).regex(OPAQUE_ID_PATTERN),
+  label: z.string().max(500),
+});
+
+export const ModuleMemberGroupSchema = z.strictObject({
+  field_key: ModuleFieldKeySchema,
+  members: z.array(ModuleMemberReferenceSchema).max(MODULE_LIMITS.relation_values_per_field),
+});
+
 export const ModuleRecordSchema = z.strictObject({
   resource_id: ModuleRecordResourceIdSchema,
   id: OpaqueIdSchema,
@@ -1043,6 +1325,8 @@ export const ModuleRecordSchema = z.strictObject({
   collection_key: ModuleKeySchema,
   manifest_digest: ModuleManifestDigestSchema,
   data: ModuleRecordDataSchema,
+  relations: z.array(ModuleRelationGroupSchema).max(MODULE_LIMITS.fields_per_collection),
+  members: z.array(ModuleMemberGroupSchema).max(MODULE_LIMITS.fields_per_collection),
   revision: ModuleExpectedRevisionSchema,
   created_at: IsoTimestampSchema,
   updated_at: IsoTimestampSchema,
@@ -1126,9 +1410,23 @@ export type ModuleRecordSearchRequest = z.infer<typeof ModuleRecordSearchRequest
 export type ModuleRecordQueryRequest = z.infer<typeof ModuleRecordQueryRequestSchema>;
 export type ModuleRecordGetRequest = z.infer<typeof ModuleRecordGetRequestSchema>;
 export type ModuleRecordCreateRequest = z.infer<typeof ModuleRecordCreateRequestSchema>;
-export type ModuleRecordUpdateRequest = z.infer<typeof ModuleRecordUpdateRequestSchema>;
+export type ModuleRecordUpdateRequest = Omit<
+  z.infer<typeof ModuleRecordUpdateRequestSchema>,
+  'relations'
+> & {
+  /** Omitted by older in-process callers; parsed MCP/REST inputs always receive {}. */
+  relations?: z.infer<typeof ModuleRelationPatchSchema>;
+};
 export type ModuleRecordArchiveRequest = z.infer<typeof ModuleRecordArchiveRequestSchema>;
 export type ModuleRecord = z.infer<typeof ModuleRecordSchema>;
 export type ModuleSummary = z.infer<typeof ModuleSummarySchema>;
 export type ModuleSearchHit = z.infer<typeof ModuleSearchHitSchema>;
 export type ModuleMutationResult = z.infer<typeof ModuleMutationResultSchema>;
+export type ModuleSavedViewConfig = z.infer<typeof ModuleSavedViewConfigSchema>;
+export type ModuleSavedViewCreateRequest = z.infer<typeof ModuleSavedViewCreateRequestSchema>;
+export type ModuleSavedViewUpdateRequest = z.infer<typeof ModuleSavedViewUpdateRequestSchema>;
+export type ModuleSavedView = z.infer<typeof ModuleSavedViewSchema>;
+export type ModuleRecordReference = z.infer<typeof ModuleRecordReferenceSchema>;
+export type ModuleRelationGroup = z.infer<typeof ModuleRelationGroupSchema>;
+export type ModuleMemberReference = z.infer<typeof ModuleMemberReferenceSchema>;
+export type ModuleMemberGroup = z.infer<typeof ModuleMemberGroupSchema>;

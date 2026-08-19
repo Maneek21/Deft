@@ -43,16 +43,20 @@ import {
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
   MODULE_OPERATION_RESULT_SCHEMAS,
+  ModuleRecordResourceIdSchema,
+  parseModuleRecordResourceId,
 } from '@deft/shared/modules';
 import {
   deftyModuleActor,
   employeeModuleActor,
+  getModuleInstallation,
   getModuleRecord,
   getModuleSchema,
   listModuleSummaries,
   queryModuleRecords,
   searchModuleRecords,
 } from './module-service.js';
+import { listModuleRecordTaskLinks } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
 
@@ -231,6 +235,25 @@ export async function executeToolCall(
           id: result.record.resource_id,
           title: `${result.record.module_id}/${result.record.collection_key} record`,
         }],
+      };
+    }
+
+    case 'module_record_task_links': {
+      const resourceId = ModuleRecordResourceIdSchema.parse(params.resource_id);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const record = await getModuleRecord(actor, parseModuleRecordResourceId(resourceId));
+      const installation = await getModuleInstallation(actor, { moduleId: record.module_id });
+      const tasks = await listModuleRecordTaskLinks(actor, installation.slug, record.id);
+      return {
+        result: { resource_id: resourceId, tasks, count: tasks.length },
+        citations: tasks.map((task) => ({
+          type: 'task',
+          id: task.task_id,
+          title: task.identifier ? `${task.identifier}: ${task.title}` : task.title,
+        })),
       };
     }
 
@@ -2225,7 +2248,9 @@ export async function executeToolCall(
         : (await requireActiveOrgMembership(orgId, _userId)).role;
       const conditions = [
         eq(agentActions.org_id, orgId),
-        visibleModuleActionSql(callerRole),
+        visibleModuleActionSql(callerRole, agentEmployeeId
+          ? { agentEmployeeId }
+          : { userId: _userId, orgId }),
       ];
       if (employee_id) {
         conditions.push(eq(agentActions.agent_employee_id, employee_id));

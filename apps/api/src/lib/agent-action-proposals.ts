@@ -11,10 +11,12 @@ import { syncApprovalToAttention } from './attention.js';
 import {
   agentModuleActionClaimKey,
   agentModuleActionIdempotencyDigest,
+  isModuleTaskLinkWriteAction,
   isModuleWriteAction,
   preflightAgentModuleAction,
   preflightAgentModuleActionWithExecutor,
   sameModuleActionInput,
+  sanitizeModuleTaskLinkActionParamsForHistory,
 } from './agent-actions.js';
 import {
   moduleMutationInputDigest,
@@ -50,8 +52,14 @@ type PersistReplyWithActionsParams = {
 };
 
 function safeActionParamsForMessage(action: string, actionParams: unknown): unknown {
-  if (!isModuleWriteAction(action) || !isRecord(actionParams)) return actionParams;
-  return sanitizeModuleActionParamsForHistory(action, actionParams);
+  if (!isRecord(actionParams)) return actionParams;
+  if (isModuleWriteAction(action)) {
+    return sanitizeModuleActionParamsForHistory(action, actionParams);
+  }
+  if (isModuleTaskLinkWriteAction(action)) {
+    return sanitizeModuleTaskLinkActionParamsForHistory(actionParams);
+  }
+  return actionParams;
 }
 
 export function sanitizeAgentReplyActionMetadata(metadata: Record<string, any>): Record<string, any> {

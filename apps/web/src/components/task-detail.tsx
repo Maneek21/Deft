@@ -19,6 +19,7 @@ import { CodeBlock } from '@/lib/editor/blocks/code-block';
 import { TagPicker } from './tag-picker';
 import { LabelPicker } from './label-picker';
 import { TaskReactionBar } from './task-card-unified';
+import { TaskModuleRecordLinks } from './task-module-record-links';
 import {
   X,
   ChevronDown,
@@ -711,6 +712,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     message_preview: string | null; message_space_id: string | null; space_name: string | null;
     author_name: string | null; author_avatar: string | null; created_at: string;
   }[]>([]);
+  const [moduleReferenceCount, setModuleReferenceCount] = useState(0);
   const sourceMessage = task?.source_message ?? null;
   const sourceMessageHref = sourceMessage
     ? `/chat?space=${sourceMessage.space_id}&message=${sourceMessage.id}`
@@ -718,7 +720,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
   const sourceMessagePreview = sourceMessage
     ? stripHtml(sourceMessage.content).slice(0, 220)
     : '';
-  const visibleReferenceCount = references.length + (sourceMessage ? 1 : 0);
+  const visibleReferenceCount = references.length
+    + (user?.role !== 'guest' ? moduleReferenceCount : 0)
+    + (sourceMessage ? 1 : 0);
 
   const titleRef = useRef<HTMLInputElement>(null);
   const dueDateInputRef = useRef<HTMLInputElement>(null);
@@ -2480,12 +2484,19 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   ? 'No references'
                   : `${visibleReferenceCount} reference${visibleReferenceCount !== 1 ? 's' : ''}`}
               </h3>
+              {user && user.role !== 'guest' && (
+                <TaskModuleRecordLinks
+                  taskId={taskId}
+                  canEdit
+                  onCountChange={setModuleReferenceCount}
+                />
+              )}
               {visibleReferenceCount === 0 ? (
-                <p className="text-[12px] px-2" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
+                <p className="mt-2 px-2 text-[12px]" style={{ color: 'var(--muted)', fontFamily: 'var(--font-body)' }}>
                   No messages or notes link to this task yet.
                 </p>
               ) : (
-                <div className="space-y-1.5">
+                <div className="mt-2 space-y-1.5">
                   {sourceMessage && (
                     <div
                       onClick={() => {

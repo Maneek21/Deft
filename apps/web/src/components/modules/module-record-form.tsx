@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { AppDialog } from '@/components/overlay-primitives';
+import { useModuleMembers } from '@/hooks/use-modules';
 import {
   diffModuleRecordUpdate,
   getModuleCollectionFields,
@@ -11,6 +12,7 @@ import {
   validateModuleRecordValues,
   type ModuleCollection,
   type ModuleField,
+  type ModuleMember,
   type ModuleRecord,
 } from '@/lib/modules';
 
@@ -27,6 +29,7 @@ export function ModuleRecordFormDialog({
   onClose: () => void;
   onSubmit: (data: Record<string, unknown>, idempotencyKey: string, unsetFields: string[]) => Promise<void>;
 }) {
+  const memberState = useModuleMembers(collection.fields.some((field) => field.type === 'member'));
   const initialValues = useMemo(
     () => initialModuleRecordValues(collection, record),
     [collection, record],
@@ -52,8 +55,9 @@ export function ModuleRecordFormDialog({
 
   const fields = useMemo(() => {
     const configuredFields = getModuleCollectionFields(collection, 'form');
-    const selected = configuredFields.length > 0 ? configuredFields : collection.fields;
-    const required = collection.fields.filter((field) => field.required && !selected.some((candidate) => candidate.key === field.key));
+    const selected = (configuredFields.length > 0 ? configuredFields : collection.fields)
+      .filter((field) => field.type !== 'relation');
+    const required = collection.fields.filter((field) => field.type !== 'relation' && field.required && !selected.some((candidate) => candidate.key === field.key));
     return [...selected, ...required];
   }, [collection]);
 
@@ -100,7 +104,7 @@ export function ModuleRecordFormDialog({
       open={open}
       onClose={busy ? () => {} : onClose}
       title={title}
-      description={`Fields are defined by the ${collection.name} module schema.`}
+      description={record ? `Update this ${collection.singularName.toLowerCase()}.` : `Add a ${collection.singularName.toLowerCase()} to ${collection.name}.`}
       width={620}
       footer={
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -146,6 +150,7 @@ export function ModuleRecordFormDialog({
             field={field}
             value={values[field.key]}
             error={errors[field.key]}
+            members={memberState.members}
             onChange={(value) => setValue(field.key, value)}
           />
         ))}
@@ -165,11 +170,13 @@ function ModuleFieldInput({
   field,
   value,
   error,
+  members,
   onChange,
 }: {
   field: ModuleField;
   value: unknown;
   error?: string;
+  members: ModuleMember[];
   onChange: (value: unknown) => void;
 }) {
   const inputId = `module-field-${field.key}`;
@@ -230,11 +237,18 @@ function ModuleFieldInput({
         {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     );
-  } else if (field.type === 'multi_select') {
+  } else if (field.type === 'multi_select' || (field.type === 'member' && field.multiple)) {
     const selected = Array.isArray(value) ? value.map(String) : [];
+    const options = field.type === 'member'
+      ? members.map((member) => ({ value: member.id, label: member.name }))
+      : field.options;
     control = (
-      <div className="grid gap-2 rounded-lg p-2 sm:grid-cols-2" style={inputStyle}>
-        {field.options.map((option) => {
+      <div className="grid max-h-64 gap-2 overflow-y-auto rounded-lg p-2 sm:grid-cols-2" style={inputStyle}>
+        {options.length === 0 ? (
+          <p className="px-2 py-1 text-[0.75rem] sm:col-span-2" style={{ color: 'var(--outline)' }}>
+            {field.type === 'member' ? 'No workspace members are available.' : 'No options are configured.'}
+          </p>
+        ) : options.map((option) => {
           const checked = selected.includes(option.value);
           return (
             <label
@@ -254,6 +268,50 @@ function ModuleFieldInput({
             </label>
           );
         })}
+      </div>
+    );
+  } else if (field.type === 'member') {
+    control = (
+      <select
+        id={inputId}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+        required={field.required}
+        aria-invalid={Boolean(error)}
+        aria-describedby={field.description || error ? helpId : undefined}
+        className="min-h-11 w-full rounded-lg px-3 text-[0.875rem] outline-none focus:ring-2 focus:ring-[var(--input-focus)]"
+        style={inputStyle}
+      >
+        <option value="">Select a member</option>
+        {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+      </select>
+    );
+  } else if (field.type === 'tags') {
+    const textValue = Array.isArray(value) ? value.map(String).join(', ') : typeof value === 'string' ? value : '';
+    const tags = textValue.split(',').map((tag) => tag.trim()).filter(Boolean);
+    control = (
+      <div>
+        <input
+          id={inputId}
+          type="text"
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+          required={field.required}
+          aria-invalid={Boolean(error)}
+          aria-describedby={field.description || error ? helpId : undefined}
+          placeholder="Add tags, separated by commas"
+          className="min-h-11 w-full rounded-lg px-3 text-[0.875rem] outline-none focus:ring-2 focus:ring-[var(--input-focus)]"
+          style={inputStyle}
+        />
+        {tags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {tags.map((tag) => (
+              <span key={tag} className="rounded-full px-2 py-0.5 text-[0.6875rem]" style={{ background: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' }}>
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     );
   } else {

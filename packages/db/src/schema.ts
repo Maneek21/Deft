@@ -1,7 +1,7 @@
 // packages/db/schema.ts — Deft database schema (Drizzle ORM + PostgreSQL)
 // This schema covers: Auth, Orgs, Users, Chat (spaces + messages), Tasks, Projects, Agent, Events
 
-import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, integer, jsonb, pgEnum, index, unique, uniqueIndex, real, vector, check, primaryKey, numeric, customType, foreignKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ═══ HELPERS ═══
@@ -205,7 +205,7 @@ export const orgMembers = pgTable('org_members', {
   joined_at: timestamp('joined_at').defaultNow().notNull(),
   ...timestamps(),
 }, (t) => [
-  uniqueIndex('org_member_unique').on(t.org_id, t.user_id),
+  unique('org_member_unique').on(t.org_id, t.user_id),
 ]);
 
 // ═══ INVITES ═══
@@ -822,7 +822,7 @@ export const moduleInstallations = pgTable('module_installations', {
   deleted_by_actor_id: text('deleted_by_actor_id'),
   ...timestamps(),
 }, (t) => [
-  uniqueIndex('module_installations_org_id_id_unique').on(t.org_id, t.id),
+  unique('module_installations_org_id_id_unique').on(t.org_id, t.id),
   uniqueIndex('module_installations_org_module_id_unique').on(t.org_id, t.module_id),
   uniqueIndex('module_installations_org_slug_unique').on(t.org_id, t.slug),
   index('module_installations_org_visibility_idx').on(t.org_id, t.is_enabled, t.is_deleted),
@@ -868,7 +868,7 @@ export const moduleVersions = pgTable('module_versions', {
     foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
     name: 'module_versions_org_installation_fk',
   }).onDelete('restrict'),
-  uniqueIndex('module_versions_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  unique('module_versions_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
   uniqueIndex('module_versions_org_installation_version_unique').on(t.org_id, t.installation_id, t.version),
   uniqueIndex('module_versions_one_active_unique')
     .on(t.org_id, t.installation_id)
@@ -930,7 +930,7 @@ export const moduleRecords = pgTable('module_records', {
     foreignColumns: [moduleVersions.org_id, moduleVersions.installation_id, moduleVersions.id],
     name: 'module_records_validated_version_fk',
   }).onDelete('restrict'),
-  uniqueIndex('module_records_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
+  unique('module_records_org_installation_id_unique').on(t.org_id, t.installation_id, t.id),
   uniqueIndex('module_records_create_idempotency_unique')
     .on(
       t.org_id,
@@ -969,6 +969,131 @@ export const moduleRecords = pgTable('module_records', {
       AND ${t.deleted_by_actor_type} IS NOT NULL
       AND ${t.deleted_by_actor_id} IS NOT NULL
     )`,
+  ),
+]);
+
+// Relation values are normalized rather than embedded in record JSON. Both
+// ends carry the same org + installation composite key, so cross-tenant and
+// cross-module edges are rejected by PostgreSQL even if a caller supplies
+// otherwise-valid record IDs.
+export const moduleRecordRelations = pgTable('module_record_relations', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  field_key: text('field_key').notNull(),
+  source_record_id: text('source_record_id').notNull(),
+  target_record_id: text('target_record_id').notNull(),
+  position: integer('position').default(0).notNull(),
+  created_by_actor_type: text('created_by_actor_type').notNull(),
+  created_by_actor_id: text('created_by_actor_id').notNull(),
+  updated_by_actor_type: text('updated_by_actor_type').notNull(),
+  updated_by_actor_id: text('updated_by_actor_id').notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
+  deleted_by_actor_type: text('deleted_by_actor_type'),
+  deleted_by_actor_id: text('deleted_by_actor_id'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'module_record_relations_org_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.installation_id, t.source_record_id],
+    foreignColumns: [moduleRecords.org_id, moduleRecords.installation_id, moduleRecords.id],
+    name: 'module_record_relations_source_record_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.installation_id, t.target_record_id],
+    foreignColumns: [moduleRecords.org_id, moduleRecords.installation_id, moduleRecords.id],
+    name: 'module_record_relations_target_record_fk',
+  }).onDelete('restrict'),
+  uniqueIndex('module_record_relations_active_unique')
+    .on(t.org_id, t.installation_id, t.source_record_id, t.field_key, t.target_record_id)
+    .where(sql`${t.is_deleted} = false`),
+  index('module_record_relations_source_idx').on(
+    t.org_id,
+    t.installation_id,
+    t.source_record_id,
+    t.field_key,
+    t.is_deleted,
+    t.position,
+  ),
+  index('module_record_relations_target_idx').on(
+    t.org_id,
+    t.installation_id,
+    t.target_record_id,
+    t.is_deleted,
+  ),
+  check('module_record_relations_field_key_not_empty', sql`length(btrim(${t.field_key})) > 0`),
+  check('module_record_relations_position_nonnegative', sql`${t.position} >= 0`),
+  check(
+    'module_record_relations_deleted_state_check',
+    sql`(
+      NOT ${t.is_deleted}
+      AND ${t.deleted_at} IS NULL
+      AND ${t.deleted_by_actor_type} IS NULL
+      AND ${t.deleted_by_actor_id} IS NULL
+    ) OR (
+      ${t.is_deleted}
+      AND ${t.deleted_at} IS NOT NULL
+      AND ${t.deleted_by_actor_type} IS NOT NULL
+      AND ${t.deleted_by_actor_id} IS NOT NULL
+    )`,
+  ),
+]);
+
+// Saved views are personal in v1. The owner is mandatory and the service only
+// exposes a row back to that user. The config is declarative query metadata;
+// it cannot contain executable code or URLs because the shared schema is
+// strict and revalidated on every read/write.
+export const moduleSavedViews = pgTable('module_saved_views', {
+  ...id(),
+  ...orgId(),
+  installation_id: text('installation_id').notNull(),
+  collection_key: text('collection_key').notNull(),
+  owner_user_id: text('owner_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  view_type: text('view_type').$type<'table' | 'board' | 'timeline'>().notNull(),
+  config: jsonb('config').$type<Record<string, unknown>>().notNull(),
+  is_deleted: boolean('is_deleted').default(false).notNull(),
+  deleted_at: timestamp('deleted_at'),
+  ...timestamps(),
+}, (t) => [
+  foreignKey({
+    columns: [t.org_id, t.installation_id],
+    foreignColumns: [moduleInstallations.org_id, moduleInstallations.id],
+    name: 'module_saved_views_org_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [t.org_id, t.owner_user_id],
+    foreignColumns: [orgMembers.org_id, orgMembers.user_id],
+    name: 'module_saved_views_owner_member_fk',
+  }).onDelete('cascade'),
+  uniqueIndex('module_saved_views_active_name_unique')
+    .on(t.org_id, t.installation_id, t.collection_key, t.owner_user_id, t.name)
+    .where(sql`${t.is_deleted} = false`),
+  index('module_saved_views_owner_idx').on(
+    t.org_id,
+    t.owner_user_id,
+    t.installation_id,
+    t.collection_key,
+    t.is_deleted,
+    t.updated_at,
+  ),
+  check('module_saved_views_collection_key_not_empty', sql`length(btrim(${t.collection_key})) > 0`),
+  check('module_saved_views_name_not_empty', sql`length(btrim(${t.name})) > 0`),
+  check('module_saved_views_type_check', sql`${t.view_type} IN ('table', 'board', 'timeline')`),
+  check('module_saved_views_config_object_check', sql`jsonb_typeof(${t.config}) = 'object'`),
+  check(
+    'module_saved_views_config_type_check',
+    sql`${t.config}->>'type' = ${t.view_type}`,
+  ),
+  check(
+    'module_saved_views_deleted_state_check',
+    sql`(${t.is_deleted} AND ${t.deleted_at} IS NOT NULL)
+      OR (NOT ${t.is_deleted} AND ${t.deleted_at} IS NULL)`,
   ),
 ]);
 

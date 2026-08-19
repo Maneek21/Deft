@@ -90,3 +90,44 @@ test('module tool badges keep safe identities but omit sensitive params', () => 
   }]);
   assert.doesNotMatch(JSON.stringify(metadata), /private-search-term/);
 });
+
+test('module task-link history redacts results and raw retry keys', () => {
+  const privateTitle = 'Private linked contact sentinel';
+  const rawKey = 'module-task-link-history-key';
+  const names = new Map<string, string>();
+  const assistant = sanitizeAgentBlocksForStorage([{
+    type: 'tool_use',
+    id: 'toolu_module_task_link',
+    name: 'module_record_task_link',
+    input: {
+      resource_id: 'module_record:record_123',
+      task_identifier: 'DEFT-42',
+      idempotency_key: rawKey,
+    },
+  }], names) as Array<Record<string, unknown>>;
+  assert.deepEqual(assistant[0]?.input, {
+    resource_id: 'module_record:record_123',
+    task_identifier: 'DEFT-42',
+  });
+  assert.doesNotMatch(JSON.stringify(assistant), new RegExp(rawKey));
+
+  const result = sanitizeAgentBlocksForStorage([{
+    type: 'tool_result',
+    tool_use_id: 'toolu_module_task_link',
+    content: JSON.stringify({ title: privateTitle, module_name: 'Contacts' }),
+  }], names) as Array<Record<string, unknown>>;
+  assert.match(String(result[0]?.content), /module_result_redacted/);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(privateTitle));
+
+  const metadata = sanitizeAgentMetadataForStorage({
+    tool_calls: [{
+      tool: 'module_record_task_unlink',
+      params: {
+        resource_id: 'module_record:record_123',
+        task_identifier: 'DEFT-42',
+        idempotency_key: rawKey,
+      },
+    }],
+  });
+  assert.doesNotMatch(JSON.stringify(metadata), new RegExp(rawKey));
+});

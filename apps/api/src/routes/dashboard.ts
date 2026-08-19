@@ -281,7 +281,7 @@ dashboardRoutes.get('/', async (c) => {
       .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
       .where(and(
         eq(agentActions.org_id, user.org_id),
-        visibleModuleActionSql(user.role),
+        visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ))
       .orderBy(desc(agentActions.created_at))
       .limit(12);
@@ -905,7 +905,7 @@ dashboardRoutes.get('/agent-activity', async (c) => {
       and(
         eq(agentActions.org_id, user.org_id),
         inArray(agentActions.approval_status, ['approved', 'pending']),
-        visibleModuleActionSql(user.role),
+        visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ),
     )
     .orderBy(desc(agentActions.created_at))

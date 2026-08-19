@@ -221,6 +221,33 @@ async function insertPendingTaskCreate(title: string): Promise<string> {
   });
 }
 
+async function insertPendingModuleCreate(sentinel: string, idempotencyKey: string): Promise<string> {
+  return withClient(async (c) => {
+    const action = await c.query(
+      `INSERT INTO agent_actions
+        (id, org_id, user_id, agent_employee_id, source, action, params,
+         approval_tier, approval_status, created_at, updated_at)
+       VALUES
+        (gen_random_uuid()::text, $1, $2, $3, 'mcp', 'module_record_create', $4::jsonb,
+         'quick', 'pending', now(), now())
+       RETURNING id`,
+      [
+        ORG_ID,
+        SHADOW_USER_ID,
+        EMP_ID,
+        JSON.stringify({
+          module_id: 'com.deft.missing-test-module',
+          collection_key: 'contacts',
+          data: { name: sentinel, email: `${sentinel}@example.test` },
+          expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+          idempotency_key: idempotencyKey,
+        }),
+      ],
+    );
+    return action.rows[0].id as string;
+  });
+}
+
 async function insertLegacyCreateTaskWithoutProject(title: string): Promise<string> {
   return withClient(async (c) => {
     const r = await c.query(
@@ -831,7 +858,7 @@ test('attention maintenance expires linked proposed work intents', async () => {
   await withClient(async (c) => {
     await c.query(
       `UPDATE agent_actions
-          SET created_at = NOW() - INTERVAL '25 hours'
+          SET created_at = NOW() - INTERVAL '48 hours'
         WHERE id = $1`,
       [actionId],
     );
@@ -1329,6 +1356,30 @@ test('POST /api/agent/actions/:id/reject with reason records reason', async () =
     assert.equal(r.rows[0].error, 'looks unsafe');
     const t = await c.query(`SELECT id FROM tasks WHERE title = $1`, [title]);
     assert.equal(t.rows.length, 0, 'reject must not create a task');
+  });
+});
+
+test('rejecting a module mutation terminalizes and removes record values and retry keys', async () => {
+  const sentinel = `private-contact-${Date.now()}`;
+  const idempotencyKey = `private-key-${Date.now()}`;
+  const actionId = await insertPendingModuleCreate(sentinel, idempotencyKey);
+
+  const res = await app().request(`/api/agent/actions/${actionId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'not approved' }),
+  });
+  assert.equal(res.status, 200);
+
+  await withClient(async (c) => {
+    const result = await c.query(
+      `SELECT approval_status, executed_at, params::text AS params
+         FROM agent_actions WHERE id = $1`,
+      [actionId],
+    );
+    assert.equal(result.rows[0].approval_status, 'rejected');
+    assert.doesNotMatch(result.rows[0].params, new RegExp(sentinel));
+    assert.doesNotMatch(result.rows[0].params, new RegExp(idempotencyKey));
   });
 });
 

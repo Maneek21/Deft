@@ -9,12 +9,21 @@ import {
   normalizeBundledModulesResponse,
   normalizeInstalledModulesResponse,
   normalizeModuleInstallation,
+  normalizeModuleActivityResponse,
+  normalizeModuleMembersResponse,
   normalizeModuleRecordPage,
   normalizeModuleRecordResponse,
+  normalizeModuleRelationsResponse,
   type BundledModule,
   type ModuleInstallation,
   type ModuleRecord,
 } from '@/lib/modules';
+import {
+  normalizeModuleSavedViewsResponse,
+  type ModuleQueryFilter,
+  type ModuleQuerySort,
+  type ModuleSavedView,
+} from '@/lib/module-saved-views';
 
 async function fetchModuleJson(path: string): Promise<unknown> {
   const response = await api.get(path);
@@ -25,8 +34,8 @@ async function fetchModuleJson(path: string): Promise<unknown> {
   return response.json();
 }
 
-export function useInstalledModules() {
-  const swr = useSWR<unknown>('/api/modules', fetchModuleJson, {
+export function useInstalledModules(enabled = true) {
+  const swr = useSWR<unknown>(enabled ? '/api/modules' : null, fetchModuleJson, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
   });
@@ -69,17 +78,57 @@ export function useModule(slug: string) {
   return { ...swr, module: normalized.module, error: swr.error ?? normalized.error };
 }
 
-export function useModuleRecords(slug: string, collectionKey: string) {
+export type ModuleRecordQueryOptions = {
+  search?: string;
+  filters?: ModuleQueryFilter[];
+  sort?: ModuleQuerySort;
+};
+
+const MODULE_QUERY_KEY_SEPARATOR = '::module-query::';
+
+async function fetchModuleQuery(key: string): Promise<unknown> {
+  const separator = key.indexOf(MODULE_QUERY_KEY_SEPARATOR);
+  if (separator < 0) throw new Error('Invalid module query cache key.');
+  const path = key.slice(0, separator);
+  const body = JSON.parse(decodeURIComponent(key.slice(separator + MODULE_QUERY_KEY_SEPARATOR.length))) as unknown;
+  const response = await api.post(path, body);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: unknown };
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Unable to query module records.');
+  }
+  return response.json();
+}
+
+export function useModuleRecords(
+  slug: string,
+  collectionKey: string,
+  query?: ModuleRecordQueryOptions,
+) {
+  const queryJson = query === undefined ? null : JSON.stringify({
+    ...(query.search?.trim() ? { search: query.search.trim() } : {}),
+    filters: query.filters ?? [],
+    ...(query.sort ? { sort: query.sort } : {}),
+  });
   const getKey = (pageIndex: number, previous: unknown) => {
     if (!slug || !collectionKey) return null;
+    const previousPage = pageIndex > 0 ? normalizeModuleRecordPage(previous) : null;
+    if (pageIndex > 0 && !previousPage?.nextCursor) return null;
+    if (queryJson !== null) {
+      const input = {
+        collection_key: collectionKey,
+        ...JSON.parse(queryJson) as Record<string, unknown>,
+        limit: 50,
+        ...(previousPage?.nextCursor ? { cursor: previousPage.nextCursor } : {}),
+      };
+      const path = `/api/modules/${encodeURIComponent(slug)}/records/query`;
+      return `${path}${MODULE_QUERY_KEY_SEPARATOR}${encodeURIComponent(JSON.stringify(input))}`;
+    }
     if (pageIndex > 0) {
-      const previousPage = normalizeModuleRecordPage(previous);
-      if (!previousPage.nextCursor) return null;
-      return `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50&cursor=${encodeURIComponent(previousPage.nextCursor)}`;
+      return `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50&cursor=${encodeURIComponent(previousPage!.nextCursor!)}`;
     }
     return `/api/modules/${encodeURIComponent(slug)}/records?collection_key=${encodeURIComponent(collectionKey)}&limit=50`;
   };
-  const swr = useSWRInfinite<unknown>(getKey, fetchModuleJson, {
+  const swr = useSWRInfinite<unknown>(getKey, queryJson === null ? fetchModuleJson : fetchModuleQuery, {
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
     revalidateFirstPage: true,
@@ -103,6 +152,21 @@ export function useModuleRecords(slug: string, collectionKey: string) {
   };
 }
 
+export function useModuleSavedViews(slug: string, collectionKey: string, enabled = true) {
+  const key = slug && collectionKey && enabled
+    ? `/api/modules/${encodeURIComponent(slug)}/saved-views?collection_key=${encodeURIComponent(collectionKey)}`
+    : null;
+  const swr = useSWR<unknown>(key, fetchModuleJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+  });
+  const views = useMemo<ModuleSavedView[]>(
+    () => normalizeModuleSavedViewsResponse(swr.data),
+    [swr.data],
+  );
+  return { ...swr, views };
+}
+
 export function useModuleRecord(slug: string, collectionKey: string, recordId: string) {
   const key = slug && collectionKey && recordId
     ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}?collection_key=${encodeURIComponent(collectionKey)}`
@@ -113,6 +177,39 @@ export function useModuleRecord(slug: string, collectionKey: string, recordId: s
   });
   const record = useMemo(() => normalizeModuleRecordResponse(swr.data), [swr.data]);
   return { ...swr, record };
+}
+
+export function useModuleRelations(slug: string, recordId: string, enabled = true) {
+  const key = slug && recordId && enabled
+    ? `/api/modules/${encodeURIComponent(slug)}/records/${encodeURIComponent(recordId)}/relations`
+    : null;
+  const swr = useSWR<unknown>(key, fetchModuleJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+  });
+  const relations = useMemo(() => normalizeModuleRelationsResponse(swr.data), [swr.data]);
+  return { ...swr, relations };
+}
+
+export function useModuleRecordActivity(recordId: string, enabled = true) {
+  const key = recordId && enabled
+    ? `/api/audit?entity_type=module_record&entity_id=${encodeURIComponent(recordId)}&limit=30`
+    : null;
+  const swr = useSWR<unknown>(key, fetchModuleJson, {
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+  });
+  const activity = useMemo(() => normalizeModuleActivityResponse(swr.data), [swr.data]);
+  return { ...swr, activity };
+}
+
+export function useModuleMembers(enabled = true) {
+  const swr = useSWR<unknown>(enabled ? '/api/members' : null, fetchModuleJson, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: true,
+  });
+  const members = useMemo(() => normalizeModuleMembersResponse(swr.data), [swr.data]);
+  return { ...swr, members };
 }
 
 function isModuleCacheKey(key: unknown, slug?: string): boolean {

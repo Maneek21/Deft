@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { db, withDbAdvisoryLock } from './db.js';
 import {
   tasks,
@@ -49,7 +51,10 @@ import {
 import { getApprovalTier, shouldAutoExecute } from './agent-approval.js';
 import {
   MODULE_OPERATION_REQUEST_SCHEMAS,
+  ModuleIdempotencyKeySchema,
   ModuleMutationResultSchema,
+  ModuleRecordResourceIdSchema,
+  parseModuleRecordResourceId,
   type ModuleActor,
   type ModuleMutationResult,
 } from '@deft/shared/modules';
@@ -67,6 +72,11 @@ import {
   sanitizeModuleActionParamsForHistory,
   updateModuleRecord,
 } from './module-service.js';
+import {
+  linkModuleRecordToTask,
+  preflightModuleRecordTaskMutationWithExecutor,
+  unlinkModuleRecordFromTask,
+} from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
 
@@ -137,6 +147,32 @@ async function buildModuleActionActor(
   });
 }
 
+async function buildModuleTaskLinkActor(
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+  actionId?: string,
+): Promise<ModuleActor> {
+  if (agentEmployeeId) {
+    const policy = await getActiveAgentToolPolicy(orgId, agentEmployeeId);
+    if (!policy) throw new Error('Agent employee is inactive, deleted, or outside this organization');
+    return employeeModuleActor({
+      orgId,
+      employeeId: policy.employeeId,
+      trustLevel: policy.trustLevel,
+      source: 'runtime',
+      ...(actionId ? { actionId } : {}),
+    });
+  }
+  const membership = await requireActiveOrgMembership(orgId, userId);
+  return deftyModuleActor({
+    orgId,
+    userId,
+    role: membership.role,
+    ...(actionId ? { actionId } : {}),
+  });
+}
+
 async function buildModuleActionActorWithExecutor(
   executor: ModuleDbExecutor,
   action: ModuleWriteAction,
@@ -192,8 +228,23 @@ const MODULE_WRITE_ACTIONS = new Set([
 
 type ModuleWriteAction = 'module_record_create' | 'module_record_update' | 'module_record_archive';
 
+const MODULE_TASK_LINK_WRITE_ACTIONS = new Set([
+  'module_record_task_link',
+  'module_record_task_unlink',
+] as const);
+
+export type ModuleTaskLinkWriteAction =
+  | 'module_record_task_link'
+  | 'module_record_task_unlink';
+
 export function isModuleWriteAction(action: string): action is ModuleWriteAction {
   return MODULE_WRITE_ACTIONS.has(action as ModuleWriteAction);
+}
+
+export function isModuleTaskLinkWriteAction(
+  action: string,
+): action is ModuleTaskLinkWriteAction {
+  return MODULE_TASK_LINK_WRITE_ACTIONS.has(action as ModuleTaskLinkWriteAction);
 }
 
 /**
@@ -228,6 +279,67 @@ function stableModuleActionValue(value: unknown): unknown {
   return value;
 }
 
+function moduleTaskLinkCanonicalInput(value: Record<string, unknown>): {
+  resource_id: string;
+  task_identifier: string;
+} {
+  const resourceId = ModuleRecordResourceIdSchema.parse(value.resource_id);
+  const taskIdentifier = z.string()
+    .trim()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/, 'Invalid task identifier')
+    .parse(value.task_identifier);
+  return { resource_id: resourceId, task_identifier: taskIdentifier };
+}
+
+function moduleTaskLinkInputDigest(value: Record<string, unknown>): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(stableModuleActionValue(moduleTaskLinkCanonicalInput(value))))
+    .digest('hex')}`;
+}
+
+export function normalizeAgentModuleTaskLinkParams(
+  action: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isModuleTaskLinkWriteAction(action)) return params;
+  const canonical = moduleTaskLinkCanonicalInput(params);
+  const idempotencyKey = ModuleIdempotencyKeySchema.parse(
+    typeof params.idempotency_key === 'string' ? params.idempotency_key.trim() : params.idempotency_key,
+  );
+  return { ...canonical, idempotency_key: idempotencyKey };
+}
+
+export function sanitizeModuleTaskLinkActionParamsForHistory(
+  value: unknown,
+): Record<string, unknown> {
+  const params = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const sanitized: Record<string, unknown> = {};
+  for (const key of ['resource_id', 'task_identifier', 'idempotency_digest', 'input_digest']) {
+    if (typeof params[key] === 'string') sanitized[key] = params[key];
+  }
+  return sanitized;
+}
+
+function terminalModuleTaskLinkActionParams(
+  action: ModuleTaskLinkWriteAction,
+  value: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Record<string, unknown> {
+  const input = normalizeAgentModuleTaskLinkParams(action, value);
+  const actor = agentModuleDigestActor(orgId, userId, agentEmployeeId);
+  return {
+    ...sanitizeModuleTaskLinkActionParamsForHistory(input),
+    idempotency_digest: moduleIdempotencyDigest(actor, input.idempotency_key as string),
+    input_digest: moduleTaskLinkInputDigest(input),
+  };
+}
+
 export function sameModuleActionInput(left: unknown, right: unknown): boolean {
   return JSON.stringify(stableModuleActionValue(left)) === JSON.stringify(stableModuleActionValue(right));
 }
@@ -257,6 +369,9 @@ export async function preflightAgentModuleAction(
   userId: string,
   agentEmployeeId?: string,
 ): Promise<Record<string, unknown>> {
+  if (isModuleTaskLinkWriteAction(action)) {
+    return normalizeAgentModuleTaskLinkParams(action, params);
+  }
   if (!isModuleWriteAction(action)) {
     return params;
   }
@@ -285,6 +400,9 @@ export async function preflightAgentModuleActionWithExecutor(
   userId: string,
   agentEmployeeId?: string,
 ): Promise<Record<string, unknown>> {
+  if (isModuleTaskLinkWriteAction(action)) {
+    return normalizeAgentModuleTaskLinkParams(action, params);
+  }
   if (!isModuleWriteAction(action)) return params;
   const normalized = normalizeAgentModuleActionParams(action, params);
   const actor = await buildModuleActionActorWithExecutor(
@@ -307,7 +425,10 @@ export async function agentModuleActionIdempotencyDigest(
   userId: string,
   agentEmployeeId?: string,
 ): Promise<string | null> {
-  if (!isModuleWriteAction(action) || typeof params.idempotency_key !== 'string') return null;
+  if (
+    (!isModuleWriteAction(action) && !isModuleTaskLinkWriteAction(action))
+    || typeof params.idempotency_key !== 'string'
+  ) return null;
   const actor = agentModuleDigestActor(orgId, userId, agentEmployeeId);
   return moduleIdempotencyDigest(actor, params.idempotency_key);
 }
@@ -487,6 +608,123 @@ export async function claimModuleAgentAction(params: {
   });
 }
 
+/**
+ * Claim one durable action for a module-record/task edge mutation. The edge
+ * itself is naturally unique, while this claim prevents a lost-response retry
+ * from consuming another agent budget slot or creating another approval card
+ * and signed receipt.
+ */
+export async function claimModuleTaskLinkAgentAction(params: {
+  action: ModuleTaskLinkWriteAction;
+  input: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  agentEmployeeId?: string;
+  values: typeof agentActions.$inferInsert;
+}): Promise<{ action: typeof agentActions.$inferSelect; reused: boolean }> {
+  const input = normalizeAgentModuleTaskLinkParams(params.action, params.input);
+  const idempotencyKey = input.idempotency_key as string;
+  const actor = agentModuleDigestActor(params.orgId, params.userId, params.agentEmployeeId);
+  const idempotencyDigest = moduleIdempotencyDigest(actor, idempotencyKey);
+  const inputDigest = moduleTaskLinkInputDigest(input);
+  const liveActor = await buildModuleTaskLinkActor(
+    params.orgId,
+    params.userId,
+    params.agentEmployeeId,
+  );
+
+  return db.transaction(async (tx) => {
+    const lockKey = agentModuleActionClaimKey(params.orgId, params.action, idempotencyDigest);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const actorScope = params.agentEmployeeId
+      ? eq(agentActions.agent_employee_id, params.agentEmployeeId)
+      : and(
+        eq(agentActions.user_id, params.userId),
+        sql`${agentActions.agent_employee_id} IS NULL`,
+      );
+    const [existing] = await tx
+      .select()
+      .from(agentActions)
+      .where(and(
+        eq(agentActions.org_id, params.orgId),
+        eq(agentActions.action, params.action),
+        actorScope,
+        inArray(agentActions.approval_status, ['pending', 'approved']),
+        or(
+          sql`${agentActions.params}->>'idempotency_key' = ${idempotencyKey}`,
+          sql`${agentActions.params}->>'idempotency_digest' = ${idempotencyDigest}`,
+        ),
+      ))
+      .orderBy(desc(agentActions.created_at))
+      .limit(1);
+    if (existing) {
+      const existingParams = existing.params && typeof existing.params === 'object'
+        ? existing.params as Record<string, unknown>
+        : {};
+      const existingInputDigest = typeof existingParams.input_digest === 'string'
+        ? existingParams.input_digest
+        : moduleTaskLinkInputDigest(existingParams);
+      if (existingInputDigest !== inputDigest) {
+        throw new Error('Idempotency key was already used for a different module task-link mutation');
+      }
+      return { action: existing, reused: true };
+    }
+
+    const taskId = await resolveTaskIdentifier(input.task_identifier as string, params.orgId, tx);
+    if (!taskId) throw new Error('Task not found');
+    const employeePolicy = await preflightModuleRecordTaskMutationWithExecutor(
+      tx,
+      liveActor,
+      taskId,
+      input.resource_id as string,
+      params.action,
+    );
+
+    const approvalTier = params.values.approval_tier === 'auto'
+      || params.values.approval_tier === 'quick'
+      || params.values.approval_tier === 'full'
+      ? params.values.approval_tier
+      : getApprovalTier(params.action);
+    const liveTrustRequiresReview = employeePolicy !== null
+      && params.values.approval_status === 'approved'
+      && params.values.source !== 'plan'
+      && !shouldAutoExecute(
+        params.action,
+        employeePolicy.trustLevel,
+        input,
+        approvalTier,
+      );
+    const liveActionValues = liveTrustRequiresReview
+      ? {
+        ...params.values,
+        approval_status: 'pending' as const,
+        approved_at: null,
+      }
+      : params.values;
+
+    const persistedParams = liveActionValues.approval_status === 'approved'
+      ? {
+        ...sanitizeModuleTaskLinkActionParamsForHistory(input),
+        idempotency_digest: idempotencyDigest,
+        input_digest: inputDigest,
+      }
+      : input;
+    const [inserted] = await tx
+      .insert(agentActions)
+      .values({
+        ...liveActionValues,
+        org_id: params.orgId,
+        user_id: params.userId,
+        action: params.action,
+        params: persistedParams,
+        ...(params.agentEmployeeId ? { agent_employee_id: params.agentEmployeeId } : {}),
+      })
+      .returning();
+    if (!inserted) throw new Error('Failed to create module task-link action log');
+    return { action: inserted, reused: false };
+  });
+}
+
 function toModuleMutationResult(
   operationResult: { mutation: ModuleMutationResult },
 ): ModuleMutationResult {
@@ -602,16 +840,17 @@ async function persistModuleMutationAction(
 async function resolveTaskIdentifier(
   identifier: string,
   orgId: string,
+  executor: Pick<typeof db, 'select'> = db,
 ): Promise<string | null> {
   const m = identifier.match(/^([A-Z]+)-(\d+)$/);
   if (m) {
-    const [proj] = await db
+    const [proj] = await executor
       .select({ id: projects.id })
       .from(projects)
       .where(and(eq(projects.org_id, orgId), eq(projects.prefix, m[1]!)))
       .limit(1);
     if (!proj) return null;
-    const [t] = await db
+    const [t] = await executor
       .select({ id: tasks.id })
       .from(tasks)
       .where(and(eq(tasks.project_id, proj.id), eq(tasks.number, parseInt(m[2]!))))
@@ -619,12 +858,46 @@ async function resolveTaskIdentifier(
     return t?.id ?? null;
   }
   // Assume raw uuid — verify it exists in this org
-  const [t] = await db
+  const [t] = await executor
     .select({ id: tasks.id })
     .from(tasks)
     .where(and(eq(tasks.id, identifier), eq(tasks.org_id, orgId)))
     .limit(1);
   return t?.id ?? null;
+}
+
+async function terminalizeModuleTaskLinkActionFailure(
+  actionId: string,
+  action: ModuleTaskLinkWriteAction,
+  params: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId: string | undefined,
+  error: string,
+): Promise<void> {
+  const terminalParams = sanitizeModuleTaskLinkActionParamsForHistory(params);
+  if (typeof params.idempotency_key === 'string' && params.idempotency_key.trim()) {
+    const actor = agentModuleDigestActor(orgId, userId, agentEmployeeId);
+    terminalParams.idempotency_digest = moduleIdempotencyDigest(
+      actor,
+      params.idempotency_key.trim(),
+    );
+    try {
+      terminalParams.input_digest = moduleTaskLinkInputDigest(params);
+    } catch {
+      // Invalid request shapes are still terminalized without retaining the
+      // raw retry key. There is no canonical input digest to assert for them.
+    }
+  }
+  await db
+    .update(agentActions)
+    .set({
+      error: error.slice(0, 2_000),
+      result: null,
+      params: terminalParams,
+      executed_at: new Date(),
+    })
+    .where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
 }
 
 export async function executeAction(
@@ -655,6 +928,16 @@ export async function executeAction(
           ...(agentEmployeeId ? { agentEmployeeId } : {}),
           error: policyError,
         });
+      } else if (isModuleTaskLinkWriteAction(action)) {
+        await terminalizeModuleTaskLinkActionFailure(
+          actionId,
+          action,
+          params,
+          orgId,
+          userId,
+          agentEmployeeId ?? undefined,
+          policyError,
+        );
       }
       return { success: false, result: null, error: policyError };
     }
@@ -662,7 +945,7 @@ export async function executeAction(
       const budget = await consumeAgentDailyActionBudget(
         orgId,
         agentEmployeeId,
-        { requireHealthy: isModuleWriteAction(action) },
+        { requireHealthy: isModuleWriteAction(action) || isModuleTaskLinkWriteAction(action) },
       );
       if (!budget.allowed) {
         if (isModuleWriteAction(action)) {
@@ -675,6 +958,16 @@ export async function executeAction(
             agentEmployeeId,
             error: budget.error,
           });
+        } else if (isModuleTaskLinkWriteAction(action)) {
+          await terminalizeModuleTaskLinkActionFailure(
+            actionId,
+            action,
+            params,
+            orgId,
+            userId,
+            agentEmployeeId,
+            budget.error,
+          );
         } else {
           await db.update(agentActions).set({ error: budget.error }).where(eq(agentActions.id, actionId));
         }
@@ -721,6 +1014,76 @@ export async function executeAction(
     }
 
     switch (action) {
+      case 'module_record_task_link': {
+        const input = normalizeAgentModuleTaskLinkParams(action, params);
+        const resourceId = ModuleRecordResourceIdSchema.parse(input.resource_id);
+        const taskIdentifier = input.task_identifier as string;
+        const taskId = await resolveTaskIdentifier(taskIdentifier, orgId);
+        if (!taskId) throw new Error('Task not found');
+        const actor = await buildModuleTaskLinkActor(
+          orgId,
+          userId,
+          agentEmployeeId ?? undefined,
+          actionId,
+        );
+        const linked = await linkModuleRecordToTask(actor, taskId, resourceId);
+        // Keep broad agent history/receipts free of projected module values.
+        // The human REST response may render the rich link, while Defty only
+        // needs stable identities and the idempotent mutation outcome.
+        const result = {
+          resource_id: resourceId,
+          task_id: taskId,
+          edge_id: linked.link.edge_id,
+          created: linked.created,
+        };
+        await db.update(agentActions).set({
+          result,
+          error: null,
+          params: terminalModuleTaskLinkActionParams(
+            action,
+            input,
+            orgId,
+            userId,
+            agentEmployeeId ?? undefined,
+          ),
+          executed_at: new Date(),
+        }).where(eq(agentActions.id, actionId));
+        return { success: true, result };
+      }
+
+      case 'module_record_task_unlink': {
+        const input = normalizeAgentModuleTaskLinkParams(action, params);
+        const resourceId = ModuleRecordResourceIdSchema.parse(input.resource_id);
+        const taskIdentifier = input.task_identifier as string;
+        const taskId = await resolveTaskIdentifier(taskIdentifier, orgId);
+        if (!taskId) throw new Error('Task not found');
+        const actor = await buildModuleTaskLinkActor(
+          orgId,
+          userId,
+          agentEmployeeId ?? undefined,
+          actionId,
+        );
+        const unlinked = await unlinkModuleRecordFromTask(
+          actor,
+          taskId,
+          parseModuleRecordResourceId(resourceId),
+        );
+        const result = { resource_id: resourceId, task_id: taskId, ...unlinked };
+        await db.update(agentActions).set({
+          result,
+          error: null,
+          params: terminalModuleTaskLinkActionParams(
+            action,
+            input,
+            orgId,
+            userId,
+            agentEmployeeId ?? undefined,
+          ),
+          executed_at: new Date(),
+        }).where(eq(agentActions.id, actionId));
+        return { success: true, result };
+      }
+
       case 'module_record_create': {
         const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_create.parse({
           ...params,
@@ -2511,6 +2874,16 @@ export async function executeAction(
         ...(agentEmployeeId ? { agentEmployeeId } : {}),
         error: msg,
       });
+    } else if (isModuleTaskLinkWriteAction(action)) {
+      await terminalizeModuleTaskLinkActionFailure(
+        actionId,
+        action,
+        params,
+        orgId,
+        userId,
+        agentEmployeeId ?? undefined,
+        msg,
+      );
     } else {
       await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
     }
@@ -2550,7 +2923,13 @@ export async function executeActionDirect(
   approvalTier: 'auto' | 'quick' | 'full',
   options?: ExecuteActionDirectOptions,
 ): Promise<ExecuteActionDirectResult> {
-  if (isModuleWriteAction(action) && typeof params.idempotency_key === 'string') {
+  if (isModuleTaskLinkWriteAction(action)) {
+    params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
+  }
+  if (
+    (isModuleWriteAction(action) || isModuleTaskLinkWriteAction(action))
+    && typeof params.idempotency_key === 'string'
+  ) {
     const actor = agentModuleDigestActor(orgId, userId, options?.agentEmployeeId);
     const lockDigest = moduleIdempotencyDigest(actor, params.idempotency_key);
     return withDbAdvisoryLock(
@@ -2590,6 +2969,7 @@ async function executeActionDirectLocked(
   // background runner, plans, and MCP). Invalid/disabled module writes must not
   // create even a pending agent_actions row containing record values.
   params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
+  params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
 
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;
@@ -2648,6 +3028,7 @@ async function executeActionDirectLocked(
 
   let actionRecord: typeof agentActions.$inferSelect;
   let reusedModuleAction = false;
+  let reusedModuleTaskLinkAction = false;
   if (isModuleWriteAction(action)) {
     const claimed = await claimModuleAgentAction({
       action,
@@ -2659,6 +3040,17 @@ async function executeActionDirectLocked(
     });
     actionRecord = claimed.action;
     reusedModuleAction = claimed.reused;
+  } else if (isModuleTaskLinkWriteAction(action)) {
+    const claimed = await claimModuleTaskLinkAgentAction({
+      action,
+      input: params,
+      orgId,
+      userId,
+      ...(options?.agentEmployeeId ? { agentEmployeeId: options.agentEmployeeId } : {}),
+      values: actionValues,
+    });
+    actionRecord = claimed.action;
+    reusedModuleTaskLinkAction = claimed.reused;
   } else {
     const [inserted] = await db.insert(agentActions).values(actionValues).returning();
     if (!inserted) throw new Error('Failed to create action log');
@@ -2679,6 +3071,34 @@ async function executeActionDirectLocked(
         await syncApprovalToAttention(actionRecord);
       } catch (syncError) {
         console.warn('[agent-actions] Failed to surface re-gated module action in attention inbox', {
+          actionId: actionRecord.id,
+          error: syncError instanceof Error ? syncError.message : String(syncError),
+        });
+      }
+    }
+    return {
+      actionId: actionRecord.id,
+      success: false,
+      result: null,
+      error,
+      requiresApproval: true,
+      approvalTier: actionRecord.approval_tier,
+    };
+  }
+  if (isModuleTaskLinkWriteAction(action) && actionRecord.approval_status === 'pending') {
+    const error = reusedModuleTaskLinkAction
+      ? actionRecord.error ?? 'Action already requires human approval'
+      : `Approval policy changed to '${actionRecord.approval_tier}'; action queued for fresh review`;
+    if (!reusedModuleTaskLinkAction) {
+      await db
+        .update(agentActions)
+        .set({ error })
+        .where(and(eq(agentActions.id, actionRecord.id), eq(agentActions.org_id, orgId)));
+      try {
+        const { syncApprovalToAttention } = await import('./attention.js');
+        await syncApprovalToAttention(actionRecord);
+      } catch (syncError) {
+        console.warn('[agent-actions] Failed to surface re-gated module task-link action', {
           actionId: actionRecord.id,
           error: syncError instanceof Error ? syncError.message : String(syncError),
         });
@@ -2769,6 +3189,34 @@ async function executeActionDirectLocked(
       };
     }
   }
+  if (reusedModuleTaskLinkAction && actionRecord.approval_status === 'approved') {
+    requiresFreshApproval = false;
+    effectiveApprovalTier = actionRecord.approval_tier;
+    if (actionRecord.executed_at) {
+      const receiptDecision = actionRecord.approved_by_user_id ? 'approved' : 'auto_executed';
+      await generateReceipt({
+        actionId: actionRecord.id,
+        orgId,
+        employeeId: options?.agentEmployeeId ?? null,
+        proposer: options?.agentEmployeeId ? 'employee' : 'defty',
+        proposerId: options?.agentEmployeeId ?? userId,
+        approverId: actionRecord.approved_by_user_id ?? null,
+        decision: receiptDecision,
+        actionName: action,
+        actionParams: sanitizeModuleTaskLinkActionParamsForHistory(actionRecord.params),
+        resultJson: actionRecord.error ? null : actionRecord.result,
+        ...(actionRecord.error
+          ? { decisionReason: `execution failed: ${actionRecord.error}`.slice(0, 2_000) }
+          : {}),
+      });
+      return {
+        actionId: actionRecord.id,
+        success: !actionRecord.error,
+        result: actionRecord.result,
+        ...(actionRecord.error ? { error: actionRecord.error } : {}),
+      };
+    }
+  }
 
   if (executionBlockedError) {
     await db.update(agentActions).set({ error: executionBlockedError }).where(eq(agentActions.id, actionRecord.id));
@@ -2831,6 +3279,40 @@ async function executeActionDirectLocked(
       decisionReason: result.success ? null : `execution failed: ${result.error ?? 'unknown'}`.slice(0, 2_000),
       actionName: action,
       actionParams: sanitizeModuleActionParamsForHistory(action, params),
+      resultJson: result.success ? result.result : null,
+    });
+  }
+  if (isModuleTaskLinkWriteAction(action)) {
+    const [terminalAction] = await db
+      .select({
+        approval_status: agentActions.approval_status,
+        approved_by_user_id: agentActions.approved_by_user_id,
+        params: agentActions.params,
+        error: agentActions.error,
+      })
+      .from(agentActions)
+      .where(and(eq(agentActions.id, actionRecord.id), eq(agentActions.org_id, orgId)))
+      .limit(1);
+    if (!terminalAction || terminalAction.approval_status !== 'approved') {
+      return {
+        actionId: actionRecord.id,
+        success: false,
+        result: null,
+        error: terminalAction?.error ?? 'Module task-link action was terminalized before execution completed',
+      };
+    }
+    const reviewedBy = terminalAction.approved_by_user_id ?? null;
+    await generateReceipt({
+      actionId: actionRecord.id,
+      orgId,
+      employeeId: options?.agentEmployeeId ?? null,
+      proposer: options?.agentEmployeeId ? 'employee' : 'defty',
+      proposerId: options?.agentEmployeeId ?? userId,
+      approverId: reviewedBy,
+      decision: reviewedBy ? 'approved' : 'auto_executed',
+      decisionReason: result.success ? null : `execution failed: ${result.error ?? 'unknown'}`.slice(0, 2_000),
+      actionName: action,
+      actionParams: sanitizeModuleTaskLinkActionParamsForHistory(terminalAction.params),
       resultJson: result.success ? result.result : null,
     });
   }

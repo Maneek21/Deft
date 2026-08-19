@@ -58,6 +58,7 @@ import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
 import { moduleRoutes } from './routes/modules.js';
+import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
 import {
   authLimiter,
@@ -195,6 +196,7 @@ app.route('/api/teams', teamRoutes);
 app.route('/api/emoji', emojiRoutes);
 app.route('/api/workflows', workflowRoutes);
 app.route('/api', crossReferenceRoutes);
+app.route('/api', moduleTaskLinkRoutes);
 app.route('/api/audit', auditRoutes);
 app.route('/api/decisions', decisionRoutes);
 app.route('/api/manager', managerRoutes);

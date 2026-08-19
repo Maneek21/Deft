@@ -71,7 +71,9 @@ import {
 } from './mcp-approval-actions.js';
 import {
   executeAction as executeAgentAction,
+  isModuleTaskLinkWriteAction,
   preflightAgentModuleAction,
+  sanitizeModuleTaskLinkActionParamsForHistory,
 } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { isAgentToolDisabled } from './agent-tool-policy.js';
@@ -112,6 +114,9 @@ export function sanitizeModuleActionParamsForReceipt(
   paramsValue: unknown,
 ): Record<string, unknown> {
   const params = recordValue(paramsValue);
+  if (isModuleTaskLinkWriteAction(action)) {
+    return sanitizeModuleTaskLinkActionParamsForHistory(params);
+  }
   if (!MODULE_MUTATION_ACTIONS.has(action)) return params;
   const sanitized = sanitizeModuleActionParamsForHistory(action, params);
   // Retry repair reads an already-scrubbed terminal action. Preserve only
@@ -198,7 +203,10 @@ async function repairRejectedModuleTerminalState(
   row: typeof agentActions.$inferSelect,
   options: { repairWorkIntent?: boolean } = {},
 ): Promise<void> {
-  if (!MODULE_MUTATION_ACTIONS.has(row.action)) return;
+  if (
+    !MODULE_MUTATION_ACTIONS.has(row.action)
+    && !isModuleTaskLinkWriteAction(row.action)
+  ) return;
   const reviewerId = terminalReviewerUserId(row.params);
   const proposer = moduleProposer(row);
   const postcommit: Array<Promise<unknown>> = [
@@ -671,6 +679,7 @@ async function approveActionLocked(
   }
 
   const isModuleMutation = MODULE_MUTATION_ACTIONS.has(row.action);
+  const isModuleTaskLink = isModuleTaskLinkWriteAction(row.action);
 
   // Authorize before returning or repairing any durable terminal state. A
   // terminal retry may create missing receipts/attention artifacts, so it is
@@ -699,7 +708,7 @@ async function approveActionLocked(
   // are safe to resume after a process crash. Completed approvals also retry
   // receipt generation, which is itself idempotent.
   if (row.approval_status === 'approved' && !resumesApprovedModule) {
-    if (isModuleMutation) await ensureApprovedModuleReceipt(row);
+    if (isModuleMutation || isModuleTaskLink) await ensureApprovedModuleReceipt(row);
     return {
       status: 'approved',
       message: 'already approved',
@@ -896,7 +905,7 @@ async function approveActionLocked(
             message: `action ${actionId} approval changed while it was being claimed; retry to resume`,
           };
         }
-        if (isModuleMutation) await ensureApprovedModuleReceipt(winner);
+        if (isModuleMutation || isModuleTaskLink) await ensureApprovedModuleReceipt(winner);
         return {
           status: 'approved',
           message: 'already approved (lost race)',
@@ -1116,6 +1125,7 @@ export async function rejectAction(
   }
 
   const isModuleMutation = MODULE_MUTATION_ACTIONS.has(row.action);
+  const isModuleTaskLink = isModuleTaskLinkWriteAction(row.action);
 
   // Terminal-state repair can write receipts and attention state. Apply the
   // same reviewer boundary before any early return or repair side effect.
@@ -1171,7 +1181,9 @@ export async function rejectAction(
       [TERMINAL_REVIEWER_USER_ID]: rejecterUserId,
       [TERMINAL_ATTENTION_RESOLUTION]: 'rejected',
     }
-    : null;
+    : isModuleTaskLink
+      ? sanitizeModuleTaskLinkActionParamsForHistory(row.params)
+      : null;
   const updated = await db.transaction(async (tx) => {
     const [claimed] = await tx
       .update(agentActions)

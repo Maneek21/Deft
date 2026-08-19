@@ -6,6 +6,11 @@ import {
 import { sanitizeModuleActionParamsForHistory } from './module-service.js';
 
 const MODULE_OPERATION_SET = new Set<string>(MODULE_OPERATION_NAMES);
+const MODULE_TASK_LINK_TOOL_SET = new Set([
+  'module_record_task_links',
+  'module_record_task_link',
+  'module_record_task_unlink',
+]);
 
 type ToolNameRegistry = Map<string, string>;
 
@@ -15,6 +20,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isModuleOperationName(value: unknown): value is ModuleOperationName {
   return typeof value === 'string' && MODULE_OPERATION_SET.has(value);
+}
+
+function isGovernedModuleToolName(value: unknown): value is string {
+  return isModuleOperationName(value)
+    || (typeof value === 'string' && MODULE_TASK_LINK_TOOL_SET.has(value));
+}
+
+function sanitizeModuleTaskLinkToolInput(value: unknown): Record<string, unknown> {
+  const input = isRecord(value) ? value : {};
+  const safe: Record<string, unknown> = {};
+  for (const key of ['resource_id', 'task_identifier']) {
+    if (typeof input[key] === 'string') safe[key] = input[key];
+  }
+  return safe;
+}
+
+function sanitizeGovernedModuleToolInput(
+  toolName: string,
+  value: unknown,
+): Record<string, unknown> {
+  return isModuleOperationName(toolName)
+    ? sanitizeModuleToolInput(toolName, value)
+    : sanitizeModuleTaskLinkToolInput(value);
 }
 
 /**
@@ -47,7 +75,7 @@ export function sanitizeModuleToolInput(
   return safe;
 }
 
-function redactedModuleToolResult(operation: ModuleOperationName): string {
+function redactedModuleToolResult(operation: string): string {
   return JSON.stringify({
     status: 'module_result_redacted',
     operation,
@@ -74,16 +102,16 @@ export function sanitizeAgentBlocksForStorage(
       && typeof block.name === 'string'
     ) {
       toolNames.set(block.id, block.name);
-      if (!isModuleOperationName(block.name)) return block;
+      if (!isGovernedModuleToolName(block.name)) return block;
       return {
         ...block,
-        input: sanitizeModuleToolInput(block.name, block.input),
+        input: sanitizeGovernedModuleToolInput(block.name, block.input),
       };
     }
 
     if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
       const operation = toolNames.get(block.tool_use_id);
-      if (!isModuleOperationName(operation)) return block;
+      if (!isGovernedModuleToolName(operation)) return block;
       return {
         ...block,
         content: redactedModuleToolResult(operation),
@@ -96,10 +124,10 @@ export function sanitizeAgentBlocksForStorage(
 export function sanitizeAgentToolCallsForStorage(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   return value.map((call) => {
-    if (!isRecord(call) || !isModuleOperationName(call.tool)) return call;
+    if (!isRecord(call) || !isGovernedModuleToolName(call.tool)) return call;
     return {
       ...call,
-      params: sanitizeModuleToolInput(call.tool, call.params),
+      params: sanitizeGovernedModuleToolInput(call.tool, call.params),
     };
   });
 }

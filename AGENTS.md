@@ -212,7 +212,7 @@ Migrations added: `0051_org_scoped_templates.sql`, `0052_agent_webhooks.sql`.
 
 ## What NOT To Do
 
-- Don't build features we don't need yet (sprints, burndown, Gantt, huddles, CRM)
+- Don't put domain-specific CRM logic in core. CRM capabilities belong in declarative modules; core stays generic.
 - Don't over-abstract. Build for the current scope, refactor when needed
 - Don't cache prematurely. Postgres is fast enough for our scale
 - Don't build a custom auth system. Use better-auth

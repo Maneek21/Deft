@@ -15,6 +15,8 @@ const HEALTH_GATED_TOOLS = new Set([
   'module_record_create',
   'module_record_update',
   'module_record_archive',
+  'module_record_task_link',
+  'module_record_task_unlink',
 ]);
 
 const NATIVE_TOOL_ALIASES: Record<string, string> = {

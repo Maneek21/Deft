@@ -10,6 +10,8 @@ import {
   ModuleActorSchema,
   ModuleMutationResultSchema,
   ModuleQueryFilterSchema,
+  ModuleRecordQueryRequestSchema,
+  ModuleSavedViewConfigSchema,
   ModuleRecordUpdateRequestSchema,
   canonicalModuleManifestJson,
   digestModuleManifest,
@@ -21,6 +23,10 @@ import {
   projectModuleRecordSearch,
   validateModuleRecordData,
 } from '../src/modules.js';
+import {
+  contentCalendarManifest,
+  equipmentRegisterManifest,
+} from './module-manifest-fixtures.js';
 
 function contactsManifest(): DeftModuleManifestV1Input {
   return {
@@ -105,6 +111,75 @@ describe('deft.module.json v1 manifest', () => {
       ...base,
       collections: [...collections, { ...collections[0], key: 'collection_extra' }],
     }));
+  });
+
+  test('keeps relation, member, tags, board, timeline, and navigation generic', () => {
+    const equipment = parseDeftModuleManifest(equipmentRegisterManifest());
+    const calendar = parseDeftModuleManifest(contentCalendarManifest());
+
+    assert.equal(equipment.navigation?.default_collection, 'equipment');
+    assert.equal(equipment.collections[0]?.fields.find((field) => field.key === 'assignees')?.type, 'member');
+    assert.equal(calendar.collections[0]?.views[0]?.type, 'timeline');
+    assert.equal(calendar.collections[0]?.views[1]?.type, 'board');
+
+    const equipmentRecord = validateModuleRecordData(equipment, 'equipment', {
+      name: 'MacBook Pro',
+      assignees: ['user_1', 'user_2'],
+      tags: ['laptop', 'design'],
+    });
+    assert.equal(equipmentRecord.success, true);
+
+    const relationInData = validateModuleRecordData(equipment, 'equipment', {
+      name: 'MacBook Pro',
+      location_id: 'record_1',
+    });
+    assert.equal(relationInData.success, false);
+    if (!relationInData.success) {
+      assert.match(relationInData.issues[0]?.message ?? '', /relation endpoint/i);
+    }
+  });
+
+  test('rejects invalid relation, board, timeline, and navigation references', () => {
+    const missingTarget = equipmentRegisterManifest();
+    const relation = missingTarget.collections[0]!.fields.find((field) => field.type === 'relation');
+    if (relation?.type === 'relation') relation.target_collection = 'missing';
+    assert.throws(() => parseDeftModuleManifest(missingTarget), /Relation target collection/);
+
+    const badBoard = equipmentRegisterManifest();
+    const board = badBoard.collections[0]!.views?.find((view) => view.type === 'board');
+    if (board?.type === 'board') board.group_by = 'name';
+    assert.throws(() => parseDeftModuleManifest(badBoard), /Board group_by/);
+
+    const badTimeline = contentCalendarManifest();
+    const timeline = badTimeline.collections[0]!.views?.find((view) => view.type === 'timeline');
+    if (timeline?.type === 'timeline') timeline.start_field = 'title';
+    assert.throws(() => parseDeftModuleManifest(badTimeline), /Timeline field/);
+
+    const badNavigation = equipmentRegisterManifest();
+    badNavigation.navigation = { default_collection: 'locations', default_view: 'missing' };
+    assert.throws(() => parseDeftModuleManifest(badNavigation), /Default view/);
+  });
+
+  test('enforces the manifest byte limit for already-parsed objects', () => {
+    const fields = Array.from({ length: MODULE_LIMITS.fields_per_collection }, (_, index) => ({
+      key: `field_${index}`,
+      label: `Field ${index}`,
+      description: 'x'.repeat(MODULE_LIMITS.description_chars),
+      type: 'text' as const,
+    }));
+    const oversized = {
+      schema_version: '1' as const,
+      id: 'community.deft.large-manifest',
+      slug: 'large-manifest',
+      version: '1.0.0',
+      name: 'Large manifest',
+      collections: Array.from({ length: MODULE_LIMITS.collections_per_module }, (_, index) => ({
+        key: `collection_${index}`,
+        name: `Collection ${index}`,
+        fields,
+      })),
+    };
+    assert.throws(() => parseDeftModuleManifest(oversized), /Manifest exceeds/);
   });
 
   test('rejects unknown keys, executable-looking icon values, and unsafe display metadata', () => {
@@ -309,6 +384,18 @@ describe('module record validation and search projection', () => {
 });
 
 describe('actors, resources, and generic operations', () => {
+  test('validates personal saved-view query configurations', () => {
+    assert.equal(ModuleSavedViewConfigSchema.safeParse({
+      type: 'board',
+      fields: ['title', 'owner'],
+      group_by: 'status',
+      filters: [{ field: 'status', operator: 'eq', value: 'draft' }],
+    }).success, true);
+    assert.equal(ModuleSavedViewConfigSchema.safeParse({
+      type: 'timeline',
+      fields: ['title'],
+    }).success, false);
+  });
   test('rejects query operator values that are invalid before manifest resolution', () => {
     assert.equal(ModuleQueryFilterSchema.safeParse({
       field: 'name',
@@ -330,6 +417,27 @@ describe('actors, resources, and generic operations', () => {
       operator: 'gte',
       value: 1,
     }).success, true);
+  });
+
+  test('bounds and normalizes collection query search terms', () => {
+    const parsed = ModuleRecordQueryRequestSchema.parse({
+      module_id: 'community.deft.contacts',
+      collection_key: 'contacts',
+      search: '  Ada Lovelace  ',
+    });
+    assert.equal(parsed.search, 'Ada Lovelace');
+    assert.deepEqual(parsed.filters, []);
+    assert.equal(parsed.limit, 25);
+    assert.equal(ModuleRecordQueryRequestSchema.safeParse({
+      module_id: 'community.deft.contacts',
+      collection_key: 'contacts',
+      search: ' '.repeat(5),
+    }).success, false);
+    assert.equal(ModuleRecordQueryRequestSchema.safeParse({
+      module_id: 'community.deft.contacts',
+      collection_key: 'contacts',
+      search: 'x'.repeat(501),
+    }).success, false);
   });
 
   test('uses a stable module_record resource id', () => {
@@ -388,12 +496,30 @@ describe('actors, resources, and generic operations', () => {
     });
     assert.deepEqual(clear.patch, {});
     assert.deepEqual(clear.unset_fields, ['company']);
+    assert.deepEqual(clear.relations, {});
 
     assert.equal(ModuleRecordUpdateRequestSchema.safeParse(common).success, false);
     assert.equal(ModuleRecordUpdateRequestSchema.safeParse({
       ...common,
       patch: { company: 'New company' },
       unset_fields: ['company'],
+    }).success, false);
+  });
+
+  test('models atomic relation replacement inside the governed update operation', () => {
+    const update = ModuleRecordUpdateRequestSchema.parse({
+      record_id: 'record_1',
+      relations: { company_id: ['company_1'] },
+      expected_revision: 3,
+      expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+      idempotency_key: 'relation-update-1',
+    });
+    assert.deepEqual(update.patch, {});
+    assert.deepEqual(update.unset_fields, []);
+    assert.deepEqual(update.relations, { company_id: ['company_1'] });
+    assert.equal(ModuleRecordUpdateRequestSchema.safeParse({
+      ...update,
+      relations: { company_id: ['company_1', 'company_1'] },
     }).success, false);
   });
 

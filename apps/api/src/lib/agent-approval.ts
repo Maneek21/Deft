@@ -131,6 +131,9 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // decision text itself. Tier 'quick' — gated under Conservative.
   link_decision_to_tasks: 'quick',
   mark_decision_implemented: 'quick',
+  module_record_task_links: 'auto',
+  module_record_task_link: 'quick',
+  module_record_task_unlink: 'quick',
 
   // Declarative modules — the shared operation contract is authoritative.
   // Keeping these references (instead of repeating literals) prevents the

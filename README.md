@@ -124,8 +124,13 @@ Preview releases also publish an amd64 image to GHCR. Download the release
 assets, copy `.env.example` to `.env`, set the required secrets and public
 URLs, then run:
 
+Choose a release whose notes identify it as `AGPL-3.0-only`, then set its
+exact immutable tag. Historical releases through `v0.2.0-preview.4` retain the
+BSL 1.1 license included in those revisions; relicensing this source tree does
+not retroactively change old tags or images.
+
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.2.0-preview.1
+export DEFT_IMAGE=ghcr.io/maneek21/deft:<agpl-release-tag>
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init

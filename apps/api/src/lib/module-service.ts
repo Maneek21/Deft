@@ -16,16 +16,24 @@ import {
   agentEmployees,
   moduleInstallations,
   moduleMutationReceipts,
+  moduleRecordRelations,
   moduleRecords,
+  moduleSavedViews,
   moduleVersions,
+  orgMembers,
+  users,
 } from '@deft/db/schema';
 import {
   ModuleActorSchema,
+  ModuleManifestDigestSchema,
   ModuleMutationResultSchema,
+  ModuleRelationPatchSchema,
+  ModuleSavedViewConfigSchema,
   ModuleRecordValidationError,
   digestModuleManifest,
   formatModuleRecordResourceId,
   parseDeftModuleManifest,
+  parseModuleRecordResourceId,
   parseModuleRecordData,
   projectModuleRecordSearch,
   validateModuleFieldValue,
@@ -39,6 +47,13 @@ import {
   type ModuleRecordQueryRequest,
   type ModuleRecordUpdateRequest,
   type ModuleSearchHit,
+  type ModuleSavedView,
+  type ModuleSavedViewConfig,
+  type ModuleSavedViewCreateRequest,
+  type ModuleSavedViewUpdateRequest,
+  type ModuleRecordReference,
+  type ModuleRelationGroup,
+  type ModuleMemberGroup,
   type ModuleSummary,
   type ModuleField,
   type ModuleMutationResult,
@@ -60,12 +75,18 @@ export type ModuleMutationActionName =
   | 'module_record_create'
   | 'module_record_update'
   | 'module_record_archive';
+export type ModuleAgentWriteActionName =
+  | ModuleMutationActionName
+  | 'module_record_task_link'
+  | 'module_record_task_unlink';
 export type ModuleDbExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
 type DbExecutor = ModuleDbExecutor;
 
 type InstallationRow = typeof moduleInstallations.$inferSelect;
 type VersionRow = typeof moduleVersions.$inferSelect;
 type RecordRow = typeof moduleRecords.$inferSelect;
+type RelationRow = typeof moduleRecordRelations.$inferSelect;
+type SavedViewRow = typeof moduleSavedViews.$inferSelect;
 
 type InstallationVersionRow = {
   installation: InstallationRow;
@@ -94,6 +115,8 @@ export type BundledModuleView = {
   icon?: string;
   version: string;
   installed: boolean;
+  installed_version?: string;
+  update_available: boolean;
 };
 
 export type ModuleRecordPage = {
@@ -172,6 +195,56 @@ function assertLifecycleAccess(actor: ModuleActor): void {
 }
 
 /**
+ * Lifecycle authority is re-read under a row lock inside the mutation
+ * transaction. The role carried by an authenticated request is a useful
+ * preflight only: it may be stale by the time an uploaded manifest has been
+ * parsed or an installation lock becomes available.
+ *
+ * Keep this as the first row lock taken by every human lifecycle mutation.
+ * Role changes then serialize before installation and record locks instead of
+ * leaving a demotion/disable TOCTOU window.
+ */
+export async function assertCurrentModuleManagerWithExecutor(
+  executor: DbExecutor,
+  actor: ModuleActor,
+): Promise<void> {
+  assertLifecycleAccess(actor);
+  if (actor.kind !== 'human') {
+    throw new ModuleError(
+      'Only workspace owners and admins can manage modules',
+      'MODULE_ACCESS_DENIED',
+      403,
+    );
+  }
+
+  const [membership] = await executor
+    .select({
+      id: orgMembers.id,
+      role: orgMembers.role,
+      is_active: orgMembers.is_active,
+    })
+    .from(orgMembers)
+    .where(and(
+      eq(orgMembers.org_id, actor.org_id),
+      eq(orgMembers.user_id, actor.actor_id),
+    ))
+    .limit(1)
+    .for('update');
+
+  if (
+    !membership
+    || !membership.is_active
+    || (membership.role !== 'owner' && membership.role !== 'admin')
+  ) {
+    throw new ModuleError(
+      'Only active workspace owners and admins can manage modules',
+      'MODULE_ACCESS_DENIED',
+      403,
+    );
+  }
+}
+
+/**
  * Revalidate an employee actor under a row lock in the mutation transaction.
  * Adapter checks are intentionally insufficient here: an admin can pause,
  * delete, mark unhealthy, or disable a tool after adapter preflight but before
@@ -181,7 +254,7 @@ function assertLifecycleAccess(actor: ModuleActor): void {
 export async function assertAgentModuleMutationPolicyWithExecutor(
   executor: DbExecutor,
   actor: ModuleActor,
-  operation: ModuleMutationActionName,
+  operation: ModuleAgentWriteActionName,
 ): Promise<{ trustLevel: 'conservative' | 'standard' | 'autonomous' } | null> {
   if (actor.kind !== 'agent_employee') return null;
 
@@ -261,6 +334,43 @@ async function findInstallation(
   if (identifier.installationId) identityConditions.push(eq(moduleInstallations.id, identifier.installationId));
   if (identityConditions.length !== 1) throw new Error('Exactly one module identifier is required');
 
+  if (options?.lock) {
+    // Lock the stable installation identity before reading its active version.
+    // A joined SELECT ... FOR UPDATE can take its snapshot before a concurrent
+    // upgrade commits, then re-check the old version as inactive without being
+    // able to see the newly inserted active version and falsely return 404.
+    let installationQuery = executor
+      .select()
+      .from(moduleInstallations)
+      .where(and(
+        eq(moduleInstallations.org_id, actor.org_id),
+        eq(moduleInstallations.is_deleted, false),
+        identityConditions[0],
+      ))
+      .limit(1);
+    if ('for' in installationQuery) {
+      installationQuery = (installationQuery as typeof installationQuery & {
+        for: (strength: 'update') => typeof installationQuery;
+      }).for('update');
+    }
+    const [installation] = await installationQuery;
+    if (!installation) throw new ModuleError('Module not found', 'MODULE_NOT_FOUND', 404);
+    assertInstallationAccess(actor, installation, mode, options);
+
+    const [version] = await executor
+      .select()
+      .from(moduleVersions)
+      .where(and(
+        eq(moduleVersions.org_id, actor.org_id),
+        eq(moduleVersions.installation_id, installation.id),
+        eq(moduleVersions.is_active, true),
+      ))
+      .limit(1);
+    if (!version) throw new ModuleError('Module has no active version', 'MODULE_NOT_FOUND', 404);
+    await verifyManifest(version);
+    return { installation, version };
+  }
+
   let query = executor
     .select({ installation: moduleInstallations, version: moduleVersions })
     .from(moduleInstallations)
@@ -272,9 +382,6 @@ async function findInstallation(
     ))
     .limit(1);
 
-  if (options?.lock && 'for' in query) {
-    query = (query as typeof query & { for: (strength: 'update') => typeof query }).for('update');
-  }
   const [row] = await query;
   if (!row) throw new ModuleError('Module not found', 'MODULE_NOT_FOUND', 404);
   assertInstallationAccess(actor, row.installation, mode, options);
@@ -284,6 +391,42 @@ async function findInstallation(
 
 function toIso(value: Date): string {
   return value.toISOString();
+}
+
+function compareSemver(left: string, right: string): number {
+  const parse = (value: string) => {
+    const withoutBuild = value.split('+', 1)[0]!;
+    const prereleaseStart = withoutBuild.indexOf('-');
+    const core = prereleaseStart === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseStart);
+    const prerelease = prereleaseStart === -1 ? undefined : withoutBuild.slice(prereleaseStart + 1);
+    return {
+      core: core!.split('.').map(Number),
+      prerelease: prerelease?.split('.') ?? [],
+    };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
+    if (a.prerelease.length === b.prerelease.length) return 0;
+    return a.prerelease.length === 0 ? 1 : -1;
+  }
+  const count = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < count; index += 1) {
+    const aPart = a.prerelease[index];
+    const bPart = b.prerelease[index];
+    if (aPart === undefined || bPart === undefined) return aPart === undefined ? -1 : 1;
+    if (aPart === bPart) continue;
+    const aNumeric = /^\d+$/.test(aPart);
+    const bNumeric = /^\d+$/.test(bPart);
+    if (aNumeric && bNumeric) return Number(aPart) < Number(bPart) ? -1 : 1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return aPart < bPart ? -1 : 1;
+  }
+  return 0;
 }
 
 function toInstallationView(
@@ -303,6 +446,23 @@ function toInstallationView(
     created_at: toIso(row.installation.created_at),
     updated_at: toIso(row.installation.updated_at),
   };
+}
+
+/**
+ * Canonical module write-access preflight for integrations that persist
+ * generic edges around a module record. Keeping this in ModuleService means
+ * every module-backed write shares enabled/guest/MCP-scope/agent-access
+ * semantics, while the caller can hold the installation lock through its own
+ * transaction.
+ */
+export async function requireModuleInstallationWriteAccessWithExecutor(
+  executor: ModuleDbExecutor,
+  actorValue: ModuleActor,
+  identifier: { slug?: string; moduleId?: string; installationId?: string },
+): Promise<ModuleInstallationView> {
+  const actor = validatedActor(actorValue);
+  const row = await findInstallation(executor, actor, identifier, 'write', { lock: true });
+  return toInstallationView(row, await verifyManifest(row.version));
 }
 
 function recordDigest(data: ModuleRecordData): string {
@@ -332,6 +492,7 @@ export function moduleMutationInputDigest(
       ...withoutKey,
       patch: withoutKey.patch ?? {},
       unset_fields: withoutKey.unset_fields ?? [],
+      relations: withoutKey.relations ?? {},
     }
     : withoutKey;
   return `sha256:${createHash('sha256').update(JSON.stringify(stableValue(canonical))).digest('hex')}`;
@@ -357,6 +518,8 @@ function toRecord(
     collection_key: row.collection_key,
     manifest_digest: version.manifest_digest,
     data: row.data as ModuleRecordData,
+    relations: [],
+    members: [],
     revision: row.revision,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
@@ -692,6 +855,193 @@ function parseRecordData(
   }
 }
 
+async function assertMemberFieldsValid(
+  executor: DbExecutor,
+  orgId: string,
+  manifest: DeftModuleManifestV1,
+  collectionKey: string,
+  data: ModuleRecordData,
+): Promise<void> {
+  const memberIds = new Set<string>();
+  for (const field of collectionFor(manifest, collectionKey).fields) {
+    if (field.type !== 'member') continue;
+    const value = data[field.key];
+    if (typeof value === 'string') memberIds.add(value);
+    if (Array.isArray(value)) value.forEach((id) => memberIds.add(id));
+  }
+  if (memberIds.size === 0) return;
+
+  const requested = [...memberIds];
+  const members = await executor
+    .select({ user_id: orgMembers.user_id })
+    .from(orgMembers)
+    .where(and(
+      eq(orgMembers.org_id, orgId),
+      eq(orgMembers.is_active, true),
+      inArray(orgMembers.user_id, requested),
+    ));
+  const activeIds = new Set(members.map((member) => member.user_id));
+  const missing = requested.filter((id) => !activeIds.has(id));
+  if (missing.length > 0) {
+    throw new ModuleError(
+      'Member fields must reference active workspace members',
+      'MODULE_VALIDATION_ERROR',
+      400,
+      { invalid_member_ids: missing.sort() },
+    );
+  }
+}
+
+type PreparedRelationReplacements = {
+  fields: Array<Extract<ModuleField, { type: 'relation' }>>;
+  currentByField: Map<string, RelationRow[]>;
+  targetsById: Map<string, RecordRow>;
+};
+
+async function prepareRelationReplacements(
+  executor: DbExecutor,
+  actor: ModuleActor,
+  source: RecordRow,
+  manifest: DeftModuleManifestV1,
+  replacements: Record<string, string[]>,
+  options?: { lock?: boolean },
+): Promise<PreparedRelationReplacements> {
+  const fields: Array<Extract<ModuleField, { type: 'relation' }>> = [];
+  for (const [fieldKey, targetIds] of Object.entries(replacements)) {
+    const field = fieldFor(manifest, source.collection_key, fieldKey);
+    if (field.type !== 'relation') {
+      throw new ModuleError('Field is not a relation', 'MODULE_RELATION_NOT_FOUND', 404);
+    }
+    if (!field.multiple && targetIds.length > 1) {
+      throw new ModuleError('This relation accepts only one record', 'MODULE_VALIDATION_ERROR', 400);
+    }
+    fields.push(field);
+  }
+  if (fields.length === 0) {
+    return { fields, currentByField: new Map(), targetsById: new Map() };
+  }
+
+  const allTargetIds = [...new Set(Object.values(replacements).flat())];
+  const targets = allTargetIds.length === 0
+    ? []
+    : await executor
+      .select()
+      .from(moduleRecords)
+      .where(and(
+        eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, source.installation_id),
+        eq(moduleRecords.is_deleted, false),
+        inArray(moduleRecords.id, allTargetIds),
+      ));
+  const targetsById = new Map(targets.map((target) => [target.id, target]));
+  for (const field of fields) {
+    const invalid = replacements[field.key]!.filter((id) => (
+      targetsById.get(id)?.collection_key !== field.target_collection
+    ));
+    if (invalid.length > 0) {
+      throw new ModuleError(
+        'Relations must reference active records in the declared collection',
+        'MODULE_VALIDATION_ERROR',
+        400,
+        { invalid_record_ids: invalid },
+      );
+    }
+  }
+
+  const currentQuery = executor
+    .select()
+    .from(moduleRecordRelations)
+    .where(and(
+      eq(moduleRecordRelations.org_id, actor.org_id),
+      eq(moduleRecordRelations.installation_id, source.installation_id),
+      eq(moduleRecordRelations.source_record_id, source.id),
+      inArray(moduleRecordRelations.field_key, fields.map((field) => field.key)),
+      eq(moduleRecordRelations.is_deleted, false),
+    ));
+  const current = options?.lock ? await currentQuery.for('update') : await currentQuery;
+  const currentByField = new Map<string, RelationRow[]>();
+  for (const field of fields) currentByField.set(field.key, []);
+  for (const edge of current) currentByField.get(edge.field_key)?.push(edge);
+  for (const edges of currentByField.values()) edges.sort((left, right) => left.position - right.position);
+  return { fields, currentByField, targetsById };
+}
+
+async function applyPreparedRelationReplacements(
+  executor: DbExecutor,
+  actor: ModuleActor,
+  source: RecordRow,
+  replacements: Record<string, string[]>,
+  prepared: PreparedRelationReplacements,
+): Promise<void> {
+  const identity = actorMetadata(actor);
+  const now = new Date();
+  for (const field of prepared.fields) {
+    const targetIds = replacements[field.key]!;
+    const current = prepared.currentByField.get(field.key) ?? [];
+    const desired = new Set(targetIds);
+    const removed = current.filter((edge) => !desired.has(edge.target_record_id));
+    if (removed.length > 0) {
+      await executor
+        .update(moduleRecordRelations)
+        .set({
+          is_deleted: true,
+          deleted_at: now,
+          deleted_by_actor_type: identity.type,
+          deleted_by_actor_id: identity.id,
+          updated_by_actor_type: identity.type,
+          updated_by_actor_id: identity.id,
+        })
+        .where(and(
+          eq(moduleRecordRelations.org_id, actor.org_id),
+          eq(moduleRecordRelations.installation_id, source.installation_id),
+          inArray(moduleRecordRelations.id, removed.map((edge) => edge.id)),
+        ));
+    }
+    const currentByTarget = new Map(current.map((edge) => [edge.target_record_id, edge]));
+    for (const [position, targetId] of targetIds.entries()) {
+      const existing = currentByTarget.get(targetId);
+      if (existing) {
+        await executor
+          .update(moduleRecordRelations)
+          .set({
+            position,
+            updated_by_actor_type: identity.type,
+            updated_by_actor_id: identity.id,
+          })
+          .where(and(
+            eq(moduleRecordRelations.id, existing.id),
+            eq(moduleRecordRelations.org_id, actor.org_id),
+            eq(moduleRecordRelations.installation_id, source.installation_id),
+          ));
+      } else {
+        await executor.insert(moduleRecordRelations).values({
+          org_id: actor.org_id,
+          installation_id: source.installation_id,
+          field_key: field.key,
+          source_record_id: source.id,
+          target_record_id: targetId,
+          position,
+          created_by_actor_type: identity.type,
+          created_by_actor_id: identity.id,
+          updated_by_actor_type: identity.type,
+          updated_by_actor_id: identity.id,
+        });
+      }
+    }
+  }
+}
+
+function preparedRelationIds(prepared: PreparedRelationReplacements): Record<string, string[]> {
+  return Object.fromEntries(prepared.fields.map((field) => [
+    field.key,
+    (prepared.currentByField.get(field.key) ?? []).map((edge) => edge.target_record_id),
+  ]));
+}
+
+function moduleValueDigest(value: unknown): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex')}`;
+}
+
 function assertExpectedManifest(version: VersionRow, expected: string): void {
   if (version.manifest_digest !== expected) {
     throw new ModuleError(
@@ -729,6 +1079,9 @@ export function sanitizeModuleActionParamsForHistory(
       params.unset_fields
         .filter((key): key is string => typeof key === 'string')
         .forEach((key) => changedFields.add(key));
+    }
+    if (params.relations && typeof params.relations === 'object' && !Array.isArray(params.relations)) {
+      Object.keys(params.relations as Record<string, unknown>).forEach((key) => changedFields.add(key));
     }
   }
   scrubbed.changed_fields = [...changedFields].sort();
@@ -1033,26 +1386,80 @@ export async function listModuleSummaries(actorValue: ModuleActor): Promise<Modu
   }));
 }
 
+export async function listModuleNavigation(actorValue: ModuleActor): Promise<Array<{
+  installation_id: string;
+  module_id: string;
+  slug: string;
+  name: string;
+  icon?: string;
+  default_collection: string;
+  default_view?: string;
+  collections: Array<{
+    key: string;
+    name: string;
+    singular_name?: string;
+    views: Array<{ key: string; name: string; type: string }>;
+  }>;
+}>> {
+  const modules = await listModuleInstallations(actorValue);
+  return modules.map((module) => {
+    const defaultCollection = module.manifest.navigation?.default_collection
+      ?? module.manifest.collections[0]!.key;
+    const collection = module.manifest.collections.find((item) => item.key === defaultCollection)!;
+    const defaultView = module.manifest.navigation?.default_view ?? collection.views?.[0]?.key;
+    return {
+      installation_id: module.id,
+      module_id: module.module_id,
+      slug: module.slug,
+      name: module.manifest.name,
+      ...(module.manifest.icon ? { icon: module.manifest.icon } : {}),
+      default_collection: defaultCollection,
+      ...(defaultView ? { default_view: defaultView } : {}),
+      collections: module.manifest.collections.map((item) => ({
+        key: item.key,
+        name: item.name,
+        ...(item.singular_name ? { singular_name: item.singular_name } : {}),
+        views: (item.views ?? []).map((view) => ({
+          key: view.key,
+          name: view.name,
+          type: view.type,
+        })),
+      })),
+    };
+  });
+}
+
 export async function listBundledModuleViews(actorValue: ModuleActor): Promise<BundledModuleView[]> {
   const actor = validatedActor(actorValue);
   assertBaseReadAccess(actor);
   const installed = await db
-    .select({ module_id: moduleInstallations.module_id })
+    .select({
+      module_id: moduleInstallations.module_id,
+      source: moduleInstallations.source,
+      version: moduleVersions.version,
+    })
     .from(moduleInstallations)
+    .innerJoin(moduleVersions, installationJoinCondition())
     .where(and(
       eq(moduleInstallations.org_id, actor.org_id),
       eq(moduleInstallations.is_deleted, false),
     ));
-  const installedIds = new Set(installed.map((row) => row.module_id));
-  return listBundledModules().map((manifest) => ({
-    slug: manifest.slug,
-    module_id: manifest.id,
-    name: manifest.name,
-    ...(manifest.description ? { description: manifest.description } : {}),
-    ...(manifest.icon ? { icon: manifest.icon } : {}),
-    version: manifest.version,
-    installed: installedIds.has(manifest.id),
-  }));
+  const installedById = new Map(installed.map((row) => [row.module_id, row]));
+  return listBundledModules().map((manifest) => {
+    const current = installedById.get(manifest.id);
+    return {
+      slug: manifest.slug,
+      module_id: manifest.id,
+      name: manifest.name,
+      ...(manifest.description ? { description: manifest.description } : {}),
+      ...(manifest.icon ? { icon: manifest.icon } : {}),
+      version: manifest.version,
+      installed: current !== undefined,
+      ...(current ? { installed_version: current.version } : {}),
+      update_available: current?.source === 'bundled'
+        && compareSemver(current.version, manifest.version) < 0,
+    };
+  });
 }
 
 export async function getModuleInstallation(
@@ -1063,6 +1470,55 @@ export async function getModuleInstallation(
   const actor = validatedActor(actorValue);
   const row = await findInstallation(db, actor, identifier, 'read', options);
   return toInstallationView(row, await verifyManifest(row.version));
+}
+
+/**
+ * Gate the generic audit endpoint through the same live module boundary as
+ * module reads. Audit rows are not an alternate existence oracle: record
+ * activity requires a current, non-archived record in an enabled installation;
+ * disabled installation control-plane history is available only to an active
+ * request actor carrying owner/admin authority (the route is read-only, so the
+ * normal authentication membership refresh remains the source for that role).
+ */
+export async function assertModuleAuditReadAccess(
+  actorValue: ModuleActor,
+  entityType: 'module_installation' | 'module_record',
+  entityId: string,
+): Promise<void> {
+  const actor = validatedActor(actorValue);
+  if (entityType === 'module_installation') {
+    await findInstallation(
+      db,
+      actor,
+      { installationId: entityId },
+      'read',
+      { allowDisabledForAdmin: true },
+    );
+    return;
+  }
+
+  let recordId: string;
+  try {
+    recordId = parseModuleRecordResourceId(entityId);
+  } catch {
+    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  }
+  const [record] = await db
+    .select({ installation_id: moduleRecords.installation_id })
+    .from(moduleRecords)
+    .where(and(
+      eq(moduleRecords.id, recordId),
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .limit(1);
+  if (!record) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  await findInstallation(
+    db,
+    actor,
+    { installationId: record.installation_id },
+    'read',
+  );
 }
 
 export async function getModuleSchema(
@@ -1084,18 +1540,19 @@ export async function getModuleSchema(
   };
 }
 
-export async function installBundledModule(
+export async function installModuleFromManifest(
   actorValue: ModuleActor,
-  slug: string,
+  manifestValue: unknown,
+  options: { source: 'bundled' | 'sideloaded' | 'registry' },
 ): Promise<ModuleInstallationView> {
   const actor = validatedActor(actorValue);
   assertLifecycleAccess(actor);
-  const manifest = getBundledModule(slug);
-  if (!manifest) throw new ModuleError('Bundled module not found', 'MODULE_NOT_FOUND', 404);
+  const manifest = parseDeftModuleManifest(manifestValue);
   const digest = await digestModuleManifest(manifest);
   const identity = actorMetadata(actor);
 
   const created = await db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
     await acquireModuleInstallLocks(tx, actor.org_id, manifest.id, manifest.slug);
     const [existing] = await tx
       .select({ id: moduleInstallations.id })
@@ -1114,7 +1571,7 @@ export async function installBundledModule(
       org_id: actor.org_id,
       module_id: manifest.id,
       slug: manifest.slug,
-      source: 'bundled',
+      source: options.source,
       is_enabled: true,
       disabled_at: null,
       agent_access: 'none',
@@ -1149,6 +1606,7 @@ export async function installBundledModule(
         slug: manifest.slug,
         version: manifest.version,
         manifest_digest: digest,
+        source: options.source,
         enabled: true,
         agent_access: 'none',
       },
@@ -1168,6 +1626,289 @@ export async function installBundledModule(
   return toInstallationView(created, manifest);
 }
 
+export async function installBundledModule(
+  actorValue: ModuleActor,
+  slug: string,
+): Promise<ModuleInstallationView> {
+  const manifest = getBundledModule(slug);
+  if (!manifest) throw new ModuleError('Bundled module not found', 'MODULE_NOT_FOUND', 404);
+  return installModuleFromManifest(actorValue, manifest, { source: 'bundled' });
+}
+
+export async function upgradeModuleInstallationToManifest(
+  actorValue: ModuleActor,
+  routeSlug: string,
+  manifestValue: unknown,
+  options: {
+    source: 'bundled' | 'sideloaded' | 'registry';
+    expected_active_manifest_digest?: string;
+  },
+): Promise<ModuleInstallationView> {
+  const actor = validatedActor(actorValue);
+  assertLifecycleAccess(actor);
+  if (options.source === 'sideloaded' && !options.expected_active_manifest_digest) {
+    throw new ModuleError(
+      'The expected active manifest digest is required for sideloaded upgrades',
+      'MODULE_MANIFEST_INVALID',
+      400,
+    );
+  }
+  const expectedActiveDigest = options.expected_active_manifest_digest
+    ? ModuleManifestDigestSchema.parse(options.expected_active_manifest_digest)
+    : undefined;
+  const manifest = parseDeftModuleManifest(manifestValue);
+  if (routeSlug !== manifest.slug) {
+    throw new ModuleError(
+      'Route slug must match the immutable manifest slug',
+      'MODULE_IDENTITY_MISMATCH',
+      409,
+    );
+  }
+  const digest = await digestModuleManifest(manifest);
+  const identity = actorMetadata(actor);
+
+  const updated = await db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
+    await acquireModuleInstallLocks(tx, actor.org_id, manifest.id, manifest.slug);
+    const current = await findInstallation(
+      tx,
+      actor,
+      { slug: routeSlug },
+      'read',
+      { allowDisabledForAdmin: true, lock: true },
+    );
+    if (
+      current.installation.source !== options.source
+      || current.installation.module_id !== manifest.id
+      || current.installation.slug !== manifest.slug
+    ) {
+      throw new ModuleError(
+        'The manifest identity or source does not match this installation',
+        'MODULE_IDENTITY_MISMATCH',
+        409,
+      );
+    }
+
+    if (
+      expectedActiveDigest
+      && current.version.manifest_digest !== expectedActiveDigest
+    ) {
+      throw new ModuleError(
+        'The active module schema changed before the update started',
+        'MODULE_MANIFEST_STALE',
+        409,
+        { current_manifest_digest: current.version.manifest_digest },
+      );
+    }
+
+    if (current.version.version === manifest.version) {
+      if (current.version.manifest_digest !== digest) {
+        if (options.source !== 'bundled') {
+          throw new ModuleError(
+            'A changed module manifest requires a strictly newer semantic version',
+            'MODULE_UPDATE_NOT_AVAILABLE',
+            409,
+          );
+        }
+        throw new Error(
+          `Module artifact ${manifest.id}@${manifest.version} changed without a version bump`,
+        );
+      }
+      throw new ModuleError(
+        'No newer module version is available',
+        'MODULE_UPDATE_NOT_AVAILABLE',
+        409,
+      );
+    }
+    if (compareSemver(current.version.version, manifest.version) >= 0) {
+      throw new ModuleError(
+        'The module update must use a strictly newer semantic version',
+        'MODULE_UPDATE_NOT_AVAILABLE',
+        409,
+      );
+    }
+
+    const records = await tx
+      .select()
+      .from(moduleRecords)
+      .where(and(
+        eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, current.installation.id),
+      ))
+      .for('update');
+    const validatedRecords: Array<{
+      row: RecordRow;
+      data: ModuleRecordData;
+      projection: ReturnType<typeof projectModuleRecordSearch>;
+    }> = [];
+    for (const record of records) {
+      const data = parseRecordData(manifest, record.collection_key, record.data);
+      await assertMemberFieldsValid(tx, actor.org_id, manifest, record.collection_key, data);
+      validatedRecords.push({
+        row: record,
+        data,
+        projection: projectModuleRecordSearch(manifest, record.collection_key, data),
+      });
+    }
+
+    const activeRelations = await tx
+      .select()
+      .from(moduleRecordRelations)
+      .where(and(
+        eq(moduleRecordRelations.org_id, actor.org_id),
+        eq(moduleRecordRelations.installation_id, current.installation.id),
+        eq(moduleRecordRelations.is_deleted, false),
+      ))
+      .for('update');
+    const recordById = new Map(records.map((record) => [record.id, record]));
+    const relationCount = new Map<string, number>();
+    for (const relation of activeRelations) {
+      const source = recordById.get(relation.source_record_id);
+      const target = recordById.get(relation.target_record_id);
+      if (!source || !target) throw new Error(`Module relation ${relation.id} references a missing record`);
+      const field = fieldFor(manifest, source.collection_key, relation.field_key);
+      if (field.type !== 'relation' || field.target_collection !== target.collection_key) {
+        throw new ModuleError(
+          `Existing relation ${relation.field_key} is incompatible with module version ${manifest.version}`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+          { source_record_id: source.id, target_record_id: target.id },
+        );
+      }
+      const key = `${source.id}\u0000${field.key}`;
+      const count = (relationCount.get(key) ?? 0) + 1;
+      relationCount.set(key, count);
+      if (!field.multiple && count > 1) {
+        throw new ModuleError(
+          `Existing relation ${field.key} has multiple targets but the new manifest is singular`,
+          'MODULE_VALIDATION_ERROR',
+          409,
+          { source_record_id: source.id },
+        );
+      }
+    }
+
+    const savedViews = await tx
+      .select()
+      .from(moduleSavedViews)
+      .where(and(
+        eq(moduleSavedViews.org_id, actor.org_id),
+        eq(moduleSavedViews.installation_id, current.installation.id),
+        eq(moduleSavedViews.is_deleted, false),
+      ))
+      .for('update');
+    for (const savedView of savedViews) {
+      const config = ModuleSavedViewConfigSchema.parse(savedView.config);
+      validateSavedViewConfig(manifest, savedView.collection_key, config);
+    }
+
+    const now = new Date();
+    const [version] = await tx.insert(moduleVersions).values({
+      org_id: actor.org_id,
+      installation_id: current.installation.id,
+      version: manifest.version,
+      manifest,
+      manifest_digest: digest,
+      is_active: false,
+      activated_at: null,
+      created_by_actor_type: identity.type,
+      created_by_actor_id: identity.id,
+    }).returning();
+    if (!version) throw new Error('Module version insert returned no row');
+
+    for (const validated of validatedRecords) {
+      await tx
+        .update(moduleRecords)
+        .set({
+          data: validated.data,
+          validated_version_id: version.id,
+          search_title: validated.projection?.title ?? '',
+          search_subtitle: validated.projection?.subtitle ?? null,
+          search_text: validated.projection?.text ?? '',
+          // Schema revalidation is not a user record edit.
+          updated_at: validated.row.updated_at,
+        })
+        .where(and(
+          eq(moduleRecords.id, validated.row.id),
+          eq(moduleRecords.org_id, actor.org_id),
+          eq(moduleRecords.installation_id, current.installation.id),
+        ));
+    }
+
+    await tx
+      .update(moduleVersions)
+      .set({ is_active: false })
+      .where(and(
+        eq(moduleVersions.id, current.version.id),
+        eq(moduleVersions.org_id, actor.org_id),
+        eq(moduleVersions.installation_id, current.installation.id),
+        eq(moduleVersions.is_active, true),
+      ));
+    const [activated] = await tx
+      .update(moduleVersions)
+      .set({ is_active: true, activated_at: now })
+      .where(and(
+        eq(moduleVersions.id, version.id),
+        eq(moduleVersions.org_id, actor.org_id),
+        eq(moduleVersions.installation_id, current.installation.id),
+        eq(moduleVersions.is_active, false),
+      ))
+      .returning();
+    if (!activated) throw new Error('Module version activation returned no row');
+
+    const [installation] = await tx
+      .update(moduleInstallations)
+      .set({
+        updated_by_actor_type: identity.type,
+        updated_by_actor_id: identity.id,
+      })
+      .where(and(
+        eq(moduleInstallations.id, current.installation.id),
+        eq(moduleInstallations.org_id, actor.org_id),
+      ))
+      .returning();
+    if (!installation) throw new Error('Module installation update returned no row');
+
+    await insertAudit(tx, actor, {
+      action: 'module.update',
+      entityType: 'module_installation',
+      entityId: installation.id,
+      before: {
+        version: current.version.version,
+        manifest_digest: current.version.manifest_digest,
+      },
+      after: { version: manifest.version, manifest_digest: digest },
+      metadata: {
+        records_revalidated: records.length,
+        relations_revalidated: activeRelations.length,
+        saved_views_revalidated: savedViews.length,
+      },
+    });
+    return { installation, version: activated };
+  });
+
+  emitModuleChange(actor.org_id, {
+    change: 'updated',
+    installation_id: updated.installation.id,
+    module_id: updated.installation.module_id,
+    slug: updated.installation.slug,
+    active_version_id: updated.version.id,
+    manifest_digest: updated.version.manifest_digest,
+    version: updated.version.version,
+  });
+  await invalidateModuleCatalogCaches(actor.org_id);
+  return toInstallationView(updated, manifest);
+}
+
+export async function updateBundledModule(
+  actorValue: ModuleActor,
+  slug: string,
+): Promise<ModuleInstallationView> {
+  const manifest = getBundledModule(slug);
+  if (!manifest) throw new ModuleError('Bundled module not found', 'MODULE_NOT_FOUND', 404);
+  return upgradeModuleInstallationToManifest(actorValue, slug, manifest, { source: 'bundled' });
+}
+
 export async function updateModuleInstallation(
   actorValue: ModuleActor,
   slug: string,
@@ -1181,6 +1922,7 @@ export async function updateModuleInstallation(
   const identity = actorMetadata(actor);
 
   const updated = await db.transaction(async (tx) => {
+    await assertCurrentModuleManagerWithExecutor(tx, actor);
     const row = await findInstallation(
       tx,
       actor,
@@ -1322,7 +2064,8 @@ export async function preflightModuleMutationWithExecutor(
     );
     assertExpectedManifest(installation.version, createInput.expected_manifest_digest);
     const manifest = await verifyManifest(installation.version);
-    parseRecordData(manifest, createInput.collection_key, createInput.data);
+    const data = parseRecordData(manifest, createInput.collection_key, createInput.data);
+    await assertMemberFieldsValid(executor, actor.org_id, manifest, createInput.collection_key, data);
     await assertMutationIdempotencyAvailable(executor, actor, 'create', createInput);
     return;
   }
@@ -1358,13 +2101,16 @@ export async function preflightModuleMutationWithExecutor(
 
   if (operation === 'module_record_update') {
     const updateInput = input as ModuleRecordUpdateRequest;
+    const relations = ModuleRelationPatchSchema.parse(updateInput.relations ?? {});
     const merged: Record<string, unknown> = {
       ...(current.data as Record<string, unknown>),
-      ...updateInput.patch,
+      ...(updateInput.patch ?? {}),
     };
-    for (const field of updateInput.unset_fields) delete merged[field];
+    for (const field of updateInput.unset_fields ?? []) delete merged[field];
     const manifest = await verifyManifest(installation.version);
-    parseRecordData(manifest, current.collection_key, merged);
+    const data = parseRecordData(manifest, current.collection_key, merged);
+    await assertMemberFieldsValid(executor, actor.org_id, manifest, current.collection_key, data);
+    await prepareRelationReplacements(executor, actor, current, manifest, relations);
   }
   await assertMutationIdempotencyAvailable(
     executor,
@@ -1404,6 +2150,7 @@ export async function createModuleRecord(
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     const manifest = await verifyManifest(installation.version);
     const data = parseRecordData(manifest, input.collection_key, input.data);
+    await assertMemberFieldsValid(tx, actor.org_id, manifest, input.collection_key, data);
 
     let projection: ReturnType<typeof projectModuleRecordSearch>;
     try {
@@ -1471,6 +2218,36 @@ export async function createModuleRecord(
   return { ...outcome, replayed: outcome.mutation.replayed };
 }
 
+/**
+ * Resolve only the immutable installation identity before taking row locks.
+ * Record update/archive then lock in the canonical order:
+ * employee (when applicable) -> installation -> record(s).
+ *
+ * The record is selected again under `FOR UPDATE` after the installation lock;
+ * this first read never authorizes a mutation and cannot be used as the
+ * revision/data snapshot.
+ */
+async function locateModuleRecordInstallation(
+  executor: DbExecutor,
+  actor: ModuleActor,
+  recordId: string,
+  expectedInstallationId?: string,
+): Promise<string> {
+  const [locator] = await executor
+    .select({ installation_id: moduleRecords.installation_id })
+    .from(moduleRecords)
+    .where(and(
+      eq(moduleRecords.id, recordId),
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .limit(1);
+  if (!locator || (expectedInstallationId && locator.installation_id !== expectedInstallationId)) {
+    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  }
+  return locator.installation_id;
+}
+
 export async function updateModuleRecord(
   actorValue: ModuleActor,
   input: ModuleRecordUpdateRequest,
@@ -1478,7 +2255,9 @@ export async function updateModuleRecord(
 ): Promise<{ record: ModuleRecord | null; replayed: boolean; mutation: ModuleMutationResult }> {
   const actor = validatedActor(actorValue);
   const identity = actorMetadata(actor);
-  const unsetFields = input.unset_fields;
+  const patch = input.patch ?? {};
+  const unsetFields = input.unset_fields ?? [];
+  const relationReplacements = ModuleRelationPatchSchema.parse(input.relations ?? {});
   const inputDigest = input.idempotency_key
     ? moduleMutationInputDigest('update', input as Record<string, unknown>)
     : undefined;
@@ -1497,28 +2276,31 @@ export async function updateModuleRecord(
       if (replay) return { record: null, mutation: replay };
     }
     await assertAgentModuleMutationPolicyWithExecutor(tx, actor, 'module_record_update');
+    const installationId = await locateModuleRecordInstallation(
+      tx,
+      actor,
+      input.record_id,
+      options?.expectedInstallationId,
+    );
+    const installation = await findInstallation(
+      tx,
+      actor,
+      { installationId },
+      'write',
+      { lock: true },
+    );
     const [current] = await tx
       .select()
       .from(moduleRecords)
       .where(and(
         eq(moduleRecords.id, input.record_id),
         eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, installation.installation.id),
         eq(moduleRecords.is_deleted, false),
       ))
       .limit(1)
       .for('update');
     if (!current) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-    if (options?.expectedInstallationId && current.installation_id !== options.expectedInstallationId) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-    }
-
-    const installation = await findInstallation(
-      tx,
-      actor,
-      { installationId: current.installation_id },
-      'write',
-      { lock: true },
-    );
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     if (current.revision !== input.expected_revision) {
       throw new ModuleError(
@@ -1529,10 +2311,20 @@ export async function updateModuleRecord(
       );
     }
 
-    const merged: Record<string, unknown> = { ...(current.data as Record<string, unknown>), ...input.patch };
+    const merged: Record<string, unknown> = { ...(current.data as Record<string, unknown>), ...patch };
     for (const field of unsetFields) delete merged[field];
     const manifest = await verifyManifest(installation.version);
     const data = parseRecordData(manifest, current.collection_key, merged);
+    await assertMemberFieldsValid(tx, actor.org_id, manifest, current.collection_key, data);
+    const preparedRelations = await prepareRelationReplacements(
+      tx,
+      actor,
+      current,
+      manifest,
+      relationReplacements,
+      { lock: true },
+    );
+    const priorRelationIds = preparedRelationIds(preparedRelations);
     let projection: ReturnType<typeof projectModuleRecordSearch>;
     try {
       projection = projectModuleRecordSearch(manifest, current.collection_key, data);
@@ -1565,19 +2357,45 @@ export async function updateModuleRecord(
       throw new ModuleError('Module record changed since it was read', 'MODULE_REVISION_CONFLICT', 409);
     }
 
-    const changedFields = [...new Set([...Object.keys(input.patch), ...unsetFields])].sort();
+    await applyPreparedRelationReplacements(
+      tx,
+      actor,
+      current,
+      relationReplacements,
+      preparedRelations,
+    );
+
+    const relationFields = Object.keys(relationReplacements).sort();
+    const changedFields = [...new Set([
+      ...Object.keys(patch),
+      ...unsetFields,
+      ...relationFields,
+    ])].sort();
     const record = toRecord(next, installation.installation, installation.version);
     await insertAudit(tx, actor, {
       action: 'module_record.update',
       entityType: 'module_record',
       entityId: record.resource_id,
-      before: { revision: current.revision, data_digest: recordDigest(current.data as ModuleRecordData) },
+      before: {
+        revision: current.revision,
+        data_digest: recordDigest(current.data as ModuleRecordData),
+        ...(relationFields.length > 0
+          ? { relations_digest: moduleValueDigest(priorRelationIds) }
+          : {}),
+      },
       after: {
         revision: next.revision,
         manifest_digest: installation.version.manifest_digest,
         data_digest: recordDigest(data),
+        ...(relationFields.length > 0
+          ? { relations_digest: moduleValueDigest(relationReplacements) }
+          : {}),
       },
-      metadata: { changed_fields: changedFields, unset_fields: [...unsetFields].sort() },
+      metadata: {
+        changed_fields: changedFields,
+        unset_fields: [...unsetFields].sort(),
+        relation_fields: relationFields,
+      },
     });
     await insertMutationReceipt(tx, actor, {
       operation: 'update',
@@ -1630,28 +2448,31 @@ export async function archiveModuleRecord(
       if (replay) return { record: null, mutation: replay };
     }
     await assertAgentModuleMutationPolicyWithExecutor(tx, actor, 'module_record_archive');
+    const installationId = await locateModuleRecordInstallation(
+      tx,
+      actor,
+      input.record_id,
+      options?.expectedInstallationId,
+    );
+    const installation = await findInstallation(
+      tx,
+      actor,
+      { installationId },
+      'write',
+      { lock: true },
+    );
     const [current] = await tx
       .select()
       .from(moduleRecords)
       .where(and(
         eq(moduleRecords.id, input.record_id),
         eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, installation.installation.id),
       ))
       .limit(1)
       .for('update');
     if (!current) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-    if (options?.expectedInstallationId && current.installation_id !== options.expectedInstallationId) {
-      throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-    }
     if (current.is_deleted) throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
-
-    const installation = await findInstallation(
-      tx,
-      actor,
-      { installationId: current.installation_id },
-      'write',
-      { lock: true },
-    );
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     if (current.revision !== input.expected_revision) {
       throw new ModuleError(
@@ -1753,7 +2574,15 @@ export async function getModuleRecord(
     .limit(1);
   if (!validatedVersion) throw new Error(`Validated module version ${row.validated_version_id} is missing`);
   await verifyManifest(validatedVersion);
-  return toRecord(row, installation.installation, validatedVersion);
+  const activeManifest = await verifyManifest(installation.version);
+  const [record] = await resolveModuleRecordFields(
+    db,
+    actor,
+    [toRecord(row, installation.installation, validatedVersion)],
+    activeManifest,
+  );
+  if (!record) throw new Error(`Module record ${row.id} could not be resolved`);
+  return record;
 }
 
 function collectionFor(
@@ -1812,6 +2641,9 @@ function assertModuleFilterCompatibility(
   field: ModuleField,
   filter: ModuleRecordQueryRequest['filters'][number],
 ): void {
+  if (field.type === 'relation') {
+    moduleValidationError('Relation fields must be queried through the relation endpoint');
+  }
   if (filter.operator === 'eq' || filter.operator === 'neq') {
     assertValidModuleFilterValue(field, filter.value, filter.operator);
     return;
@@ -1827,6 +2659,14 @@ function assertModuleFilterCompatibility(
       }
       return;
     }
+    if (field.type === 'tags') {
+      assertValidModuleFilterValue(field, [filter.value], filter.operator);
+      return;
+    }
+    if (field.type === 'member' && field.multiple) {
+      assertValidModuleFilterValue(field, [filter.value], filter.operator);
+      return;
+    }
     if (!['text', 'long_text', 'email', 'url'].includes(field.type)) {
       moduleValidationError('contains is only valid for text or multi-select fields');
     }
@@ -1837,8 +2677,23 @@ function assertModuleFilterCompatibility(
     if (!Array.isArray(filter.value) || !filter.value.every((item) => typeof item === 'string')) {
       moduleValidationError('in requires an array of string values');
     }
-    if (!['text', 'long_text', 'email', 'url', 'date', 'datetime', 'single_select', 'multi_select'].includes(field.type)) {
+    if (![
+      'text',
+      'long_text',
+      'email',
+      'url',
+      'date',
+      'datetime',
+      'single_select',
+      'multi_select',
+      'member',
+      'tags',
+    ].includes(field.type)) {
       moduleValidationError('in is not valid for this field type');
+    }
+    if (field.type === 'tags' || (field.type === 'member' && field.multiple)) {
+      assertValidModuleFilterValue(field, filter.value, filter.operator);
+      return;
     }
     for (const item of filter.value) {
       if (field.type === 'multi_select') {
@@ -1856,6 +2711,12 @@ function assertModuleFilterCompatibility(
     moduleValidationError(`${filter.operator} is only valid for number/date fields`);
   }
   assertValidModuleFilterValue(field, filter.value, filter.operator);
+}
+
+function isJsonArrayModuleField(field: ModuleField): boolean {
+  return field.type === 'multi_select'
+    || field.type === 'tags'
+    || (field.type === 'member' && field.multiple);
 }
 
 function typedModuleFieldExpression(field: ModuleField): SQL {
@@ -1887,6 +2748,17 @@ function literalModuleIlike(expression: SQLWrapper, value: string): SQL {
   return sql`${expression} ILIKE ${`%${escapeModuleLikeLiteral(value)}%`} ESCAPE '\\'`;
 }
 
+function moduleQuerySearchCondition(value: string): SQL {
+  const titleContains = literalModuleIlike(moduleRecords.search_title, value);
+  const subtitleContains = literalModuleIlike(moduleRecords.search_subtitle, value);
+  const tsQuery = sql`websearch_to_tsquery('simple'::regconfig, ${value})`;
+  return or(
+    sql`${moduleRecords.search_vector} @@ ${tsQuery}`,
+    titleContains,
+    subtitleContains,
+  )!;
+}
+
 function moduleFilterCondition(
   manifest: DeftModuleManifestV1,
   collectionKey: string,
@@ -1897,7 +2769,7 @@ function moduleFilterCondition(
   const valueExpression = jsonValue(field.key);
 
   if (filter.operator === 'eq' || filter.operator === 'neq') {
-    const comparison = field.type === 'multi_select'
+    const comparison = isJsonArrayModuleField(field)
       ? sql`${valueExpression} = ${JSON.stringify(filter.value)}::jsonb`
       : sql`${typedModuleFieldExpression(field)} = ${typedModuleFilterValue(
           field,
@@ -1907,7 +2779,7 @@ function moduleFilterCondition(
   }
 
   if (filter.operator === 'contains') {
-    if (field.type === 'multi_select') {
+    if (isJsonArrayModuleField(field)) {
       return sql`${valueExpression} @> jsonb_build_array(${filter.value as string})`;
     }
     return literalModuleIlike(jsonText(field.key), filter.value as string);
@@ -1916,7 +2788,7 @@ function moduleFilterCondition(
   if (filter.operator === 'in') {
     const values = filter.value as string[];
     if (values.length === 0) return sql`false`;
-    if (field.type === 'multi_select') {
+    if (isJsonArrayModuleField(field)) {
       return or(...values.map((item) => sql`${valueExpression} @> jsonb_build_array(${item})`))!;
     }
     return sql`${typedModuleFieldExpression(field)} IN (${sql.join(
@@ -1947,11 +2819,45 @@ function moduleSortExpression(
   if (field.type === 'multi_select') {
     throw new ModuleError('Cannot sort by a multi-select field', 'MODULE_VALIDATION_ERROR', 400);
   }
+  if (isJsonArrayModuleField(field) || field.type === 'relation') {
+    throw new ModuleError('Cannot sort by an array or relation field', 'MODULE_VALIDATION_ERROR', 400);
+  }
   return typedModuleFieldExpression(field);
+}
+
+function validateSavedViewConfig(
+  manifest: DeftModuleManifestV1,
+  collectionKey: string,
+  config: ModuleSavedViewConfig,
+): void {
+  const collection = collectionFor(manifest, collectionKey);
+  const fieldByKey = new Map(collection.fields.map((field) => [field.key, field]));
+  for (const fieldKey of config.fields) fieldFor(manifest, collectionKey, fieldKey);
+  for (const filter of config.filters) assertModuleFilterCompatibility(
+    fieldFor(manifest, collectionKey, filter.field),
+    filter,
+  );
+  if (config.sort) moduleSortExpression(manifest, collectionKey, config.sort);
+
+  if (config.type === 'board') {
+    const field = fieldByKey.get(config.group_by);
+    if (!field || !['single_select', 'member', 'tags'].includes(field.type)) {
+      moduleValidationError('Board group_by must reference a select, member, or tags field');
+    }
+  }
+  if (config.type === 'timeline') {
+    for (const fieldKey of [config.start_field, ...(config.end_field ? [config.end_field] : [])]) {
+      const field = fieldByKey.get(fieldKey);
+      if (!field || (field.type !== 'date' && field.type !== 'datetime')) {
+        moduleValidationError(`Timeline field must reference a date or datetime: ${fieldKey}`);
+      }
+    }
+  }
 }
 
 export const _moduleQueryCompilerForTest = Object.freeze({
   filterCondition: moduleFilterCondition,
+  searchCondition: moduleQuerySearchCondition,
   sortExpression: moduleSortExpression,
 });
 
@@ -1970,6 +2876,7 @@ export async function queryModuleRecords(
     eq(moduleRecords.installation_id, installation.installation.id),
     eq(moduleRecords.collection_key, input.collection_key),
     eq(moduleRecords.is_deleted, false),
+    ...(input.search ? [moduleQuerySearchCondition(input.search)] : []),
     ...input.filters.map((filter) => moduleFilterCondition(manifest, input.collection_key, filter)),
   ];
   const sortExpression = moduleSortExpression(manifest, input.collection_key, input.sort);
@@ -1994,8 +2901,14 @@ export async function queryModuleRecords(
   const hasMore = rows.length > limit;
   const selected = rows.slice(0, limit);
   await Promise.all([...new Map(selected.map((row) => [row.version.id, row.version])).values()].map(verifyManifest));
+  const records = await resolveModuleRecordFields(
+    db,
+    actor,
+    selected.map((row) => toRecord(row.record, installation.installation, row.version)),
+    manifest,
+  );
   return {
-    records: selected.map((row) => toRecord(row.record, installation.installation, row.version)),
+    records,
     next_cursor: hasMore ? encodeCursor(offset + limit) : null,
   };
 }
@@ -2016,6 +2929,450 @@ export async function listModuleRecords(
     limit: input.limit ?? 25,
     ...(input.cursor ? { cursor: input.cursor } : {}),
   });
+}
+
+function assertPersonalViewActor(actor: ModuleActor, mode: AccessMode): asserts actor is Extract<ModuleActor, { kind: 'human' }> {
+  if (mode === 'write') assertBaseWriteAccess(actor);
+  else assertBaseReadAccess(actor);
+  if (actor.kind !== 'human') {
+    throw new ModuleError('Saved views belong to individual workspace members', 'MODULE_ACCESS_DENIED', 403);
+  }
+}
+
+function toSavedView(
+  row: SavedViewRow,
+  moduleId: string,
+): ModuleSavedView {
+  return {
+    id: row.id,
+    installation_id: row.installation_id,
+    module_id: moduleId,
+    collection_key: row.collection_key,
+    owner_user_id: row.owner_user_id,
+    name: row.name,
+    config: ModuleSavedViewConfigSchema.parse(row.config),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+  };
+}
+
+export async function listModuleSavedViews(
+  actorValue: ModuleActor,
+  slug: string,
+  collectionKey?: string,
+): Promise<ModuleSavedView[]> {
+  const actor = validatedActor(actorValue);
+  assertPersonalViewActor(actor, 'read');
+  const installation = await findInstallation(db, actor, { slug }, 'read');
+  const manifest = await verifyManifest(installation.version);
+  if (collectionKey) collectionFor(manifest, collectionKey);
+  const conditions: SQL[] = [
+    eq(moduleSavedViews.org_id, actor.org_id),
+    eq(moduleSavedViews.installation_id, installation.installation.id),
+    eq(moduleSavedViews.owner_user_id, actor.actor_id),
+    eq(moduleSavedViews.is_deleted, false),
+  ];
+  if (collectionKey) conditions.push(eq(moduleSavedViews.collection_key, collectionKey));
+  const rows = await db
+    .select()
+    .from(moduleSavedViews)
+    .where(and(...conditions))
+    .orderBy(asc(moduleSavedViews.name), asc(moduleSavedViews.id));
+  return rows.map((row) => toSavedView(row, installation.installation.module_id));
+}
+
+export async function createModuleSavedView(
+  actorValue: ModuleActor,
+  slug: string,
+  input: ModuleSavedViewCreateRequest,
+): Promise<ModuleSavedView> {
+  const actor = validatedActor(actorValue);
+  assertPersonalViewActor(actor, 'write');
+  const config = ModuleSavedViewConfigSchema.parse(input.config);
+  try {
+    return await db.transaction(async (tx) => {
+      // Upgrade takes the same installation lock before locking/revalidating
+      // saved views. Holding it through validation + insert prevents a view
+      // validated against the old manifest from appearing after that scan.
+      const installation = await findInstallation(
+        tx,
+        actor,
+        { slug },
+        'read',
+        { lock: true },
+      );
+      validateSavedViewConfig(
+        await verifyManifest(installation.version),
+        input.collection_key,
+        config,
+      );
+      const [row] = await tx.insert(moduleSavedViews).values({
+        org_id: actor.org_id,
+        installation_id: installation.installation.id,
+        collection_key: input.collection_key,
+        owner_user_id: actor.actor_id,
+        name: input.name,
+        view_type: config.type,
+        config,
+      }).returning();
+      if (!row) throw new Error('Module saved view insert returned no row');
+      return toSavedView(row, installation.installation.module_id);
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === '23505') {
+      throw new ModuleError(
+        'A saved view with this name already exists in the collection',
+        'MODULE_SAVED_VIEW_CONFLICT',
+        409,
+      );
+    }
+    throw error;
+  }
+}
+
+export async function updateModuleSavedView(
+  actorValue: ModuleActor,
+  slug: string,
+  viewId: string,
+  input: ModuleSavedViewUpdateRequest,
+): Promise<ModuleSavedView> {
+  const actor = validatedActor(actorValue);
+  assertPersonalViewActor(actor, 'write');
+  try {
+    return await db.transaction(async (tx) => {
+      const installation = await findInstallation(
+        tx,
+        actor,
+        { slug },
+        'read',
+        { lock: true },
+      );
+      const [current] = await tx
+        .select()
+        .from(moduleSavedViews)
+        .where(and(
+          eq(moduleSavedViews.id, viewId),
+          eq(moduleSavedViews.org_id, actor.org_id),
+          eq(moduleSavedViews.installation_id, installation.installation.id),
+          eq(moduleSavedViews.owner_user_id, actor.actor_id),
+          eq(moduleSavedViews.is_deleted, false),
+        ))
+        .limit(1)
+        .for('update');
+      if (!current) {
+        throw new ModuleError('Saved view not found', 'MODULE_SAVED_VIEW_NOT_FOUND', 404);
+      }
+      const config = input.config
+        ? ModuleSavedViewConfigSchema.parse(input.config)
+        : ModuleSavedViewConfigSchema.parse(current.config);
+      validateSavedViewConfig(
+        await verifyManifest(installation.version),
+        current.collection_key,
+        config,
+      );
+      const [row] = await tx
+        .update(moduleSavedViews)
+        .set({
+          name: input.name ?? current.name,
+          view_type: config.type,
+          config,
+        })
+        .where(and(
+          eq(moduleSavedViews.id, current.id),
+          eq(moduleSavedViews.org_id, actor.org_id),
+          eq(moduleSavedViews.owner_user_id, actor.actor_id),
+          eq(moduleSavedViews.is_deleted, false),
+        ))
+        .returning();
+      if (!row) throw new ModuleError('Saved view not found', 'MODULE_SAVED_VIEW_NOT_FOUND', 404);
+      return toSavedView(row, installation.installation.module_id);
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === '23505') {
+      throw new ModuleError(
+        'A saved view with this name already exists in the collection',
+        'MODULE_SAVED_VIEW_CONFLICT',
+        409,
+      );
+    }
+    throw error;
+  }
+}
+
+export async function deleteModuleSavedView(
+  actorValue: ModuleActor,
+  slug: string,
+  viewId: string,
+): Promise<void> {
+  const actor = validatedActor(actorValue);
+  assertPersonalViewActor(actor, 'write');
+  const deleted = await db.transaction(async (tx) => {
+    const installation = await findInstallation(
+      tx,
+      actor,
+      { slug },
+      'read',
+      { lock: true },
+    );
+    const [row] = await tx
+      .update(moduleSavedViews)
+      .set({ is_deleted: true, deleted_at: new Date() })
+      .where(and(
+        eq(moduleSavedViews.id, viewId),
+        eq(moduleSavedViews.org_id, actor.org_id),
+        eq(moduleSavedViews.installation_id, installation.installation.id),
+        eq(moduleSavedViews.owner_user_id, actor.actor_id),
+        eq(moduleSavedViews.is_deleted, false),
+      ))
+      .returning({ id: moduleSavedViews.id });
+    return row;
+  });
+  if (!deleted) throw new ModuleError('Saved view not found', 'MODULE_SAVED_VIEW_NOT_FOUND', 404);
+}
+
+async function moduleRecordForRelation(
+  executor: DbExecutor,
+  actor: ModuleActor,
+  recordId: string,
+  expectedInstallationId?: string,
+): Promise<RecordRow> {
+  const [record] = await executor
+    .select()
+    .from(moduleRecords)
+    .where(and(
+      eq(moduleRecords.id, recordId),
+      eq(moduleRecords.org_id, actor.org_id),
+      eq(moduleRecords.is_deleted, false),
+    ))
+    .limit(1);
+  if (!record || (expectedInstallationId && record.installation_id !== expectedInstallationId)) {
+    throw new ModuleError('Module record not found', 'MODULE_RECORD_NOT_FOUND', 404);
+  }
+  return record;
+}
+
+function referenceFor(row: RecordRow): ModuleRecordReference {
+  return {
+    id: row.id,
+    collection_key: row.collection_key,
+    label: row.search_title || row.id,
+  };
+}
+
+async function resolveModuleRecordFields(
+  executor: DbExecutor,
+  actor: ModuleActor,
+  records: ModuleRecord[],
+  manifest: DeftModuleManifestV1,
+): Promise<ModuleRecord[]> {
+  if (records.length === 0) return [];
+  const recordIds = records.map((record) => record.id);
+  const installationId = records[0]!.installation_id;
+  if (records.some((record) => record.installation_id !== installationId)) {
+    throw new Error('Resolved module record pages must belong to one installation');
+  }
+
+  const edges = await executor
+    .select()
+    .from(moduleRecordRelations)
+    .where(and(
+      eq(moduleRecordRelations.org_id, actor.org_id),
+      eq(moduleRecordRelations.installation_id, installationId),
+      inArray(moduleRecordRelations.source_record_id, recordIds),
+      eq(moduleRecordRelations.is_deleted, false),
+    ))
+    .orderBy(asc(moduleRecordRelations.field_key), asc(moduleRecordRelations.position));
+  const targetIds = [...new Set(edges.map((edge) => edge.target_record_id))];
+  const targets = targetIds.length === 0
+    ? []
+    : await executor
+      .select()
+      .from(moduleRecords)
+      .where(and(
+        eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, installationId),
+        eq(moduleRecords.is_deleted, false),
+        inArray(moduleRecords.id, targetIds),
+      ));
+  const targetById = new Map(targets.map((target) => [target.id, target]));
+  const edgesBySourceField = new Map<string, RelationRow[]>();
+  for (const edge of edges) {
+    const key = `${edge.source_record_id}\u0000${edge.field_key}`;
+    const group = edgesBySourceField.get(key);
+    if (group) group.push(edge);
+    else edgesBySourceField.set(key, [edge]);
+  }
+
+  const memberIds = new Set<string>();
+  for (const record of records) {
+    const collection = collectionFor(manifest, record.collection_key);
+    for (const field of collection.fields) {
+      if (field.type !== 'member') continue;
+      const value = record.data[field.key];
+      if (typeof value === 'string') memberIds.add(value);
+      if (Array.isArray(value)) value.forEach((id) => memberIds.add(id));
+    }
+  }
+  const memberRows = memberIds.size === 0
+    ? []
+    : await executor
+      .select({ id: users.id, name: users.name })
+      .from(orgMembers)
+      .innerJoin(users, eq(users.id, orgMembers.user_id))
+      .where(and(
+        eq(orgMembers.org_id, actor.org_id),
+        eq(orgMembers.is_active, true),
+        inArray(orgMembers.user_id, [...memberIds]),
+      ));
+  const memberLabelById = new Map(memberRows.map((member) => [
+    member.id,
+    member.name.trim().slice(0, 500) || member.id,
+  ]));
+
+  return records.map((record) => {
+    const collection = collectionFor(manifest, record.collection_key);
+    const relations: ModuleRelationGroup[] = collection.fields
+      .filter((field): field is Extract<ModuleField, { type: 'relation' }> => field.type === 'relation')
+      .map((field) => ({
+        field_key: field.key,
+        records: (edgesBySourceField.get(`${record.id}\u0000${field.key}`) ?? [])
+          .map((edge) => targetById.get(edge.target_record_id))
+          .filter((target): target is RecordRow => (
+            target !== undefined && target.collection_key === field.target_collection
+          ))
+          .map(referenceFor),
+      }));
+    const members: ModuleMemberGroup[] = collection.fields
+      .filter((field): field is Extract<ModuleField, { type: 'member' }> => field.type === 'member')
+      .map((field) => {
+        const raw = record.data[field.key];
+        const ids = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+        return {
+          field_key: field.key,
+          members: ids.flatMap((id) => {
+            const label = memberLabelById.get(id);
+            return label ? [{ id, label }] : [];
+          }),
+        };
+      });
+    return { ...record, relations, members };
+  });
+}
+
+export async function listModuleRecordReferences(
+  actorValue: ModuleActor,
+  slug: string,
+  collectionKey: string,
+  ids?: string[],
+): Promise<ModuleRecordReference[]> {
+  const actor = validatedActor(actorValue);
+  const installation = await findInstallation(db, actor, { slug }, 'read');
+  const manifest = await verifyManifest(installation.version);
+  collectionFor(manifest, collectionKey);
+  if (ids && ids.length === 0) return [];
+  const conditions: SQL[] = [
+    eq(moduleRecords.org_id, actor.org_id),
+    eq(moduleRecords.installation_id, installation.installation.id),
+    eq(moduleRecords.collection_key, collectionKey),
+    eq(moduleRecords.is_deleted, false),
+  ];
+  if (ids) conditions.push(inArray(moduleRecords.id, ids));
+  const rows = await db
+    .select()
+    .from(moduleRecords)
+    .where(and(...conditions))
+    .orderBy(asc(moduleRecords.search_title), asc(moduleRecords.id))
+    .limit(ids ? Math.min(ids.length, 100) : 100);
+  return rows.map(referenceFor);
+}
+
+export async function getModuleRecordRelations(
+  actorValue: ModuleActor,
+  recordId: string,
+  options?: { expectedInstallationId?: string },
+): Promise<ModuleRelationGroup[]> {
+  const actor = validatedActor(actorValue);
+  const source = await moduleRecordForRelation(db, actor, recordId, options?.expectedInstallationId);
+  const installation = await findInstallation(
+    db,
+    actor,
+    { installationId: source.installation_id },
+    'read',
+  );
+  const manifest = await verifyManifest(installation.version);
+  const fields = collectionFor(manifest, source.collection_key).fields.filter(
+    (field): field is Extract<ModuleField, { type: 'relation' }> => field.type === 'relation',
+  );
+  const edges = await db
+    .select()
+    .from(moduleRecordRelations)
+    .where(and(
+      eq(moduleRecordRelations.org_id, actor.org_id),
+      eq(moduleRecordRelations.installation_id, source.installation_id),
+      eq(moduleRecordRelations.source_record_id, source.id),
+      eq(moduleRecordRelations.is_deleted, false),
+    ))
+    .orderBy(asc(moduleRecordRelations.field_key), asc(moduleRecordRelations.position));
+  const targetIds = [...new Set(edges.map((edge) => edge.target_record_id))];
+  const targets = targetIds.length === 0
+    ? []
+    : await db
+      .select()
+      .from(moduleRecords)
+      .where(and(
+        eq(moduleRecords.org_id, actor.org_id),
+        eq(moduleRecords.installation_id, source.installation_id),
+        eq(moduleRecords.is_deleted, false),
+        inArray(moduleRecords.id, targetIds),
+      ));
+  const targetById = new Map(targets.map((target) => [target.id, target]));
+  return fields.map((field) => ({
+    field_key: field.key,
+    records: edges
+      .filter((edge) => edge.field_key === field.key)
+      .map((edge) => targetById.get(edge.target_record_id))
+      .filter((record): record is RecordRow => record !== undefined)
+      .map(referenceFor),
+  }));
+}
+
+export async function replaceModuleRecordRelations(
+  actorValue: ModuleActor,
+  recordId: string,
+  fieldKey: string,
+  targetRecordIds: string[],
+  options: {
+    expectedInstallationId?: string;
+    expectedRevision: number;
+    expectedManifestDigest: string;
+    idempotencyKey: string;
+  },
+): Promise<ModuleRelationGroup> {
+  const actor = validatedActor(actorValue);
+  if (actor.kind !== 'human') {
+    throw new ModuleError(
+      'Use module_record_update to replace relations from an agent runtime',
+      'MODULE_ACCESS_DENIED',
+      403,
+    );
+  }
+  await updateModuleRecord(actor, {
+    record_id: recordId,
+    patch: {},
+    unset_fields: [],
+    relations: { [fieldKey]: targetRecordIds },
+    expected_revision: options.expectedRevision,
+    expected_manifest_digest: options.expectedManifestDigest,
+    idempotency_key: options.idempotencyKey,
+  }, {
+    expectedInstallationId: options.expectedInstallationId,
+  });
+  const relations = await getModuleRecordRelations(actor, recordId, {
+    expectedInstallationId: options.expectedInstallationId,
+  });
+  const group = relations.find((candidate) => candidate.field_key === fieldKey);
+  if (!group) throw new ModuleError('Field is not a relation', 'MODULE_RELATION_NOT_FOUND', 404);
+  return group;
 }
 
 export async function searchModuleRecords(

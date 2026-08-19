@@ -50,6 +50,7 @@ test('Defty module input schemas stay strict and carry concurrency fields', () =
   );
   assert.ok(update.input_schema.properties.expected_revision);
   assert.ok(update.input_schema.properties.expected_manifest_digest);
+  assert.ok(update.input_schema.properties.relations);
   assert.ok(archive.input_schema.properties.expected_revision);
   assert.ok(archive.input_schema.properties.expected_manifest_digest);
   for (const tool of [create, update, archive]) {
@@ -139,6 +140,7 @@ test('module receipts retain field names and concurrency metadata but no record 
     record_id: 'record_1',
     patch: { email: 'private@example.com', company: 'Acme' },
     unset_fields: ['notes', 'company'],
+    relations: { company_id: ['private-company-record'] },
     expected_revision: 4,
     expected_manifest_digest: `sha256:${'b'.repeat(64)}`,
     idempotency_key: 'private@example.com',
@@ -147,8 +149,9 @@ test('module receipts retain field names and concurrency metadata but no record 
     record_id: 'record_1',
     expected_manifest_digest: `sha256:${'b'.repeat(64)}`,
     expected_revision: 4,
-    changed_fields: ['company', 'email', 'notes'],
+    changed_fields: ['company', 'company_id', 'email', 'notes'],
   });
   assert.equal(JSON.stringify(update).includes('private@example.com'), false);
   assert.equal(JSON.stringify(update).includes('Acme'), false);
+  assert.equal(JSON.stringify(update).includes('private-company-record'), false);
 });
