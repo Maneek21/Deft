@@ -4,7 +4,6 @@ import { useDeferredValue, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
-  ChevronRight,
   Loader2,
   Plus,
   Settings2,
@@ -12,6 +11,7 @@ import {
 } from 'lucide-react';
 import { EmptyState } from '@/components/empty-state';
 import { useSetPageContext } from '@/components/app-header-context';
+import { ModuleCollectionNav } from '@/components/modules/module-collection-nav';
 import { ModuleRecordExplorer } from '@/components/modules/module-record-explorer';
 import { ModuleRecordFormDialog } from '@/components/modules/module-record-form';
 import { ModuleSavedViews } from '@/components/modules/module-saved-views';
@@ -247,50 +247,14 @@ export function ModuleWorkspace() {
         </div>
       </header>
 
-      {installedModule.manifest.collections.length > 1 && (
-        <nav
-          className="flex flex-shrink-0 gap-1 overflow-x-auto px-3 py-2 md:hidden"
-          style={{ borderBottom: '1px solid var(--ghost-border)' }}
-          aria-label={`${installedModule.manifest.name} collections`}
-        >
-          {installedModule.manifest.collections.map((candidate) => (
-            <CollectionButton
-              key={candidate.key}
-              name={candidate.name}
-              active={candidate.key === collection?.key}
-              onClick={() => chooseCollection(candidate.key)}
-              compact
-            />
-          ))}
-        </nav>
-      )}
+      <ModuleCollectionNav
+        moduleName={installedModule.manifest.name}
+        collections={installedModule.manifest.collections}
+        activeKey={collection?.key ?? null}
+        onSelect={chooseCollection}
+      />
 
-      <div className="flex min-h-0 flex-1">
-        {installedModule.manifest.collections.length > 1 && (
-          <aside
-            className="hidden w-52 flex-shrink-0 flex-col p-3 md:flex lg:w-60"
-            style={{ background: 'var(--surface-container-low)', borderRight: '1px solid var(--ghost-border)' }}
-          >
-            <p className="px-2 pb-2 pt-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--outline)' }}>
-              Collections
-            </p>
-            <nav className="space-y-1" aria-label={`${installedModule.manifest.name} collections`}>
-              {installedModule.manifest.collections.map((candidate) => (
-                <CollectionButton
-                  key={candidate.key}
-                  name={candidate.name}
-                  active={candidate.key === collection?.key}
-                  onClick={() => chooseCollection(candidate.key)}
-                />
-              ))}
-            </nav>
-            <div className="mt-auto px-2 pt-4 text-[0.625rem] leading-relaxed" style={{ color: 'var(--outline)' }}>
-              {installedModule.manifest.collections.length} collections · v{installedModule.manifest.version ?? '—'}
-            </div>
-          </aside>
-        )}
-
-        <main className="min-w-0 flex-1 overflow-y-auto px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4 md:px-6 md:pt-5">
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-4 md:px-6 md:pt-5">
           {(actionError || notice) && (
             <div
               role={actionError ? 'alert' : 'status'}
@@ -381,8 +345,7 @@ export function ModuleWorkspace() {
               )}
             </div>
           )}
-        </main>
-      </div>
+      </main>
 
       {collection && (
         <ModuleRecordFormDialog
@@ -393,31 +356,5 @@ export function ModuleWorkspace() {
         />
       )}
     </div>
-  );
-}
-
-function CollectionButton({
-  name,
-  active,
-  onClick,
-  compact = false,
-}: {
-  name: string;
-  active: boolean;
-  onClick: () => void;
-  compact?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-current={active ? 'page' : undefined}
-      className={`flex min-h-10 items-center rounded-lg text-left text-[0.8125rem] font-medium ${compact ? 'flex-shrink-0 px-3' : 'w-full gap-2 px-2.5'}`}
-      style={{ color: active ? 'var(--on-surface)' : 'var(--on-surface-variant)', background: active ? 'var(--bg-active)' : 'transparent' }}
-    >
-      {!compact && <TableProperties size={14} className="flex-shrink-0" style={{ color: active ? 'var(--primary)' : 'var(--outline)' }} />}
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      {!compact && active && <ChevronRight size={13} className="flex-shrink-0" style={{ color: 'var(--outline)' }} />}
-    </button>
   );
 }

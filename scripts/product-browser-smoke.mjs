@@ -113,8 +113,31 @@ async function main() {
     }
     record('Navigate core settings surfaces');
 
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await settle(page, '/settings/modules');
+    const availableTab = page.getByRole('button', { name: /Available/i }).first();
+    if (await availableTab.count()) await availableTab.click();
+    const installModule = page.getByRole('button', { name: 'Install module' }).first();
+    if (await installModule.count()) {
+      await installModule.click();
+      await page.getByText(/installed and ready/i).first().waitFor({ timeout: 15_000 });
+    }
+    await settle(page, '/modules/contacts/contacts');
+    const collectionTabs = page.getByRole('tablist', { name: /contacts collections/i });
+    await collectionTabs.waitFor({ state: 'visible', timeout: 10_000 });
+    const collectionAside = page.locator('aside').filter({ hasText: /^Collections$/ });
+    if (await collectionAside.count()) {
+      throw new Error('Desktop Contacts still renders a second collections sidebar');
+    }
+    for (const label of ['Contacts', 'Companies', 'Deals', 'Activities']) {
+      await collectionTabs.getByRole('tab', { name: label, exact: true }).waitFor({ state: 'visible' });
+    }
+    await collectionTabs.getByRole('tab', { name: 'Companies', exact: true }).click();
+    await page.waitForURL((url) => url.pathname.includes('/modules/contacts/companies'), { timeout: 10_000 });
+    record('Contacts uses collection tabs without a second left rail');
+
     await page.setViewportSize({ width: 390, height: 844 });
-    const mobilePaths = ['/chat', '/tasks', '/knowledge', '/calendar', '/notes', '/inbox', '/settings'];
+    const mobilePaths = ['/chat', '/tasks', '/knowledge', '/calendar', '/notes', '/inbox', '/settings', '/modules/contacts/contacts'];
     for (const path of mobilePaths) {
       await settle(page, path);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

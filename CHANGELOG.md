@@ -10,6 +10,11 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+### Changed
+
+- Multi-collection modules use header collection tabs on every viewport.
+  Desktop no longer renders a second left rail next to the workspace sidebar.
+
 ## [0.3.0-preview.1] — 2026-08-19
 
 First AGPL-3.0-only preview. This is the delta from `v0.2.0-preview.4`.

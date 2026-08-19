@@ -30,6 +30,7 @@ jobs:
           src/lib/huddle-state.test.ts
           src/lib/socket.test.ts
           src/lib/space-socket.test.ts
+          src/lib/module-collection-nav.test.ts
       - name: Type check API
         run: cd apps/api && npx tsc --noEmit
       - name: Type check Web
