@@ -1,5 +1,5 @@
-// Shared validation helpers — dependency-free (no zod here, since @deft/shared
-// has no runtime deps). Consumers that want Zod can wrap these regexes.
+// Legacy dependency-free validation helpers. The declarative module contract
+// uses Zod in ./modules; these primitives stay lightweight for older callers.
 
 /**
  * Strict semver regex: MAJOR.MINOR.PATCH with optional pre-release/build metadata.

@@ -4,16 +4,17 @@ import { getSettingsNavGroups, isSettingsItemActive } from './settings-navigatio
 
 test('members see only personal workspace and personal connection settings', () => {
   const items = getSettingsNavGroups('member').flatMap((group) => group.items);
-  assert.deepEqual(items.map((item) => item.name), ['General', 'Profile', 'Calendar', 'Connections']);
+  assert.deepEqual(items.map((item) => item.name), ['General', 'Profile', 'License & source', 'Calendar', 'Connections']);
   assert.equal(items.some((item) => item.href === '/settings/api-access'), false);
 });
 
-test('owners get seven primary destinations and specialist controls under Advanced', () => {
+test('owners get module administration as a primary workspace destination', () => {
   const groups = getSettingsNavGroups('owner');
   const primary = groups.filter((group) => !group.advanced).flatMap((group) => group.items);
   const advanced = groups.find((group) => group.advanced);
 
-  assert.equal(primary.length, 7);
+  assert.equal(primary.length, 9);
+  assert.ok(primary.some((item) => item.href === '/settings/modules'));
   assert.ok(advanced);
   assert.ok(advanced.items.some((item) => item.name === 'Mention groups'));
   assert.ok(advanced.items.some((item) => item.name === 'API access'));

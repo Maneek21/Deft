@@ -37,10 +37,16 @@ import {
   pollPendingWork,
   pingAlive,
 } from './cooperative.js';
+import {
+  MODULE_MCP_READ_TOOLS,
+  MODULE_MCP_TOOL_SCHEMAS,
+  MODULE_MCP_WRITE_TOOLS,
+} from './modules.js';
 
 export type ToolHandler = (args: any, ctx: ToolContext) => Promise<ToolResult>;
 
 export const READ_ONLY_TOOLS: Record<string, ToolHandler> = {
+  ...MODULE_MCP_READ_TOOLS,
   platform_context: platformContext as ToolHandler,
   memory_recall: memoryRecall as ToolHandler,
   memory_list: memoryList as ToolHandler,
@@ -70,6 +76,7 @@ export const TOOL_ALIASES: Record<string, string> = {
 };
 
 export const WRITE_TOOLS: Record<string, ToolHandler> = {
+  ...MODULE_MCP_WRITE_TOOLS,
   memory_write: memoryWrite as ToolHandler,
   memory_update: memoryUpdate as ToolHandler,
   wiki_create: wikiCreate as ToolHandler,
@@ -114,6 +121,7 @@ const CALLER_SLUG_PROP = {
 };
 
 export const toolSchemas: ToolSchema[] = [
+  ...(MODULE_MCP_TOOL_SCHEMAS as ToolSchema[]),
   {
     name: 'platform_context',
     description:

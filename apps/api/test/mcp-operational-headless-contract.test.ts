@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   REMOTE_MCP_AUTHORIZATION_SCOPES,
-  REMOTE_MCP_READ_SCOPES,
+  REMOTE_MCP_DEFAULT_READ_SCOPES,
   REMOTE_MCP_SCOPES,
   authorizationScopeSelection,
   normalizeScopes,
@@ -15,8 +15,13 @@ import {
   HUMAN_TOOLS,
   HUMAN_WRITE_TOOLS,
   buildHumanToolSchemas,
+  humanToolHasRequiredScope,
 } from '../src/lib/mcp-tools/human.js';
 import { toolSchemas } from '../src/lib/mcp-tools/index.js';
+import {
+  MODULE_OPERATION_DEFINITIONS,
+  MODULE_OPERATION_NAMES,
+} from '@deft/shared/modules';
 
 const READ_TOOLS = [
   'workspace_capabilities',
@@ -55,12 +60,19 @@ const WRITE_TOOLS = [
 test('operational headless scopes are accepted without weakening default read grants', () => {
   assert.ok(REMOTE_MCP_SCOPES.includes('write:calendar'));
   assert.ok(REMOTE_MCP_SCOPES.includes('write:workspace'));
+  assert.ok(REMOTE_MCP_SCOPES.includes('read:modules'));
+  assert.ok(REMOTE_MCP_SCOPES.includes('write:modules'));
   assert.deepEqual(normalizeScopes(undefined), [
     'read:workspace',
     'read:wiki',
     'read:tasks',
     'read:messages',
     'read:calendar',
+  ]);
+  assert.equal(normalizeScopes(undefined).includes('read:modules'), false);
+  assert.deepEqual(normalizeScopes('read:modules write:modules'), [
+    'read:modules',
+    'write:modules',
   ]);
   assert.deepEqual(normalizeScopes('write:calendar write:workspace unknown:scope'), [
     'write:calendar',
@@ -74,7 +86,7 @@ test('operational headless scopes are accepted without weakening default read gr
 
 test('scope-less OAuth clients get a read-safe default with explicit access choices', () => {
   const omitted = authorizationScopeSelection(undefined, {});
-  assert.deepEqual(omitted.scopes, [...REMOTE_MCP_READ_SCOPES]);
+  assert.deepEqual(omitted.scopes, [...REMOTE_MCP_DEFAULT_READ_SCOPES]);
   assert.deepEqual(omitted.availableScopes, [...REMOTE_MCP_AUTHORIZATION_SCOPES]);
   assert.equal(omitted.mode, 'deft-choice');
 
@@ -82,7 +94,7 @@ test('scope-less OAuth clients get a read-safe default with explicit access choi
     'read:workspace read:wiki read:tasks read:messages read:calendar',
     { client_name: 'ChatGPT' },
   );
-  assert.deepEqual(legacyChatGpt.scopes, [...REMOTE_MCP_READ_SCOPES]);
+  assert.deepEqual(legacyChatGpt.scopes, [...REMOTE_MCP_DEFAULT_READ_SCOPES]);
   assert.deepEqual(legacyChatGpt.availableScopes, [...REMOTE_MCP_AUTHORIZATION_SCOPES]);
   assert.equal(legacyChatGpt.mode, 'deft-choice');
 
@@ -129,6 +141,66 @@ test('every operational tool is registered, classified, and advertised once', ()
     assert.ok((schema.inputSchema as any)?.properties?.idempotency_key, `${name} must advertise retry safety`);
   }
   assert.equal((schemaByName.get('calendar_event_cancel')?.annotations as any)?.destructiveHint, true);
+});
+
+test('module MCP exposes exactly eight static operations from the shared contract', () => {
+  const operationNames = new Set<string>(MODULE_OPERATION_NAMES);
+  const agentSchemas = toolSchemas.filter((schema) => operationNames.has(schema.name));
+  assert.deepEqual(
+    agentSchemas.map((schema) => schema.name).sort(),
+    [...MODULE_OPERATION_NAMES].sort(),
+  );
+  assert.equal(agentSchemas.length, 8);
+
+  const humanSchemas = buildHumanToolSchemas(
+    toolSchemas as unknown as Array<Record<string, unknown>>,
+  );
+  const humanByName = new Map(
+    humanSchemas.map((schema) => [String(schema.name), schema]),
+  );
+  for (const operation of MODULE_OPERATION_NAMES) {
+    const agent = agentSchemas.find((schema) => schema.name === operation)!;
+    const agentInput = agent.inputSchema as any;
+    assert.ok(agentInput.required.includes('caller_employee_slug'));
+    assert.equal(agentInput.additionalProperties, false);
+    if (MODULE_OPERATION_DEFINITIONS[operation].mode === 'read') {
+      assert.match(
+        String(agent.description ?? ''),
+        /untrusted data[\s\S]*never[\s\S]*instructions/i,
+      );
+    }
+
+    const human = humanByName.get(operation)!;
+    const humanInput = human.inputSchema as any;
+    assert.equal(Boolean(humanInput.properties?.caller_employee_slug), false);
+    assert.equal(
+      (human.annotations as any)?.readOnlyHint,
+      MODULE_OPERATION_DEFINITIONS[operation].mode === 'read',
+    );
+    if (MODULE_OPERATION_DEFINITIONS[operation].mode === 'write') {
+      assert.ok(agentInput.required.includes('idempotency_key'));
+      assert.ok(humanInput.required.includes('idempotency_key'));
+      assert.equal(
+        (human.annotations as any)?.destructiveHint,
+        MODULE_OPERATION_DEFINITIONS[operation].destructive,
+      );
+    }
+  }
+});
+
+test('human module scopes are explicit and generic search/fetch use any granted read scope', () => {
+  for (const operation of MODULE_OPERATION_NAMES) {
+    const expected = MODULE_OPERATION_DEFINITIONS[operation].mode === 'read'
+      ? 'read:modules'
+      : 'write:modules';
+    assert.equal(HUMAN_TOOL_SCOPES[operation], expected);
+    assert.equal(humanToolHasRequiredScope([expected], operation), true);
+    assert.equal(humanToolHasRequiredScope([], operation), false);
+  }
+  assert.equal(humanToolHasRequiredScope(['read:modules'], 'search'), true);
+  assert.equal(humanToolHasRequiredScope(['read:modules'], 'fetch'), true);
+  assert.equal(humanToolHasRequiredScope(['read:tasks'], 'search'), true);
+  assert.equal(humanToolHasRequiredScope([], 'search'), false);
 });
 
 test('capability catalog keeps dangerous administration out of MCP', () => {

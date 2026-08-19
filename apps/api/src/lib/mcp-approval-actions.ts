@@ -14,6 +14,19 @@ export const CANONICAL_MCP_ACTION_KINDS = [
   'wiki_update',
 ] as const;
 
+/**
+ * Module mutations are queued only by their dedicated static MCP tools,
+ * which validate the shared request schema and run ModuleService preflight
+ * before persisting a proposal. They belong to the signed resolver path but
+ * intentionally stay out of CANONICAL_MCP_ACTION_KINDS so the generic
+ * request_human_approval tool cannot bypass that boundary.
+ */
+const GOVERNED_MODULE_ACTION_KINDS = [
+  'module_record_create',
+  'module_record_update',
+  'module_record_archive',
+] as const;
+
 const MCP_ACTION_ALIASES = {
   add_task_comment: 'task_update',
 } as const;
@@ -21,6 +34,7 @@ const MCP_ACTION_ALIASES = {
 export const MCP_ACTION_KINDS = new Set<string>([
   ...CANONICAL_MCP_ACTION_KINDS,
   ...Object.keys(MCP_ACTION_ALIASES),
+  ...GOVERNED_MODULE_ACTION_KINDS,
 ]);
 
 type NormalizedApprovalAction =

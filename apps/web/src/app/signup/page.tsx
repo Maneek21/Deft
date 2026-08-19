@@ -108,7 +108,7 @@ export default function SignupPage() {
               style={{ background: 'rgba(80,80,120,0.25)', color: 'var(--on-surface-variant)', border: '1px solid var(--ghost-border)' }}>
               <strong style={{ color: 'var(--on-surface)' }}>This Deft workspace is already set up.</strong>
               {' '}Ask your administrator for an invite — self-hosted Deft hosts a single workspace per deployment.
-              {' '}See LICENSE for the BSL 1.1 terms that make this a hard rule rather than a configuration knob.
+              {' '}This is a current product limitation, not a license restriction.
             </div>
           )}
 
@@ -223,13 +223,16 @@ export default function SignupPage() {
         </div>
 
         {/* Footer */}
-        <p className="text-[0.875rem]" style={{ color: 'var(--outline)' }}>
-          Already have an account?{' '}
-          <Link href="/login" className="underline underline-offset-4"
-            style={{ color: 'var(--primary)', textDecorationColor: 'rgba(200,191,255,0.4)' }}>
-            Sign in
-          </Link>
-        </p>
+        <div className="flex flex-col items-center gap-2 text-[0.875rem]" style={{ color: 'var(--outline)' }}>
+          <p>
+            Already have an account?{' '}
+            <Link href="/login" className="underline underline-offset-4"
+              style={{ color: 'var(--primary)', textDecorationColor: 'rgba(200,191,255,0.4)' }}>
+              Sign in
+            </Link>
+          </p>
+          <Link href="/license" className="text-[0.75rem] underline underline-offset-4">License &amp; source</Link>
+        </div>
       </main>
     </div>
   );

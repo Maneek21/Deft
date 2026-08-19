@@ -13,7 +13,7 @@ import { llm } from './llm.js';
 import { retrieveContext } from './retrieve-context.js';
 import { AGENT_TOOLS, ACTION_TOOLS, CALENDAR_READ_TOOLS } from './agent-tools.js';
 import { executeToolCall } from './agent-context.js';
-import { executeActionDirect } from './agent-actions.js';
+import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier, type TrustLevel } from './agent-approval.js';
 import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from './mcp-tools.js';
 import { getIO } from '../socket.js';
@@ -464,7 +464,7 @@ export async function runAgentQuery(params: {
           // source_message_id. The LLM never has to know about it — we inject
           // it here for create_task and similar tools.
           const toolInput = { ...(tool.input as Record<string, any>) };
-          if (params.sourceMessageId && !toolInput.source_message_id) {
+          if (params.sourceMessageId && !isModuleWriteAction(tool.name) && !toolInput.source_message_id) {
             toolInput.source_message_id = params.sourceMessageId;
           }
           const { actionId, success, result, error, requiresApproval, approvalTier: currentTier } = await executeActionDirect(
@@ -509,7 +509,7 @@ export async function runAgentQuery(params: {
           // Thread the source message id through so the approval UI can persist
           // it when the action is executed later.
           const pendingParams = { ...(tool.input as Record<string, any>) };
-          if (params.sourceMessageId && !pendingParams.source_message_id) {
+          if (params.sourceMessageId && !isModuleWriteAction(tool.name) && !pendingParams.source_message_id) {
             pendingParams.source_message_id = params.sourceMessageId;
           }
           pendingActions.push({

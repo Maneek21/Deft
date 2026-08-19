@@ -1,16 +1,15 @@
 /**
  * Self-hosted v1 — Single-org hard-block.
  *
- * Deft ships under BSL 1.1, which prohibits offering Deft as a hosted
- * service to third parties. To give that license technical teeth, a self-
- * hosted Deft instance only ever hosts one org. The first signup
- * bootstraps that org; every subsequent signup must join the existing org
- * via an invite flow (or be rejected).
+ * The self-hosted v1 product supports one workspace per deployment. This
+ * guard protects that supported operating model; it is not a license
+ * restriction. The first signup bootstraps the workspace, and every
+ * subsequent signup must join it through an invite flow (or be rejected).
  *
  * This helper counts how many orgs exist. Callers decide how to react:
  *   - auth /signup rejects with SINGLE_ORG_LIMIT when count >= 1 and the
  *     request is not an invite redemption.
- *   - the startup check in apps/api/src/index.ts logs a warning if count
+ *   - the startup check in apps/api/src/server.ts logs a warning if count
  *     exceeds 1 (which can only happen on a DB carried over from a
  *     pre-hard-block build — treat as operator misconfiguration).
  *
@@ -32,8 +31,7 @@ export async function countOrgs(): Promise<number> {
 export const SINGLE_ORG_ERROR = {
   error:
     'This Deft instance already has a workspace. Ask your administrator ' +
-    'for an invite — self-hosted Deft hosts a single workspace per ' +
-    'deployment. See LICENSE for the BSL 1.1 terms that make this a ' +
-    'hard rule rather than a configuration knob.',
+    'for an invite — the self-hosted v1 product supports a single ' +
+    'workspace per deployment.',
   code: 'SINGLE_ORG_LIMIT',
 } as const;

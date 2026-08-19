@@ -126,11 +126,11 @@ async function main() {
     );
     console.log(`deleted ${users.rowCount} test shadow users`);
 
-    // Delete BSL probe messages from old OpenClaw audits (if not already deleted)
+    // Delete legacy license-probe messages from old OpenClaw audits (if not already deleted)
     const msgs = await client.query(
       "delete from messages where content::text like '%@Test OpenClaw PM%BSL 1.1 licensing%' returning id",
     );
-    console.log(`deleted ${msgs.rowCount} test BSL probe messages`);
+    console.log(`deleted ${msgs.rowCount} legacy license probe messages`);
 
     console.log('Cleanup complete');
   } finally {

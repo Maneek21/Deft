@@ -31,6 +31,7 @@ import { errorResult, textResult } from './types.js';
 import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
+import { employeeModuleActor, listModuleSummaries } from '../module-service.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -538,6 +539,32 @@ export async function platformContext(
       teamSummaries = [];
     }
 
+    let installedModules: Array<Record<string, unknown>> = [];
+    try {
+      installedModules = (await listModuleSummaries(employeeModuleActor({
+        orgId: ctx.org_id,
+        employeeId: ctx.employee_id,
+        trustLevel: ctx.trust_level,
+        source: 'mcp',
+      }))).map((module) => ({
+        module_id: module.module_id,
+        name: module.name,
+        version: module.version,
+        manifest_digest: module.manifest_digest,
+        collections: module.collections,
+        untrusted_metadata: true,
+        retrieval_hint: {
+          tool: 'module_schema_get',
+          args_template: {
+            caller_employee_slug: ctx.employee_slug,
+            module_id: module.module_id,
+          },
+        },
+      }));
+    } catch {
+      installedModules = [];
+    }
+
     const now = new Date();
     const payload = {
       generated_at: now.toISOString(),
@@ -560,6 +587,7 @@ export async function platformContext(
       })),
       active_projects: activeProjects,
       teams: teamSummaries,
+      installed_modules: installedModules,
       relevant_wiki_snippets: wikiSnippets,
       context_packets: buildContextPackets(wikiSnippets, trigger, ctx),
       trigger_context: trigger ?? null,

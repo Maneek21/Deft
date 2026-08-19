@@ -9,7 +9,12 @@ import * as huddle from './huddle-rooms.js';
 import { requireActiveOrgMembership } from './lib/org-membership.js';
 import { createNotificationIfAllowed } from './lib/notification-policy.js';
 
-export type SocketUser = { id: string; email: string; org_id: string };
+export type SocketUser = {
+  id: string;
+  email: string;
+  org_id: string;
+  role?: 'owner' | 'admin' | 'member' | 'guest';
+};
 type HuddleEventName = 'huddle:create' | 'huddle:list' | 'huddle:join' | 'huddle:leave' | 'huddle:signal' | 'huddle:mute';
 type HuddleErrorCode = 'INVALID_PAYLOAD' | 'FORBIDDEN' | 'ROOM_NOT_FOUND' | 'NOT_PARTICIPANT' | 'TARGET_NOT_FOUND' | 'ALREADY_IN_HUDDLE' | 'INTERNAL_ERROR';
 
@@ -113,7 +118,7 @@ export type HuddleEvictionScope =
   | {
       orgId: string;
       userId: string;
-      reason: 'org_membership_revoked';
+      reason: 'org_membership_revoked' | 'org_role_changed';
     };
 
 export type RealtimeRevocationServer = {
@@ -147,9 +152,8 @@ export function revokeRealtimeAccess(
       return;
     }
 
-    // A revoked org member must not retain the org room or any space room that
-    // the socket joined before revocation. Disconnecting the scoped sockets is
-    // the only atomic Socket.IO operation that removes all of those rooms.
+    // A revoked org member or a member whose role changed must not retain rooms
+    // granted under the old authorization. Reconnect re-resolves current role.
     server.in(`org-user:${scope.orgId}:${scope.userId}`).disconnectSockets(true);
   } catch (error) {
     // The access mutation has already committed. Realtime cleanup is best
@@ -300,11 +304,13 @@ export function setupSocket(server: HTTPServer) {
     }
 
     try {
-      await socket.join([
+      const initialRooms = [
         `org:${user.org_id}`,
         `user:${user.id}`,
         `org-user:${user.org_id}:${user.id}`,
-      ]);
+      ];
+      if (user.role !== 'guest') initialRooms.push(`org-members:${user.org_id}`);
+      await socket.join(initialRooms);
     } catch (error) {
       console.error('Failed to initialize socket rooms:', error);
       socket.disconnect(true);

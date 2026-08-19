@@ -2,6 +2,11 @@
   "name": "deft",
   "version": "0.1.0-alpha",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maneek21/Deft.git"
+  },
   "packageManager": "pnpm@11.10.0",
   "scripts": {
     "audit:session1": "tsx docs/superpowers/audits/agent-ui-session-1.audit.ts",
@@ -35,6 +40,12 @@
     "dev:api": "pnpm --filter @deft/api dev",
     "dev:web": "pnpm --filter @deft/web dev",
     "lint": "pnpm -r lint",
+    "module:check": "tsx scripts/modules-cli.ts check",
+    "module:format": "tsx scripts/modules-cli.ts format",
+    "module:init": "tsx scripts/modules-cli.ts init",
+    "module:test": "tsx --test scripts/modules-cli.test.ts",
+    "module:vendor": "tsx scripts/modules-cli.ts vendor",
+    "module:verify": "tsx scripts/modules-cli.ts verify-lock .",
     "pilot:dev": "tsx scripts/pilot-preflight.ts --start",
     "pilot:clean-agent-queue": "tsx scripts/agent-demo-queue-cleanup.ts",
     "pilot:cracks:battery": "node scripts/pilot-cracks-clearance-battery.mjs",

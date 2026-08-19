@@ -121,7 +121,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/productivity/daily-standup/SOUL.md',
   },
   {
     slug: 'designer',
@@ -148,7 +148,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/creative/ux-researcher/SOUL.md',
   },
   {
     slug: 'qa',
@@ -174,7 +174,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/development/qa-tester/SOUL.md',
   },
   {
     slug: 'cs',
@@ -201,7 +201,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-sonnet-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/customer-success/onboarding-guide/SOUL.md',
   },
   {
     slug: 'community',
@@ -226,7 +226,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-haiku-4-5-20251001',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/marketing/social-media/SOUL.md',
   },
   {
     slug: 'on-call',
@@ -256,7 +256,7 @@ export const TEMPLATE_META: TemplateMeta[] = [
     model_recommendation: 'anthropic/claude-opus-4-6',
     fallback_models: DEFAULT_FALLBACKS,
     source: 'community',
-    source_attribution: 'bundled',
+    source_attribution: 'https://github.com/mergisi/awesome-openclaw-agents/blob/main/agents/devops/incident-responder/SOUL.md',
   },
   {
     slug: 'cfo',

@@ -24,11 +24,12 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ### Changed
 
+- Relicensed the current codebase from BSL 1.1 to GNU AGPL v3.0 only, removed the hosted-service restriction, added source-offer metadata, and clarified that the one-workspace deployment boundary is a product limitation rather than a license condition.
 - Reworked Defty planning so natural-language requests resolve through model-generated structured drafts, deterministic validation, approval, execution, and confirmation.
 - Moved supported approval cards into the source conversation with an inbox mirror.
 - Reworked chat knowledge capture into settled-window episode processing with quiet receipts.
 - Simplified Connections, Agent employees, Inbox, Settings, Chat, Tasks, Knowledge, and Calendar interfaces across desktop and mobile.
-- Standardized public positioning on source-available BSL 1.1, the self-hosted v1 integration contract, and current alpha boundaries.
+- Standardized public positioning on the self-hosted v1 integration contract and current alpha boundaries.
 
 ### Fixed
 
@@ -151,11 +152,11 @@ Bring-Your-Own-Agent (BYOA) MCP surface for connecting external runtimes
   #26, not history-rewritten — history rewrite would break in-flight
   forks/clones during alpha).
 
-### License
+### License at release
 
-[BSL 1.1](LICENSE) — free for any purpose except hosting as a service
-for third parties. Mandatory attribution in forks. Each release
-auto-converts to Apache 2.0 four years after its release date.
+The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
+codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
+the license file present in the exact revision you use.
 
 [Unreleased]: https://github.com/Maneek21/Deft/compare/v0.1.0-alpha...HEAD
 [0.1.0-alpha]: https://github.com/Maneek21/Deft/releases/tag/v0.1.0-alpha

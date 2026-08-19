@@ -1,6 +1,6 @@
 # Support
 
-Deft is an alpha, source-available self-hosted project. Community support is best effort and does not include an uptime or response-time SLA.
+Deft is an alpha, open-source self-hosted project. Community support is best effort and does not include an uptime or response-time SLA.
 
 ## Where to ask
 
@@ -29,4 +29,4 @@ Self-hosters are responsible for infrastructure, HTTPS, DNS, backups, restore dr
 
 ## What maintainers may close
 
-Maintainers may close requests that cannot be reproduced, omit required context after follow-up, depend on unsupported forks, request prohibited hosted-service use, disclose secrets, or fall outside the current product contract.
+Maintainers may close requests that cannot be reproduced, omit required context after follow-up, depend on unsupported forks, disclose secrets, or fall outside the current product contract.

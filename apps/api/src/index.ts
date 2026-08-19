@@ -57,6 +57,8 @@ import { metricsRoutes, requireMetricsBearer } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
 import { taskTemplateRoutes } from './routes/task-templates.js';
 import { workIntentRoutes } from './routes/work-intents.js';
+import { moduleRoutes } from './routes/modules.js';
+import { moduleTaskLinkRoutes } from './routes/module-task-links.js';
 import { authMiddleware } from './middleware/auth.js';
 import {
   authLimiter,
@@ -194,6 +196,7 @@ app.route('/api/teams', teamRoutes);
 app.route('/api/emoji', emojiRoutes);
 app.route('/api/workflows', workflowRoutes);
 app.route('/api', crossReferenceRoutes);
+app.route('/api', moduleTaskLinkRoutes);
 app.route('/api/audit', auditRoutes);
 app.route('/api/decisions', decisionRoutes);
 app.route('/api/manager', managerRoutes);
@@ -214,6 +217,7 @@ app.route('/api/projects', taskTemplateRoutes);
 // Task 3 — /api/task-templates list + detail (read-only catalog)
 app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
+app.route('/api/modules', moduleRoutes);
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 

@@ -37,9 +37,9 @@ type McpToken = {
   recent_actions?: OAuthAuditAction[];
 };
 
-const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar'];
-const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki', 'write:calendar', 'write:workspace'];
-const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki'];
+const READ_SCOPES = ['read:workspace', 'read:wiki', 'read:tasks', 'read:messages', 'read:calendar', 'read:modules'];
+const WRITE_SCOPES = ['write:tasks', 'write:messages', 'write:wiki', 'write:calendar', 'write:modules', 'write:workspace'];
+const COLLABORATE_SCOPES = [...READ_SCOPES, 'write:tasks', 'write:messages', 'write:wiki', 'write:modules'];
 const ALL_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES];
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -48,10 +48,12 @@ const SCOPE_LABELS: Record<string, string> = {
   'read:tasks': 'Task lists, task detail, comments, and progress',
   'read:messages': 'Visible spaces, threads, unread work, and chat search',
   'read:calendar': 'Native and ICS calendar context',
+  'read:modules': 'Installed module schemas and records, such as the Contacts Directory',
   'write:tasks': 'Create, update, transition, and comment on tasks',
   'write:messages': 'Post messages into spaces and DMs you can access',
   'write:wiki': 'Save or update wiki knowledge as you',
   'write:calendar': 'Create, update, and cancel your native Deft calendar events',
+  'write:modules': 'Create, update, and archive records in enabled modules',
   'write:workspace': 'Manage your notes, inbox, approvals, projects, and agent operations',
 };
 
@@ -138,13 +140,13 @@ const PRESETS: Array<{ id: AccessPreset; title: string; detail: string; scopes: 
   {
     id: 'read',
     title: 'Read and answer',
-    detail: 'Can answer questions using visible workspace, task, chat, calendar, and wiki context.',
+    detail: 'Can answer questions using visible workspace, task, chat, calendar, wiki, and module context.',
     scopes: READ_SCOPES,
   },
   {
     id: 'work',
     title: 'Collaborate in work',
-    detail: 'Can create and update tasks, post messages, and maintain wiki knowledge as you.',
+    detail: 'Can create and update tasks and module records, post messages, and maintain wiki knowledge as you.',
     scopes: COLLABORATE_SCOPES,
   },
   {
@@ -413,7 +415,7 @@ export default function McpAccessPage() {
   }, [accessPreset, customScopes]);
   const testPrompts = useMemo(() => {
     const prompts = [...READ_TEST_PROMPTS];
-    if (selectedScopes.some((scope) => ['write:tasks', 'write:messages', 'write:wiki'].includes(scope))) {
+    if (selectedScopes.some((scope) => ['write:tasks', 'write:messages', 'write:wiki', 'write:modules'].includes(scope))) {
       prompts.push(...COLLABORATE_TEST_PROMPTS);
     }
     if (selectedScopes.includes('write:workspace') || selectedScopes.includes('write:calendar')) {

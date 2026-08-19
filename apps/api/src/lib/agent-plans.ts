@@ -14,7 +14,7 @@ import { agentPlans, agentEmployees, orgs, tasks, messages } from '@deft/db/sche
 import { eq, and, sql } from 'drizzle-orm';
 import { executeToolCall } from './agent-context.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction } from './agent-approval.js';
-import { executeActionDirect } from './agent-actions.js';
+import { executeActionDirect, isModuleWriteAction } from './agent-actions.js';
 import { ACTION_TOOLS } from './agent-tools.js';
 import { runAgentQuery } from './agent-runner.js';
 import type { TrustLevel } from './agent-approval.js';
@@ -405,7 +405,7 @@ export async function executePlan(
       typeof (context as any)?.source_message_id === 'string'
         ? ((context as any).source_message_id as string)
         : null;
-    if (isWriteAction && planSourceMessageId && !resolvedParams.source_message_id) {
+    if (isWriteAction && !isModuleWriteAction(step.tool) && planSourceMessageId && !resolvedParams.source_message_id) {
       resolvedParams.source_message_id = planSourceMessageId;
     }
 
