@@ -149,7 +149,7 @@ async function main(): Promise<void> {
       }
       // ─── Gap #10: wiki detail endpoint 200 ───
       {
-        const res = await page.request.get(`${API_URL}/api/wiki/fact-license-bsl`, {
+        const res = await page.request.get(`${API_URL}/api/wiki/fact-license-agpl`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         record(

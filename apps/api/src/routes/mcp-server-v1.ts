@@ -44,8 +44,10 @@ import {
 import type { ToolContext, ToolResult } from '../lib/mcp-tools/types.js';
 import {
   HUMAN_TOOLS,
-  HUMAN_TOOL_SCOPES,
   buildHumanToolSchemas,
+  humanToolChallengeScope,
+  humanToolHasRequiredScope,
+  humanToolScopeError,
   type HumanToolContext,
 } from '../lib/mcp-tools/human.js';
 import { auditOAuth, metadataUrls } from '../lib/oauth-mcp.js';
@@ -53,6 +55,11 @@ import {
   consumeAgentDailyActionBudget,
   isAgentToolDisabled,
 } from '../lib/agent-tool-policy.js';
+import { MODULE_MCP_WRITE_TOOLS } from '../lib/mcp-tools/modules.js';
+import {
+  humanModuleActor,
+  moduleIdempotencyDigest,
+} from '../lib/module-service.js';
 
 export const mcpServerV1Routes = new Hono();
 
@@ -110,6 +117,32 @@ class McpJsonRpcError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function humanIdempotencyAuditMetadata(params: {
+  canonicalToolName: string;
+  args: Record<string, unknown>;
+  orgId: string;
+  userId: string;
+  role: HumanToolContext['role'];
+  scopes: string[];
+}): Record<string, unknown> {
+  const key = params.args.idempotency_key;
+  if (typeof key !== 'string') return { idempotency_key: null };
+  if (!MODULE_MCP_WRITE_TOOLS[params.canonicalToolName]) {
+    return { idempotency_key: key };
+  }
+  const actor = humanModuleActor({
+    orgId: params.orgId,
+    userId: params.userId,
+    role: params.role,
+    source: 'mcp',
+    scopes: params.scopes,
+  });
+  return {
+    idempotency_key: null,
+    idempotency_digest: moduleIdempotencyDigest(actor, key),
+  };
 }
 
 function normalizedOrigin(value: string): string | null {
@@ -491,7 +524,10 @@ async function dispatchTool(
   }
 
   try {
-    if (WRITE_TOOLS[canonicalToolName]) {
+    // Module proposals do not consume an execution slot. The module handler
+    // charges direct writes; queued writes are charged once by the canonical
+    // approval executor after a human approves them.
+    if (WRITE_TOOLS[canonicalToolName] && !MODULE_MCP_WRITE_TOOLS[canonicalToolName]) {
       const budget = await consumeAgentDailyActionBudget(ctx.org_id, ctx.employee_id);
       if (!budget.allowed) {
         const result = {
@@ -529,8 +565,7 @@ function humanCatalog(scopes: string[]) {
   return buildHumanToolSchemas(toolSchemas as unknown as Array<Record<string, unknown>>)
     .filter((schema) => {
       const name = String(schema.name ?? '');
-      const required = HUMAN_TOOL_SCOPES[name];
-      return !required || scopes.includes(required);
+      return humanToolHasRequiredScope(scopes, name);
     });
 }
 
@@ -544,9 +579,8 @@ async function dispatchHumanTool(
   if (!handler) {
     return { isError: true, content: [{ type: 'text', text: `Unknown or unavailable personal MCP tool: ${toolName}` }] };
   }
-  const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
-  if (requiredScope && !ctx.scopes.includes(requiredScope)) {
-    return { isError: true, content: [{ type: 'text', text: `Missing MCP scope: ${requiredScope}` }] };
+  if (!humanToolHasRequiredScope(ctx.scopes, canonicalToolName)) {
+    return { isError: true, content: [{ type: 'text', text: humanToolScopeError(canonicalToolName) ?? 'Missing MCP scope' }] };
   }
   try {
     return await handler(args, ctx);
@@ -685,12 +719,9 @@ mcpServerV1Routes.post('/', async (c) => {
         };
       }
       const resolved = principal as ResolvedGateway;
-      const allConservative = resolved.gateway_employees.every((e) => e.trust_level === 'conservative');
-      const writeNames = new Set(Object.keys(WRITE_TOOLS));
       const catalog = sortedCatalog(
         toolSchemas.filter((t) => (
-          (allConservative ? !writeNames.has(t.name) : true)
-          && resolved.gateway_employees.every((employee) => (
+          resolved.gateway_employees.every((employee) => (
             !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
           ))
         )),
@@ -729,13 +760,13 @@ mcpServerV1Routes.post('/', async (c) => {
       const args = (params.arguments ?? {}) as Record<string, unknown>;
       const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
       if (principal.kind === 'human' || principal.kind === 'oauth') {
-        const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
-        if (principal.kind === 'oauth' && requiredScope && !principal.scopes.includes(requiredScope)) {
+        if (principal.kind === 'oauth' && !humanToolHasRequiredScope(principal.scopes, canonicalToolName)) {
+          const challengeScope = humanToolChallengeScope(canonicalToolName);
           throw new McpAuthError(
             403,
             'insufficient_scope',
-            `Missing MCP scope: ${requiredScope}`,
-            requiredScope,
+            humanToolScopeError(canonicalToolName) ?? 'Missing MCP scope',
+            challengeScope,
           );
         }
         const knownTool = Boolean(HUMAN_TOOLS[canonicalToolName]);
@@ -749,29 +780,38 @@ mcpServerV1Routes.post('/', async (c) => {
           grant_id: principal.grant_id,
           principal_kind: principal.kind,
         });
-        if (principal.kind === 'oauth') {
-          await auditOAuth({
-            orgId: principal.org_id,
-            userId: principal.user_id,
-            clientId: principal.client_id ?? null,
-            event: 'mcp_tool_call',
-            metadata: {
-              tool_name: toolName,
-              success: !result.isError,
-              surface: 'jsonrpc',
-              ...requestAuditMetadata(requestMetadata),
-              grant_id: principal.grant_id ?? null,
-              idempotency_key: typeof args.idempotency_key === 'string' ? args.idempotency_key : null,
-              target_id: typeof args.task_id === 'string'
+        await auditOAuth({
+          orgId: principal.org_id,
+          userId: principal.user_id,
+          clientId: principal.client_id ?? `personal-token:${principal.token_id}`,
+          event: 'mcp_tool_call',
+          metadata: {
+            tool_name: toolName,
+            success: !result.isError,
+            surface: 'jsonrpc',
+            ...requestAuditMetadata(requestMetadata),
+            principal_kind: principal.kind,
+            token_id: principal.kind === 'human' ? principal.token_id : null,
+            grant_id: principal.grant_id ?? null,
+            ...humanIdempotencyAuditMetadata({
+              canonicalToolName,
+              args,
+              orgId: principal.org_id,
+              userId: principal.user_id,
+              role: principal.role,
+              scopes: principal.scopes,
+            }),
+            target_id: typeof args.record_id === 'string'
+              ? args.record_id
+              : typeof args.task_id === 'string'
                 ? args.task_id
                 : typeof args.space_id === 'string'
                   ? args.space_id
                   : typeof args.project_id === 'string'
                     ? args.project_id
                     : null,
-            },
-          });
-        }
+          },
+        });
         if (requestMetadata.era === 'modern' && !knownTool) {
           throw new McpJsonRpcError(
             -32602,
@@ -784,7 +824,8 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
-      if (isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
+      const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
+      if (!isModuleWrite && isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
         throw new McpAuthError(403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
       }
       const ctx: ToolContext = {
@@ -887,17 +928,12 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
 
   const resolved = principal as ResolvedGateway;
 
-  // Phase 3: if EVERY employee on this Gateway is conservative, strip write
-  // tools from the catalog. Any single non-conservative employee exposes the
-  // full set — the caller-slug validation inside /tools/call still runs.
-  const allConservative = resolved.gateway_employees.every(
-    (e) => e.trust_level === 'conservative',
-  );
-  const writeNames = new Set(Object.keys(WRITE_TOOLS));
+  // Discovery describes capabilities; trust and approval policy is enforced
+  // for the resolved caller at tools/call time. Conservative employees must
+  // still be able to propose governed writes for human review.
   const catalog = sortedCatalog(
     toolSchemas.filter((t) => (
-      (allConservative ? !writeNames.has(t.name) : true)
-      && resolved.gateway_employees.every((employee) => (
+      resolved.gateway_employees.every((employee) => (
         !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
       ))
     )),
@@ -945,10 +981,14 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
 
   if (principal.kind === 'human' || principal.kind === 'oauth') {
     const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
-    const requiredScope = HUMAN_TOOL_SCOPES[canonicalToolName];
-    if (principal.kind === 'oauth' && requiredScope && !principal.scopes.includes(requiredScope)) {
-      setOAuthChallenge(c, requiredScope, 'insufficient_scope');
-      return errorResponse(c, 403, 'insufficient_scope', `Missing MCP scope: ${requiredScope}`);
+    if (principal.kind === 'oauth' && !humanToolHasRequiredScope(principal.scopes, canonicalToolName)) {
+      setOAuthChallenge(c, humanToolChallengeScope(canonicalToolName), 'insufficient_scope');
+      return errorResponse(
+        c,
+        403,
+        'insufficient_scope',
+        humanToolScopeError(canonicalToolName) ?? 'Missing MCP scope',
+      );
     }
     const result = await dispatchHumanTool(toolName, args, {
       org_id: principal.org_id,
@@ -960,28 +1000,37 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
       grant_id: principal.grant_id,
       principal_kind: principal.kind,
     });
-    if (principal.kind === 'oauth') {
-      await auditOAuth({
-        orgId: principal.org_id,
-        userId: principal.user_id,
-        clientId: principal.client_id ?? null,
-        event: 'mcp_tool_call',
-        metadata: {
-          tool_name: toolName,
-          success: !result.isError,
-          surface: 'legacy',
-          grant_id: principal.grant_id ?? null,
-          idempotency_key: typeof args.idempotency_key === 'string' ? args.idempotency_key : null,
-          target_id: typeof args.task_id === 'string'
+    await auditOAuth({
+      orgId: principal.org_id,
+      userId: principal.user_id,
+      clientId: principal.client_id ?? `personal-token:${principal.token_id}`,
+      event: 'mcp_tool_call',
+      metadata: {
+        tool_name: toolName,
+        success: !result.isError,
+        surface: 'legacy',
+        principal_kind: principal.kind,
+        token_id: principal.kind === 'human' ? principal.token_id : null,
+        grant_id: principal.grant_id ?? null,
+        ...humanIdempotencyAuditMetadata({
+          canonicalToolName,
+          args,
+          orgId: principal.org_id,
+          userId: principal.user_id,
+          role: principal.role,
+          scopes: principal.scopes,
+        }),
+        target_id: typeof args.record_id === 'string'
+          ? args.record_id
+          : typeof args.task_id === 'string'
             ? args.task_id
             : typeof args.space_id === 'string'
               ? args.space_id
               : typeof args.project_id === 'string'
                 ? args.project_id
                 : null,
-        },
-      });
-    }
+      },
+    });
     return c.json(result);
   }
 
@@ -996,7 +1045,9 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     }
     return errorResponse(c, 500, 'internal', 'Slug validation error');
   }
-  if (isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
+  const canonicalToolName = TOOL_ALIASES[toolName] ?? toolName;
+  const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
+  if (!isModuleWrite && isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
     return errorResponse(c, 403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
   }
 

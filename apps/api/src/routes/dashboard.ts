@@ -5,6 +5,7 @@ import { tasks, taskAssignees, projects, users, spaces, spaceMembers, messages, 
 import { getIO } from '../socket.js';
 import { DEFTY_NAME } from '../lib/ensure-defty-membership.js';
 import { generateDailyStandup } from '../lib/standup-automation.js';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 
 export const dashboardRoutes = new Hono();
 
@@ -278,7 +279,10 @@ dashboardRoutes.get('/', async (c) => {
     })
       .from(agentActions)
       .leftJoin(agentEmployees, eq(agentActions.agent_employee_id, agentEmployees.id))
-      .where(eq(agentActions.org_id, user.org_id))
+      .where(and(
+        eq(agentActions.org_id, user.org_id),
+        visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
+      ))
       .orderBy(desc(agentActions.created_at))
       .limit(12);
 
@@ -901,6 +905,7 @@ dashboardRoutes.get('/agent-activity', async (c) => {
       and(
         eq(agentActions.org_id, user.org_id),
         inArray(agentActions.approval_status, ['approved', 'pending']),
+        visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
       ),
     )
     .orderBy(desc(agentActions.created_at))

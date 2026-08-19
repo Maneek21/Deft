@@ -82,7 +82,7 @@ Full system audit for production shipping, April 13, 2026. Supersedes the April 
 ### B2 — Terms of Service page
 - **Where:** new file `apps/web/src/app/terms/page.tsx`
 - **What:** required by Google OAuth, most payment processors, enterprise customers.
-- **Fix:** static page. Cover: usage restrictions, liability, termination, governing law, BSL 1.1 license reference.
+- **Fix:** static license-and-source page. Cover: AGPL-3.0-only terms, warranty disclaimer, and the Corresponding Source offer for network users.
 - **Effort:** 4 h
 - **Severity:** CRITICAL
 

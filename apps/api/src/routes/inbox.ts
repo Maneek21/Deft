@@ -10,6 +10,7 @@ import {
   agentActions,
   agentEmployees,
 } from '@deft/db/schema';
+import { visibleModuleActionSql } from '../lib/module-action-visibility.js';
 
 export const inboxRoutes = new Hono();
 
@@ -166,9 +167,15 @@ function visibleCaptureActionSql(user: { id: string; org_id: string }) {
 }
 
 function reviewableActionSql(user: { id: string; org_id: string; role?: string }) {
-  if (user.role === 'owner' || user.role === 'admin') return visibleCaptureActionSql(user);
+  if (user.role === 'owner' || user.role === 'admin') {
+    return and(
+      visibleCaptureActionSql(user),
+      visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
+    );
+  }
   return and(
     visibleCaptureActionSql(user),
+    visibleModuleActionSql(user.role, { userId: user.id, orgId: user.org_id }),
     sql`COALESCE(
       ${agentActions.params}->>'source_user_id',
       ${agentActions.params}->>'origin_user_id',

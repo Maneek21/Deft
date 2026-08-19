@@ -3,14 +3,14 @@
 ### Where humans and agents work together.
 
 [![CI](https://github.com/Maneek21/Deft/actions/workflows/ci.yml/badge.svg)](https://github.com/Maneek21/Deft/actions/workflows/ci.yml)
-[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-7c5cff.svg)](./LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--only-7c5cff.svg)](./LICENSE)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-f59e0b.svg)](#project-status-and-limitations)
 
 [Website](https://deft.ing) | [Live demo](https://demo.deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
 ![Where humans and agents work together.](docs/assets/repository/hero.png)
 
-Deft is a self-hostable, source-available workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
+Deft is a self-hostable, open-source workspace where people and AI agents share the same chat, tasks, knowledge, calendar context, approvals, and receipts.
 
 Instead of pasting fragments from Slack, Notion, and a task tracker into an AI chat, connect Codex, Claude, ChatGPT, or your own agent to the work record your team already uses.
 
@@ -80,7 +80,7 @@ The Connections page guides each user through the setup required by their client
 | Context is copied into an AI conversation by hand | Agents retrieve permission-aware workspace context through MCP or native tools |
 | Agent writes are invisible or happen outside the workspace | Proposed writes can require approval and completed work leaves a receipt |
 | AI is tied to one vendor or sidebar | Teams can use Defty, Codex, Claude, ChatGPT, or their own agent runtime |
-| SaaS data and behavior are controlled by a vendor | The product is self-hostable and its source is available under BSL 1.1 |
+| SaaS data and behavior are controlled by a vendor | The product is self-hostable and open source under AGPL-3.0-only |
 
 ## Quick start with Docker
 
@@ -124,8 +124,13 @@ Preview releases also publish an amd64 image to GHCR. Download the release
 assets, copy `.env.example` to `.env`, set the required secrets and public
 URLs, then run:
 
+Choose a release whose notes identify it as `AGPL-3.0-only`, then set its
+exact immutable tag. Historical releases through `v0.2.0-preview.4` retain the
+BSL 1.1 license included in those revisions; relicensing this source tree does
+not retroactively change old tags or images.
+
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.2.0-preview.1
+export DEFT_IMAGE=ghcr.io/maneek21/deft:<agpl-release-tag>
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
@@ -200,7 +205,7 @@ Important current boundaries:
 - Versioned upgrades are supported from the `v0.2.0-preview.1` baseline forward; older untracked alpha databases require a reviewed migration or fresh install.
 - Native Google, Slack, Gmail, and GitHub OAuth integrations are not part of the current self-hosted v1 promise. Use ICS for calendar subscriptions and bring external tools through your own agent or MCP runtime.
 - Agent quality depends on the configured model, scopes, workspace data, and approval policy.
-- This repository is source-available under BSL 1.1, not OSI open source today.
+- This repository is open source under GNU AGPL v3.0 only.
 
 Security reports should follow [SECURITY.md](SECURITY.md). Operational support boundaries are documented in [docs/self-hosted-v1-contract.md](docs/self-hosted-v1-contract.md).
 
@@ -212,6 +217,13 @@ If Deft is useful to you, starring the repository helps more teams find the proj
 
 ## License
 
-Deft is licensed under the [Business Source License 1.1](LICENSE).
+Deft is free software licensed under the [GNU Affero General Public License
+v3.0 only](LICENSE) (`AGPL-3.0-only`). You may use, study, modify, and
+redistribute it subject to the license terms. If you modify Deft and let users
+interact with that version over a network, section 13 requires you to offer
+those users its Corresponding Source.
 
-You may use, copy, modify, and self-host Deft. You may not offer it as a hosted or managed service to third parties under the current license. Forks and derivative works must retain the required attribution. Each release converts to Apache License 2.0 four years after its release date.
+Public modified deployments should set `DEFT_SOURCE_CODE_URL` to the
+public URL for the exact source they run. See [NOTICE](NOTICE) for the project
+copyright notice and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for
+third-party attribution.

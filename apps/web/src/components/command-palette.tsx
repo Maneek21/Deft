@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import {
   Search, Hash, CheckSquare, User, MessageSquare,
   Sun, Plus, Settings, Bot, Tag, CalendarDays,
-  BookOpen, FileText, Scale, BellOff, Smile, Clock,
+  BookOpen, FileText, Scale, BellOff, Smile, Clock, Boxes,
 } from 'lucide-react';
 import { statusLabel } from '@/lib/task-status-labels';
 import { useAuth } from '@/lib/auth-context';
@@ -28,6 +28,19 @@ const OPEN_COMMAND_PALETTE_EVENT = 'deft:open-command-palette';
 type WikiResult = { id: string; title: string; summary: string | null; slug: string | null; type: string | null; source_id: string };
 type NoteResult = { id: string; title: string; summary: string | null; source_id: string };
 type DecisionResult = { id: string; title: string; summary: string | null; slug: string | null; source_id: string };
+type ModuleSearchResult = {
+  id: string;
+  type: 'module_record';
+  title: string;
+  snippet: string | null;
+  url: string;
+  module_slug: string;
+  module_name: string;
+  collection_key: string;
+  collection_name: string;
+  updated_at: string;
+  score: number;
+};
 
 type SearchResults = {
   spaces: { id: string; name: string; type: string }[];
@@ -35,6 +48,7 @@ type SearchResults = {
   people: { id: string; name: string; email: string }[];
   messages: { id: string; content: string; space_id: string; space_name: string; user_name: string }[];
   tags: { id: string; name: string; color: string | null }[];
+  modules: ModuleSearchResult[];
   wiki: WikiResult[];
   privateNotes: NoteResult[];
   decisions: DecisionResult[];
@@ -60,6 +74,10 @@ function formatStatus(status: string): string {
   return statusLabel(status);
 }
 
+function isSafeInternalPath(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//');
+}
+
 export function CommandPalette() {
   const router = useRouter();
   const pathname = usePathname();
@@ -68,17 +86,19 @@ export function CommandPalette() {
   const { toggleTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
+  const [results, setResults] = useState<SearchResults>({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
   const [selectedIndex, setSelectedIndex] = useState(0);
   // When set, the palette is in "args prompt" sub-mode for the picked command.
   const [activePrompt, setActivePrompt] = useState<{ label: string; placeholder: string; submit: (args: string) => Promise<void> | void } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const searchRequestRef = useRef(0);
 
   const close = useCallback(() => {
+    searchRequestRef.current += 1;
     setOpen(false);
     setQuery('');
-    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
+    setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
     setSelectedIndex(0);
     setActivePrompt(null);
   }, []);
@@ -157,8 +177,9 @@ export function CommandPalette() {
         setOpen((prev) => {
           if (prev) {
             // closing
+            searchRequestRef.current += 1;
             setQuery('');
-            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
+            setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
             setSelectedIndex(0);
           }
           return !prev;
@@ -187,8 +208,9 @@ export function CommandPalette() {
 
   // Debounced search
   useEffect(() => {
+    const requestId = ++searchRequestRef.current;
     if (!query || query.startsWith('/') || activePrompt) {
-      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], wiki: [], privateNotes: [], decisions: [] });
+      setResults({ spaces: [], tasks: [], people: [], messages: [], tags: [], modules: [], wiki: [], privateNotes: [], decisions: [] });
       return;
     }
     const timer = setTimeout(async () => {
@@ -196,12 +218,14 @@ export function CommandPalette() {
         const res = await api.get(`/api/search?q=${encodeURIComponent(query)}`);
         if (res.ok) {
           const data = await res.json();
+          if (requestId !== searchRequestRef.current) return;
           setResults({
             spaces: data.spaces ?? [],
             tasks: data.tasks ?? [],
             people: data.people ?? [],
             messages: data.messages ?? [],
             tags: data.tags ?? [],
+            modules: data.modules ?? [],
             wiki: data.wiki ?? [],
             privateNotes: data.privateNotes ?? [],
             decisions: data.decisions ?? [],
@@ -230,6 +254,7 @@ export function CommandPalette() {
     results.people.forEach((p) => items.push({ type: 'person', item: p, index: idx++ }));
     results.messages.forEach((m) => items.push({ type: 'message', item: m, index: idx++ }));
     results.tags.forEach((t) => items.push({ type: 'tag', item: t, index: idx++ }));
+    results.modules.forEach((moduleRecord) => items.push({ type: 'moduleRecord', item: moduleRecord, index: idx++ }));
     (results.wiki ?? []).forEach((w) => items.push({ type: 'wiki', item: w, index: idx++ }));
     (results.privateNotes ?? []).forEach((n) => items.push({ type: 'privateNote', item: n, index: idx++ }));
     (results.decisions ?? []).forEach((d) => items.push({ type: 'decision', item: d, index: idx++ }));
@@ -303,6 +328,10 @@ export function CommandPalette() {
           close();
         } else if (selected.type === 'tag') {
           router.push(`/settings/tags?tag=${selected.item.id}`);
+          close();
+        } else if (selected.type === 'moduleRecord') {
+          const url = selected.item.url;
+          if (isSafeInternalPath(url)) router.push(url);
           close();
         } else if (selected.type === 'wiki') {
           const slug = selected.item.slug;
@@ -598,12 +627,42 @@ export function CommandPalette() {
                   </button>
                 )}
               />
+              {/* Module records */}
+              <ResultGroup
+                title="Modules"
+                icon={Boxes}
+                items={results.modules ?? []}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length}
+                selectedIndex={selectedIndex}
+                setSelectedIndex={setSelectedIndex}
+                renderItem={(item: ModuleSearchResult, isSelected: boolean) => (
+                  <button
+                    className="w-full flex items-center gap-3 px-4 text-left"
+                    style={{
+                      height: '44px',
+                      background: isSelected ? 'var(--bg-hover)' : 'transparent',
+                      color: 'var(--on-surface)',
+                      transition: '150ms cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onClick={() => {
+                      if (isSafeInternalPath(item.url)) router.push(item.url);
+                      close();
+                    }}
+                  >
+                    <Boxes size={14} strokeWidth={1.5} className="flex-shrink-0" style={{ color: 'var(--outline)' }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px]">{item.title}</span>
+                      <span className="block truncate text-[10px]" style={{ color: 'var(--outline)' }}>{item.module_name} · {item.collection_name}</span>
+                    </span>
+                  </button>
+                )}
+              />
               {/* Knowledge (Wiki) */}
               <ResultGroup
                 title="Knowledge"
                 icon={BookOpen}
                 items={results.wiki ?? []}
-                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.modules ?? []).length}
                 selectedIndex={selectedIndex}
                 setSelectedIndex={setSelectedIndex}
                 renderItem={(item: WikiResult, isSelected: boolean) => (
@@ -630,7 +689,7 @@ export function CommandPalette() {
                 title="Notes"
                 icon={FileText}
                 items={results.privateNotes ?? []}
-                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.modules ?? []).length + (results.wiki ?? []).length}
                 selectedIndex={selectedIndex}
                 setSelectedIndex={setSelectedIndex}
                 renderItem={(item: NoteResult, isSelected: boolean) => (
@@ -654,7 +713,7 @@ export function CommandPalette() {
                 title="Decisions"
                 icon={Scale}
                 items={results.decisions ?? []}
-                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.wiki ?? []).length + (results.privateNotes ?? []).length}
+                startIndex={results.spaces.length + results.tasks.length + results.people.length + results.messages.length + results.tags.length + (results.modules ?? []).length + (results.wiki ?? []).length + (results.privateNotes ?? []).length}
                 selectedIndex={selectedIndex}
                 setSelectedIndex={setSelectedIndex}
                 renderItem={(item: DecisionResult, isSelected: boolean) => (

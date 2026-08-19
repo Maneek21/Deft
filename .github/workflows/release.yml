@@ -80,6 +80,8 @@ jobs:
           # setting this only on the running container is too late.
           build-args: |
             NEXT_PUBLIC_FEATURE_HUDDLES=true
+            VCS_REF=${{ steps.release.outputs.sha }}
+            SOURCE_URL=https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}
 
       - name: Attest image provenance
         uses: actions/attest-build-provenance@v4
@@ -92,7 +94,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp docker-compose.yml compose.prod.yml compose.release.yml .env.example dist/
+          cp docker-compose.yml compose.prod.yml compose.release.yml .env.example LICENSE NOTICE THIRD-PARTY-LICENSES.md dist/
           cat > dist/release-manifest.json <<JSON
           {
             "schema": "deft.release.v1",
@@ -100,10 +102,21 @@ jobs:
             "commit": "${{ steps.release.outputs.sha }}",
             "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}",
             "digest": "${{ steps.image.outputs.digest }}",
+            "license": "AGPL-3.0-only",
+            "source": "https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}",
             "platforms": ["linux/amd64"],
             "upgrade_support": "versioned-from-v0.2.0-preview.1"
           }
           JSON
+
+      - name: Attach exact corresponding source
+        shell: bash
+        run: |
+          git archive \
+            --format=tar.gz \
+            --prefix="deft-${{ steps.release.outputs.version }}/" \
+            --output="dist/deft-${{ steps.release.outputs.version }}-source.tar.gz" \
+            "${{ steps.release.outputs.sha }}"
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.0

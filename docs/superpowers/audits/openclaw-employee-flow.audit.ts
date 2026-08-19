@@ -3,7 +3,7 @@
  * Phase 5 end-to-end audit — OpenClaw employee chat flow.
  *
  * Verifies the full path from a user typing `@Test OpenClaw PM hi, what is
- * BSL 1.1?` in #general → BullMQ → agent-employee-message worker → envelope
+ * AGPL v3?` in #general → job queue → agent-employee-message worker → envelope
  * adapter → OpenClaw Docker container → MCP roundtrip → reply posted back in
  * the thread → agent_session_turns row captured.
  *
@@ -18,7 +18,7 @@
  *
  * CRITICAL: Before launching Playwright, the audit runs a single targeted
  * curl against /api/mcp/v1/tools/call to verify the MCP server sees the new
- * employee and `memory_recall` returns BSL. This protects against wasted
+ * employee and `memory_recall` returns AGPL. This protects against wasted
  * credit burn on a broken setup.
  */
 import 'dotenv/config';
@@ -264,7 +264,7 @@ async function preflightMcpCall(rawToken: string): Promise<unknown> {
       name: 'memory_recall',
       arguments: {
         caller_employee_slug: TEST_EMPLOYEE.slug,
-        query: 'BSL',
+        query: 'AGPL',
         limit: 3,
       },
     }),
@@ -281,8 +281,8 @@ async function preflightMcpCall(rawToken: string): Promise<unknown> {
   const txt = (body as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? '';
   console.log(`  preflight MCP memory_recall: ${txt.length} bytes`);
   assert(
-    /bsl|license/i.test(txt),
-    `Preflight memory_recall text did not mention BSL/license: ${txt.slice(0, 300)}`,
+    /agpl|license/i.test(txt),
+    `Preflight memory_recall text did not mention AGPL/license: ${txt.slice(0, 300)}`,
   );
   return body;
 }
@@ -370,7 +370,7 @@ async function sendChatMention(page: Page): Promise<string> {
 
   // Continue typing the prompt. (Avoid `?` which triggers the global
   // keyboard-shortcut modal if focus escapes the editor — use a period.)
-  const prompt = ' hi, what is BSL 1.1 licensing.';
+  const prompt = ' hi, what is AGPL v3 licensing.';
   await page.keyboard.type(prompt, { delay: 25 });
   await page.waitForTimeout(200);
   await page.keyboard.press('Enter');
@@ -509,7 +509,7 @@ async function main(): Promise<void> {
       const reply = await waitForAgentReply(page, 60_000);
       assert(reply.length > 0, 'agent reply is empty');
       console.log(`    reply preview: ${reply.slice(0, 160)}...`);
-      // NOTE: we don't assert reply content contains BSL/license here —
+      // NOTE: we don't assert reply content contains AGPL/license here —
       // the local OpenClaw container owns its SOUL.md file-based prompt,
       // and per Phase 5 constraints we cannot reconfigure it mid-audit.
       // The "real" content assertion lives with the session_turns tokens

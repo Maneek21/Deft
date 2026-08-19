@@ -14,6 +14,7 @@ import { resolveProjectTarget } from '../../lib/resolve-project-target.js';
 import {
   compileDeftyActionDraft,
   persistAgentReplyWithActions,
+  sanitizeAgentReplyActionMetadata,
   validateRegisteredProposalAction,
 } from '../../lib/agent-action-proposals.js';
 
@@ -1813,7 +1814,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         content: failedApprovalContent,
         parent_id: threadParentId,
         metadata: {
-          ...replyMetadata,
+          ...sanitizeAgentReplyActionMetadata(replyMetadata),
           pending_actions: undefined,
           pending_actions_error: pendingActionPersistError,
         } as never,

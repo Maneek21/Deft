@@ -10,8 +10,9 @@ database and application stack yourself. Your data stays on your infrastructure.
 
 Each deployment supports one organisation. The first user to sign up becomes
 the workspace owner; everyone else joins through invite links generated from
-Settings -> Members. Hosting Deft as a managed service for other organisations
-is outside the Business Source License 1.1 terms.
+Settings -> Members. This one-workspace boundary is the supported v1 product
+contract, not a license restriction. AGPL-3.0-only permits network use under
+its terms, including the Corresponding Source obligation for modified versions.
 
 AI is bring-your-own-provider. Deft can use Anthropic, OpenAI, OpenRouter, or a
 local Ollama server, but the core workspace works without any AI provider.
@@ -125,7 +126,14 @@ build because Next.js bakes them into the browser bundle:
 NEXT_PUBLIC_APP_URL=http://your-domain-or-ip:3000
 NEXT_PUBLIC_API_URL=http://your-domain-or-ip:3001
 NEXT_PUBLIC_WS_URL=http://your-domain-or-ip:3001
+DEFT_SOURCE_CODE_URL=https://example.com/your-fork/tree/EXACT_COMMIT
 ```
+
+Official images default this source offer to the exact upstream release. If
+you expose a modified Deft server to users over a network, set
+`DEFT_SOURCE_CODE_URL` to a no-charge, publicly reachable copy of the exact
+Corresponding Source you run, including the scripts needed to build and install
+it. The in-product `/license` page presents this link to users.
 
 If signup or login shows "Failed to fetch", the browser is probably trying to
 call the wrong API URL. Fix the `NEXT_PUBLIC_*` values and rebuild.
@@ -360,6 +368,7 @@ semi-autonomous runtime should show up as a shared coworker in Deft.
 | `NEXT_PUBLIC_APP_URL` | Recommended | Public web URL and invite-link base | `http://localhost:3000` |
 | `NEXT_PUBLIC_API_URL` | Recommended | Public API URL seen by browser | `http://localhost:3001` |
 | `NEXT_PUBLIC_WS_URL` | Recommended | Public WebSocket/API URL seen by browser | `http://localhost:3001` |
+| `DEFT_SOURCE_CODE_URL` | Required for modified public deployments | Public Corresponding Source URL shown on `/license` | Image-embedded upstream source URL |
 | `API_PORT` | No | API port inside the app container | `3001` |
 | `DEFT_WEB_PORT` | No | Host port for web | `3000` |
 | `DEFT_API_PORT` | No | Host port for API | `3001` |

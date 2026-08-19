@@ -110,9 +110,12 @@ For an urgent fix on a previously released minor version:
 5. Open a PR to merge the hotfix branch back into `master` so the fix
    isn't lost when the next minor goes out.
 
-## License-date implications
+## License and source artifacts
 
-[BSL 1.1](LICENSE) auto-converts each release to Apache 2.0 four years
-after the release date. The release date is the tag date (the date of
-the annotated tag, not the prep-PR merge). Keep this in mind when
-back-dating tags is tempting — don't.
+Every release is licensed under [GNU AGPL v3.0 only](LICENSE). Confirm that
+the GitHub release includes `LICENSE`, `NOTICE`, and
+`THIRD-PARTY-LICENSES.md`, and that the container image carries
+`org.opencontainers.image.licenses=AGPL-3.0-only` and an exact
+`org.opencontainers.image.source` URL for the released commit. GitHub's source
+archive plus the repository's build and installation scripts are the
+Corresponding Source offered with the official image.

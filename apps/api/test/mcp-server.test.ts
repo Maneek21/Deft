@@ -8,7 +8,7 @@
  *   2. POST /tools/list with missing bearer returns 401
  *   3. POST /tools/list with valid bearer returns tool catalog
  *   4. POST /tools/call platform_context returns JSON with date/org/employee fields
- *   5. POST /tools/call memory_recall returns at least one page for "BSL"
+ *   5. POST /tools/call memory_recall returns at least one page for "AGPL"
  *   6. POST /tools/call wiki_search aliases memory_recall
  *   7. POST /tools/call memory_write creates a wiki page row
  *   8. Calling an unknown tool returns MCP tool error
@@ -252,14 +252,14 @@ test('4. POST /tools/call platform_context returns org, employee, date', async (
   );
 });
 
-test('5. POST /tools/call memory_recall returns at least one page for "BSL"', async () => {
+test('5. POST /tools/call memory_recall returns at least one page for "AGPL"', async () => {
   const res = await mcpPost(
     '/tools/call',
     {
       name: 'memory_recall',
       arguments: {
         caller_employee_slug: TEST_EMPLOYEE_SLUG,
-        query: 'BSL license',
+        query: 'AGPL license',
         limit: 5,
       },
     },
@@ -270,10 +270,10 @@ test('5. POST /tools/call memory_recall returns at least one page for "BSL"', as
   assert.ok(!body.isError, `memory_recall should not error: ${JSON.stringify(body)}`);
   const parsed = JSON.parse(body.content[0].text);
   assert.ok(Array.isArray(parsed), 'recall result is array');
-  // Not strictly required that a BSL page exists, but the seed wiki includes one.
+  // Not strictly required that an AGPL page exists, but the seed wiki includes one.
   // If it's missing we warn rather than fail so the test can still run on fresh DBs.
   if (parsed.length === 0) {
-    console.warn('[test] memory_recall returned empty for "BSL" — is seed-wiki loaded?');
+    console.warn('[test] memory_recall returned empty for "AGPL" — is seed-wiki loaded?');
   } else {
     assert.ok(parsed[0].slug, 'first page has a slug');
   }
@@ -286,7 +286,7 @@ test('6. POST /tools/call wiki_search aliases memory_recall and records canonica
       name: 'wiki_search',
       arguments: {
         caller_employee_slug: TEST_EMPLOYEE_SLUG,
-        query: 'BSL license',
+        query: 'AGPL license',
         limit: 5,
       },
     },

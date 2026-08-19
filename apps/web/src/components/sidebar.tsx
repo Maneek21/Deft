@@ -8,8 +8,15 @@ import { HUDDLES_ENABLED } from '@/lib/feature-flags';
 import { agentConnectionStatus } from '@/lib/agent-employee-status';
 import { registerOpenCreateSpace } from '@/lib/quick-actions';
 import { getSettingsNavGroups, isSettingsItemActive } from '@/lib/settings-navigation';
+import {
+  getModuleNavigationItems,
+  isPrimaryNavigationItemActive,
+  type ModuleNavigationItem,
+} from '@/lib/module-navigation';
+import { useInstalledModules, useModuleRealtime } from '@/hooks/use-modules';
 import { useTheme } from './theme-provider';
 import { Logo } from './brand/logo';
+import { ModuleIcon } from './modules/module-primitives';
 import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/time';
 import Link from 'next/link';
@@ -40,6 +47,7 @@ import {
   Smile,
   Inbox,
   ChevronDown,
+  type LucideIcon,
 } from 'lucide-react';
 import { CreateSpaceModal } from './create-space-modal';
 import { CreateDmModal } from './create-dm-modal';
@@ -85,14 +93,29 @@ type Project = {
   done_tasks: number;
 };
 
-const navItems = [
-  { name: 'Chat', href: '/chat', icon: MessageSquare },
-  { name: 'Tasks', href: '/tasks', icon: CheckSquare },
-  { name: 'Knowledge', href: '/knowledge', icon: BookOpen },
-  { name: 'Calendar', href: '/calendar', icon: CalendarDays },
-  { name: 'Notes', href: '/notes', icon: FileText },
-  { name: 'Inbox', href: '/inbox', icon: Inbox },
+type CoreNavigationItem = {
+  kind: 'core';
+  name: string;
+  href: string;
+  icon: LucideIcon;
+};
+
+type PrimaryNavigationItem = CoreNavigationItem | ModuleNavigationItem;
+
+const navItems: CoreNavigationItem[] = [
+  { kind: 'core', name: 'Chat', href: '/chat', icon: MessageSquare },
+  { kind: 'core', name: 'Tasks', href: '/tasks', icon: CheckSquare },
+  { kind: 'core', name: 'Knowledge', href: '/knowledge', icon: BookOpen },
+  { kind: 'core', name: 'Calendar', href: '/calendar', icon: CalendarDays },
+  { kind: 'core', name: 'Notes', href: '/notes', icon: FileText },
+  { kind: 'core', name: 'Inbox', href: '/inbox', icon: Inbox },
 ];
+
+function PrimaryNavigationIcon({ item }: { item: PrimaryNavigationItem }) {
+  if (item.kind === 'module') return <ModuleIcon token={item.icon} size={18} />;
+  const Icon = item.icon;
+  return <Icon size={18} strokeWidth={1.5} />;
+}
 
 // ── Chat sidebar content (Spaces + DMs) ──────────────────────────────
 function ChatSidebarContent({
@@ -724,6 +747,14 @@ export function Sidebar({
   const { unreadCounts } = useChatContext();
   const pathname = usePathname();
   const router = useRouter();
+  const installedModules = useInstalledModules(Boolean(user && user.role !== 'guest'));
+  useModuleRealtime();
+  const moduleNavItems = getModuleNavigationItems(installedModules.modules, user?.role);
+  const visibleNavItems: PrimaryNavigationItem[] = [
+    ...navItems.slice(0, -1),
+    ...moduleNavItems,
+    navItems[navItems.length - 1],
+  ];
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   // Create-space modal lifted from ChatSidebarContent — the parent Sidebar
@@ -820,7 +851,7 @@ export function Sidebar({
     if (pathname.startsWith('/tasks')) {
       return <TasksSidebarContent onNav={handleNav} />;
     }
-    if (pathname.startsWith('/notes') || pathname.startsWith('/dashboard')) {
+    if (pathname.startsWith('/notes') || pathname.startsWith('/modules') || pathname.startsWith('/dashboard')) {
       return null;
     }
     if (pathname.startsWith('/settings')) {
@@ -870,8 +901,8 @@ export function Sidebar({
 
       {/* Nav items — vertical list */}
       <div className="px-3 py-1 flex-shrink-0">
-        {navItems.map((item) => {
-          const active = pathname.startsWith(item.href);
+        {visibleNavItems.map((item) => {
+          const active = isPrimaryNavigationItemActive(pathname, item.href);
           return (
             <Link
               key={item.href}
@@ -887,9 +918,9 @@ export function Sidebar({
                 fontWeight: active ? 500 : 400,
               }}
             >
-              <item.icon size={18} strokeWidth={1.5} />
+              <PrimaryNavigationIcon item={item} />
               <span>{item.name}</span>
-              {item.name === 'Chat' && totalUnread > 0 && (
+              {item.kind === 'core' && item.href === '/chat' && totalUnread > 0 && (
                 <div
                   className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
                   style={{ background: 'var(--primary-container)' }}
@@ -897,7 +928,7 @@ export function Sidebar({
                   {totalUnread > 99 ? '99+' : totalUnread}
                 </div>
               )}
-              {item.name === 'Inbox' && inboxCount > 0 && (
+              {item.kind === 'core' && item.href === '/inbox' && inboxCount > 0 && (
                 <div
                   className="ml-auto min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
                   style={{ background: 'var(--danger, #ef4444)' }}
@@ -1010,8 +1041,8 @@ export function Sidebar({
 
 
       {/* Nav icons */}
-      {navItems.map((item) => {
-        const active = pathname.startsWith(item.href);
+      {visibleNavItems.map((item) => {
+        const active = isPrimaryNavigationItemActive(pathname, item.href);
         return (
           <Link key={item.href} href={item.href} title={item.name}
             className="w-9 h-9 flex items-center justify-center rounded-full"
@@ -1019,7 +1050,7 @@ export function Sidebar({
               background: active ? 'var(--bg-active)' : 'transparent',
               color: active ? 'var(--primary)' : 'var(--outline)',
             }}>
-            <item.icon size={18} strokeWidth={1.5} />
+            <PrimaryNavigationIcon item={item} />
           </Link>
         );
       })}

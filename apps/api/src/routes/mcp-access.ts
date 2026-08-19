@@ -14,10 +14,12 @@ const ALLOWED_SCOPES = [
   'read:tasks',
   'read:messages',
   'read:calendar',
+  'read:modules',
   'write:tasks',
   'write:messages',
   'write:wiki',
   'write:calendar',
+  'write:modules',
   'write:workspace',
 ] as const;
 

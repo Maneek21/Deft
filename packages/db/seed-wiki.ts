@@ -133,9 +133,9 @@ const pages: Page[] = [
   { slug: 'fact-api-cost-estimate', title: 'API Cost Estimates', type: 'fact', confidence: 0.85, scope: 'org',
     summary: 'Estimated Anthropic API costs per org size',
     content: 'Estimated monthly Anthropic API costs (cascade ingest only):\n- 5 person org: ~$2/month\n- 10 person org: ~$4/month\n- 25 person org: ~$11/month\n- 50 person org: ~$22/month\n\nThis covers Haiku calls for message classification + wiki cascade ingest. Agent reasoning (Sonnet) costs are additional and usage-dependent.' },
-  { slug: 'fact-license-bsl', title: 'License: BSL 1.1', type: 'fact', confidence: 1.0, scope: 'org',
-    summary: 'Business Source License — use for any purpose except hosting as a service',
-    content: 'Deft is licensed under BSL 1.1 (Business Source License).\n\nPermitted: Any use including commercial, self-hosting, modifications, forks\nRestricted: Hosting Deft as a service for third parties (competing SaaS)\nRequired: Mandatory attribution in forks\n\nThe license converts to Apache 2.0 after 4 years.' },
+  { slug: 'fact-license-agpl', title: 'License: GNU AGPL v3', type: 'fact', confidence: 1.0, scope: 'org',
+    summary: 'GNU AGPL v3 — open source with network Corresponding Source obligations',
+    content: 'Deft is licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only).\n\nYou may use, study, modify, and redistribute Deft under the license terms. If you modify Deft and let users interact with that version over a network, section 13 requires you to offer those users its Corresponding Source. The self-hosted v1 one-workspace boundary is a product limitation, not a license restriction. See LICENSE for the complete terms.' },
 ];
 
 // Link definitions: [source_slug, target_slug]

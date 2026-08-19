@@ -127,7 +127,7 @@ Insert between the `GAP CHECKS START` and `GAP CHECKS END` sentinel lines in `ga
 ```typescript
   // ─── Gap #10: wiki detail view ───
   {
-    const res = await page.request.get(`${API}/api/wiki/fact-license-bsl`, {
+    const res = await page.request.get(`${API}/api/wiki/fact-license-agpl`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     record(
@@ -1399,7 +1399,7 @@ item A3 and the logout gap from the April 15 sweep."
 
 **Context:** Test fixtures from prior audit runs leaked into the seed DB:
 - `Test UI Employee 1776170891346` in org_members
-- 7 `@Test OpenClaw PM hi, what is BSL 1.1 licensing.` messages in `#general`
+- 7 legacy `@Test OpenClaw PM` license-probe messages in `#general`
 - Two "Untitled" events on Apr 5 (possibly seed data)
 - Two "Untitled" notes
 
@@ -1427,11 +1427,11 @@ async function main() {
     );
     console.log(`deleted ${users.rowCount} test shadow users`);
 
-    // 2. BSL probe messages from old OpenClaw audits
+    // 2. Legacy license-probe messages from old OpenClaw audits
     const msgs = await client.query(
       "delete from messages where content::text like '%@Test OpenClaw PM%hi, what is BSL 1.1 licensing.%' returning id",
     );
-    console.log(`deleted ${msgs.rowCount} test BSL probe messages`);
+    console.log(`deleted ${msgs.rowCount} legacy license probe messages`);
 
     // 3. Messages with literal double-@ (@@Rahul) — legacy artifacts
     const dupAt = await client.query(

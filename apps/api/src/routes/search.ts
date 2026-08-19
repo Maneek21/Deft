@@ -4,6 +4,7 @@ import { db } from '../lib/db.js';
 import { tasks, projects, spaces, users, messages, orgMembers, tags, notes, spaceMembers } from '@deft/db/schema';
 import { retrieveContext, type ContextResult } from '../lib/retrieve-context.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
+import { humanModuleActor, searchModuleRecords } from '../lib/module-service.js';
 
 export const searchRoutes = new Hono();
 
@@ -14,7 +15,10 @@ searchRoutes.get('/', async (c) => {
     const q = c.req.query('q') || '';
 
     if (q.length < 1) {
-      return c.json({ spaces: [], tasks: [], people: [], messages: [] });
+      return c.json({
+        spaces: [], tasks: [], people: [], messages: [], tags: [], notes: [],
+        wiki: [], privateNotes: [], decisions: [], modules: [],
+      });
     }
 
     const pattern = `%${q}%`;
@@ -182,6 +186,31 @@ searchRoutes.get('/', async (c) => {
         source_id: r.source_id,
       }));
 
+    const moduleGroup = await searchModuleRecords(
+      humanModuleActor({
+        orgId: user.org_id,
+        userId: user.id,
+        role: user.role ?? 'member',
+        source: 'rest',
+      }),
+      { query: q, limit: 5 },
+    ).then(({ items }) => items.map((item) => ({
+      id: item.resource_id,
+      type: 'module_record' as const,
+      title: item.title,
+      snippet: item.snippet ?? item.subtitle,
+      url: item.url,
+      module_slug: item.module_slug,
+      module_name: item.module_name,
+      collection_key: item.collection_key,
+      collection_name: item.collection_name,
+      updated_at: item.updated_at,
+      score: item.score,
+    }))).catch((error) => {
+      console.warn('[search] module search failed:', error instanceof Error ? error.message : String(error));
+      return [];
+    });
+
     return c.json({
       spaces: spaceResults,
       tasks: taskResults,
@@ -192,6 +221,7 @@ searchRoutes.get('/', async (c) => {
       wiki: wikiGroup,
       privateNotes: notesGroup,
       decisions: decisionsGroup,
+      modules: moduleGroup,
     });
   } catch (err) {
     console.error('Search error:', err);
