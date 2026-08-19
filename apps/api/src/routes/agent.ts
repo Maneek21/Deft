@@ -2014,14 +2014,22 @@ agentRoutes.get('/actions/:id/receipt', async (c) => {
   const [action] = await db
     .select({ id: agentActions.id, org_id: agentActions.org_id })
     .from(agentActions)
-    .where(and(
-      eq(agentActions.id, actionId),
-      eq(agentActions.org_id, user.org_id),
-      visibleActionSql(user),
-    ))
+    .where(eq(agentActions.id, actionId))
     .limit(1);
 
   if (!action) {
+    return c.json({ error: 'action not found', code: 'NOT_FOUND' }, 404);
+  }
+  if (action.org_id !== user.org_id) {
+    return c.json({ error: 'forbidden', code: 'FORBIDDEN' }, 403);
+  }
+
+  const [visibleAction] = await db
+    .select({ id: agentActions.id })
+    .from(agentActions)
+    .where(and(eq(agentActions.id, actionId), visibleActionSql(user)))
+    .limit(1);
+  if (!visibleAction) {
     return c.json({ error: 'action not found', code: 'NOT_FOUND' }, 404);
   }
   const [receipt] = await db
