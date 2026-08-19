@@ -933,7 +933,7 @@ Example: 5 humans + 3 agents on annual = (5 x $12) + (3 x $20) = **$120/month**.
 
 ### Self-Hosted Pricing
 
-Fully free. Self-hosted orgs bring their own LLM API keys, run their own infrastructure, pay nothing to Deft. The BSL 1.1 license allows any use except hosting as a service for third parties.
+Fully free to run. Self-hosted orgs bring their own LLM API keys, operate their own infrastructure, and pay nothing to Deft. The current codebase is licensed under AGPL-3.0-only; modified network deployments must offer users their Corresponding Source.
 
 ### Marketplace Moderation
 

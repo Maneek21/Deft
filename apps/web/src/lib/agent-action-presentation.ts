@@ -17,6 +17,7 @@ export type ApprovalIconName =
   | 'note'
   | 'calendar'
   | 'canvas'
+  | 'module'
   | 'plan'
   | 'admin'
   | 'generic';
@@ -41,6 +42,7 @@ export type ApprovalCardPresentation = {
     | 'note'
     | 'calendar'
     | 'canvas'
+    | 'module'
     | 'plan'
     | 'admin'
     | 'generic';
@@ -61,6 +63,9 @@ export type ApprovalCardPresentation = {
 
 const INTERNAL_APPROVAL_PARAM_KEYS = new Set([
   'idempotency_key',
+  'expected_manifest_digest',
+  'expected_revision',
+  'manifest_digest',
   'proposal_node_id',
   'proposal_depends_on',
   'source_message_id',
@@ -262,6 +267,9 @@ function actionKind(actionName: string): ApprovalCardPresentation['kind'] {
   if (['create_note'].includes(actionName)) return 'note';
   if (['create_reminder', 'schedule_meeting', 'calendar_create', 'calendar_update'].includes(actionName)) return 'calendar';
   if (['write_canvas'].includes(actionName)) return 'canvas';
+  if (
+    ['module_record_create', 'module_record_update', 'module_record_archive'].includes(actionName)
+  ) return 'module';
   if (['create_plan'].includes(actionName)) return 'plan';
   if (
     [
@@ -448,6 +456,57 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       sourceLabel: age ? `Source: Defty - ${age}` : 'Source: Defty',
       detailsLabel: 'Canvas preview',
       emptyDetails: 'This changes a shared surface visible to the space.',
+      chips,
+    };
+  }
+
+  if (kind === 'module') {
+    const proposerName = action.proposer === 'employee' && action.employee_name
+      ? action.employee_name
+      : 'Defty';
+    const moduleName = getNestedStringParam(params, [
+      'module_name',
+      'module.name',
+      'module_slug',
+      'module.slug',
+      'slug',
+    ]);
+    const collectionName = getNestedStringParam(params, [
+      'collection_name',
+      'collection.name',
+      'collection_key',
+      'collection.key',
+    ]);
+    const recordTitle = getNestedStringParam(params, [
+      'record_title',
+      'title',
+      'data.name',
+      'data.title',
+      'patch.name',
+      'patch.title',
+    ]);
+    const isCreate = action.action === 'module_record_create';
+    const isArchive = action.action === 'module_record_archive';
+    const operation = isCreate ? 'create' : isArchive ? 'archive' : 'update';
+
+    pushChip(chips, moduleName, 'project');
+    pushChip(chips, collectionName.replaceAll('_', ' '), 'book');
+    return {
+      kind,
+      icon: 'module',
+      eyebrow: isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
+      headline: `${proposerName} proposed a module ${operation}`,
+      title: recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
+      summary: content
+        ? truncateApprovalText(content, 150)
+        : `Review this ${collectionName || 'module'} record change before it is applied.`,
+      approveLabel: isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
+      doneLabel: isCreate ? 'Record created' : isArchive ? 'Record archived' : 'Record updated',
+      sourceLabel: age ? `Source: ${proposerName} - ${age}` : `Source: ${proposerName}`,
+      detailsLabel: 'Record details',
+      emptyDetails: 'The module manifest validates this change before it is applied.',
+      badge: isArchive ? 'Archive' : moduleName || undefined,
+      badgeTone: isArchive ? 'danger' : 'neutral',
       chips,
     };
   }

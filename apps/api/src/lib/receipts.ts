@@ -31,6 +31,7 @@ import crypto from 'node:crypto';
 import { db } from './db.js';
 import { actionReceipts } from '@deft/db/schema';
 import { env } from './env.js';
+import { and, eq, sql } from 'drizzle-orm';
 
 type InferredReceipt = typeof actionReceipts.$inferSelect;
 export type ActionReceipt = InferredReceipt;
@@ -163,7 +164,9 @@ function computeHmac(payload: string): string {
 }
 
 /**
- * Insert a signed receipt. Never throws; on DB failure logs + returns null.
+ * Ensure one signed receipt per action decision. Concurrent/retry callers are
+ * serialized by a PostgreSQL advisory lock. Never throws; on DB failure logs
+ * and returns null.
  */
 export async function generateReceipt(
   params: GenerateReceiptParams,
@@ -186,25 +189,39 @@ export async function generateReceipt(
     const canonical = canonicalize(envelope);
     const signature = computeHmac(canonical);
 
-    const [row] = await db
-      .insert(actionReceipts)
-      .values({
-        org_id: params.orgId,
-        action_id: params.actionId,
-        employee_id: params.employeeId ?? null,
-        proposer: params.proposer,
-        proposer_id: params.proposerId ?? null,
-        approver_id: params.approverId ?? null,
-        decision: params.decision,
-        decision_reason: params.decisionReason ?? null,
-        action_name: params.actionName,
-        action_params_json: (params.actionParams ?? {}) as unknown as Record<string, unknown>,
-        result_json: (params.resultJson ?? null) as unknown as Record<string, unknown>,
-        signature_hmac: signature,
-        signed_at: signedAt,
-      })
-      .returning();
-    return row ?? null;
+    return await db.transaction(async (tx) => {
+      const receiptKey = `action-receipt:${params.actionId}:${params.decision}`;
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+      const [existing] = await tx
+        .select()
+        .from(actionReceipts)
+        .where(and(
+          eq(actionReceipts.action_id, params.actionId),
+          eq(actionReceipts.decision, params.decision),
+        ))
+        .limit(1);
+      if (existing) return existing;
+
+      const [row] = await tx
+        .insert(actionReceipts)
+        .values({
+          org_id: params.orgId,
+          action_id: params.actionId,
+          employee_id: params.employeeId ?? null,
+          proposer: params.proposer,
+          proposer_id: params.proposerId ?? null,
+          approver_id: params.approverId ?? null,
+          decision: params.decision,
+          decision_reason: params.decisionReason ?? null,
+          action_name: params.actionName,
+          action_params_json: (params.actionParams ?? {}) as unknown as Record<string, unknown>,
+          result_json: (params.resultJson ?? null) as unknown as Record<string, unknown>,
+          signature_hmac: signature,
+          signed_at: signedAt,
+        })
+        .returning();
+      return row ?? null;
+    });
   } catch (err) {
     // AUDIT OVERLAY: never let a receipt failure crash the caller. Log +
     // continue. Ops will reconcile via a gap report later.

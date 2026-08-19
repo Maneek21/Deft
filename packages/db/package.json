@@ -2,6 +2,7 @@
   "name": "@deft/db",
   "version": "0.0.1",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -24,12 +25,12 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.22.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
     "@types/pg": "^8.21.0",
     "drizzle-kit": "^0.31.10",
-    "tsx": "^4.23.11"
+    "tsx": "^4.23.12"
   }
 }

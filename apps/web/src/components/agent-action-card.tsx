@@ -4,6 +4,7 @@ import { useState } from 'react';
 import {
   AlertTriangle,
   BookOpen,
+  Boxes,
   CalendarClock,
   CheckCircle2,
   CheckSquare,
@@ -372,6 +373,7 @@ function CompactActionIcon({ icon }: { icon: ApprovalIconName }) {
   if (icon === 'note') return <StickyNote size={14} strokeWidth={1.9} />;
   if (icon === 'calendar') return <CalendarClock size={14} strokeWidth={1.9} />;
   if (icon === 'canvas') return <ScrollText size={14} strokeWidth={1.9} />;
+  if (icon === 'module') return <Boxes size={14} strokeWidth={1.9} />;
   if (icon === 'plan') return <Sparkles size={14} strokeWidth={1.9} />;
   if (icon === 'admin') return <ShieldAlert size={14} strokeWidth={1.9} />;
   if (icon === 'generic') return <Info size={14} strokeWidth={1.9} />;
@@ -1065,7 +1067,9 @@ export function AgentActionCard({
           </p>
         ) : (
           <p className="text-[12px] mt-1" style={{ color: 'var(--foreground-secondary)' }}>
-            Source message attached. Open it before approving if the wording feels ambiguous.
+            {action.proposer === 'employee' || action.source === 'mcp'
+              ? 'Proposed through MCP. No chat source message is attached.'
+              : 'No source excerpt is available. Review the proposed fields before approving.'}
           </p>
         )}
         {sourceMessageId && sourceSpaceId && (

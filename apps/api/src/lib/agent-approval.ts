@@ -40,6 +40,10 @@
 
 import type { ToolResult } from './mcp-tools/types.js';
 import { textResult } from './mcp-tools/types.js';
+import {
+  MODULE_OPERATION_DEFINITIONS,
+  MODULE_OPERATION_NAMES,
+} from '@deft/shared/modules';
 
 export type TrustLevel = 'conservative' | 'standard' | 'autonomous';
 export type ApprovalTier = 'auto' | 'quick' | 'full';
@@ -127,6 +131,21 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   // decision text itself. Tier 'quick' — gated under Conservative.
   link_decision_to_tasks: 'quick',
   mark_decision_implemented: 'quick',
+  module_record_task_links: 'auto',
+  module_record_task_link: 'quick',
+  module_record_task_unlink: 'quick',
+
+  // Declarative modules — the shared operation contract is authoritative.
+  // Keeping these references (instead of repeating literals) prevents the
+  // Defty and MCP adapters from drifting on policy.
+  module_list: MODULE_OPERATION_DEFINITIONS.module_list.approval_tier,
+  module_schema_get: MODULE_OPERATION_DEFINITIONS.module_schema_get.approval_tier,
+  module_record_search: MODULE_OPERATION_DEFINITIONS.module_record_search.approval_tier,
+  module_record_query: MODULE_OPERATION_DEFINITIONS.module_record_query.approval_tier,
+  module_record_get: MODULE_OPERATION_DEFINITIONS.module_record_get.approval_tier,
+  module_record_create: MODULE_OPERATION_DEFINITIONS.module_record_create.approval_tier,
+  module_record_update: MODULE_OPERATION_DEFINITIONS.module_record_update.approval_tier,
+  module_record_archive: MODULE_OPERATION_DEFINITIONS.module_record_archive.approval_tier,
 };
 
 /**
@@ -139,6 +158,12 @@ const DESTRUCTIVE_ADMIN_TOOLS = new Set([
   'manage_mcp_connection',
   'remove_member',
 ]);
+
+const DESTRUCTIVE_MODULE_TOOLS: ReadonlySet<string> = new Set(
+  MODULE_OPERATION_NAMES.filter(
+    (operation) => MODULE_OPERATION_DEFINITIONS[operation].destructive,
+  ),
+);
 
 /**
  * Returns true if the tool call should be treated as a destructive action
@@ -157,6 +182,15 @@ export function isDestructiveAction(toolName: string, params?: unknown): boolean
   const effectiveToolName = toolName.startsWith('mcp__')
     ? toolName.split('__').slice(2).join('__')
     : toolName;
+  // Archive does not use the legacy `delete_` prefix, so its destructive
+  // classification must come from the shared module operation definition.
+  // Check both native and MCP-prefixed forms.
+  if (
+    DESTRUCTIVE_MODULE_TOOLS.has(toolName)
+    || DESTRUCTIVE_MODULE_TOOLS.has(effectiveToolName)
+  ) {
+    return true;
+  }
   if (effectiveToolName.startsWith('delete_')) return true;
   if (
     params !== null &&

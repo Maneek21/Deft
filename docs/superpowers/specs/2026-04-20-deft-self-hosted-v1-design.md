@@ -229,11 +229,11 @@ No feature flags, no parked branches. Build fresh when managed SaaS becomes a re
 
 ### 2. Single-org enforcement: **hard-block.**
 
-Motivation: BSL 1.1 already prohibits hosting-as-a-service-for-third-parties, but technical enforcement stops anyone (well-intentioned or otherwise) from spinning Deft up as a SaaS competitor before the first-party managed SKU exists.
+Motivation at the time: keep the initial self-hosted product and its support surface intentionally single-workspace while the first-party managed architecture is still unbuilt. This is a product and deployment constraint, not a license restriction.
 
 Mechanics:
-- **Startup check**: on API boot, `SELECT count(*) FROM orgs`. If > 1, log a fatal error pointing at `LICENSE` and exit. Hosters cannot accidentally run multi-tenant.
-- **POST /api/orgs**: returns 403 `SELF_HOSTED_SINGLE_ORG` if an org already exists. Points the caller at `LICENSE`.
+- **Startup check**: on API boot, `SELECT count(*) FROM orgs`. If > 1, log an operator warning explaining the supported single-workspace deployment contract.
+- **POST /api/orgs**: returns 403 `SELF_HOSTED_SINGLE_ORG` if an org already exists and points the caller at the supported product contract.
 - **UI**: remove "create org" / "switch org" affordances anywhere they exist. One org, implicit, named at first-run.
 - **Schema**: `org_id` stays on every table — forward-compat for the SaaS lift. The enforcement is policy + runtime check, not a schema change.
 

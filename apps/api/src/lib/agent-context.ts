@@ -36,9 +36,63 @@ import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssignee } from './resolve-assignee.js';
 import { visibleTaskCondition } from './task-visibility.js';
-import { agentToolPolicyError } from './agent-tool-policy.js';
+import {
+  agentToolPolicyError,
+  getActiveAgentToolPolicy,
+} from './agent-tool-policy.js';
+import {
+  MODULE_OPERATION_REQUEST_SCHEMAS,
+  MODULE_OPERATION_RESULT_SCHEMAS,
+  ModuleRecordResourceIdSchema,
+  parseModuleRecordResourceId,
+} from '@deft/shared/modules';
+import {
+  deftyModuleActor,
+  employeeModuleActor,
+  getModuleInstallation,
+  getModuleRecord,
+  getModuleSchema,
+  listModuleSummaries,
+  queryModuleRecords,
+  searchModuleRecords,
+} from './module-service.js';
+import { listModuleRecordTaskLinks } from './module-task-links.js';
+import { requireActiveOrgMembership } from './org-membership.js';
+import { visibleModuleActionSql } from './module-action-visibility.js';
 
 type Citation = { type: string; id: string; title: string };
+
+async function buildModuleReadActor(
+  orgId: string,
+  userId: string,
+  context?: {
+    conversationId?: string;
+    actionId?: string;
+    agentEmployeeId?: string;
+  },
+) {
+  if (context?.agentEmployeeId) {
+    const policy = await getActiveAgentToolPolicy(orgId, context.agentEmployeeId);
+    if (!policy) {
+      throw new Error('Agent employee is inactive, deleted, or outside this organization');
+    }
+    return employeeModuleActor({
+      orgId,
+      employeeId: context.agentEmployeeId,
+      trustLevel: policy.trustLevel,
+      source: 'runtime',
+      ...(context.actionId ? { actionId: context.actionId } : {}),
+    });
+  }
+  const membership = await requireActiveOrgMembership(orgId, userId);
+  return deftyModuleActor({
+    orgId,
+    userId,
+    role: membership.role,
+    ...(context?.conversationId ? { conversationId: context.conversationId } : {}),
+    ...(context?.actionId ? { actionId: context.actionId } : {}),
+  });
+}
 
 export async function executeToolCall(
   toolName: string,
@@ -87,6 +141,122 @@ export async function executeToolCall(
   }
 
   switch (toolName) {
+    case 'module_list': {
+      MODULE_OPERATION_REQUEST_SCHEMAS.module_list.parse(params);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_list.parse({
+        modules: await listModuleSummaries(actor),
+      });
+      return {
+        result,
+        citations: result.modules.map((module) => ({
+          type: 'module',
+          id: module.installation_id,
+          title: module.name,
+        })),
+      };
+    }
+
+    case 'module_schema_get': {
+      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_schema_get.parse(params);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_schema_get.parse(
+        await getModuleSchema(actor, input.module_id),
+      );
+      return {
+        result,
+        citations: [{
+          type: 'module',
+          id: result.installation_id,
+          title: result.manifest.name,
+        }],
+      };
+    }
+
+    case 'module_record_search': {
+      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_search.parse(params);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_search.parse(
+        await searchModuleRecords(actor, input),
+      );
+      return {
+        result,
+        citations: result.items.map((item) => ({
+          type: 'module_record',
+          id: item.resource_id,
+          title: item.title,
+        })),
+      };
+    }
+
+    case 'module_record_query': {
+      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_query.parse(params);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const page = await queryModuleRecords(actor, input);
+      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_query.parse({
+        items: page.records,
+        next_cursor: page.next_cursor,
+      });
+      return {
+        result,
+        citations: result.items.map((item) => ({
+          type: 'module_record',
+          id: item.resource_id,
+          title: `${item.module_id}/${item.collection_key} record`,
+        })),
+      };
+    }
+
+    case 'module_record_get': {
+      const input = MODULE_OPERATION_REQUEST_SCHEMAS.module_record_get.parse(params);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const result = MODULE_OPERATION_RESULT_SCHEMAS.module_record_get.parse({
+        record: await getModuleRecord(actor, input.record_id),
+      });
+      return {
+        result,
+        citations: [{
+          type: 'module_record',
+          id: result.record.resource_id,
+          title: `${result.record.module_id}/${result.record.collection_key} record`,
+        }],
+      };
+    }
+
+    case 'module_record_task_links': {
+      const resourceId = ModuleRecordResourceIdSchema.parse(params.resource_id);
+      const actor = await buildModuleReadActor(orgId, _userId, {
+        conversationId,
+        agentEmployeeId,
+      });
+      const record = await getModuleRecord(actor, parseModuleRecordResourceId(resourceId));
+      const installation = await getModuleInstallation(actor, { moduleId: record.module_id });
+      const tasks = await listModuleRecordTaskLinks(actor, installation.slug, record.id);
+      return {
+        result: { resource_id: resourceId, tasks, count: tasks.length },
+        citations: tasks.map((task) => ({
+          type: 'task',
+          id: task.task_id,
+          title: task.identifier ? `${task.identifier}: ${task.title}` : task.title,
+        })),
+      };
+    }
+
     case 'search_messages': {
       const limit = params.limit || 10;
       const conditions: any[] = [
@@ -2073,7 +2243,15 @@ export async function executeToolCall(
       const { employee_id, limit: resultLimit } = params as { employee_id?: string; limit?: number };
       const maxResults = Math.min(resultLimit || 20, 100);
 
-      const conditions = [eq(agentActions.org_id, orgId)];
+      const callerRole = agentEmployeeId
+        ? 'member'
+        : (await requireActiveOrgMembership(orgId, _userId)).role;
+      const conditions = [
+        eq(agentActions.org_id, orgId),
+        visibleModuleActionSql(callerRole, agentEmployeeId
+          ? { agentEmployeeId }
+          : { userId: _userId, orgId }),
+      ];
       if (employee_id) {
         conditions.push(eq(agentActions.agent_employee_id, employee_id));
       }

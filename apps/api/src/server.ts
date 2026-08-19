@@ -70,10 +70,10 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
     const count = await countOrgs();
     if (count > 1) {
       console.warn(
-        `[startup] This Deft instance has ${count} orgs. Self-hosted ` +
-          'Deft is licensed for a single workspace per deployment ' +
-          '(BSL 1.1). Check LICENSE and consolidate before opening ' +
-          'signup to external users.',
+        `[startup] This Deft instance has ${count} workspaces. The ` +
+          'self-hosted v1 product supports one workspace per deployment. ' +
+          'Consolidate before opening signup to external users, or use a ' +
+          'deployment architecture that explicitly supports multiple workspaces.',
       );
     }
   } catch (err) {

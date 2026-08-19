@@ -140,13 +140,16 @@ function LoginContent() {
         </div>
 
         {/* Footer */}
-        <p className="text-[0.875rem]" style={{ color: 'var(--outline)' }}>
-          Don&apos;t have an account?{' '}
-          <Link href="/signup" className="underline underline-offset-4"
-            style={{ color: 'var(--primary)' }}>
-            Sign up
-          </Link>
-        </p>
+        <div className="flex flex-col items-center gap-2 text-[0.875rem]" style={{ color: 'var(--outline)' }}>
+          <p>
+            Don&apos;t have an account?{' '}
+            <Link href="/signup" className="underline underline-offset-4"
+              style={{ color: 'var(--primary)' }}>
+              Sign up
+            </Link>
+          </p>
+          <Link href="/license" className="text-[0.75rem] underline underline-offset-4">License &amp; source</Link>
+        </div>
       </main>
     </div>
   );

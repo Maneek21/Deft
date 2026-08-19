@@ -1405,6 +1405,14 @@ memberRoutes.patch('/:id', async (c) => {
       .set({ role: parsed.data.role })
       .where(eq(orgMembers.id, targetMembership.id));
 
+    if (parsed.data.role !== targetMembership.role) {
+      await evictActiveHuddleParticipants({
+        orgId: currentUser.org_id,
+        userId: memberId,
+        reason: 'org_role_changed',
+      });
+    }
+
     return c.json({ success: true });
   } catch (err) {
     console.error('Failed to update member role:', err);

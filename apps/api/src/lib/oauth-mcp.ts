@@ -18,6 +18,18 @@ export const REMOTE_MCP_READ_SCOPES = [
   'read:tasks',
   'read:messages',
   'read:calendar',
+  'read:modules',
+] as const;
+
+// Keep the historical scope-less grant least-privilege contract stable.
+// Modules are advertised and selectable, but are never injected into an
+// omitted/legacy request merely because the server learned a new scope.
+export const REMOTE_MCP_DEFAULT_READ_SCOPES = [
+  'read:workspace',
+  'read:wiki',
+  'read:tasks',
+  'read:messages',
+  'read:calendar',
 ] as const;
 
 export const REMOTE_MCP_WRITE_SCOPES = [
@@ -25,6 +37,7 @@ export const REMOTE_MCP_WRITE_SCOPES = [
   'write:messages',
   'write:wiki',
   'write:calendar',
+  'write:modules',
   'write:workspace',
 ] as const;
 
@@ -82,8 +95,8 @@ export function normalizeScopes(value: string | string[] | undefined | null): st
   const allowed = new Set(REMOTE_MCP_AUTHORIZATION_SCOPES);
   const scopes = requested.length > 0
     ? requested.filter((s) => allowed.has(s as RemoteMcpAuthorizationScope))
-    : [...REMOTE_MCP_READ_SCOPES];
-  return scopes.length > 0 ? Array.from(new Set(scopes)) : [...REMOTE_MCP_READ_SCOPES];
+    : [...REMOTE_MCP_DEFAULT_READ_SCOPES];
+  return scopes.length > 0 ? Array.from(new Set(scopes)) : [...REMOTE_MCP_DEFAULT_READ_SCOPES];
 }
 
 export function authorizationScopeSelection(
