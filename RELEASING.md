@@ -12,28 +12,36 @@ alpha:
   upgrading.
 - **Patch** (`0.X.Y`) — non-breaking fixes only. Safe to bump in place.
 
-Tag format: `vMAJOR.MINOR.PATCH[-channel]` where `channel` is one of
-`alpha` / `beta` / `rc`. Examples: `v0.1.0-alpha`, `v0.2.0-beta`,
-`v1.0.0-rc.1`. Once 1.0 ships, the channel suffix drops.
+Tag format: `vMAJOR.MINOR.PATCH[-channel]`. During alpha the channel is
+`preview` (for example `v0.3.0-preview.1`). Older docs mentioned
+`alpha` / `beta` / `rc`; keep using `preview` unless the project
+explicitly changes channel. Once 1.0 ships, the channel suffix drops.
+
+The Git tag includes the leading `v`. The GHCR image tag does not:
+
+```text
+git tag     v0.3.0-preview.1
+GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.1
+```
 
 ## Cutting a release
 
 ### 1. Pre-flight
 
-On `master`, verify the four required CI checks are green:
+On `master`, confirm required check-runs are green on the latest commit
+(Type Check, Test API, Build, Production Image + Browser Smoke,
+Versioned Upgrade, CodeQL). Dependency Review runs on pull requests, not
+on push to `master`.
 
 ```bash
 git checkout master
-git pull origin master
-gh pr checks --required  # or visit the most recent commit's checks page
+git pull --ff-only origin master
 ```
 
-If any required check is red, fix that first — releases must come off a
-green master.
+If Production Image + Browser Smoke or Versioned Upgrade is red, stop.
+Releases must come off a green `master`.
 
 ### 2. Open a release-prep PR
-
-Create a branch and update both the version and CHANGELOG in one PR:
 
 ```bash
 git switch -c chore/release-vX.Y.Z-channel
@@ -44,60 +52,62 @@ Edit `package.json` (root) — bump the `version` field. Workspace
 carry independent versions; they all inherit the monorepo version.
 
 Edit `CHANGELOG.md`:
-- Move every item under `[Unreleased]` into a new section
-  `[X.Y.Z-channel] — YYYY-MM-DD` placed directly below `[Unreleased]`.
-- Leave a fresh empty `[Unreleased]` section at the top for next time.
+- Write an accurate **delta from the previous tag**. Do not dump the
+  entire `[Unreleased]` section if it still contains work that already
+  shipped on an earlier tag.
+- Leave a fresh empty `[Unreleased]` section at the top.
 - Update the comparison links at the bottom of the file:
   ```
   [Unreleased]: https://github.com/Maneek21/Deft/compare/vX.Y.Z-channel...HEAD
   [X.Y.Z-channel]: https://github.com/Maneek21/Deft/releases/tag/vX.Y.Z-channel
   ```
 
-Commit, push, open a PR titled `chore(release): vX.Y.Z-channel`, get the
-required CI checks green, squash-merge.
+If README or compose files still contain a placeholder image tag, replace
+it with the GHCR tag (no leading `v`) in the same PR. Merge the prep PR
+and push the annotated tag in the same release session so README never
+points at a missing image.
+
+Commit, push, open a PR titled `chore(release): vX.Y.Z-channel`, wait for
+required CI (including Dependency Review), squash-merge.
 
 ### 3. Tag the release
 
-After the prep PR lands on `master`:
+After the prep PR lands on `master` and that merge commit's check-runs
+are green:
 
 ```bash
 git checkout master
-git pull origin master
+git pull --ff-only origin master
 git tag -a vX.Y.Z-channel -m "Deft vX.Y.Z-channel"
 git push origin vX.Y.Z-channel
 ```
 
-Use **annotated** tags (`-a`), never lightweight tags — the release page
-shows the annotation message and `git describe` works correctly.
+Use **annotated** tags (`-a`), never lightweight tags.
 
-### 4. Create the GitHub Release
+### 4. GitHub Actions publishes the image and Release
 
-Extract the `[X.Y.Z-channel]` section of `CHANGELOG.md` into a temp file
-`release-notes-X.Y.Z.md`, then:
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml).
+That workflow:
 
-```bash
-gh release create vX.Y.Z-channel \
-  --title "vX.Y.Z-channel" \
-  --notes-file release-notes-X.Y.Z.md \
-  --prerelease   # omit once on 1.0+ stable
-```
+- builds and pushes the `linux/amd64` GHCR image
+- attests provenance, attaches SPDX SBOM and corresponding source
+- writes `release-manifest.json` (`license: AGPL-3.0-only`)
+- creates the GitHub Release (`--generate-notes`, prerelease when the
+  version contains `-`)
 
-`--prerelease` flags the release as not-production-ready. Drop the flag
-on `1.0.0` and later stable releases.
+**Do not run a second `gh release create`.** The workflow already creates
+the Release. If notes need a license banner or highlights, edit the
+Release body after the workflow finishes.
 
-### 5. (Optional) Publish Docker image
+If packaging fails after the tag exists, **do not move the tag**. Re-run
+the workflow with `workflow_dispatch` against the existing tag. If the
+published image is unusable, fix forward and cut the next preview tag.
 
-The `Docker Image Build` CI job builds the production `Dockerfile` on
-every PR but does not push to a registry. To publish a tagged image,
-build and push manually:
-
-```bash
-docker build -t ghcr.io/maneek21/deft:vX.Y.Z-channel .
-docker push ghcr.io/maneek21/deft:vX.Y.Z-channel
-```
-
-Or set up a `release.yml` workflow triggered on tag push that authenticates
-to GHCR / Docker Hub and pushes. Not wired up yet during alpha.
+Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
+`THIRD-PARTY-LICENSES.md`, `.env.example`, the source archive, SBOM,
+checksums, and compose files. Confirm the image label
+`org.opencontainers.image.licenses=AGPL-3.0-only` (the production
+`Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).
 
 ## Hotfix releases
 
@@ -106,16 +116,14 @@ For an urgent fix on a previously released minor version:
 1. Branch off the released tag: `git switch -c hotfix/vX.Y.Z+1 vX.Y.Z-channel`
 2. Cherry-pick or land the fix.
 3. Bump the patch number, update `CHANGELOG.md`, tag `vX.Y.Z+1-channel`.
-4. Push the tag and create the GitHub Release as above.
+4. Push the tag and let `release.yml` package it.
 5. Open a PR to merge the hotfix branch back into `master` so the fix
    isn't lost when the next minor goes out.
 
 ## License and source artifacts
 
-Every release is licensed under [GNU AGPL v3.0 only](LICENSE). Confirm that
-the GitHub release includes `LICENSE`, `NOTICE`, and
-`THIRD-PARTY-LICENSES.md`, and that the container image carries
-`org.opencontainers.image.licenses=AGPL-3.0-only` and an exact
-`org.opencontainers.image.source` URL for the released commit. GitHub's source
-archive plus the repository's build and installation scripts are the
-Corresponding Source offered with the official image.
+Every current-line release is licensed under [GNU AGPL v3.0 only](LICENSE).
+Historical tags through `v0.2.0-preview.4` retain BSL 1.1 as shipped.
+Do not rewrite those tags. GitHub's source archive plus the repository's
+build and installation scripts are the Corresponding Source offered with
+the official image.

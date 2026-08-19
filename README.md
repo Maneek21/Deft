@@ -130,7 +130,7 @@ BSL 1.1 license included in those revisions; relicensing this source tree does
 not retroactively change old tags or images.
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:<agpl-release-tag>
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.1
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
