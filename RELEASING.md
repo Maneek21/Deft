@@ -104,8 +104,8 @@ the workflow with `workflow_dispatch` against the existing tag. If the
 published image is unusable, fix forward and cut the next preview tag.
 
 Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
-`THIRD-PARTY-LICENSES.md`, the source archive, SBOM, checksums, and
-compose files. Confirm the image label
+`THIRD-PARTY-LICENSES.md`, `.env.example`, the source archive, SBOM,
+checksums, and compose files. Confirm the image label
 `org.opencontainers.image.licenses=AGPL-3.0-only` (the production
 `Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).
 

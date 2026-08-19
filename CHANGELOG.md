@@ -46,6 +46,8 @@ line are not repeated here.
   tenant-scoped replacement, and deterministic planning.
 - Chat browser smoke assertions are scoped to actual message rows.
 - Cross-org receipt semantics are preserved in the module runtime.
+- Preview GitHub Releases now attach `.env.example` and include it in
+  `SHA256SUMS`. Shell `dist/*` previously omitted that dotfile.
 
 ## [0.2.0-preview.1 — 0.2.0-preview.4]
 

@@ -127,7 +127,7 @@ jobs:
 
       - name: Generate checksums
         shell: bash
-        run: (cd dist && sha256sum * > SHA256SUMS)
+        run: (cd dist && sha256sum -- * .env.example > SHA256SUMS)
 
       - name: Create GitHub release
         env:
@@ -137,4 +137,5 @@ jobs:
         run: |
           args=(--repo "$GITHUB_REPOSITORY" --title "Deft ${{ steps.release.outputs.tag }}" --generate-notes --verify-tag)
           [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
-          gh release create "${{ steps.release.outputs.tag }}" dist/* "${args[@]}"
+          # dist/* does not match dotfiles; attach .env.example explicitly.
+          gh release create "${{ steps.release.outputs.tag }}" dist/* dist/.env.example "${args[@]}"
