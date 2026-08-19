@@ -10,34 +10,51 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.1] — 2026-08-19
+
+First AGPL-3.0-only preview. This is the delta from `v0.2.0-preview.4`.
+Earlier `[Unreleased]` notes that already shipped on the `0.2.0-preview`
+line are not repeated here.
+
 ### Added
 
-- Tagged preview release workflow with a GHCR image, provenance attestation,
-  SPDX SBOM, checksums, and a machine-readable release manifest.
-- Runtime public-URL injection for portable prebuilt images.
-- Guided personal MCP connections for Codex, Claude, ChatGPT-compatible clients, and custom streamable HTTP MCP clients.
-- Operational headless MCP tools for unread triage, context packets, people, teams, tasks, messages, notes, wiki, decisions, and calendar workflows.
-- Task Table view, richer Timeline and Calendar interactions, persistent view preferences, and improved bulk operations.
-- Profile, member, team, and linked-resource management with team dashboard summaries.
-- Agent employee bridge supervision, structured-mention wakeup, assignment flows, and completion receipts.
-- Synthetic 60-person workspace certification for isolation, job backlog, notification volume, bulk operations, and recovery exercises.
+- Declarative Modules v1: first-class Deft applications defined through
+  strict `deft.module.json` manifests, reusing storage, permissions,
+  search, approvals, receipts, tasks, audit, and agent access.
+- Bundled Contacts module as a manifest-defined CRM surface for contacts,
+  companies, deals, and activities — not CRM code in core.
+- Module distribution, provenance locking, sideloading, immutable module
+  versions, compatible upgrades, and runtime verification for bundled
+  module artifacts.
 
 ### Changed
 
-- Relicensed the current codebase from BSL 1.1 to GNU AGPL v3.0 only, removed the hosted-service restriction, added source-offer metadata, and clarified that the one-workspace deployment boundary is a product limitation rather than a license condition.
-- Reworked Defty planning so natural-language requests resolve through model-generated structured drafts, deterministic validation, approval, execution, and confirmation.
-- Moved supported approval cards into the source conversation with an inbox mirror.
-- Reworked chat knowledge capture into settled-window episode processing with quiet receipts.
-- Simplified Connections, Agent employees, Inbox, Settings, Chat, Tasks, Knowledge, and Calendar interfaces across desktop and mobile.
-- Standardized public positioning on the self-hosted v1 integration contract and current alpha boundaries.
+- Relicensed the current release line from BSL 1.1 to GNU AGPL v3.0 only.
+  Historical tags through `v0.2.0-preview.4` retain the licenses shipped
+  in those revisions. Relicensing does not rewrite old tags or images.
+- Removed Redis/BullMQ from the supported runtime. Scheduled work uses
+  PostgreSQL `job_queue` with in-process workers.
+- Hardened live chat reconnect behavior so subscriptions survive socket
+  reconnects.
+- Updated dependency and security-tooling pins used by the release line
+  (pnpm action, CodeQL, patch/minor group).
 
 ### Fixed
 
-- Scheduled chat-to-knowledge jobs now reach their registered handler.
-- Agent task creation supports structured descriptions, subtasks, dependencies, and richer completion receipts.
-- Personal MCP unread and owner-operator workflows avoid hidden-tool and keyword-search fallbacks.
-- Mobile scrolling, navigation overlays, chat composers, avatar propagation, mentions, approval placement, and task-view interaction defects found during dogfooding.
-- Self-host bootstrap, environment validation, health checks, and production preflight coverage.
+- Destructive pilot knowledge-receipt seeding now uses real
+  message-backed sources, explicit simulated-history metadata,
+  tenant-scoped replacement, and deterministic planning.
+- Chat browser smoke assertions are scoped to actual message rows.
+- Cross-org receipt semantics are preserved in the module runtime.
+
+## [0.2.0-preview.1 — 0.2.0-preview.4]
+
+Historical BSL 1.1 preview releases. These tags introduced the portable
+preview-image and self-host upgrade line and remain licensed under the
+terms included in those revisions.
+
+See the GitHub Releases page and tag comparisons for exact historical
+contents.
 
 ## [0.1.0-alpha] — 2026-05-26
 
@@ -158,5 +175,7 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.1.0-alpha...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.1...HEAD
+[0.3.0-preview.1]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.1
+[0.2.0-preview.1 — 0.2.0-preview.4]: https://github.com/Maneek21/Deft/releases/tag/v0.2.0-preview.4
 [0.1.0-alpha]: https://github.com/Maneek21/Deft/releases/tag/v0.1.0-alpha

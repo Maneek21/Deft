@@ -39,6 +39,6 @@ This roadmap communicates direction, not delivery dates. Deft is an alpha and pr
 
 ## Explicit non-commitments
 
-The roadmap does not currently promise native Slack, Gmail, GitHub, Google Calendar OAuth, Linear, or Notion connectors. It also does not promise a hosted multi-customer Deft service under the current BSL license. External tools should be connected through customer-owned agent or MCP runtimes unless the product contract changes.
+The roadmap does not currently promise native Slack, Gmail, GitHub, Google Calendar OAuth, Linear, or Notion connectors. A hosted multi-customer Deft service is not part of the current self-hosted product promise. External tools should be connected through customer-owned agent or MCP runtimes unless the product contract changes.
 
 See [current limitations](docs/current-limitations.md) for boundaries that apply today.
