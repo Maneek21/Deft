@@ -20,6 +20,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Verify bundled module provenance
+        run: pnpm module:verify
       - name: Lint web
         run: pnpm --filter @deft/web lint
       - name: Test web realtime lifecycle state
