@@ -6,7 +6,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--only-7c5cff.svg)](./LICENSE)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-f59e0b.svg)](#project-status-and-limitations)
 
-[Website](https://deft.ing) | [Live demo](https://demo.deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
+[Website](https://deft.ing) | [Self-hosting guide](docs/self-hosting.md) | [Contributing](CONTRIBUTING.md)
 
 ![Where humans and agents work together.](docs/assets/repository/hero.png)
 
