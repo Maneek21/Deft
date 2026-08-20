@@ -46,6 +46,12 @@ Instead of pasting fragments from Slack, Notion, and a task tracker into an AI c
 
 Deft still works as a normal workspace without an AI provider key. Chat, tasks, notes, knowledge, calendar, people, and teams remain available; AI features stay disabled until a provider is configured.
 
+### An extensible workspace through Modules
+
+Deft's workspace can also grow with the needs of a company. Modules let developers add domain-specific collections and applications while inheriting the workspace primitives that already exist, including identity, permissions, search, context and agent access.
+
+The bundled **Contacts** module is the first example of this model. The goal is not to turn Deft's core into every application a company might need, but to let new capabilities live on the same shared substrate instead of becoming another disconnected system.
+
 ## Product surfaces
 
 ### Chat keeps the source conversation attached
