@@ -10,10 +10,17 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.2] — 2026-08-20
+
+Delta from `v0.3.0-preview.1`. Deft remains alpha.
+
 ### Changed
 
-- Multi-collection modules use header collection tabs on every viewport.
-  Desktop no longer renders a second left rail next to the workspace sidebar.
+- Multi-collection modules, including bundled Contacts, use header
+  collection tabs on every viewport. Desktop no longer renders a second
+  left rail next to the workspace sidebar.
+- Product browser smoke now asserts Contacts collection tabs and the
+  absence of a second collections aside.
 
 ## [0.3.0-preview.1] — 2026-08-19
 
@@ -182,7 +189,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.1...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.2...HEAD
+[0.3.0-preview.2]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.2
 [0.3.0-preview.1]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.1
 [0.2.0-preview.1 — 0.2.0-preview.4]: https://github.com/Maneek21/Deft/releases/tag/v0.2.0-preview.4
 [0.1.0-alpha]: https://github.com/Maneek21/Deft/releases/tag/v0.1.0-alpha

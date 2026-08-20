@@ -13,15 +13,15 @@ alpha:
 - **Patch** (`0.X.Y`) — non-breaking fixes only. Safe to bump in place.
 
 Tag format: `vMAJOR.MINOR.PATCH[-channel]`. During alpha the channel is
-`preview` (for example `v0.3.0-preview.1`). Older docs mentioned
+`preview` (for example `v0.3.0-preview.2`). Older docs mentioned
 `alpha` / `beta` / `rc`; keep using `preview` unless the project
 explicitly changes channel. Once 1.0 ships, the channel suffix drops.
 
 The Git tag includes the leading `v`. The GHCR image tag does not:
 
 ```text
-git tag     v0.3.0-preview.1
-GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.1
+git tag     v0.3.0-preview.2
+GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.2
 ```
 
 ## Cutting a release
