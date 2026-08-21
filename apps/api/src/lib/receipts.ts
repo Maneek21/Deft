@@ -160,6 +160,8 @@ function buildSignedEnvelope(params: {
 function computeHmac(payload: string): string {
   return crypto
     .createHmac('sha256', env.ENCRYPTION_KEY)
+    // HMAC-SHA256 authenticates an audit receipt; this is not password storage.
+    // codeql[js/insufficient-password-hash]
     .update(payload)
     .digest('hex');
 }
