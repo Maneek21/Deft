@@ -254,7 +254,47 @@ test('5. Date fields in resultJson survive DB roundtrip and still verify', async
   );
 });
 
-test('6. generateReceipt swallows DB failures and returns null', async () => {
+test('6. generateReceipt redacts secrets in stored params and signs that same representation', async () => {
+  const actionId = await insertPendingAction('task_create');
+  const { generateReceipt, verifyReceipt } = await import('../src/lib/receipts.js');
+  const originalParams = {
+    title: 'secret rotation',
+    token_count: 3,
+    secretary: 'Ada',
+    password: 'hunter2',
+    api_key: 'k_live',
+    authorization: 'Bearer abc',
+  };
+
+  const receipt = await generateReceipt({
+    actionId,
+    orgId: ORG_ID,
+    employeeId: TEST_EMP_ID,
+    proposer: 'employee',
+    proposerId: TEST_EMP_ID,
+    decision: 'auto_executed',
+    actionName: 'task_create',
+    actionParams: originalParams,
+    resultJson: { id: 'task-secret-rotation' },
+  });
+
+  assert.ok(receipt);
+  assert.equal(originalParams.password, 'hunter2', 'execution params must remain unsanitized');
+  assert.equal(originalParams.api_key, 'k_live');
+  const stored = receipt!.action_params_json as Record<string, unknown>;
+  assert.equal(stored.title, 'secret rotation');
+  assert.equal(stored.token_count, 3);
+  assert.equal(stored.secretary, 'Ada');
+  assert.equal(stored.password, '[redacted]');
+  assert.equal(stored.api_key, '[redacted]');
+  assert.equal(stored.authorization, '[redacted]');
+  assert.equal(JSON.stringify(stored).includes('hunter2'), false);
+  assert.equal(JSON.stringify(stored).includes('k_live'), false);
+  assert.equal(JSON.stringify(stored).includes('Bearer abc'), false);
+  assert.equal(await verifyReceipt(receipt!), true);
+});
+
+test('7. generateReceipt swallows DB failures and returns null', async () => {
   // Pass a non-existent action_id so the FK constraint fails. The library
   // must log + return null, not propagate the error.
   const { generateReceipt } = await import('../src/lib/receipts.js');

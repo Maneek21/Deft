@@ -59,6 +59,7 @@ import {
   type WikiUpdateArgs,
 } from './mcp-tools/wiki-create.js';
 import { generateReceipt } from './receipts.js';
+import { sanitizeModuleActionParamsForReceipt } from './receipt-params.js';
 import {
   markWorkIntentConvertedForAction,
   markWorkIntentDismissedForAction,
@@ -90,6 +91,7 @@ import {
 } from './module-service.js';
 import { resolveAttentionBySource } from './attention.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
+export { sanitizeModuleActionParamsForReceipt };
 
 const MODULE_MUTATION_ACTIONS: ReadonlySet<string> = new Set(
   MODULE_OPERATION_NAMES.filter(
@@ -101,44 +103,6 @@ function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-/**
- * Module record values remain in the narrowly-authorized agent_actions row
- * while a proposal is pending, but must not be copied into the broad signed
- * receipt store. Receipts retain only concurrency, identity, and field-name
- * metadata needed to audit the decision.
- */
-export function sanitizeModuleActionParamsForReceipt(
-  action: string,
-  paramsValue: unknown,
-): Record<string, unknown> {
-  const params = recordValue(paramsValue);
-  if (isModuleTaskLinkWriteAction(action)) {
-    return sanitizeModuleTaskLinkActionParamsForHistory(params);
-  }
-  if (!MODULE_MUTATION_ACTIONS.has(action)) return params;
-  const sanitized = sanitizeModuleActionParamsForHistory(action, params);
-  // Retry repair reads an already-scrubbed terminal action. Preserve only
-  // the safe field-name/digest evidence that the first terminalization wrote;
-  // never reintroduce record values or the raw idempotency key.
-  const hasRawMutationPayload = (
-    (params.data !== null && typeof params.data === 'object')
-    || (params.patch !== null && typeof params.patch === 'object')
-    || Array.isArray(params.unset_fields)
-  );
-  if (!hasRawMutationPayload && Array.isArray(params.changed_fields)) {
-    sanitized.changed_fields = [...new Set(
-      params.changed_fields.filter((field): field is string => typeof field === 'string'),
-    )].sort();
-  }
-  for (const key of ['idempotency_digest', 'input_digest'] as const) {
-    const value = params[key];
-    if (typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)) {
-      sanitized[key] = value;
-    }
-  }
-  return sanitized;
 }
 
 function terminalModuleActionParams(

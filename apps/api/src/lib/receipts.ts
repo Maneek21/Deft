@@ -32,6 +32,7 @@ import { db } from './db.js';
 import { actionReceipts } from '@deft/db/schema';
 import { env } from './env.js';
 import { and, eq, sql } from 'drizzle-orm';
+import { sanitizeActionParamsForReceipt } from './receipt-params.js';
 
 type InferredReceipt = typeof actionReceipts.$inferSelect;
 export type ActionReceipt = InferredReceipt;
@@ -173,11 +174,15 @@ export async function generateReceipt(
 ): Promise<ActionReceipt | null> {
   try {
     const signedAt = new Date();
+    const safeActionParams = sanitizeActionParamsForReceipt(
+      params.actionName,
+      params.actionParams,
+    );
     const envelope = buildSignedEnvelope({
       actionId: params.actionId,
       orgId: params.orgId,
       actionName: params.actionName,
-      actionParams: params.actionParams,
+      actionParams: safeActionParams,
       decision: params.decision,
       decisionReason: params.decisionReason ?? null,
       employeeId: params.employeeId ?? null,
@@ -214,7 +219,7 @@ export async function generateReceipt(
           decision: params.decision,
           decision_reason: params.decisionReason ?? null,
           action_name: params.actionName,
-          action_params_json: (params.actionParams ?? {}) as unknown as Record<string, unknown>,
+          action_params_json: safeActionParams,
           result_json: (params.resultJson ?? null) as unknown as Record<string, unknown>,
           signature_hmac: signature,
           signed_at: signedAt,
