@@ -11,7 +11,10 @@ Deft is an alpha. It is suitable for technical evaluation, internal use, and con
 - Named GHCR preview images are currently amd64-only.
 - Historical databases created before `v0.2.0-preview.1` are not automatically adopted. The upgrader refuses unknown or incomplete schemas rather than mutating them.
 - Raw `pnpm db:migrate` remains unsupported; the release upgrader owns the checksum ledger and compatibility checks.
-- Operators should pin a commit, back up Postgres and uploads, and rehearse restore before updating.
+- Schema migrations are forward-only; successful upgrades do not have an
+  automatic downgrade. Operators should pin an image digest, back up Postgres
+  and uploads, and rehearse restoring both with the previous image digest
+  before updating.
 
 ## Deployment contract
 

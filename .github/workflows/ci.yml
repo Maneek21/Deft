@@ -162,6 +162,58 @@ jobs:
               END IF;
             END \$\$;
           "
+      - name: Seed and snapshot representative preview data
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          WITH target AS (
+            SELECT o.id AS org_id, u.id AS user_id, s.id AS space_id, m.id AS message_id
+            FROM orgs o
+            JOIN org_members om ON om.org_id = o.id
+            JOIN users u ON u.id = om.user_id
+            JOIN space_members sm ON sm.user_id = u.id
+            JOIN spaces s ON s.id = sm.space_id AND s.org_id = o.id
+            JOIN messages m ON m.space_id = s.id AND m.org_id = o.id
+            WHERE o.slug = 'testers-tomatoes'
+            ORDER BY u.id, s.id, m.id
+            LIMIT 1
+          )
+          INSERT INTO teams (
+            id, org_id, name, handle, description, type, visibility,
+            lead_user_id, default_space_id, is_archived, created_by
+          )
+          SELECT
+            'upgrade-cert-team-v1', org_id, 'Upgrade Certification Team',
+            'upgrade-certification', 'Representative team retained across upgrades',
+            'functional', 'org', user_id, space_id, false, user_id
+          FROM target
+          ON CONFLICT (org_id, handle) DO NOTHING;
+
+          WITH target AS (
+            SELECT o.id AS org_id, u.id AS user_id, s.id AS space_id, m.id AS message_id
+            FROM orgs o
+            JOIN org_members om ON om.org_id = o.id
+            JOIN users u ON u.id = om.user_id
+            JOIN space_members sm ON sm.user_id = u.id
+            JOIN spaces s ON s.id = sm.space_id AND s.org_id = o.id
+            JOIN messages m ON m.space_id = s.id AND m.org_id = o.id
+            WHERE o.slug = 'testers-tomatoes'
+            ORDER BY u.id, s.id, m.id
+            LIMIT 1
+          )
+          INSERT INTO agent_actions (
+            id, org_id, user_id, conversation_id, message_id, source, action,
+            params, result, approval_tier, approval_status
+          )
+          SELECT
+            'upgrade-cert-agent-action-v1', org_id, user_id, space_id, message_id,
+            'native', 'post_message',
+            '{"content":"upgrade preservation fixture"}'::jsonb,
+            '{"status":"fixture"}'::jsonb, 'auto', 'approved'
+          FROM target
+          ON CONFLICT (id) DO NOTHING;
+          SQL
+          bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-before"
       - name: Inspect and dry-run without writing a ledger
         run: |
           if pnpm db:assert-fresh; then
@@ -189,6 +241,8 @@ jobs:
               END IF;
             END \$\$;
           "
+          bash scripts/ci/snapshot-upgrade-data.sh "$RUNNER_TEMP/upgrade-after"
+          diff --recursive --unified "$RUNNER_TEMP/upgrade-before" "$RUNNER_TEMP/upgrade-after"
       - name: Run upgrade unit tests
         run: pnpm test:upgrade
 
