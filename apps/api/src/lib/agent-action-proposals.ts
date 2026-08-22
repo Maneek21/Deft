@@ -14,10 +14,15 @@ import {
   isModuleTaskLinkWriteAction,
   isModuleWriteAction,
   preflightAgentModuleAction,
+  preflightAgentModuleBulkCreateAction,
   preflightAgentModuleActionWithExecutor,
   sameModuleActionInput,
   sanitizeModuleTaskLinkActionParamsForHistory,
 } from './agent-actions.js';
+import {
+  isModuleRecordBulkCreateAction,
+  sanitizeModuleBulkCreateParamsForHistory,
+} from './module-record-bulk-create.js';
 import {
   moduleMutationInputDigest,
   sanitizeModuleActionParamsForHistory,
@@ -55,6 +60,9 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   if (!isRecord(actionParams)) return actionParams;
   if (isModuleWriteAction(action)) {
     return sanitizeModuleActionParamsForHistory(action, actionParams);
+  }
+  if (isModuleRecordBulkCreateAction(action)) {
+    return sanitizeModuleBulkCreateParamsForHistory(actionParams);
   }
   if (isModuleTaskLinkWriteAction(action)) {
     return sanitizeModuleTaskLinkActionParamsForHistory(actionParams);
@@ -99,9 +107,16 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
         params.userId,
         proposal.agent_employee_id ?? undefined,
       );
-      preparedPendingActions.push({ ...proposal, params: canonicalParams });
+      const bulkCanonicalParams = await preflightAgentModuleBulkCreateAction(
+        proposal.action,
+        canonicalParams,
+        params.orgId,
+        params.userId,
+        proposal.agent_employee_id ?? undefined,
+      );
+      preparedPendingActions.push({ ...proposal, params: bulkCanonicalParams });
     } catch (error) {
-      if (!isModuleWriteAction(proposal.action)) throw error;
+      if (!isModuleWriteAction(proposal.action) && !isModuleRecordBulkCreateAction(proposal.action)) throw error;
       rejectedModuleActions.push(proposal.action);
       console.warn('[agent-action-proposals] Rejected module proposal before persistence', {
         action: proposal.action,
@@ -246,7 +261,9 @@ export async function persistAgentReplyWithActions(params: PersistReplyWithActio
     }
 
     const duplicateOnly = readyActions.length > 0 && novelActions.length === 0 && duplicateActions.length > 0;
-    const messageContent = duplicateOnly
+    const messageContent = rejectedModuleActions.length > 0 && readyActions.length === 0
+      ? 'I could not safely prepare that module change. Refresh the module schema or permissions, then try again.'
+      : duplicateOnly
       ? duplicateActions.every((action) => action.approval_status === 'approved')
         ? 'This request was already approved and completed.'
         : 'I already drafted this request. Use the existing approval card to review it.'

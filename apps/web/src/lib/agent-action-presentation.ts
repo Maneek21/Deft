@@ -268,7 +268,7 @@ function actionKind(actionName: string): ApprovalCardPresentation['kind'] {
   if (['create_reminder', 'schedule_meeting', 'calendar_create', 'calendar_update'].includes(actionName)) return 'calendar';
   if (['write_canvas'].includes(actionName)) return 'canvas';
   if (
-    ['module_record_create', 'module_record_update', 'module_record_archive'].includes(actionName)
+    ['module_record_create', 'module_record_bulk_create', 'module_record_update', 'module_record_archive'].includes(actionName)
   ) return 'module';
   if (['create_plan'].includes(actionName)) return 'plan';
   if (
@@ -486,24 +486,33 @@ export function getAgentActionPresentation(action: AgentActionForPresentation): 
       'patch.title',
     ]);
     const isCreate = action.action === 'module_record_create';
+    const isBulkCreate = action.action === 'module_record_bulk_create';
     const isArchive = action.action === 'module_record_archive';
-    const operation = isCreate ? 'create' : isArchive ? 'archive' : 'update';
+    const operation = isBulkCreate ? 'import' : isCreate ? 'create' : isArchive ? 'archive' : 'update';
+    const rowCount = Array.isArray(params.rows)
+      ? params.rows.length
+      : typeof params.row_count === 'number' ? params.row_count : 0;
+    const sourceFileName = getNestedStringParam(params, ['source_file_name']);
 
     pushChip(chips, moduleName, 'project');
     pushChip(chips, collectionName.replaceAll('_', ' '), 'book');
     return {
       kind,
       icon: 'module',
-      eyebrow: isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
+      eyebrow: isBulkCreate ? 'Module import draft' : isCreate ? 'Module record draft' : isArchive ? 'Module archive' : 'Module record update',
       headline: `${proposerName} proposed a module ${operation}`,
-      title: recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
+      title: isBulkCreate
+        ? `Import ${rowCount || ''} ${collectionName || 'module'} record${rowCount === 1 ? '' : 's'}`.replace(/\s+/g, ' ').trim()
+        : recordTitle || `${operation[0].toUpperCase()}${operation.slice(1)} ${collectionName || 'record'}`,
       summary: content
         ? truncateApprovalText(content, 150)
-        : `Review this ${collectionName || 'module'} record change before it is applied.`,
-      approveLabel: isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
-      doneLabel: isCreate ? 'Record created' : isArchive ? 'Record archived' : 'Record updated',
+        : isBulkCreate
+          ? `Review ${rowCount} validated row${rowCount === 1 ? '' : 's'}${sourceFileName ? ` from ${sourceFileName}` : ''} before import.`
+          : `Review this ${collectionName || 'module'} record change before it is applied.`,
+      approveLabel: isBulkCreate ? 'Approve import' : isCreate ? 'Approve create' : isArchive ? 'Approve archive' : 'Approve update',
+      doneLabel: isBulkCreate ? 'Records imported' : isCreate ? 'Record created' : isArchive ? 'Record archived' : 'Record updated',
       sourceLabel: age ? `Source: ${proposerName} - ${age}` : `Source: ${proposerName}`,
-      detailsLabel: 'Record details',
+      detailsLabel: isBulkCreate ? 'Import details' : 'Record details',
       emptyDetails: 'The module manifest validates this change before it is applied.',
       badge: isArchive ? 'Archive' : moduleName || undefined,
       badgeTone: isArchive ? 'danger' : 'neutral',

@@ -79,6 +79,15 @@ import {
 } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
+import {
+  MODULE_RECORD_BULK_CREATE_ACTION,
+  ModuleRecordBulkCreateError,
+  ModuleRecordBulkCreateParamsSchema,
+  executeModuleRecordBulkCreate,
+  isModuleRecordBulkCreateAction,
+  preflightModuleRecordBulkCreate,
+  sanitizeModuleBulkCreateParamsForHistory,
+} from './module-record-bulk-create.js';
 
 type ModuleEmployeeActionPolicy = {
   id: string;
@@ -90,7 +99,7 @@ type ModuleEmployeeActionPolicy = {
 
 function assertModuleEmployeeActionPolicy(
   policy: ModuleEmployeeActionPolicy,
-  action: ModuleWriteAction,
+  action: ModuleGovernedRecordWriteAction,
 ): void {
   if (policy.unhealthy) {
     throw new Error(
@@ -105,7 +114,7 @@ function assertModuleEmployeeActionPolicy(
 function employeeModuleActionActor(
   policy: ModuleEmployeeActionPolicy,
   orgId: string,
-  action: ModuleWriteAction,
+  action: ModuleGovernedRecordWriteAction,
   actionId?: string,
 ) {
   assertModuleEmployeeActionPolicy(policy, action);
@@ -119,7 +128,7 @@ function employeeModuleActionActor(
 }
 
 async function buildModuleActionActor(
-  action: ModuleWriteAction,
+  action: ModuleGovernedRecordWriteAction,
   orgId: string,
   userId: string,
   actionId?: string,
@@ -175,7 +184,7 @@ async function buildModuleTaskLinkActor(
 
 async function buildModuleActionActorWithExecutor(
   executor: ModuleDbExecutor,
-  action: ModuleWriteAction,
+  action: ModuleGovernedRecordWriteAction,
   orgId: string,
   userId: string,
   actionId?: string,
@@ -227,6 +236,7 @@ const MODULE_WRITE_ACTIONS = new Set([
 ] as const);
 
 type ModuleWriteAction = 'module_record_create' | 'module_record_update' | 'module_record_archive';
+type ModuleGovernedRecordWriteAction = ModuleWriteAction | typeof MODULE_RECORD_BULK_CREATE_ACTION;
 
 const MODULE_TASK_LINK_WRITE_ACTIONS = new Set([
   'module_record_task_link',
@@ -239,6 +249,40 @@ export type ModuleTaskLinkWriteAction =
 
 export function isModuleWriteAction(action: string): action is ModuleWriteAction {
   return MODULE_WRITE_ACTIONS.has(action as ModuleWriteAction);
+}
+
+export function normalizeAgentModuleBulkCreateParams(
+  action: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isModuleRecordBulkCreateAction(action)) return params;
+  const {
+    source_message_id: _sourceMessageId,
+    proposal_node_id: _proposalNodeId,
+    proposal_depends_on: _proposalDependsOn,
+    ...canonical
+  } = params;
+  return ModuleRecordBulkCreateParamsSchema.parse(canonical) as Record<string, unknown>;
+}
+
+export async function preflightAgentModuleBulkCreateAction(
+  action: string,
+  params: Record<string, unknown>,
+  orgId: string,
+  userId: string,
+  agentEmployeeId?: string,
+): Promise<Record<string, unknown>> {
+  if (!isModuleRecordBulkCreateAction(action)) return params;
+  const normalized = normalizeAgentModuleBulkCreateParams(action, params);
+  const actor = await buildModuleActionActor(
+    MODULE_RECORD_BULK_CREATE_ACTION,
+    orgId,
+    userId,
+    undefined,
+    agentEmployeeId,
+  );
+  await preflightModuleRecordBulkCreate(actor, normalized);
+  return normalized;
 }
 
 export function isModuleTaskLinkWriteAction(
@@ -945,7 +989,11 @@ export async function executeAction(
       const budget = await consumeAgentDailyActionBudget(
         orgId,
         agentEmployeeId,
-        { requireHealthy: isModuleWriteAction(action) || isModuleTaskLinkWriteAction(action) },
+        {
+          requireHealthy: isModuleWriteAction(action)
+            || isModuleRecordBulkCreateAction(action)
+            || isModuleTaskLinkWriteAction(action),
+        },
       );
       if (!budget.allowed) {
         if (isModuleWriteAction(action)) {
@@ -1099,6 +1147,30 @@ export async function executeAction(
         const created = await createModuleRecord(actor, input);
         const result = toModuleMutationResult(created);
         await persistModuleMutationAction(actionId, 'module_record_create', params, actor, result);
+        return { success: true, result };
+      }
+
+      case 'module_record_bulk_create': {
+        const input = ModuleRecordBulkCreateParamsSchema.parse(
+          normalizeAgentModuleBulkCreateParams(action, params),
+        );
+        // Child mutations deliberately omit agent_action_id: one parent action
+        // owns many independently idempotent module receipts.
+        const actor = await buildModuleActionActor(
+          MODULE_RECORD_BULK_CREATE_ACTION,
+          orgId,
+          userId,
+          undefined,
+          agentEmployeeId ?? undefined,
+        );
+        const result = await executeModuleRecordBulkCreate(actor, input);
+        await db.update(agentActions).set({
+          result,
+          error: null,
+          params: sanitizeModuleBulkCreateParamsForHistory(input),
+          after_state: result,
+          executed_at: new Date(),
+        }).where(and(eq(agentActions.id, actionId), eq(agentActions.org_id, orgId)));
         return { success: true, result };
       }
 
@@ -2864,6 +2936,7 @@ export async function executeAction(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
+    const partialBulkResult = err instanceof ModuleRecordBulkCreateError ? err.progress : null;
     if (isModuleWriteAction(action)) {
       await terminalizeModuleActionFailure({
         actionId,
@@ -2887,7 +2960,7 @@ export async function executeAction(
     } else {
       await db.update(agentActions).set({ error: msg }).where(eq(agentActions.id, actionId));
     }
-    return { success: false, result: null, error: msg };
+    return { success: false, result: partialBulkResult, error: msg };
   }
 }
 
@@ -2969,6 +3042,7 @@ async function executeActionDirectLocked(
   // background runner, plans, and MCP). Invalid/disabled module writes must not
   // create even a pending agent_actions row containing record values.
   params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
+  params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
 
   let effectiveApprovalTier = approvalTier;

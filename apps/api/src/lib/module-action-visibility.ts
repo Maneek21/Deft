@@ -14,8 +14,13 @@ export const MODULE_TASK_LINK_WRITE_ACTION_NAMES = [
   'module_record_task_unlink',
 ] as const;
 
+export const MODULE_BULK_WRITE_ACTION_NAMES = [
+  'module_record_bulk_create',
+] as const;
+
 export const MODULE_GOVERNED_WRITE_ACTION_NAMES = [
   ...MODULE_WRITE_ACTION_NAMES,
+  ...MODULE_BULK_WRITE_ACTION_NAMES,
   ...MODULE_TASK_LINK_WRITE_ACTION_NAMES,
 ] as const;
 

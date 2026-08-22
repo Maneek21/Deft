@@ -18,6 +18,7 @@ import {
   validateRegisteredProposalAction,
 } from '../../lib/agent-action-proposals.js';
 import { getMessageAttachmentContext } from '../../lib/agent-message-attachments.js';
+import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
 
 function stripMentionSyntax(content: string): string {
   return toPlainText(content)
@@ -1470,7 +1471,22 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     const attachmentContextSections = await getMessageAttachmentContext({ messageId, orgId });
     let fallbackProjectName: string | null = null;
     let compiledActionDraft: Awaited<ReturnType<typeof compileDeftyActionDraft>> | null = null;
-    if (hasWriteIntent && attachmentContextSections.length === 0) {
+    if (attachmentContextSections.length > 0) {
+      try {
+        compiledActionDraft = await compileMessageModuleCsvImport({
+          orgId,
+          userId,
+          messageId,
+          promptContent,
+        });
+      } catch (err) {
+        console.warn('[agent-reply] Deterministic module CSV compiler failed; using the general reasoning path', {
+          messageId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (!compiledActionDraft && hasWriteIntent && attachmentContextSections.length === 0) {
       try {
         fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
         const priorTaskReferences = await collectRecentAgentTaskReferences({
