@@ -102,9 +102,13 @@ That workflow:
 the Release. If notes need a license banner or highlights, edit the
 Release body after the workflow finishes.
 
-If packaging fails after the tag exists, **do not move the tag**. Re-run
-the workflow with `workflow_dispatch` against the existing tag. If the
-published image is unusable, fix forward and cut the next preview tag.
+If packaging fails after the tag exists, **do not move the tag**. If the failed
+run already completed image build, provenance attestation, and signing, fix the
+workflow on `master`, dispatch it against the existing tag, and select
+`reuse_existing_image`. Recovery then verifies and packages the original
+tag-signed digest without rebuilding it. Do not select reuse when the original
+image/signature steps did not complete. If the published image itself is
+unusable, fix forward and cut the next preview tag.
 
 Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
 `THIRD-PARTY-LICENSES.md`, `.env.example`, the source archive, SBOM,

@@ -22,6 +22,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify bundled module provenance
         run: pnpm module:verify
+      - name: Verify release publishing contract
+        run: pnpm test:release-workflow
       - name: Lint web
         run: pnpm --filter @deft/web lint
       - name: Test web realtime lifecycle state

@@ -70,6 +70,7 @@
     "selfhost:smoke": "tsx scripts/selfhost-smoke.ts",
     "selfhost:upgrade": "tsx scripts/selfhost-upgrade.ts",
     "test:upgrade": "pnpm --filter @deft/db test:upgrade && tsx --test scripts/selfhost-upgrade.test.ts",
+    "test:release-workflow": "node --test scripts/release-workflow.test.mjs",
     "test:public-env": "node --test scripts/inject-public-env.test.mjs",
     "typecheck": "pnpm -r --parallel typecheck"
   },
