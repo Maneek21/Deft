@@ -33,15 +33,22 @@ import {
 } from '../lib/agent-actions.js';
 import { logAuditEvent } from '../lib/audit.js';
 import { shouldAutoExecute, getApprovalTier, isDestructiveAction, type ApprovalTier } from '../lib/agent-approval.js';
-import { getMCPToolsForAgent, mcpToolToAnthropicFormat } from '../lib/mcp-tools.js';
+import {
+  getMCPToolsForAgent,
+  mcpToolToAnthropicFormat,
+  quoteMcpProviderIdentifier,
+} from '../lib/mcp-tools.js';
 import { getActiveAgentToolPolicy, isAgentToolDisabled } from '../lib/agent-tool-policy.js';
 import { runAgentStreamingLoop } from '../lib/agent-stream-loop.js';
 import { retrieveContext } from '../lib/retrieve-context.js';
 import {
-  UNTRUSTED_WORKSPACE_DATA_RULE,
   attachUntrustedContextToCurrentUserMessage,
   buildUntrustedWorkspaceContext,
 } from '../lib/agent-untrusted-context.js';
+import {
+  appendDelegatedSystemInstructions,
+  ensureImmutablePlatformPolicy,
+} from '../lib/agent-system-prompt.js';
 import {
   approveAction as resolveApproveAction,
   rejectAction as resolveRejectAction,
@@ -576,12 +583,13 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   if (mcpToolsBySlug.size > 0) {
     const lines: string[] = ['\n\n## Your Connected MCP Capabilities'];
     for (const [slug, toolList] of mcpToolsBySlug.entries()) {
-      lines.push(`\n**${slug}** — ${toolList.length} tools available:`);
+      lines.push(`\nConnection ${quoteMcpProviderIdentifier(slug)} — ${toolList.length} tools available:`);
       const byTier: Record<string, string[]> = { auto: [], quick: [], full: [] };
       for (const t of toolList) byTier[t.tier]?.push(t.originalName);
-      if (byTier.auto!.length) lines.push(`  - instant (no approval needed): ${byTier.auto!.join(', ')}`);
-      if (byTier.quick!.length) lines.push(`  - quick-approve: ${byTier.quick!.join(', ')}`);
-      if (byTier.full!.length)  lines.push(`  - full-review (ask first): ${byTier.full!.join(', ')}`);
+      const renderNames = (names: string[]) => names.map(quoteMcpProviderIdentifier).join(', ');
+      if (byTier.auto!.length) lines.push(`  - instant (no approval needed): ${renderNames(byTier.auto!)}`);
+      if (byTier.quick!.length) lines.push(`  - quick-approve: ${renderNames(byTier.quick!)}`);
+      if (byTier.full!.length)  lines.push(`  - full-review (ask first): ${renderNames(byTier.full!)}`);
     }
     lines.push(
       '\nUse these tools whenever the user asks for something that matches their purpose.',
@@ -593,12 +601,13 @@ Daily action budget: ${emp.max_daily_actions - emp.daily_action_count}/${emp.max
   }
 
   const untrustedContext = buildUntrustedWorkspaceContext([memoryContext, wikiSection]);
-  if (employeePrompt) {
-    systemPrompt = employeePrompt + connectionInfo + mcpCapabilitiesSection
-      + `\n\n${UNTRUSTED_WORKSPACE_DATA_RULE}`;
-  } else {
-    systemPrompt = systemPrompt + connectionInfo + mcpCapabilitiesSection;
-  }
+  systemPrompt = ensureImmutablePlatformPolicy(systemPrompt + connectionInfo);
+  systemPrompt = appendDelegatedSystemInstructions(
+    systemPrompt,
+    employeePrompt,
+    'organization_employee',
+  );
+  systemPrompt += mcpCapabilitiesSection;
 
   // Resolve the agent's user_id from space_members (the non-current-user member).
   // Must happen before history rehydration so we can distinguish user vs assistant rows.
