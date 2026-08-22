@@ -13,15 +13,15 @@ alpha:
 - **Patch** (`0.X.Y`) — non-breaking fixes only. Safe to bump in place.
 
 Tag format: `vMAJOR.MINOR.PATCH[-channel]`. During alpha the channel is
-`preview` (for example `v0.3.0-preview.2`). Older docs mentioned
+`preview` (for example `v0.3.0-preview.3`). Older docs mentioned
 `alpha` / `beta` / `rc`; keep using `preview` unless the project
 explicitly changes channel. Once 1.0 ships, the channel suffix drops.
 
 The Git tag includes the leading `v`. The GHCR image tag does not:
 
 ```text
-git tag     v0.3.0-preview.2
-GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.2
+git tag     v0.3.0-preview.3
+GHCR image  ghcr.io/maneek21/deft:0.3.0-preview.3
 ```
 
 ## Cutting a release
@@ -90,8 +90,11 @@ Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/rele
 That workflow:
 
 - builds and pushes the `linux/amd64` GHCR image
-- attests provenance, attaches SPDX SBOM and corresponding source
-- writes `release-manifest.json` (`license: AGPL-3.0-only`)
+- publishes GitHub build provenance and keylessly signs the exact image digest
+- verifies the Cosign workflow identity and provenance before continuing
+- attaches the SPDX SBOM and corresponding source
+- writes `release-manifest.json` (`license: AGPL-3.0-only`) with the digest,
+  signing identity, and provenance type
 - creates the GitHub Release (`--generate-notes`, prerelease when the
   version contains `-`)
 
@@ -108,6 +111,11 @@ Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
 checksums, and compose files. Confirm the image label
 `org.opencontainers.image.licenses=AGPL-3.0-only` (the production
 `Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).
+Run the digest-first Cosign and `gh attestation verify` commands in
+[`docs/self-hosting.md`](docs/self-hosting.md) against the published manifest.
+If signing, signature verification, provenance publication, or provenance
+verification fails, the workflow must stop before the GitHub Release is
+created.
 
 ## Hotfix releases
 
