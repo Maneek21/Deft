@@ -43,3 +43,21 @@ test('module record approvals receive a specific, legible presentation', () => {
     { label: 'Contacts', icon: 'book' },
   ]);
 });
+
+test('module CSV imports show one truthful batch approval', () => {
+  const presentation = getAgentActionPresentation({
+    action: 'module_record_bulk_create',
+    params: {
+      module_name: 'Contacts',
+      collection_name: 'Contacts',
+      source_file_name: 'contacts.csv',
+      rows: [{ data: { name: 'Ada' } }, { data: { name: 'Grace' } }],
+    },
+  });
+
+  assert.equal(presentation.kind, 'module');
+  assert.equal(presentation.eyebrow, 'Module import draft');
+  assert.equal(presentation.title, 'Import 2 Contacts records');
+  assert.equal(presentation.approveLabel, 'Approve import');
+  assert.equal(presentation.doneLabel, 'Records imported');
+});

@@ -69,6 +69,10 @@ import {
   visibleModuleActionSql,
 } from '../lib/module-action-visibility.js';
 import { sanitizeAgentMetadataForStorage } from '../lib/module-agent-history.js';
+import {
+  isModuleRecordBulkCreateAction,
+  sanitizeModuleBulkCreateParamsForHistory,
+} from '../lib/module-record-bulk-create.js';
 
 export const agentRoutes = new Hono();
 
@@ -1133,6 +1137,7 @@ agentRoutes.get('/actions/pending-by-space', async (c) => {
       AND a.source IS DISTINCT FROM 'defty_capture'
       AND (${user.role !== 'guest'} OR a.action NOT IN (
         'module_record_create',
+        'module_record_bulk_create',
         'module_record_update',
         'module_record_archive',
         'module_record_task_link',
@@ -1538,6 +1543,7 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       action.source === 'defty_capture'
       || isModuleTaskLinkWriteAction(action.action)
       || isModuleWriteActionName(action.action)
+      || isModuleRecordBulkCreateAction(action.action)
     ) {
       const [terminalReceiptAction] = await db
         .select({ params: agentActions.params })
@@ -1559,6 +1565,8 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
           ? sanitizeModuleTaskLinkActionParamsForHistory(terminalReceiptParams)
           : isModuleWriteActionName(action.action)
             ? sanitizeModuleActionParamsForReceipt(action.action, terminalReceiptParams)
+            : isModuleRecordBulkCreateAction(action.action)
+              ? sanitizeModuleBulkCreateParamsForHistory(terminalReceiptParams)
             : terminalReceiptParams,
         resultJson: execResult.result,
       });
@@ -1791,13 +1799,17 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     ? sanitizeModuleTaskLinkActionParamsForHistory(action.params)
     : isModuleWriteActionName(action.action)
       ? sanitizeModuleActionParamsForReceipt(action.action, action.params)
+      : isModuleRecordBulkCreateAction(action.action)
+        ? sanitizeModuleBulkCreateParamsForHistory(action.params)
       : action.params;
   const [updatedAction] = await db
     .update(agentActions)
     .set({
       approval_status: 'rejected',
       error: reason ?? null,
-      ...(isModuleTaskLinkWriteAction(action.action) || isModuleWriteActionName(action.action)
+      ...(isModuleTaskLinkWriteAction(action.action)
+        || isModuleWriteActionName(action.action)
+        || isModuleRecordBulkCreateAction(action.action)
         ? { params: rejectedParams, executed_at: new Date() }
         : {}),
     })
@@ -1828,6 +1840,7 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     action.source === 'defty_capture'
     || isModuleTaskLinkWriteAction(action.action)
     || isModuleWriteActionName(action.action)
+    || isModuleRecordBulkCreateAction(action.action)
   ) {
     await generateReceipt({
       actionId,

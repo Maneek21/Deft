@@ -1122,10 +1122,12 @@ async function expirePendingModuleActions(
         and(
           eq(agentActions.approval_status, 'approved'),
           sql`${agentActions.executed_at} IS NULL`,
+          sql`${agentActions.action} <> 'module_record_bulk_create'`,
         ),
       ),
       inArray(agentActions.action, [
         'module_record_create',
+        'module_record_bulk_create',
         'module_record_update',
         'module_record_archive',
       ]),
@@ -1163,11 +1165,35 @@ async function expirePendingModuleActions(
   for (const action of pending) {
     const params = action.params as Record<string, unknown>;
     const belongsToInstallation = action.action === 'module_record_create'
+      || action.action === 'module_record_bulk_create'
       ? params.module_id === installation.module_id
       : typeof params.record_id === 'string' && ownedRecordIds.has(params.record_id);
     if (!belongsToInstallation) continue;
-    const terminalParams = sanitizeModuleActionParamsForHistory(action.action, params);
-    if (typeof params.idempotency_key === 'string') {
+    const terminalParams = action.action === 'module_record_bulk_create'
+      ? {
+        module_id: params.module_id,
+        module_name: params.module_name,
+        collection_key: params.collection_key,
+        collection_name: params.collection_name,
+        expected_manifest_digest: params.expected_manifest_digest,
+        source_file_name: params.source_file_name,
+        row_count: Array.isArray(params.rows) ? params.rows.length : params.row_count,
+        changed_fields: Array.isArray(params.rows)
+          ? [...new Set(params.rows.flatMap((row) => {
+            if (!row || typeof row !== 'object' || Array.isArray(row)) return [];
+            const data = (row as Record<string, unknown>).data;
+            return data && typeof data === 'object' && !Array.isArray(data) ? Object.keys(data) : [];
+          }))].sort()
+          : params.changed_fields,
+        input_digest: `sha256:${createHash('sha256').update(JSON.stringify(stableValue({
+          module_id: params.module_id,
+          collection_key: params.collection_key,
+          expected_manifest_digest: params.expected_manifest_digest,
+          rows: params.rows,
+        }))).digest('hex')}`,
+      }
+      : sanitizeModuleActionParamsForHistory(action.action, params);
+    if (action.action !== 'module_record_bulk_create' && typeof params.idempotency_key === 'string') {
       const digestActor = action.agent_employee_id
         ? employeeModuleActor({
           orgId,

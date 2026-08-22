@@ -144,6 +144,7 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   module_record_query: MODULE_OPERATION_DEFINITIONS.module_record_query.approval_tier,
   module_record_get: MODULE_OPERATION_DEFINITIONS.module_record_get.approval_tier,
   module_record_create: MODULE_OPERATION_DEFINITIONS.module_record_create.approval_tier,
+  module_record_bulk_create: 'full',
   module_record_update: MODULE_OPERATION_DEFINITIONS.module_record_update.approval_tier,
   module_record_archive: MODULE_OPERATION_DEFINITIONS.module_record_archive.approval_tier,
 };
@@ -160,9 +161,14 @@ const DESTRUCTIVE_ADMIN_TOOLS = new Set([
 ]);
 
 const DESTRUCTIVE_MODULE_TOOLS: ReadonlySet<string> = new Set(
-  MODULE_OPERATION_NAMES.filter(
-    (operation) => MODULE_OPERATION_DEFINITIONS[operation].destructive,
-  ),
+  [
+    ...MODULE_OPERATION_NAMES.filter(
+      (operation) => MODULE_OPERATION_DEFINITIONS[operation].destructive,
+    ),
+    // High-volume batch mutations always retain a human checkpoint, even for
+    // Autonomous employees.
+    'module_record_bulk_create',
+  ],
 );
 
 /**

@@ -71,6 +71,11 @@ test('Autonomous: remove_member → false (admin tool, always queues)', () => {
   assert.equal(shouldAutoExecute('remove_member', 'autonomous'), false);
 });
 
+test('Autonomous: module_record_bulk_create → false (high-volume batch always queues)', () => {
+  assert.equal(shouldAutoExecute('module_record_bulk_create', 'autonomous'), false);
+  assert.equal(isDestructiveAction('module_record_bulk_create'), true);
+});
+
 test('Autonomous: delete_task → false (delete_ prefix match)', () => {
   // delete_task is not in TOOL_APPROVAL_TIERS so it defaults to full tier,
   // and the delete_ prefix guard fires first.

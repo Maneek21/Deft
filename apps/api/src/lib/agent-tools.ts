@@ -61,6 +61,43 @@ export const MODULE_AGENT_TOOLS: Anthropic.Tool[] = MODULE_OPERATION_NAMES.map(
 
 export const AGENT_TOOLS: Anthropic.Tool[] = [
   {
+    name: 'module_record_bulk_create',
+    description:
+      'Create up to 100 validated records in one enabled module collection as one reviewed, retry-safe batch. This is intended for deterministic imports and always requires human approval.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        module_id: { type: 'string', description: 'The exact enabled module id.' },
+        module_name: { type: 'string', description: 'Module display name for the approval surface.' },
+        collection_key: { type: 'string', description: 'The exact manifest collection key.' },
+        collection_name: { type: 'string', description: 'Collection display name for the approval surface.' },
+        expected_manifest_digest: { type: 'string', description: 'The active manifest digest used to validate every row.' },
+        source_file_name: { type: 'string', description: 'The attached import file name.' },
+        rows: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: {
+            type: 'object',
+            properties: { data: { type: 'object' } },
+            required: ['data'],
+          },
+        },
+        idempotency_key: { type: 'string', description: 'Stable opaque key reused for retries of this exact batch.' },
+      },
+      required: [
+        'module_id',
+        'module_name',
+        'collection_key',
+        'collection_name',
+        'expected_manifest_digest',
+        'source_file_name',
+        'rows',
+        'idempotency_key',
+      ],
+    },
+  },
+  {
     name: 'search_messages',
     description:
       'Search chat messages across spaces in the organization. Use for questions about conversations, decisions, or what people said.',
@@ -897,6 +934,7 @@ export const ACTION_TOOLS = new Set([
   // Declarative module mutations. Approval tiers are sourced from the
   // shared module operation definitions in agent-approval.ts.
   'module_record_create',
+  'module_record_bulk_create',
   'module_record_update',
   'module_record_archive',
 ]);
