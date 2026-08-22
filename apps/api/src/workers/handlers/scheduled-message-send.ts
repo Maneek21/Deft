@@ -1,9 +1,14 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
-import { messages, scheduledMessages, users } from '@deft/db/schema';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { files, messages, scheduledMessages, users } from '@deft/db/schema';
 import { db } from '../../lib/db.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import { getIO } from '../../socket.js';
 import type { JobData } from '../types.js';
+import {
+  extractLegacyAttachmentIds,
+  MAX_MESSAGE_ATTACHMENTS,
+  toMessageAttachment,
+} from '../../lib/message-attachments.js';
 
 type ScheduledMessageJobData = {
   scheduledId?: unknown;
@@ -75,6 +80,33 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
 
     if (!message) throw new Error('Failed to persist scheduled message');
 
+    const attachmentIds = Array.from(new Set(extractLegacyAttachmentIds(scheduled.content)));
+    if (attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {
+      throw new Error(`Scheduled message exceeds the ${MAX_MESSAGE_ATTACHMENTS}-attachment limit`);
+    }
+    const claimedFiles = attachmentIds.length > 0
+      ? await tx.update(files)
+        .set({ message_id: message.id })
+        .where(and(
+          inArray(files.id, attachmentIds),
+          eq(files.org_id, scheduled.org_id),
+          eq(files.uploaded_by, scheduled.user_id),
+          isNull(files.message_id),
+          isNull(files.task_id),
+        ))
+        .returning({
+          id: files.id,
+          filename: files.filename,
+          mime_type: files.mime_type,
+          size_bytes: files.size_bytes,
+        })
+      : [];
+    if (claimedFiles.length !== attachmentIds.length) {
+      throw new Error('One or more scheduled-message attachments are unavailable');
+    }
+    const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
+    const messageAttachments = attachmentIds.map((id) => toMessageAttachment(claimedById.get(id)!));
+
     await tx
       .update(scheduledMessages)
       .set({ status: 'sent', sent_at: new Date() })
@@ -87,6 +119,7 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
       message,
       spaceId: scheduled.space_id,
       userId: scheduled.user_id,
+      attachments: messageAttachments,
     };
   });
 
@@ -102,6 +135,8 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
     ...result.message,
     user_name: user?.name,
     user_avatar: user?.avatar_url,
+    file_ids: result.attachments.map((file) => file.id),
+    files: result.attachments,
   });
 
   return true;

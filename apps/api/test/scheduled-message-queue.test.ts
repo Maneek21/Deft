@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 import {
+  files,
   jobQueue,
   messages,
   orgMembers,
@@ -162,6 +163,43 @@ test('scheduled-message send commits exactly one message under concurrent delive
   assert.equal(state?.status, 'sent');
   assert.ok(state?.sentAt instanceof Date);
   assert.equal(await sendScheduledMessage(scheduled.id), false, 'replay after commit must no-op');
+});
+
+test('scheduled-message delivery claims marker attachments into the committed message', async () => {
+  const [file] = await db.insert(files).values({
+    org_id: orgId,
+    uploaded_by: userId,
+    filename: 'scheduled.csv',
+    mime_type: 'text/csv',
+    size_bytes: 12,
+    storage_key: `${marker}-scheduled.csv`,
+  }).returning();
+  if (!file) throw new Error('Failed to seed scheduled attachment');
+  const content = `${marker}-attachment\n[[file:${file.id}:scheduled.csv:text/csv:12:/api/files/${file.id}]]`;
+  const [scheduled] = await db.insert(scheduledMessages).values({
+    org_id: orgId,
+    user_id: userId,
+    space_id: spaceId,
+    content,
+    scheduled_for: new Date(Date.now() - 1_000),
+  }).returning();
+  if (!scheduled) throw new Error('Failed to seed scheduled attachment message');
+
+  try {
+    assert.equal(await sendScheduledMessage(scheduled.id), true);
+    const [sent] = await db.select({ id: messages.id })
+      .from(messages)
+      .where(and(eq(messages.org_id, orgId), eq(messages.content, content)));
+    assert.ok(sent);
+    const [linked] = await db.select({ message_id: files.message_id })
+      .from(files)
+      .where(eq(files.id, file.id));
+    assert.equal(linked?.message_id, sent.id);
+  } finally {
+    await db.delete(files).where(eq(files.id, file.id));
+    await db.delete(messages).where(and(eq(messages.org_id, orgId), eq(messages.content, content)));
+    await db.delete(scheduledMessages).where(eq(scheduledMessages.id, scheduled.id));
+  }
 });
 
 test('scheduled-message delivery cancels when space access was revoked', async () => {

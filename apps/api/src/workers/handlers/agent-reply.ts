@@ -17,6 +17,7 @@ import {
   sanitizeAgentReplyActionMetadata,
   validateRegisteredProposalAction,
 } from '../../lib/agent-action-proposals.js';
+import { getMessageAttachmentContext } from '../../lib/agent-message-attachments.js';
 
 function stripMentionSyntax(content: string): string {
   return toPlainText(content)
@@ -1466,9 +1467,10 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     // reasoning loop remains the fallback for reads, discussion synthesis, and
     // requests the compiler cannot safely resolve. This avoids paying for two
     // independent reasoning passes for a straightforward governed write.
+    const attachmentContextSections = await getMessageAttachmentContext({ messageId, orgId });
     let fallbackProjectName: string | null = null;
     let compiledActionDraft: Awaited<ReturnType<typeof compileDeftyActionDraft>> | null = null;
-    if (hasWriteIntent) {
+    if (hasWriteIntent && attachmentContextSections.length === 0) {
       try {
         fallbackProjectName = await resolveProjectNameForMentionFallback(orgId, spaceId, promptContent);
         const priorTaskReferences = await collectRecentAgentTaskReferences({
@@ -1530,6 +1532,7 @@ export async function handleAgentReply(job: JobData): Promise<void> {
         userId,
         orgName,
         conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        untrustedContextSections: attachmentContextSections,
         // Task 3.2 — thread the triggering message id so write actions like
         // create_task can inherit source_message_id without the LLM having
         // to know about it.
