@@ -14,6 +14,11 @@ on:
         required: true
         default: true
         type: boolean
+      reuse_existing_image:
+        description: Reuse an already-published and tag-signed image after a packaging failure
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -65,6 +70,7 @@ jobs:
 
       - name: Build and publish amd64 image
         id: image
+        if: github.event_name != 'workflow_dispatch' || !inputs.reuse_existing_image
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -83,11 +89,42 @@ jobs:
             VCS_REF=${{ steps.release.outputs.sha }}
             SOURCE_URL=https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}
 
+      - name: Resolve existing signed image digest
+        id: existing
+        if: github.event_name == 'workflow_dispatch' && inputs.reuse_existing_image
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/${IMAGE_NAME}:${VERSION}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "Existing release image did not resolve to an immutable digest" >&2
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve immutable release digest
+        id: digest
+        env:
+          BUILT_DIGEST: ${{ steps.image.outputs.digest }}
+          REUSED_DIGEST: ${{ steps.existing.outputs.digest }}
+        shell: bash
+        run: |
+          digest="${REUSED_DIGEST:-$BUILT_DIGEST}"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "Release image digest is missing or invalid" >&2
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Attest image provenance
+        if: steps.existing.outputs.digest == ''
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
 
       - name: Install Cosign
@@ -96,20 +133,31 @@ jobs:
           cosign-release: v3.0.6
 
       - name: Sign release image digest
+        if: steps.existing.outputs.digest == ''
         env:
-          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
         shell: bash
         run: cosign sign --yes "$IMAGE_REF"
 
       - name: Verify signature and provenance
+        id: verification
         env:
-          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          REUSED_DIGEST: ${{ steps.existing.outputs.digest }}
         shell: bash
         run: |
+          if [[ -n "$REUSED_DIGEST" ]]; then
+            identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${RELEASE_TAG}"
+          else
+            identity="https://github.com/${GITHUB_WORKFLOW_REF}"
+          fi
           cosign verify "$IMAGE_REF" \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-identity "$identity" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" >/dev/null
           gh attestation verify "oci://$IMAGE_REF" --repo "$GITHUB_REPOSITORY"
+          echo "signature_identity=$identity" >> "$GITHUB_OUTPUT"
 
       - name: Generate release manifest
         shell: bash
@@ -122,9 +170,9 @@ jobs:
             "tag": "${{ steps.release.outputs.tag }}",
             "commit": "${{ steps.release.outputs.sha }}",
             "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}",
-            "digest": "${{ steps.image.outputs.digest }}",
+            "digest": "${{ steps.digest.outputs.digest }}",
             "signature": "sigstore-keyless",
-            "signature_identity": "https://github.com/${{ github.workflow_ref }}",
+            "signature_identity": "${{ steps.verification.outputs.signature_identity }}",
             "provenance": "github-build-attestation",
             "license": "AGPL-3.0-only",
             "source": "https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}",
@@ -145,7 +193,7 @@ jobs:
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}
           format: spdx-json
           output-file: dist/deft-${{ steps.release.outputs.version }}.spdx.json
 

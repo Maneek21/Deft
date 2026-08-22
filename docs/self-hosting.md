@@ -70,8 +70,9 @@ export TAG=v0.3.0-preview.3
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+export SIGNATURE_IDENTITY="$(jq -r .signature_identity release-manifest.json)"
 cosign verify "$IMAGE@$DIGEST" \
-  --certificate-identity "https://github.com/Maneek21/Deft/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-identity "$SIGNATURE_IDENTITY" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
 ```
