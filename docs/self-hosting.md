@@ -61,9 +61,27 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 ```
 
 Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
-the exact commit, image digest, and upgrade baseline. Use `init` only for a
-fresh database. Versioned release upgrades begin at `v0.2.0-preview.1` and use
-the dedicated `upgrade` service described below.
+the exact commit, image digest, keyless-signing identity, provenance type, and
+upgrade baseline. Release-tagged images are signed by the release workflow and
+carry GitHub build provenance. Verify the digest before deploying it:
+
+```bash
+export TAG=v0.3.0-preview.3
+export VERSION="${TAG#v}"
+export IMAGE=ghcr.io/maneek21/deft
+export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+cosign verify "$IMAGE@$DIGEST" \
+  --certificate-identity "https://github.com/Maneek21/Deft/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
+```
+
+Compare `DIGEST` with `release-manifest.json`, then set `DEFT_IMAGE` to the
+immutable `ghcr.io/maneek21/deft@<digest>` reference. A release workflow fails
+before creating the GitHub release if signing, signature verification,
+provenance publication, or provenance verification fails. Use `init` only for
+a fresh database. Versioned release upgrades begin at `v0.2.0-preview.1` and
+use the dedicated `upgrade` service described below.
 
 ### Fast path: one-command bootstrap
 
@@ -452,6 +470,13 @@ The wrapper builds or pulls the target image before downtime, stops app writes,
 writes a compressed Postgres backup, runs the `upgrade` service, recreates the
 app, and requires doctor plus MCP smoke to pass. Site-specific overlays can be
 appended with `--compose-file <file>`.
+
+Schema upgrades are forward-only. The migration ledger is checksummed and a
+failed migration transaction rolls back, but there is no automatic downgrade
+path after a successful upgrade. Recovery means stopping Deft, restoring the
+pre-upgrade Postgres backup and uploads backup, and running the exact previous
+image digest. Rehearse that restore on a disposable host before upgrading data
+that cannot be recreated.
 
 Preview the exact sequence without changing data:
 
