@@ -22,6 +22,10 @@ import {
   attachUntrustedContextToCurrentUserMessage,
   buildUntrustedWorkspaceContext,
 } from './agent-untrusted-context.js';
+import {
+  appendDelegatedSystemInstructions,
+  ensureImmutablePlatformPolicy,
+} from './agent-system-prompt.js';
 
 const SYSTEM_PROMPT = `You are Deft, the AI assistant for this workspace. You have direct SQL access to the organization's data through tools.
 
@@ -108,7 +112,7 @@ export async function runAgentQuery(params: {
   conversationHistory?: ConversationMessage[];
   /** 'chat_mention' (default): write actions skipped. 'background': auto-execute per trust level. */
   mode?: 'chat_mention' | 'background';
-  /** Override system prompt (for agent employees in future). */
+  /** First-party workflow specialization. It cannot replace platform policy. */
   systemPromptOverride?: string;
   /** Override trust level (for agent employees with per-employee trust). */
   trustLevelOverride?: 'conservative' | 'standard' | 'autonomous';
@@ -241,6 +245,8 @@ export async function runAgentQuery(params: {
     }
   }
 
+  systemPrompt = ensureImmutablePlatformPolicy(systemPrompt);
+
   // Auto-load relevant wiki context through the shared retrieval gateway.
   // Retrieved wiki is untrusted user-channel data, not system policy.
   const retrievedWikiSections: string[] = [];
@@ -326,12 +332,17 @@ export async function runAgentQuery(params: {
   }
   const retrievalMs = Date.now() - retrievalStartedAt;
 
-  // Apply system prompt override if provided (for agent employees)
+  // First-party workflows can specialize output/role, but may not replace the
+  // immutable Deft policy or remove retrieved-data trust boundaries.
   if (systemPromptOverride) {
-    systemPrompt = systemPromptOverride
+    const workflowInstructions = systemPromptOverride
       .replace('{{DATE}}', new Date().toISOString().split('T')[0]!)
-      .replace('{{ORG}}', orgName || 'Unknown') + connectionInfo
-      + `\nCurrent time: ${nowIso}. User/workspace timezone: ${workspaceTimezone}. Resolve relative dates and times in this timezone unless the user explicitly supplies another one.`;
+      .replace('{{ORG}}', orgName || 'Unknown');
+    systemPrompt = appendDelegatedSystemInstructions(
+      systemPrompt,
+      workflowInstructions,
+      'first_party_workflow',
+    );
   }
 
   const reasonModel = reasonProvider.model;
@@ -352,8 +363,8 @@ export async function runAgentQuery(params: {
   // Add the current message
   apiMessages.push({ role: 'user', content });
 
-  // systemPromptOverride historically discarded preloaded wiki by replacing
-  // the composed system prompt. Keep that observable behavior.
+  // Evidence-only first-party workflows intentionally exclude auto-retrieved
+  // wiki context. Their caller supplies a closed, permission-filtered packet.
   if (!systemPromptOverride) {
     apiMessages = attachUntrustedContextToCurrentUserMessage(
       apiMessages,
