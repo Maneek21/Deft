@@ -10,6 +10,50 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.3] — 2026-08-22
+
+Delta from `v0.3.0-preview.2`. Deft remains alpha.
+
+### Added
+
+- Structured text attachments are now bound to their exact org and message,
+  authorized through the same space-membership rules as chat, and presented to
+  the agent as untrusted user data with filename/type/size provenance.
+- Defty can deterministically compile an attached CSV into one governed,
+  full-review module bulk-import proposal. The generic importer resolves the
+  target from installed manifests, validates every header/value, limits batches
+  to 100 rows, and uses per-row receipts/idempotency so replay cannot duplicate
+  records.
+- The certified App Protocol v2 implementation contract now defines closed
+  Modules, provider-neutral Capabilities, staged App Packs, encrypted Governed
+  App Runs, cross-app references, explicit grants, and the Native Equivalence
+  branch gate.
+
+### Security
+
+- Retrieved wiki and agent-memory context remain outside system instructions
+  and are explicitly framed as untrusted data on the current user turn.
+- Agent-authored approval proposals use the canonical actor boundary, cannot
+  impersonate a human requester, and recheck live membership, module access,
+  employee health, trust, and action budgets before execution.
+- Signed action receipts redact secret-like input fields while preserving stable
+  verification semantics.
+- Attachment lookup is exact-message and exact-org scoped with path containment,
+  media/size limits, and no generic filesystem access.
+- Bulk-import approval/history/receipts retain row counts, field names, digests,
+  and resource IDs but scrub CSV row values and raw retry keys.
+
+### Changed
+
+- Release-tagged GHCR images are keylessly signed with Cosign. The release job
+  verifies the workflow identity and GitHub build provenance for the exact image
+  digest before it can create a GitHub Release.
+- Versioned-upgrade CI now snapshots representative chat, task, wiki, team, and
+  agent-action data from a populated `v0.2.0-preview.1` database, runs the entire
+  checksummed upgrade chain twice, and requires byte-for-byte preservation.
+- Self-hosting docs now provide digest-first signature/provenance verification
+  commands and explicitly document forward-only migration recovery.
+
 ## [0.3.0-preview.2] — 2026-08-20
 
 Delta from `v0.3.0-preview.1`. Deft remains alpha.
@@ -189,7 +233,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.2...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.3...HEAD
+[0.3.0-preview.3]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.3
 [0.3.0-preview.2]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.2
 [0.3.0-preview.1]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.1
 [0.2.0-preview.1 — 0.2.0-preview.4]: https://github.com/Maneek21/Deft/releases/tag/v0.2.0-preview.4
