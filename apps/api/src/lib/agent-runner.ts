@@ -110,6 +110,8 @@ export async function runAgentQuery(params: {
   userId: string;
   orgName: string;
   conversationHistory?: ConversationMessage[];
+  /** Permission-filtered workspace/file evidence to attach to the current user turn as untrusted data. */
+  untrustedContextSections?: string[];
   /** 'chat_mention' (default): write actions skipped. 'background': auto-execute per trust level. */
   mode?: 'chat_mention' | 'background';
   /** First-party workflow specialization. It cannot replace platform policy. */
@@ -364,13 +366,16 @@ export async function runAgentQuery(params: {
   apiMessages.push({ role: 'user', content });
 
   // Evidence-only first-party workflows intentionally exclude auto-retrieved
-  // wiki context. Their caller supplies a closed, permission-filtered packet.
-  if (!systemPromptOverride) {
-    apiMessages = attachUntrustedContextToCurrentUserMessage(
-      apiMessages,
-      buildUntrustedWorkspaceContext(retrievedWikiSections),
-    );
-  }
+  // wiki context. Explicit caller-supplied evidence remains untrusted and may
+  // be attached when the caller has already permission-filtered it.
+  const untrustedContextSections = [
+    ...(!systemPromptOverride ? retrievedWikiSections : []),
+    ...(params.untrustedContextSections ?? []),
+  ];
+  apiMessages = attachUntrustedContextToCurrentUserMessage(
+    apiMessages,
+    buildUntrustedWorkspaceContext(untrustedContextSections),
+  );
 
   let allCitations: any[] = [];
   let pendingActions: any[] = [];

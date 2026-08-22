@@ -1128,18 +1128,12 @@ export function SpaceChat({
       const quoteHtml = serializeQuotedMessage(quotedMessageToSend);
       content = quoteHtml + content;
     }
-    // Embed file references as markers in the content
-    if (pendingFilesToSend.length > 0) {
-      const fileLines = pendingFilesToSend.map(
-        (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
-      );
-      content = content + '\n' + fileLines.join('\n');
-    }
     const token = localStorage.getItem('deft-access-token');
     if (token) getSocket(token).emit('typing:stop', { space_id: requestSpaceId });
     isTyping.current = false;
     const response = await api.post(`/api/messages/${requestSpaceId}`, {
       content: content || '(attached files)',
+      file_ids: pendingFilesToSend.map((file) => file.id),
     });
     if (!response.ok) {
       throw new Error(await apiErrorMessage(response, 'Failed to send message'));
@@ -2668,10 +2662,11 @@ function MessageFiles({
   onImageClick: (src: string) => void;
 }) {
   if (!files || files.length === 0) return null;
+  const uniqueFiles = Array.from(new Map(files.map((file) => [file.id, file])).values());
 
   return (
     <div className="flex flex-wrap gap-2 mt-2">
-      {files.map((file) =>
+      {uniqueFiles.map((file) =>
         isImageType(file.type) || isImageUrl(file.url) ? (
           <button
             key={file.id}

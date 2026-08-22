@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray, ne } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers } from '@deft/db/schema';
+import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -14,13 +14,22 @@ import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
 import { toPlainText } from '../lib/plain-text.js';
+import {
+  getMessageAttachments,
+  MAX_MESSAGE_ATTACHMENTS,
+  normalizeAttachmentIds,
+  toMessageAttachment,
+} from '../lib/message-attachments.js';
 
 export const messageRoutes = new Hono();
 
 const sendMessageSchema = z.object({
   content: z.string().min(1),
   parent_id: z.string().optional(),
+  file_ids: z.array(z.string().min(1)).max(MAX_MESSAGE_ATTACHMENTS).optional(),
 });
+
+class AttachmentClaimError extends Error {}
 
 // Helper: aggregate reactions for a set of message IDs
 async function getReactionsForMessages(messageIds: string[]) {
@@ -262,15 +271,18 @@ messageRoutes.get('/:spaceId', async (c) => {
       const seen = new Set<string>();
       const unique = combined.filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; });
       const messageIds = unique.map(m => m.id);
-      const [reactionsMap, replyStatsMap] = await Promise.all([
+      const [reactionsMap, replyStatsMap, attachmentsMap] = await Promise.all([
         getReactionsForMessages(messageIds),
         getReplyStats(messageIds),
+        getMessageAttachments(messageIds, user.org_id),
       ]);
       const result = unique.map(msg => ({
         ...msg,
         reactions: reactionsMap.get(msg.id) ?? [],
         reply_count: replyStatsMap.get(msg.id)?.reply_count ?? 0,
         latest_reply_at: replyStatsMap.get(msg.id)?.latest_reply_at ?? null,
+        file_ids: (attachmentsMap.get(msg.id) ?? []).map((file) => file.id),
+        files: attachmentsMap.get(msg.id) ?? [],
       }));
       return c.json({ messages: result, next_cursor: null });
     }
@@ -312,9 +324,10 @@ messageRoutes.get('/:spaceId', async (c) => {
     const messageIds = result.map((m) => m.id);
 
     // Fetch reactions and reply stats in parallel
-    const [reactionsMap, replyStatsMap] = await Promise.all([
+    const [reactionsMap, replyStatsMap, attachmentsMap] = await Promise.all([
       getReactionsForMessages(messageIds),
       getReplyStats(messageIds),
+      getMessageAttachments(messageIds, user.org_id),
     ]);
 
     // Fetch thread read state for messages with replies
@@ -350,6 +363,8 @@ messageRoutes.get('/:spaceId', async (c) => {
         reply_count: replyCount,
         latest_reply_at: latestReplyAt,
         has_unread_thread_replies: hasUnreadThreadReplies,
+        file_ids: (attachmentsMap.get(msg.id) ?? []).map((file) => file.id),
+        files: attachmentsMap.get(msg.id) ?? [],
       };
     });
 
@@ -435,13 +450,54 @@ messageRoutes.post('/:spaceId', async (c) => {
       normalizedContent = plainAgentMentions.content;
     }
 
-    const [message] = await db.insert(messages).values({
-      org_id: user.org_id,
-      space_id: spaceId,
-      user_id: user.id,
-      content: normalizedContent,
-      parent_id: parsed.data.parent_id,
-    }).returning();
+    const attachmentIds = normalizeAttachmentIds(parsed.data.file_ids, normalizedContent);
+    if (attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {
+      return c.json({
+        error: `A message can include at most ${MAX_MESSAGE_ATTACHMENTS} attachments`,
+        code: 'VALIDATION_ERROR',
+      }, 400);
+    }
+
+    const { message, messageAttachments } = await db.transaction(async (tx) => {
+      const [insertedMessage] = await tx.insert(messages).values({
+        org_id: user.org_id,
+        space_id: spaceId,
+        user_id: user.id,
+        content: normalizedContent,
+        parent_id: parsed.data.parent_id,
+      }).returning();
+      if (!insertedMessage) throw new Error('Message insert returned no row');
+
+      if (attachmentIds.length === 0) {
+        return { message: insertedMessage, messageAttachments: [] };
+      }
+
+      const claimedFiles = await tx.update(files)
+        .set({ message_id: insertedMessage.id })
+        .where(and(
+          inArray(files.id, attachmentIds),
+          eq(files.org_id, user.org_id),
+          eq(files.uploaded_by, user.id),
+          isNull(files.message_id),
+          isNull(files.task_id),
+        ))
+        .returning({
+          id: files.id,
+          filename: files.filename,
+          mime_type: files.mime_type,
+          size_bytes: files.size_bytes,
+        });
+
+      if (claimedFiles.length !== attachmentIds.length) {
+        throw new AttachmentClaimError('One or more attachments are unavailable');
+      }
+
+      const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
+      return {
+        message: insertedMessage,
+        messageAttachments: attachmentIds.map((id) => toMessageAttachment(claimedById.get(id)!)),
+      };
+    });
 
     // Get user info for the broadcast
     const [userData] = await db.select({
@@ -456,6 +512,8 @@ messageRoutes.post('/:spaceId', async (c) => {
       reactions: [],
       reply_count: 0,
       latest_reply_at: null,
+      file_ids: messageAttachments.map((file) => file.id),
+      files: messageAttachments,
     };
 
     // Broadcast via Socket.io
@@ -797,6 +855,9 @@ messageRoutes.post('/:spaceId', async (c) => {
         // Blocked detection — enqueue alert if someone is blocked
     return c.json(messageWithUser, 201);
   } catch (err) {
+    if (err instanceof AttachmentClaimError) {
+      return c.json({ error: err.message, code: 'ATTACHMENT_NOT_FOUND' }, 404);
+    }
     console.error('Failed to send message:', err);
     return c.json({ error: 'Failed to send message', code: 'INTERNAL_ERROR' }, 500);
   }
@@ -1003,15 +1064,23 @@ messageRoutes.get('/:id/thread', async (c) => {
     // Fetch reactions for parent + replies so deep-linked thread drawers can
     // hydrate from this endpoint without needing the parent message list first.
     const replyIds = replies.map((r) => r.id);
-    const reactionsMap = await getReactionsForMessages([parentMsg.id, ...replyIds]);
+    const attachmentMessageIds = [parentMsg.id, ...replyIds];
+    const [reactionsMap, attachmentsMap] = await Promise.all([
+      getReactionsForMessages(attachmentMessageIds),
+      getMessageAttachments(attachmentMessageIds, user.org_id),
+    ]);
     const parentWithReactions = {
       ...parentMsg,
       reactions: reactionsMap.get(parentMsg.id) ?? [],
+      file_ids: (attachmentsMap.get(parentMsg.id) ?? []).map((file) => file.id),
+      files: attachmentsMap.get(parentMsg.id) ?? [],
     };
 
     const repliesWithReactions = replies.map((reply) => ({
       ...reply,
       reactions: reactionsMap.get(reply.id) ?? [],
+      file_ids: (attachmentsMap.get(reply.id) ?? []).map((file) => file.id),
+      files: attachmentsMap.get(reply.id) ?? [],
     }));
 
     return c.json({ parent: parentWithReactions, replies: repliesWithReactions });

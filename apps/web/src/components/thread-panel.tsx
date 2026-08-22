@@ -6,7 +6,7 @@ import { api } from '@/lib/api';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { getSocket } from '@/lib/socket';
 import { useAuth } from '@/lib/auth-context';
-import { X, Smile, ArrowLeft } from 'lucide-react';
+import { X, Smile, ArrowLeft, FileText } from 'lucide-react';
 import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
 import { RichComposer } from './rich-composer';
@@ -21,6 +21,14 @@ type Reaction = {
   users: string[];
 };
 
+type FileAttachment = {
+  id: string;
+  url: string;
+  name: string;
+  type: string;
+  size: number;
+};
+
 type Message = {
   id: string;
   content: string;
@@ -33,7 +41,61 @@ type Message = {
   created_at: string;
   reactions?: Reaction[];
   file_ids?: string[];
+  files?: FileAttachment[];
 };
+
+const FILE_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+function parseLegacyFileMarkers(content: string): { text: string; files: FileAttachment[] } {
+  const pattern = /\[\[file:([^:]+):([^:]+):([^:]+):([^:]+):([^\]]+)\]\]/g;
+  const files: FileAttachment[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    let url = match[5]!;
+    if (url.startsWith('/')) url = FILE_API_BASE + url;
+    files.push({
+      id: match[1]!,
+      name: match[2]!,
+      type: match[3]!,
+      size: Number(match[4]!) || 0,
+      url,
+    });
+  }
+  return { text: content.replace(pattern, '').trim(), files };
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ThreadMessageFiles({ files }: { files?: FileAttachment[] }) {
+  if (!files?.length) return null;
+  const uniqueFiles = Array.from(new Map(files.map((file) => [file.id, file])).values());
+  return (
+    <div className="flex flex-wrap gap-2 mt-2">
+      {uniqueFiles.map((file) => (
+        <a
+          key={file.id}
+          href={file.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg no-underline"
+          style={{ background: 'var(--surface-container)', color: 'var(--on-surface)' }}
+        >
+          <FileText size={18} strokeWidth={1.5} style={{ color: 'var(--outline)' }} />
+          <div className="min-w-0">
+            <p className="text-[13px] font-medium truncate max-w-[200px]">{file.name}</p>
+            <p className="text-[11px]" style={{ color: 'var(--outline)', fontFamily: 'var(--font-mono)' }}>
+              {formatAttachmentSize(file.size)}
+            </p>
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
 
 async function apiErrorMessage(res: Response, fallback: string) {
   const body = await res.json().catch(() => null);
@@ -332,14 +394,11 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
   const handleRichSend = async (html: string, _text: string) => {
     const requestMessageId = messageId;
     const pendingFilesToSend = [...pendingFiles];
-    let content = html;
-    if (pendingFilesToSend.length > 0) {
-      const fileLines = pendingFilesToSend.map(
-        (f) => `[[file:${f.id}:${f.name}:${f.type}:${f.size}:${f.url}]]`
-      );
-      content = fileLines.join('\n') + '\n' + content;
-    }
-    const response = await api.post(`/api/messages/${spaceId}`, { content, parent_id: requestMessageId });
+    const response = await api.post(`/api/messages/${spaceId}`, {
+      content: html || '(attached files)',
+      parent_id: requestMessageId,
+      file_ids: pendingFilesToSend.map((file) => file.id),
+    });
     if (!response.ok) {
       throw new Error(await apiErrorMessage(response, 'Failed to send reply'));
     }
@@ -426,7 +485,9 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
     const color = avatarColor(msg.user_name || '');
     const inlineActions = pendingByMessage?.[msg.id] ?? [];
     const hasApprovalContext = inlineActions.length > 0 || Object.keys(pendingByMessage ?? {}).length > 0;
-    const displayContent = normalizeInlineApprovalCopy(msg.content, hasApprovalContext);
+    const legacyContent = parseLegacyFileMarkers(msg.content);
+    const displayContent = normalizeInlineApprovalCopy(legacyContent.text, hasApprovalContext);
+    const messageFiles = [...(msg.files ?? []), ...legacyContent.files];
     return (
       <div className={`flex gap-3 ${isParent ? 'py-3' : 'py-2'}`}>
         <div className="flex-shrink-0">
@@ -470,6 +531,8 @@ export function ThreadPanel({ parentMessage, spaceId, onClose }: Props) {
                   </span>
                 )}
               </div>
+
+              <ThreadMessageFiles files={messageFiles} />
 
               {renderPendingActions(msg.id)}
 

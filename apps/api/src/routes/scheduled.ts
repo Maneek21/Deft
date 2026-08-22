@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { scheduledMessages } from '@deft/db/schema';
+import { files, scheduledMessages } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
+import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
 
 export const scheduledRoutes = new Hono();
 
@@ -28,6 +29,28 @@ scheduledRoutes.post('/', async (c) => {
 
   if (!(await requireSpaceMembership(parsed.data.space_id, user.id))) {
     return c.json({ error: 'Not a member of this space', code: 'FORBIDDEN' }, 403);
+  }
+
+  const attachmentIds = Array.from(new Set(extractLegacyAttachmentIds(parsed.data.content)));
+  if (attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {
+    return c.json({
+      error: `A scheduled message can include at most ${MAX_MESSAGE_ATTACHMENTS} attachments`,
+      code: 'VALIDATION_ERROR',
+    }, 400);
+  }
+  if (attachmentIds.length > 0) {
+    const availableFiles = await db.select({ id: files.id })
+      .from(files)
+      .where(and(
+        inArray(files.id, attachmentIds),
+        eq(files.org_id, user.org_id),
+        eq(files.uploaded_by, user.id),
+        isNull(files.message_id),
+        isNull(files.task_id),
+      ));
+    if (availableFiles.length !== attachmentIds.length) {
+      return c.json({ error: 'One or more attachments are unavailable', code: 'ATTACHMENT_NOT_FOUND' }, 404);
+    }
   }
 
   const scheduled = await db.transaction(async (tx) => {
