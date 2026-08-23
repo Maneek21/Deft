@@ -11,6 +11,84 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 
+MAX_PREFETCH_CHARS = 16000
+
+
+def _compact_json_value(value: Any, *, string_limit: int, list_limit: int) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= string_limit else value[:string_limit] + "…"
+    if isinstance(value, list):
+        return [
+            _compact_json_value(item, string_limit=string_limit, list_limit=list_limit)
+            for item in value[:list_limit]
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _compact_json_value(item, string_limit=string_limit, list_limit=list_limit)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _serialize_prefetch_context(
+    platform_context: Any,
+    memories: Any,
+    session_id: str,
+) -> str:
+    """Return valid, bounded JSON while retaining the highest-value context."""
+    context = dict(platform_context) if isinstance(platform_context, dict) else platform_context
+    if isinstance(context, dict):
+        context = {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in context.items()
+        }
+    memory_payload = list(memories) if isinstance(memories, list) else memories
+    payload = {
+        "source": "deft",
+        "session_id": session_id,
+        "platform_context": context,
+        "wiki_results": memory_payload,
+    }
+
+    def render() -> str:
+        return json.dumps(payload, ensure_ascii=False)
+
+    serialized = render()
+    if len(serialized) <= MAX_PREFETCH_CHARS:
+        return serialized
+
+    payload["truncated"] = True
+    if isinstance(context, dict):
+        # memory_recall below is the authoritative wiki result set, so this
+        # platform-context convenience copy is the first safe field to drop.
+        context.pop("relevant_wiki_snippets", None)
+        for key in ("context_packets", "teammates", "teams", "active_projects", "recommended_tool_paths"):
+            value = context.get(key)
+            while isinstance(value, list) and value and len(render()) > MAX_PREFETCH_CHARS:
+                value.pop()
+
+    if isinstance(memory_payload, list):
+        while len(memory_payload) > 1 and len(render()) > MAX_PREFETCH_CHARS:
+            memory_payload.pop()
+
+    serialized = render()
+    if len(serialized) <= MAX_PREFETCH_CHARS:
+        return serialized
+
+    payload["platform_context"] = _compact_json_value(context, string_limit=500, list_limit=2)
+    payload["wiki_results"] = _compact_json_value(memory_payload, string_limit=2000, list_limit=1)
+    serialized = render()
+    if len(serialized) <= MAX_PREFETCH_CHARS:
+        return serialized
+
+    return json.dumps({
+        "source": "deft",
+        "session_id": session_id,
+        "truncated": True,
+        "error": "Deft context exceeded the safe prompt budget.",
+    }, ensure_ascii=False)
+
+
 class DeftMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
         self._base_url = os.environ.get("DEFT_MCP_URL", "").rstrip("/")
@@ -73,12 +151,11 @@ class DeftMemoryProvider(MemoryProvider):
                 "include_org": True,
             })
             self.last_error = None
-            return json.dumps({
-                "source": "deft",
-                "session_id": session_id or self._session_id,
-                "platform_context": context,
-                "wiki_results": memories,
-            }, ensure_ascii=False)[:16000]
+            return _serialize_prefetch_context(
+                context,
+                memories,
+                session_id or self._session_id,
+            )
         except Exception as exc:  # fail open: Deft outage must not kill Hermes
             self.last_error = str(exc)
             return ""

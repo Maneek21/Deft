@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import unittest
 
@@ -31,6 +32,30 @@ class DeftMemoryProviderTests(unittest.TestCase):
         value = provider.prefetch("find qualified leads", session_id="session-1")
         self.assertIn('"slug": "rita"', value)
         self.assertIn('"slug": "rule"', value)
+
+    def test_prefetch_large_context_remains_valid_bounded_json(self):
+        provider = FakeProvider()
+        provider.initialize("session-large", agent_context="primary")
+
+        def large_call(name, _arguments):
+            if name == "platform_context":
+                return {
+                    "org": {"name": "Deft"},
+                    "relevant_wiki_snippets": [{"content": "x" * 6000}],
+                    "context_packets": [{"content": "y" * 6000} for _ in range(2)],
+                    "teammates": [{"name": "Person " + str(i)} for i in range(20)],
+                }
+            return [{"slug": f"rule-{i}", "content": "z" * 5000} for i in range(5)]
+
+        provider._call = large_call
+        value = provider.prefetch("find company policy", session_id="session-large")
+        parsed = json.loads(value)
+
+        self.assertLessEqual(len(value), MOD.MAX_PREFETCH_CHARS)
+        self.assertEqual(parsed["source"], "deft")
+        self.assertEqual(parsed["session_id"], "session-large")
+        self.assertTrue(parsed["truncated"])
+        self.assertGreaterEqual(len(parsed["wiki_results"]), 1)
 
     def test_builtin_memory_write_uses_stable_digest_key(self):
         provider = FakeProvider()
