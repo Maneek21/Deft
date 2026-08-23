@@ -47,8 +47,14 @@ jobs:
           tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           [[ "$tag" == v* ]] || { echo "Release tag must start with v" >&2; exit 1; }
           git rev-parse "$tag^{commit}" >/dev/null
+          version="${tag#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          [[ "$package_version" == "$version" ]] || {
+            echo "package.json version $package_version does not match release $version" >&2
+            exit 1
+          }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse "$tag^{commit}")" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
@@ -86,6 +92,7 @@ jobs:
           # setting this only on the running container is too late.
           build-args: |
             NEXT_PUBLIC_FEATURE_HUDDLES=true
+            DEFT_RELEASE_VERSION=${{ steps.release.outputs.version }}
             VCS_REF=${{ steps.release.outputs.sha }}
             SOURCE_URL=https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}
 
@@ -177,7 +184,9 @@ jobs:
             "license": "AGPL-3.0-only",
             "source": "https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}",
             "platforms": ["linux/amd64"],
-            "upgrade_support": "versioned-from-v0.2.0-preview.1"
+            "upgrade_support": "versioned-from-v0.2.0-preview.1",
+            "agent_channel_protocol": "deft.agent_channel.v2",
+            "hermes_integration": "deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz"
           }
           JSON
 
@@ -189,6 +198,13 @@ jobs:
             --prefix="deft-${{ steps.release.outputs.version }}/" \
             --output="dist/deft-${{ steps.release.outputs.version }}-source.tar.gz" \
             "${{ steps.release.outputs.sha }}"
+
+      - name: Build matched Hermes integration bundle
+        shell: bash
+        run: |
+          node scripts/build-hermes-integration-bundle.mjs
+          tar -czf "dist/deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz" -C dist/hermes-integration .
+          rm -rf dist/hermes-integration
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.0

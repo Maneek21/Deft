@@ -112,14 +112,23 @@ switch ($Action) {
     $info = if ($task) { Get-ScheduledTaskInfo -TaskName $TaskName } else { $null }
     $processes = @(Get-ServiceProcess)
     $logPath = Join-Path $ServiceRoot 'service.log'
+    $healthPath = Join-Path $ServiceRoot 'health.json'
     $logItem = Get-Item -LiteralPath $logPath -ErrorAction SilentlyContinue
+    $healthItem = Get-Item -LiteralPath $healthPath -ErrorAction SilentlyContinue
+    $health = if ($healthItem) {
+      try { Get-Content -LiteralPath $healthPath -Raw | ConvertFrom-Json } catch { $null }
+    } else { $null }
     $taskState = if ($task) { [string]$task.State } else { 'NotInstalled' }
     $logAgeSeconds = if ($logItem) {
       [Math]::Round(((Get-Date) - $logItem.LastWriteTime).TotalSeconds)
     } else { $null }
+    $healthAgeSeconds = if ($health -and $health.checked_at) {
+      [Math]::Round(((Get-Date) - [datetime]$health.checked_at).TotalSeconds)
+    } else { $null }
+    $semanticallyHealthy = $health -and $health.state -eq 'healthy' -and $healthAgeSeconds -le 180
     [pscustomobject]@{
       Installed = [bool]$task
-      Healthy = [bool]($task -and $taskState -eq 'Running' -and $processes.Count -eq 1 -and $logItem -and $logAgeSeconds -le 180)
+      Healthy = [bool]($task -and $taskState -eq 'Running' -and $processes.Count -eq 1 -and $semanticallyHealthy)
       TaskState = $taskState
       ProcessCount = $processes.Count
       LastRunTime = $info.LastRunTime
@@ -127,6 +136,13 @@ switch ($Action) {
       ConfigPresent = Test-Path -LiteralPath $configTarget
       LastLogWriteTime = $logItem.LastWriteTime
       LogAgeSeconds = $logAgeSeconds
+      RuntimeState = if ($health) { $health.state } else { 'unknown' }
+      ProtocolVersion = if ($health) { $health.protocol_version } else { $null }
+      AdapterVersion = if ($health) { $health.adapter_version } else { $null }
+      ServerRelease = if ($health) { $health.server_release } else { $null }
+      LastErrorCode = if ($health) { $health.last_error_code } else { $null }
+      LastError = if ($health) { $health.last_error } else { $null }
+      HealthAgeSeconds = $healthAgeSeconds
       LastLogLine = if ($logItem) { Get-Content -LiteralPath $logPath -Tail 1 } else { $null }
     }
   }
@@ -134,9 +150,12 @@ switch ($Action) {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $task) { throw "'$TaskName' is not installed. Run Install first." }
     Assert-Config $configTarget
-    $logItem = Get-Item -LiteralPath (Join-Path $ServiceRoot 'service.log') -ErrorAction SilentlyContinue
-    $logIsFresh = $logItem -and ((Get-Date) - $logItem.LastWriteTime).TotalSeconds -le 180
-    if ([string]$task.State -ne 'Running' -or @(Get-ServiceProcess).Count -ne 1 -or -not $logIsFresh) {
+    $healthPath = Join-Path $ServiceRoot 'health.json'
+    $health = if (Test-Path -LiteralPath $healthPath) {
+      try { Get-Content -LiteralPath $healthPath -Raw | ConvertFrom-Json } catch { $null }
+    } else { $null }
+    $healthIsFresh = $health -and $health.state -eq 'healthy' -and ((Get-Date) - [datetime]$health.checked_at).TotalSeconds -le 180
+    if ([string]$task.State -ne 'Running' -or @(Get-ServiceProcess).Count -ne 1 -or -not $healthIsFresh) {
       Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
       Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
       Start-ScheduledTask -TaskName $TaskName

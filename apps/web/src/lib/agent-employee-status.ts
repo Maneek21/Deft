@@ -70,6 +70,19 @@ export function agentEmployeeLifecycle(emp: AgentEmployeeHealth, now = Date.now(
     return { label: 'Setup incomplete', detail: 'Deft Workspace skill is missing', tone: 'amber' };
   }
 
+  if (emp.certification_status !== 'verified') {
+    if (emp.certification_status === 'challenge_issued') {
+      return { label: 'Certifying', detail: 'waiting for the end-to-end employee check', tone: 'amber' };
+    }
+    if (emp.certification_status === 'mcp_reachable') {
+      return { label: 'Setup incomplete', detail: 'MCP works, but the employee check has not passed', tone: 'amber' };
+    }
+    if (emp.certification_status === 'token_issued') {
+      return { label: 'Setup incomplete', detail: 'waiting for the first runtime call', tone: 'amber' };
+    }
+    return { label: 'Draft', detail: 'finish setup and certify the runtime', tone: 'gray' };
+  }
+
   const contact = latestAgentContact(emp);
   const contactAt = validTime(contact);
   const workAt = latestTime(emp.last_work_outcome_at, emp.last_turn_at);
@@ -77,16 +90,9 @@ export function agentEmployeeLifecycle(emp: AgentEmployeeHealth, now = Date.now(
   const workAge = workAt ? Math.max(0, now - workAt) : Number.POSITIVE_INFINITY;
 
   if (!contactAt) {
-    if (emp.certification_status === 'challenge_issued') {
-      return { label: 'Certifying', detail: 'waiting for the runtime challenge', tone: 'amber' };
-    }
-    if (emp.certification_status === 'verified' || emp.certification_status === 'mcp_reachable') {
+    if (emp.certification_status === 'verified') {
       return { label: 'Ready to connect', detail: 'certified, but no runtime contact yet', tone: 'purple' };
     }
-    if (emp.certification_status === 'token_issued') {
-      return { label: 'Setup incomplete', detail: 'waiting for the first runtime call', tone: 'amber' };
-    }
-    return { label: 'Draft', detail: 'finish setup and connect a runtime', tone: 'gray' };
   }
 
   if ((emp.pending_action_count ?? 0) > 0) {

@@ -28,10 +28,12 @@ ARG NEXT_PUBLIC_APP_URL=__DEFT_APP_URL__
 ARG NEXT_PUBLIC_API_URL=__DEFT_API_URL__
 ARG NEXT_PUBLIC_WS_URL=__DEFT_WS_URL__
 ARG NEXT_PUBLIC_FEATURE_HUDDLES=false
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.6
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 ENV NEXT_PUBLIC_FEATURE_HUDDLES=$NEXT_PUBLIC_FEATURE_HUDDLES
+ENV DEFT_RELEASE_VERSION=$DEFT_RELEASE_VERSION
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
@@ -44,6 +46,7 @@ RUN pnpm --filter @deft/web build
 
 # Stage 3: Production
 FROM node:22-alpine AS runner
+ARG DEFT_RELEASE_VERSION=0.3.0-preview.6
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/Maneek21/Deft
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
@@ -59,6 +62,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV API_PORT=3001
 ENV DEFT_BUILD_SOURCE_URL=$SOURCE_URL
+ENV DEFT_RELEASE_VERSION=$DEFT_RELEASE_VERSION
+ENV DEFT_BUILD_COMMIT=$VCS_REF
 
 # Copy built artifacts
 COPY --from=builder /app/node_modules ./node_modules

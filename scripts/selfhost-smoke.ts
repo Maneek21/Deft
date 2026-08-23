@@ -43,11 +43,50 @@ async function fetchJson<T = any>(url: string, init?: RequestInit): Promise<{ st
 }
 
 async function checkHealth(): Promise<Check> {
-  const res = await fetchText(`${API_URL}/health`);
+  const res = await fetchJson(`${API_URL}/health`);
+  const body = res.json as any;
+  const ok = res.status === 200
+    && body?.status === 'ok'
+    && body?.agent_channel_protocol === 'deft.agent_channel.v2'
+    && typeof body?.release === 'string';
   return {
     name: 'API health',
-    ok: res.status === 200,
-    detail: res.status === 200 ? `${API_URL}/health returned 200` : `${API_URL}/health returned ${res.status}: ${res.text.slice(0, 160)}`,
+    ok,
+    detail: ok
+      ? `${API_URL}/health release=${body.release}; channel=${body.agent_channel_protocol}`
+      : `${API_URL}/health returned ${res.status}: ${res.text.slice(0, 160)}`,
+  };
+}
+
+async function checkReadiness(): Promise<Check> {
+  const res = await fetchJson(`${API_URL}/health/ready`);
+  const body = res.json as any;
+  const ok = res.status === 200
+    && body?.status === 'ready'
+    && body?.checks?.agent_channel_v2_schema === true
+    && body?.checks?.wiki_memory_sync === true;
+  return {
+    name: 'Release/schema readiness',
+    ok,
+    detail: ok
+      ? `schema=${body.schema_head}; Agent Channel v2 and wiki memory sync are ready`
+      : `readiness returned ${res.status}: ${res.text.slice(0, 200)}`,
+  };
+}
+
+async function checkAgentChannelContract(): Promise<Check> {
+  const res = await fetchJson(`${API_URL}/api/agent-channel/v1/contract`);
+  const body = res.json as any;
+  const required = ['single_flight_claims', 'renewable_leases', 'fencing_tokens', 'terminal_outcomes', 'identity_bound_mcp'];
+  const ok = res.status === 200
+    && body?.protocol_version === 'deft.agent_channel.v2'
+    && required.every((capability) => body?.capabilities?.includes(capability));
+  return {
+    name: 'Agent Channel compatibility contract',
+    ok,
+    detail: ok
+      ? `protocol=${body.protocol_version}; release=${body.server_release}`
+      : `contract returned ${res.status}: ${res.text.slice(0, 200)}`,
   };
 }
 
@@ -175,6 +214,8 @@ async function main() {
 
   const checks = [
     await checkHealth(),
+    await checkReadiness(),
+    await checkAgentChannelContract(),
     await checkProtectedResource(),
     await checkAuthorizationServer(),
     await checkDynamicClientRegistration(),

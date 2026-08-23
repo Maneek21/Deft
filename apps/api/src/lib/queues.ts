@@ -89,7 +89,6 @@ export async function enqueue(
 ): Promise<void> {
   const executor = opts?.executor ?? db;
   const delay = Math.max(0, opts?.delay ?? 0);
-  const runAt = new Date(Date.now() + delay);
   const maxAttempts = positiveInteger(opts?.maxAttempts, 3);
   const orgId = inferOrgId(data, opts?.orgId);
   const dedupeKey = opts?.dedupeKey?.trim() || null;
@@ -107,7 +106,7 @@ export async function enqueue(
       ${JSON.stringify(data)}::jsonb,
       'pending',
       ${maxAttempts},
-      ${runAt},
+      now() + (${delay} * interval '1 millisecond'),
       ${dedupeKey}
     )
     ON CONFLICT DO NOTHING
@@ -269,7 +268,7 @@ export async function ensureCronJob(
   data?: Record<string, unknown>,
   delay?: number,
 ): Promise<void> {
-  const runAt = new Date(Date.now() + Math.max(0, delay ?? 0));
+  const delayMs = Math.max(0, delay ?? 0);
   await db.execute(sql`
     INSERT INTO job_queue (
       id, queue, name, data, status, max_attempts, run_at, cron_key
@@ -280,7 +279,7 @@ export async function ensureCronJob(
       ${JSON.stringify(data ?? {})}::jsonb,
       'pending',
       2,
-      ${runAt},
+      now() + (${delayMs} * interval '1 millisecond'),
       ${cronKey}
     )
     ON CONFLICT DO NOTHING

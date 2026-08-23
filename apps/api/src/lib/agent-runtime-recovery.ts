@@ -1,5 +1,5 @@
 export type AgentRuntimeRecovery = {
-  state: 'healthy' | 'setup_required' | 'offline' | 'delivery_failed' | 'backlogged';
+  state: 'healthy' | 'setup_required' | 'offline' | 'delivery_failed' | 'backlogged' | 'certifying';
   title: string;
   detail: string;
   action: 'none' | 'regenerate_channel_token' | 'send_channel_test' | 'inspect_queue';
@@ -11,6 +11,7 @@ export function describeAgentRuntimeRecovery(input: {
   lastSeenAt?: Date | null;
   failedDeliveries: number;
   pendingDeliveries: number;
+  certificationStatus?: string | null;
   now?: Date;
 }): AgentRuntimeRecovery {
   const now = input.now ?? new Date();
@@ -33,6 +34,12 @@ export function describeAgentRuntimeRecovery(input: {
     detail: 'Start the runtime and channel bridge, then send a test event. Deft will update this page when contact resumes.',
     action: 'send_channel_test',
   };
+  if (input.certificationStatus !== 'verified') return {
+    state: 'certifying',
+    title: 'Transport connected; employee check pending',
+    detail: 'Deft will mark this employee ready only after a real Agent Channel assignment, Hermes turn, MCP calls, reply, and memory probe complete.',
+    action: 'none',
+  };
   if (input.pendingDeliveries > 5) return {
     state: 'backlogged',
     title: `${input.pendingDeliveries} deliveries are waiting`,
@@ -42,7 +49,7 @@ export function describeAgentRuntimeRecovery(input: {
   return {
     state: 'healthy',
     title: 'Runtime is ready',
-    detail: 'The employee is connected and no delivery failures need attention.',
+    detail: 'The employee passed the end-to-end check, is connected, and has no delivery failures.',
     action: 'none',
   };
 }

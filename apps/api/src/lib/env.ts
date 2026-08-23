@@ -57,10 +57,14 @@ function resolveDockerDatabaseUrl(): string | null {
 export const DEVELOPMENT_ENCRYPTION_KEY = 'deft-dev-encryption-key-32ch';
 
 export function resolveEncryptionKey(
-  configured = process.env.ENCRYPTION_KEY,
+  configured?: string,
   nodeEnv = process.env.NODE_ENV,
 ): string {
-  const value = configured?.trim();
+  // An explicit `undefined` must remain distinguishable from an omitted
+  // argument so callers validating supplied production configuration cannot
+  // accidentally fall back to a key inherited from the parent process.
+  const resolved = arguments.length === 0 ? process.env.ENCRYPTION_KEY : configured;
+  const value = resolved?.trim();
   const insecure = !value
     || value === DEVELOPMENT_ENCRYPTION_KEY
     || value.includes('CHANGE_ME')

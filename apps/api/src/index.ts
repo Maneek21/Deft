@@ -3,6 +3,14 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
+import { sql } from 'drizzle-orm';
+import { db } from './lib/db.js';
+import {
+  AGENT_CHANNEL_PROTOCOL_VERSION,
+  DEFT_BUILD_COMMIT,
+  DEFT_RELEASE_VERSION,
+  DEFT_SCHEMA_HEAD,
+} from './lib/agent-channel.js';
 import { authRoutes } from './routes/auth.js';
 import { spaceRoutes } from './routes/spaces.js';
 import { messageRoutes } from './routes/messages.js';
@@ -219,7 +227,51 @@ app.route('/api/task-templates', taskTemplateRoutes);
 app.route('/api/work-intents', workIntentRoutes);
 app.route('/api/modules', moduleRoutes);
 
-app.get('/health', (c) => c.json({ status: 'ok' }));
+app.get('/health', (c) => c.json({
+  status: 'ok',
+  release: DEFT_RELEASE_VERSION,
+  commit: DEFT_BUILD_COMMIT,
+  schema_head: DEFT_SCHEMA_HEAD,
+  agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+}));
+
+app.get('/health/ready', async (c) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE table_name = 'agent_channel_events'
+            AND column_name IN ('claim_token', 'claim_owner', 'lease_expires_at')
+        )::int AS channel_column_count,
+        EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'wiki_memory_syncs'
+        ) AS has_memory_sync
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+    `);
+    const rows = Array.isArray(result) ? result : ('rows' in result ? result.rows : []);
+    const row = rows[0] as { channel_column_count?: number; has_memory_sync?: boolean } | undefined;
+    const ready = Number(row?.channel_column_count ?? 0) === 3 && row?.has_memory_sync === true;
+    return c.json({
+      status: ready ? 'ready' : 'not_ready',
+      release: DEFT_RELEASE_VERSION,
+      commit: DEFT_BUILD_COMMIT,
+      schema_head: DEFT_SCHEMA_HEAD,
+      agent_channel_protocol: AGENT_CHANNEL_PROTOCOL_VERSION,
+      checks: {
+        agent_channel_v2_schema: Number(row?.channel_column_count ?? 0) === 3,
+        wiki_memory_sync: row?.has_memory_sync === true,
+      },
+    }, ready ? 200 : 503);
+  } catch (err) {
+    return c.json({
+      status: 'not_ready',
+      error: 'Database readiness check failed',
+      code: 'DATABASE_NOT_READY',
+    }, 503);
+  }
+});
 
 app.get('/health/queue', async (c) => {
   const authError = requireMetricsBearer(c);

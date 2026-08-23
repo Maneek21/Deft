@@ -21,6 +21,7 @@ import {
   agentMcpCallAudit,
   agentCooperativeLog,
   agentChannelConnections,
+  agentChannelDeliveryAttempts,
   agentChannelEvents,
   agentChannelTokens,
   projects,
@@ -29,6 +30,8 @@ import {
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
+  AGENT_CHANNEL_CAPABILITIES,
+  DEFT_RELEASE_VERSION,
   issueAgentChannelToken,
   publishAgentChannelEvent,
 } from '../lib/agent-channel.js';
@@ -38,6 +41,7 @@ import { MODULE_WRITE_ACTION_NAMES } from '../lib/module-action-visibility.js';
 import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '../lib/agent-channel-lifecycle.js';
 import { loadAgentActivity } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
+import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -547,10 +551,17 @@ function agentChannelEndpointUrl(): string {
   return `${apiBase.replace(/\/$/, '')}/api/agent-channel/v1`;
 }
 
+function hermesIntegrationBundleUrl(): string {
+  return process.env.DEFT_HERMES_BUNDLE_URL?.trim()
+    || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
+}
+
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',
   'task_query',
   'ping_alive',
+  'memory_write',
+  'memory_recall',
   'record_conversation_turn',
   'record_decision',
 ] as const;
@@ -565,6 +576,9 @@ type RuntimeSetup = {
   runtime_kind: string;
   tool_server_name: string | null;
   channel_protocol_version: string;
+  channel_capabilities: string[];
+  integration_version: string | null;
+  integration_bundle_url: string | null;
   mcp_endpoint_url: string;
   channel_endpoint_url: string;
   tool_name_style: 'bare' | 'server_prefixed';
@@ -589,6 +603,11 @@ type CertificationChallengeEvidence = {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  channelEventSeen: boolean;
+  channelCompleted: boolean;
+  channelReplyNonceSeen: boolean;
+  singleDelivery: boolean;
+  runtimeSessionSeen: boolean;
   completed: boolean;
 };
 
@@ -604,6 +623,7 @@ async function loadCertificationChallengeEvidence(params: {
   orgId: string;
   employeeId: string;
   challenge: {
+    id: string;
     nonce: string;
     required_tools: string[];
     status: string;
@@ -648,12 +668,68 @@ async function loadCertificationChallengeEvidence(params: {
     : challenge.required_tools.filter((tool) => !seenTools.has(tool));
   const nonceSeen = persistedComplete || nonceRows.length > 0;
 
+  const [channelEvent] = await db
+    .select({
+      id: agentChannelEvents.id,
+      status: agentChannelEvents.status,
+      delivery_count: agentChannelEvents.delivery_count,
+      runtime_session_key: agentChannelEvents.runtime_session_key,
+      work_outcome: agentChannelEvents.work_outcome,
+    })
+    .from(agentChannelEvents)
+    .where(and(
+      eq(agentChannelEvents.org_id, orgId),
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'certification.challenge'),
+      eq(agentChannelEvents.source_kind, 'certification'),
+      eq(agentChannelEvents.source_id, challenge.id),
+      gte(agentChannelEvents.created_at, challenge.started_at),
+    ))
+    .orderBy(desc(agentChannelEvents.created_at))
+    .limit(1);
+  const replyRows = channelEvent
+    ? await db
+        .select({ id: agentChannelDeliveryAttempts.id })
+        .from(agentChannelDeliveryAttempts)
+        .where(and(
+          eq(agentChannelDeliveryAttempts.org_id, orgId),
+          eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+          eq(agentChannelDeliveryAttempts.event_id, channelEvent.id),
+          eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+          eq(agentChannelDeliveryAttempts.status, 'completed'),
+          sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
+        ))
+        .limit(1)
+    : [];
+  const channelEventSeen = persistedComplete || Boolean(channelEvent);
+  const channelCompleted = persistedComplete || (
+    channelEvent?.status === 'completed'
+    && channelEvent.work_outcome === 'completed'
+  );
+  const channelReplyNonceSeen = persistedComplete || replyRows.length > 0;
+  const singleDelivery = persistedComplete || channelEvent?.delivery_count === 1;
+  const runtimeSessionSeen = persistedComplete || Boolean(channelEvent?.runtime_session_key);
+  const completed = persistedComplete || (
+    missingTools.length === 0
+    && nonceSeen
+    && channelEventSeen
+    && channelCompleted
+    && channelReplyNonceSeen
+    && singleDelivery
+    && runtimeSessionSeen
+  );
+
   return {
     seenTools,
     missingTools,
     nonceSeen,
     auditCount: auditRows.length,
-    completed: persistedComplete || (missingTools.length === 0 && nonceSeen),
+    channelEventSeen,
+    channelCompleted,
+    channelReplyNonceSeen,
+    singleDelivery,
+    runtimeSessionSeen,
+    completed,
   };
 }
 
@@ -768,7 +844,6 @@ function buildCertificationPrompt(
 ): string {
   const runtimeKind = runtimeKindOf(employee);
   const toolNames = CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool));
-  const taskCreate = runtimeToolName(runtimeKind, 'task_create');
   const prefixNote = runtimeKind === 'hermes'
     ? 'Hermes exposes Deft MCP tools to the model as mcp_deft_<tool>, so use the exact names below.'
     : 'Use the Deft MCP tools below.';
@@ -778,8 +853,10 @@ function buildCertificationPrompt(
     prefixNote,
     `Use caller_employee_slug exactly as "${employee.slug}" on every Deft MCP tool call.`,
     `Call these tools now: ${toolNames.join(', ')}.`,
+    `Use ${runtimeToolName(runtimeKind, 'memory_write')} to save a private certification memory whose title and body contain ${nonce}; use idempotency_key "certification:${nonce}".`,
+    `Then call ${runtimeToolName(runtimeKind, 'memory_recall')} with query "${nonce}" and confirm the memory is returned.`,
     `Include this exact certification nonce in record_conversation_turn and record_decision: ${nonce}.`,
-    `If ${taskCreate} is available, create one small useful task for the organization after certification.`,
+    `Your final reply must contain this exact nonce: ${nonce}.`,
     'Finish with a short natural-language summary. Do not prefix every future message with your own name.',
   ].join('\n');
 }
@@ -798,12 +875,16 @@ function buildRuntimeSetup(
       runtime_kind: runtimeKind,
       tool_server_name: 'deft',
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+      channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+      integration_version: '0.2.0',
+      integration_bundle_url: hermesIntegrationBundleUrl(),
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
       tool_name_style: 'server_prefixed',
       tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
       setup_steps: [
-        'Save the Deft stdio bridge as deft-mcp-stdio.mjs on the machine where Hermes runs.',
+        `Download and extract the immutable Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
+        'Use the bundled Deft MCP stdio bridge and Hermes plugins; do not copy these files from another Deft checkout.',
         'Add the mcp_servers.deft block to the active Hermes config.yaml.',
         'Enable the authenticated Hermes Responses API and start the Hermes gateway.',
         'Set the Agent Channel quick-config variables shown below, including the Hermes API URL, key, and model.',
@@ -814,6 +895,11 @@ function buildRuntimeSetup(
         'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
       ],
       commands: [
+        {
+          label: 'Download matched Deft integration',
+          command: `curl -fL -o deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz ${hermesIntegrationBundleUrl()}`,
+          description: `Downloads the checksummed Hermes integration built for Deft ${DEFT_RELEASE_VERSION}.`,
+        },
         {
           label: 'List configured MCP servers',
           command: 'hermes mcp list',
@@ -836,7 +922,7 @@ function buildRuntimeSetup(
         },
         {
           label: 'Start live Deft delivery',
-          command: 'pnpm agent:hermes-channel',
+          command: 'node ./deft-hermes-integration/scripts/hermes-agent-channel-bridge.mjs',
           description: 'Consumes the durable Agent Channel inbox, asks Hermes, and posts exactly one reply through Deft.',
         },
         {
@@ -866,7 +952,8 @@ function buildRuntimeSetup(
         'Use mcp_deft_memory_recall for wiki context; mcp_deft_wiki_search exists only for compatibility with older/native wording.',
         'If Hermes exits before tool calls with a provider/auth error, fix Hermes model credentials first.',
         'Avoid passing a toolset override that disables MCP tools for the run.',
-        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; the Hermes API and pnpm agent:hermes-channel process must both be running.',
+        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; the Hermes API and the matched bundled Agent Channel bridge must both be running.',
+        `If the bridge reports INCOMPATIBLE_CHANNEL, install the integration bundle for Deft ${DEFT_RELEASE_VERSION}; do not enable a legacy fallback.`,
         'If a channel reply appears twice, stop any older bridge process and verify Hermes is not calling chat-writing MCP tools directly.',
       ],
     };
@@ -876,6 +963,9 @@ function buildRuntimeSetup(
     runtime_kind: runtimeKind,
     tool_server_name: null,
     channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+    channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    integration_version: null,
+    integration_bundle_url: null,
     mcp_endpoint_url: endpoint,
     channel_endpoint_url: channelEndpoint,
     tool_name_style: 'bare',
@@ -921,6 +1011,11 @@ function buildCertificationStages(params: {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  channelEventSeen: boolean;
+  channelCompleted: boolean;
+  channelReplyNonceSeen: boolean;
+  singleDelivery: boolean;
+  runtimeSessionSeen: boolean;
   completed: boolean;
 }): CertificationStage[] {
   const runtimeKind = runtimeKindOf(params.employee);
@@ -945,6 +1040,22 @@ function buildCertificationStages(params: {
           : 'Connect the runtime to the Deft MCP endpoint.',
     },
     {
+      key: 'channel_delivered',
+      label: 'Assignment delivered',
+      status: params.channelEventSeen && params.singleDelivery ? 'pass' : 'pending',
+      detail: params.channelEventSeen && params.singleDelivery
+        ? 'The certification assignment was claimed exactly once through Agent Channel.'
+        : 'Waiting for a compatible runtime to claim the certification assignment exactly once.',
+    },
+    {
+      key: 'runtime_inference',
+      label: 'Runtime inference completed',
+      status: params.channelCompleted && params.runtimeSessionSeen ? 'pass' : 'pending',
+      detail: params.channelCompleted && params.runtimeSessionSeen
+        ? 'Hermes completed the assignment and reported a terminal outcome.'
+        : 'Waiting for Hermes to run the assignment and report a terminal outcome.',
+    },
+    {
       key: 'required_tools_called',
       label: 'Required tools called',
       status: toolsCalled ? 'pass' : 'pending',
@@ -959,6 +1070,14 @@ function buildCertificationStages(params: {
       detail: params.nonceSeen
         ? 'The challenge nonce was recorded in the cooperative log.'
         : 'Call record_conversation_turn or record_decision with the challenge nonce.',
+    },
+    {
+      key: 'channel_reply_verified',
+      label: 'Reply verified',
+      status: params.channelReplyNonceSeen ? 'pass' : 'pending',
+      detail: params.channelReplyNonceSeen
+        ? 'The Agent Channel reply contains the one-time certification nonce.'
+        : 'Waiting for a nonce-bearing reply through Agent Channel.',
     },
     {
       key: 'verified',
@@ -978,8 +1097,21 @@ function certificationFailureReason(params: {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  channelEventSeen: boolean;
+  channelCompleted: boolean;
+  channelReplyNonceSeen: boolean;
+  singleDelivery: boolean;
+  runtimeSessionSeen: boolean;
 }): string | null {
-  if (params.missingTools.length === 0 && params.nonceSeen) return null;
+  if (
+    params.missingTools.length === 0
+    && params.nonceSeen
+    && params.channelEventSeen
+    && params.channelCompleted
+    && params.channelReplyNonceSeen
+    && params.singleDelivery
+    && params.runtimeSessionSeen
+  ) return null;
   const runtimeKind = runtimeKindOf(params.employee);
   const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
   if (!mcpReachable) {
@@ -987,12 +1119,45 @@ function certificationFailureReason(params: {
       ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the bridge config.'
       : 'The runtime has not reached Deft MCP yet.';
   }
+  if (!params.channelEventSeen) return 'The Hermes runtime has not claimed the Agent Channel certification assignment.';
+  if (!params.singleDelivery) return 'The certification assignment was delivered more than once. Reset certification after fixing runtime stability.';
+  if (!params.channelCompleted || !params.runtimeSessionSeen) return 'Hermes has not completed a real runtime turn for the certification assignment.';
   if (params.missingTools.length > 0) {
     return runtimeKind === 'hermes'
       ? `Hermes can reach Deft MCP, but its model loop has not called: ${params.missingTools.map((tool) => runtimeToolName('hermes', tool)).join(', ')}. Check model auth and use the mcp_deft_* tool names.`
       : `The runtime has not called: ${params.missingTools.join(', ')}.`;
   }
+  if (!params.channelReplyNonceSeen) return 'Hermes completed tool calls but did not reply through Agent Channel with the certification nonce.';
   return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
+}
+
+async function cancelPendingCertification(orgId: string, employeeId: string, reason: string) {
+  await db.execute(sql`
+    UPDATE agent_certification_challenges
+    SET status = 'reset',
+        failure_reason = ${reason},
+        completed_at = now(),
+        updated_at = now()
+    WHERE org_id = ${orgId}
+      AND employee_id = ${employeeId}
+      AND status = 'pending'
+  `);
+  await db.execute(sql`
+    UPDATE agent_channel_events
+    SET status = 'cancelled',
+        completed_at = COALESCE(completed_at, now()),
+        work_outcome = 'cancelled',
+        outcome_detail = ${reason},
+        outcome_at = now(),
+        claim_owner = NULL,
+        claim_token = NULL,
+        lease_expires_at = NULL,
+        updated_at = now()
+    WHERE org_id = ${orgId}
+      AND agent_employee_id = ${employeeId}
+      AND source_kind = 'certification'
+      AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')
+  `);
 }
 
 async function issueMcpToken({
@@ -2132,6 +2297,11 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
               missingTools: challengeEvidence?.missingTools ?? [],
               nonceSeen: challengeEvidence?.nonceSeen ?? false,
               auditCount: challengeEvidence?.auditCount ?? 0,
+              channelEventSeen: challengeEvidence?.channelEventSeen ?? false,
+              channelCompleted: challengeEvidence?.channelCompleted ?? false,
+              channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
+              singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
               completed: challengeEvidence?.completed ?? false,
             }),
           }
@@ -2173,6 +2343,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
           lastSeenAt: channelConnection?.last_seen_at,
           failedDeliveries: channelQueue.failed ?? 0,
           pendingDeliveries: channelQueue.pending ?? 0,
+          certificationStatus: employee.certification_status,
         }),
       },
     });
@@ -2249,6 +2420,7 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
+    await cancelPendingCertification(user.org_id, employee.id, 'Superseded by a new certification challenge');
     const nonce = `deft-cert-${employee.slug}-${crypto.randomBytes(6).toString('hex')}`;
     const [challenge] = await db
       .insert(agentCertificationChallenges)
@@ -2260,6 +2432,33 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
         status: 'pending',
       })
       .returning();
+    if (!challenge) throw new Error('Certification challenge insert returned no row');
+
+    await ensureAgentConversationSpace({
+      orgId: user.org_id,
+      userId: user.id,
+      agentUserId: employee.user_id,
+      conversationId: challenge.id,
+      title: `${employee.name} onboarding check`,
+    });
+    const { event: channelEvent } = await publishAgentChannelEvent({
+      orgId: user.org_id,
+      employeeId: employee.id,
+      kind: 'certification.challenge',
+      sourceKind: 'certification',
+      sourceId: challenge.id,
+      spaceId: challenge.id,
+      actorUserId: user.id,
+      idempotencyKey: `employee-certification:${challenge.id}`,
+      payload: {
+        nonce,
+        employee_slug: employee.slug,
+        is_dm: true,
+        parent_id: null,
+        certification_prompt: buildCertificationPrompt(employee, nonce),
+        expected_reply_contains: nonce,
+      },
+    });
 
     await db
       .update(agentEmployees)
@@ -2268,6 +2467,8 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
 
     return c.json({
       challenge,
+      channel_event: channelEvent,
+      conversation_id: challenge.id,
       instructions: certificationInstructions(employee, nonce),
       runtime_setup: buildRuntimeSetup(employee, nonce),
       mcp_endpoint_url: mcpEndpointUrl(),
@@ -2326,6 +2527,11 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
               missingTools: challengeEvidence?.missingTools ?? challenge.required_tools,
               nonceSeen: challengeEvidence?.nonceSeen ?? false,
               auditCount: challengeEvidence?.auditCount ?? 0,
+              channelEventSeen: challengeEvidence?.channelEventSeen ?? false,
+              channelCompleted: challengeEvidence?.channelCompleted ?? false,
+              channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
+              singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
               completed: challengeEvidence?.completed ?? false,
             }),
           }
@@ -2373,6 +2579,11 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      channelEventSeen,
+      channelCompleted,
+      channelReplyNonceSeen,
+      singleDelivery,
+      runtimeSessionSeen,
       completed,
     } = challengeEvidence;
     const stages = buildCertificationStages({
@@ -2380,6 +2591,11 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      channelEventSeen,
+      channelCompleted,
+      channelReplyNonceSeen,
+      singleDelivery,
+      runtimeSessionSeen,
       completed,
     });
     const failureReason = certificationFailureReason({
@@ -2387,6 +2603,11 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      channelEventSeen,
+      channelCompleted,
+      channelReplyNonceSeen,
+      singleDelivery,
+      runtimeSessionSeen,
     });
 
     if (completed) {
@@ -2411,6 +2632,11 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       completed,
       missing_tools: missingTools,
       nonce_seen,
+      channel_event_seen: channelEventSeen,
+      channel_completed: channelCompleted,
+      channel_reply_nonce_seen: channelReplyNonceSeen,
+      single_delivery: singleDelivery,
+      runtime_session_seen: runtimeSessionSeen,
       seen_tools: Array.from(seenTools),
       required_tools: challenge.required_tools,
       instructions: certificationInstructions(employee, challenge.nonce),
@@ -2439,16 +2665,7 @@ agentEmployeeRoutes.post('/:id/certification/reset', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
-    await db.execute(sql`
-      UPDATE agent_certification_challenges
-      SET status = 'reset',
-          failure_reason = 'Reset by operator',
-          completed_at = now(),
-          updated_at = now()
-      WHERE org_id = ${user.org_id}
-        AND employee_id = ${id}
-        AND status = 'pending'
-    `);
+    await cancelPendingCertification(user.org_id, id, 'Reset by operator');
     await db
       .update(agentEmployees)
       .set({ certification_status: employee.last_mcp_call_at ? 'mcp_reachable' : 'token_issued' })

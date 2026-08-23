@@ -1,5 +1,5 @@
 /**
- * Agent Channel API v1.
+ * Agent Channel API transport path v1, protocol contract v2.
  *
  * This is the live delivery plane for always-on BYOA runtimes. MCP remains the
  * tool plane; this route lets a runtime receive Deft workplace events, ack
@@ -23,7 +23,12 @@ import {
 } from '../lib/mcp-token.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
+  AGENT_CHANNEL_CAPABILITIES,
+  AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES,
   AGENT_CHANNEL_DEFAULT_LEASE_MS,
+  DEFT_BUILD_COMMIT,
+  DEFT_RELEASE_VERSION,
+  DEFT_SCHEMA_HEAD,
   getAgentChannelPrincipal,
   hasActiveAgentChannelClaim,
   listPendingChannelEvents,
@@ -38,6 +43,17 @@ import { executeSendMessage } from '../lib/mcp-tools/writes.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 
 export const agentChannelRoutes = new Hono();
+
+function channelContract() {
+  return {
+    protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+    server_release: DEFT_RELEASE_VERSION,
+    server_commit: DEFT_BUILD_COMMIT,
+    schema_head: DEFT_SCHEMA_HEAD,
+    capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+  };
+}
 
 function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string, detail?: string | null) {
   if (event.source_kind !== 'task' || !event.source_id) return;
@@ -87,8 +103,43 @@ const statusSchema = z.object({
   caller_employee_slug: z.string().optional(),
 });
 
-function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 500, code: string, message: string) {
+function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 500, code: string, message: string) {
   return c.json({ error: message, code }, status);
+}
+
+function channelCompatibility(c: Context): {
+  adapterVersion: string;
+  capabilities: string[];
+} | Response {
+  const protocolVersion = c.req.query('protocol_version')?.trim() ?? '';
+  const adapterVersion = c.req.query('adapter_version')?.trim() ?? '';
+  const capabilities = (c.req.query('capabilities') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const missingCapabilities = AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES
+    .filter((capability) => !capabilities.includes(capability));
+
+  if (protocolVersion !== AGENT_CHANNEL_PROTOCOL_VERSION || !adapterVersion || missingCapabilities.length > 0) {
+    return c.json({
+      error: [
+        `Agent Channel runtime is incompatible with ${AGENT_CHANNEL_PROTOCOL_VERSION}.`,
+        protocolVersion ? `Runtime requested ${protocolVersion}.` : 'Runtime did not declare a protocol version.',
+        adapterVersion ? null : 'Runtime did not declare an adapter version.',
+        missingCapabilities.length > 0 ? `Missing capabilities: ${missingCapabilities.join(', ')}.` : null,
+        `Install the Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
+      ].filter(Boolean).join(' '),
+      code: 'INCOMPATIBLE_CHANNEL',
+      protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+      server_release: DEFT_RELEASE_VERSION,
+      server_commit: DEFT_BUILD_COMMIT,
+      schema_head: DEFT_SCHEMA_HEAD,
+      capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+      required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+    }, 426);
+  }
+
+  return { adapterVersion, capabilities };
 }
 
 async function resolveChannelPrincipal(c: Context, callerSlug?: string | null): Promise<AgentChannelPrincipal | Response> {
@@ -116,7 +167,7 @@ async function resolveChannelPrincipal(c: Context, callerSlug?: string | null): 
   }
 }
 
-function isResponse(value: AgentChannelPrincipal | Response): value is Response {
+function isResponse<T>(value: T | Response): value is Response {
   return value instanceof Response;
 }
 
@@ -170,16 +221,32 @@ async function closeFallbackWorkForEvent(params: {
     ));
 }
 
+agentChannelRoutes.get('/contract', (c) => c.json(channelContract()));
+
 agentChannelRoutes.get('/connect', async (c) => {
   const principal = await resolveChannelPrincipal(c, c.req.query('caller_employee_slug'));
   if (isResponse(principal)) return principal;
+  const compatibility = channelCompatibility(c);
+  if (isResponse(compatibility)) return compatibility;
 
-  const connection = await touchAgentChannelConnection(principal);
+  const connection = await touchAgentChannelConnection(principal, {
+    metadata: {
+      adapter_version: compatibility.adapterVersion,
+      runtime_capabilities: compatibility.capabilities,
+      server_release: DEFT_RELEASE_VERSION,
+      server_commit: DEFT_BUILD_COMMIT,
+      schema_head: DEFT_SCHEMA_HEAD,
+    },
+  });
   await updateAgentChannelCursor({ principal, connectionId: connection?.id ?? null });
 
   return c.json({
     ok: true,
     protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+    server_release: DEFT_RELEASE_VERSION,
+    server_commit: DEFT_BUILD_COMMIT,
+    schema_head: DEFT_SCHEMA_HEAD,
+    capabilities: [...AGENT_CHANNEL_CAPABILITIES],
     employee: {
       id: principal.employee_id,
       slug: principal.employee_slug,
@@ -193,6 +260,8 @@ agentChannelRoutes.get('/connect', async (c) => {
 agentChannelRoutes.get('/events', async (c) => {
   const principal = await resolveChannelPrincipal(c, c.req.query('caller_employee_slug'));
   if (isResponse(principal)) return principal;
+  const compatibility = channelCompatibility(c);
+  if (isResponse(compatibility)) return compatibility;
 
   const limit = Number.parseInt(c.req.query('limit') ?? '25', 10);
   const workerId = c.req.query('worker_id')?.trim();
@@ -221,6 +290,7 @@ agentChannelRoutes.get('/events', async (c) => {
   return c.json({
     ok: true,
     protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+    capabilities: [...AGENT_CHANNEL_CAPABILITIES],
     cursor: lastEventId,
     events,
   });

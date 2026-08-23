@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $configPath = Join-Path $ServiceRoot 'service.env'
 $bridgePath = Join-Path $ServiceRoot 'hermes-agent-channel-bridge.mjs'
 $logPath = Join-Path $ServiceRoot 'service.log'
+$healthPath = Join-Path $ServiceRoot 'health.json'
 $mutex = [Threading.Mutex]::new($false, $MutexName)
 
 function Rotate-ServiceLog {
@@ -40,6 +41,7 @@ try {
     }
     [Environment]::SetEnvironmentVariable($parts[0], $parts[1], 'Process')
   }
+  [Environment]::SetEnvironmentVariable('DEFT_CHANNEL_HEALTH_FILE', $healthPath, 'Process')
 
   $node = (Get-Command node.exe -ErrorAction Stop).Source
   while ($true) {
@@ -59,6 +61,10 @@ try {
       $ErrorActionPreference = $previousErrorActionPreference
     }
 
+    if ($bridgeExitCode -eq 78) {
+      Write-ServiceLog 'bridge stopped because the Deft server and Hermes adapter are incompatible; install the bundle for the running Deft release'
+      exit 78
+    }
     Write-ServiceLog "bridge exited with code $bridgeExitCode; restarting in $RestartDelaySeconds seconds"
     Start-Sleep -Seconds $RestartDelaySeconds
   }

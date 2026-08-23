@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_POLL_MS = 3000;
@@ -8,6 +9,31 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_HEARTBEAT_MS = 60000;
 const DEFAULT_LEASE_MS = 120000;
+export const HERMES_DEFT_ADAPTER_VERSION = '0.2.0';
+export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
+export const AGENT_CHANNEL_CAPABILITIES = [
+  'single_flight_claims',
+  'renewable_leases',
+  'fencing_tokens',
+  'terminal_outcomes',
+  'identity_bound_mcp',
+  'wiki_memory_sync_v1',
+];
+export const AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES = [
+  'single_flight_claims',
+  'renewable_leases',
+  'fencing_tokens',
+  'terminal_outcomes',
+  'identity_bound_mcp',
+];
+
+export class AgentChannelCompatibilityError extends Error {
+  constructor(message) {
+    super(`INCOMPATIBLE_CHANNEL: ${message}`);
+    this.name = 'AgentChannelCompatibilityError';
+    this.code = 'INCOMPATIBLE_CHANNEL';
+  }
+}
 
 function requiredEnv(env, key) {
   const value = env[key]?.trim();
@@ -45,6 +71,8 @@ export function configFromEnv(env = process.env) {
       Math.max(5000, Math.floor(positiveInteger(env.DEFT_CHANNEL_LEASE_MS, DEFAULT_LEASE_MS) / 3)),
     ),
     workerId: env.DEFT_CHANNEL_WORKER_ID?.trim() || `hermes-bridge:${randomUUID()}`,
+    adapterVersion: env.DEFT_CHANNEL_ADAPTER_VERSION?.trim() || HERMES_DEFT_ADAPTER_VERSION,
+    healthFile: env.DEFT_CHANNEL_HEALTH_FILE?.trim() || null,
     once: ['1', 'true', 'yes'].includes((env.DEFT_CHANNEL_ONCE ?? '').toLowerCase()),
   };
 }
@@ -137,6 +165,7 @@ export class HermesAgentChannelBridge {
     this.now = options.now ?? (() => Date.now());
     this.setInterval = options.setIntervalImpl ?? globalThis.setInterval;
     this.clearInterval = options.clearIntervalImpl ?? globalThis.clearInterval;
+    this.healthWriter = options.healthWriter ?? (async (path, value) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8'));
     this.lastHeartbeatAt = 0;
     this.stopped = false;
   }
@@ -177,7 +206,11 @@ export class HermesAgentChannelBridge {
       }
 
       const message = body?.error?.message || body?.error || body?.raw || `HTTP ${response.status}`;
-      throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
+      const prefix = typeof body?.code === 'string' ? `${body.code}: ` : '';
+      const error = new Error(`${prefix}${typeof message === 'string' ? message : JSON.stringify(message)}`);
+      error.code = body?.code;
+      error.status = response.status;
+      throw error;
     }
   }
 
@@ -190,8 +223,51 @@ export class HermesAgentChannelBridge {
     return this.request(`${this.config.channelUrl}${path}`, { ...init, headers });
   }
 
+  compatibilityParams() {
+    return {
+      protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+      adapter_version: this.config.adapterVersion ?? HERMES_DEFT_ADAPTER_VERSION,
+      capabilities: AGENT_CHANNEL_CAPABILITIES.join(','),
+    };
+  }
+
+  validateConnection(connection) {
+    const actualProtocol = connection?.protocol_version ?? 'missing';
+    const serverCapabilities = Array.isArray(connection?.capabilities) ? connection.capabilities : [];
+    const missing = AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES
+      .filter((capability) => !serverCapabilities.includes(capability));
+    if (actualProtocol !== AGENT_CHANNEL_PROTOCOL_VERSION || missing.length > 0) {
+      throw new AgentChannelCompatibilityError([
+        `server protocol ${actualProtocol}; adapter requires ${AGENT_CHANNEL_PROTOCOL_VERSION}`,
+        missing.length > 0 ? `missing server capabilities: ${missing.join(', ')}` : null,
+        connection?.server_release ? `server release ${connection.server_release}` : null,
+      ].filter(Boolean).join('; '));
+    }
+    return connection;
+  }
+
+  async writeHealth(state, details = {}) {
+    if (!this.config.healthFile) return;
+    const value = {
+      state,
+      checked_at: new Date(this.now()).toISOString(),
+      adapter_version: this.config.adapterVersion ?? HERMES_DEFT_ADAPTER_VERSION,
+      protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
+      worker_id: this.config.workerId,
+      ...details,
+    };
+    await this.healthWriter(this.config.healthFile, value).catch((error) => {
+      this.log.warn?.(`[deft-channel] could not write health state: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   async connect() {
-    return this.channel(`/connect?caller_employee_slug=${encodeURIComponent(this.config.employeeSlug)}`);
+    const query = new URLSearchParams({
+      caller_employee_slug: this.config.employeeSlug,
+      ...this.compatibilityParams(),
+    });
+    const connection = await this.channel(`/connect?${query.toString()}`);
+    return this.validateConnection(connection);
   }
 
   async status(state, eventId = null, detail = null) {
@@ -293,7 +369,9 @@ export class HermesAgentChannelBridge {
   }
 
   async processEvent(event) {
-    if (!event.claim_token) throw new Error(`Channel event ${event.id} has no claim token`);
+    if (!event.claim_token) {
+      throw new AgentChannelCompatibilityError(`channel event ${event.id} has no claim token`);
+    }
     const sessionKey = conversationKey(event, this.config.employeeSlug);
     this.currentClaimToken = event.claim_token;
     await this.ack(event.id, 'received', { runtimeSessionKey: sessionKey, claimToken: event.claim_token });
@@ -340,8 +418,10 @@ export class HermesAgentChannelBridge {
       limit: '1',
       worker_id: this.config.workerId,
       lease_ms: String(this.config.leaseMs),
+      ...this.compatibilityParams(),
     });
     const body = await this.channel(`/events?${query.toString()}`);
+    this.validateConnection(body);
     for (const event of body.events ?? []) {
       await this.processEvent(event);
     }
@@ -360,13 +440,45 @@ export class HermesAgentChannelBridge {
   }
 
   async run() {
-    const connection = await this.connect();
+    await this.writeHealth('connecting');
+    let connection;
+    try {
+      connection = await this.connect();
+    } catch (error) {
+      if (error?.code === 'INCOMPATIBLE_CHANNEL') {
+        await this.status('error', null, error instanceof Error ? error.message : String(error)).catch(() => {});
+      }
+      await this.writeHealth(error?.code === 'INCOMPATIBLE_CHANNEL' ? 'incompatible' : 'degraded', {
+        last_error_code: error?.code ?? 'CONNECT_FAILED',
+        last_error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     this.log.info?.(`[deft-channel] connected as ${connection.employee?.slug ?? this.config.employeeSlug}`);
+    await this.writeHealth('healthy', {
+      server_release: connection.server_release ?? null,
+      server_commit: connection.server_commit ?? null,
+      schema_head: connection.schema_head ?? null,
+      last_success_at: new Date(this.now()).toISOString(),
+    });
     do {
       try {
         const eventCount = await this.pollOnce();
         this.logHeartbeat(eventCount);
+        await this.writeHealth('healthy', {
+          server_release: connection.server_release ?? null,
+          server_commit: connection.server_commit ?? null,
+          schema_head: connection.schema_head ?? null,
+          last_success_at: new Date(this.now()).toISOString(),
+          last_event_count: eventCount,
+        });
       } catch (error) {
+        const incompatible = error?.code === 'INCOMPATIBLE_CHANNEL' || error instanceof AgentChannelCompatibilityError;
+        await this.writeHealth(incompatible ? 'incompatible' : 'degraded', {
+          last_error_code: error?.code ?? 'POLL_FAILED',
+          last_error: error instanceof Error ? error.message : String(error),
+        });
+        if (incompatible) throw error;
         if (this.config.once) throw error;
         const message = error instanceof Error ? error.message : String(error);
         this.log.warn?.(`[deft-channel] poll failed; staying alive: ${message}`);
@@ -387,6 +499,6 @@ export async function main() {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error) => {
     console.error(`[deft-channel] ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
+    process.exitCode = error?.code === 'INCOMPATIBLE_CHANNEL' ? 78 : 1;
   });
 }

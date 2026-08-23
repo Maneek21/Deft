@@ -13,6 +13,7 @@ import {
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
   agentChannelEvents,
+  agentChannelConnections,
   moduleInstallations,
   moduleMutationReceipts,
   moduleRecordRelations,
@@ -489,4 +490,20 @@ test('wiki memory sync schema converges across fresh installs and supported upgr
   assert.match(upgradeSql, /wiki_memory_sync_identity_unique/i);
   assert.match(upgradeSql, /content_digest/i);
   assert.match(upgradeSql, /page_version/i);
+});
+
+test('Agent Channel v2 is the fresh-install default and supported upgrade boundary', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.6',
+  );
+  assert.ok(migration, 'Agent Channel v2 migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  assert.match(upgradeSql, /ALTER COLUMN "protocol_version" SET DEFAULT 'deft\.agent_channel\.v2'/i);
+  assert.match(upgradeSql, /SET "status" = 'disconnected'/i);
+
+  const table = getTableConfig(agentChannelConnections);
+  const protocolColumn = table.columns.find((column) => column.name === 'protocol_version');
+  assert.equal(protocolColumn?.default, 'deft.agent_channel.v2');
 });

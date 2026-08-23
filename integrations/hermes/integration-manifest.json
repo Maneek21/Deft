@@ -1,0 +1,25 @@
+{
+  "schema": "deft.hermes.integration.v1",
+  "integration_version": "0.2.0",
+  "deft_release": "0.3.0-preview.6",
+  "deft_release_compatibility": "=0.3.0-preview.6",
+  "agent_channel_protocols": ["deft.agent_channel.v2"],
+  "required_channel_capabilities": [
+    "single_flight_claims",
+    "renewable_leases",
+    "fencing_tokens",
+    "terminal_outcomes",
+    "identity_bound_mcp",
+    "wiki_memory_sync_v1"
+  ],
+  "hermes_compatibility": ">=0.1.0",
+  "contents": [
+    "scripts/hermes-agent-channel-bridge.mjs",
+    "scripts/hermes-channel-service.ps1",
+    "scripts/run-hermes-channel-service.ps1",
+    "scripts/deft-mcp-stdio.mjs",
+    "plugins/deft-employee",
+    "plugins/deft-memory",
+    "README.md"
+  ]
+}

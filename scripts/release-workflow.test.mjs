@@ -39,3 +39,11 @@ test('release manifest records signature and provenance metadata', () => {
   assert.match(workflow, /"signature_identity": "\$\{\{ steps\.verification\.outputs\.signature_identity \}\}"/);
   assert.match(workflow, /"provenance": "github-build-attestation"/);
 });
+
+test('release couples the image, package version, and Hermes integration bundle', () => {
+  assert.match(workflow, /package\.json version \$package_version does not match release \$version/);
+  assert.match(workflow, /DEFT_RELEASE_VERSION=\$\{\{ steps\.release\.outputs\.version \}\}/);
+  assert.match(workflow, /node scripts\/build-hermes-integration-bundle\.mjs/);
+  assert.match(workflow, /deft-hermes-integration-\$\{\{ steps\.release\.outputs\.version \}\}\.tar\.gz/);
+  assert.match(workflow, /"agent_channel_protocol": "deft\.agent_channel\.v2"/);
+});
