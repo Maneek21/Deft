@@ -21,6 +21,8 @@ const files = [
   // fresh push must share with the supported upgrade path.
   '0081_modules_v1.sql',
   '0082_module_relations_views.sql',
+  '0083_agent_channel_leases.sql',
+  '0084_wiki_memory_sync.sql',
 ];
 
 async function main() {

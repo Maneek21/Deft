@@ -11,8 +11,8 @@
  * The resolver pattern:
  *   1. Extract the bearer.
  *   2. `resolveGatewayToken(bearer)` → { org_id, gateway_employees[] }.
- *   3. On tools/call, read `arguments.caller_employee_slug` and call
- *      `validateCallerSlug()` to narrow to one employee → ToolContext.
+ *   3. On tools/call, bind the one employee authenticated by that token to
+ *      ToolContext. Model-authored arguments never select identity.
  *   4. Dispatch to handler, wrap any thrown error as an MCP tool error.
  *
  * This file deliberately lives at `mcp-server-v1.ts` rather than overwriting
@@ -27,7 +27,7 @@ import {
   extractBearer,
   resolveMcpPrincipal,
   resolveGatewayToken,
-  validateCallerSlug,
+  resolveAuthenticatedEmployee,
   McpAuthError,
   type ResolvedGateway,
   type GatewayEmployee,
@@ -117,6 +117,27 @@ class McpJsonRpcError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function tokenBoundAgentCatalog(tools: typeof toolSchemas): typeof toolSchemas {
+  return tools.map((tool) => {
+    const inputSchema = { ...tool.inputSchema };
+    const properties = isRecord(inputSchema.properties)
+      ? { ...inputSchema.properties }
+      : undefined;
+    if (properties) delete properties.caller_employee_slug;
+    const required = Array.isArray(inputSchema.required)
+      ? inputSchema.required.filter((name) => name !== 'caller_employee_slug')
+      : undefined;
+    return {
+      ...tool,
+      inputSchema: {
+        ...inputSchema,
+        ...(properties ? { properties } : {}),
+        ...(required ? { required } : {}),
+      },
+    };
+  });
 }
 
 function humanIdempotencyAuditMetadata(params: {
@@ -675,7 +696,7 @@ mcpServerV1Routes.post('/', async (c) => {
       supportedVersions: [MODERN_PROTOCOL_VERSION],
       capabilities: { tools: {} },
       instructions:
-        'Use tools/list to discover Deft workspace tools. Agent employee calls must include caller_employee_slug.',
+        'Use tools/list to discover Deft workspace tools. Employee identity is bound to the bearer token.',
       ttlMs: 0,
       cacheScope: 'private',
     }));
@@ -720,7 +741,7 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const catalog = sortedCatalog(
-        toolSchemas.filter((t) => (
+        tokenBoundAgentCatalog(toolSchemas).filter((t) => (
           resolved.gateway_employees.every((employee) => (
             !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
           ))
@@ -823,7 +844,8 @@ mcpServerV1Routes.post('/', async (c) => {
         return result;
       }
       const resolved = principal as ResolvedGateway;
-      const employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
+      const employee = resolveAuthenticatedEmployee(resolved);
+      const boundArgs = { ...args, caller_employee_slug: employee.slug };
       const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
       if (!isModuleWrite && isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
         throw new McpAuthError(403, 'forbidden', `Tool '${toolName}' is disabled for this agent employee`);
@@ -835,7 +857,7 @@ mcpServerV1Routes.post('/', async (c) => {
         trust_level: employee.trust_level,
       };
       const knownTool = Boolean(ALL_TOOLS[canonicalToolName]);
-      const result = await dispatchTool(toolName, args, ctx, {
+      const result = await dispatchTool(toolName, boundArgs, ctx, {
         surface: 'jsonrpc',
         caller_employee_slug: employee.slug,
         request_id: id,
@@ -932,7 +954,7 @@ mcpServerV1Routes.post('/tools/list', async (c) => {
   // for the resolved caller at tools/call time. Conservative employees must
   // still be able to propose governed writes for human review.
   const catalog = sortedCatalog(
-    toolSchemas.filter((t) => (
+    tokenBoundAgentCatalog(toolSchemas).filter((t) => (
       resolved.gateway_employees.every((employee) => (
         !isAgentToolDisabled(employee.disabled_tools, t.name, TOOL_ALIASES)
       ))
@@ -1034,11 +1056,11 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     return c.json(result);
   }
 
-  // 3. Caller slug validation
+  // 3. Token-bound employee identity
   const resolved = principal as ResolvedGateway;
   let employee: GatewayEmployee;
   try {
-    employee = validateCallerSlug(resolved, String(args.caller_employee_slug ?? ''));
+    employee = resolveAuthenticatedEmployee(resolved);
   } catch (err) {
     if (err instanceof McpAuthError) {
       return errorResponse(c, err.status as 400 | 403, err.code, err.message);
@@ -1059,7 +1081,7 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     trust_level: employee.trust_level,
   };
 
-  return c.json(await dispatchTool(toolName, args, ctx, {
+  return c.json(await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {
     surface: 'legacy',
     caller_employee_slug: employee.slug,
   }));

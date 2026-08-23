@@ -15,6 +15,7 @@ const event = {
   source_id: 'message-1',
   space_id: 'space-1',
   thread_id: 'thread-1',
+  claim_token: 'claim-event-1',
   payload: { content: '@Maya summarize this launch blocker', reply_thread_id: 'thread-1' },
 };
 
@@ -38,13 +39,16 @@ function config() {
     maxRetries: 2,
     retryBaseMs: 5,
     heartbeatMs: 60000,
+    leaseMs: 120000,
+    leaseHeartbeatMs: 40000,
+    workerId: 'bridge-worker-test',
     once: true,
   };
 }
 
 test('buildEventPrompt preserves the event and pins the employee identity', () => {
   const prompt = buildEventPrompt(event, 'maya');
-  assert.match(prompt, /caller_employee_slug exactly "maya"/);
+  assert.match(prompt, /bearer token binds your employee identity/);
   assert.match(prompt, /message\.created/);
   assert.match(prompt, /summarize this launch blocker/);
   assert.match(prompt, /Do not call message_post, send_message, post_thread_reply/);
@@ -100,9 +104,12 @@ test('processEvent acks, marks working, invokes Hermes, replies once, and return
     '/api/agent-channel/v1/status',
   ]);
   assert.equal(calls[0].body.state, 'received');
+  assert.equal(calls[0].body.claim_token, 'claim-event-1');
   assert.equal(calls[1].body.state, 'working');
   assert.equal(calls[3].body.idempotency_key, 'hermes-channel:event-1');
+  assert.equal(calls[3].body.outcome, 'needs_human');
   assert.equal(calls[4].body.state, 'idle');
+  assert.equal(calls[4].body.event_id, null);
   assert.equal(calls[2].init.headers['X-Hermes-Session-Key'], 'deft:maya:thread-1');
 });
 
@@ -125,6 +132,7 @@ test('top-level DM replies stay in the main conversation instead of opening a th
   const dmEvent = {
     ...event,
     id: 'event-dm',
+    claim_token: 'claim-event-dm',
     thread_id: null,
     payload: { content: 'hello', is_dm: true, parent_id: null, reply_thread_id: null },
   };
@@ -171,6 +179,23 @@ test('request retries a transient channel rate limit instead of killing the brid
   assert.equal(result.ok, true);
   assert.equal(attempts, 2);
   assert.deepEqual(sleeps, [5]);
+});
+
+test('pollOnce claims only one event so queued leases cannot expire behind active work', async () => {
+  const urls = [];
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return jsonResponse({ ok: true, events: [] });
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  assert.equal(await bridge.pollOnce(), 0);
+  const query = new URL(urls[0]).searchParams;
+  assert.equal(query.get('limit'), '1');
+  assert.equal(query.get('worker_id'), 'bridge-worker-test');
+  assert.equal(query.get('lease_ms'), '120000');
 });
 
 test('heartbeat is rate-limited while proving the poll loop is alive', () => {

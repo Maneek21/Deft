@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -13,6 +13,23 @@ import { McpAuthError } from './mcp-token.js';
 import { getIO } from '../socket.js';
 
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v1';
+export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
+export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
+export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
+
+function boundedLeaseMs(value?: number) {
+  if (!Number.isFinite(value)) return AGENT_CHANNEL_DEFAULT_LEASE_MS;
+  return Math.min(Math.max(Math.trunc(value!), AGENT_CHANNEL_MIN_LEASE_MS), AGENT_CHANNEL_MAX_LEASE_MS);
+}
+
+function resultRows(result: unknown): Array<Record<string, any>> {
+  if (Array.isArray(result)) return result as Array<Record<string, any>>;
+  if (result && typeof result === 'object' && 'rows' in result) {
+    const rows = (result as { rows?: unknown }).rows;
+    return Array.isArray(rows) ? rows as Array<Record<string, any>> : [];
+  }
+  return [];
+}
 
 export type AgentChannelEventKind =
   | 'message.created'
@@ -267,8 +284,13 @@ export async function listPendingChannelEvents(params: {
   principal: AgentChannelPrincipal;
   limit?: number;
   afterEventId?: string | null;
+  workerId: string;
+  leaseMs?: number;
 }) {
   const limit = Math.min(Math.max(params.limit ?? 25, 1), 100);
+  const workerId = params.workerId.trim().slice(0, 200);
+  if (!workerId) throw new Error('Agent Channel workerId is required');
+  const leaseMs = boundedLeaseMs(params.leaseMs);
   let afterCreatedAt: Date | null = null;
 
   if (params.afterEventId) {
@@ -286,34 +308,77 @@ export async function listPendingChannelEvents(params: {
     afterCreatedAt = cursorEvent?.created_at ?? null;
   }
 
-  const rows = await db
-    .select()
-    .from(agentChannelEvents)
-    .where(
-      and(
-        eq(agentChannelEvents.org_id, params.principal.org_id),
-        eq(agentChannelEvents.agent_employee_id, params.principal.employee_id),
-        sql`${agentChannelEvents.status} IN ('pending', 'delivered')`,
-        ...(afterCreatedAt ? [sql`${agentChannelEvents.created_at} > ${afterCreatedAt}`] : []),
-      ),
+  const claimToken = crypto.randomUUID();
+  const cursorFilter = afterCreatedAt
+    ? sql`AND created_at > ${afterCreatedAt}`
+    : sql``;
+  const result = await db.execute(sql`
+    WITH claimable AS (
+      SELECT id
+      FROM agent_channel_events
+      WHERE org_id = ${params.principal.org_id}
+        AND agent_employee_id = ${params.principal.employee_id}
+        AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')
+        AND (claim_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= now())
+        ${cursorFilter}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
     )
-    .orderBy(asc(agentChannelEvents.created_at))
-    .limit(limit);
+    UPDATE agent_channel_events AS event
+    SET status = CASE WHEN event.status = 'pending' THEN 'delivered' ELSE event.status END,
+        delivered_at = COALESCE(event.delivered_at, now()),
+        delivery_count = event.delivery_count + 1,
+        claim_owner = ${workerId},
+        claim_token = ${claimToken},
+        claimed_at = now(),
+        lease_expires_at = now() + (${leaseMs} * interval '1 millisecond'),
+        updated_at = now()
+    FROM claimable
+    WHERE event.id = claimable.id
+    RETURNING event.*
+  `);
 
-  if (rows.length > 0) {
-    const ids = rows.map((row) => row.id);
-    await db
-      .update(agentChannelEvents)
-      .set({
-        status: 'delivered',
-        delivered_at: sql`COALESCE(${agentChannelEvents.delivered_at}, now())`,
-        delivery_count: sql`${agentChannelEvents.delivery_count} + 1`,
-        updated_at: new Date(),
-      })
-      .where(inArray(agentChannelEvents.id, ids));
-  }
+  return resultRows(result)
+    .sort((left, right) => {
+      const createdDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      return createdDelta || String(left.id).localeCompare(String(right.id));
+    }) as Array<typeof agentChannelEvents.$inferSelect>;
+}
 
-  return rows;
+export function hasActiveAgentChannelClaim(
+  event: Pick<typeof agentChannelEvents.$inferSelect, 'claim_token' | 'lease_expires_at'>,
+  claimToken: string | null | undefined,
+  now = new Date(),
+) {
+  return Boolean(
+    claimToken
+    && event.claim_token === claimToken
+    && event.lease_expires_at
+    && event.lease_expires_at.getTime() > now.getTime(),
+  );
+}
+
+export async function renewAgentChannelEventLease(params: {
+  principal: AgentChannelPrincipal;
+  eventId: string;
+  claimToken: string;
+  leaseMs?: number;
+}) {
+  const leaseMs = boundedLeaseMs(params.leaseMs);
+  const result = await db.execute(sql`
+    UPDATE agent_channel_events
+    SET lease_expires_at = now() + (${leaseMs} * interval '1 millisecond'),
+        updated_at = now()
+    WHERE id = ${params.eventId}
+      AND org_id = ${params.principal.org_id}
+      AND agent_employee_id = ${params.principal.employee_id}
+      AND status IN ('delivered', 'acknowledged', 'running', 'approval_pending')
+      AND claim_token = ${params.claimToken}
+      AND lease_expires_at > now()
+    RETURNING *
+  `);
+  return (resultRows(result)[0] ?? null) as typeof agentChannelEvents.$inferSelect | null;
 }
 
 export async function getAgentChannelPrincipal(employeeId: string, orgId: string): Promise<AgentChannelPrincipal | null> {

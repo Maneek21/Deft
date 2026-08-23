@@ -7,14 +7,23 @@
  * gating for cross-scope promotion.
  */
 import { sql, and, eq, or, desc } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { db } from '../db.js';
-import { agentEmployees, spaceMembers, spaces, wikiPages } from '@deft/db/schema';
+import {
+  agentEmployees,
+  messages,
+  projects,
+  spaceMembers,
+  spaces,
+  tasks,
+  wikiPages,
+} from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { invalidatePlatformContextCacheFor } from './context.js';
 import { retrieveContext } from '../retrieve-context.js';
 import { wikiPageRelevantToSpaceCondition } from '../wiki-visibility.js';
+import { visibleTaskCondition } from '../task-visibility.js';
 
 const VALID_TYPES = new Set([
   'concept',
@@ -244,7 +253,125 @@ export type MemoryWriteArgs = {
   type: string;
   confidence?: number;
   scope?: 'user' | 'org';
+  idempotency_key?: string;
+  runtime_session_id?: string;
+  source_refs?: Array<{
+    kind: 'task' | 'message' | 'session' | 'url' | 'artifact';
+    id: string;
+    excerpt?: string;
+  }>;
 };
+
+const SENSITIVE_MEMORY_PATTERNS = [
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
+  /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*[^\s]{8,}/i,
+  /\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}/i,
+];
+
+function containsSensitiveMemory(text: string) {
+  return SENSITIVE_MEMORY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+type ValidatedMemorySource = NonNullable<MemoryWriteArgs['source_refs']>[number] & {
+  source_space_id: string | null;
+  source_user_id: string | null;
+};
+
+async function validateMemorySources(
+  sources: MemoryWriteArgs['source_refs'],
+  orgId: string,
+  employeeUserId: string,
+): Promise<{ sources?: ValidatedMemorySource[]; error?: string }> {
+  const validated: ValidatedMemorySource[] = [];
+  for (const source of sources ?? []) {
+    const id = source?.id?.trim();
+    if (!id || id.length > 2048) {
+      return { error: 'memory_write source_refs require a non-empty id of at most 2048 characters' };
+    }
+    if (source.excerpt !== undefined && source.excerpt.length > 2000) {
+      return { error: 'memory_write source_ref excerpts must be at most 2000 characters' };
+    }
+
+    if (source.kind === 'message') {
+      const [message] = await db
+        .select({ id: messages.id, space_id: messages.space_id, user_id: messages.user_id })
+        .from(messages)
+        .innerJoin(spaces, eq(spaces.id, messages.space_id))
+        .where(and(
+          eq(messages.id, id),
+          eq(messages.org_id, orgId),
+          eq(spaces.org_id, orgId),
+          eq(messages.is_deleted, false),
+          or(
+            eq(spaces.type, 'public'),
+            sql`exists (
+              select 1 from ${spaceMembers}
+              where ${spaceMembers.space_id} = ${messages.space_id}
+                and ${spaceMembers.user_id} = ${employeeUserId}
+            )`,
+          ),
+        ))
+        .limit(1);
+      if (!message) return { error: `memory_write: message source ${id} is unavailable to this employee` };
+      validated.push({ ...source, id, source_space_id: message.space_id, source_user_id: message.user_id });
+      continue;
+    }
+
+    if (source.kind === 'task') {
+      const [task] = await db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .innerJoin(projects, eq(projects.id, tasks.project_id))
+        .where(and(
+          eq(tasks.id, id),
+          eq(tasks.org_id, orgId),
+          eq(projects.org_id, orgId),
+          eq(projects.is_deleted, false),
+          eq(tasks.is_deleted, false),
+          visibleTaskCondition(employeeUserId),
+        ))
+        .limit(1);
+      if (!task) return { error: `memory_write: task source ${id} is unavailable to this employee` };
+      validated.push({ ...source, id, source_space_id: null, source_user_id: null });
+      continue;
+    }
+
+    if (source.kind === 'url') {
+      try {
+        const parsed = new URL(id);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('unsupported protocol');
+      } catch {
+        return { error: `memory_write: URL source ${id} must be an absolute HTTP(S) URL` };
+      }
+    } else if (source.kind !== 'session' && source.kind !== 'artifact') {
+      return { error: `memory_write: unsupported source kind ${String(source.kind)}` };
+    }
+    validated.push({ ...source, id, source_space_id: null, source_user_id: null });
+  }
+  return { sources: validated };
+}
+
+function memoryDigest(args: MemoryWriteArgs) {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      title: args.title.trim(),
+      body: args.body,
+      type: args.type,
+      confidence: args.confidence ?? 0.7,
+      source_refs: args.source_refs ?? [],
+    }))
+    .digest('hex');
+}
+
+function queryRows(result: unknown): Array<Record<string, any>> {
+  if (Array.isArray(result)) return result as Array<Record<string, any>>;
+  if (result && typeof result === 'object' && 'rows' in result) {
+    const rows = (result as { rows?: unknown }).rows;
+    return Array.isArray(rows) ? rows as Array<Record<string, any>> : [];
+  }
+  return [];
+}
 
 function slugify(s: string): string {
   return s
@@ -267,6 +394,15 @@ export async function memoryWrite(
       `memory_write requires type in: ${[...VALID_TYPES].join(', ')}`,
     );
   }
+  if (containsSensitiveMemory(`${args.title}\n${args.body}\n${JSON.stringify(args.source_refs ?? [])}`)) {
+    return errorResult('memory_write rejected content that appears to contain a credential or secret');
+  }
+  if (args.idempotency_key !== undefined && !args.idempotency_key.trim()) {
+    return errorResult('memory_write idempotency_key must be non-empty when provided');
+  }
+  if ((args.source_refs?.length ?? 0) > 20) {
+    return errorResult('memory_write accepts at most 20 source_refs');
+  }
 
   const confidence =
     typeof args.confidence === 'number'
@@ -275,8 +411,12 @@ export async function memoryWrite(
 
   // Phase 3: always tag to the employee. Phase 4's memory_update handles
   // scope promotion to org with approval.
+  const digest = memoryDigest(args);
+  const idempotencyKey = args.idempotency_key?.trim() || null;
   const baseSlug = slugify(args.title);
-  const suffix = Math.random().toString(36).slice(2, 8);
+  const suffix = idempotencyKey
+    ? createHash('sha256').update(`${ctx.employee_id}:${idempotencyKey}`).digest('hex').slice(0, 8)
+    : Math.random().toString(36).slice(2, 8);
   const slug = baseSlug ? `${baseSlug}-${suffix}` : `memory-${suffix}`;
 
   // NOTE: raw SQL rather than drizzle insert() because the schema declares
@@ -285,20 +425,118 @@ export async function memoryWrite(
   // insert() always references every declared column and would fail. Raw SQL
   // lets us list only the columns we know exist.
   try {
-    const id = randomUUID();
-    const rows = await db.execute(sql`
-      INSERT INTO wiki_pages
-        (id, org_id, scope, agent_employee_id, type, title, slug, summary,
-         content, confidence, version, is_deleted, created_at, updated_at)
-      VALUES
-        (${id}, ${ctx.org_id}, 'user', ${ctx.employee_id}, ${args.type},
-         ${args.title.trim()}, ${slug}, ${args.body.slice(0, 240)},
-         ${args.body}, ${confidence}, 1, false, now(), now())
-      RETURNING slug, created_at
-    `);
-    const anyRows = (rows as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
-    const first = (anyRows as Array<Record<string, unknown>>)[0];
-    if (!first) return errorResult('memory_write: insert returned no row');
+    const [employee] = await db.select({ user_id: agentEmployees.user_id })
+      .from(agentEmployees)
+      .where(and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id)))
+      .limit(1);
+    if (!employee?.user_id) return errorResult('memory_write: employee shadow user not found');
+    const sourceValidation = await validateMemorySources(args.source_refs, ctx.org_id, employee.user_id);
+    if (sourceValidation.error) return errorResult(sourceValidation.error);
+    const validatedSources = sourceValidation.sources ?? [];
+    const result = await db.transaction(async (tx) => {
+      if (idempotencyKey) {
+        const existingRows = await tx.execute(sql`
+          SELECT s.id AS sync_id, s.content_digest, s.page_version,
+                 p.id AS page_id, p.slug, p.version, p.title, p.content, p.summary, p.is_deleted
+          FROM wiki_memory_syncs s
+          JOIN wiki_pages p ON p.id = s.page_id AND p.org_id = s.org_id
+          WHERE s.org_id = ${ctx.org_id}
+            AND s.agent_employee_id = ${ctx.employee_id}
+            AND s.idempotency_key = ${idempotencyKey}
+          FOR UPDATE OF s, p
+        `);
+        const existing = queryRows(existingRows)[0];
+        if (existing) {
+          if (existing.is_deleted) throw new Error('memory_write: canonical page was deleted; human review is required');
+          if (existing.content_digest === digest) {
+            return { id: existing.page_id, slug: existing.slug, version: existing.version, replayed: true, updated: false };
+          }
+          if (Number(existing.version) !== Number(existing.page_version)) {
+            throw new Error('memory_write: canonical page changed since the last sync; human review is required');
+          }
+          await tx.execute(sql`
+            INSERT INTO wiki_page_versions
+              (id, page_id, version, title, content, summary, edited_by, created_at)
+            VALUES
+              (${randomUUID()}, ${existing.page_id}, ${existing.version}, ${existing.title},
+               ${existing.content}, ${existing.summary}, ${employee.user_id}, now())
+            ON CONFLICT (page_id, version) DO NOTHING
+          `);
+          const nextVersion = Number(existing.version) + 1;
+          await tx.execute(sql`
+            UPDATE wiki_pages
+            SET title = ${args.title.trim()}, content = ${args.body}, summary = ${args.body.slice(0, 240)},
+                type = ${args.type}, confidence = ${confidence}, previous_content = content,
+                version = ${nextVersion}, updated_at = now()
+            WHERE id = ${existing.page_id} AND org_id = ${ctx.org_id}
+          `);
+          await tx.execute(sql`
+            UPDATE wiki_memory_syncs
+            SET content_digest = ${digest}, page_version = ${nextVersion},
+                runtime_session_id = ${args.runtime_session_id ?? null},
+                provenance = ${JSON.stringify({ source_refs: args.source_refs ?? [] })}::jsonb,
+                updated_at = now()
+            WHERE id = ${existing.sync_id}
+          `);
+          for (const source of validatedSources) {
+            await tx.execute(sql`
+              INSERT INTO wiki_citations
+                (id, org_id, page_id, source_type, source_id, source_space_id, source_user_id, excerpt, created_at)
+              SELECT ${randomUUID()}, ${ctx.org_id}, ${existing.page_id}, ${source.kind}, ${source.id},
+                     ${source.source_space_id}, ${source.source_user_id},
+                     ${source.excerpt?.slice(0, 500) ?? null}, now()
+              WHERE NOT EXISTS (
+                SELECT 1 FROM wiki_citations
+                WHERE org_id = ${ctx.org_id} AND page_id = ${existing.page_id}
+                  AND source_type = ${source.kind} AND source_id = ${source.id}
+              )
+            `);
+          }
+          return { id: existing.page_id, slug: existing.slug, version: nextVersion, replayed: false, updated: true };
+        }
+      }
+
+      const id = randomUUID();
+      const rows = await tx.execute(sql`
+        INSERT INTO wiki_pages
+          (id, org_id, scope, agent_employee_id, type, title, slug, summary,
+           content, metadata, confidence, version, is_deleted, created_via, created_at, updated_at)
+        VALUES
+          (${id}, ${ctx.org_id}, 'user', ${ctx.employee_id}, ${args.type},
+           ${args.title.trim()}, ${slug}, ${args.body.slice(0, 240)}, ${args.body},
+           ${JSON.stringify({ memory_sync: { runtime_session_id: args.runtime_session_id ?? null, source_refs: args.source_refs ?? [] } })}::jsonb,
+           ${confidence}, 1, false, 'hermes_memory_sync', now(), now())
+        RETURNING id, slug, version
+      `);
+      const first = queryRows(rows)[0];
+      if (!first) throw new Error('memory_write: insert returned no row');
+      if (idempotencyKey) {
+        await tx.execute(sql`
+          INSERT INTO wiki_memory_syncs
+            (id, org_id, agent_employee_id, idempotency_key, content_digest, page_id,
+             page_version, runtime_session_id, provenance, created_at, updated_at)
+          VALUES
+            (${randomUUID()}, ${ctx.org_id}, ${ctx.employee_id}, ${idempotencyKey}, ${digest}, ${id},
+             1, ${args.runtime_session_id ?? null},
+             ${JSON.stringify({ source_refs: args.source_refs ?? [] })}::jsonb, now(), now())
+        `);
+      }
+      for (const source of validatedSources) {
+        await tx.execute(sql`
+          INSERT INTO wiki_citations
+            (id, org_id, page_id, source_type, source_id, source_space_id, source_user_id, excerpt, created_at)
+          SELECT ${randomUUID()}, ${ctx.org_id}, ${id}, ${source.kind}, ${source.id},
+                 ${source.source_space_id}, ${source.source_user_id},
+                 ${source.excerpt?.slice(0, 500) ?? null}, now()
+          WHERE NOT EXISTS (
+            SELECT 1 FROM wiki_citations
+            WHERE org_id = ${ctx.org_id} AND page_id = ${id}
+              AND source_type = ${source.kind} AND source_id = ${source.id}
+          )
+        `);
+      }
+      return { id, slug: first.slug, version: first.version, replayed: false, updated: false };
+    });
 
     // Update search_vector so memory_recall can find this page immediately.
     await db.execute(sql`
@@ -306,7 +544,7 @@ export async function memoryWrite(
         setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(summary, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(content, '')), 'C')
-      WHERE id = ${id}
+      WHERE id = ${result.id}
     `);
 
     // Phase 12 review fix — plan §4.2 I3: invalidate platform_context cache
@@ -314,10 +552,39 @@ export async function memoryWrite(
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
     return textResult({
-      slug: String(first.slug),
-      created_at: first.created_at,
+      page_id: result.id,
+      slug: String(result.slug),
+      version: Number(result.version),
+      content_digest: digest,
+      replayed: result.replayed,
+      updated: result.updated,
     });
   } catch (err) {
+    const databaseCode = (err as { code?: string; cause?: { code?: string } })?.code
+      ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (idempotencyKey && databaseCode === '23505') {
+      const replayRows = await db.execute(sql`
+        SELECT p.id, p.slug, p.version, s.content_digest
+        FROM wiki_memory_syncs s
+        JOIN wiki_pages p ON p.id = s.page_id AND p.org_id = s.org_id
+        WHERE s.org_id = ${ctx.org_id}
+          AND s.agent_employee_id = ${ctx.employee_id}
+          AND s.idempotency_key = ${idempotencyKey}
+        LIMIT 1
+      `);
+      const replay = queryRows(replayRows)[0];
+      if (replay?.content_digest === digest) {
+        invalidatePlatformContextCacheFor(ctx.employee_id);
+        return textResult({
+          page_id: replay.id,
+          slug: replay.slug,
+          version: Number(replay.version),
+          content_digest: digest,
+          replayed: true,
+          updated: false,
+        });
+      }
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return errorResult(`memory_write failed: ${msg}`);
   }

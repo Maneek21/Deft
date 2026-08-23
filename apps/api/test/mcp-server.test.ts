@@ -201,6 +201,18 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   const wikiSearch = body.tools.find((t: any) => t.name === 'wiki_search');
   const platformContext = body.tools.find((t: any) => t.name === 'platform_context');
   const taskUpdate = body.tools.find((t: any) => t.name === 'task_update');
+  for (const tool of body.tools) {
+    assert.equal(
+      tool.inputSchema?.properties?.caller_employee_slug,
+      undefined,
+      `${tool.name} must use token-bound employee identity`,
+    );
+    assert.equal(
+      tool.inputSchema?.required?.includes('caller_employee_slug') ?? false,
+      false,
+      `${tool.name} must not require caller_employee_slug`,
+    );
+  }
   assert.ok(memoryRecall?.inputSchema?.properties?.space_id, 'memory_recall exposes space_id');
   assert.ok(memoryRecall?.inputSchema?.properties?.include_org, 'memory_recall exposes include_org');
   assert.ok(wikiSearch?.inputSchema?.properties?.space_id, 'wiki_search exposes space_id');
@@ -366,7 +378,7 @@ test('8. Calling an unknown tool returns MCP error result', async () => {
   );
 });
 
-test('9. Invalid caller_employee_slug returns 403', async () => {
+test('9. bearer token identity overrides stale delegated caller slug', async () => {
   const res = await mcpPost(
     '/tools/call',
     {
@@ -375,7 +387,22 @@ test('9. Invalid caller_employee_slug returns 403', async () => {
     },
     RAW_TOKEN!
   );
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.equal(body.isError, false);
+  assert.equal(JSON.parse(body.content[0].text).employee.slug, TEST_EMPLOYEE_SLUG);
+});
+
+test('9b. caller slug can be omitted because bearer token binds identity', async () => {
+  const res = await mcpPost(
+    '/tools/call',
+    { name: 'platform_context', arguments: {} },
+    RAW_TOKEN!,
+  );
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.equal(body.isError, false);
+  assert.equal(JSON.parse(body.content[0].text).employee.slug, TEST_EMPLOYEE_SLUG);
 });
 
 test('10. platform_context second call within 60s hits LRU cache', async () => {

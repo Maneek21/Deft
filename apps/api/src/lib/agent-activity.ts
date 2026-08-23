@@ -73,7 +73,13 @@ export async function loadAgentActivity(params: { orgId: string; employeeId: str
         kind: 'delivery',
         label: event.kind,
         status,
-        detail: event.source_kind ? `From ${event.source_kind}` : null,
+        detail: [
+          event.source_kind ? `From ${event.source_kind}` : null,
+          event.work_outcome && event.work_outcome !== 'completed'
+            ? `Outcome: ${event.work_outcome.replaceAll('_', ' ')}`
+            : null,
+          event.outcome_detail ?? null,
+        ].filter(Boolean).join(' · ') || null,
         occurred_at: event.updated_at,
         target_url: event.space_id ? `/chat${query}` : null,
         error: event.error,

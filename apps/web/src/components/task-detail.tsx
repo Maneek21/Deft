@@ -665,7 +665,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     agent_employee_id: string | null;
     step_index: number;
     step_description: string;
-    status: 'queued' | 'started' | 'completed' | 'failed';
+    status: 'queued' | 'pending' | 'delivered' | 'acknowledged' | 'started' | 'approval_pending' | 'needs_human' | 'blocked' | 'completed' | 'failed' | 'cancelled';
     total_steps: number;
     error?: string;
   } | null>(null);
@@ -742,6 +742,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       setDescValue(normalized.description || '');
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
+      setAgentProgress(data.agent_progress || null);
     }
     setLoading(false);
   }, [taskId]);
@@ -773,7 +774,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       agent_employee_id: string | null;
       step_index: number;
       step_description: string;
-      status: 'queued' | 'started' | 'completed' | 'failed';
+      status: 'queued' | 'pending' | 'delivered' | 'acknowledged' | 'started' | 'approval_pending' | 'needs_human' | 'blocked' | 'completed' | 'failed' | 'cancelled';
       total_steps: number;
       error?: string;
     }) => {
@@ -1760,12 +1761,13 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             const agentLabel = employee?.name ? `${employee.name} (AI)` : 'Agent';
             const stepNum = agentProgress.step_index + 1;
             const total = agentProgress.total_steps;
-            const isFailed = agentProgress.status === 'failed';
+            const isFailed = agentProgress.status === 'failed' || agentProgress.status === 'cancelled';
             const isDone = agentProgress.status === 'completed';
-            const isQueued = agentProgress.status === 'queued';
-            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : isQueued ? 'var(--surface)' : 'var(--muted-bg, #f3f4f6)';
-            const fg = isFailed ? '#991b1b' : isDone ? '#166534' : 'var(--foreground)';
-            const border = isFailed ? '#fecaca' : isDone ? '#bbf7d0' : 'var(--border)';
+            const isQueued = ['queued', 'pending', 'delivered', 'acknowledged'].includes(agentProgress.status);
+            const needsHuman = agentProgress.status === 'needs_human' || agentProgress.status === 'blocked' || agentProgress.status === 'approval_pending';
+            const bg = isFailed ? '#fef2f2' : isDone ? '#f0fdf4' : needsHuman ? '#fffbeb' : isQueued ? 'var(--surface)' : 'var(--muted-bg, #f3f4f6)';
+            const fg = isFailed ? '#991b1b' : isDone ? '#166534' : needsHuman ? '#92400e' : 'var(--foreground)';
+            const border = isFailed ? '#fecaca' : isDone ? '#bbf7d0' : needsHuman ? '#fde68a' : 'var(--border)';
             return (
               <div
                 className="mx-5 mb-3 px-3 py-2 rounded-md text-[12px] flex items-center gap-2"
@@ -1788,6 +1790,10 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   ) : isDone ? (
                     <>
                       <strong>{agentLabel}</strong> finished: {agentProgress.step_description}
+                    </>
+                  ) : needsHuman ? (
+                    <>
+                      <strong>{agentLabel}</strong> needs attention: {agentProgress.step_description}
                     </>
                   ) : isQueued ? (
                     <>

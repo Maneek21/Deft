@@ -12,6 +12,7 @@ import {
 } from './upgrade.ts';
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
+  agentChannelEvents,
   moduleInstallations,
   moduleMutationReceipts,
   moduleRecordRelations,
@@ -447,4 +448,45 @@ test('module relations/views fresh-install and supported-upgrade SQL stay identi
     upgradeSql,
     /module_saved_views_active_name_unique[\s\S]*owner_user_id,[\s\S]*name[\s\S]*WHERE is_deleted = false/i,
   );
+});
+
+test('Agent Channel lease schema converges across fresh installs and supported upgrades', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.4',
+  );
+  assert.ok(migration, 'Agent Channel lease migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0083_agent_channel_leases.sql'), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0083_agent_channel_leases\.sql'/);
+  assert.match(upgradeSql, /claim_token text/i);
+  assert.match(upgradeSql, /lease_expires_at timestamp/i);
+  assert.match(upgradeSql, /agent_channel_event_claim_shape_check/i);
+  assert.match(upgradeSql, /work_outcome IN \('completed', 'needs_human', 'blocked', 'failed', 'cancelled'\)/i);
+  assert.match(upgradeSql, /agent_channel_event_lease_idx/i);
+
+  const table = getTableConfig(agentChannelEvents);
+  assert.ok(table.checks.some((item) => item.name === 'agent_channel_event_claim_shape_check'));
+  assert.ok(table.checks.some((item) => item.name === 'agent_channel_event_work_outcome_check'));
+  assert.ok(table.indexes.some((item) => item.config.name === 'agent_channel_event_lease_idx'));
+});
+
+test('wiki memory sync schema converges across fresh installs and supported upgrades', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.5',
+  );
+  assert.ok(migration, 'wiki memory sync migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0084_wiki_memory_sync.sql'), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0084_wiki_memory_sync\.sql'/);
+  assert.match(upgradeSql, /wiki_memory_sync_identity_unique/i);
+  assert.match(upgradeSql, /content_digest/i);
+  assert.match(upgradeSql, /page_version/i);
 });

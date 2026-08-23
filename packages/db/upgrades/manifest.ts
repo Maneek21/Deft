@@ -67,6 +67,16 @@ export const upgradeManifest = {
       file: '0.2.0-preview.7-module-relations-views.sql',
       description: 'Add normalized module record relations and personal saved views',
     },
+    {
+      version: '0.3.0-preview.4',
+      file: '0.3.0-preview.4-agent-channel-leases.sql',
+      description: 'Add single-flight Agent Channel leases and truthful work outcomes',
+    },
+    {
+      version: '0.3.0-preview.5',
+      file: '0.3.0-preview.5-wiki-memory-sync.sql',
+      description: 'Add idempotent Hermes-to-wiki memory reconciliation receipts',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

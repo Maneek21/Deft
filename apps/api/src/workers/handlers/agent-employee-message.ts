@@ -18,6 +18,7 @@ import { eq, and, lte, sql } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { ensureDeftyMembership } from '../../lib/ensure-defty-membership.js';
 import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
+import { employeeCanAccessSpace } from '../../lib/mcp-tools/employee-space-access.js';
 
 interface AgentEmployeeMessageData {
   messageId: string;
@@ -105,7 +106,12 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
 
   // Block agent→agent mentions (prevent loops)
   const [triggerMsg] = await db.select().from(messages)
-    .where(eq(messages.id, messageId))
+    .where(and(
+      eq(messages.id, messageId),
+      eq(messages.org_id, orgId),
+      eq(messages.space_id, spaceId),
+      eq(messages.is_deleted, false),
+    ))
     .limit(1);
   if (!triggerMsg) return;
 
@@ -122,6 +128,10 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
 
   if (!employee) {
     console.warn(`[agent-employee-message] Employee ${employeeId} not found or inactive, skipping`);
+    return;
+  }
+  if (!(await employeeCanAccessSpace(employeeId, orgId, spaceId))) {
+    console.warn(`[agent-employee-message] Employee ${employeeId} cannot access space ${spaceId}, skipping`);
     return;
   }
 

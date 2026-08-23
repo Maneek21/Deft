@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, spaces, spaceMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelEvents, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -11,8 +11,7 @@ import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
 import { isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
-import { dispatchAgentEmployeeTask } from '../lib/dispatch-agent-task.js';
-import { publishAgentChannelEvent, type AgentChannelEventKind } from '../lib/agent-channel.js';
+import { dispatchAgentEmployeeTask, publishTaskChannelEventForAssignee } from '../lib/dispatch-agent-task.js';
 import { reserveNextTaskNumber } from '../lib/task-numbering.js';
 import { resolveAssignableAssigneeId } from '../lib/resolve-assignee.js';
 import { createNotificationIfAllowed } from '../lib/notification-policy.js';
@@ -169,71 +168,6 @@ async function getVisibleTaskForOrg(taskId: string, orgId: string, userId: strin
     )
     .limit(1);
   return task ?? null;
-}
-
-async function publishTaskChannelEventForAssignee(params: {
-  orgId: string;
-  task: NonNullable<Awaited<ReturnType<typeof getVisibleTaskForOrg>>>;
-  actorUserId: string;
-  kind: AgentChannelEventKind;
-  idempotencyKey: string;
-  projectPrefix?: string | null;
-  payload: Record<string, unknown>;
-}) {
-  if (!params.task.assignee_id || params.task.assignee_id === params.actorUserId) return;
-
-  try {
-    const [employee] = await db
-      .select({
-        id: agentEmployees.id,
-        user_id: agentEmployees.user_id,
-      })
-      .from(agentEmployees)
-      .where(
-        and(
-          eq(agentEmployees.org_id, params.orgId),
-          eq(agentEmployees.user_id, params.task.assignee_id),
-          eq(agentEmployees.is_active, true),
-          eq(agentEmployees.is_deleted, false),
-        ),
-      )
-      .limit(1);
-
-    if (!employee || employee.user_id === params.actorUserId) return;
-
-    let prefix = params.projectPrefix;
-    if (prefix === undefined) {
-      const [project] = await db
-        .select({ prefix: projects.prefix })
-        .from(projects)
-        .where(eq(projects.id, params.task.project_id))
-        .limit(1);
-      prefix = project?.prefix ?? null;
-    }
-
-    await publishAgentChannelEvent({
-      orgId: params.orgId,
-      employeeId: employee.id,
-      kind: params.kind,
-      sourceKind: 'task',
-      sourceId: params.task.id,
-      actorUserId: params.actorUserId,
-      idempotencyKey: `${params.kind}:${params.idempotencyKey}:employee:${employee.id}`,
-      payload: {
-        task_id: params.task.id,
-        task_key: prefix ? `${prefix}-${params.task.number}` : null,
-        project_id: params.task.project_id,
-        title: params.task.title,
-        description: params.task.description ?? null,
-        status: params.task.status,
-        priority: params.task.priority,
-        assignee_user_id: params.task.assignee_id,
-        ...params.payload,
-      },
-    });
-  } catch (err) {
-    console.error(`[tasks] failed to publish ${params.kind} channel event for task ${params.task.id}:`, err);
-  }
 }
 
 /**
@@ -1087,6 +1021,7 @@ taskRoutes.post('/:id/agent-handoff', async (c) => {
     if (!task) {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
+
     if (!task.assignee_id) {
       return c.json({ error: 'Assign this task to an agent employee first', code: 'NO_ASSIGNEE' }, 400);
     }
@@ -1204,6 +1139,31 @@ taskRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
+    const [latestAgentEvent] = await db.select({
+      agent_employee_id: agentChannelEvents.agent_employee_id,
+      status: agentChannelEvents.status,
+      work_outcome: agentChannelEvents.work_outcome,
+      detail: agentChannelEvents.outcome_detail,
+      error: agentChannelEvents.error,
+      updated_at: agentChannelEvents.updated_at,
+    }).from(agentChannelEvents)
+      .where(and(
+        eq(agentChannelEvents.org_id, user.org_id),
+        eq(agentChannelEvents.source_kind, 'task'),
+        eq(agentChannelEvents.source_id, task.id),
+        task.assignee_id
+          ? sql`EXISTS (
+              SELECT 1 FROM agent_employees ae
+              WHERE ae.id = ${agentChannelEvents.agent_employee_id}
+                AND ae.org_id = ${user.org_id}
+                AND ae.user_id = ${task.assignee_id}
+                AND ae.is_deleted = false
+            )`
+          : sql`FALSE`,
+      ))
+      .orderBy(desc(agentChannelEvents.updated_at))
+      .limit(1);
+
     // Fetch assignee info
     let assignee = null;
     if (task.assignee_id) {
@@ -1310,6 +1270,19 @@ taskRoutes.get('/:id', async (c) => {
       source_message: sourceMessage,
       subtasks,
       parent_task: parentTask,
+      agent_progress: latestAgentEvent ? {
+        agent_employee_id: latestAgentEvent.agent_employee_id,
+        step_index: 0,
+        total_steps: 1,
+        status: latestAgentEvent.work_outcome ?? (
+          latestAgentEvent.status === 'running' ? 'started' : latestAgentEvent.status
+        ),
+        step_description: latestAgentEvent.detail
+          ?? latestAgentEvent.error
+          ?? `Agent work is ${latestAgentEvent.status.replaceAll('_', ' ')}`,
+        error: latestAgentEvent.error ?? undefined,
+        updated_at: latestAgentEvent.updated_at,
+      } : null,
     });
   } catch (err) {
     console.error('Failed to fetch task:', err);
