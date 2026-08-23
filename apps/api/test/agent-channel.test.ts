@@ -475,7 +475,7 @@ async function publishMessageEvent(
 }
 
 async function claimChannelEvent(eventId: string, workerId = `worker-${crypto.randomUUID()}`) {
-  const res = await app.request(`/api/agent-channel/v1/events?limit=100&worker_id=${encodeURIComponent(workerId)}&lease_ms=120000`, {
+  const res = await app.request(`/api/agent-channel/v1/events?limit=100&worker_id=${encodeURIComponent(workerId)}&lease_ms=120000&${channelCompatibilityQuery()}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
   const body = await res.json() as any;
@@ -486,18 +486,28 @@ async function claimChannelEvent(eventId: string, workerId = `worker-${crypto.ra
   return claimed;
 }
 
+function channelCompatibilityQuery() {
+  return new URLSearchParams({
+    protocol_version: 'deft.agent_channel.v2',
+    adapter_version: '0.2.0-test',
+    capabilities: 'single_flight_claims,renewable_leases,fencing_tokens,terminal_outcomes,identity_bound_mcp,wiki_memory_sync_v1',
+  }).toString();
+}
+
 test('GET /connect requires a bearer token', async () => {
   const res = await app.request('/api/agent-channel/v1/connect');
   assert.equal(res.status, 401);
 });
 
-test('GET /connect authenticates an agent bearer and records connection', async () => {
-  const res = await app.request('/api/agent-channel/v1/connect', {
+test('GET /connect authenticates a compatible agent bearer and records connection', async () => {
+  const res = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery()}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
   const body = await res.json() as any;
   assert.equal(res.status, 200, JSON.stringify(body));
   assert.equal(body.ok, true);
+  assert.equal(body.protocol_version, 'deft.agent_channel.v2');
+  assert.ok(body.capabilities.includes('fencing_tokens'));
   assert.equal(body.employee.slug, employeeSlug);
   assert.equal(body.connection.status, 'connected');
 
@@ -509,11 +519,31 @@ test('GET /connect authenticates an agent bearer and records connection', async 
   assert.ok(connection?.last_seen_at);
 });
 
+test('GET /contract advertises the lease-safe public compatibility contract', async () => {
+  const res = await app.request('/api/agent-channel/v1/contract');
+  const body = await res.json() as any;
+  assert.equal(res.status, 200);
+  assert.equal(body.protocol_version, 'deft.agent_channel.v2');
+  assert.ok(body.capabilities.includes('fencing_tokens'));
+  assert.ok(body.required_runtime_capabilities.includes('terminal_outcomes'));
+});
+
+test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
+  const res = await app.request('/api/agent-channel/v1/connect?protocol_version=deft.agent_channel.v1&adapter_version=0.1.0&capabilities=terminal_outcomes', {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  const body = await res.json() as any;
+  assert.equal(res.status, 426, JSON.stringify(body));
+  assert.equal(body.code, 'INCOMPATIBLE_CHANNEL');
+  assert.equal(body.protocol_version, 'deft.agent_channel.v2');
+  assert.ok(body.capabilities.includes('fencing_tokens'));
+});
+
 test('GET /events returns pending events once and marks them delivered', async () => {
   const first = await publishMessageEvent('agent-channel-events-once');
   await publishMessageEvent('agent-channel-events-once');
 
-  const res = await app.request('/api/agent-channel/v1/events?limit=10&worker_id=events-once&lease_ms=120000', {
+  const res = await app.request(`/api/agent-channel/v1/events?limit=10&worker_id=events-once&lease_ms=120000&${channelCompatibilityQuery()}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
   const body = await res.json() as any;
@@ -538,7 +568,7 @@ test('GET /events returns pending events once and marks them delivered', async (
 test('concurrent bridge polls grant one active claim per event', async () => {
   const event = await publishMessageEvent(`agent-channel-single-flight-${crypto.randomUUID()}`);
   const poll = (workerId: string) => app.request(
-    `/api/agent-channel/v1/events?limit=100&worker_id=${workerId}&lease_ms=120000`,
+    `/api/agent-channel/v1/events?limit=100&worker_id=${workerId}&lease_ms=120000&${channelCompatibilityQuery()}`,
     { headers: { authorization: `Bearer ${bearer}` } },
   ).then(async (response) => ({ response, body: await response.json() as any }));
 

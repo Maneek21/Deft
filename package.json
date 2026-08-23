@@ -1,6 +1,6 @@
 {
   "name": "deft",
-  "version": "0.3.0-preview.3",
+  "version": "0.3.0-preview.6",
   "private": true,
   "license": "AGPL-3.0-only",
   "repository": {
@@ -59,6 +59,7 @@
     "test:product-browser": "node scripts/product-browser-smoke.mjs",
     "test:product-browser:seed": "tsx scripts/seed-product-browser-smoke.ts",
     "agent:hermes-channel": "node scripts/hermes-agent-channel-bridge.mjs",
+    "agent:hermes-bundle": "node scripts/build-hermes-integration-bundle.mjs",
     "test:hermes-channel": "node --test scripts/hermes-agent-channel-bridge.test.mjs",
     "chat:certify": "tsx scripts/reports/chat-ui-certification.ts",
     "certify:60-person": "node scripts/certify-60-person.mjs",

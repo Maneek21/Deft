@@ -33,15 +33,19 @@ async function rowFor(name: string) {
 }
 
 async function makeReady(id: string): Promise<void> {
-  await db.update(jobQueue)
-    .set({ run_at: new Date(Date.now() - 1_000) })
-    .where(eq(jobQueue.id, id));
+  await db.execute(sql`
+    UPDATE job_queue
+    SET run_at = now() - interval '1 second'
+    WHERE id = ${id}
+  `);
 }
 
 async function expireLease(id: string): Promise<void> {
-  await db.update(jobQueue)
-    .set({ lock_expires_at: new Date(Date.now() - 1_000) })
-    .where(eq(jobQueue.id, id));
+  await db.execute(sql`
+    UPDATE job_queue
+    SET lock_expires_at = now() - interval '1 second'
+    WHERE id = ${id}
+  `);
 }
 
 test('concurrent dequeue claims a job once with a unique ownership token', async () => {

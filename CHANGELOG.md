@@ -10,6 +10,32 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.6] — 2026-08-23
+
+### Added
+
+- Agent Channel v2 compatibility negotiation, lease/fencing capability checks,
+  release and schema readiness metadata, and a release-pinned Hermes integration
+  bundle with complete checksums.
+- End-to-end employee certification now proves real channel delivery, Hermes
+  runtime inference, employee-scoped MCP calls, a nonce-bearing reply, terminal
+  outcome reporting, and wiki memory recall/writeback before showing Ready.
+
+### Changed
+
+- Runtime transport contact, health, and employee readiness are now distinct UI
+  states. A polling process can no longer make an uncertified employee appear
+  ready to work.
+- The Windows Hermes service uses structured semantic health and fails closed on
+  incompatible protocol versions instead of retrying malformed work forever.
+
+### Fixed
+
+- Prevented newer Hermes bridges from consuming older unclaimed Agent Channel
+  events, which previously caused silent non-response and unbounded redelivery.
+- Fresh-install and supported-upgrade gates now require Agent Channel leases and
+  wiki memory-sync schema before the API reports ready.
+
 ## [0.3.0-preview.3] — 2026-08-22
 
 Delta from `v0.3.0-preview.2`. Deft remains alpha.
@@ -233,7 +259,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.3...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.6...HEAD
+[0.3.0-preview.6]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.6
 [0.3.0-preview.3]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.3
 [0.3.0-preview.2]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.2
 [0.3.0-preview.1]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.1

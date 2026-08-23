@@ -2267,7 +2267,7 @@ export const agentChannelConnections = pgTable('agent_channel_connections', {
   agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
   runtime_kind: text('runtime_kind').default('custom_mcp').notNull(),
   status: text('status').default('disconnected').notNull(),
-  protocol_version: text('protocol_version').default('deft.agent_channel.v1').notNull(),
+  protocol_version: text('protocol_version').default('deft.agent_channel.v2').notNull(),
   last_seen_at: timestamp('last_seen_at'),
   last_event_id: text('last_event_id'),
   last_error: text('last_error'),

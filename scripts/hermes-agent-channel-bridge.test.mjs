@@ -46,6 +46,21 @@ function config() {
   };
 }
 
+const compatibleConnection = {
+  ok: true,
+  protocol_version: 'deft.agent_channel.v2',
+  server_release: '0.3.0-preview.6',
+  capabilities: [
+    'single_flight_claims',
+    'renewable_leases',
+    'fencing_tokens',
+    'terminal_outcomes',
+    'identity_bound_mcp',
+    'wiki_memory_sync_v1',
+  ],
+  employee: { slug: 'maya' },
+};
+
 test('buildEventPrompt preserves the event and pins the employee identity', () => {
   const prompt = buildEventPrompt(event, 'maya');
   assert.match(prompt, /bearer token binds your employee identity/);
@@ -167,7 +182,7 @@ test('request retries a transient channel rate limit instead of killing the brid
         headers: { 'content-type': 'application/json', 'retry-after': '0' },
       });
     }
-    return jsonResponse({ ok: true, employee: { slug: 'maya' } });
+    return jsonResponse(compatibleConnection);
   };
   const bridge = new HermesAgentChannelBridge(config(), {
     fetchImpl,
@@ -181,12 +196,48 @@ test('request retries a transient channel rate limit instead of killing the brid
   assert.deepEqual(sleeps, [5]);
 });
 
+test('connect rejects a legacy Agent Channel before polling any work', async () => {
+  const urls = [];
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return jsonResponse({
+        ok: true,
+        protocol_version: 'deft.agent_channel.v1',
+        employee: { slug: 'maya' },
+      });
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await assert.rejects(
+    () => bridge.run(),
+    /INCOMPATIBLE_CHANNEL.*deft\.agent_channel\.v1.*deft\.agent_channel\.v2/,
+  );
+  assert.equal(urls.filter((url) => url.includes('/events')).length, 0, 'an incompatible bridge must stop before GET /events');
+  assert.match(urls[0], /protocol_version=deft\.agent_channel\.v2/);
+  assert.match(urls[0], /adapter_version=/);
+  assert.match(urls[0], /capabilities=/);
+});
+
+test('connect rejects a v2 server that omits a required capability', async () => {
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl: async () => jsonResponse({
+      ...compatibleConnection,
+      capabilities: compatibleConnection.capabilities.filter((name) => name !== 'fencing_tokens'),
+    }),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  await assert.rejects(() => bridge.connect(), /INCOMPATIBLE_CHANNEL.*fencing_tokens/);
+});
+
 test('pollOnce claims only one event so queued leases cannot expire behind active work', async () => {
   const urls = [];
   const bridge = new HermesAgentChannelBridge(config(), {
     fetchImpl: async (url) => {
       urls.push(url);
-      return jsonResponse({ ok: true, events: [] });
+      return jsonResponse({ ...compatibleConnection, events: [] });
     },
     logger: { info() {}, warn() {}, error() {} },
   });

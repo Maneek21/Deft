@@ -141,6 +141,14 @@ before(async () => {
 after(async () => {
   await withClient(async (client) => {
     await client.query('DELETE FROM agent_channel_events WHERE agent_employee_id = $1', [AUTH_EMPLOYEE_ID]);
+    await client.query(
+      'DELETE FROM space_members WHERE user_id IN ($1, $2, $3, $4)',
+      [SHADOW_USER_ID, ADMIN_USER_ID, MEMBER_USER_ID, AUTH_SHADOW_USER_ID],
+    );
+    await client.query(
+      "DELETE FROM spaces WHERE org_id = $1 AND created_by = $2 AND type = 'agent_conversation'",
+      [ORG_ID, ADMIN_USER_ID],
+    );
     await client.query('DELETE FROM agent_cooperative_log WHERE employee_id = $1', [EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_mcp_call_audit WHERE employee_id = $1', [EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_certification_challenges WHERE employee_id IN ($1, $2)', [EMPLOYEE_ID, AUTH_EMPLOYEE_ID]);
@@ -251,12 +259,72 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
     { method: 'POST' },
   );
   assert.equal(startResponse.status, 201);
+  const startBody = await startResponse.json() as any;
+  assert.equal(startBody.channel_event.kind, 'certification.challenge');
+  assert.equal(startBody.channel_event.source_id, startBody.challenge.id);
+  assert.equal(startBody.channel_event.space_id, startBody.challenge.id);
+  assert.ok(startBody.challenge.required_tools.includes('memory_recall'));
+  assert.ok(startBody.challenge.required_tools.includes('memory_write'));
+  assert.match(startBody.runtime_setup.certification_prompt, /final reply.*nonce/i);
 
-  const checkResponse = await app().request(
+  await withClient(async (client) => {
+    for (const tool of startBody.challenge.required_tools) {
+      await client.query(
+        `INSERT INTO agent_mcp_call_audit
+           (id, org_id, employee_id, tool_name, success, created_at)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, true, now())`,
+        [ORG_ID, AUTH_EMPLOYEE_ID, tool],
+      );
+    }
+    await client.query(
+      `INSERT INTO agent_cooperative_log
+         (id, org_id, employee_id, kind, summary, created_at)
+       VALUES (gen_random_uuid()::text, $1, $2, 'decision', $3, now())`,
+      [ORG_ID, AUTH_EMPLOYEE_ID, `Certification ${startBody.challenge.nonce}`],
+    );
+  });
+
+  const mcpOnlyCheck = await app().request(
     `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/check`,
     { method: 'POST' },
   );
-  assert.equal(checkResponse.status, 200);
+  assert.equal(mcpOnlyCheck.status, 200);
+  const mcpOnlyBody = await mcpOnlyCheck.json() as any;
+  assert.equal(mcpOnlyBody.completed, false, 'MCP evidence alone must not certify an employee');
+  assert.equal(mcpOnlyBody.channel_completed, false);
+
+  await withClient(async (client) => {
+    await client.query(
+      `UPDATE agent_channel_events
+       SET status = 'completed', delivery_count = 1, delivered_at = now(), acked_at = now(),
+           completed_at = now(), work_outcome = 'completed', outcome_at = now(),
+           runtime_session_key = 'hermes:certification:test'
+       WHERE id = $1`,
+      [startBody.channel_event.id],
+    );
+    await client.query(
+      `INSERT INTO agent_channel_delivery_attempts
+         (id, org_id, agent_employee_id, event_id, direction, idempotency_key, status, request_json)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'inbound_reply', $4, 'completed', $5::jsonb)`,
+      [
+        ORG_ID,
+        AUTH_EMPLOYEE_ID,
+        startBody.channel_event.id,
+        `certification-reply-${startBody.challenge.id}`,
+        JSON.stringify({ content: `Certification complete ${startBody.challenge.nonce}` }),
+      ],
+    );
+  });
+
+  const deepCheckResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/check`,
+    { method: 'POST' },
+  );
+  assert.equal(deepCheckResponse.status, 200);
+  const deepCheckBody = await deepCheckResponse.json() as any;
+  assert.equal(deepCheckBody.completed, true);
+  assert.equal(deepCheckBody.single_delivery, true);
+  assert.equal(deepCheckBody.channel_reply_nonce_seen, true);
 
   const resetResponse = await app().request(
     `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/reset`,

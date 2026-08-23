@@ -48,6 +48,9 @@ type DeveloperPayload = {
     runtime_kind: string;
     tool_server_name: string | null;
     channel_protocol_version: string;
+    channel_capabilities: string[];
+    integration_version: string | null;
+    integration_bundle_url: string | null;
     mcp_endpoint_url: string;
     channel_endpoint_url: string;
     tool_name_style: 'bare' | 'server_prefixed';
@@ -424,7 +427,7 @@ export default function DeveloperPage() {
           onCopy={() => copy('slug', data.employee.slug)}
         />
         <Field
-          label="Connection"
+          label="Last runtime signal"
           value={connectionLabel}
         />
         <Field
@@ -506,7 +509,7 @@ export default function DeveloperPage() {
           )}
         />
         <Field
-          label="Channel status"
+          label="Channel transport"
           value={`${channelConnectionLabel} - pending ${data.channel.queue.pending} - failed ${data.channel.queue.failed}`}
         />
         <Field
@@ -598,6 +601,11 @@ export default function DeveloperPage() {
           <div className="mt-1 text-[11px] text-muted-foreground">
             Agent Channel: {data.runtime_setup.channel_protocol_version}
           </div>
+          {data.runtime_setup.integration_version && (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              Matched Hermes integration: {data.runtime_setup.integration_version}
+            </div>
+          )}
           <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs">
             {data.runtime_setup.setup_steps.map((step) => (
               <li key={step}>{step}</li>
@@ -625,7 +633,7 @@ export default function DeveloperPage() {
           <div className="mt-3">
             <div className="mb-1 text-xs text-muted-foreground">Certification prompt</div>
             <p className="mb-1 text-[11px] text-muted-foreground">
-              Paste this prompt into the interactive runtime chat; it is intentionally kept separate from executable commands.
+              Deft sends this prompt through Agent Channel during certification. Paste it manually only when diagnosing the model loop.
             </p>
             <CodeBlock
               value={data.runtime_setup.certification_prompt}

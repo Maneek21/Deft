@@ -12,7 +12,23 @@ import {
 import { McpAuthError } from './mcp-token.js';
 import { getIO } from '../socket.js';
 
-export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v1';
+export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
+export const AGENT_CHANNEL_CAPABILITIES = [
+  'single_flight_claims',
+  'renewable_leases',
+  'fencing_tokens',
+  'terminal_outcomes',
+  'identity_bound_mcp',
+  'wiki_memory_sync_v1',
+] as const;
+export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
+  'renewable_leases',
+  'fencing_tokens',
+  'terminal_outcomes',
+] as const;
+export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.6';
+export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
+export const DEFT_SCHEMA_HEAD = '0.3.0-preview.6';
 export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
 export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
 export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
@@ -201,7 +217,12 @@ export async function publishAgentChannelEvent(input: PublishAgentChannelEventIn
 
 export async function touchAgentChannelConnection(
   principal: AgentChannelPrincipal,
-  opts?: { status?: 'connected' | 'degraded' | 'disconnected'; lastEventId?: string | null; lastError?: string | null },
+  opts?: {
+    status?: 'connected' | 'degraded' | 'disconnected';
+    lastEventId?: string | null;
+    lastError?: string | null;
+    metadata?: Record<string, unknown>;
+  },
 ) {
   const now = new Date();
   const id = crypto.randomUUID();
@@ -217,6 +238,7 @@ export async function touchAgentChannelConnection(
       last_seen_at: now,
       last_event_id: opts?.lastEventId ?? null,
       last_error: opts?.lastError ?? null,
+      metadata: opts?.metadata ?? {},
     })
     .onConflictDoUpdate({
       target: [
@@ -230,6 +252,7 @@ export async function touchAgentChannelConnection(
         last_seen_at: now,
         last_event_id: opts?.lastEventId ?? sql`${agentChannelConnections.last_event_id}`,
         last_error: opts?.lastError ?? null,
+        metadata: opts?.metadata ?? sql`${agentChannelConnections.metadata}`,
         updated_at: now,
       },
     })
