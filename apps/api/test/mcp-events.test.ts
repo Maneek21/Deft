@@ -281,11 +281,13 @@ test('3. events_query filters by since/until time range', async () => {
   assert.ok(!ids.has(OLD_EVENT_ID), '5-day-old event filtered out by since');
 });
 
-test('4. events_query with unknown caller_employee_slug returns 403', async () => {
-  const { status } = await mcpCall(
+test('4. events_query ignores model-authored caller_employee_slug and uses the bearer identity', async () => {
+  const { status, body } = await mcpCall(
     'events_query',
     { caller_employee_slug: 'nobody-on-this-phase6-gateway' },
     RAW_TOKEN!,
   );
-  assert.equal(status, 403);
+  assert.equal(status, 200);
+  assert.equal(body.isError, false);
+  assert.ok(Array.isArray(parseContent(body)));
 });
