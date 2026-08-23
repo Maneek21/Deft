@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, lt, lte, gt, sql, isNull, inArray, ne } from 'drizzle-orm';
+import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
@@ -13,6 +13,7 @@ import { DEFTY_EMAIL, ensureDeftyMembership } from '../lib/ensure-defty-membersh
 import { enqueueChatObservation } from '../lib/chat-observation.js';
 import { createNotificationIfAllowed, createNotificationsIfAllowed } from '../lib/notification-policy.js';
 import { normalizePlainAgentMentions } from '../lib/agent-mention-normalization.js';
+import { dispatchAgentEmployeeMessage } from '../lib/dispatch-agent-message.js';
 import { toPlainText } from '../lib/plain-text.js';
 import {
   getMessageAttachments,
@@ -787,43 +788,14 @@ messageRoutes.post('/:spaceId', async (c) => {
     // Also auto-trigger BYOA agents in DM/agent_conversation spaces — no mention
     // required. BYOA delivery must not depend on Deft's own hosted LLM provider:
     // the external runtime already owns its model and pulls work through MCP.
-    try {
-      const targetUserIds = new Set<string>(mentionedUserIds);
-      const [spaceRow] = await db.select({ type: spaces.type })
-        .from(spaces).where(eq(spaces.id, spaceId)).limit(1);
-      if (spaceRow && (spaceRow.type === 'dm' || spaceRow.type === 'agent_conversation')) {
-        const dmMembers = await db.select({ user_id: spaceMembers.user_id })
-          .from(spaceMembers)
-          .where(and(eq(spaceMembers.space_id, spaceId), sql`${spaceMembers.user_id} != ${user.id}`));
-        for (const m of dmMembers) targetUserIds.add(m.user_id);
-      }
-
-      if (targetUserIds.size > 0) {
-        const targetEmployees = await db.select({
-          id: agentEmployees.id,
-          user_id: agentEmployees.user_id,
-        })
-          .from(agentEmployees)
-          .where(and(
-            eq(agentEmployees.org_id, user.org_id),
-            eq(agentEmployees.is_active, true),
-            ne(agentEmployees.runtime_kind, 'defty_system'),
-            inArray(agentEmployees.user_id, Array.from(targetUserIds)),
-          ));
-
-        for (const emp of targetEmployees) {
-          await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-message', {
-            messageId: message!.id,
-            spaceId,
-            orgId: user.org_id,
-            employeeId: emp.id,
-            isDM: spaceRow?.type === 'dm' || spaceRow?.type === 'agent_conversation',
-          });
-        }
-      }
-    } catch (err) {
-      console.error('Failed to enqueue agent-employee-message:', err);
-    }
+    await dispatchAgentEmployeeMessage({
+      messageId: message!.id,
+      spaceId,
+      orgId: user.org_id,
+      actorUserId: user.id,
+      content: normalizedContent,
+      mentionedUserIds,
+    });
 
     // Cross-reference detection — check for task identifier patterns like PROJ-42
     const TASK_ID_PATTERN = /([A-Z]+-\d+)/g;

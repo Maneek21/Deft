@@ -2032,6 +2032,23 @@ export const wikiCitations = pgTable('wiki_citations', {
   index('wiki_citations_source').on(t.source_type, t.source_id),
 ]);
 
+export const wikiMemorySyncs = pgTable('wiki_memory_syncs', {
+  ...id(),
+  ...orgId(),
+  agent_employee_id: text('agent_employee_id').notNull().references(() => agentEmployees.id, { onDelete: 'cascade' }),
+  idempotency_key: text('idempotency_key').notNull(),
+  content_digest: text('content_digest').notNull(),
+  page_id: text('page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  page_version: integer('page_version').notNull(),
+  runtime_session_id: text('runtime_session_id'),
+  provenance: jsonb('provenance'),
+  ...timestamps(),
+}, (t) => [
+  uniqueIndex('wiki_memory_sync_identity_unique').on(t.org_id, t.agent_employee_id, t.idempotency_key),
+  index('wiki_memory_sync_page_idx').on(t.page_id),
+  index('wiki_memory_sync_employee_updated_idx').on(t.org_id, t.agent_employee_id, t.updated_at),
+]);
+
 export const wikiOpsLog = pgTable('wiki_ops_log', {
   ...id(),
   ...orgId(),
@@ -2296,17 +2313,36 @@ export const agentChannelEvents = pgTable('agent_channel_events', {
   idempotency_key: text('idempotency_key').notNull(),
   status: text('status').default('pending').notNull(),
   delivery_count: integer('delivery_count').default(0).notNull(),
+  claim_owner: text('claim_owner'),
+  claim_token: text('claim_token'),
+  claimed_at: timestamp('claimed_at'),
+  lease_expires_at: timestamp('lease_expires_at'),
   delivered_at: timestamp('delivered_at'),
   acked_at: timestamp('acked_at'),
   completed_at: timestamp('completed_at'),
   failed_at: timestamp('failed_at'),
+  work_outcome: text('work_outcome'),
+  outcome_detail: text('outcome_detail'),
+  outcome_at: timestamp('outcome_at'),
+  runtime_session_key: text('runtime_session_key'),
   error: text('error'),
   ...timestamps(),
 }, (t) => [
   uniqueIndex('agent_channel_event_idempotency_unique').on(t.org_id, t.agent_employee_id, t.idempotency_key),
   index('agent_channel_event_employee_status_idx').on(t.agent_employee_id, t.status, t.created_at),
+  index('agent_channel_event_lease_idx').on(t.agent_employee_id, t.status, t.lease_expires_at),
+  index('agent_channel_event_outcome_idx').on(t.agent_employee_id, t.work_outcome, t.outcome_at),
   index('agent_channel_event_org_kind_idx').on(t.org_id, t.kind, t.created_at),
   index('agent_channel_event_space_idx').on(t.space_id),
+  check('agent_channel_event_claim_shape_check', sql`
+    (${t.claim_token} IS NULL AND ${t.claim_owner} IS NULL AND ${t.claimed_at} IS NULL AND ${t.lease_expires_at} IS NULL)
+    OR
+    (${t.claim_token} IS NOT NULL AND ${t.claim_owner} IS NOT NULL AND ${t.claimed_at} IS NOT NULL)
+  `),
+  check('agent_channel_event_work_outcome_check', sql`
+    ${t.work_outcome} IS NULL
+    OR ${t.work_outcome} IN ('completed', 'needs_human', 'blocked', 'failed', 'cancelled')
+  `),
 ]);
 
 export const agentChannelCursors = pgTable('agent_channel_cursors', {

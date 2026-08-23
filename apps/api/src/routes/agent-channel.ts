@@ -9,12 +9,13 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
   agentChannelDeliveryAttempts,
   agentChannelEvents,
+  agentEmployees,
 } from '@deft/db/schema';
 import {
   extractBearer,
@@ -22,21 +23,43 @@ import {
 } from '../lib/mcp-token.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
+  AGENT_CHANNEL_DEFAULT_LEASE_MS,
   getAgentChannelPrincipal,
+  hasActiveAgentChannelClaim,
   listPendingChannelEvents,
+  renewAgentChannelEventLease,
   resolveAgentChannelBearer,
   touchAgentChannelConnection,
   updateAgentChannelCursor,
   type AgentChannelPrincipal,
 } from '../lib/agent-channel.js';
+import { getIO } from '../socket.js';
 import { executeSendMessage } from '../lib/mcp-tools/writes.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 
 export const agentChannelRoutes = new Hono();
 
+function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employeeId: string, status: string, detail?: string | null) {
+  if (event.source_kind !== 'task' || !event.source_id) return;
+  const normalized = status === 'running' || status === 'working' || status === 'typing'
+    ? 'started'
+    : status;
+  getIO()?.to(`org:${event.org_id}`).emit('task:agent_progress', {
+    task_id: event.source_id,
+    agent_employee_id: employeeId,
+    step_index: 0,
+    total_steps: 1,
+    step_description: detail || 'Agent employee activity updated',
+    status: normalized,
+    error: normalized === 'failed' ? detail ?? undefined : undefined,
+  });
+}
+
 const ackSchema = z.object({
   event_id: z.string().min(1),
-  state: z.enum(['received', 'completed', 'failed']).default('received'),
+  state: z.enum(['received', 'completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('received'),
+  claim_token: z.string().min(1),
+  lease_ms: z.number().int().positive().optional(),
   runtime_session_key: z.string().min(1).optional(),
   detail: z.string().max(2000).optional(),
   error: z.string().max(4000).optional(),
@@ -48,12 +71,18 @@ const replySchema = z.object({
   content: z.string().min(1).max(16000),
   thread_id: z.string().nullable().optional(),
   idempotency_key: z.string().min(1).max(300).optional(),
+  claim_token: z.string().min(1),
+  outcome: z.enum(['completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('completed'),
+  summary: z.string().max(2000).optional(),
+  runtime_session_key: z.string().min(1).optional(),
   caller_employee_slug: z.string().optional(),
 });
 
 const statusSchema = z.object({
   state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'error']),
   event_id: z.string().optional(),
+  claim_token: z.string().min(1).optional(),
+  lease_ms: z.number().int().positive().optional(),
   detail: z.string().max(2000).optional(),
   caller_employee_slug: z.string().optional(),
 });
@@ -111,6 +140,7 @@ async function closeFallbackWorkForEvent(params: {
   principal: AgentChannelPrincipal;
   runtimeSessionKey?: string | null;
   detail?: string | null;
+  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled';
 }) {
   const payload = (params.event.payload ?? {}) as Record<string, unknown>;
   const actionId = typeof payload.pending_action_id === 'string' ? payload.pending_action_id : null;
@@ -125,6 +155,7 @@ async function closeFallbackWorkForEvent(params: {
       result: {
         channel_event_id: params.event.id,
         channel_state: 'completed',
+        work_outcome: params.outcome ?? 'completed',
         runtime_session_key: params.runtimeSessionKey ?? null,
         detail: params.detail ?? null,
       },
@@ -164,11 +195,18 @@ agentChannelRoutes.get('/events', async (c) => {
   if (isResponse(principal)) return principal;
 
   const limit = Number.parseInt(c.req.query('limit') ?? '25', 10);
+  const workerId = c.req.query('worker_id')?.trim();
+  if (!workerId) {
+    return errorResponse(c, 400, 'VALIDATION_ERROR', 'worker_id is required');
+  }
+  const leaseMs = Number.parseInt(c.req.query('lease_ms') ?? String(AGENT_CHANNEL_DEFAULT_LEASE_MS), 10);
   const afterEventId = c.req.query('cursor') ?? c.req.query('after_event_id') ?? null;
   const events = await listPendingChannelEvents({
     principal,
     limit: Number.isFinite(limit) ? limit : 25,
     afterEventId,
+    workerId,
+    leaseMs: Number.isFinite(leaseMs) ? leaseMs : AGENT_CHANNEL_DEFAULT_LEASE_MS,
   });
   const lastEventId = events.at(-1)?.id ?? null;
   const connection = await touchAgentChannelConnection(principal, { lastEventId });
@@ -202,22 +240,58 @@ agentChannelRoutes.post('/ack', async (c) => {
   if (!event) {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
+  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+
+  const reportedOutcome = parsed.data.state === 'received' ? null : parsed.data.state;
+  const lifecycleSignal = parsed.data.state === 'received'
+    ? 'acknowledged'
+    : parsed.data.state === 'failed'
+      ? 'failed'
+      : parsed.data.state === 'cancelled'
+        ? 'cancelled'
+        : 'completed';
 
   const patch = buildAgentChannelLifecyclePatch(
     event,
-    parsed.data.state === 'received' ? 'acknowledged' : parsed.data.state,
+    lifecycleSignal,
     new Date(),
     parsed.data.error ?? parsed.data.detail,
   );
+  const now = new Date();
+  const requestedLeaseMs = parsed.data.lease_ms ?? AGENT_CHANNEL_DEFAULT_LEASE_MS;
+  const leaseMs = Math.min(Math.max(requestedLeaseMs, 30_000), 600_000);
+  const claimPatch = parsed.data.state === 'received'
+    ? {
+        lease_expires_at: new Date(now.getTime() + leaseMs),
+        runtime_session_key: parsed.data.runtime_session_key ?? event.runtime_session_key,
+      }
+    : {
+        lease_expires_at: null,
+        work_outcome: reportedOutcome,
+        outcome_detail: parsed.data.detail ?? parsed.data.error ?? null,
+        outcome_at: now,
+        runtime_session_key: parsed.data.runtime_session_key ?? event.runtime_session_key,
+      };
 
   let updated = event;
-  if (Object.keys(patch).length > 0) {
+  if (Object.keys(patch).length > 0 || Object.keys(claimPatch).length > 0) {
     const [updatedRow] = await db
       .update(agentChannelEvents)
-      .set(patch)
-      .where(eq(agentChannelEvents.id, event.id))
+      .set({ ...patch, ...claimPatch })
+      .where(and(
+        eq(agentChannelEvents.id, event.id),
+        eq(agentChannelEvents.org_id, principal.org_id),
+        eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+        eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+        sql`${agentChannelEvents.lease_expires_at} > now()`,
+      ))
       .returning();
-    if (updatedRow) updated = updatedRow;
+    if (!updatedRow) {
+      return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim expired before the acknowledgement committed');
+    }
+    updated = updatedRow;
   }
 
   await touchAgentChannelConnection(principal, {
@@ -226,13 +300,21 @@ agentChannelRoutes.post('/ack', async (c) => {
     lastError: parsed.data.state === 'failed' ? patch.error ?? 'Runtime reported failure' : null,
   });
   await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
-  if (parsed.data.state === 'completed') {
+  if (reportedOutcome) {
+    await db.update(agentEmployees)
+      .set({ last_work_outcome_at: now, updated_at: now })
+      .where(and(
+        eq(agentEmployees.id, principal.employee_id),
+        eq(agentEmployees.org_id, principal.org_id),
+      ));
     await closeFallbackWorkForEvent({
       event,
       principal,
       runtimeSessionKey: parsed.data.runtime_session_key ?? null,
       detail: parsed.data.detail ?? null,
+      outcome: reportedOutcome,
     });
+    emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.detail ?? parsed.data.error);
   }
 
   return c.json({ ok: true, event: updated });
@@ -268,6 +350,9 @@ agentChannelRoutes.post('/reply', async (c) => {
     event_id: event.id,
     content: parsed.data.content,
     thread_id: parentId,
+    outcome: parsed.data.outcome,
+    summary: parsed.data.summary ?? null,
+    runtime_session_key: parsed.data.runtime_session_key ?? null,
   };
 
   const [existingAttempt] = await db
@@ -286,6 +371,9 @@ agentChannelRoutes.post('/reply', async (c) => {
   }
   if (existingAttempt) {
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+  }
+  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
 
   const [claim] = await db
@@ -357,18 +445,47 @@ agentChannelRoutes.post('/reply', async (c) => {
     })
     .where(eq(agentChannelDeliveryAttempts.id, claim.id));
 
+  const reportedOutcome = result.isError ? 'failed' : parsed.data.outcome;
   const lifecyclePatch = buildAgentChannelLifecyclePatch(
     event,
-    result.isError ? 'failed' : 'completed',
+    reportedOutcome === 'failed'
+      ? 'failed'
+      : reportedOutcome === 'cancelled'
+        ? 'cancelled'
+        : 'completed',
     new Date(),
     result.isError ? text : null,
   );
+  const outcomeAt = new Date();
   if (Object.keys(lifecyclePatch).length > 0) {
-    await db
+    const [settled] = await db
       .update(agentChannelEvents)
-      .set(lifecyclePatch)
-      .where(eq(agentChannelEvents.id, event.id));
+      .set({
+        ...lifecyclePatch,
+        lease_expires_at: null,
+        work_outcome: reportedOutcome,
+        outcome_detail: parsed.data.summary ?? (result.isError ? text : null),
+        outcome_at: outcomeAt,
+        runtime_session_key: parsed.data.runtime_session_key ?? event.runtime_session_key,
+      })
+      .where(and(
+        eq(agentChannelEvents.id, event.id),
+        eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+      ))
+      .returning({ id: agentChannelEvents.id });
+    if (!settled) {
+      return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim changed before the reply could settle');
+    }
   }
+
+  await db.update(agentEmployees)
+    .set({ last_work_outcome_at: outcomeAt, updated_at: outcomeAt })
+    .where(and(
+      eq(agentEmployees.id, principal.employee_id),
+      eq(agentEmployees.org_id, principal.org_id),
+    ));
+
+  emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (result.isError ? text : null));
 
   await touchAgentChannelConnection(principal, {
     status: result.isError ? 'degraded' : 'connected',
@@ -380,11 +497,13 @@ agentChannelRoutes.post('/reply', async (c) => {
     await closeFallbackWorkForEvent({
       event,
       principal,
-      detail: 'Runtime replied through the Agent Channel.',
+      runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+      detail: parsed.data.summary ?? 'Runtime replied through the Agent Channel.',
+      outcome: reportedOutcome,
     });
   }
 
-  return c.json({ ok: !result.isError, idempotent: false, result: responseJson }, result.isError ? 500 : 200);
+  return c.json({ ok: !result.isError, idempotent: false, outcome: reportedOutcome, result: responseJson }, result.isError ? 500 : 200);
 });
 
 agentChannelRoutes.post('/status', async (c) => {
@@ -400,11 +519,6 @@ agentChannelRoutes.post('/status', async (c) => {
   const connectionStatus = parsed.data.state === 'error' || parsed.data.state === 'degraded'
     ? 'degraded'
     : 'connected';
-  const connection = await touchAgentChannelConnection(principal, {
-    status: connectionStatus,
-    lastEventId: parsed.data.event_id ?? null,
-    lastError: parsed.data.state === 'error' ? parsed.data.detail ?? 'Runtime reported error' : null,
-  });
 
   if (parsed.data.event_id) {
     const event = await getEventForPrincipal(parsed.data.event_id, principal);
@@ -414,15 +528,37 @@ agentChannelRoutes.post('/status', async (c) => {
         ? 'running'
         : null;
     if (event && signal) {
+      if (!parsed.data.claim_token) {
+        return errorResponse(c, 409, 'STALE_CLAIM', 'claim_token is required for event progress updates');
+      }
+      const renewed = await renewAgentChannelEventLease({
+        principal,
+        eventId: event.id,
+        claimToken: parsed.data.claim_token,
+        leaseMs: parsed.data.lease_ms,
+      });
+      if (!renewed) {
+        return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+      }
       const lifecyclePatch = buildAgentChannelLifecyclePatch(event, signal);
       if (Object.keys(lifecyclePatch).length > 0) {
         await db
           .update(agentChannelEvents)
           .set(lifecyclePatch)
-          .where(eq(agentChannelEvents.id, event.id));
+          .where(and(
+            eq(agentChannelEvents.id, event.id),
+            eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+          ));
       }
+      emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
     }
   }
+
+  const connection = await touchAgentChannelConnection(principal, {
+    status: connectionStatus,
+    lastEventId: parsed.data.event_id ?? null,
+    lastError: parsed.data.state === 'error' ? parsed.data.detail ?? 'Runtime reported error' : null,
+  });
 
   return c.json({
     ok: true,

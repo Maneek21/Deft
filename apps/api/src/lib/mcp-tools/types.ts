@@ -1,10 +1,9 @@
 /**
  * Shared types for Phase 3 MCP tool handlers.
  *
- * ToolContext is what every tool receives after the bearer is resolved and the
- * caller_employee_slug is validated. It is explicitly scoped to one employee:
- * the dispatcher validates the declared slug and narrows to that single
- * employee before calling the handler.
+ * ToolContext is what every tool receives after the bearer is resolved. It is
+ * explicitly scoped to the one employee authenticated by that credential;
+ * model-authored arguments never select identity.
  *
  * ToolResult matches the MCP streamable-http tool-result shape: a list of
  * content blocks. Phase 3 only emits text blocks. Tool-level errors are

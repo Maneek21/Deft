@@ -230,7 +230,7 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'memory_write',
     description:
-      "Persist knowledge to the org wiki. This is the ONLY tool for durable memory — use it whenever asked to 'remember', 'save', 'note', or 'track' information. Creates a searchable wiki page visible to the whole org.",
+      "Persist employee-owned knowledge to Deft's searchable wiki. Use it whenever asked to 'remember', 'save', or retain reusable knowledge. Supply a stable idempotency_key for retries; promote verified company knowledge through memory_update under Deft approval policy.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -250,6 +250,21 @@ export const toolSchemas: ToolSchema[] = [
           ],
         },
         confidence: { type: 'number', minimum: 0, maximum: 1 },
+        idempotency_key: { type: 'string', description: 'Stable source/run key. Replays return the same canonical page.' },
+        runtime_session_id: { type: 'string', description: 'Hermes session or run identifier for provenance.' },
+        source_refs: {
+          type: 'array',
+          maxItems: 20,
+          items: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: ['task', 'message', 'session', 'url', 'artifact'] },
+              id: { type: 'string' },
+              excerpt: { type: 'string' },
+            },
+            required: ['kind', 'id'],
+          },
+        },
       },
       required: ['caller_employee_slug', 'title', 'body', 'type'],
     },

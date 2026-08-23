@@ -84,6 +84,11 @@ type DeveloperPayload = {
       source_kind?: string | null;
       source_id?: string | null;
       delivery_count: number;
+      claim_owner?: string | null;
+      lease_expires_at?: string | null;
+      work_outcome?: string | null;
+      outcome_detail?: string | null;
+      outcome_at?: string | null;
       error?: string | null;
       created_at: string;
       updated_at: string;
@@ -707,8 +712,8 @@ export default function DeveloperPage() {
           empty="No channel events delivered yet."
           rows={data.diagnostics.recent_channel_events.map((row) => ({
             id: row.id,
-            main: `${row.status} ${row.kind}`,
-            sub: `${new Date(row.created_at).toLocaleString()} - delivery count ${row.delivery_count}${row.error ? ` - ${row.error}` : ''}`,
+            main: `${row.status}${row.work_outcome ? ` / ${row.work_outcome}` : ''} ${row.kind}`,
+            sub: `${new Date(row.created_at).toLocaleString()} - delivery count ${row.delivery_count}${row.outcome_detail ? ` - ${row.outcome_detail}` : ''}${row.error ? ` - ${row.error}` : ''}`,
             actions: row.status === 'failed' || row.status === 'cancelled' ? (
               <button type="button" onClick={() => controlDelivery(row.id, 'retry')} disabled={queueBusy === row.id} className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-50">
                 <RotateCcw className="size-3" /> Retry

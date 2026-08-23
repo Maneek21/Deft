@@ -65,6 +65,11 @@ import {
   moduleOperationErrorResult,
   parseModuleOperationArgs,
 } from './modules.js';
+import { dispatchAgentEmployeeMessage } from '../dispatch-agent-message.js';
+import {
+  dispatchAgentEmployeeTask,
+  publishTaskChannelEventForAssignee,
+} from '../dispatch-agent-task.js';
 
 export type HumanToolContext = {
   org_id: string;
@@ -2084,6 +2089,15 @@ export async function humanTaskCreate(args: HumanTaskCreateArgs, ctx: HumanToolC
       return errorResult(msg);
     }
     const task = bundle.parent;
+    for (const assignedTask of bundle.allTasks) {
+      if (!assignedTask.assignee_id) continue;
+      await dispatchAgentEmployeeTask({
+        taskId: assignedTask.id,
+        orgId: ctx.org_id,
+        assigneeUserId: assignedTask.assignee_id,
+        assignedBy: ctx.user_id,
+      });
+    }
     return textResult({
       ...task,
       task_key: taskReference(project.prefix, task.number ?? null),
@@ -2154,6 +2168,25 @@ export async function humanTaskUpdate(args: { task_id?: string; patch?: Record<s
         new_value: entry.new_value,
       })));
     }
+    const assigneeChanged = 'assignee_id' in updates && updates.assignee_id !== existingTask.assignee_id;
+    if (assigneeChanged && task.assignee_id) {
+      await dispatchAgentEmployeeTask({
+        taskId: task.id,
+        orgId: ctx.org_id,
+        assigneeUserId: task.assignee_id,
+        assignedBy: ctx.user_id,
+      });
+    }
+    if (!assigneeChanged && typeof updates.status === 'string' && updates.status !== existingTask.status) {
+      await publishTaskChannelEventForAssignee({
+        orgId: ctx.org_id,
+        task,
+        actorUserId: ctx.user_id,
+        kind: 'task.status_changed',
+        idempotencyKey: `mcp:${task.id}:${existingTask.status}:${updates.status}`,
+        payload: { old_status: existingTask.status, new_status: updates.status },
+      });
+    }
     return textResult(task);
   });
 }
@@ -2192,6 +2225,19 @@ export async function humanTaskTransition(args: { task_id?: string; status?: str
       old_value: existingTask.status,
       new_value: status,
     });
+    await publishTaskChannelEventForAssignee({
+      orgId: ctx.org_id,
+      task,
+      actorUserId: ctx.user_id,
+      kind: 'task.status_changed',
+      idempotencyKey: `mcp:${task.id}:${existingTask.status}:${status}`,
+      projectPrefix: project?.prefix ?? null,
+      payload: {
+        old_status: existingTask.status,
+        new_status: status,
+        reason: args.reason ?? null,
+      },
+    });
     return textResult({
       ...task,
       task_key: taskReference(project?.prefix ?? null, task.number),
@@ -2213,6 +2259,10 @@ export async function humanCommentOnTask(args: { task_id?: string; content?: str
   if (!content) return errorResult('comment_on_task requires content');
   return withIdempotency('comment_on_task', args, ctx, async () => {
     if (!(await userCanSeeTask(ctx, taskId))) return errorResult('comment_on_task: task not found');
+    const [task] = await db.select().from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.org_id, ctx.org_id), eq(tasks.is_deleted, false)))
+      .limit(1);
+    if (!task) return errorResult('comment_on_task: task not found');
     const [comment] = await db.insert(taskComments).values({
       org_id: ctx.org_id,
       task_id: taskId,
@@ -2220,6 +2270,18 @@ export async function humanCommentOnTask(args: { task_id?: string; content?: str
       content,
     }).returning();
     await db.insert(taskActivity).values({ org_id: ctx.org_id, task_id: taskId, user_id: ctx.user_id, action: 'commented' });
+    await publishTaskChannelEventForAssignee({
+      orgId: ctx.org_id,
+      task,
+      actorUserId: ctx.user_id,
+      kind: 'task.commented',
+      idempotencyKey: `comment:${comment!.id}`,
+      payload: {
+        comment_id: comment!.id,
+        commenter_id: ctx.user_id,
+        content,
+      },
+    });
     return textResult(comment);
   });
 }
@@ -2249,6 +2311,13 @@ export async function humanMessagePost(args: { space_id?: string; content?: stri
       content,
       parent_id: args.parent_id ?? null,
     }).returning();
+    await dispatchAgentEmployeeMessage({
+      messageId: row!.id,
+      spaceId,
+      orgId: ctx.org_id,
+      actorUserId: ctx.user_id,
+      content,
+    });
     return textResult(row);
   });
 }
@@ -2332,6 +2401,14 @@ export async function humanSendMessage(args: HumanSendMessageArgs, ctx: HumanToo
       content,
       parent_id: parentId,
     }).returning();
+
+    await dispatchAgentEmployeeMessage({
+      messageId: row!.id,
+      spaceId: spaceId!,
+      orgId: ctx.org_id,
+      actorUserId: ctx.user_id,
+      content,
+    });
 
     return textResult({
       ...row,

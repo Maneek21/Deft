@@ -3,8 +3,8 @@
  *
  * One bearer = one BYOA agent. The agent presents the raw token to Deft on
  * every MCP request; Deft bcrypt-compares it against all live employee rows
- * to find the owning employee, then the tool handler validates the declared
- * `caller_employee_slug` against that employee's slug.
+ * to find the owning employee. Employee identity comes from that credential,
+ * never from model-authored tool arguments.
  *
  * Defty (the in-process built-in agent) does not transit MCP — it has no
  * `agent_employees` row and never participates in bearer auth. Every row in
@@ -274,6 +274,18 @@ export function validateCallerSlug(
     );
   }
   return hit;
+}
+
+/** Resolve the one employee authenticated by this bearer token. */
+export function resolveAuthenticatedEmployee(resolved: ResolvedGateway): GatewayEmployee {
+  if (resolved.gateway_employees.length !== 1) {
+    throw new McpAuthError(
+      403,
+      'forbidden',
+      'Agent employee bearer must resolve to exactly one employee',
+    );
+  }
+  return resolved.gateway_employees[0]!;
 }
 
 /** Read the Authorization header and extract the bearer token value. */
