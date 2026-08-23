@@ -1,6 +1,6 @@
 name: deft-employee
 description: Deft assignment context, generic runtime policy, and sanitized outcome reporting.
-version: 0.2.0
+version: 0.2.1
 hooks:
   - pre_llm_call
   - pre_tool_call
