@@ -1,8 +1,8 @@
 {
   "schema": "deft.hermes.integration.v1",
-  "integration_version": "0.2.0",
-  "deft_release": "0.3.0-preview.6",
-  "deft_release_compatibility": "=0.3.0-preview.6",
+  "integration_version": "0.2.1",
+  "deft_release": "0.3.0-preview.7",
+  "deft_release_compatibility": "=0.3.0-preview.7",
   "agent_channel_protocols": ["deft.agent_channel.v2"],
   "required_channel_capabilities": [
     "single_flight_claims",

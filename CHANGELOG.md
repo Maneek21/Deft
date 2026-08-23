@@ -10,6 +10,24 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.7] — 2026-08-23
+
+### Changed
+
+- The release-pinned Hermes integration bundle is now version `0.2.1` and
+  includes the fresh-install reliability fixes and their regression coverage.
+
+### Fixed
+
+- Hermes service reinstall, repair, stop, and uninstall now terminate both the
+  bridge child and its verified PowerShell supervisor so refreshed credentials
+  cannot be shadowed by a stale environment.
+- Deft employee policy recognizes Hermes's real `mcp_deft_*` tool namespace as
+  governed Deft work while continuing to block unapproved external writes.
+- Idle channel status no longer sends a null event ID, and ambiguous transport
+  failures no longer replay a non-idempotent Hermes inference request and
+  duplicate long-running work.
+
 ## [0.3.0-preview.6] — 2026-08-23
 
 ### Added
@@ -259,7 +277,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.6...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.7...HEAD
+[0.3.0-preview.7]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.7
 [0.3.0-preview.6]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.6
 [0.3.0-preview.3]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.3
 [0.3.0-preview.2]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.2
