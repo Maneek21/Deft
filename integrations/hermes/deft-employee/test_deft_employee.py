@@ -15,6 +15,14 @@ class DeftEmployeeHookTests(unittest.TestCase):
         decision = hooks.pre_tool_call(tool_name="gmail_send_email", args={"to": "a@example.com"})
         self.assertEqual(decision["action"], "block")
 
+    def test_model_visible_deft_write_is_governed_by_deft(self):
+        hooks = MOD.DeftEmployeeHooks()
+        decision = hooks.pre_tool_call(
+            tool_name="mcp_deft_memory_write",
+            args={"title": "Certification memory"},
+        )
+        self.assertIsNone(decision)
+
     def test_destructive_command_is_blocked(self):
         hooks = MOD.DeftEmployeeHooks()
         decision = hooks.pre_tool_call(tool_name="terminal", args={"command": "rm -rf /tmp/work"})

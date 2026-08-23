@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Rita Hermes fresh-install gauntlet overview</title>
+  <desc id="desc">A visual summary of the fresh installation, certification, three completed scenarios, and current readiness.</desc>
+  <rect width="1280" height="720" fill="#0b1220"/>
+  <text x="64" y="72" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">Rita / Hermes fresh-install gauntlet</text>
+  <text x="64" y="108" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="18">demo.deft.ing · 23 Aug 2026 · gpt-5.6-sol · medium reasoning</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="64" y="150" width="250" height="118" rx="16" fill="#142238" stroke="#2b466e"/>
+    <text x="88" y="188" fill="#93c5fd" font-size="15" font-weight="700">FRESH DEPLOY</text>
+    <text x="88" y="222" fill="#f8fafc" font-size="24" font-weight="700">Release .6</text>
+    <text x="88" y="248" fill="#cbd5e1" font-size="15">Clean DB + pilot seed</text>
+
+    <rect x="346" y="150" width="250" height="118" rx="16" fill="#142238" stroke="#2b466e"/>
+    <text x="370" y="188" fill="#86efac" font-size="15" font-weight="700">ONBOARDING</text>
+    <text x="370" y="222" fill="#f8fafc" font-size="24" font-weight="700">Certified</text>
+    <text x="370" y="248" fill="#cbd5e1" font-size="15">Runtime + channel + memory</text>
+
+    <rect x="628" y="150" width="250" height="118" rx="16" fill="#142238" stroke="#2b466e"/>
+    <text x="652" y="188" fill="#facc15" font-size="15" font-weight="700">MODULE SETUP</text>
+    <text x="652" y="222" fill="#f8fafc" font-size="24" font-weight="700">Contacts opt-in</text>
+    <text x="652" y="248" fill="#cbd5e1" font-size="15">Install + scoped write grant</text>
+
+    <rect x="910" y="150" width="306" height="118" rx="16" fill="#142238" stroke="#2b466e"/>
+    <text x="934" y="188" fill="#c4b5fd" font-size="15" font-weight="700">RUNTIME EVIDENCE</text>
+    <text x="934" y="222" fill="#f8fafc" font-size="24" font-weight="700">Single final effect</text>
+    <text x="934" y="248" fill="#cbd5e1" font-size="15">3 companies, task in review</text>
+
+    <text x="64" y="330" fill="#f8fafc" font-size="22" font-weight="700">Completed diagnostic scenarios</text>
+
+    <rect x="64" y="356" width="360" height="176" rx="16" fill="#101c2f" stroke="#1e3a5f"/>
+    <text x="88" y="392" fill="#60a5fa" font-size="15" font-weight="700">COMPLEX CHAT</text>
+    <text x="88" y="428" fill="#f8fafc" font-size="26" font-weight="700">16 / 18</text>
+    <text x="88" y="458" fill="#cbd5e1" font-size="16">Separated facts and proposals</text>
+    <text x="88" y="484" fill="#cbd5e1" font-size="16">Preserved Diego, Lina, Sage rights</text>
+    <text x="88" y="510" fill="#fbbf24" font-size="14">Gap: new evidence task had no owner</text>
+
+    <rect x="460" y="356" width="360" height="176" rx="16" fill="#101c2f" stroke="#1e3a5f"/>
+    <text x="484" y="392" fill="#34d399" font-size="15" font-weight="700">EXPLICIT KNOWLEDGE</text>
+    <text x="484" y="428" fill="#f8fafc" font-size="26" font-weight="700">17 / 18</text>
+    <text x="484" y="458" fill="#cbd5e1" font-size="16">Reconciled wiki and live work</text>
+    <text x="484" y="484" fill="#cbd5e1" font-size="16">Created one missing quality gate</text>
+    <text x="484" y="510" fill="#fbbf24" font-size="14">Minor: recovered invalid status jump</text>
+
+    <rect x="856" y="356" width="360" height="176" rx="16" fill="#101c2f" stroke="#1e3a5f"/>
+    <text x="880" y="392" fill="#a78bfa" font-size="15" font-weight="700">IMPLICIT KNOWLEDGE + RESEARCH</text>
+    <text x="880" y="428" fill="#f8fafc" font-size="26" font-weight="700">14 / 18</text>
+    <text x="880" y="458" fill="#cbd5e1" font-size="16">Applied ICP without wiki hint</text>
+    <text x="880" y="484" fill="#cbd5e1" font-size="16">3 sourced, deduplicated companies</text>
+    <text x="880" y="510" fill="#fbbf24" font-size="14">Partial: no people or activities created</text>
+
+    <rect x="64" y="574" width="1152" height="92" rx="16" fill="#291d14" stroke="#92400e"/>
+    <text x="88" y="610" fill="#fbbf24" font-size="16" font-weight="700">CURRENT DECISION</text>
+    <text x="88" y="642" fill="#f8fafc" font-size="22" font-weight="700">Strong supervised-pilot evidence; full bounded-autonomy certification is still incomplete.</text>
+  </g>
+</svg>

@@ -124,7 +124,7 @@ test('processEvent acks, marks working, invokes Hermes, replies once, and return
   assert.equal(calls[3].body.idempotency_key, 'hermes-channel:event-1');
   assert.equal(calls[3].body.outcome, 'needs_human');
   assert.equal(calls[4].body.state, 'idle');
-  assert.equal(calls[4].body.event_id, null);
+  assert.equal('event_id' in calls[4].body, false);
   assert.equal(calls[2].init.headers['X-Hermes-Session-Key'], 'deft:maya:thread-1');
 });
 
@@ -140,6 +140,20 @@ test('processEvent reports runtime failures to the channel', async () => {
   const terminalCalls = calls.slice(-2);
   assert.equal(terminalCalls[0].body.state, 'failed');
   assert.equal(terminalCalls[1].body.state, 'degraded');
+});
+
+test('processEvent does not replay an ambiguous Hermes transport failure', async () => {
+  let inferenceAttempts = 0;
+  const fetchImpl = async (url) => {
+    if (url.includes('/v1/responses')) {
+      inferenceAttempts += 1;
+      throw new Error('connection closed after request');
+    }
+    return jsonResponse({ ok: true });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), { fetchImpl, logger: { info() {}, error() {} } });
+  await assert.rejects(() => bridge.processEvent(event), /connection closed after request/);
+  assert.equal(inferenceAttempts, 1);
 });
 
 test('top-level DM replies stay in the main conversation instead of opening a thread', async () => {

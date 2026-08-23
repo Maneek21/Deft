@@ -56,6 +56,19 @@ function Get-ServiceProcess {
   }
 }
 
+function Get-ServiceSupervisorProcess {
+  Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -in @('powershell.exe', 'pwsh.exe') -and $_.CommandLine -like "*$runnerTarget*"
+  }
+}
+
+function Stop-ServiceProcesses {
+  # Stop the bridge before its supervisor, then stop the supervisor before it
+  # can restart the bridge with environment values cached before an upgrade.
+  Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+  Get-ServiceSupervisorProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+}
+
 switch ($Action) {
   'Install' {
     if (-not $ConfigPath) { throw 'Install requires -ConfigPath.' }
@@ -65,10 +78,14 @@ switch ($Action) {
     # Upgrades must replace the running copy as well as the files. Otherwise the
     # old supervisor keeps the mutex and the newly registered task exits idle.
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    Stop-ServiceProcesses
     for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
       $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-      if ((-not $existingTask -or [string]$existingTask.State -ne 'Running') -and @(Get-ServiceProcess).Count -eq 0) {
+      if (
+        (-not $existingTask -or [string]$existingTask.State -ne 'Running') -and
+        @(Get-ServiceProcess).Count -eq 0 -and
+        @(Get-ServiceSupervisorProcess).Count -eq 0
+      ) {
         break
       }
       Start-Sleep -Milliseconds 250
@@ -104,7 +121,7 @@ switch ($Action) {
   }
   'Stop' {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    Stop-ServiceProcesses
     Write-Output "Stopped '$TaskName'."
   }
   'Status' {
@@ -157,7 +174,7 @@ switch ($Action) {
     $healthIsFresh = $health -and $health.state -eq 'healthy' -and ((Get-Date) - [datetime]$health.checked_at).TotalSeconds -le 180
     if ([string]$task.State -ne 'Running' -or @(Get-ServiceProcess).Count -ne 1 -or -not $healthIsFresh) {
       Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-      Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+      Stop-ServiceProcesses
       Start-ScheduledTask -TaskName $TaskName
       Write-Output "Repaired and started '$TaskName'."
     } else {
@@ -166,7 +183,7 @@ switch ($Action) {
   }
   'Uninstall' {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Get-ServiceProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    Stop-ServiceProcesses
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $ServiceRoot -Recurse -Force -ErrorAction SilentlyContinue
     Write-Output "Removed '$TaskName'."
