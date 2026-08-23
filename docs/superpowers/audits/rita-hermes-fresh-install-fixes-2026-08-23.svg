@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Rita Hermes fixes from the fresh-install gauntlet</title>
+  <desc id="desc">Four observed faults, their root causes, implemented fixes, and verification.</desc>
+  <rect width="1280" height="720" fill="#07131c"/>
+  <text x="64" y="72" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">Fault → root cause → fix → evidence</text>
+  <text x="64" y="108" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="18">Changes kept at the integration seams; no schema migration required</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <g transform="translate(64 148)">
+      <rect width="1152" height="106" rx="15" fill="#102333" stroke="#27506e"/>
+      <text x="24" y="31" fill="#fca5a5" font-size="14" font-weight="700">STALE CREDENTIALS AFTER REINSTALL</text>
+      <text x="24" y="61" fill="#e2e8f0" font-size="17">Orphan PowerShell supervisor retained the old environment and reacquired the mutex.</text>
+      <text x="24" y="88" fill="#86efac" font-size="15">Fix: stop the verified bridge child and powershell/pwsh supervisor before replacing files.</text>
+    </g>
+
+    <g transform="translate(64 274)">
+      <rect width="1152" height="106" rx="15" fill="#102333" stroke="#27506e"/>
+      <text x="24" y="31" fill="#fca5a5" font-size="14" font-weight="700">DEFT MEMORY WRITE FALSELY BLOCKED</text>
+      <text x="24" y="61" fill="#e2e8f0" font-size="17">Hermes exposes Deft tools as mcp_deft_*, while the policy hook recognized other prefixes.</text>
+      <text x="24" y="88" fill="#86efac" font-size="15">Fix: recognize the real trusted namespace; external writes remain blocked by policy.</text>
+    </g>
+
+    <g transform="translate(64 400)">
+      <rect width="1152" height="106" rx="15" fill="#102333" stroke="#27506e"/>
+      <text x="24" y="31" fill="#fca5a5" font-size="14" font-weight="700">SUCCESSFUL WORK REPORTED AS VALIDATION FAILURE</text>
+      <text x="24" y="61" fill="#e2e8f0" font-size="17">Idle status serialized event_id as null although the API accepts an omitted optional string.</text>
+      <text x="24" y="88" fill="#86efac" font-size="15">Fix: omit event_id when idle; bridge contract test verifies the request shape.</text>
+    </g>
+
+    <g transform="translate(64 526)">
+      <rect width="1152" height="106" rx="15" fill="#102333" stroke="#27506e"/>
+      <text x="24" y="31" fill="#fca5a5" font-size="14" font-weight="700">DUPLICATE LONG AGENT RUN AFTER TRANSPORT DROP</text>
+      <text x="24" y="61" fill="#e2e8f0" font-size="17">A generic HTTP retry replayed the non-idempotent Hermes inference POST after ambiguous acceptance.</text>
+      <text x="24" y="88" fill="#86efac" font-size="15">Fix: no blind inference replay; fail closed and resume through the durable channel event.</text>
+    </g>
+
+    <text x="64" y="680" fill="#a7f3d0" font-size="16" font-weight="700">Verified: 12 bridge tests · 5 plugin tests · PowerShell parse · live fresh-install completion</text>
+  </g>
+</svg>

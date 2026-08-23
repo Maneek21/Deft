@@ -71,7 +71,11 @@ class DeftEmployeeHooks:
         rendered = _sanitize(args, 2000)
         if tool_name in {"terminal", "process"} and DESTRUCTIVE_COMMAND.search(rendered):
             return {"action": "block", "message": "Destructive command blocked by Deft employee policy."}
-        is_deft_tool = tool_name.startswith("mcp__deft") or tool_name.startswith("deft_")
+        is_deft_tool = (
+            tool_name.startswith("mcp__deft")
+            or tool_name.startswith("mcp_deft_")
+            or tool_name.startswith("deft_")
+        )
         if WRITE_HINT.search(tool_name) and not is_deft_tool and not self.policy.get("allow_external_writes", False):
             return {"action": "block", "message": "External write needs Deft human approval for this assignment."}
         self.tool_calls += 1

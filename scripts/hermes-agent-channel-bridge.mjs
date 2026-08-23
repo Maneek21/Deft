@@ -170,13 +170,14 @@ export class HermesAgentChannelBridge {
     this.stopped = false;
   }
 
-  async request(url, init = {}) {
+  async request(url, init = {}, options = {}) {
+    const allowRetry = options.retry !== false;
     for (let attempt = 0; ; attempt += 1) {
       let response;
       try {
         response = await this.fetch(url, init);
       } catch (error) {
-        if (attempt >= this.config.maxRetries) throw error;
+        if (!allowRetry || attempt >= this.config.maxRetries) throw error;
         const delayMs = this.config.retryBaseMs * (2 ** attempt);
         this.log.warn?.(`[deft-channel] transport error; retrying in ${delayMs}ms`);
         await this.sleep(delayMs);
@@ -195,7 +196,7 @@ export class HermesAgentChannelBridge {
       if (response.ok) return body ?? {};
 
       const retryable = response.status === 429 || response.status >= 500;
-      if (retryable && attempt < this.config.maxRetries) {
+      if (allowRetry && retryable && attempt < this.config.maxRetries) {
         const retryAfterSeconds = Number.parseFloat(response.headers.get('retry-after') ?? '');
         const delayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
           ? Math.ceil(retryAfterSeconds * 1000)
@@ -275,7 +276,7 @@ export class HermesAgentChannelBridge {
       method: 'POST',
       body: JSON.stringify({
         state,
-        event_id: eventId,
+        event_id: eventId ?? undefined,
         claim_token: eventId ? this.currentClaimToken : undefined,
         lease_ms: eventId ? this.config.leaseMs : undefined,
         detail,
@@ -337,7 +338,7 @@ export class HermesAgentChannelBridge {
         instructions: 'Act as an accountable Deft Agent Employee. Use Deft MCP tools for workspace facts and governed actions.',
         store: true,
       }),
-    });
+    }, { retry: false });
     const text = extractHermesText(response);
     return { decision: parseHermesDecision(text), sessionKey, responseId: response.id ?? null };
   }
