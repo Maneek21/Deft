@@ -66,7 +66,7 @@ upgrade baseline. Release-tagged images are signed by the release workflow and
 carry GitHub build provenance. Verify the digest before deploying it:
 
 ```bash
-export TAG=v0.3.0-preview.7
+export TAG=v0.3.0-preview.8
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"

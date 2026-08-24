@@ -10,6 +10,46 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.8] — 2026-08-24
+
+### Added
+
+- Agent Channel v2 now carries structured source evidence, task context, scoped
+  conversation locality, renewable leases, single-flight runtime correlation,
+  truthful terminal outcomes, and bounded progress heartbeats for independently
+  hosted Hermes employees.
+- The matched Hermes bundle now includes a Deft employee policy/reporting hook
+  and governed memory provider. Fresh sessions automatically receive relevant
+  company Knowledge, while employee-private writeback is versioned,
+  provenance-bearing, correction-aware, and retry-safe.
+- Task and generic module contracts expose executable transition/schema
+  guidance, atomic module relations, Contacts-compatible examples, runtime
+  readiness diagnostics, artifact-oriented outcome cards, and immutable AI
+  attribution.
+- CI and release publication now require a commit-bound certificate from two
+  consecutive clean-state Hermes employee recovery/security gauntlets. The
+  production-image path also runs the Agent Channel and MCP self-host smoke.
+
+### Fixed
+
+- Ambiguous Hermes handoffs reconcile correlated durable effects instead of
+  replaying completed work or reporting false failure; duplicate claims,
+  expired leases, restarts, and credential rotation remain fenced.
+- Hermes can discover and write Contacts and other declarative modules through
+  the shared module schema rather than relying on module-specific tool names.
+- Connector backoff timestamps ending in `.401Z` are no longer mistaken for an
+  HTTP 401 credential failure.
+
+### Security
+
+- Employee identity remains bearer-bound across task, chat, memory, and module
+  operations; private-space context and corrections cannot cross their current
+  organization or membership boundary.
+- Retrieved Knowledge, attachments, module data, and provider descriptions stay
+  explicitly untrusted; external writes and destructive commands fail closed,
+  and persisted progress, outcomes, receipts, and memory reject or redact
+  secret-like content.
+
 ## [0.3.0-preview.7] — 2026-08-23
 
 ### Changed
@@ -277,7 +317,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.7...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.8...HEAD
+[0.3.0-preview.8]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.8
 [0.3.0-preview.7]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.7
 [0.3.0-preview.6]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.6
 [0.3.0-preview.3]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.3
