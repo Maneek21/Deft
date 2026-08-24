@@ -10,6 +10,17 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.10] — 2026-08-24
+
+### Fixed
+
+- Multiple independently installed Hermes employee channel services can now
+  run side by side on Windows; each service root receives its own stable mutex
+  instead of silently exiting behind the first employee's global mutex.
+- Windows service health and repair checks now compare bridge timestamps as UTC
+  instants, preventing healthy employees from appearing stale or being
+  restarted on hosts outside UTC.
+
 ## [0.3.0-preview.9] — 2026-08-24
 
 ### Fixed
@@ -325,7 +336,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.9...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.10...HEAD
+[0.3.0-preview.10]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.10
 [0.3.0-preview.9]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.9
 [0.3.0-preview.8]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.8
 [0.3.0-preview.7]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.7
