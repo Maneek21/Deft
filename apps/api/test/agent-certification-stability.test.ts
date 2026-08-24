@@ -175,6 +175,7 @@ after(async () => {
     await client.query('DELETE FROM agent_cooperative_log WHERE employee_id = $1', [EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_mcp_call_audit WHERE employee_id = $1', [EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_certification_challenges WHERE employee_id IN ($1, $2)', [EMPLOYEE_ID, AUTH_EMPLOYEE_ID]);
+    await client.query('DELETE FROM wiki_pages WHERE agent_employee_id = $1', [AUTH_EMPLOYEE_ID]);
     await client.query('DELETE FROM agent_employees WHERE id IN ($1, $2)', [EMPLOYEE_ID, AUTH_EMPLOYEE_ID]);
     await client.query('DELETE FROM org_members WHERE user_id IN ($1, $2)', [ADMIN_USER_ID, MEMBER_USER_ID]);
     await client.query(
@@ -301,6 +302,22 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
          VALUES (gen_random_uuid()::text, $1, $2, $3, true, now())`,
         [ORG_ID, AUTH_EMPLOYEE_ID, tool],
       );
+      if (tool === 'memory_write') {
+        await client.query(
+          `INSERT INTO agent_mcp_call_audit
+             (id, org_id, employee_id, tool_name, success, metadata, created_at)
+           VALUES (gen_random_uuid()::text, $1, $2, $3, true, $4::jsonb, now())`,
+          [
+            ORG_ID,
+            AUTH_EMPLOYEE_ID,
+            tool,
+            JSON.stringify({
+              memory_page_id: `cert-memory-${startBody.challenge.id}`,
+              memory_replayed: true,
+            }),
+          ],
+        );
+      }
     }
     await client.query(
       `INSERT INTO agent_cooperative_log
@@ -318,6 +335,11 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   const mcpOnlyBody = await mcpOnlyCheck.json() as any;
   assert.equal(mcpOnlyBody.completed, false, 'MCP evidence alone must not certify an employee');
   assert.equal(mcpOnlyBody.channel_completed, false);
+  assert.equal(mcpOnlyBody.private_memory_verified, false);
+  assert.equal(
+    mcpOnlyBody.stages.find((stage: any) => stage.key === 'private_memory_round_trip')?.status,
+    'pending',
+  );
 
   await withClient(async (client) => {
     await client.query(
@@ -351,6 +373,26 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   assert.equal(deepCheckBody.completed, false, 'verification waits for a restart and fresh post-restart work');
   assert.equal(deepCheckBody.single_delivery, true);
   assert.equal(deepCheckBody.channel_reply_nonce_seen, true);
+  assert.equal(deepCheckBody.private_memory_verified, false);
+
+  await withClient(async (client) => {
+    const pageId = `cert-memory-${startBody.challenge.id}`;
+    await client.query(
+      `INSERT INTO wiki_pages
+         (id, org_id, scope, agent_employee_id, type, title, slug, summary, content,
+          confidence, version, is_deleted, created_via, created_at, updated_at)
+       VALUES ($1, $2, 'user', $3, 'fact', $4, $5, $4, $4,
+         0.8, 1, false, 'hermes_memory_sync', now(), now())`,
+      [pageId, ORG_ID, AUTH_EMPLOYEE_ID, `Certification ${startBody.challenge.nonce}`, `cert-memory-${startBody.challenge.id}`],
+    );
+    await client.query(
+      `INSERT INTO wiki_memory_syncs
+         (id, org_id, agent_employee_id, idempotency_key, content_digest, page_id,
+          page_version, runtime_session_id, provenance, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, 1, 'certification-test', '{}'::jsonb, now(), now())`,
+      [ORG_ID, AUTH_EMPLOYEE_ID, `certification:${startBody.challenge.nonce}`, 'test-digest', pageId],
+    );
+  });
 
   await withClient(async (client) => {
     await client.query(
@@ -399,6 +441,7 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   const finalCheckBody = await finalCheckResponse.json() as any;
   assert.equal(finalCheckBody.completed, true);
   assert.equal(finalCheckBody.restart_proof_completed, true);
+  assert.equal(finalCheckBody.private_memory_verified, true);
 
   const resetResponse = await app().request(
     `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/reset`,

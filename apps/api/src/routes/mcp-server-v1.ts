@@ -568,12 +568,26 @@ async function dispatchTool(
     }
     const result = await handler(args, ctx);
     const success = !result.isError;
+    let resultAuditMetadata: Record<string, unknown> = {};
+    if (success && canonicalToolName === 'memory_write') {
+      const resultText = result.content?.find((item) => item.type === 'text')?.text;
+      try {
+        const payload = resultText ? JSON.parse(resultText) as Record<string, unknown> : {};
+        const pageId = typeof payload.page_id === 'string' ? payload.page_id.slice(0, 256) : null;
+        resultAuditMetadata = {
+          memory_page_id: pageId,
+          memory_replayed: payload.replayed === true,
+        };
+      } catch {
+        resultAuditMetadata = { memory_result_unparseable: true };
+      }
+    }
     await auditMcpCall({
       ctx,
       toolName,
       success,
       error: success ? null : result.content?.map((c) => c.text).join('\n') || 'Tool returned an MCP error',
-      metadata: auditMetadata,
+      metadata: { ...auditMetadata, ...resultAuditMetadata },
     });
     return result;
   } catch (err) {

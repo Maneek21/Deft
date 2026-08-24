@@ -27,6 +27,8 @@ import {
   projects,
   mcpConnections,
   moduleInstallations,
+  wikiMemorySyncs,
+  wikiPages,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
@@ -606,6 +608,7 @@ type CertificationChallengeEvidence = {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  privateMemoryVerified: boolean;
   channelEventSeen: boolean;
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
@@ -646,7 +649,10 @@ async function loadCertificationChallengeEvidence(params: {
   // Grouping keeps the query bounded to unique tool names even after a runtime
   // has made thousands of later calls.
   const auditRows = await db
-    .select({ tool_name: agentMcpCallAudit.tool_name })
+    .select({
+      tool_name: agentMcpCallAudit.tool_name,
+      call_count: sql<number>`COUNT(*)::int`,
+    })
     .from(agentMcpCallAudit)
     .where(and(
       eq(agentMcpCallAudit.org_id, orgId),
@@ -656,6 +662,9 @@ async function loadCertificationChallengeEvidence(params: {
     ))
     .groupBy(agentMcpCallAudit.tool_name);
   const seenTools = new Set(auditRows.map((row) => row.tool_name));
+  const memoryWriteCallCount = Number(
+    auditRows.find((row) => row.tool_name === 'memory_write')?.call_count ?? 0,
+  );
 
   const nonceRows = await db
     .select({ id: agentCooperativeLog.id })
@@ -676,6 +685,45 @@ async function loadCertificationChallengeEvidence(params: {
     ? []
     : challenge.required_tools.filter((tool) => !seenTools.has(tool));
   const nonceSeen = persistedComplete || nonceRows.length > 0;
+  const privateMemoryRows = persistedComplete ? [{ page_id: 'persisted-complete' }] : await db
+    .select({ page_id: wikiPages.id })
+    .from(wikiMemorySyncs)
+    .innerJoin(wikiPages, and(
+      eq(wikiPages.id, wikiMemorySyncs.page_id),
+      eq(wikiPages.org_id, wikiMemorySyncs.org_id),
+    ))
+    .where(and(
+      eq(wikiMemorySyncs.org_id, orgId),
+      eq(wikiMemorySyncs.agent_employee_id, employeeId),
+      eq(wikiMemorySyncs.idempotency_key, `certification:${challenge.nonce}`),
+      eq(wikiPages.scope, 'user'),
+      eq(wikiPages.agent_employee_id, employeeId),
+      eq(wikiPages.is_deleted, false),
+      or(
+        sql`${wikiPages.title} ILIKE ${`%${challenge.nonce}%`}`,
+        sql`${wikiPages.content} ILIKE ${`%${challenge.nonce}%`}`,
+      ),
+    ))
+    .limit(1);
+  const replayAuditRows = persistedComplete || privateMemoryRows.length === 0 ? [] : await db
+    .select({ id: agentMcpCallAudit.id })
+    .from(agentMcpCallAudit)
+    .where(and(
+      eq(agentMcpCallAudit.org_id, orgId),
+      eq(agentMcpCallAudit.employee_id, employeeId),
+      eq(agentMcpCallAudit.tool_name, 'memory_write'),
+      eq(agentMcpCallAudit.success, true),
+      gte(agentMcpCallAudit.created_at, challenge.started_at),
+      sql`COALESCE(${agentMcpCallAudit.metadata}->>'memory_replayed', 'false') = 'true'`,
+      sql`${agentMcpCallAudit.metadata}->>'memory_page_id' = ${privateMemoryRows[0]?.page_id ?? ''}`,
+    ))
+    .limit(1);
+  const privateMemoryVerified = persistedComplete || (
+    memoryWriteCallCount >= 2
+    && seenTools.has('memory_recall')
+    && privateMemoryRows.length > 0
+    && replayAuditRows.length > 0
+  );
 
   const [channelEvent] = await db
     .select({
@@ -722,6 +770,7 @@ async function loadCertificationChallengeEvidence(params: {
   const baseCompleted = persistedComplete || (
     missingTools.length === 0
     && nonceSeen
+    && privateMemoryVerified
     && channelEventSeen
     && channelCompleted
     && channelReplyNonceSeen
@@ -778,6 +827,7 @@ async function loadCertificationChallengeEvidence(params: {
     missingTools,
     nonceSeen,
     auditCount: auditRows.length,
+    privateMemoryVerified,
     channelEventSeen,
     channelCompleted,
     channelReplyNonceSeen,
@@ -914,7 +964,8 @@ function buildCertificationPrompt(
     `When ${runtimeToolName(runtimeKind, 'task_query')} returns a task, confirm it includes allowed_next_statuses; do not mutate the task.`,
     `When ${runtimeToolName(runtimeKind, 'module_list')} returns an enabled module, call ${runtimeToolName(runtimeKind, 'module_schema_get')} for it and inspect the exact create/update input schemas and collection examples; do not create or update a record. An empty module list is valid.`,
     `Use ${runtimeToolName(runtimeKind, 'memory_write')} to save a private certification memory whose title and body contain ${nonce}; use idempotency_key "certification:${nonce}".`,
-    `Then call ${runtimeToolName(runtimeKind, 'memory_recall')} with query "${nonce}" and confirm the memory is returned.`,
+    `Repeat the identical ${runtimeToolName(runtimeKind, 'memory_write')} call with the same idempotency key and confirm replayed is true.`,
+    `Then call ${runtimeToolName(runtimeKind, 'memory_recall')} with query "${nonce}" and confirm the returned page has authority "deft_canonical".`,
     `Include this exact certification nonce in record_conversation_turn and record_decision: ${nonce}.`,
     `Your final reply must contain this exact nonce: ${nonce}.`,
     'Finish with a short natural-language summary. Do not prefix every future message with your own name.',
@@ -1073,6 +1124,7 @@ function buildCertificationStages(params: {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  privateMemoryVerified: boolean;
   channelEventSeen: boolean;
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
@@ -1136,6 +1188,14 @@ function buildCertificationStages(params: {
         : 'Call record_conversation_turn or record_decision with the challenge nonce.',
     },
     {
+      key: 'private_memory_round_trip',
+      label: 'Private memory round-trip',
+      status: params.privateMemoryVerified ? 'pass' : 'pending',
+      detail: params.privateMemoryVerified
+        ? 'A nonce-bound private page exists and the retry-safe write was replayed before recall.'
+        : 'Write the nonce-bound private memory twice with the same idempotency key, then recall it.',
+    },
+    {
       key: 'channel_reply_verified',
       label: 'Reply verified',
       status: params.channelReplyNonceSeen ? 'pass' : 'pending',
@@ -1177,6 +1237,7 @@ function certificationFailureReason(params: {
   missingTools: string[];
   nonceSeen: boolean;
   auditCount: number;
+  privateMemoryVerified: boolean;
   channelEventSeen: boolean;
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
@@ -1188,6 +1249,7 @@ function certificationFailureReason(params: {
   if (
     params.missingTools.length === 0
     && params.nonceSeen
+    && params.privateMemoryVerified
     && params.channelEventSeen
     && params.channelCompleted
     && params.channelReplyNonceSeen
@@ -1210,6 +1272,9 @@ function certificationFailureReason(params: {
     return runtimeKind === 'hermes'
       ? `Hermes can reach Deft MCP, but its model loop has not called: ${params.missingTools.map((tool) => runtimeToolName('hermes', tool)).join(', ')}. Check model auth and use the mcp_deft_* tool names.`
       : `The runtime has not called: ${params.missingTools.join(', ')}.`;
+  }
+  if (!params.privateMemoryVerified) {
+    return 'Certification did not verify a replay-safe employee-private memory page and recall round-trip.';
   }
   if (!params.channelReplyNonceSeen) return 'Hermes completed tool calls but did not reply through Agent Channel with the certification nonce.';
   if (!params.restartDetected) return 'Restart the Hermes channel bridge once so Deft can prove reconnect persistence.';
@@ -2462,6 +2527,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
               missingTools: challengeEvidence?.missingTools ?? [],
               nonceSeen: challengeEvidence?.nonceSeen ?? false,
               auditCount: challengeEvidence?.auditCount ?? 0,
+              privateMemoryVerified: challengeEvidence?.privateMemoryVerified ?? false,
               channelEventSeen: challengeEvidence?.channelEventSeen ?? false,
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
@@ -2723,6 +2789,7 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
               missingTools: challengeEvidence?.missingTools ?? challenge.required_tools,
               nonceSeen: challengeEvidence?.nonceSeen ?? false,
               auditCount: challengeEvidence?.auditCount ?? 0,
+              privateMemoryVerified: challengeEvidence?.privateMemoryVerified ?? false,
               channelEventSeen: challengeEvidence?.channelEventSeen ?? false,
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
@@ -2778,6 +2845,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      privateMemoryVerified,
       channelEventSeen,
       channelCompleted,
       channelReplyNonceSeen,
@@ -2814,6 +2882,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      privateMemoryVerified,
       channelEventSeen,
       channelCompleted,
       channelReplyNonceSeen,
@@ -2828,6 +2897,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       missingTools,
       nonceSeen: nonce_seen,
       auditCount,
+      privateMemoryVerified,
       channelEventSeen,
       channelCompleted,
       channelReplyNonceSeen,
@@ -2864,6 +2934,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channel_reply_nonce_seen: channelReplyNonceSeen,
       single_delivery: singleDelivery,
       runtime_session_seen: runtimeSessionSeen,
+      private_memory_verified: privateMemoryVerified,
       restart_detected: restartDetected,
       restart_proof_event_seen: restartProofEventSeen,
       restart_proof_completed: restartProofCompleted,

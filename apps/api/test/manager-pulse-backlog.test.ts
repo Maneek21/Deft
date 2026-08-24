@@ -129,6 +129,7 @@ test('manager pulse excludes backlog tasks from active-task count', async () => 
   env.ANTHROPIC_API_KEY = '';
 
   const { generateManagerPulse } = await import('../src/services/manager-pulse.js');
+  const { closeDb } = await import('../src/lib/db.js');
 
   try {
     await withClient(async (c) => {
@@ -150,5 +151,6 @@ test('manager pulse excludes backlog tasks from active-task count', async () => 
     });
   } finally {
     env.ANTHROPIC_API_KEY = originalKey;
+    await closeDb();
   }
 });

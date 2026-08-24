@@ -328,17 +328,19 @@ test('6. POST /tools/call wiki_search aliases memory_recall and records canonica
 
 test('7. POST /tools/call memory_write creates a wiki_pages row', async () => {
   const title = `Phase3 MCP test memory ${Date.now()}`;
+  const memoryArguments = {
+    caller_employee_slug: TEST_EMPLOYEE_SLUG,
+    title,
+    body: 'This is a Phase 3 MCP server test memory page body.',
+    type: 'fact',
+    confidence: 0.8,
+    idempotency_key: `mcp-server-memory:${title}`,
+  };
   const res = await mcpPost(
     '/tools/call',
     {
       name: 'memory_write',
-      arguments: {
-        caller_employee_slug: TEST_EMPLOYEE_SLUG,
-        title,
-        body: 'This is a Phase 3 MCP server test memory page body.',
-        type: 'fact',
-        confidence: 0.8,
-      },
+      arguments: memoryArguments,
     },
     RAW_TOKEN!
   );
@@ -347,6 +349,14 @@ test('7. POST /tools/call memory_write creates a wiki_pages row', async () => {
   assert.ok(!body.isError, `memory_write should not error: ${JSON.stringify(body)}`);
   const parsed = JSON.parse(body.content[0].text);
   assert.ok(parsed.slug, 'slug returned');
+
+  const replayRes = await mcpPost(
+    '/tools/call',
+    { name: 'memory_write', arguments: memoryArguments },
+    RAW_TOKEN!,
+  );
+  const replayBody = await replayRes.json() as any;
+  assert.equal(JSON.parse(replayBody.content[0].text).replayed, true);
 
   // Verify row exists in DB
   await withClient(async (c) => {
@@ -357,6 +367,15 @@ test('7. POST /tools/call memory_write creates a wiki_pages row', async () => {
     assert.equal(r.rows.length, 1);
     assert.equal(r.rows[0].title, title);
     assert.equal(r.rows[0].agent_employee_id, TEST_EMPLOYEE_ID);
+    const replayAudit = await c.query(
+      `SELECT metadata
+       FROM agent_mcp_call_audit
+       WHERE employee_id = $1 AND tool_name = 'memory_write'
+         AND metadata->>'memory_page_id' = $2
+         AND metadata->>'memory_replayed' = 'true'`,
+      [TEST_EMPLOYEE_ID, parsed.page_id],
+    );
+    assert.equal(replayAudit.rows.length, 1);
   });
 });
 
