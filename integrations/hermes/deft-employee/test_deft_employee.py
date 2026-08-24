@@ -63,6 +63,8 @@ class DeftEmployeeHookTests(unittest.TestCase):
         self.assertIn("allowed_next_statuses", context["deft_task_contract"])
         self.assertIn("module_schema_get", context["deft_module_contract"])
         self.assertIn("relations", context["deft_module_contract"])
+        self.assertIn("record_progress", context["deft_progress_contract"])
+        self.assertIn("Do not mirror every tool call", context["deft_progress_contract"])
 
 
 if __name__ == "__main__":

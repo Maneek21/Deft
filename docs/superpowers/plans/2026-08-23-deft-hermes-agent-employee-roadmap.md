@@ -44,7 +44,7 @@ pilot rather than an ideal-employee release.
 
 ## Reliability delivery checkpoint — 2026-08-24
 
-The first two minimum-work packages are merged:
+The first five minimum-work packages are merged:
 
 - PR #240 makes the triggering conversation the primary evidence envelope
   and scopes automatic Knowledge recall to the local assignment before broader
@@ -52,9 +52,17 @@ The first two minimum-work packages are merged:
 - PR #241 gives every Hermes delivery attempt a stable runtime request key,
   permits one same-key recovery on an ambiguous transport failure, correlates
   durable Deft effects to that exact attempt, and reconciles an uncertain final
-  handoff without replaying completed work or reporting a false failure.
+  handoff without replaying completed work or reporting a false failure;
+- PR #242 makes task transitions and generic module relation writes executable
+  from returned schemas and certification rather than model guesswork;
+- PR #243 publishes the release-pinned external-runtime bundle, readiness and
+  diagnostics contract, selected-module preflight, deep certification, and
+  bridge-restart proof without placing Hermes on the Deft VPS; and
+- PR #244 completes governed employee-private memory writeback, promotion,
+  correction/deletion fencing, secret and instruction rejection, and fresh
+  session reuse certification.
 
-The executable-contract package adds the next required employee boundary:
+The executable-contract package established this employee boundary:
 
 - task query/detail and mutation results expose `allowed_next_statuses`, while
   invalid transition responses return the current, requested, and allowed
@@ -68,9 +76,9 @@ The executable-contract package adds the next required employee boundary:
 - employee certification probes task-transition discovery and generic module
   discovery without requiring Contacts—or any module—to be installed.
 
-This still does not make the ideal-employee claim. Distributed onboarding,
-the governed memory loop, employee progress/outcome UX, and the clean-state
-release gauntlet remain in the delivery order below.
+This still does not make the ideal-employee claim. The employee progress and
+business-outcome package is in validation; the clean-state release gauntlet and
+two consecutive matched demo runs remain in the delivery order below.
 
 ## Executive summary
 

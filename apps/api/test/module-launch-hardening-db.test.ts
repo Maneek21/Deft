@@ -478,6 +478,7 @@ test('audit route gates module entities and returns a safe record-activity proje
     const recordEvents = await targeted.json() as Array<Record<string, unknown>>;
     const linked = recordEvents.find((event) => event.action === 'module_record.task_linked');
     assert.ok(linked);
+    assert.equal(linked.actor_name, 'Launch audit');
     assert.equal(Object.hasOwn(linked, 'before_state'), false);
     assert.equal(Object.hasOwn(linked, 'after_state'), false);
     assert.deepEqual(linked.metadata, { changed_fields: ['name'] });

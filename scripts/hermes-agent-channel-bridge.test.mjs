@@ -42,6 +42,7 @@ function config() {
     heartbeatMs: 60000,
     leaseMs: 120000,
     leaseHeartbeatMs: 40000,
+    progressHeartbeatMs: 75000,
     workerId: 'bridge-worker-test',
     once: true,
   };
@@ -72,6 +73,8 @@ test('buildEventPrompt preserves the event and pins the employee identity', () =
   assert.match(prompt, /Do not call message_post, send_message, post_thread_reply/);
   assert.match(prompt, /bridge is the sole writer/);
   assert.match(prompt, /different named destination/);
+  assert.match(prompt, /call record_progress once when you begin/);
+  assert.match(prompt, /Do not mirror raw tool calls/);
   assert.doesNotMatch(prompt, /channel-secret/);
 });
 
@@ -268,6 +271,38 @@ test('processEvent safely recovers an ambiguous Hermes transport failure with th
     'deft-channel:event-1:attempt:1',
     'deft-channel:event-1:attempt:1',
   ]);
+});
+
+test('lease renewal stays quiet until the bounded human-visible progress heartbeat', async () => {
+  const calls = [];
+  let now = 0;
+  let tick = null;
+  const bridge = new HermesAgentChannelBridge(config(), {
+    now: () => now,
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return jsonResponse({ ok: true });
+    },
+    setIntervalImpl: (callback) => {
+      tick = callback;
+      return { unref() {} };
+    },
+    clearIntervalImpl() {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  bridge.currentClaimToken = event.claim_token;
+  const heartbeat = bridge.startLeaseHeartbeat(event);
+  assert.ok(tick);
+
+  now = 40000;
+  await tick();
+  now = 80000;
+  await tick();
+  heartbeat.stop();
+
+  assert.equal(calls.length, 2);
+  assert.equal(Object.hasOwn(calls[0].body, 'detail'), false, 'lease renewal must omit user-facing progress');
+  assert.equal(calls[1].body.detail, 'Still working on message.created');
 });
 
 test('processEvent reports a reconciled uncertain handoff instead of a false failure', async () => {

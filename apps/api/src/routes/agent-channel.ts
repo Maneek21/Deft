@@ -834,7 +834,9 @@ agentChannelRoutes.post('/status', async (c) => {
             eq(agentChannelEvents.claim_token, parsed.data.claim_token),
           ));
       }
-      emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
+      if (parsed.data.detail) {
+        emitTaskProgress(event, principal.employee_id, signal, parsed.data.detail);
+      }
     }
   }
 

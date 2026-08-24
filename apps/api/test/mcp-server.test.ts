@@ -196,11 +196,13 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
   assert.ok(names.has('task_query'), 'task_query in catalog');
   assert.ok(names.has('thread_fetch'), 'thread_fetch in catalog');
   assert.ok(names.has('member_list'), 'member_list in catalog');
+  assert.ok(names.has('record_progress'), 'record_progress in catalog');
 
   const memoryRecall = body.tools.find((t: any) => t.name === 'memory_recall');
   const wikiSearch = body.tools.find((t: any) => t.name === 'wiki_search');
   const platformContext = body.tools.find((t: any) => t.name === 'platform_context');
   const taskUpdate = body.tools.find((t: any) => t.name === 'task_update');
+  const recordProgress = body.tools.find((t: any) => t.name === 'record_progress');
   for (const tool of body.tools) {
     assert.equal(
       tool.inputSchema?.properties?.caller_employee_slug,
@@ -230,6 +232,15 @@ test('3. POST /tools/list with valid bearer returns tool catalog', async () => {
     taskUpdate?.inputSchema?.properties?.patch?.properties?.due_date,
     'task_update advertises due-date changes to agent runtimes',
   );
+  assert.ok(recordProgress?.inputSchema?.required?.includes('idempotency_key'));
+  assert.deepEqual(recordProgress?.inputSchema?.properties?.status?.enum, [
+    'working',
+    'retrying',
+    'waiting_human',
+    'needs_human',
+    'blocked',
+    'approval_pending',
+  ]);
 });
 
 test('4. POST /tools/call platform_context returns org, employee, date', async () => {

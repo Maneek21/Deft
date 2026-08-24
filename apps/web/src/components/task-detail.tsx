@@ -173,8 +173,38 @@ type ActivityItem = {
   field: string;
   old_value: string | null;
   new_value: string | null;
-  user_name: string;
+  user_name: string | null;
+  acting_agent_employee_id?: string | null;
+  agent_employee_name?: string | null;
   created_at: string;
+};
+
+type AgentOutcome = {
+  agent_employee_id: string;
+  business_outcome: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain';
+  summary: string | null;
+  outcome_at: string | null;
+  runtime_state: string;
+  runtime_error: string | null;
+  has_durable_effects: boolean;
+  effects: null | {
+    task_state: null | { status: string; employee_activity_count: number };
+    task_comments: { count: number };
+    task_activity: { count: number };
+    messages: { count: number };
+    agent_actions: { count: number };
+    module_mutations: {
+      count: number;
+      artifacts: Array<{
+        receipt_id: string;
+        record_id: string;
+        module_slug: string;
+        collection_key: string;
+        operation: 'create' | 'update' | 'archive';
+      }>;
+    };
+    action_receipts: { count: number };
+  };
 };
 
 type AgentEmployee = {
@@ -669,6 +699,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
     total_steps: number;
     error?: string;
   } | null>(null);
+  const [agentOutcome, setAgentOutcome] = useState<AgentOutcome | null>(null);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -742,7 +773,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
       setDescValue(normalized.description || '');
       setSubtasks(data.subtasks || []);
       setParentTask(data.parent_task || null);
-      setAgentProgress(data.agent_progress || null);
+      setAgentProgress(data.agent_outcome ? null : data.agent_progress || null);
+      setAgentOutcome(data.agent_outcome || null);
     }
     setLoading(false);
   }, [taskId]);
@@ -787,6 +819,9 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
         total_steps: payload.total_steps,
         error: payload.error,
       });
+      if (['completed', 'failed', 'cancelled', 'needs_human', 'blocked'].includes(payload.status)) {
+        void loadTask();
+      }
     };
 
     socket.on('task:updated', onUpdated);
@@ -1810,6 +1845,81 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
             );
           })()}
 
+          {agentOutcome && (() => {
+            const employee = agentEmployees.find((candidate) => candidate.id === agentOutcome.agent_employee_id);
+            const employeeName = employee?.name ?? 'Agent employee';
+            const uncertain = agentOutcome.business_outcome === 'work_completed_handoff_uncertain';
+            const failed = agentOutcome.business_outcome === 'failed' || agentOutcome.business_outcome === 'cancelled';
+            const needsHuman = agentOutcome.business_outcome === 'needs_human' || agentOutcome.business_outcome === 'blocked';
+            const title = uncertain
+              ? 'Work completed; final handoff uncertain'
+              : failed
+                ? 'Work did not complete'
+                : needsHuman
+                  ? 'Work needs human input'
+                  : 'Work completed';
+            const effects = agentOutcome.effects;
+            const evidence = [
+              effects?.task_comments.count ? `${effects.task_comments.count} task comment${effects.task_comments.count === 1 ? '' : 's'}` : null,
+              effects?.task_activity.count ? `${effects.task_activity.count} task change${effects.task_activity.count === 1 ? '' : 's'}` : null,
+              effects?.module_mutations.count ? `${effects.module_mutations.count} module artifact${effects.module_mutations.count === 1 ? '' : 's'}` : null,
+              effects?.action_receipts.count ? `${effects.action_receipts.count} signed receipt${effects.action_receipts.count === 1 ? '' : 's'}` : null,
+            ].filter((value): value is string => Boolean(value));
+            return (
+              <section
+                className="mx-5 mb-3 rounded-lg px-3 py-3"
+                style={{
+                  background: failed ? '#fef2f2' : needsHuman ? '#fffbeb' : '#f0fdf4',
+                  border: `1px solid ${failed ? '#fecaca' : needsHuman ? '#fde68a' : '#bbf7d0'}`,
+                }}
+                aria-label="Agent work outcome"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[12px] font-semibold" style={{ color: failed ? '#991b1b' : needsHuman ? '#92400e' : '#166534' }}>
+                      {title}
+                    </p>
+                    <p className="mt-0.5 text-[11px]" style={{ color: 'var(--foreground-secondary)' }}>
+                      {employeeName}{agentOutcome.summary ? ` · ${agentOutcome.summary}` : ''}
+                    </p>
+                  </div>
+                  {agentOutcome.outcome_at && (
+                    <time className="shrink-0 text-[10px]" style={{ color: 'var(--muted)' }}>
+                      {new Date(agentOutcome.outcome_at).toLocaleString()}
+                    </time>
+                  )}
+                </div>
+                {evidence.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Durable work evidence">
+                    {evidence.map((label) => (
+                      <span key={label} className="rounded-full px-2 py-0.5 text-[10px]" style={{ background: 'var(--surface)', color: 'var(--foreground-secondary)', border: '1px solid var(--border)' }}>
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {effects?.module_mutations.artifacts && effects.module_mutations.artifacts.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {effects.module_mutations.artifacts.map((artifact) => (
+                      <a
+                        key={artifact.receipt_id}
+                        href={`/modules/${encodeURIComponent(artifact.module_slug)}/${encodeURIComponent(artifact.collection_key)}/${encodeURIComponent(artifact.record_id)}`}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium"
+                        style={{ color: 'var(--primary)' }}
+                      >
+                        <ExternalLink size={11} />
+                        Open {artifact.module_slug} {artifact.operation} artifact
+                      </a>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 border-t pt-2 text-[10px]" style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}>
+                  Runtime transport: {agentOutcome.runtime_error ? `degraded · ${agentOutcome.runtime_error}` : agentOutcome.runtime_state.replaceAll('_', ' ')}
+                </div>
+              </section>
+            );
+          })()}
+
           {/* Task 6.1 — tab navigation strip */}
           <div
             className="flex px-3 overflow-x-auto"
@@ -2681,6 +2791,8 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   const oldLabel = formatActivityValue(a.field, a.old_value, members);
                   const newLabel = formatActivityValue(a.field, a.new_value, members);
                   const isAgentHandoff = a.action === 'agent_handoff_queued';
+                  const isAgentProgress = a.action === 'agent_progress';
+                  const actorName = a.agent_employee_name ?? a.user_name ?? 'Agent employee';
                   return (
                   <div key={a.id} className="flex items-start gap-2.5 text-[12px]">
                     <div
@@ -2689,10 +2801,15 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                     />
                     <div className="flex-1 min-w-0">
                       <span style={{ color: 'var(--foreground)', fontFamily: 'var(--font-heading)', fontWeight: 600 }}>
-                        {a.user_name}
+                        {actorName}{a.agent_employee_name ? ' (AI)' : ''}
                       </span>{' '}
                       <span style={{ color: 'var(--foreground-secondary)', fontFamily: 'var(--font-body)' }}>
-                        {isAgentHandoff ? (
+                        {isAgentProgress ? (
+                          <>
+                            reported {a.old_value?.replaceAll('_', ' ') ?? 'progress'}: {' '}
+                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>{a.new_value}</span>
+                          </>
+                        ) : isAgentHandoff ? (
                           <>
                             queued work for{' '}
                             <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>
@@ -2702,7 +2819,7 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                         ) : (
                           <>changed {formatFieldName(a.field)}</>
                         )}
-                        {!isDescription && !isAgentHandoff && (
+                        {!isDescription && !isAgentHandoff && !isAgentProgress && (
                           <>
                             {': '}
                             <span style={{ color: 'var(--muted)', textDecoration: 'line-through', textDecorationColor: 'var(--muted)' }}>

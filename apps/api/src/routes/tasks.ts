@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelEvents, spaces, spaceMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -25,6 +25,7 @@ import {
   type TaskTableSortField,
 } from '../lib/task-table-query.js';
 import { bulkTaskUpdateSchema, bulkUpdateTasks, BulkTaskUpdateError } from '../lib/task-bulk-update.js';
+import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const taskRoutes = new Hono();
 
@@ -1139,14 +1140,7 @@ taskRoutes.get('/:id', async (c) => {
       return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
     }
 
-    const [latestAgentEvent] = await db.select({
-      agent_employee_id: agentChannelEvents.agent_employee_id,
-      status: agentChannelEvents.status,
-      work_outcome: agentChannelEvents.work_outcome,
-      detail: agentChannelEvents.outcome_detail,
-      error: agentChannelEvents.error,
-      updated_at: agentChannelEvents.updated_at,
-    }).from(agentChannelEvents)
+    const [latestAgentEvent] = await db.select().from(agentChannelEvents)
       .where(and(
         eq(agentChannelEvents.org_id, user.org_id),
         eq(agentChannelEvents.source_kind, 'task'),
@@ -1163,6 +1157,45 @@ taskRoutes.get('/:id', async (c) => {
       ))
       .orderBy(desc(agentChannelEvents.updated_at))
       .limit(1);
+
+    const [latestMilestone] = latestAgentEvent
+      ? await db.select({
+        summary: agentCooperativeLog.summary,
+        metadata: agentCooperativeLog.metadata,
+        updated_at: agentCooperativeLog.created_at,
+      }).from(agentCooperativeLog).where(and(
+        eq(agentCooperativeLog.org_id, user.org_id),
+        eq(agentCooperativeLog.employee_id, latestAgentEvent.agent_employee_id),
+        eq(agentCooperativeLog.kind, 'milestone'),
+        sql`${agentCooperativeLog.metadata}->>'channel_event_id' = ${latestAgentEvent.id}`,
+      )).orderBy(desc(agentCooperativeLog.created_at)).limit(1)
+      : [];
+    const milestoneStatus = latestMilestone
+      && typeof latestMilestone.metadata === 'object'
+      && latestMilestone.metadata !== null
+      && typeof (latestMilestone.metadata as Record<string, unknown>).status === 'string'
+      ? (latestMilestone.metadata as Record<string, unknown>).status as string
+      : null;
+
+    let latestReconciliation = null;
+    if (latestAgentEvent && latestAgentEvent.work_outcome) {
+      const [attempt] = await db.select({
+        runtime_request_key: agentChannelDeliveryAttempts.idempotency_key,
+      }).from(agentChannelDeliveryAttempts).where(and(
+        eq(agentChannelDeliveryAttempts.org_id, user.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, latestAgentEvent.agent_employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, latestAgentEvent.id),
+        eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
+      )).orderBy(desc(agentChannelDeliveryAttempts.created_at)).limit(1);
+      if (attempt?.runtime_request_key) {
+        latestReconciliation = await reconcileAgentChannelRuntimeAttempt({
+          event: latestAgentEvent,
+          orgId: user.org_id,
+          employeeId: latestAgentEvent.agent_employee_id,
+          runtimeRequestKey: attempt.runtime_request_key,
+        });
+      }
+    }
 
     // Fetch assignee info
     let assignee = null;
@@ -1274,14 +1307,31 @@ taskRoutes.get('/:id', async (c) => {
         agent_employee_id: latestAgentEvent.agent_employee_id,
         step_index: 0,
         total_steps: 1,
-        status: latestAgentEvent.work_outcome ?? (
+        status: latestAgentEvent.work_outcome
+          ?? (milestoneStatus === 'waiting_human'
+            ? 'needs_human'
+            : milestoneStatus === 'retrying'
+              ? 'started'
+              : milestoneStatus)
+          ?? (
           latestAgentEvent.status === 'running' ? 'started' : latestAgentEvent.status
         ),
-        step_description: latestAgentEvent.detail
+        step_description: latestAgentEvent.outcome_detail
+          ?? latestMilestone?.summary
           ?? latestAgentEvent.error
           ?? `Agent work is ${latestAgentEvent.status.replaceAll('_', ' ')}`,
         error: latestAgentEvent.error ?? undefined,
-        updated_at: latestAgentEvent.updated_at,
+        updated_at: latestMilestone?.updated_at ?? latestAgentEvent.updated_at,
+      } : null,
+      agent_outcome: latestAgentEvent?.work_outcome ? {
+        agent_employee_id: latestAgentEvent.agent_employee_id,
+        business_outcome: latestAgentEvent.work_outcome,
+        summary: latestAgentEvent.outcome_detail,
+        outcome_at: latestAgentEvent.outcome_at,
+        runtime_state: latestAgentEvent.status,
+        runtime_error: latestAgentEvent.error,
+        has_durable_effects: latestReconciliation?.has_durable_effects ?? false,
+        effects: latestReconciliation?.effects ?? null,
       } : null,
     });
   } catch (err) {
@@ -1458,9 +1508,15 @@ taskRoutes.get('/:id/activity', async (c) => {
       created_at: taskActivity.created_at,
       user_name: users.name,
       user_avatar: users.avatar_url,
+      acting_agent_employee_id: taskActivity.acting_agent_employee_id,
+      agent_employee_name: agentEmployees.name,
     })
       .from(taskActivity)
       .leftJoin(users, eq(taskActivity.user_id, users.id))
+      .leftJoin(agentEmployees, and(
+        eq(taskActivity.acting_agent_employee_id, agentEmployees.id),
+        eq(taskActivity.org_id, agentEmployees.org_id),
+      ))
       .where(eq(taskActivity.task_id, taskId))
       .orderBy(desc(taskActivity.created_at));
 

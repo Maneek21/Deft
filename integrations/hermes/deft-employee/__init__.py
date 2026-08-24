@@ -57,6 +57,7 @@ class DeftEmployeeHooks:
             "assignment_policy": self.policy.get("assignment", {}),
             "budgets": budgets,
             "reporting": "Report milestones, ask a precise human question when blocked, and return evidence plus truthful outcome.",
+            "deft_progress_contract": "For task assignments call record_progress when beginning with a concise plan, at meaningful milestones, and when a blocker or retry approach changes. Use a stable idempotency_key. Do not mirror every tool call or post routine progress to chat.",
             "deft_task_contract": "Read allowed_next_statuses from task_query/task_detail before changing status. On INVALID_TRANSITION, choose only from the returned allowed_next_statuses.",
             "deft_module_contract": "Call module_schema_get before module writes. Follow its exact input_schema and collection example; put scalar fields in data/patch and links in relations: {field_key: [record_ids]}.",
         }, ensure_ascii=False)}

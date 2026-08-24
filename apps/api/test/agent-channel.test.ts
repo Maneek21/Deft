@@ -18,6 +18,7 @@ import {
   agentChannelTokens,
   agentEmployees,
   agentActions,
+  agentCooperativeLog,
   actionReceipts,
   messages,
   notifications,
@@ -40,12 +41,14 @@ import {
 import { loadAgentActivity } from '../src/lib/agent-activity.js';
 import { projectRoutes } from '../src/routes/projects.js';
 import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
+import { taskRoutes } from '../src/routes/tasks.js';
 import {
   humanMessagePost,
   humanTaskCreate,
   type HumanToolContext,
 } from '../src/lib/mcp-tools/human.js';
 import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
+import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
 
 const app = new Hono();
@@ -56,6 +59,7 @@ operatorApp.use('*', async (c, next) => {
   await next();
 });
 operatorApp.route('/api/agent-employees', agentEmployeeRoutes);
+operatorApp.route('/api/tasks', taskRoutes);
 
 let orgId: string;
 let humanUserId: string;
@@ -175,6 +179,7 @@ after(async () => {
     await db.delete(agentChannelConnections).where(eq(agentChannelConnections.agent_employee_id, employeeId));
     await db.delete(agentChannelEvents).where(eq(agentChannelEvents.agent_employee_id, employeeId));
     await db.delete(actionReceipts).where(eq(actionReceipts.employee_id, employeeId));
+    await db.delete(agentCooperativeLog).where(eq(agentCooperativeLog.employee_id, employeeId));
     await db.delete(agentActions).where(eq(agentActions.org_id, orgId));
     await db.delete(notifications).where(eq(notifications.org_id, orgId));
     await db.delete(taskComments).where(eq(taskComments.org_id, orgId));
@@ -1107,6 +1112,97 @@ test('agent activity merges delivery and action records into one ordered stream'
   assert.equal(proposedAction?.kind, 'action');
   assert.equal(proposedAction?.status, 'approval_pending');
   assert.equal(proposedAction?.target_url, `/chat?space=${spaceId}`);
+});
+
+test('record_progress persists one task milestone and replays idempotently', async () => {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 904,
+    title: 'Research a durable employee milestone',
+    status: 'in_progress',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const published = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `progress-event-${crypto.randomUUID()}`,
+    payload: { task_id: taskId },
+  });
+  assert.ok(published.event);
+  const event = published.event!;
+  const args = {
+    summary: 'Selected the source-backed prospect; creating the governed company record next.',
+    status: 'working' as const,
+    idempotency_key: 'selected-prospect',
+    artifact_refs: [{
+      kind: 'url',
+      label: 'Official company page',
+      reference: 'https://example.test/company?access_token=must-not-persist#private',
+    }],
+  };
+  const context = {
+    org_id: orgId,
+    employee_id: employeeId,
+    employee_slug: employeeSlug,
+    trust_level: 'autonomous' as const,
+    channel_event_id: event.id,
+    runtime_request_key: `deft-channel:${event.id}:attempt:1`,
+  };
+
+  const invalidStatus = await recordProgress({ ...args, status: 'done' as any }, context);
+  const unsafeSummary = await recordProgress({ ...args, summary: 'password=must-not-persist' }, context);
+  assert.equal(invalidStatus.isError, true);
+  assert.equal(unsafeSummary.isError, true);
+
+  const first = parseToolResult(await recordProgress(args, context));
+  const replay = parseToolResult(await recordProgress(args, context));
+
+  assert.equal(first.replayed, false);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.log_id, first.log_id);
+  const activity = await db.select().from(taskActivity).where(and(
+    eq(taskActivity.task_id, taskId),
+    eq(taskActivity.action, 'agent_progress'),
+  ));
+  assert.equal(activity.length, 1);
+  assert.equal(activity[0]?.acting_agent_employee_id, employeeId);
+  assert.equal(activity[0]?.new_value, args.summary);
+  const logs = await db.select().from(agentCooperativeLog).where(and(
+    eq(agentCooperativeLog.employee_id, employeeId),
+    eq(agentCooperativeLog.kind, 'milestone'),
+  ));
+  const log = logs.find((row) => (row.metadata as any)?.channel_event_id === event.id);
+  assert.ok(log);
+  assert.notEqual((log!.metadata as any).idempotency_digest, args.idempotency_key);
+  assert.deepEqual((log!.metadata as any).artifacts, [{
+    kind: 'url',
+    label: 'Official company page',
+    reference: 'https://example.test/company',
+  }]);
+
+  const detailResponse = await operatorApp.request(`/api/tasks/${taskId}`);
+  const detailText = await detailResponse.text();
+  assert.equal(detailResponse.status, 200, detailText);
+  const detail = JSON.parse(detailText) as any;
+  assert.equal(detail.agent_progress?.step_description, args.summary);
+  assert.equal(detail.agent_progress?.status, 'working');
+  assert.equal(detail.agent_outcome, null);
+
+  const activityResponse = await operatorApp.request(`/api/tasks/${taskId}/activity`);
+  const activityText = await activityResponse.text();
+  assert.equal(activityResponse.status, 200, activityText);
+  const activityFeed = JSON.parse(activityText) as any[];
+  const progressItem = activityFeed.find((item) => item.action === 'agent_progress');
+  assert.equal(progressItem?.acting_agent_employee_id, employeeId);
+  assert.equal(progressItem?.agent_employee_name, 'Channel Agent');
 });
 
 test('operators can cancel and retry a live channel delivery', async () => {
