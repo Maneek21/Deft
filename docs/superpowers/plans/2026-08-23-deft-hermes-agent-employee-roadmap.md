@@ -1,7 +1,8 @@
 # Deft + Hermes Agent Employee Roadmap
 
 **Date:** 2026-08-23
-**Status:** Implementation in progress; repository checkpoint complete, live certification pending
+**Status:** Core integration merged in `v0.3.0-preview.7`; reliability follow-up
+and ideal-employee certification remain
 **Primary employee under test:** Rita
 **Runtime:** Hermes Agent
 
@@ -34,6 +35,13 @@ adapter directories are not yet installed in Rita's dedicated profile, live
 failure/recovery certification has not run, and the implementation is not yet
 reviewed, merged, or deployed.
 
+That paragraph records the August 23 checkpoint. The implementation was
+subsequently reviewed, merged, released, and deployed through
+`v0.3.0-preview.7`. Fresh Rita and Asha pilots proved the supervised employee
+loop, but also exposed the reliability and context defects captured in the
+minimum-work section below. The current release therefore remains a supervised
+pilot rather than an ideal-employee release.
+
 ## Executive summary
 
 The goal is not to rebuild Hermes inside Deft.
@@ -60,10 +68,10 @@ The product we are building is therefore a small but reliable integration:
    with its native capabilities, asks for help when blocked, and reports back
    with evidence.
 
-This work should be completed, merged, and certified before App Protocol v2
-implementation begins. App Protocol remains the governed execution system for
-Deft-owned apps and connectors; it must not become a replacement for Hermes's
-native MCP and skills ecosystem.
+This reliability work must be completed, merged, and certified before Deft
+makes the ideal-employee promise. App Protocol remains the governed execution
+system for Deft-owned apps and connectors; it must not become a replacement for
+Hermes's native MCP and skills ecosystem.
 
 ## Product endstate
 
@@ -101,6 +109,37 @@ Knowledge learned during the work is retained at the right level:
 | Shared Deft-owned connectors | App Protocol | Execute through governed App Runs with idempotency and receipts |
 | Runtime-native external connectors | Hermes | Apply generic run policy through hooks and report sanitized results to Deft |
 
+### Deployment topology
+
+Deft is installed on the organization's VPS and remains the lightweight
+workplace and control plane. Hermes does **not** run on that VPS as part of the
+Deft deployment: co-hosting arbitrary employee runtimes would make Deft's RAM
+and process footprint unpredictable.
+
+People and organizations install Hermes wherever they choose: a personal
+computer, company workstation, dedicated worker, home lab, or separately
+managed server. The Deft integration bridge runs beside that Hermes runtime and
+connects outbound to Deft over the Agent Channel. Deft never needs an inbound
+connection to the Hermes host.
+
+- Every connected employee uses an isolated Hermes profile and an
+  employee-scoped, revocable Deft credential.
+- Several employees may run on one host or on different hosts; placement is an
+  operator decision, not a Deft architecture decision.
+- A disconnected runtime is a normal availability state. Deft retains queued
+  work and reports the employee as unavailable without treating the Deft
+  deployment as unhealthy.
+- Deft publishes and certifies the release-pinned bridge, memory adapter, and
+  policy hooks. Hermes continues to install, run, update, and supervise its own
+  gateway, profiles, skills, MCPs, browser, and execution processes.
+- The same protocol and certification suite applies across supported operating
+  systems. Deft does not require or infer a particular runtime host topology.
+
+Rejected alternatives are bundling Hermes into the Deft VPS deployment and
+building a Deft-owned Hermes fleet manager. Both expand Deft's operational and
+security surface, duplicate runtime ownership, and undermine self-hosting
+predictability.
+
 ### What this boundary means
 
 Deft will not create a capability interface for every Hermes tool. It will not
@@ -111,6 +150,32 @@ cron, browser automation, or memory engine.
 Deft will make those capabilities safer and more useful when they are used for
 company work by supplying scoped context, an authenticated employee identity,
 task-level boundaries, human escalation, durable reporting, and shared memory.
+
+## Product decisions locked — 2026-08-24
+
+1. **Distributed, operator-owned runtimes.** Hermes runs wherever the person or
+   organization installs it and connects outbound to Deft. Deft does not host
+   Hermes or decide employee placement.
+2. **Tiered memory.** Transient working state remains in Hermes. Reusable
+   learning may sync automatically into employee-private Deft Knowledge with
+   provenance. Organization-wide promotion requires human approval unless an
+   authorized human explicitly requested publication. Newer human corrections
+   always override runtime memory.
+3. **External-action policy.** Research and external reads may run within the
+   assignment policy. Standard employees require approval before email,
+   publishing, destructive changes, or other external writes. Autonomous
+   employees may bypass per-action approval only for connector and action
+   classes explicitly granted by the organization.
+4. **Minimum multi-employee coordination.** Employees coordinate through normal
+   Deft spaces, tasks, comments, Knowledge, and explicit handoffs. No new
+   runtime-to-runtime orchestration is required for the first promise.
+5. **Useful progress, not chat noise.** Milestones are durable task activity; a
+   long silent step emits a heartbeat after roughly 60–90 seconds. Chat is used
+   for meaningful results, blockers, approval or assistance requests, and
+   explicitly requested updates.
+6. **Release threshold.** A fresh Deft seed and fresh Hermes profiles must pass
+   the complete gauntlet twice consecutively, without shell repair, before the
+   ideal-employee label is used.
 
 ## Where we are now
 
@@ -523,19 +588,153 @@ because it does not materially improve Hermes inside Deft:
 - Detailed per-tool schema-aware policy for arbitrary runtime-native MCPs.
 - Specialized CRM, campaign, recruiting, or support logic in Deft core.
 
+## Further questions resolved
+
+| Question from the live pilot | Resolution |
+| --- | --- |
+| Why did a `#general` reply import unrelated work? | The current event and memory-prefetch seams carry identifiers but do not establish the source thread as the primary evidence boundary. Fix prompt assembly and retrieval scoping together; do not treat this as a model-only problem. |
+| How should an ambiguous long-run transport failure recover? | Send a stable Hermes `Idempotency-Key` derived from the Deft event and attempt, permit one bounded recovery request, and reconcile durable Deft writes and receipts before reporting failure. Never blindly replay a non-idempotent run. |
+| Who schedules background skill and memory review? | Hermes. Deft employee profile guidance disables foreground-triggered review until Hermes can make it idle-only and preemptible. Deft does not build a second scheduler. |
+| What relation shape should modules expose? | One generic shape for create and update: `relations: { field_key: [record_ids] }`. Mutations are atomic and module introspection returns manifest-derived valid examples. |
+| Where should learned knowledge live? | Transient state stays in Hermes; reusable learning syncs to employee-private Deft Knowledge with provenance; organization-wide promotion follows the locked approval policy; human corrections fence stale runtime copies. |
+
+## Minimum Deft work before the ideal-employee promise
+
+### 1. Make the triggering conversation the primary evidence envelope
+
+- Include the source space, thread, message, task, and relevant participants in
+  a structured event context rather than relying on identifiers embedded in an
+  undifferentiated prompt.
+- Fetch the source thread before broad workspace search when answering a
+  conversation event.
+- Label every retrieved fact with its scope and source. Importing evidence from
+  another space must be explicit and justified.
+- Bound automatic context and wiki recall independently so an unrelated but
+  semantically similar workspace item cannot displace the local conversation.
+
+**Acceptance evidence:** an automated fixture containing plausible conflicting
+facts in another space produces a locally grounded answer with no undisclosed
+cross-space import.
+
+### 2. Make long-run handoff and terminal outcomes truthful
+
+- Send a stable idempotency key on the Hermes response request and reuse it for
+  the same Deft delivery attempt.
+- On an ambiguous response-body or connection failure, perform at most one safe
+  recovery request and never start an uncorrelated second run.
+- Reconcile task state, comments, module mutations, action receipts, and stored
+  runtime correlation before terminalizing the event.
+- Represent `work_completed_handoff_uncertain` separately from both success and
+  failure when durable effects exist but the final human-facing response is
+  unavailable.
+
+**Acceptance evidence:** the BUY-10 failure shape cannot produce duplicate
+writes or a false failure, including when the connection drops after the last
+durable mutation.
+
+### 3. Make Deft task and module contracts executable without guessing
+
+- Return `allowed_next_statuses` with task reads and invalid-transition errors.
+- Use the same generic relation patch on module record creation and update:
+  `relations: { field_key: [record_ids] }`.
+- Apply record fields and relations atomically.
+- Return exact operation input schemas and at least one valid,
+  manifest-derived example, including relation cardinality and value shape.
+- Add these contract probes to employee certification so Contacts is not a
+  special case.
+
+**Acceptance evidence:** a fresh employee creates a linked Contacts activity
+and advances a task to review without schema-error recovery.
+
+### 4. Make distributed onboarding self-verifying
+
+- Deft publishes a release-pinned integration bundle for installation beside
+  any operator-owned Hermes runtime. The bundle contains only the bridge,
+  memory adapter, policy hooks, manifest, and diagnostics.
+- The bridge uses outbound HTTPS to Deft; no inbound runtime port or co-location
+  with the Deft VPS is required.
+- Onboarding preflights requested modules, missing installations, employee
+  access, approval policy, model reachability, and high-level connector
+  availability before showing Ready.
+- Deep certification proves protocol compatibility, employee-bound identity,
+  one event delivery, a real Hermes inference, a Deft MCP call, report-back,
+  private memory recall/writeback, and selected-module read/write access.
+- Certification includes bridge restart persistence. Hermes remains responsible
+  for installing and supervising its gateway.
+- Offline, incompatible, degraded, certifying, and ready are distinct visible
+  states. An offline runtime leaves queued work intact.
+
+**Acceptance evidence:** a clean Hermes install on an independently chosen host
+can connect using only the pinned instructions, pass certification, restart,
+and process the next event without shell repair.
+
+### 5. Complete the governed memory loop
+
+- Scope automatic recall to the triggering task, conversation, people, project,
+  and authorized Knowledge before broad organization recall.
+- Keep working state local to Hermes and sync reusable learning to
+  employee-private Deft Knowledge with stable provenance and replay identity.
+- Promote organization-wide knowledge only under the locked authorization and
+  approval policy.
+- Human edits, deletion, access changes, and newer versions invalidate stale
+  cached runtime context.
+- Reject credentials, untrusted instructions, restricted-space leakage, and
+  unsupported claims at the memory boundary.
+
+**Acceptance evidence:** an implicit-Knowledge task cites the right rule, a
+verified new learning is reusable in a fresh session, a human correction changes
+the next answer, and replay creates no duplicate page.
+
+### 6. Show employee progress and business outcomes clearly
+
+- Persist meaningful milestones in task activity and emit a heartbeat after
+  roughly 60–90 seconds without a milestone.
+- Use chat for results, blockers, approval or assistance requests, and requested
+  updates rather than mirroring every tool call.
+- Show durable business artifacts and receipts independently of runtime health
+  or final-response transport.
+- Preserve immutable employee attribution on generic module writes.
+- Show a high-level runtime capability attestation so people know whether an
+  external connector exists, what Deft policy permits, and what approval is
+  still required.
+
+**Acceptance evidence:** a five-minute research task never appears abandoned,
+does not flood chat, and ends with a truthful artifact-oriented handoff even if
+the runtime subsequently disconnects.
+
+### 7. Certify the promise from clean state
+
+Run the full gauntlet from a fresh Deft seed and fresh Hermes profiles. It must
+include conversation locality, explicit and implicit Knowledge, generic module
+writes, approved external outreach, destructive and identity boundaries,
+approval delay and rejection, duplicate delivery, bridge and Hermes restart,
+credential revocation, memory correction, action-budget exhaustion, delegated
+partial failure, injection resistance, privacy, and secret redaction.
+
+The complete gauntlet must pass twice consecutively with no manual database,
+profile, service, or shell repair. Simple boundary responses should complete in
+under 30 seconds, ordinary internal tasks in under two minutes, and longer work
+must provide useful progress.
+
 ## Delivery order
 
-1. Secure, upgrade, and certify the Rita runtime.
-2. Fix single-flight delivery, identity, readiness, circuit-breaker isolation,
-   wake parity, outcomes, and idempotency.
-3. Ship the Deft memory-provider adapter and automatic wiki recall/writeback.
-4. Ship the Deft employee policy/reporting plugin.
-5. Ship task progress, assistance, approval, and final-report UX.
-6. Run the three end-to-end scenarios and the recovery/security matrix multiple
-   times.
-7. Merge only when the exit gates and invariants pass.
-8. Update the App Protocol boundary language and begin its implementation branch
-   from the newly certified commit.
+1. **Context locality PR:** structured source evidence, scoped retrieval, and
+   contamination fixtures.
+2. **Runtime reconciliation PR:** Hermes idempotency header, bounded ambiguous
+   recovery, durable-outcome reconciliation, and failure injection tests.
+3. **Executable contracts PR:** allowed task transitions, atomic module
+   relations on create/update, examples, and certification fixtures.
+4. **Distributed onboarding PR:** capability/access preflight, release-pinned
+   bundle flow, readiness states, restart proof, and diagnostics.
+5. **Memory-policy PR:** scoped recall, employee-private writeback, promotion,
+   correction fencing, and memory certification.
+6. **Employee experience PR:** progress cadence, assistance/approval UX,
+   outcome cards, attribution, and capability attestation.
+7. **Release-gate PR:** automate the clean-state gauntlet and recovery/security
+   matrix in release and self-host smoke gates.
+8. Deploy the matched Deft release and integration bundle to demo, onboard fresh
+   employees from independently hosted Hermes runtimes, pass the gauntlet twice,
+   merge all required work, and only then use the ideal-employee promise.
 
 ## Definition of done
 

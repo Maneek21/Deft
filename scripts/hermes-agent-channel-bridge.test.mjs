@@ -72,6 +72,56 @@ test('buildEventPrompt preserves the event and pins the employee identity', () =
   assert.doesNotMatch(prompt, /channel-secret/);
 });
 
+test('buildEventPrompt marks the source thread as the primary evidence boundary', () => {
+  const prompt = buildEventPrompt(event, 'maya');
+  const contextLine = prompt
+    .split('\n')
+    .find((line) => line.startsWith('DEFT_PRIMARY_EVIDENCE_JSON='));
+
+  assert.ok(contextLine, 'prompt must include a machine-readable primary evidence envelope');
+  assert.deepEqual(JSON.parse(contextLine.slice('DEFT_PRIMARY_EVIDENCE_JSON='.length)), {
+    event_id: 'event-1',
+    event_kind: 'message.created',
+    source_kind: 'message',
+    source_id: 'message-1',
+    space_id: 'space-1',
+    thread_id: 'thread-1',
+    triggering_message_id: 'message-1',
+    retrieval_query: '@Maya summarize this launch blocker',
+  });
+  assert.match(prompt, /source thread is the primary evidence boundary/i);
+  assert.match(prompt, /fetch the source thread before broad workspace search/i);
+  assert.match(prompt, /label.*outside the source space or thread/i);
+});
+
+test('buildEventPrompt gives task events a bounded task-specific retrieval query', () => {
+  const prompt = buildEventPrompt({
+    ...event,
+    kind: 'task.assigned',
+    source_kind: 'task',
+    source_id: 'task-1',
+    space_id: null,
+    thread_id: null,
+    payload: {
+      task_id: 'task-1',
+      title: 'Research qualified grocers',
+      description: 'Use the buyer criteria and create a sourced shortlist.',
+    },
+  }, 'maya');
+  const contextLine = prompt
+    .split('\n')
+    .find((line) => line.startsWith('DEFT_PRIMARY_EVIDENCE_JSON='));
+  const context = JSON.parse(contextLine.slice('DEFT_PRIMARY_EVIDENCE_JSON='.length));
+
+  assert.equal(context.source_kind, 'task');
+  assert.equal(context.source_id, 'task-1');
+  assert.equal(context.triggering_message_id, null);
+  assert.equal(
+    context.retrieval_query,
+    'Research qualified grocers\nUse the buyer criteria and create a sourced shortlist.',
+  );
+});
+
 test('extractHermesText and parseHermesDecision accept Responses API output', () => {
   const text = extractHermesText({
     output: [{

@@ -339,6 +339,16 @@ describe('platformContext', () => {
     assert.ok(company, 'company memory packet exists');
     assert.ok(channel, 'channel memory packet exists');
     assert.ok(employee, 'employee memory packet exists');
+    assert.equal(
+      packets[0]?.id,
+      `space:${triggeringSpaceId}:memory`,
+      'the current channel must be the first automatic evidence packet',
+    );
+    assert.equal(
+      packets.at(-1)?.id,
+      'company_memory',
+      'broad company memory must follow local and employee-scoped evidence',
+    );
 
     const companyItems = company.items as Array<Record<string, unknown>>;
     const channelItems = channel.items as Array<Record<string, unknown>>;

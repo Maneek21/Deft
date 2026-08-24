@@ -876,7 +876,7 @@ function buildRuntimeSetup(
       tool_server_name: 'deft',
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
       channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
-      integration_version: '0.2.1',
+      integration_version: '0.2.2',
       integration_bundle_url: hermesIntegrationBundleUrl(),
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
