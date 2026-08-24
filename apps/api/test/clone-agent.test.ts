@@ -46,6 +46,10 @@ before(async () => {
   });
   if (!mem) {
     await db.insert(orgMembers).values({ id: crypto.randomUUID(), org_id: testOrgId, user_id: testUserId, role: 'admin' });
+  } else if (mem.role !== 'owner' && mem.role !== 'admin' || !mem.is_active) {
+    await db.update(orgMembers)
+      .set({ role: 'admin', is_active: true })
+      .where(and(eq(orgMembers.user_id, testUserId), eq(orgMembers.org_id, testOrgId)));
   }
 
   // Source employee with one attached skill

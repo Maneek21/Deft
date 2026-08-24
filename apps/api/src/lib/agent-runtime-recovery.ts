@@ -1,5 +1,5 @@
 export type AgentRuntimeRecovery = {
-  state: 'healthy' | 'setup_required' | 'offline' | 'delivery_failed' | 'backlogged' | 'certifying';
+  state: 'ready' | 'setup_required' | 'offline' | 'incompatible' | 'degraded' | 'delivery_failed' | 'backlogged' | 'certifying';
   title: string;
   detail: string;
   action: 'none' | 'regenerate_channel_token' | 'send_channel_test' | 'inspect_queue';
@@ -22,11 +22,23 @@ export function describeAgentRuntimeRecovery(input: {
     detail: 'Generate a channel token, add it to the runtime, then send a test event.',
     action: 'regenerate_channel_token',
   };
+  if (input.connectionStatus === 'incompatible') return {
+    state: 'incompatible',
+    title: 'Runtime integration is incompatible',
+    detail: 'Install the Hermes integration bundle pinned to this Deft release, then restart the channel bridge.',
+    action: 'send_channel_test',
+  };
   if (input.failedDeliveries > 0) return {
     state: 'delivery_failed',
     title: `${input.failedDeliveries} delivery${input.failedDeliveries === 1 ? '' : 'ies'} need attention`,
     detail: 'Inspect the failed event below, retry it after the runtime is healthy, or cancel it if the work is obsolete.',
     action: 'inspect_queue',
+  };
+  if (input.connectionStatus === 'degraded') return {
+    state: 'degraded',
+    title: 'Runtime needs attention',
+    detail: 'The bridge is checking in, but its Hermes runtime preflight or recent work failed. Inspect the runtime health details before assigning more work.',
+    action: 'send_channel_test',
   };
   if (input.connectionStatus !== 'connected' || stale) return {
     state: 'offline',
@@ -47,7 +59,7 @@ export function describeAgentRuntimeRecovery(input: {
     action: 'inspect_queue',
   };
   return {
-    state: 'healthy',
+    state: 'ready',
     title: 'Runtime is ready',
     detail: 'The employee passed the end-to-end check, is connected, and has no delivery failures.',
     action: 'none',

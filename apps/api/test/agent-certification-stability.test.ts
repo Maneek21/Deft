@@ -68,10 +68,10 @@ before(async () => {
     );
     await client.query(
       `INSERT INTO agent_employees
-         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-          runtime_kind, certification_status, is_byoa, is_active, created_by)
+       (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
+          runtime_kind, certification_status, is_byoa, is_active, mcp_token_hash, created_by)
        VALUES ($1, $2, $3, $4, $5, 'project_manager', 'test', 'standard',
-         'hermes', 'token_issued', true, true, $6)`,
+         'hermes', 'token_issued', true, true, 'test-mcp-hash', $6)`,
       [
         AUTH_EMPLOYEE_ID,
         ORG_ID,
@@ -80,6 +80,29 @@ before(async () => {
         AUTH_EMPLOYEE_SLUG,
         ADMIN_USER_ID,
       ],
+    );
+    await client.query(
+      `INSERT INTO agent_channel_tokens
+         (id, org_id, agent_employee_id, name, token_hash, token_prefix, scopes, is_active, created_by)
+       VALUES (gen_random_uuid()::text, $1, $2, 'Certification channel', 'test-channel-hash', 'deft_channel',
+         '["channel:read","channel:write"]'::jsonb, true, $3)`,
+      [ORG_ID, AUTH_EMPLOYEE_ID, ADMIN_USER_ID],
+    );
+    await client.query(
+      `INSERT INTO agent_channel_connections
+         (id, org_id, agent_employee_id, runtime_kind, status, protocol_version, last_seen_at, metadata)
+       VALUES (gen_random_uuid()::text, $1, $2, 'hermes', 'connected', 'deft.agent_channel.v2', now(), $3::jsonb)`,
+      [ORG_ID, AUTH_EMPLOYEE_ID, JSON.stringify({
+        worker_id: 'certification-worker-1',
+        restart_count: 0,
+        runtime_attestation: {
+          schema: 'deft.hermes.runtime_attestation.v1',
+          ready: true,
+          responses_api: true,
+          skills_api: true,
+          enabled_toolsets: [],
+        },
+      })],
     );
     await client.query(
       `INSERT INTO agent_certification_challenges
@@ -325,9 +348,57 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   );
   assert.equal(deepCheckResponse.status, 200);
   const deepCheckBody = await deepCheckResponse.json() as any;
-  assert.equal(deepCheckBody.completed, true);
+  assert.equal(deepCheckBody.completed, false, 'verification waits for a restart and fresh post-restart work');
   assert.equal(deepCheckBody.single_delivery, true);
   assert.equal(deepCheckBody.channel_reply_nonce_seen, true);
+
+  await withClient(async (client) => {
+    await client.query(
+      `UPDATE agent_channel_connections
+       SET metadata = metadata || '{"worker_id":"certification-worker-2","restart_count":1}'::jsonb,
+           last_seen_at = now()
+       WHERE agent_employee_id = $1`,
+      [AUTH_EMPLOYEE_ID],
+    );
+  });
+  const restartCheckResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/check`,
+    { method: 'POST' },
+  );
+  const restartCheckBody = await restartCheckResponse.json() as any;
+  assert.equal(restartCheckBody.restart_detected, true);
+  assert.equal(restartCheckBody.restart_proof_event_seen, false);
+
+  await withClient(async (client) => {
+    const proof = await client.query(
+      `UPDATE agent_channel_events
+       SET status = 'completed', delivery_count = 1, delivered_at = now(), acked_at = now(),
+           completed_at = now(), work_outcome = 'completed', outcome_at = now(),
+           runtime_session_key = 'hermes:certification:restart'
+       WHERE agent_employee_id = $1 AND kind = 'certification.restart_proof'
+       RETURNING id`,
+      [AUTH_EMPLOYEE_ID],
+    );
+    await client.query(
+      `INSERT INTO agent_channel_delivery_attempts
+         (id, org_id, agent_employee_id, event_id, direction, idempotency_key, status, request_json)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'inbound_reply', $4, 'completed', $5::jsonb)`,
+      [
+        ORG_ID,
+        AUTH_EMPLOYEE_ID,
+        proof.rows[0].id,
+        `certification-restart-reply-${startBody.challenge.id}`,
+        JSON.stringify({ content: `Restart proof ${startBody.challenge.nonce}` }),
+      ],
+    );
+  });
+  const finalCheckResponse = await app().request(
+    `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/check`,
+    { method: 'POST' },
+  );
+  const finalCheckBody = await finalCheckResponse.json() as any;
+  assert.equal(finalCheckBody.completed, true);
+  assert.equal(finalCheckBody.restart_proof_completed, true);
 
   const resetResponse = await app().request(
     `/api/agent-employees/${AUTH_EMPLOYEE_ID}/certification/reset`,

@@ -122,6 +122,21 @@ type DeveloperPayload = {
       last_seen_at?: string | null;
       last_event_id?: string | null;
       last_error?: string | null;
+      metadata?: {
+        worker_id?: string;
+        restart_count?: number;
+        last_restart_at?: string | null;
+        runtime_attestation?: {
+          ready?: boolean;
+          hermes_version?: string | null;
+          configured_model?: string | null;
+          responses_api?: boolean;
+          skills_api?: boolean;
+          enabled_toolsets?: string[];
+          checked_at?: string;
+          error_code?: string;
+        };
+      };
     } | null;
     token: {
       token_prefix: string;
@@ -143,7 +158,7 @@ type DeveloperPayload = {
       oldest_open_age_ms: number | null;
     };
     recovery: {
-      state: 'healthy' | 'setup_required' | 'offline' | 'delivery_failed' | 'backlogged';
+      state: 'ready' | 'setup_required' | 'offline' | 'incompatible' | 'degraded' | 'delivery_failed' | 'backlogged' | 'certifying';
       title: string;
       detail: string;
       action: 'none' | 'regenerate_channel_token' | 'send_channel_test' | 'inspect_queue';
@@ -265,7 +280,17 @@ export default function DeveloperPage() {
     setError(null);
     try {
       const res = await api.post(`/api/agent-employees/${employeeId}/certification/${action}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const failure = await res.json().catch(() => null);
+        if (failure?.code === 'ONBOARDING_PREFLIGHT_FAILED') {
+          const failed = failure.preflight?.checks
+            ?.filter((check: { status: string }) => check.status === 'fail')
+            .map((check: { detail: string }) => check.detail)
+            .join(' ');
+          throw new Error(failed || failure.error);
+        }
+        throw new Error(failure?.error || `HTTP ${res.status}`);
+      }
       const payload = await res.json();
       if (action === 'check') {
         const missing = payload.missing_tools?.length ? ` Missing: ${payload.missing_tools.join(', ')}.` : '';
@@ -350,6 +375,15 @@ export default function DeveloperPage() {
     : data.channel.token
       ? 'Token issued, not connected yet'
       : 'No channel token issued';
+  const runtimeAttestation = data.channel.connection?.metadata?.runtime_attestation;
+  const runtimeAttestationLabel = runtimeAttestation
+    ? [
+        runtimeAttestation.ready ? 'ready' : `failed${runtimeAttestation.error_code ? ` (${runtimeAttestation.error_code})` : ''}`,
+        runtimeAttestation.hermes_version ? `Hermes ${runtimeAttestation.hermes_version}` : null,
+        runtimeAttestation.configured_model ? `model ${runtimeAttestation.configured_model}` : null,
+        runtimeAttestation.enabled_toolsets?.length ? `toolsets: ${runtimeAttestation.enabled_toolsets.join(', ')}` : null,
+      ].filter(Boolean).join(' · ')
+    : 'No runtime attestation received';
 
   const claudeDesktopConfig = JSON.stringify(
     {
@@ -409,7 +443,7 @@ export default function DeveloperPage() {
       )}
       {error && <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">{error}</div>}
 
-      <div className={`mb-4 rounded border px-3 py-2 text-xs ${data.channel.recovery.state === 'healthy' ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/30 bg-amber-500/10'}`}>
+      <div className={`mb-4 rounded border px-3 py-2 text-xs ${data.channel.recovery.state === 'ready' ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/30 bg-amber-500/10'}`}>
         <div className="font-medium">{data.channel.recovery.title}</div>
         <div className="mt-0.5 text-muted-foreground">{data.channel.recovery.detail}</div>
         {data.channel.recovery.action === 'regenerate_channel_token' && (
@@ -433,6 +467,14 @@ export default function DeveloperPage() {
         <Field
           label="Runtime"
           value={`${data.employee.runtime_kind ?? 'custom_mcp'} / ${data.employee.wake_mode ?? 'manual'}`}
+        />
+        <Field
+          label="Runtime attestation"
+          value={runtimeAttestationLabel}
+        />
+        <Field
+          label="Bridge restart proof"
+          value={`${data.channel.connection?.metadata?.restart_count ?? 0} reconnect${(data.channel.connection?.metadata?.restart_count ?? 0) === 1 ? '' : 's'} recorded`}
         />
         <Field
           label="Job title"

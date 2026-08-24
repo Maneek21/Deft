@@ -22,12 +22,14 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'identity_bound_mcp',
   'wiki_memory_sync_v1',
   'runtime_reconciliation_v1',
+  'runtime_attestation_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
   'fencing_tokens',
   'terminal_outcomes',
   'runtime_reconciliation_v1',
+  'runtime_attestation_v1',
 ] as const;
 export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.7';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
@@ -251,14 +253,40 @@ export async function publishAgentChannelEvent(input: PublishAgentChannelEventIn
 export async function touchAgentChannelConnection(
   principal: AgentChannelPrincipal,
   opts?: {
-    status?: 'connected' | 'degraded' | 'disconnected';
+    status?: 'connected' | 'degraded' | 'disconnected' | 'incompatible';
     lastEventId?: string | null;
     lastError?: string | null;
     metadata?: Record<string, unknown>;
+    workerId?: string | null;
   },
 ) {
   const now = new Date();
   const id = crypto.randomUUID();
+  const insertMetadata = {
+    ...(opts?.metadata ?? {}),
+    ...(opts?.workerId ? { worker_id: opts.workerId, restart_count: 0 } : {}),
+  };
+  const mergedMetadata = opts?.workerId
+    ? sql`coalesce(${agentChannelConnections.metadata}, '{}'::jsonb)
+        || ${JSON.stringify(opts.metadata ?? {})}::jsonb
+        || jsonb_build_object(
+          'worker_id', cast(${opts.workerId} as text),
+          'restart_count', case
+            when coalesce(${agentChannelConnections.metadata}->>'worker_id', '') <> ''
+              and ${agentChannelConnections.metadata}->>'worker_id' <> cast(${opts.workerId} as text)
+            then coalesce((${agentChannelConnections.metadata}->>'restart_count')::integer, 0) + 1
+            else coalesce((${agentChannelConnections.metadata}->>'restart_count')::integer, 0)
+          end,
+          'last_restart_at', case
+            when coalesce(${agentChannelConnections.metadata}->>'worker_id', '') <> ''
+              and ${agentChannelConnections.metadata}->>'worker_id' <> cast(${opts.workerId} as text)
+            then cast(${now.toISOString()} as text)
+            else ${agentChannelConnections.metadata}->>'last_restart_at'
+          end
+        )`
+    : opts?.metadata
+      ? sql`coalesce(${agentChannelConnections.metadata}, '{}'::jsonb) || ${JSON.stringify(opts.metadata)}::jsonb`
+      : sql`${agentChannelConnections.metadata}`;
   const [connection] = await db
     .insert(agentChannelConnections)
     .values({
@@ -271,7 +299,7 @@ export async function touchAgentChannelConnection(
       last_seen_at: now,
       last_event_id: opts?.lastEventId ?? null,
       last_error: opts?.lastError ?? null,
-      metadata: opts?.metadata ?? {},
+      metadata: insertMetadata,
     })
     .onConflictDoUpdate({
       target: [
@@ -285,7 +313,7 @@ export async function touchAgentChannelConnection(
         last_seen_at: now,
         last_event_id: opts?.lastEventId ?? sql`${agentChannelConnections.last_event_id}`,
         last_error: opts?.lastError ?? null,
-        metadata: opts?.metadata ?? sql`${agentChannelConnections.metadata}`,
+        metadata: mergedMetadata,
         updated_at: now,
       },
     })

@@ -9,7 +9,7 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_HEARTBEAT_MS = 60000;
 const DEFAULT_LEASE_MS = 120000;
-export const HERMES_DEFT_ADAPTER_VERSION = '0.2.4';
+export const HERMES_DEFT_ADAPTER_VERSION = '0.3.0';
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
 export const AGENT_CHANNEL_CAPABILITIES = [
   'single_flight_claims',
@@ -19,6 +19,7 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'identity_bound_mcp',
   'wiki_memory_sync_v1',
   'runtime_reconciliation_v1',
+  'runtime_attestation_v1',
 ];
 export const AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES = [
   'single_flight_claims',
@@ -27,6 +28,7 @@ export const AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES = [
   'terminal_outcomes',
   'identity_bound_mcp',
   'runtime_reconciliation_v1',
+  'runtime_attestation_v1',
 ];
 
 export class AgentChannelCompatibilityError extends Error {
@@ -316,13 +318,50 @@ export class HermesAgentChannelBridge {
   async connect() {
     const query = new URLSearchParams({
       caller_employee_slug: this.config.employeeSlug,
+      worker_id: this.config.workerId,
       ...this.compatibilityParams(),
     });
     const connection = await this.channel(`/connect?${query.toString()}`);
     return this.validateConnection(connection);
   }
 
-  async status(state, eventId = null, detail = null) {
+  async preflightHermesRuntime() {
+    const headers = { Authorization: `Bearer ${this.config.hermesApiKey}` };
+    const [health, models, capabilities, toolsets] = await Promise.all([
+      this.request(`${this.config.hermesApiUrl}/health`, {}, { retry: false }),
+      this.request(`${this.config.hermesApiUrl}/v1/models`, { headers }, { retry: false }),
+      this.request(`${this.config.hermesApiUrl}/v1/capabilities`, { headers }, { retry: false }),
+      this.request(`${this.config.hermesApiUrl}/v1/toolsets`, { headers }, { retry: false }),
+    ]);
+    const availableModels = [...new Set((Array.isArray(models?.data) ? models.data : [])
+      .map((model) => typeof model?.id === 'string' ? model.id.trim() : '')
+      .filter(Boolean))].slice(0, 20);
+    const enabledToolsets = [...new Set((Array.isArray(toolsets?.data) ? toolsets.data : [])
+      .filter((toolset) => toolset?.enabled === true && toolset?.configured === true)
+      .map((toolset) => typeof toolset?.name === 'string' ? toolset.name.trim().slice(0, 64) : '')
+      .filter(Boolean))].sort().slice(0, 50);
+    const responsesApi = capabilities?.features?.responses_api === true;
+    const skillsApi = capabilities?.features?.skills_api === true;
+    if (health?.status !== 'ok' || availableModels.length === 0 || !responsesApi || !skillsApi) {
+      const error = new Error('Hermes runtime is reachable but required health, model, Responses API, or skills capability is unavailable.');
+      error.code = 'HERMES_CAPABILITY_MISSING';
+      throw error;
+    }
+
+    return {
+      schema: 'deft.hermes.runtime_attestation.v1',
+      ready: true,
+      checked_at: new Date(this.now()).toISOString(),
+      hermes_version: typeof health?.version === 'string' ? health.version.slice(0, 64) : null,
+      configured_model: this.config.hermesModel,
+      available_models: availableModels,
+      responses_api: responsesApi,
+      skills_api: skillsApi,
+      enabled_toolsets: enabledToolsets,
+    };
+  }
+
+  async status(state, eventId = null, detail = null, options = {}) {
     return this.channel('/status', {
       method: 'POST',
       body: JSON.stringify({
@@ -331,6 +370,8 @@ export class HermesAgentChannelBridge {
         claim_token: eventId ? this.currentClaimToken : undefined,
         lease_ms: eventId ? this.config.leaseMs : undefined,
         detail,
+        worker_id: this.config.workerId,
+        attestation: options.attestation,
         caller_employee_slug: this.config.employeeSlug,
       }),
     });
@@ -575,7 +616,7 @@ export class HermesAgentChannelBridge {
       connection = await this.connect();
     } catch (error) {
       if (error?.code === 'INCOMPATIBLE_CHANNEL') {
-        await this.status('error', null, error instanceof Error ? error.message : String(error)).catch(() => {});
+        await this.status('incompatible', null, error instanceof Error ? error.message : String(error)).catch(() => {});
       }
       await this.writeHealth(error?.code === 'INCOMPATIBLE_CHANNEL' ? 'incompatible' : 'degraded', {
         last_error_code: error?.code ?? 'CONNECT_FAILED',
@@ -584,11 +625,28 @@ export class HermesAgentChannelBridge {
       throw error;
     }
     this.log.info?.(`[deft-channel] connected as ${connection.employee?.slug ?? this.config.employeeSlug}`);
+    let runtimeAttestation;
+    try {
+      runtimeAttestation = await this.preflightHermesRuntime();
+      await this.status('idle', null, 'Hermes runtime preflight passed.', { attestation: runtimeAttestation });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+      runtimeAttestation = {
+        schema: 'deft.hermes.runtime_attestation.v1',
+        ready: false,
+        checked_at: new Date(this.now()).toISOString(),
+        error_code: error?.code ?? 'HERMES_PREFLIGHT_FAILED',
+      };
+      await this.status('degraded', null, detail, { attestation: runtimeAttestation }).catch(() => {});
+      await this.writeHealth('degraded', { last_error_code: runtimeAttestation.error_code, last_error: detail });
+      throw error;
+    }
     await this.writeHealth('healthy', {
       server_release: connection.server_release ?? null,
       server_commit: connection.server_commit ?? null,
       schema_head: connection.schema_head ?? null,
       last_success_at: new Date(this.now()).toISOString(),
+      runtime_attestation: runtimeAttestation,
     });
     do {
       try {

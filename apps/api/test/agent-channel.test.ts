@@ -495,7 +495,8 @@ function channelCompatibilityQuery() {
   return new URLSearchParams({
     protocol_version: 'deft.agent_channel.v2',
     adapter_version: '0.2.0-test',
-    capabilities: 'single_flight_claims,renewable_leases,fencing_tokens,terminal_outcomes,identity_bound_mcp,wiki_memory_sync_v1,runtime_reconciliation_v1',
+    capabilities: 'single_flight_claims,renewable_leases,fencing_tokens,terminal_outcomes,identity_bound_mcp,wiki_memory_sync_v1,runtime_reconciliation_v1,runtime_attestation_v1',
+    worker_id: 'channel-test-worker',
   }).toString();
 }
 
@@ -532,10 +533,11 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.ok(body.capabilities.includes('fencing_tokens'));
   assert.ok(body.required_runtime_capabilities.includes('terminal_outcomes'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_reconciliation_v1'));
+  assert.ok(body.required_runtime_capabilities.includes('runtime_attestation_v1'));
 });
 
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
-  const res = await app.request('/api/agent-channel/v1/connect?protocol_version=deft.agent_channel.v1&adapter_version=0.1.0&capabilities=terminal_outcomes', {
+  const res = await app.request('/api/agent-channel/v1/connect?protocol_version=deft.agent_channel.v1&adapter_version=0.1.0&capabilities=terminal_outcomes&worker_id=legacy-worker', {
     headers: { authorization: `Bearer ${bearer}` },
   });
   const body = await res.json() as any;
@@ -543,6 +545,46 @@ test('GET /connect rejects a legacy runtime before recording it as connected', a
   assert.equal(body.code, 'INCOMPATIBLE_CHANNEL');
   assert.equal(body.protocol_version, 'deft.agent_channel.v2');
   assert.ok(body.capabilities.includes('fencing_tokens'));
+
+  const [connection] = await db.select().from(agentChannelConnections)
+    .where(eq(agentChannelConnections.agent_employee_id, employeeId)).limit(1);
+  assert.equal(connection?.status, 'incompatible');
+});
+
+test('POST /status persists a bounded runtime attestation and reconnect count', async () => {
+  const reconnect = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery().replace('channel-test-worker', 'replacement-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(reconnect.status, 200, await reconnect.text());
+
+  const res = await app.request('/api/agent-channel/v1/status', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      state: 'idle',
+      worker_id: 'replacement-worker',
+      attestation: {
+        schema: 'deft.hermes.runtime_attestation.v1',
+        ready: true,
+        checked_at: '2026-08-24T12:00:00.000Z',
+        hermes_version: '0.16.0',
+        configured_model: 'Maya',
+        available_models: ['Maya'],
+        responses_api: true,
+        skills_api: true,
+        enabled_toolsets: ['web'],
+      },
+    }),
+  });
+  assert.equal(res.status, 200, await res.text());
+
+  const [connection] = await db.select().from(agentChannelConnections)
+    .where(eq(agentChannelConnections.agent_employee_id, employeeId)).limit(1);
+  const metadata = connection?.metadata as Record<string, any>;
+  assert.equal(metadata.worker_id, 'replacement-worker');
+  assert.ok(metadata.restart_count >= 1);
+  assert.equal(metadata.runtime_attestation.hermes_version, '0.16.0');
+  assert.deepEqual(metadata.runtime_attestation.enabled_toolsets, ['web']);
 });
 
 test('GET /events returns pending events once and marks them delivered', async () => {
