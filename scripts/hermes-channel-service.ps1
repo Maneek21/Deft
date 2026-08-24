@@ -50,6 +50,26 @@ function Protect-Config([string]$Path) {
   if ($LASTEXITCODE -ne 0) { throw "Could not protect service config: $Path" }
 }
 
+function Get-UtcAgeSeconds([object]$Timestamp) {
+  if (-not $Timestamp) { return $null }
+  try {
+    $parsed = if ($Timestamp -is [DateTimeOffset]) {
+      $Timestamp
+    } elseif ($Timestamp -is [datetime]) {
+      [DateTimeOffset]$Timestamp
+    } else {
+      [DateTimeOffset]::Parse(
+        [string]$Timestamp,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+      )
+    }
+    return [Math]::Max(0, [Math]::Round(([DateTimeOffset]::UtcNow - $parsed.ToUniversalTime()).TotalSeconds))
+  } catch {
+    return $null
+  }
+}
+
 function Get-ServiceProcess {
   Get-CimInstance Win32_Process | Where-Object {
     $_.Name -eq 'node.exe' -and $_.CommandLine -like "*$bridgeTarget*"
@@ -139,10 +159,8 @@ switch ($Action) {
     $logAgeSeconds = if ($logItem) {
       [Math]::Round(((Get-Date) - $logItem.LastWriteTime).TotalSeconds)
     } else { $null }
-    $healthAgeSeconds = if ($health -and $health.checked_at) {
-      [Math]::Round(((Get-Date) - [datetime]$health.checked_at).TotalSeconds)
-    } else { $null }
-    $semanticallyHealthy = $health -and $health.state -eq 'healthy' -and $healthAgeSeconds -le 180
+    $healthAgeSeconds = if ($health) { Get-UtcAgeSeconds $health.checked_at } else { $null }
+    $semanticallyHealthy = $health -and $health.state -eq 'healthy' -and $null -ne $healthAgeSeconds -and $healthAgeSeconds -le 180
     [pscustomobject]@{
       Installed = [bool]$task
       Healthy = [bool]($task -and $taskState -eq 'Running' -and $processes.Count -eq 1 -and $semanticallyHealthy)
@@ -171,7 +189,8 @@ switch ($Action) {
     $health = if (Test-Path -LiteralPath $healthPath) {
       try { Get-Content -LiteralPath $healthPath -Raw | ConvertFrom-Json } catch { $null }
     } else { $null }
-    $healthIsFresh = $health -and $health.state -eq 'healthy' -and ((Get-Date) - [datetime]$health.checked_at).TotalSeconds -le 180
+    $healthAgeSeconds = if ($health) { Get-UtcAgeSeconds $health.checked_at } else { $null }
+    $healthIsFresh = $health -and $health.state -eq 'healthy' -and $null -ne $healthAgeSeconds -and $healthAgeSeconds -le 180
     if ([string]$task.State -ne 'Running' -or @(Get-ServiceProcess).Count -ne 1 -or -not $healthIsFresh) {
       Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
       Stop-ServiceProcesses

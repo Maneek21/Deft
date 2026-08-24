@@ -3,10 +3,22 @@ param(
   [string]$ServiceRoot = (Join-Path $env:LOCALAPPDATA 'Deft\hermes-channel'),
   [int]$RestartDelaySeconds = 5,
   [int]$MaxLogSizeMB = 10,
-  [string]$MutexName = 'Local\DeftHermesAgentChannel'
+  [string]$MutexName
 )
 
 $ErrorActionPreference = 'Stop'
+$resolvedServiceRoot = [IO.Path]::GetFullPath($ServiceRoot).TrimEnd('\', '/')
+if (-not $MutexName) {
+  $normalizedServiceRoot = $resolvedServiceRoot.ToLowerInvariant()
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $hashBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedServiceRoot))
+  } finally {
+    $sha256.Dispose()
+  }
+  $serviceInstanceHash = ([BitConverter]::ToString($hashBytes)).Replace('-', '').Substring(0, 16)
+  $MutexName = "Local\DeftHermesAgentChannel-$serviceInstanceHash"
+}
 $configPath = Join-Path $ServiceRoot 'service.env'
 $bridgePath = Join-Path $ServiceRoot 'hermes-agent-channel-bridge.mjs'
 $logPath = Join-Path $ServiceRoot 'service.log'
