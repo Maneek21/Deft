@@ -42,8 +42,8 @@ Tagged preview releases also publish an amd64 image to
 the same image works on localhost or a custom domain.
 
 For a named release, download `docker-compose.yml`, `compose.prod.yml`,
-`compose.release.yml`, and `.env.example` from the GitHub release into one
-directory. Then set:
+`compose.release.yml`, and `default.env.example` from the GitHub release into
+one directory. Copy `default.env.example` to `.env`, then set:
 
 ```bash
 DEFT_IMAGE=ghcr.io/maneek21/deft:<release-version>
@@ -66,7 +66,7 @@ upgrade baseline. Release-tagged images are signed by the release workflow and
 carry GitHub build provenance. Verify the digest before deploying it:
 
 ```bash
-export TAG=v0.3.0-preview.8
+export TAG=v0.3.0-preview.9
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"

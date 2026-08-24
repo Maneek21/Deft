@@ -111,7 +111,7 @@ image/signature steps did not complete. If the published image itself is
 unusable, fix forward and cut the next preview tag.
 
 Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
-`THIRD-PARTY-LICENSES.md`, `.env.example`, the source archive, SBOM,
+`THIRD-PARTY-LICENSES.md`, `default.env.example`, the source archive, SBOM,
 checksums, and compose files. Confirm the image label
 `org.opencontainers.image.licenses=AGPL-3.0-only` (the production
 `Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).

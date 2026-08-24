@@ -10,6 +10,14 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.9] — 2026-08-24
+
+### Fixed
+
+- GitHub releases publish the environment template as
+  `default.env.example`, and `SHA256SUMS` now records that exact downloadable
+  filename instead of an unavailable leading-dot name.
+
 ## [0.3.0-preview.8] — 2026-08-24
 
 ### Added
@@ -317,7 +325,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.8...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.9...HEAD
+[0.3.0-preview.9]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.9
 [0.3.0-preview.8]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.8
 [0.3.0-preview.7]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.7
 [0.3.0-preview.6]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.6

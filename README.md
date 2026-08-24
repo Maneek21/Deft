@@ -127,7 +127,7 @@ See [docs/self-hosting.md](docs/self-hosting.md) for environment variables, HTTP
 ### Run a named preview image
 
 Preview releases also publish an amd64 image to GHCR. Download the release
-assets, copy `.env.example` to `.env`, set the required secrets and public
+assets, copy `default.env.example` to `.env`, set the required secrets and public
 URLs, then run:
 
 Choose a release whose notes identify it as `AGPL-3.0-only`, then set its
@@ -136,7 +136,7 @@ BSL 1.1 license included in those revisions; relicensing this source tree does
 not retroactively change old tags or images.
 
 ```bash
-export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.8
+export DEFT_IMAGE=ghcr.io/maneek21/deft:0.3.0-preview.9
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml pull
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml up -d postgres
 docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml run --rm init
