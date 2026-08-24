@@ -236,7 +236,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp docker-compose.yml compose.prod.yml compose.release.yml .env.example LICENSE NOTICE THIRD-PARTY-LICENSES.md dist/
+          cp docker-compose.yml compose.prod.yml compose.release.yml LICENSE NOTICE THIRD-PARTY-LICENSES.md dist/
+          # GitHub release assets cannot retain a leading dot reliably. Publish
+          # the template under a stable explicit name so downloaded checksums
+          # match the asset name on every client.
+          cp .env.example dist/default.env.example
           cat > dist/release-manifest.json <<JSON
           {
             "schema": "deft.release.v1",
@@ -282,7 +286,7 @@ jobs:
 
       - name: Generate checksums
         shell: bash
-        run: (cd dist && sha256sum -- * .env.example > SHA256SUMS)
+        run: (cd dist && sha256sum -- * > SHA256SUMS)
 
       - name: Create GitHub release
         env:
@@ -292,5 +296,4 @@ jobs:
         run: |
           args=(--repo "$GITHUB_REPOSITORY" --title "Deft ${{ steps.release.outputs.tag }}" --generate-notes --verify-tag)
           [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
-          # dist/* does not match dotfiles; attach .env.example explicitly.
-          gh release create "${{ steps.release.outputs.tag }}" dist/* dist/.env.example "${args[@]}"
+          gh release create "${{ steps.release.outputs.tag }}" dist/* "${args[@]}"

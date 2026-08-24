@@ -59,3 +59,9 @@ test('release publication is blocked on a two-pass clean-state Hermes employee c
   const publication = position('publish:');
   assert.ok(certification < publication);
 });
+
+test('release environment template has a downloadable checksum-stable name', () => {
+  assert.match(workflow, /cp \.env\.example dist\/default\.env\.example/);
+  assert.match(workflow, /\(cd dist && sha256sum -- \* > SHA256SUMS\)/);
+  assert.doesNotMatch(workflow, /dist\/\.env\.example/);
+});
