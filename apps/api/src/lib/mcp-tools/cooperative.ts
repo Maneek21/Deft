@@ -168,6 +168,8 @@ export async function requestHumanApproval(
       org_id: ctx.org_id,
       user_id: emp.created_by,
       agent_employee_id: ctx.employee_id,
+      channel_event_id: ctx.channel_event_id,
+      runtime_request_key: ctx.runtime_request_key,
       message_id: sourceMessageId,
       source: 'mcp',
       action: normalized.action,

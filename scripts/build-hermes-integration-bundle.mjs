@@ -38,6 +38,7 @@ for (const [source, target] of files) {
 
 const readme = `# Deft Hermes integration ${manifest.integration_version}\n\n` +
   `This immutable boundary bundle is for Deft ${manifest.deft_release} and Agent Channel ${manifest.agent_channel_protocols.join(', ')}.\n\n` +
+  `It requires Hermes ${manifest.hermes_compatibility}; that runtime floor provides idempotent Responses requests for safe long-run recovery.\n\n` +
   'It contains only Deft MCP, delivery, identity, and memory-sync adapters. Hermes remains responsible for reasoning, external tools, MCP servers, skills, browser/computer use, and model configuration.\n\n' +
   'Install the two bundled plugins in the active Hermes profile, configure the bundled stdio bridge, then run scripts/hermes-agent-channel-bridge.mjs beside the authenticated Hermes gateway. The bridge fails closed if the Deft server is incompatible.\n';
 await writeFile(join(outputRoot, 'README.md'), readme, 'utf8');

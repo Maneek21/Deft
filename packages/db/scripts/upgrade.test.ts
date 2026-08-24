@@ -492,6 +492,27 @@ test('wiki memory sync schema converges across fresh installs and supported upgr
   assert.match(upgradeSql, /page_version/i);
 });
 
+test('runtime reconciliation outcome converges across fresh installs and supported upgrades', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.7',
+  );
+  assert.ok(migration, 'runtime reconciliation migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(
+    resolve(scriptsDir, '..', 'drizzle', '0085_agent_channel_runtime_reconciliation.sql'),
+    'utf8',
+  );
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0085_agent_channel_runtime_reconciliation\.sql'/);
+  assert.match(upgradeSql, /ADD COLUMN IF NOT EXISTS channel_event_id text/i);
+  assert.match(upgradeSql, /agent_action_runtime_request_idx/i);
+  assert.match(upgradeSql, /agent_channel_attempt_active_runtime_unique/i);
+  assert.match(upgradeSql, /work_completed_handoff_uncertain/i);
+});
+
 test('Agent Channel v2 is the fresh-install default and supported upgrade boundary', () => {
   const migration = upgradeManifest.migrations.find(
     (item) => item.version === '0.3.0-preview.6',

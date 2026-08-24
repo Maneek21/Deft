@@ -16,6 +16,7 @@ const event = {
   space_id: 'space-1',
   thread_id: 'thread-1',
   claim_token: 'claim-event-1',
+  delivery_count: 1,
   payload: { content: '@Maya summarize this launch blocker', reply_thread_id: 'thread-1' },
 };
 
@@ -57,6 +58,7 @@ const compatibleConnection = {
     'terminal_outcomes',
     'identity_bound_mcp',
     'wiki_memory_sync_v1',
+    'runtime_reconciliation_v1',
   ],
   employee: { slug: 'maya' },
 };
@@ -176,6 +178,7 @@ test('processEvent acks, marks working, invokes Hermes, replies once, and return
   assert.equal(calls[4].body.state, 'idle');
   assert.equal('event_id' in calls[4].body, false);
   assert.equal(calls[2].init.headers['X-Hermes-Session-Key'], 'deft:maya:thread-1');
+  assert.equal(calls[2].init.headers['Idempotency-Key'], 'deft-channel:event-1:attempt:1');
 });
 
 test('processEvent reports runtime failures to the channel', async () => {
@@ -192,18 +195,79 @@ test('processEvent reports runtime failures to the channel', async () => {
   assert.equal(terminalCalls[1].body.state, 'degraded');
 });
 
-test('processEvent does not replay an ambiguous Hermes transport failure', async () => {
-  let inferenceAttempts = 0;
-  const fetchImpl = async (url) => {
+test('processEvent safely recovers an ambiguous Hermes transport failure with the same request identity', async () => {
+  const responseByKey = new Map();
+  const requestKeys = [];
+  let inferenceExecutions = 0;
+  let responseAttempts = 0;
+  const fetchImpl = async (url, init = {}) => {
     if (url.includes('/v1/responses')) {
-      inferenceAttempts += 1;
-      throw new Error('connection closed after request');
+      responseAttempts += 1;
+      const key = init.headers['Idempotency-Key'];
+      requestKeys.push(key);
+      if (!responseByKey.has(key)) {
+        inferenceExecutions += 1;
+        responseByKey.set(key, {
+          id: 'resp-recovered',
+          output_text: '{"reply":"The buyer record is updated.","summary":"Updated BUY-10.","outcome":"completed"}',
+        });
+        throw new Error('connection closed after request');
+      }
+      return jsonResponse(responseByKey.get(key));
     }
     return jsonResponse({ ok: true });
   };
-  const bridge = new HermesAgentChannelBridge(config(), { fetchImpl, logger: { info() {}, error() {} } });
-  await assert.rejects(() => bridge.processEvent(event), /connection closed after request/);
-  assert.equal(inferenceAttempts, 1);
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl,
+    sleep: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await bridge.processEvent(event);
+
+  assert.equal(result.responseId, 'resp-recovered');
+  assert.equal(responseAttempts, 2, 'one bounded recovery request is allowed');
+  assert.equal(inferenceExecutions, 1, 'Hermes must join/cache the original idempotent run');
+  assert.deepEqual(requestKeys, [
+    'deft-channel:event-1:attempt:1',
+    'deft-channel:event-1:attempt:1',
+  ]);
+});
+
+test('processEvent reports a reconciled uncertain handoff instead of a false failure', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ url, init, body });
+    if (url.includes('/v1/responses')) throw new Error('connection closed after durable work');
+    if (url.endsWith('/reconcile')) {
+      return jsonResponse({
+        ok: true,
+        has_durable_effects: true,
+        effects: {
+          task_comments: { count: 1, ids: ['comment-1'] },
+          agent_actions: { count: 1, ids: ['action-1'] },
+        },
+      });
+    }
+    return jsonResponse({ ok: true });
+  };
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl,
+    sleep: async () => {},
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await bridge.processEvent(event);
+
+  assert.equal(result.decision.outcome, 'work_completed_handoff_uncertain');
+  const reconcileCall = calls.find((call) => call.url.endsWith('/reconcile'));
+  assert.equal(reconcileCall.body.runtime_request_key, 'deft-channel:event-1:attempt:1');
+  const terminalAck = calls.find((call) => call.url.endsWith('/ack')
+    && call.body.state === 'work_completed_handoff_uncertain');
+  assert.ok(terminalAck);
+  assert.equal(terminalAck.body.runtime_request_key, 'deft-channel:event-1:attempt:1');
+  assert.equal(calls.some((call) => call.url.endsWith('/ack') && call.body.state === 'failed'), false);
 });
 
 test('top-level DM replies stay in the main conversation instead of opening a thread', async () => {

@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
   agentChannelCursors,
+  agentChannelDeliveryAttempts,
   agentChannelEvents,
   agentChannelTokens,
   agentEmployees,
@@ -20,18 +21,50 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'terminal_outcomes',
   'identity_bound_mcp',
   'wiki_memory_sync_v1',
+  'runtime_reconciliation_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
   'fencing_tokens',
   'terminal_outcomes',
+  'runtime_reconciliation_v1',
 ] as const;
 export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.7';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
-export const DEFT_SCHEMA_HEAD = '0.3.0-preview.6';
+export const DEFT_SCHEMA_HEAD = '0.3.0-preview.7';
 export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
 export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
 export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
+
+export async function getActiveAgentChannelRuntimeCorrelation(
+  orgId: string,
+  employeeId: string,
+): Promise<{ channel_event_id: string; runtime_request_key: string } | null> {
+  const rows = await db.select({
+    channel_event_id: agentChannelEvents.id,
+    runtime_request_key: agentChannelDeliveryAttempts.idempotency_key,
+  })
+    .from(agentChannelDeliveryAttempts)
+    .innerJoin(agentChannelEvents, and(
+      eq(agentChannelEvents.id, agentChannelDeliveryAttempts.event_id),
+      eq(agentChannelEvents.org_id, agentChannelDeliveryAttempts.org_id),
+      eq(agentChannelEvents.agent_employee_id, agentChannelDeliveryAttempts.agent_employee_id),
+    ))
+    .where(and(
+      eq(agentChannelDeliveryAttempts.org_id, orgId),
+      eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+      eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
+      eq(agentChannelDeliveryAttempts.status, 'started'),
+      sql`${agentChannelEvents.lease_expires_at} > now()`,
+    ))
+    .orderBy(desc(agentChannelDeliveryAttempts.created_at))
+    .limit(2);
+  if (rows.length !== 1 || !rows[0]?.runtime_request_key) return null;
+  return {
+    channel_event_id: rows[0].channel_event_id,
+    runtime_request_key: rows[0].runtime_request_key,
+  };
+}
 
 function boundedLeaseMs(value?: number) {
   if (!Number.isFinite(value)) return AGENT_CHANNEL_DEFAULT_LEASE_MS;

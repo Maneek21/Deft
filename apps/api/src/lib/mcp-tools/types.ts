@@ -19,6 +19,8 @@ export type ToolContext = {
   employee_id: string;
   employee_slug: string;
   trust_level: TrustLevel;
+  channel_event_id?: string;
+  runtime_request_key?: string;
 };
 
 export type ToolTextContent = { type: 'text'; text: string };

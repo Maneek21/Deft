@@ -28,11 +28,15 @@ import {
   spaceMembers,
   spaces,
   taskActivity,
+  taskComments,
   tasks,
   users,
 } from '@deft/db';
 import { agentChannelRoutes } from '../src/routes/agent-channel.js';
-import { publishAgentChannelEvent } from '../src/lib/agent-channel.js';
+import {
+  getActiveAgentChannelRuntimeCorrelation,
+  publishAgentChannelEvent,
+} from '../src/lib/agent-channel.js';
 import { loadAgentActivity } from '../src/lib/agent-activity.js';
 import { projectRoutes } from '../src/routes/projects.js';
 import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
@@ -173,6 +177,7 @@ after(async () => {
     await db.delete(actionReceipts).where(eq(actionReceipts.employee_id, employeeId));
     await db.delete(agentActions).where(eq(agentActions.org_id, orgId));
     await db.delete(notifications).where(eq(notifications.org_id, orgId));
+    await db.delete(taskComments).where(eq(taskComments.org_id, orgId));
     await db.delete(taskActivity).where(eq(taskActivity.org_id, orgId));
     await db.delete(tasks).where(eq(tasks.org_id, orgId));
     await db.execute(sql`DELETE FROM job_queue WHERE data->>'orgId' = ${orgId}`);
@@ -490,7 +495,7 @@ function channelCompatibilityQuery() {
   return new URLSearchParams({
     protocol_version: 'deft.agent_channel.v2',
     adapter_version: '0.2.0-test',
-    capabilities: 'single_flight_claims,renewable_leases,fencing_tokens,terminal_outcomes,identity_bound_mcp,wiki_memory_sync_v1',
+    capabilities: 'single_flight_claims,renewable_leases,fencing_tokens,terminal_outcomes,identity_bound_mcp,wiki_memory_sync_v1,runtime_reconciliation_v1',
   }).toString();
 }
 
@@ -526,6 +531,7 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.equal(body.protocol_version, 'deft.agent_channel.v2');
   assert.ok(body.capabilities.includes('fencing_tokens'));
   assert.ok(body.required_runtime_capabilities.includes('terminal_outcomes'));
+  assert.ok(body.required_runtime_capabilities.includes('runtime_reconciliation_v1'));
 });
 
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
@@ -680,6 +686,284 @@ test('POST /ack records received/completed state and cursor', async () => {
   assert.equal(closedFallback?.approval_status, 'approved');
   assert.ok(closedFallback?.executed_at);
   assert.equal((closedFallback?.result as any)?.channel_event_id, event.id);
+});
+
+test('runtime reconciliation preserves completed work when the final Hermes handoff is ambiguous', async () => {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 9001,
+    title: 'Reconcile the BUY-10 handoff',
+    status: 'in_progress',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const { event } = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `agent-channel-reconcile-${crypto.randomUUID()}`,
+    payload: { task_id: taskId, title: 'Reconcile the BUY-10 handoff' },
+  });
+  const claimed = await claimChannelEvent(event.id, 'reconcile-worker');
+  const runtimeRequestKey = `deft-channel:${event.id}:attempt:${claimed.delivery_count}`;
+
+  const received = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'received',
+      claim_token: claimed.claim_token,
+      runtime_session_key: 'deft:channel-agent:buy-10',
+      runtime_request_key: runtimeRequestKey,
+    }),
+  });
+  assert.equal(received.status, 200, await received.text());
+  const activeCorrelation = await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId);
+  assert.ok(activeCorrelation);
+  assert.deepEqual(activeCorrelation, {
+    channel_event_id: event.id,
+    runtime_request_key: runtimeRequestKey,
+  });
+
+  const [action] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: agentUserId,
+    agent_employee_id: employeeId,
+    ...activeCorrelation,
+    source: 'mcp',
+    action: 'module_record_update',
+    params: { record: 'BUY-10' },
+    approval_tier: 'auto',
+    approval_status: 'approved',
+    approved_at: new Date(),
+    executed_at: new Date(),
+    result: { record_id: 'BUY-10' },
+  }).returning({ id: agentActions.id });
+  await db.insert(actionReceipts).values({
+    org_id: orgId,
+    action_id: action!.id,
+    employee_id: employeeId,
+    proposer: 'employee',
+    proposer_id: employeeId,
+    decision: 'auto_executed',
+    action_name: 'module_record_update',
+    action_params_json: { record: 'BUY-10' },
+    result_json: { record_id: 'BUY-10' },
+    signature_hmac: 'test-signature',
+  });
+  await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: agentUserId,
+    agent_employee_id: employeeId,
+    source: 'mcp',
+    action: 'unrelated_concurrent_work',
+    params: { task_id: 'another-task' },
+    approval_tier: 'auto',
+    approval_status: 'approved',
+    approved_at: new Date(),
+    executed_at: new Date(),
+  });
+  await db.insert(taskComments).values({
+    org_id: orgId,
+    task_id: taskId,
+    user_id: agentUserId,
+    content: 'BUY-10 was updated before the response connection dropped.',
+  });
+
+  const reconcile = await app.request('/api/agent-channel/v1/reconcile', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      claim_token: claimed.claim_token,
+      runtime_request_key: runtimeRequestKey,
+    }),
+  });
+  const reconciliation = await reconcile.json() as any;
+  assert.equal(reconcile.status, 200, JSON.stringify(reconciliation));
+  assert.equal(reconciliation.has_durable_effects, true);
+  assert.equal(reconciliation.effects.task_comments.count, 1);
+  assert.equal(reconciliation.effects.agent_actions.count, 1);
+  assert.equal(reconciliation.effects.action_receipts.count, 1);
+  assert.equal(reconciliation.effects.task_state.task_id, taskId);
+
+  const uncertain = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'work_completed_handoff_uncertain',
+      claim_token: claimed.claim_token,
+      runtime_request_key: runtimeRequestKey,
+      detail: 'Durable Deft work exists, but the final Hermes response was unavailable.',
+    }),
+  });
+  assert.equal(uncertain.status, 200, await uncertain.text());
+
+  const [recorded] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(recorded?.status, 'completed');
+  assert.equal(recorded?.work_outcome, 'work_completed_handoff_uncertain');
+  assert.match(recorded?.outcome_detail ?? '', /Durable Deft work exists/);
+
+  const [attempt] = await db.select().from(agentChannelDeliveryAttempts)
+    .where(and(
+      eq(agentChannelDeliveryAttempts.event_id, event.id),
+      eq(agentChannelDeliveryAttempts.idempotency_key, runtimeRequestKey),
+    ))
+    .limit(1);
+  assert.equal(attempt?.direction, 'outbound_runtime');
+  assert.equal(attempt?.status, 'work_completed_handoff_uncertain');
+});
+
+test('uncertain handoff cannot terminalize without correlated durable effects', async () => {
+  const event = await publishMessageEvent(`agent-channel-empty-reconcile-${crypto.randomUUID()}`);
+  const claimed = await claimChannelEvent(event.id, 'empty-reconcile-worker');
+  const runtimeRequestKey = `deft-channel:${event.id}:attempt:${claimed.delivery_count}`;
+  const received = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'received',
+      claim_token: claimed.claim_token,
+      runtime_request_key: runtimeRequestKey,
+    }),
+  });
+  assert.equal(received.status, 200, await received.text());
+
+  const response = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'work_completed_handoff_uncertain',
+      claim_token: claimed.claim_token,
+      runtime_request_key: runtimeRequestKey,
+    }),
+  });
+  const body = await response.json() as any;
+  assert.equal(response.status, 409, JSON.stringify(body));
+  assert.equal(body.code, 'NO_DURABLE_EFFECTS');
+
+  const [recorded] = await db.select().from(agentChannelEvents).where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(recorded?.status, 'acknowledged');
+  assert.equal(recorded?.work_outcome, null);
+
+  const failed = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'failed',
+      claim_token: claimed.claim_token,
+      runtime_request_key: runtimeRequestKey,
+      error: 'No correlated durable effects were found.',
+    }),
+  });
+  assert.equal(failed.status, 200, await failed.text());
+});
+
+test('one employee cannot start two correlated runtime attempts concurrently', async () => {
+  const firstEvent = await publishMessageEvent(`agent-channel-runtime-one-${crypto.randomUUID()}`);
+  const secondEvent = await publishMessageEvent(`agent-channel-runtime-two-${crypto.randomUUID()}`);
+  const claimResponse = await app.request(
+    `/api/agent-channel/v1/events?limit=100&worker_id=runtime-multi-worker&lease_ms=120000&${channelCompatibilityQuery()}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const claimBody = await claimResponse.json() as any;
+  assert.equal(claimResponse.status, 200, JSON.stringify(claimBody));
+  const firstClaim = claimBody.events.find((candidate: any) => candidate.id === firstEvent.id);
+  const secondClaim = claimBody.events.find((candidate: any) => candidate.id === secondEvent.id);
+  assert.ok(firstClaim);
+  assert.ok(secondClaim);
+  const firstKey = `deft-channel:${firstEvent.id}:attempt:${firstClaim.delivery_count}`;
+  const secondKey = `deft-channel:${secondEvent.id}:attempt:${secondClaim.delivery_count}`;
+
+  const first = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: firstEvent.id,
+      state: 'received',
+      claim_token: firstClaim.claim_token,
+      runtime_request_key: firstKey,
+    }),
+  });
+  assert.equal(first.status, 200, await first.text());
+
+  const second = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: secondEvent.id,
+      state: 'received',
+      claim_token: secondClaim.claim_token,
+      runtime_request_key: secondKey,
+    }),
+  });
+  const secondBody = await second.json() as any;
+  assert.equal(second.status, 409, JSON.stringify(secondBody));
+  assert.equal(secondBody.code, 'RUNTIME_REQUEST_KEY_CONFLICT');
+
+  for (const [event, claim, key] of [
+    [firstEvent, firstClaim, firstKey],
+    [secondEvent, secondClaim, null],
+  ] as const) {
+    const settle = await app.request('/api/agent-channel/v1/ack', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        state: 'failed',
+        claim_token: claim.claim_token,
+        runtime_request_key: key ?? undefined,
+        error: 'Test cleanup',
+      }),
+    });
+    assert.equal(settle.status, 200, await settle.text());
+  }
+
+  await db.update(agentChannelDeliveryAttempts)
+    .set({ status: 'started' })
+    .where(eq(agentChannelDeliveryAttempts.idempotency_key, firstKey));
+  const recoveryEvent = await publishMessageEvent(`agent-channel-runtime-recovery-${crypto.randomUUID()}`);
+  const recoveryClaim = await claimChannelEvent(recoveryEvent.id, 'runtime-recovery-worker');
+  const recoveryKey = `deft-channel:${recoveryEvent.id}:attempt:${recoveryClaim.delivery_count}`;
+  const recovered = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: recoveryEvent.id,
+      state: 'received',
+      claim_token: recoveryClaim.claim_token,
+      runtime_request_key: recoveryKey,
+    }),
+  });
+  assert.equal(recovered.status, 200, await recovered.text());
+  const [abandoned] = await db.select({ status: agentChannelDeliveryAttempts.status })
+    .from(agentChannelDeliveryAttempts)
+    .where(eq(agentChannelDeliveryAttempts.idempotency_key, firstKey))
+    .limit(1);
+  assert.equal(abandoned?.status, 'abandoned');
+  const settleRecovery = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: recoveryEvent.id,
+      state: 'failed',
+      claim_token: recoveryClaim.claim_token,
+      runtime_request_key: recoveryKey,
+      error: 'Test cleanup',
+    }),
+  });
+  assert.equal(settleRecovery.status, 200, await settleRecovery.text());
 });
 
 test('channel lifecycle records acknowledgement, work, and approval without regressing terminal state', async () => {

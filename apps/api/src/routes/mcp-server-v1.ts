@@ -60,6 +60,7 @@ import {
   humanModuleActor,
   moduleIdempotencyDigest,
 } from '../lib/module-service.js';
+import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js';
 
 export const mcpServerV1Routes = new Hono();
 
@@ -845,6 +846,10 @@ mcpServerV1Routes.post('/', async (c) => {
       }
       const resolved = principal as ResolvedGateway;
       const employee = resolveAuthenticatedEmployee(resolved);
+      const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
+        resolved.org_id,
+        employee.employee_id,
+      );
       const boundArgs = { ...args, caller_employee_slug: employee.slug };
       const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
       if (!isModuleWrite && isAgentToolDisabled(employee.disabled_tools, toolName, TOOL_ALIASES)) {
@@ -855,6 +860,7 @@ mcpServerV1Routes.post('/', async (c) => {
         employee_id: employee.employee_id,
         employee_slug: employee.slug,
         trust_level: employee.trust_level,
+        ...(runtimeCorrelation ?? {}),
       };
       const knownTool = Boolean(ALL_TOOLS[canonicalToolName]);
       const result = await dispatchTool(toolName, boundArgs, ctx, {
@@ -1074,11 +1080,16 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   }
 
   // 4. Tool dispatch — unknown tool => MCP-level error content (isError)
+  const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
+    resolved.org_id,
+    employee.employee_id,
+  );
   const ctx: ToolContext = {
     org_id: resolved.org_id,
     employee_id: employee.employee_id,
     employee_slug: employee.slug,
     trust_level: employee.trust_level,
+    ...(runtimeCorrelation ?? {}),
   };
 
   return c.json(await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {

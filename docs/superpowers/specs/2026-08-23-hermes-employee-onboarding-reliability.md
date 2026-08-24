@@ -73,16 +73,17 @@ The lease/fencing contract is a breaking change and must use `deft.agent_channel
 ```json
 {
   "protocol_version": "deft.agent_channel.v2",
-  "server_release": "0.3.0-preview.5",
+  "server_release": "0.3.0-preview.7",
   "server_commit": "<sha>",
-  "schema_head": "0.3.0-preview.5",
+  "schema_head": "0.3.0-preview.7",
   "capabilities": [
     "single_flight_claims",
     "renewable_leases",
     "fencing_tokens",
     "terminal_outcomes",
     "identity_bound_mcp",
-    "wiki_memory_sync_v1"
+    "wiki_memory_sync_v1",
+    "runtime_reconciliation_v1"
   ]
 }
 ```
@@ -90,6 +91,12 @@ The lease/fencing contract is a breaking change and must use `deft.agent_channel
 The bridge sends its adapter version, Hermes version, supported protocol majors, and required capabilities. If the intersection is empty or a required capability is absent, `/connect` returns an explicit incompatibility response, preferably HTTP 426 with a stable error code and the compatible integration version.
 
 The bridge must validate the handshake before its first event poll. It must not silently downgrade to legacy unclaimed processing.
+
+The matched Hermes bundle requires Hermes `>=0.16.0`. For each claimed Deft
+delivery it sends one stable Responses API `Idempotency-Key`, performs at most
+one same-key recovery after an ambiguous transport failure, and asks Deft to
+reconcile employee-attributed durable effects before reporting
+`work_completed_handoff_uncertain`.
 
 ### Fail-fast runtime behavior
 
