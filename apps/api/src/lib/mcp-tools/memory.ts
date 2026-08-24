@@ -137,6 +137,7 @@ export async function memoryRecall(
       ? await db
           .select({
             slug: wikiPages.slug,
+            id: wikiPages.id,
             title: wikiPages.title,
             summary: wikiPages.summary,
             content: wikiPages.content,
@@ -146,6 +147,7 @@ export async function memoryRecall(
             origin_space_id: wikiPages.origin_space_id,
             origin_message_id: wikiPages.origin_message_id,
             created_via: wikiPages.created_via,
+            version: wikiPages.version,
             matched_space_id: wikiMatchedSpaceIdExpr(ctx.org_id, spaceId),
             updated_at: wikiPages.updated_at,
           })
@@ -199,6 +201,7 @@ export async function memoryRecall(
       const fullContent = row.content ?? '';
       const truncated = fullContent.length > CONTENT_CAP;
       return {
+        page_id: row.id,
         slug: row.slug,
         title: row.title,
         summary: row.summary ?? null,
@@ -211,6 +214,9 @@ export async function memoryRecall(
         origin_message_id: row.origin_message_id ?? null,
         created_via: row.created_via ?? null,
         matched_space_id: row.matched_space_id ?? null,
+        version: Number(row.version),
+        updated_at: row.updated_at,
+        authority: 'deft_canonical',
       };
     });
     const result = [...exactResults, ...filtered.filter((r) => {
@@ -222,6 +228,7 @@ export async function memoryRecall(
       const fullContent = r.content ?? '';
       const truncated = fullContent.length > CONTENT_CAP;
       return {
+        page_id: r.source_id,
         slug: (r.metadata?.slug as string) ?? '',
         title: r.title,
         summary: (r.metadata?.summary as string | null) ?? null,
@@ -234,6 +241,9 @@ export async function memoryRecall(
         origin_message_id: r.metadata?.origin_message_id ?? null,
         created_via: r.metadata?.created_via ?? null,
         matched_space_id: r.metadata?.matched_space_id ?? null,
+        version: Number(r.metadata?.version ?? 1),
+        updated_at: r.metadata?.updated_at ?? null,
+        authority: 'deft_canonical',
       };
     })].slice(0, limit);
 
@@ -269,8 +279,18 @@ const SENSITIVE_MEMORY_PATTERNS = [
   /\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}/i,
 ];
 
+const UNTRUSTED_INSTRUCTION_PATTERNS = [
+  /\b(?:ignore|disregard|override)\b.{0,40}\b(?:previous|prior|system|developer)\b.{0,24}\binstructions?\b/i,
+  /\b(?:act|respond|behave)\s+as\s+(?:the\s+)?(?:system|developer|administrator)\b/i,
+  /<\/?(?:system|developer|assistant|tool|workspace_context)\b/i,
+];
+
 function containsSensitiveMemory(text: string) {
   return SENSITIVE_MEMORY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function containsUntrustedInstruction(text: string) {
+  return UNTRUSTED_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 type ValidatedMemorySource = NonNullable<MemoryWriteArgs['source_refs']>[number] & {
@@ -397,8 +417,11 @@ export async function memoryWrite(
   if (containsSensitiveMemory(`${args.title}\n${args.body}\n${JSON.stringify(args.source_refs ?? [])}`)) {
     return errorResult('memory_write rejected content that appears to contain a credential or secret');
   }
-  if (args.idempotency_key !== undefined && !args.idempotency_key.trim()) {
-    return errorResult('memory_write idempotency_key must be non-empty when provided');
+  if (containsUntrustedInstruction(`${args.title}\n${args.body}`)) {
+    return errorResult('memory_write rejected content that appears to contain an untrusted instruction');
+  }
+  if (!args.idempotency_key?.trim()) {
+    return errorResult('memory_write requires a non-empty idempotency_key for retry-safe reusable knowledge');
   }
   if ((args.source_refs?.length ?? 0) > 20) {
     return errorResult('memory_write accepts at most 20 source_refs');
@@ -412,7 +435,7 @@ export async function memoryWrite(
   // Phase 3: always tag to the employee. Phase 4's memory_update handles
   // scope promotion to org with approval.
   const digest = memoryDigest(args);
-  const idempotencyKey = args.idempotency_key?.trim() || null;
+  const idempotencyKey = args.idempotency_key.trim();
   const baseSlug = slugify(args.title);
   const suffix = idempotencyKey
     ? createHash('sha256').update(`${ctx.employee_id}:${idempotencyKey}`).digest('hex').slice(0, 8)

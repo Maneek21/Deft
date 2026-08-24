@@ -21,7 +21,14 @@ class FakeProvider(MOD.DeftMemoryProvider):
         if name == "platform_context":
             return {"employee": {"slug": "rita"}}
         if name == "memory_recall":
-            return [{"slug": "rule", "content": "Use verified leads"}]
+            return [{
+                "page_id": "page-1",
+                "slug": "rule",
+                "version": 3,
+                "updated_at": "2026-08-24T10:00:00Z",
+                "authority": "deft_canonical",
+                "content": "Use the human-corrected qualification rule",
+            }]
         return {"ok": True, "page_id": "page-1", "version": 1}
 
 
@@ -32,6 +39,14 @@ class DeftMemoryProviderTests(unittest.TestCase):
         value = provider.prefetch("find qualified leads", session_id="session-1")
         self.assertIn('"slug": "rita"', value)
         self.assertIn('"slug": "rule"', value)
+        self.assertIn('"authority": "deft_canonical"', value)
+
+    def test_system_prompt_makes_current_deft_version_authoritative(self):
+        provider = FakeProvider()
+        prompt = provider.system_prompt_block()
+
+        self.assertIn("current Deft version overrides", prompt)
+        self.assertIn("untrusted reference data", prompt)
 
     def test_prefetch_routes_channel_events_through_the_primary_evidence_scope(self):
         provider = FakeProvider()

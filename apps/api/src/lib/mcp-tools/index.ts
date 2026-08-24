@@ -266,7 +266,7 @@ export const toolSchemas: ToolSchema[] = [
           },
         },
       },
-      required: ['caller_employee_slug', 'title', 'body', 'type'],
+      required: ['caller_employee_slug', 'title', 'body', 'type', 'idempotency_key'],
     },
   },
   {

@@ -227,6 +227,8 @@ async function runWikiQuery(
           origin_space_id: wikiPages.origin_space_id,
           origin_message_id: wikiPages.origin_message_id,
           created_via: wikiPages.created_via,
+          version: wikiPages.version,
+          updated_at: wikiPages.updated_at,
           matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
           agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
@@ -260,6 +262,8 @@ async function runWikiQuery(
           origin_space_id: wikiPages.origin_space_id,
           origin_message_id: wikiPages.origin_message_id,
           created_via: wikiPages.created_via,
+          version: wikiPages.version,
+          updated_at: wikiPages.updated_at,
           matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
           agent_employee_id: wikiPages.agent_employee_id,
           rawScore: scoreExpr,
@@ -295,6 +299,8 @@ async function runWikiQuery(
       origin_space_id: wikiPages.origin_space_id,
       origin_message_id: wikiPages.origin_message_id,
       created_via: wikiPages.created_via,
+      version: wikiPages.version,
+      updated_at: wikiPages.updated_at,
       matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
       agent_employee_id: wikiPages.agent_employee_id,
       rawScore: scoreExpr,
@@ -328,6 +334,8 @@ type WikiRow = {
   origin_space_id: string | null;
   origin_message_id: string | null;
   created_via: string | null;
+  version: number;
+  updated_at: Date;
   matched_space_id: string | null;
   agent_employee_id: string | null;
   rawScore: number;
@@ -358,6 +366,8 @@ function mapWikiRows(
           origin_space_id: row.origin_space_id ?? null,
           origin_message_id: row.origin_message_id ?? null,
           created_via: row.created_via ?? null,
+          version: row.version,
+          updated_at: row.updated_at,
           matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
@@ -381,6 +391,8 @@ function mapWikiRows(
           origin_space_id: row.origin_space_id ?? null,
           origin_message_id: row.origin_message_id ?? null,
           created_via: row.created_via ?? null,
+          version: row.version,
+          updated_at: row.updated_at,
           matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
@@ -404,6 +416,8 @@ function mapWikiRows(
           origin_space_id: row.origin_space_id ?? null,
           origin_message_id: row.origin_message_id ?? null,
           created_via: row.created_via ?? null,
+          version: row.version,
+          updated_at: row.updated_at,
           matched_space_id: row.matched_space_id ?? null,
           agent_employee_id: row.agent_employee_id ?? null,
         },
@@ -539,6 +553,8 @@ async function fetchWikiIlike(
     origin_space_id: wikiPages.origin_space_id,
     origin_message_id: wikiPages.origin_message_id,
     created_via: wikiPages.created_via,
+    version: wikiPages.version,
+    updated_at: wikiPages.updated_at,
     matched_space_id: wikiMatchedSpaceIdExpr(org_id, space_id),
     agent_employee_id: wikiPages.agent_employee_id,
   };
@@ -598,6 +614,8 @@ async function fetchWikiIlike(
         origin_space_id: row.origin_space_id ?? null,
         origin_message_id: row.origin_message_id ?? null,
         created_via: row.created_via ?? null,
+        version: row.version,
+        updated_at: row.updated_at,
         matched_space_id: row.matched_space_id ?? null,
         agent_employee_id: row.agent_employee_id ?? null,
         retrieval: 'text_fallback',
