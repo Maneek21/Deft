@@ -16,6 +16,20 @@ class DeftEmployeeHookTests(unittest.TestCase):
         decision = hooks.pre_tool_call(tool_name="gmail_send_email", args={"to": "a@example.com"})
         self.assertEqual(decision["action"], "block")
 
+    def test_approved_external_write_is_available_to_the_runtime(self):
+        hooks = MOD.DeftEmployeeHooks()
+        hooks.policy = {"allow_external_writes": True}
+        decision = hooks.pre_tool_call(tool_name="gmail_send_email", args={"to": "a@example.com"})
+        self.assertIsNone(decision)
+
+    def test_tool_budget_exhaustion_requests_human_assistance(self):
+        hooks = MOD.DeftEmployeeHooks()
+        hooks.policy = {"budgets": {"max_tool_calls": 1}}
+        self.assertIsNone(hooks.pre_tool_call(tool_name="browser", args={"url": "https://example.com"}))
+        decision = hooks.pre_tool_call(tool_name="browser", args={"url": "https://example.org"})
+        self.assertEqual(decision["action"], "block")
+        self.assertIn("human assistance", decision["message"])
+
     def test_model_visible_deft_write_is_governed_by_deft(self):
         hooks = MOD.DeftEmployeeHooks()
         decision = hooks.pre_tool_call(

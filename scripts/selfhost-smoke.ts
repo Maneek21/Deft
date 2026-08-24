@@ -18,6 +18,8 @@ const REDIRECT_URI = process.env.DEFT_SMOKE_REDIRECT_URI || 'http://localhost:39
 const REQUESTED_SCOPE = process.env.DEFT_SMOKE_SCOPE || 'read:workspace read:wiki read:tasks read:messages read:calendar';
 const OPTIONAL_BEARER = process.env.DEFT_MCP_BEARER_TOKEN || process.env.DEFT_SMOKE_MCP_TOKEN || '';
 const REQUIRE_AUTH = args.has('--require-auth') || process.env.DEFT_REQUIRE_AUTH_SMOKE === '1';
+const REQUIRE_HERMES_EMPLOYEE = args.has('--require-hermes-employee') || process.env.DEFT_REQUIRE_HERMES_EMPLOYEE_SMOKE === '1';
+const REQUIRED_EMPLOYEE_TOOLS = ['platform_context', 'memory_recall', 'memory_write', 'record_progress', 'task_query', 'module_schema_get'];
 
 function mark(check: Check) {
   const icon = check.ok ? (check.warn ? 'WARN' : 'OK') : 'FAIL';
@@ -77,7 +79,16 @@ async function checkReadiness(): Promise<Check> {
 async function checkAgentChannelContract(): Promise<Check> {
   const res = await fetchJson(`${API_URL}/api/agent-channel/v1/contract`);
   const body = res.json as any;
-  const required = ['single_flight_claims', 'renewable_leases', 'fencing_tokens', 'terminal_outcomes', 'identity_bound_mcp'];
+  const required = [
+    'single_flight_claims',
+    'renewable_leases',
+    'fencing_tokens',
+    'terminal_outcomes',
+    'identity_bound_mcp',
+    'wiki_memory_sync_v1',
+    'runtime_reconciliation_v1',
+    'runtime_attestation_v1',
+  ];
   const ok = res.status === 200
     && body?.protocol_version === 'deft.agent_channel.v2'
     && required.every((capability) => body?.capabilities?.includes(capability));
@@ -182,10 +193,10 @@ async function checkOptionalBearerToolsList(): Promise<Check> {
   if (!OPTIONAL_BEARER) {
     return {
       name: 'Optional bearer MCP flow',
-      ok: !REQUIRE_AUTH,
-      warn: !REQUIRE_AUTH,
-      detail: REQUIRE_AUTH
-        ? 'DEFT_MCP_BEARER_TOKEN not set; authenticated tools/list smoke is required'
+      ok: !REQUIRE_AUTH && !REQUIRE_HERMES_EMPLOYEE,
+      warn: !REQUIRE_AUTH && !REQUIRE_HERMES_EMPLOYEE,
+      detail: REQUIRE_AUTH || REQUIRE_HERMES_EMPLOYEE
+        ? 'DEFT_MCP_BEARER_TOKEN not set; authenticated employee tools/list smoke is required'
         : 'DEFT_MCP_BEARER_TOKEN not set; skipped authenticated tools/list smoke. Set DEFT_REQUIRE_AUTH_SMOKE=1 or pass --require-auth to make this a failure.',
     };
   }
@@ -196,11 +207,21 @@ async function checkOptionalBearerToolsList(): Promise<Check> {
   });
   const body = res.json as any;
   const tools = body?.result?.tools;
-  const ok = res.status === 200 && Array.isArray(tools) && tools.length > 0;
+  const toolNames = Array.isArray(tools)
+    ? new Set(tools.map((tool: any) => tool?.name).filter((name: unknown): name is string => typeof name === 'string'))
+    : new Set<string>();
+  const missingEmployeeTools = REQUIRE_HERMES_EMPLOYEE
+    ? REQUIRED_EMPLOYEE_TOOLS.filter((name) => !toolNames.has(name))
+    : [];
+  const ok = res.status === 200 && Array.isArray(tools) && tools.length > 0 && missingEmployeeTools.length === 0;
   return {
     name: 'Optional bearer MCP flow',
     ok,
-    detail: ok ? `authenticated tools/list returned ${tools.length} tool(s)` : `authenticated tools/list returned ${res.status}: ${res.text.slice(0, 180)}`,
+    detail: ok
+      ? `authenticated tools/list returned ${tools.length} tool(s)${REQUIRE_HERMES_EMPLOYEE ? '; required Hermes employee contract is present' : ''}`
+      : missingEmployeeTools.length > 0
+        ? `authenticated tools/list is missing employee tools: ${missingEmployeeTools.join(', ')}`
+        : `authenticated tools/list returned ${res.status}: ${res.text.slice(0, 180)}`,
   };
 }
 
@@ -210,6 +231,7 @@ async function main() {
   console.log(`  public api: ${PUBLIC_API_URL}`);
   console.log(`  mcp: ${MCP_URL}`);
   console.log(`  authenticated tools/list: ${REQUIRE_AUTH ? 'required' : 'optional'}`);
+  console.log(`  Hermes employee contract: ${REQUIRE_HERMES_EMPLOYEE ? 'required' : 'optional'}`);
   console.log('');
 
   const checks = [

@@ -178,7 +178,7 @@ export function clientOptionsForTransport(
 function isAuthenticationError(message: string): boolean {
   const normalized = message.toLowerCase();
   return (
-    normalized.includes("401") ||
+    /\b401\b/.test(normalized) ||
     normalized.includes("unauthorized") ||
     normalized.includes("authentication") ||
     normalized.includes("invalid token")

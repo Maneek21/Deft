@@ -96,10 +96,57 @@ jobs:
       - name: Run tests
         run: pnpm --filter @deft/api test
 
+  hermes-release-gate:
+    name: Hermes Employee Release Gate
+    runs-on: ubuntu-latest
+    needs: typecheck
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_hermes_gate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_hermes_gate_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_hermes_gate_test
+      JWT_SECRET: ci-hermes-gate-jwt-not-for-prod
+      JWT_REFRESH_SECRET: ci-hermes-gate-refresh-not-for-prod
+      ANTHROPIC_API_KEY: sk-ant-ci-hermes-gate-dummy-not-real
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pnpm install --frozen-lockfile
+      - name: Run two clean-state Hermes employee passes
+        run: pnpm test:hermes-employee-release-gate
+      - name: Retain certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-employee-release-gate
+          path: dist/hermes-employee-release-gate.json
+          if-no-files-found: warn
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [typecheck, test]
+    needs: [typecheck, test, hermes-release-gate]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6.0.10
@@ -350,6 +397,11 @@ jobs:
           done
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
+      - name: Run self-host Agent Channel and MCP smoke
+        env:
+          DEFT_API_URL: http://127.0.0.1:3001
+          DEFT_PUBLIC_URL: http://127.0.0.1:3001
+        run: pnpm selfhost:smoke
       - name: Run production browser smoke
         env:
           DEFT_WEB_URL: http://127.0.0.1:3000

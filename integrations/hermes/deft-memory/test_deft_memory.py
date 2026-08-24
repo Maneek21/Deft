@@ -1,7 +1,26 @@
 import importlib.util
 import json
 import pathlib
+import sys
+import types
 import unittest
+
+
+try:
+    from agent.memory_provider import MemoryProvider as _HermesMemoryProvider
+except ModuleNotFoundError as exc:
+    if exc.name not in {"agent", "agent.memory_provider"}:
+        raise
+    agent_package = types.ModuleType("agent")
+    agent_package.__path__ = []
+    memory_provider_module = types.ModuleType("agent.memory_provider")
+
+    class _HermesMemoryProvider:
+        pass
+
+    memory_provider_module.MemoryProvider = _HermesMemoryProvider
+    sys.modules["agent"] = agent_package
+    sys.modules["agent.memory_provider"] = memory_provider_module
 
 
 MODULE = pathlib.Path(__file__).with_name("__init__.py")
