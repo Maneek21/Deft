@@ -5,6 +5,7 @@ import {
   ENGINEERING_TRANSITIONS,
   ENGINEERING_PRIORITY_VOCAB,
   ENGINEERING_DEFAULTS,
+  allowedNextStatuses,
   isValidTransition,
 } from '../src/lib/task-status-machine.js';
 
@@ -30,4 +31,12 @@ test('isValidTransition rejects illegal transitions', () => {
   assert.equal(isValidTransition('done', 'todo', ENGINEERING_DEFAULTS), false);
   // backlog -> in_review skips stages
   assert.equal(isValidTransition('backlog', 'in_review', ENGINEERING_DEFAULTS), false);
+});
+
+test('allowedNextStatuses exposes the executable transition contract', () => {
+  assert.deepEqual(
+    allowedNextStatuses('backlog', ENGINEERING_DEFAULTS),
+    ['todo', 'in_progress', 'cancelled'],
+  );
+  assert.deepEqual(allowedNextStatuses('unknown', ENGINEERING_DEFAULTS), []);
 });

@@ -1228,6 +1228,7 @@ export const ModuleRecordCreateRequestSchema = z.strictObject({
   module_id: ModuleIdSchema,
   collection_key: ModuleKeySchema,
   data: ModuleRecordDataSchema,
+  relations: ModuleRelationPatchSchema.default({}),
   expected_manifest_digest: ModuleManifestDigestSchema,
   idempotency_key: ModuleIdempotencyKeySchema,
 });
@@ -1281,6 +1282,36 @@ export const MODULE_OPERATION_REQUEST_SCHEMAS = Object.freeze({
   module_record_update: ModuleRecordUpdateRequestSchema,
   module_record_archive: ModuleRecordArchiveRequestSchema,
 });
+
+/**
+ * Generate the transport contract from the same Zod parser that executes the
+ * operation. Agent-facing transports require retry identity for every write,
+ * including update/archive where older in-process callers may omit it.
+ */
+export function getModuleOperationInputJsonSchema(
+  operation: ModuleOperationName,
+  options?: { require_write_idempotency?: boolean },
+): Record<string, unknown> {
+  const { $schema: _schema, ...schema } = z.toJSONSchema(
+    MODULE_OPERATION_REQUEST_SCHEMAS[operation],
+    {
+      target: 'draft-7',
+      io: 'input',
+      reused: 'inline',
+      cycles: 'throw',
+    },
+  ) as Record<string, unknown>;
+  if (options?.require_write_idempotency && MODULE_OPERATION_DEFINITIONS[operation].mode === 'write') {
+    const required = new Set(
+      Array.isArray(schema.required)
+        ? schema.required.filter((item): item is string => typeof item === 'string')
+        : [],
+    );
+    required.add('idempotency_key');
+    schema.required = [...required];
+  }
+  return schema;
+}
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
 
@@ -1382,6 +1413,25 @@ export const ModuleMutationResultSchema = z.strictObject({
   replayed: z.boolean(),
 });
 
+export const ModuleOperationContractSchema = z.strictObject({
+  input_schema: z.record(z.string(), z.unknown()),
+});
+
+export const ModuleCollectionContractSchema = z.strictObject({
+  collection_key: ModuleKeySchema,
+  relation_fields: z.array(z.strictObject({
+    field_key: ModuleFieldKeySchema,
+    target_collection: ModuleKeySchema,
+    cardinality: z.enum(['one', 'many']),
+    required: z.boolean(),
+    request_value_shape: z.literal('record_id[]'),
+  })).max(MODULE_LIMITS.fields_per_collection),
+  examples: z.strictObject({
+    create: z.record(z.string(), z.unknown()),
+    update: z.record(z.string(), z.unknown()),
+  }),
+});
+
 export const MODULE_OPERATION_RESULT_SCHEMAS = Object.freeze({
   module_list: z.strictObject({ modules: z.array(ModuleSummarySchema) }),
   module_schema_get: z.strictObject({
@@ -1389,6 +1439,11 @@ export const MODULE_OPERATION_RESULT_SCHEMAS = Object.freeze({
     enabled: z.boolean(),
     manifest_digest: ModuleManifestDigestSchema,
     manifest: DeftModuleManifestV1Schema,
+    operation_contracts: z.strictObject({
+      module_record_create: ModuleOperationContractSchema,
+      module_record_update: ModuleOperationContractSchema,
+    }),
+    collection_contracts: z.array(ModuleCollectionContractSchema).max(MODULE_LIMITS.collections_per_module),
   }),
   module_record_search: z.strictObject({
     items: z.array(ModuleSearchHitSchema),
@@ -1409,7 +1464,13 @@ export type ModuleSchemaGetRequest = z.infer<typeof ModuleSchemaGetRequestSchema
 export type ModuleRecordSearchRequest = z.infer<typeof ModuleRecordSearchRequestSchema>;
 export type ModuleRecordQueryRequest = z.infer<typeof ModuleRecordQueryRequestSchema>;
 export type ModuleRecordGetRequest = z.infer<typeof ModuleRecordGetRequestSchema>;
-export type ModuleRecordCreateRequest = z.infer<typeof ModuleRecordCreateRequestSchema>;
+export type ModuleRecordCreateRequest = Omit<
+  z.infer<typeof ModuleRecordCreateRequestSchema>,
+  'relations'
+> & {
+  /** Omitted by older in-process callers; parsed MCP/REST inputs always receive {}. */
+  relations?: z.infer<typeof ModuleRelationPatchSchema>;
+};
 export type ModuleRecordUpdateRequest = Omit<
   z.infer<typeof ModuleRecordUpdateRequestSchema>,
   'relations'

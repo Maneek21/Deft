@@ -8,7 +8,7 @@ import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
 import { visibleTaskCondition } from '../lib/task-visibility.js';
 import { visibleWikiPageCondition } from '../lib/wiki-visibility.js';
-import { isValidTransition } from '../lib/task-status-machine.js';
+import { allowedNextStatuses, isValidTransition } from '../lib/task-status-machine.js';
 import { getProjectResolvedConfig } from '../lib/project-resolved-config.js';
 import { detectBlocksCycle } from '../lib/task-dependency.js';
 import { dispatchAgentEmployeeTask, publishTaskChannelEventForAssignee } from '../lib/dispatch-agent-task.js';
@@ -1963,7 +1963,13 @@ taskRoutes.patch('/:id', async (c) => {
     if (parsed.data.status !== undefined && parsed.data.status !== existingTask.status) {
       const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
       if (!isValidTransition(existingTask.status, parsed.data.status, resolvedConfig)) {
-        return c.json({ error: 'Invalid status transition', code: 'INVALID_TRANSITION' }, 400);
+        return c.json({
+          error: 'Invalid status transition',
+          code: 'INVALID_TRANSITION',
+          current_status: existingTask.status,
+          requested_status: parsed.data.status,
+          allowed_next_statuses: allowedNextStatuses(existingTask.status, resolvedConfig),
+        }, 400);
       }
       updateData.status = parsed.data.status;
       activityEntries.push({ action: 'status_changed', field: 'status', old_value: existingTask.status, new_value: parsed.data.status });

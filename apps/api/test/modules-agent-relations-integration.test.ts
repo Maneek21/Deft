@@ -4,7 +4,10 @@ import test, { after } from 'node:test';
 import { Hono } from 'hono';
 import pg from 'pg';
 
-import type { DeftModuleManifestV1Input } from '@deft/shared/modules';
+import {
+  MODULE_OPERATION_REQUEST_SCHEMAS,
+  type DeftModuleManifestV1Input,
+} from '@deft/shared/modules';
 import { executeToolCall } from '../src/lib/agent-context.js';
 import { closeDb } from '../src/lib/db.js';
 import { issueEmployeeToken, issuePersonalMcpToken } from '../src/lib/mcp-token.js';
@@ -201,6 +204,14 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
       expected_manifest_digest: installed.manifest_digest,
       idempotency_key: `asset-${suffix}`,
     });
+    const linkedAtCreate = await createModuleRecord(owner, {
+      module_id: manifest.id,
+      collection_key: 'assets',
+      data: { name: 'Analytical Engine', status: 'planned', owner_id: ownerId },
+      relations: { site_id: [site.record!.id] },
+      expected_manifest_digest: installed.manifest_digest,
+      idempotency_key: `asset-linked-create-${suffix}`,
+    });
     const secondSource = await createModuleRecord(owner, {
       module_id: manifest.id,
       collection_key: 'assets',
@@ -215,7 +226,50 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
       expected_manifest_digest: foreignInstalled.manifest_digest,
       idempotency_key: `foreign-site-${suffix}`,
     });
-    assert.ok(site.record && wrongCollection.record && source.record && secondSource.record && foreignSite.record);
+    assert.ok(
+      site.record
+      && wrongCollection.record
+      && source.record
+      && linkedAtCreate.record
+      && secondSource.record
+      && foreignSite.record,
+    );
+
+    const linkedCreateResponse = await nativeApp.request(
+      `/api/modules/${manifest.slug}/records/${linkedAtCreate.record.id}`,
+    );
+    assert.equal(linkedCreateResponse.status, 200);
+    assert.deepEqual((await linkedCreateResponse.json() as any).record.relations, [{
+      field_key: 'site_id',
+      records: [{ id: site.record.id, collection_key: 'sites', label: 'London Lab' }],
+    }]);
+
+    const beforeRejectedCreate = await client.query(
+      `SELECT count(*)::int AS count FROM module_records
+       WHERE org_id = $1 AND collection_key = 'assets' AND is_deleted = false`,
+      [orgId],
+    );
+    await assert.rejects(
+      createModuleRecord(owner, {
+        module_id: manifest.id,
+        collection_key: 'assets',
+        data: { name: 'Must Roll Back' },
+        relations: { site_id: [wrongCollection.record.id] },
+        expected_manifest_digest: installed.manifest_digest,
+        idempotency_key: `asset-invalid-create-${suffix}`,
+      }),
+      (error: any) => error?.code === 'MODULE_VALIDATION_ERROR',
+    );
+    const afterRejectedCreate = await client.query(
+      `SELECT count(*)::int AS count FROM module_records
+       WHERE org_id = $1 AND collection_key = 'assets' AND is_deleted = false`,
+      [orgId],
+    );
+    assert.equal(
+      afterRejectedCreate.rows[0].count,
+      beforeRejectedCreate.rows[0].count,
+      'invalid relation must roll back the record field insert atomically',
+    );
 
     const employeeToken = await issueEmployeeToken(orgId, employeeId);
     const personalToken = (await issuePersonalMcpToken({
@@ -225,6 +279,85 @@ test('generic relation writes share governed MCP/Defty/REST record semantics', {
       scopes: ['read:workspace', 'write:workspace', 'read:modules', 'write:modules'],
       createdBy: ownerId,
     })).raw;
+
+    const schemaResult = await callMcp(employeeToken, 'module_schema_get', {
+      caller_employee_slug: employeeSlug,
+      module_id: manifest.id,
+    });
+    assert.notEqual(schemaResult.isError, true);
+    const schemaPayload = toolPayload(schemaResult);
+    assert.equal(
+      schemaPayload.operation_contracts.module_record_create.input_schema.properties.relations.type,
+      'object',
+    );
+    assert.equal(
+      schemaPayload.operation_contracts.module_record_update.input_schema.properties.relations.type,
+      'object',
+    );
+    const assetContract = schemaPayload.collection_contracts.find(
+      (contract: any) => contract.collection_key === 'assets',
+    );
+    assert.deepEqual(assetContract.relation_fields, [{
+      field_key: 'site_id',
+      target_collection: 'sites',
+      cardinality: 'one',
+      required: false,
+      request_value_shape: 'record_id[]',
+    }]);
+    assert.deepEqual(assetContract.examples.create.relations, { site_id: ['site_id_record_id'] });
+    assert.deepEqual(assetContract.examples.update.relations, { site_id: ['site_id_record_id'] });
+    assert.equal(
+      MODULE_OPERATION_REQUEST_SCHEMAS.module_record_create.safeParse(
+        assetContract.examples.create,
+      ).success,
+      true,
+      'manifest-derived create example must satisfy the executing request parser',
+    );
+    assert.equal(
+      MODULE_OPERATION_REQUEST_SCHEMAS.module_record_update.safeParse(
+        assetContract.examples.update,
+      ).success,
+      true,
+      'manifest-derived update example must satisfy the executing request parser',
+    );
+
+    const governedCreateInput = {
+      caller_employee_slug: employeeSlug,
+      module_id: manifest.id,
+      collection_key: 'assets',
+      data: { name: 'Governed Linked Asset', status: 'active' },
+      relations: { site_id: [site.record.id] },
+      expected_manifest_digest: installed.manifest_digest,
+      idempotency_key: `governed-create-relation-${suffix}`,
+    };
+    const proposedCreate = await callMcp(
+      employeeToken,
+      'module_record_create',
+      governedCreateInput,
+    );
+    assert.notEqual(proposedCreate.isError, true);
+    const createApprovalId = toolPayload(proposedCreate).approval_id as string;
+    assert.match(createApprovalId, /\S+/);
+    const approvedCreate = await callMcp(personalToken, 'approval_approve', {
+      action_id: createApprovalId,
+      idempotency_key: `approve-create-${suffix}`,
+    });
+    assert.notEqual(approvedCreate.isError, true);
+    const createReplay = await callMcp(
+      employeeToken,
+      'module_record_create',
+      governedCreateInput,
+    );
+    assert.notEqual(createReplay.isError, true);
+    const createdRecordId = toolPayload(createReplay).record_id as string;
+    const governedCreateRead = await nativeApp.request(
+      `/api/modules/${manifest.slug}/records/${createdRecordId}`,
+    );
+    assert.equal(governedCreateRead.status, 200);
+    assert.deepEqual((await governedCreateRead.json() as any).record.relations, [{
+      field_key: 'site_id',
+      records: [{ id: site.record.id, collection_key: 'sites', label: 'London Lab' }],
+    }]);
     const relationInput = {
       caller_employee_slug: employeeSlug,
       record_id: source.record.id,

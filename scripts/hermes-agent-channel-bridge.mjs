@@ -9,7 +9,7 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_HEARTBEAT_MS = 60000;
 const DEFAULT_LEASE_MS = 120000;
-export const HERMES_DEFT_ADAPTER_VERSION = '0.2.3';
+export const HERMES_DEFT_ADAPTER_VERSION = '0.2.4';
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
 export const AGENT_CHANNEL_CAPABILITIES = [
   'single_flight_claims',

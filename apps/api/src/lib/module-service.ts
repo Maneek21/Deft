@@ -30,6 +30,7 @@ import {
   ModuleRelationPatchSchema,
   ModuleSavedViewConfigSchema,
   ModuleRecordValidationError,
+  getModuleOperationInputJsonSchema,
   digestModuleManifest,
   formatModuleRecordResourceId,
   parseDeftModuleManifest,
@@ -489,12 +490,21 @@ export function moduleMutationInputDigest(
   const { idempotency_key: _idempotencyKey, ...withoutKey } = value;
   const canonical = operation === 'update'
     ? {
-      ...withoutKey,
-      patch: withoutKey.patch ?? {},
-      unset_fields: withoutKey.unset_fields ?? [],
-      relations: withoutKey.relations ?? {},
-    }
-    : withoutKey;
+        ...withoutKey,
+        patch: withoutKey.patch ?? {},
+        unset_fields: withoutKey.unset_fields ?? [],
+        relations: withoutKey.relations ?? {},
+      }
+    : operation === 'create'
+      ? (() => {
+          const { relations, ...legacyCompatible } = withoutKey;
+          return relations
+            && typeof relations === 'object'
+            && Object.keys(relations as Record<string, unknown>).length > 0
+            ? { ...legacyCompatible, relations }
+            : legacyCompatible;
+        })()
+      : withoutKey;
   return `sha256:${createHash('sha256').update(JSON.stringify(stableValue(canonical))).digest('hex')}`;
 }
 
@@ -901,7 +911,7 @@ type PreparedRelationReplacements = {
 async function prepareRelationReplacements(
   executor: DbExecutor,
   actor: ModuleActor,
-  source: RecordRow,
+  source: Pick<RecordRow, 'id' | 'installation_id' | 'collection_key'>,
   manifest: DeftModuleManifestV1,
   replacements: Record<string, string[]>,
   options?: { lock?: boolean },
@@ -969,7 +979,7 @@ async function prepareRelationReplacements(
 async function applyPreparedRelationReplacements(
   executor: DbExecutor,
   actor: ModuleActor,
-  source: RecordRow,
+  source: Pick<RecordRow, 'id' | 'installation_id' | 'collection_key'>,
   replacements: Record<string, string[]>,
   prepared: PreparedRelationReplacements,
 ): Promise<void> {
@@ -1547,6 +1557,34 @@ export async function assertModuleAuditReadAccess(
   );
 }
 
+function moduleFieldExample(field: Exclude<ModuleField, { type: 'relation' }>): unknown {
+  switch (field.type) {
+    case 'text':
+    case 'long_text':
+      return `${field.key}_example`;
+    case 'email':
+      return `${field.key}@example.com`;
+    case 'url':
+      return 'https://example.com';
+    case 'date':
+      return '2026-01-01';
+    case 'datetime':
+      return '2026-01-01T00:00:00Z';
+    case 'number':
+      return 1;
+    case 'boolean':
+      return true;
+    case 'single_select':
+      return field.options[0]!.value;
+    case 'multi_select':
+      return [field.options[0]!.value];
+    case 'member':
+      return field.multiple ? ['member_id'] : 'member_id';
+    case 'tags':
+      return ['example'];
+  }
+}
+
 export async function getModuleSchema(
   actorValue: ModuleActor,
   moduleId: string,
@@ -1555,14 +1593,94 @@ export async function getModuleSchema(
   enabled: boolean;
   manifest_digest: string;
   manifest: DeftModuleManifestV1;
+  operation_contracts: {
+    module_record_create: { input_schema: Record<string, unknown> };
+    module_record_update: { input_schema: Record<string, unknown> };
+  };
+  collection_contracts: Array<{
+    collection_key: string;
+    relation_fields: Array<{
+      field_key: string;
+      target_collection: string;
+      cardinality: 'one' | 'many';
+      required: boolean;
+      request_value_shape: 'record_id[]';
+    }>;
+    examples: {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+  }>;
 }> {
   const actor = validatedActor(actorValue);
   const row = await findInstallation(db, actor, { moduleId }, 'read');
+  const manifest = await verifyManifest(row.version);
   return {
     installation_id: row.installation.id,
     enabled: row.installation.is_enabled,
     manifest_digest: row.version.manifest_digest,
-    manifest: await verifyManifest(row.version),
+    manifest,
+    operation_contracts: {
+      module_record_create: {
+        input_schema: getModuleOperationInputJsonSchema('module_record_create', {
+          require_write_idempotency: true,
+        }),
+      },
+      module_record_update: {
+        input_schema: getModuleOperationInputJsonSchema('module_record_update', {
+          require_write_idempotency: true,
+        }),
+      },
+    },
+    collection_contracts: manifest.collections.map((collection) => {
+      const relationFields = collection.fields.filter(
+        (field): field is Extract<ModuleField, { type: 'relation' }> => field.type === 'relation',
+      );
+      const scalarFields = collection.fields.filter((field) => field.type !== 'relation');
+      const requiredScalarFields = scalarFields.filter((field) => field.required);
+      const exampleScalarFields = requiredScalarFields.length > 0
+        ? requiredScalarFields
+        : scalarFields.slice(0, 1);
+      const data = Object.fromEntries(
+        exampleScalarFields.map((field) => [field.key, moduleFieldExample(field)]),
+      );
+      const relations = Object.fromEntries(relationFields.map((field) => [
+        field.key,
+        field.multiple
+          ? [`${field.key}_record_id_1`, `${field.key}_record_id_2`]
+          : [`${field.key}_record_id`],
+      ]));
+      const updateField = scalarFields[0];
+      return {
+        collection_key: collection.key,
+        relation_fields: relationFields.map((field) => ({
+          field_key: field.key,
+          target_collection: field.target_collection,
+          cardinality: field.multiple ? 'many' as const : 'one' as const,
+          required: field.required,
+          request_value_shape: 'record_id[]' as const,
+        })),
+        examples: {
+          create: {
+            module_id: manifest.id,
+            collection_key: collection.key,
+            data,
+            relations,
+            expected_manifest_digest: row.version.manifest_digest,
+            idempotency_key: `create:${collection.key}:stable-intent-key`,
+          },
+          update: {
+            record_id: `${collection.key}_record_id`,
+            patch: updateField ? { [updateField.key]: moduleFieldExample(updateField) } : {},
+            unset_fields: [],
+            relations,
+            expected_revision: 1,
+            expected_manifest_digest: row.version.manifest_digest,
+            idempotency_key: `update:${collection.key}:stable-intent-key`,
+          },
+        },
+      };
+    }),
   };
 }
 
@@ -2091,7 +2209,19 @@ export async function preflightModuleMutationWithExecutor(
     assertExpectedManifest(installation.version, createInput.expected_manifest_digest);
     const manifest = await verifyManifest(installation.version);
     const data = parseRecordData(manifest, createInput.collection_key, createInput.data);
+    const relations = ModuleRelationPatchSchema.parse(createInput.relations ?? {});
     await assertMemberFieldsValid(executor, actor.org_id, manifest, createInput.collection_key, data);
+    await prepareRelationReplacements(
+      executor,
+      actor,
+      {
+        id: '__module_create_preflight__',
+        installation_id: installation.installation.id,
+        collection_key: createInput.collection_key,
+      },
+      manifest,
+      relations,
+    );
     await assertMutationIdempotencyAvailable(executor, actor, 'create', createInput);
     return;
   }
@@ -2176,6 +2306,7 @@ export async function createModuleRecord(
     assertExpectedManifest(installation.version, input.expected_manifest_digest);
     const manifest = await verifyManifest(installation.version);
     const data = parseRecordData(manifest, input.collection_key, input.data);
+    const relationReplacements = ModuleRelationPatchSchema.parse(input.relations ?? {});
     await assertMemberFieldsValid(tx, actor.org_id, manifest, input.collection_key, data);
 
     let projection: ReturnType<typeof projectModuleRecordSearch>;
@@ -2203,8 +2334,25 @@ export async function createModuleRecord(
     }).returning();
     if (!created) throw new Error('Module record insert returned no row');
 
+    const preparedRelations = await prepareRelationReplacements(
+      tx,
+      actor,
+      created,
+      manifest,
+      relationReplacements,
+      { lock: true },
+    );
+    await applyPreparedRelationReplacements(
+      tx,
+      actor,
+      created,
+      relationReplacements,
+      preparedRelations,
+    );
+
     const record = toRecord(created, installation.installation, installation.version);
-    const changedFields = Object.keys(data).sort();
+    const relationFields = Object.keys(relationReplacements).sort();
+    const changedFields = [...new Set([...Object.keys(data), ...relationFields])].sort();
     await insertAudit(tx, actor, {
       action: 'module_record.create',
       entityType: 'module_record',
@@ -2215,8 +2363,14 @@ export async function createModuleRecord(
         revision: created.revision,
         manifest_digest: installation.version.manifest_digest,
         data_digest: recordDigest(data),
+        ...(relationFields.length > 0
+          ? { relations_digest: moduleValueDigest(relationReplacements) }
+          : {}),
       },
-      metadata: { changed_fields: changedFields },
+      metadata: {
+        changed_fields: changedFields,
+        ...(relationFields.length > 0 ? { relation_fields: relationFields } : {}),
+      },
     });
     await insertMutationReceipt(tx, actor, {
       operation: 'create',

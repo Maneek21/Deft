@@ -265,6 +265,9 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   assert.equal(startBody.channel_event.space_id, startBody.challenge.id);
   assert.ok(startBody.challenge.required_tools.includes('memory_recall'));
   assert.ok(startBody.challenge.required_tools.includes('memory_write'));
+  assert.ok(startBody.challenge.required_tools.includes('module_list'));
+  assert.match(startBody.instructions, /allowed_next_statuses/);
+  assert.match(startBody.instructions, /module_schema_get/);
   assert.match(startBody.runtime_setup.certification_prompt, /final reply.*nonce/i);
 
   await withClient(async (client) => {

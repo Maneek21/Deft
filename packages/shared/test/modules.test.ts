@@ -10,6 +10,7 @@ import {
   ModuleActorSchema,
   ModuleMutationResultSchema,
   ModuleQueryFilterSchema,
+  ModuleRecordCreateRequestSchema,
   ModuleRecordQueryRequestSchema,
   ModuleSavedViewConfigSchema,
   ModuleRecordUpdateRequestSchema,
@@ -519,6 +520,22 @@ describe('actors, resources, and generic operations', () => {
     assert.deepEqual(update.relations, { company_id: ['company_1'] });
     assert.equal(ModuleRecordUpdateRequestSchema.safeParse({
       ...update,
+      relations: { company_id: ['company_1', 'company_1'] },
+    }).success, false);
+  });
+
+  test('uses the same generic relation patch for record creation', () => {
+    const create = ModuleRecordCreateRequestSchema.parse({
+      module_id: 'community.deft.contacts',
+      collection_key: 'contacts',
+      data: { name: 'Ada' },
+      relations: { company_id: ['company_1'] },
+      expected_manifest_digest: `sha256:${'a'.repeat(64)}`,
+      idempotency_key: 'relation-create-1',
+    });
+    assert.deepEqual(create.relations, { company_id: ['company_1'] });
+    assert.equal(ModuleRecordCreateRequestSchema.safeParse({
+      ...create,
       relations: { company_id: ['company_1', 'company_1'] },
     }).success, false);
   });
