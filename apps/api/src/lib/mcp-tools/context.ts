@@ -131,22 +131,6 @@ function buildContextPackets(
 
   const packets: ContextPacket[] = [
     {
-      id: 'company_memory',
-      scope: 'org',
-      label: 'Company memory',
-      description: 'Org-wide knowledge that is useful across channels and teams.',
-      retrieval_hint: {
-        tool: 'memory_recall',
-        args_template: {
-          caller_employee_slug: ctx.employee_slug,
-          query: '<query>',
-          scope: 'org',
-        },
-      },
-      item_count: companyItems.length,
-      items: companyItems,
-    },
-    {
       id: 'employee_memory',
       scope: 'employee',
       label: 'Employee memory',
@@ -163,10 +147,26 @@ function buildContextPackets(
       item_count: employeeItems.length,
       items: employeeItems,
     },
+    {
+      id: 'company_memory',
+      scope: 'org',
+      label: 'Company memory',
+      description: 'Org-wide knowledge that is useful across channels and teams.',
+      retrieval_hint: {
+        tool: 'memory_recall',
+        args_template: {
+          caller_employee_slug: ctx.employee_slug,
+          query: '<query>',
+          scope: 'org',
+        },
+      },
+      item_count: companyItems.length,
+      items: companyItems,
+    },
   ];
 
   if (spaceId) {
-    packets.splice(1, 0, {
+    packets.unshift({
       id: `space:${spaceId}:memory`,
       scope: 'space',
       label: 'Channel memory',

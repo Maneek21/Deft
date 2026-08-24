@@ -14,6 +14,12 @@ records a concise turn receipt after responses, and mirrors explicit Hermes
 memory writes into an employee-owned Deft wiki page. Verified shared knowledge
 is promoted with Deft's existing `memory_update` approval flow.
 
+Agent Channel prompts carry a bridge-owned primary-evidence envelope. For a
+message event, the provider passes its space and triggering message to
+`platform_context` and performs its automatic recall against channel-relevant
+Knowledge before the employee considers broader workspace context. Markers
+embedded later in workplace text are ignored.
+
 Hermes must be upgraded to a version whose memory-provider discovery supports
 user or packaged providers before certification. The currently audited v0.16.0
 runtime is not the production baseline.

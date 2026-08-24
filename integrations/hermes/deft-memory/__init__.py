@@ -12,6 +12,48 @@ from agent.memory_provider import MemoryProvider
 
 
 MAX_PREFETCH_CHARS = 16000
+PRIMARY_EVIDENCE_PREFIX = "DEFT_PRIMARY_EVIDENCE_JSON="
+MAX_RETRIEVAL_QUERY_CHARS = 2000
+
+
+def _bounded_string(value: Any, limit: int = 512) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized[:limit]
+
+
+def _parse_primary_evidence(query: str) -> Dict[str, Any]:
+    """Read only the bridge-owned first line; payload markers later are untrusted."""
+    first_line = query.splitlines()[0] if query else ""
+    if not first_line.startswith(PRIMARY_EVIDENCE_PREFIX):
+        return {}
+    try:
+        raw = json.loads(first_line[len(PRIMARY_EVIDENCE_PREFIX):])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    evidence: Dict[str, Any] = {}
+    for key in (
+        "event_id",
+        "event_kind",
+        "source_kind",
+        "source_id",
+        "space_id",
+        "thread_id",
+        "triggering_message_id",
+    ):
+        value = _bounded_string(raw.get(key))
+        if value is not None:
+            evidence[key] = value
+    retrieval_query = _bounded_string(raw.get("retrieval_query"), MAX_RETRIEVAL_QUERY_CHARS)
+    if retrieval_query is not None:
+        evidence["retrieval_query"] = retrieval_query
+    return evidence
 
 
 def _compact_json_value(value: Any, *, string_limit: int, list_limit: int) -> Any:
@@ -34,6 +76,7 @@ def _serialize_prefetch_context(
     platform_context: Any,
     memories: Any,
     session_id: str,
+    primary_evidence: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Return valid, bounded JSON while retaining the highest-value context."""
     context = dict(platform_context) if isinstance(platform_context, dict) else platform_context
@@ -42,10 +85,16 @@ def _serialize_prefetch_context(
             key: list(value) if isinstance(value, list) else value
             for key, value in context.items()
         }
+        if primary_evidence and isinstance(context.get("context_packets"), list):
+            # The labeled packets establish locality and provenance. Keeping the
+            # flat convenience copy would duplicate broad org snippets without
+            # their evidence tier and weaken the local-first ordering.
+            context.pop("relevant_wiki_snippets", None)
     memory_payload = list(memories) if isinstance(memories, list) else memories
     payload = {
         "source": "deft",
         "session_id": session_id,
+        "primary_evidence": primary_evidence or None,
         "platform_context": context,
         "wiki_results": memory_payload,
     }
@@ -141,20 +190,41 @@ class DeftMemoryProvider(MemoryProvider):
         if not self._enabled or not query.strip():
             return ""
         try:
+            active_session_id = session_id or self._session_id
+            evidence = _parse_primary_evidence(query)
+            trigger = {
+                "kind": evidence.get("event_kind", "hermes_memory_prefetch"),
+                "session_id": active_session_id,
+            }
+            for source_key in (
+                "event_id",
+                "source_kind",
+                "source_id",
+                "space_id",
+                "thread_id",
+                "triggering_message_id",
+            ):
+                if evidence.get(source_key):
+                    trigger[source_key] = evidence[source_key]
             context = self._call("platform_context", {
-                "trigger": {"kind": "hermes_memory_prefetch", "session_id": session_id or self._session_id},
+                "trigger": trigger,
             })
-            memories = self._call("memory_recall", {
-                "query": query[:2000],
+            recall_args: Dict[str, Any] = {
+                "query": evidence.get("retrieval_query", query[:MAX_RETRIEVAL_QUERY_CHARS]),
                 "limit": self._limit,
                 "scope": "all",
                 "include_org": True,
-            })
+            }
+            if evidence.get("space_id"):
+                recall_args["space_id"] = evidence["space_id"]
+                recall_args["include_org"] = False
+            memories = self._call("memory_recall", recall_args)
             self.last_error = None
             return _serialize_prefetch_context(
                 context,
                 memories,
-                session_id or self._session_id,
+                active_session_id,
+                evidence,
             )
         except Exception as exc:  # fail open: Deft outage must not kill Hermes
             self.last_error = str(exc)
