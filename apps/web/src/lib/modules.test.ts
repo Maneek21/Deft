@@ -362,6 +362,7 @@ test('normalizes relation and audit envelopes for record side panels', () => {
     action: 'module_record.update',
     actor_type: 'user',
     actor_id: 'user-1',
+    actor_name: 'Lina Ortega',
     metadata: { changed_fields: ['email'] },
     created_at: '2026-01-02T00:00:00.000Z',
   }]), [{
@@ -369,6 +370,7 @@ test('normalizes relation and audit envelopes for record side panels', () => {
     action: 'module_record.update',
     actorType: 'user',
     actorId: 'user-1',
+    actorName: 'Lina Ortega',
     metadata: { changed_fields: ['email'] },
     createdAt: '2026-01-02T00:00:00.000Z',
   }]);

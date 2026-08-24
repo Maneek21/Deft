@@ -31,6 +31,7 @@ import {
   recordConversationTurn,
   recordDecision,
   recordOutcome,
+  recordProgress,
   recordReasoningStep,
   recordActionAttempt,
   requestHumanApproval,
@@ -92,6 +93,7 @@ export const WRITE_TOOLS: Record<string, ToolHandler> = {
   record_conversation_turn: recordConversationTurn as ToolHandler,
   record_decision: recordDecision as ToolHandler,
   record_outcome: recordOutcome as ToolHandler,
+  record_progress: recordProgress as ToolHandler,
   record_reasoning_step: recordReasoningStep as ToolHandler,
   record_action_attempt: recordActionAttempt as ToolHandler,
   // Request for human approval — queues an agent_actions row.
@@ -860,6 +862,45 @@ export const toolSchemas: ToolSchema[] = [
         session_turn_id: { type: 'string' },
       },
       required: ['caller_employee_slug', 'summary'],
+    },
+  },
+  {
+    name: 'record_progress',
+    description:
+      'Persist one concise, meaningful milestone for the active Deft task assignment. ' +
+      'Use this for plan/assumption confirmation, research selection, durable artifact creation, ' +
+      'a retry that changes the approach, or a specific human/approval blocker. Do not mirror every tool call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...CALLER_SLUG_PROP,
+        summary: { type: 'string', maxLength: 600, description: 'Human-readable milestone or precise blocker.' },
+        status: {
+          type: 'string',
+          enum: ['working', 'retrying', 'waiting_human', 'needs_human', 'blocked', 'approval_pending'],
+          description: 'Current business-work state, not runtime transport health.',
+        },
+        idempotency_key: {
+          type: 'string',
+          maxLength: 300,
+          description: 'Stable key for this milestone within the current assignment attempt.',
+        },
+        artifact_refs: {
+          type: 'array',
+          maxItems: 10,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: { type: 'string', maxLength: 64 },
+              label: { type: 'string', maxLength: 200 },
+              reference: { type: 'string', maxLength: 500 },
+            },
+            required: ['kind', 'label', 'reference'],
+          },
+        },
+      },
+      required: ['caller_employee_slug', 'summary', 'status', 'idempotency_key'],
     },
   },
   {

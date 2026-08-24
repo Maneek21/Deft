@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db } from '../lib/db.js';
-import { auditLog } from '@deft/db/schema';
-import { eq, and, desc, notInArray } from 'drizzle-orm';
+import { agentEmployees, auditLog, orgMembers, users } from '@deft/db/schema';
+import { eq, and, desc, inArray, notInArray } from 'drizzle-orm';
 import type { AuthUser } from '../middleware/auth.js';
 import { assertModuleAuditReadAccess, humanModuleActor } from '../lib/module-service.js';
 import { isModuleError } from '../lib/module-errors.js';
@@ -77,6 +77,37 @@ auditRoutes.get('/', async (c) => {
     // before_state/after_state can contain values from adjacent integrations
     // (for example a linked task id). The record activity surface needs only a
     // narrow, non-secret projection and must not inherit those permissions.
+    const employeeIds = [...new Set(events
+      .filter((event) => event.actor_type === 'agent_employee')
+      .map((event) => event.actor_id))];
+    const userIds = [...new Set(events
+      .filter((event) => event.actor_type === 'human' || event.actor_type === 'defty' || event.actor_type === 'user')
+      .map((event) => event.actor_id))];
+    const [employeeActors, userActors] = await Promise.all([
+      employeeIds.length > 0
+        ? db.select({ id: agentEmployees.id, name: agentEmployees.name })
+          .from(agentEmployees)
+          .where(and(eq(agentEmployees.org_id, user.org_id), inArray(agentEmployees.id, employeeIds)))
+        : [],
+      userIds.length > 0
+        ? db.select({ id: users.id, name: users.name })
+          .from(users)
+          .innerJoin(orgMembers, and(
+            eq(orgMembers.user_id, users.id),
+            eq(orgMembers.org_id, user.org_id),
+            eq(orgMembers.is_active, true),
+          ))
+          .where(inArray(users.id, userIds))
+        : [],
+    ]);
+    const actorNames = new Map<string, string>([
+      ...employeeActors.map((actor) => [`agent_employee:${actor.id}`, actor.name] as const),
+      ...userActors.flatMap((actor) => [
+        [`human:${actor.id}`, actor.name] as const,
+        [`defty:${actor.id}`, actor.name] as const,
+        [`user:${actor.id}`, actor.name] as const,
+      ]),
+    ]);
     return c.json(events.map((event) => ({
       id: event.id,
       action: event.action,
@@ -84,6 +115,7 @@ auditRoutes.get('/', async (c) => {
       entity_id: event.entity_id,
       actor_type: event.actor_type,
       actor_id: event.actor_id,
+      actor_name: actorNames.get(`${event.actor_type}:${event.actor_id}`) ?? null,
       metadata: safeModuleRecordMetadata(event.metadata),
       created_at: event.created_at,
     })));

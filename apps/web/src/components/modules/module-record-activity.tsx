@@ -50,7 +50,11 @@ export function ModuleRecordActivity({ resourceId, fields }: { resourceId: strin
                 )}
                 <p className="mt-1 text-[0.625rem]" style={{ color: 'var(--outline)' }}>
                   {event.createdAt ? new Date(event.createdAt).toLocaleString() : 'Time unavailable'}
-                  {event.actorType ? ` · ${humanizeIdentifier(event.actorType)}` : ''}
+                  {event.actorName
+                    ? ` · ${event.actorName}${event.actorType === 'agent_employee' ? ' (AI)' : ''}`
+                    : event.actorType
+                      ? ` · ${humanizeIdentifier(event.actorType)}`
+                      : ''}
                 </p>
               </li>
             );

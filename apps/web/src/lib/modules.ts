@@ -170,6 +170,7 @@ export type ModuleRecordActivity = {
   action: string;
   actorType: string | null;
   actorId: string | null;
+  actorName: string | null;
   metadata: Record<string, unknown>;
   createdAt: string | null;
 };
@@ -519,6 +520,7 @@ export function normalizeModuleActivityResponse(value: unknown): ModuleRecordAct
       action,
       actorType: asString(event.actor_type) ?? asString(event.actorType),
       actorId: asString(event.actor_id) ?? asString(event.actorId),
+      actorName: asString(event.actor_name) ?? asString(event.actorName),
       metadata: asRecord(event.metadata),
       createdAt: asString(event.created_at) ?? asString(event.createdAt),
     }];

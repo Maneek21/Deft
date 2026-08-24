@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import {
   actionReceipts,
   agentActions,
@@ -6,7 +6,9 @@ import {
   agentChannelEvents,
   agentEmployees,
   messages,
+  moduleInstallations,
   moduleMutationReceipts,
+  moduleRecords,
   taskActivity,
   taskComments,
   tasks,
@@ -30,7 +32,17 @@ export type RuntimeReconciliation = {
     task_activity: { count: number; ids: string[] };
     messages: { count: number; ids: string[] };
     agent_actions: { count: number; ids: string[] };
-    module_mutations: { count: number; ids: string[] };
+    module_mutations: {
+      count: number;
+      ids: string[];
+      artifacts: Array<{
+        receipt_id: string;
+        record_id: string;
+        module_slug: string;
+        collection_key: string;
+        operation: 'create' | 'update' | 'archive';
+      }>;
+    };
     action_receipts: { count: number; ids: string[] };
   };
 };
@@ -77,6 +89,7 @@ export async function reconcileAgentChannelRuntimeAttempt(params: {
         eq(taskActivity.org_id, params.orgId),
         eq(taskActivity.task_id, taskId),
         eq(taskActivity.acting_agent_employee_id, params.employeeId),
+        sql`${taskActivity.action} <> 'agent_progress'`,
         gte(taskActivity.created_at, since),
       ))
       .orderBy(desc(taskActivity.created_at))
@@ -120,8 +133,23 @@ export async function reconcileAgentChannelRuntimeAttempt(params: {
     .limit(50);
   const actionIds = actionRows.map((row) => row.id);
   const moduleMutationRows = actionIds.length > 0
-    ? await db.select({ id: moduleMutationReceipts.id })
+    ? await db.select({
+      id: moduleMutationReceipts.id,
+      record_id: moduleMutationReceipts.record_id,
+      operation: moduleMutationReceipts.operation,
+      module_slug: moduleInstallations.slug,
+      collection_key: moduleRecords.collection_key,
+    })
       .from(moduleMutationReceipts)
+      .innerJoin(moduleInstallations, and(
+        eq(moduleInstallations.org_id, moduleMutationReceipts.org_id),
+        eq(moduleInstallations.id, moduleMutationReceipts.installation_id),
+      ))
+      .innerJoin(moduleRecords, and(
+        eq(moduleRecords.org_id, moduleMutationReceipts.org_id),
+        eq(moduleRecords.installation_id, moduleMutationReceipts.installation_id),
+        eq(moduleRecords.id, moduleMutationReceipts.record_id),
+      ))
       .where(and(
         eq(moduleMutationReceipts.org_id, params.orgId),
         eq(moduleMutationReceipts.actor_type, 'agent_employee'),
@@ -168,7 +196,17 @@ export async function reconcileAgentChannelRuntimeAttempt(params: {
       task_activity: { count: taskActivityRows.length, ids: ids(taskActivityRows) },
       messages: { count: messageRows.length, ids: ids(messageRows) },
       agent_actions: { count: actionRows.length, ids: ids(actionRows) },
-      module_mutations: { count: moduleMutationRows.length, ids: ids(moduleMutationRows) },
+      module_mutations: {
+        count: moduleMutationRows.length,
+        ids: ids(moduleMutationRows),
+        artifacts: moduleMutationRows.map((row) => ({
+          receipt_id: row.id,
+          record_id: row.record_id,
+          module_slug: row.module_slug,
+          collection_key: row.collection_key,
+          operation: row.operation,
+        })),
+      },
       action_receipts: { count: receiptRows.length, ids: ids(receiptRows) },
     },
   };

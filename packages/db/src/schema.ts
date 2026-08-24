@@ -2633,6 +2633,7 @@ export const agentCooperativeLog = pgTable('agent_cooperative_log', {
     | 'outcome'
     | 'reasoning_step'
     | 'action_attempt'
+    | 'milestone'
   >().notNull(),
   // Free-form narrative the agent sends. Never truncated — the point of
   // the log is to receive the agent's voice verbatim.
