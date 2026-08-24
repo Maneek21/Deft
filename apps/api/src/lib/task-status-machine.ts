@@ -58,3 +58,23 @@ export function isValidTransition(
   }
   return true;
 }
+
+/**
+ * Return the status values a caller may choose next, preserving the transition
+ * graph's preferred order. A same-status no-op remains valid for update
+ * semantics but is not a next state and is therefore omitted from this
+ * executable read contract.
+ */
+export function allowedNextStatuses(
+  from: StatusId,
+  projectResolvedConfig: ProjectResolvedConfig,
+): StatusId[] {
+  const statusIds = projectResolvedConfig.statuses.map((status) => status.id);
+  if (!statusIds.includes(from)) return [];
+  if (!projectResolvedConfig.allowed_transitions) {
+    return statusIds.filter((status) => status !== from);
+  }
+  const validStatuses = new Set(statusIds);
+  return (projectResolvedConfig.allowed_transitions[from] ?? [])
+    .filter((status) => status !== from && validStatuses.has(status));
+}

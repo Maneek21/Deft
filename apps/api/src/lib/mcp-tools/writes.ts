@@ -44,7 +44,7 @@ import { invalidatePlatformContextCacheFor } from './context.js';
 import { generateReceipt } from '../receipts.js';
 import { checkReplyStorm, STORM_THRESHOLD } from '../storm-detector.js';
 import { getProjectResolvedConfig } from '../project-resolved-config.js';
-import { isValidTransition } from '../task-status-machine.js';
+import { allowedNextStatuses, isValidTransition } from '../task-status-machine.js';
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
@@ -524,11 +524,27 @@ export async function executeTaskUpdate(
 
     if (typeof patch.title === 'string') update.title = patch.title;
     if (typeof patch.description === 'string') update.description = patch.description;
+    if (patch.status !== undefined && !VALID_STATUS.has(patch.status)) {
+      const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
+      return errorResult(JSON.stringify({
+        error: 'task_update: invalid status transition',
+        code: 'INVALID_TRANSITION',
+        current_status: existingTask.status,
+        requested_status: patch.status,
+        allowed_next_statuses: allowedNextStatuses(existingTask.status, resolvedConfig),
+      }));
+    }
     if (patch.status && VALID_STATUS.has(patch.status)) {
       if (patch.status !== existingTask.status) {
         const resolvedConfig = await getProjectResolvedConfig(existingTask.project_id);
         if (!isValidTransition(existingTask.status, patch.status, resolvedConfig)) {
-          return errorResult('task_update: invalid status transition');
+          return errorResult(JSON.stringify({
+            error: 'task_update: invalid status transition',
+            code: 'INVALID_TRANSITION',
+            current_status: existingTask.status,
+            requested_status: patch.status,
+            allowed_next_statuses: allowedNextStatuses(existingTask.status, resolvedConfig),
+          }));
         }
         update.status = patch.status;
         activityEntries.push({
@@ -707,6 +723,7 @@ export async function executeTaskUpdate(
 
     invalidatePlatformContextCacheFor(ctx.employee_id);
 
+    const resultConfig = await getProjectResolvedConfig(row.project_id);
     const resultPayload = {
       id: row.id,
       title: row.title,
@@ -716,6 +733,7 @@ export async function executeTaskUpdate(
       due_date: row.due_date,
       comment_id: createdCommentId,
       updated_at: row.updated_at,
+      allowed_next_statuses: allowedNextStatuses(row.status, resultConfig),
     };
 
     if (!opts?.skipReceipt) {

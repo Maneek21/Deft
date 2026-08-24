@@ -36,6 +36,8 @@ import { generateOneOnePrep } from '../services/oneone-prep.js';
 import { createPlanRow } from './agent-plans.js';
 import { resolveAssignee } from './resolve-assignee.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { allowedNextStatuses } from './task-status-machine.js';
+import { getProjectResolvedConfig } from './project-resolved-config.js';
 import {
   agentToolPolicyError,
   getActiveAgentToolPolicy,
@@ -529,6 +531,7 @@ export async function executeToolCall(
           due_date: tasks.due_date,
           created_at: tasks.created_at,
           assignee_name: users.name,
+          project_id: projects.id,
           project_name: projects.name,
           project_prefix: projects.prefix,
         })
@@ -573,7 +576,16 @@ export async function executeToolCall(
         title: `${task.project_prefix}-${task.number}: ${task.title}`,
       });
 
-      return { result: { ...task, comments, activity }, citations };
+      const resolvedConfig = await getProjectResolvedConfig(task.project_id);
+      return {
+        result: {
+          ...task,
+          allowed_next_statuses: allowedNextStatuses(task.status, resolvedConfig),
+          comments,
+          activity,
+        },
+        citations,
+      };
     }
 
     case 'check_calendar': {

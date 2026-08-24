@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import json
 import unittest
 
 
@@ -55,6 +56,13 @@ class DeftEmployeeHookTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["metadata"]["status"], "error")
         self.assertFalse(calls[1][1]["metadata"]["success"])
         self.assertEqual(calls[1][1]["metadata"]["status"], "timeout")
+
+    def test_llm_context_teaches_executable_deft_contracts(self):
+        hooks = MOD.DeftEmployeeHooks()
+        context = json.loads(hooks.pre_llm_call()["context"])
+        self.assertIn("allowed_next_statuses", context["deft_task_contract"])
+        self.assertIn("module_schema_get", context["deft_module_contract"])
+        self.assertIn("relations", context["deft_module_contract"])
 
 
 if __name__ == "__main__":

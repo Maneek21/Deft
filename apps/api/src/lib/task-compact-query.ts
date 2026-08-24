@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'dri
 import { labels, projects, taskAssignees, taskLabels, tasks, users } from '@deft/db/schema';
 import { db } from './db.js';
 import { visibleTaskCondition } from './task-visibility.js';
+import { allowedNextStatuses, ENGINEERING_DEFAULTS } from './task-status-machine.js';
 
 const STATUSES = new Set(['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled']);
 const PRIORITIES = new Set(['p0', 'p1', 'p2', 'p3']);
@@ -111,5 +112,9 @@ export async function queryCompactTasks(input: CompactTaskQuery, actor: { orgId:
     list.push({ id: label.id, name: label.name, color: label.color });
     byTask.set(label.task_id, list);
   }
-  return rows.map((row) => ({ ...row, labels: byTask.get(row.id) ?? [] }));
+  return rows.map((row) => ({
+    ...row,
+    allowed_next_statuses: allowedNextStatuses(row.status, ENGINEERING_DEFAULTS),
+    labels: byTask.get(row.id) ?? [],
+  }));
 }

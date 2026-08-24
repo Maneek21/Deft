@@ -26,6 +26,8 @@ import {
   workflowRuns,
 } from '@deft/db/schema';
 import { taskUpdate } from '../src/lib/mcp-tools/writes.js';
+import { taskQuery } from '../src/lib/mcp-tools/tasks.js';
+import { taskDetail } from '../src/lib/mcp-tools/reports.js';
 import type { ToolContext } from '../src/lib/mcp-tools/types.js';
 
 let orgId: string;
@@ -178,6 +180,13 @@ test('task_update rejects invalid status transitions', async () => {
 
   assert.equal(result.isError, true, `expected invalid transition error: ${JSON.stringify(result)}`);
   assert.match(result.content?.[0]?.text ?? '', /invalid status transition/i);
+  assert.deepEqual(parseResult(result), {
+    error: 'task_update: invalid status transition',
+    code: 'INVALID_TRANSITION',
+    current_status: 'backlog',
+    requested_status: 'done',
+    allowed_next_statuses: ['todo', 'in_progress', 'cancelled'],
+  });
 
   const [row] = await db
     .select({ status: tasks.status })
@@ -185,6 +194,45 @@ test('task_update rejects invalid status transitions', async () => {
     .where(eq(tasks.id, taskId))
     .limit(1);
   assert.equal(row?.status, 'backlog', 'invalid transition must not update the task');
+});
+
+test('task_update returns the transition contract for an unknown status value', async () => {
+  const taskId = await createTask('todo');
+
+  const result = await taskUpdate({
+    caller_employee_slug: employeeSlug,
+    task_id: taskId,
+    patch: { status: 'review' },
+  }, ctx());
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(parseResult(result), {
+    error: 'task_update: invalid status transition',
+    code: 'INVALID_TRANSITION',
+    current_status: 'todo',
+    requested_status: 'review',
+    allowed_next_statuses: ['in_progress', 'backlog', 'cancelled'],
+  });
+});
+
+test('task_query returns allowed_next_statuses with every task read', async () => {
+  const taskId = await createTask('in_progress');
+
+  const result = await taskQuery({ caller_employee_slug: employeeSlug, limit: 100 }, ctx());
+
+  assert.equal(result.isError, false, JSON.stringify(result));
+  const row = parseResult(result).find((item: { id: string }) => item.id === taskId);
+  assert.ok(row, 'created task should be visible to its employee');
+  assert.deepEqual(row.allowed_next_statuses, ['in_review', 'done', 'backlog', 'cancelled']);
+});
+
+test('task_detail returns the same allowed transition contract', async () => {
+  const taskId = await createTask('in_review');
+
+  const result = await taskDetail({ task_identifier: taskId }, ctx());
+
+  assert.equal(result.isError, false, JSON.stringify(result));
+  assert.deepEqual(parseResult(result).allowed_next_statuses, ['in_progress', 'done', 'cancelled']);
 });
 
 test('task_update enqueues workflow and records activity on valid status change', async () => {
@@ -202,6 +250,7 @@ test('task_update enqueues workflow and records activity on valid status change'
   assert.ok(!result.isError, `valid transition should succeed: ${result.content?.[0]?.text}`);
   const parsed = parseResult(result);
   assert.equal(parsed.status, 'done');
+  assert.deepEqual(parsed.allowed_next_statuses, ['in_progress', 'backlog']);
 
   const [activity] = await db
     .select()

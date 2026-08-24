@@ -42,6 +42,36 @@ loop, but also exposed the reliability and context defects captured in the
 minimum-work section below. The current release therefore remains a supervised
 pilot rather than an ideal-employee release.
 
+## Reliability delivery checkpoint — 2026-08-24
+
+The first two minimum-work packages are merged:
+
+- PR #240 makes the triggering conversation the primary evidence envelope
+  and scopes automatic Knowledge recall to the local assignment before broader
+  workspace evidence; and
+- PR #241 gives every Hermes delivery attempt a stable runtime request key,
+  permits one same-key recovery on an ambiguous transport failure, correlates
+  durable Deft effects to that exact attempt, and reconciles an uncertain final
+  handoff without replaying completed work or reporting a false failure.
+
+The executable-contract package adds the next required employee boundary:
+
+- task query/detail and mutation results expose `allowed_next_statuses`, while
+  invalid transition responses return the current, requested, and allowed
+  statuses in a structured error;
+- module create and update share `relations: { field_key: [record_ids] }`, with
+  record fields and relation edges committed atomically and legacy empty-create
+  idempotency identities preserved;
+- `module_schema_get` returns the exact shared create/update JSON Schemas plus
+  manifest-derived, parser-valid examples and relation cardinality for every
+  collection; and
+- employee certification probes task-transition discovery and generic module
+  discovery without requiring Contacts—or any module—to be installed.
+
+This still does not make the ideal-employee claim. Distributed onboarding,
+the governed memory loop, employee progress/outcome UX, and the clean-state
+release gauntlet remain in the delivery order below.
+
 ## Executive summary
 
 The goal is not to rebuild Hermes inside Deft.
