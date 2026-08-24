@@ -26,6 +26,7 @@ import {
   agentChannelTokens,
   projects,
   mcpConnections,
+  moduleInstallations,
 } from '@deft/db/schema';
 import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
@@ -42,6 +43,7 @@ import { summarizeAgentChannelLifecycle, summarizeAgentChannelMetrics } from '..
 import { loadAgentActivity } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
+import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -609,6 +611,10 @@ type CertificationChallengeEvidence = {
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
   runtimeSessionSeen: boolean;
+  baseCompleted: boolean;
+  restartDetected: boolean;
+  restartProofEventSeen: boolean;
+  restartProofCompleted: boolean;
   completed: boolean;
 };
 
@@ -623,6 +629,7 @@ function runtimeToolName(runtimeKind: string, tool: string): string {
 async function loadCertificationChallengeEvidence(params: {
   orgId: string;
   employeeId: string;
+  runtimeKind?: string | null;
   challenge: {
     id: string;
     nonce: string;
@@ -632,6 +639,7 @@ async function loadCertificationChallengeEvidence(params: {
   };
 }): Promise<CertificationChallengeEvidence> {
   const { orgId, employeeId, challenge } = params;
+  const requiresRestartProof = params.runtimeKind === 'hermes';
 
   // Certification evidence is scoped to the challenge and intentionally
   // independent of the bounded recent-activity lists rendered in diagnostics.
@@ -676,6 +684,7 @@ async function loadCertificationChallengeEvidence(params: {
       delivery_count: agentChannelEvents.delivery_count,
       runtime_session_key: agentChannelEvents.runtime_session_key,
       work_outcome: agentChannelEvents.work_outcome,
+      payload: agentChannelEvents.payload,
     })
     .from(agentChannelEvents)
     .where(and(
@@ -710,7 +719,7 @@ async function loadCertificationChallengeEvidence(params: {
   const channelReplyNonceSeen = persistedComplete || replyRows.length > 0;
   const singleDelivery = persistedComplete || channelEvent?.delivery_count === 1;
   const runtimeSessionSeen = persistedComplete || Boolean(channelEvent?.runtime_session_key);
-  const completed = persistedComplete || (
+  const baseCompleted = persistedComplete || (
     missingTools.length === 0
     && nonceSeen
     && channelEventSeen
@@ -719,6 +728,50 @@ async function loadCertificationChallengeEvidence(params: {
     && singleDelivery
     && runtimeSessionSeen
   );
+  const eventPayload = channelEvent?.payload && typeof channelEvent.payload === 'object'
+    ? channelEvent.payload as Record<string, unknown>
+    : {};
+  const baselineRestartCount = Number(eventPayload.baseline_restart_count ?? 0);
+  const [connection] = await db.select({ metadata: agentChannelConnections.metadata })
+    .from(agentChannelConnections)
+    .where(and(
+      eq(agentChannelConnections.org_id, orgId),
+      eq(agentChannelConnections.agent_employee_id, employeeId),
+    )).limit(1);
+  const currentRestartCount = Number((connection?.metadata as Record<string, unknown> | null)?.restart_count ?? 0);
+  const restartDetected = persistedComplete || !requiresRestartProof || currentRestartCount > baselineRestartCount;
+  const [restartProofEvent] = await db.select({
+    id: agentChannelEvents.id,
+    status: agentChannelEvents.status,
+    delivery_count: agentChannelEvents.delivery_count,
+    runtime_session_key: agentChannelEvents.runtime_session_key,
+    work_outcome: agentChannelEvents.work_outcome,
+  }).from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.org_id, orgId),
+    eq(agentChannelEvents.agent_employee_id, employeeId),
+    eq(agentChannelEvents.kind, 'certification.restart_proof'),
+    eq(agentChannelEvents.source_kind, 'certification'),
+    eq(agentChannelEvents.source_id, challenge.id),
+    gte(agentChannelEvents.created_at, challenge.started_at),
+  )).orderBy(desc(agentChannelEvents.created_at)).limit(1);
+  const restartProofReplies = restartProofEvent ? await db.select({ id: agentChannelDeliveryAttempts.id })
+    .from(agentChannelDeliveryAttempts).where(and(
+      eq(agentChannelDeliveryAttempts.org_id, orgId),
+      eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+      eq(agentChannelDeliveryAttempts.event_id, restartProofEvent.id),
+      eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+      eq(agentChannelDeliveryAttempts.status, 'completed'),
+      sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
+    )).limit(1) : [];
+  const restartProofEventSeen = persistedComplete || !requiresRestartProof || Boolean(restartProofEvent);
+  const restartProofCompleted = persistedComplete || !requiresRestartProof || Boolean(
+    restartProofEvent?.status === 'completed'
+      && restartProofEvent.work_outcome === 'completed'
+      && restartProofEvent.delivery_count === 1
+      && restartProofEvent.runtime_session_key
+      && restartProofReplies.length > 0
+  );
+  const completed = persistedComplete || (baseCompleted && restartDetected && restartProofCompleted);
 
   return {
     seenTools,
@@ -730,6 +783,10 @@ async function loadCertificationChallengeEvidence(params: {
     channelReplyNonceSeen,
     singleDelivery,
     runtimeSessionSeen,
+    baseCompleted,
+    restartDetected,
+    restartProofEventSeen,
+    restartProofCompleted,
     completed,
   };
 }
@@ -879,7 +936,7 @@ function buildRuntimeSetup(
       tool_server_name: 'deft',
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
       channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
-      integration_version: '0.2.4',
+      integration_version: '0.3.0',
       integration_bundle_url: hermesIntegrationBundleUrl(),
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
@@ -1006,6 +1063,7 @@ function certificationInstructions(
     'For task_query, search for any active task or request a small list, and confirm returned tasks expose allowed_next_statuses. Do not mutate task state during certification.',
     'For module_list, request enabled modules. If one exists, call module_schema_get and inspect its create/update input schemas and collection examples. An empty list is valid; do not mutate module records during certification.',
     `For ping_alive, identify yourself naturally as ${employee.name}; do not prefix every future chat message with your name.`,
+    'After the first assignment passes, restart the channel bridge once. Deft will send a fresh assignment to prove reconnect persistence.',
     ...setup.troubleshooting.map((line) => `Troubleshooting: ${line}`),
   ].join('\n');
 }
@@ -1020,6 +1078,8 @@ function buildCertificationStages(params: {
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
   runtimeSessionSeen: boolean;
+  restartDetected: boolean;
+  restartProofCompleted: boolean;
   completed: boolean;
 }): CertificationStage[] {
   const runtimeKind = runtimeKindOf(params.employee);
@@ -1084,6 +1144,22 @@ function buildCertificationStages(params: {
         : 'Waiting for a nonce-bearing reply through Agent Channel.',
     },
     {
+      key: 'runtime_restart_detected',
+      label: 'Runtime restart detected',
+      status: params.restartDetected ? 'pass' : 'pending',
+      detail: params.restartDetected
+        ? 'The remote bridge reconnected with a new worker identity.'
+        : 'Restart the Hermes channel bridge once to prove durable recovery.',
+    },
+    {
+      key: 'post_restart_assignment',
+      label: 'Post-restart assignment completed',
+      status: params.restartProofCompleted ? 'pass' : 'pending',
+      detail: params.restartProofCompleted
+        ? 'Hermes claimed and completed fresh work after reconnecting.'
+        : 'Waiting for Hermes to process the restart-proof assignment.',
+    },
+    {
       key: 'verified',
       label: 'Verified employee',
       status: params.completed ? 'pass' : 'pending',
@@ -1106,6 +1182,8 @@ function certificationFailureReason(params: {
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
   runtimeSessionSeen: boolean;
+  restartDetected: boolean;
+  restartProofCompleted: boolean;
 }): string | null {
   if (
     params.missingTools.length === 0
@@ -1115,6 +1193,8 @@ function certificationFailureReason(params: {
     && params.channelReplyNonceSeen
     && params.singleDelivery
     && params.runtimeSessionSeen
+    && params.restartDetected
+    && params.restartProofCompleted
   ) return null;
   const runtimeKind = runtimeKindOf(params.employee);
   const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
@@ -1132,6 +1212,8 @@ function certificationFailureReason(params: {
       : `The runtime has not called: ${params.missingTools.join(', ')}.`;
   }
   if (!params.channelReplyNonceSeen) return 'Hermes completed tool calls but did not reply through Agent Channel with the certification nonce.';
+  if (!params.restartDetected) return 'Restart the Hermes channel bridge once so Deft can prove reconnect persistence.';
+  if (!params.restartProofCompleted) return 'The bridge reconnected, but Hermes has not completed the post-restart proof assignment yet.';
   return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
 }
 
@@ -2145,6 +2227,84 @@ agentEmployeeRoutes.post('/:id/channel-events/:eventId/cancel', async (c) => {
 // agent's filesystem. A Defty-specific settings page (Defty's SOUL.md
 // lives inside Deft) can come back as its own focused feature if needed.
 
+const onboardingPreflightSchema = z.object({
+  modules: z.array(z.object({
+    module_id: z.string().trim().min(1).max(200),
+    access: z.enum(['read', 'write']),
+  }).strict()).max(50).default([]),
+  hermes_toolsets: z.array(z.string().trim().min(1).max(64)).max(50).default([]),
+}).strict();
+type OnboardingPreflightRequirements = z.infer<typeof onboardingPreflightSchema>;
+
+async function loadAgentOnboardingPreflight(
+  orgId: string,
+  employee: typeof agentEmployees.$inferSelect,
+  requirements: OnboardingPreflightRequirements,
+) {
+  const [[connection], [channelToken]] = await Promise.all([
+    db.select().from(agentChannelConnections)
+      .where(and(eq(agentChannelConnections.agent_employee_id, employee.id), eq(agentChannelConnections.org_id, orgId))).limit(1),
+    db.select({ id: agentChannelTokens.id }).from(agentChannelTokens).where(and(
+      eq(agentChannelTokens.agent_employee_id, employee.id),
+      eq(agentChannelTokens.org_id, orgId),
+      eq(agentChannelTokens.is_active, true),
+      isNull(agentChannelTokens.revoked_at),
+    )).limit(1),
+  ]);
+  const moduleIds = [...new Set(requirements.modules.map((requirement) => requirement.module_id))];
+  const installedModules = moduleIds.length === 0 ? [] : await db.select({
+    module_id: moduleInstallations.module_id,
+    access: moduleInstallations.agent_access,
+    enabled: moduleInstallations.is_enabled,
+  }).from(moduleInstallations).where(and(
+    eq(moduleInstallations.org_id, orgId),
+    eq(moduleInstallations.is_deleted, false),
+    inArray(moduleInstallations.module_id, moduleIds),
+  ));
+  const metadata = connection?.metadata && typeof connection.metadata === 'object'
+    ? connection.metadata as Record<string, unknown>
+    : {};
+  const attestation = metadata.runtime_attestation && typeof metadata.runtime_attestation === 'object'
+    ? metadata.runtime_attestation as any
+    : null;
+  return evaluateAgentOnboardingPreflight({
+    employee: {
+      active: employee.is_active && !employee.is_deleted,
+      unhealthy: employee.unhealthy,
+      has_mcp_token: Boolean(employee.mcp_token_hash),
+      has_channel_token: Boolean(channelToken),
+      trust_level: employee.trust_level,
+      max_daily_actions: employee.max_daily_actions,
+    },
+    connection: connection ? { status: connection.status, attestation } : null,
+    requirements,
+    modules: installedModules.filter((module) => module.access !== 'none') as Array<{
+      module_id: string;
+      access: 'read' | 'write';
+      enabled: boolean;
+    }>,
+  });
+}
+
+agentEmployeeRoutes.post('/:id/onboarding-preflight', async (c) => {
+  const authorizationError = await requireOwnerOrAdmin(c);
+  if (authorizationError) return authorizationError;
+  const user = c.get('user');
+  const id = c.req.param('id');
+  const parsed = onboardingPreflightSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+  }
+
+  const [employee] = await db.select().from(agentEmployees)
+    .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id))).limit(1);
+  if (!employee || employee.is_deleted) {
+    return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+  }
+  const result = await loadAgentOnboardingPreflight(user.org_id, employee, parsed.data);
+  return c.json(result, result.ready ? 200 : 409);
+});
+
 // ─── GET /:id/developer  → BYOA connection credentials ───────────────
 //
 // Returns the MCP endpoint URL and a masked token placeholder so the
@@ -2265,6 +2425,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       ? await loadCertificationChallengeEvidence({
           orgId: user.org_id,
           employeeId: id,
+          runtimeKind: employee.runtime_kind,
           challenge: latestChallenge,
         })
       : null;
@@ -2306,6 +2467,8 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              restartDetected: challengeEvidence?.restartDetected ?? false,
+              restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
             }),
           }
@@ -2424,6 +2587,31 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
       .limit(1);
     if (!employee) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
 
+    const preflightInput = onboardingPreflightSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!preflightInput.success) {
+      return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: preflightInput.error.flatten() }, 400);
+    }
+    const preflight = runtimeKindOf(employee) === 'hermes'
+      ? await loadAgentOnboardingPreflight(user.org_id, employee, preflightInput.data)
+      : null;
+    if (preflight && !preflight.ready) {
+      return c.json({
+        error: 'Hermes onboarding preflight failed. Resolve the failed checks before certification.',
+        code: 'ONBOARDING_PREFLIGHT_FAILED',
+        preflight,
+      }, 409);
+    }
+    const [currentConnection] = await db.select({ metadata: agentChannelConnections.metadata })
+      .from(agentChannelConnections)
+      .where(and(eq(agentChannelConnections.agent_employee_id, employee.id), eq(agentChannelConnections.org_id, user.org_id)))
+      .limit(1);
+    const connectionMetadata = currentConnection?.metadata && typeof currentConnection.metadata === 'object'
+      ? currentConnection.metadata as Record<string, unknown>
+      : {};
+    const baselineRestartCount = Number.isInteger(connectionMetadata.restart_count)
+      ? Number(connectionMetadata.restart_count)
+      : 0;
+
     await cancelPendingCertification(user.org_id, employee.id, 'Superseded by a new certification challenge');
     const nonce = `deft-cert-${employee.slug}-${crypto.randomBytes(6).toString('hex')}`;
     const [challenge] = await db
@@ -2461,6 +2649,8 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
         parent_id: null,
         certification_prompt: buildCertificationPrompt(employee, nonce),
         expected_reply_contains: nonce,
+        onboarding_requirements: preflightInput.data,
+        baseline_restart_count: baselineRestartCount,
       },
     });
 
@@ -2475,6 +2665,7 @@ agentEmployeeRoutes.post('/:id/certification/start', async (c) => {
       conversation_id: challenge.id,
       instructions: certificationInstructions(employee, nonce),
       runtime_setup: buildRuntimeSetup(employee, nonce),
+      preflight,
       mcp_endpoint_url: mcpEndpointUrl(),
     }, 201);
   } catch (err) {
@@ -2509,6 +2700,7 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
       ? await loadCertificationChallengeEvidence({
           orgId: user.org_id,
           employeeId: id,
+          runtimeKind: employee.runtime_kind,
           challenge,
         })
       : null;
@@ -2536,6 +2728,8 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              restartDetected: challengeEvidence?.restartDetected ?? false,
+              restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
             }),
           }
@@ -2576,6 +2770,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
     const challengeEvidence = await loadCertificationChallengeEvidence({
       orgId: user.org_id,
       employeeId: id,
+      runtimeKind: employee.runtime_kind,
       challenge,
     });
     const {
@@ -2588,8 +2783,32 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelReplyNonceSeen,
       singleDelivery,
       runtimeSessionSeen,
+      baseCompleted,
+      restartDetected,
+      restartProofEventSeen,
+      restartProofCompleted,
       completed,
     } = challengeEvidence;
+    if (baseCompleted && restartDetected && !restartProofEventSeen) {
+      await publishAgentChannelEvent({
+        orgId: user.org_id,
+        employeeId: employee.id,
+        kind: 'certification.restart_proof',
+        sourceKind: 'certification',
+        sourceId: challenge.id,
+        spaceId: challenge.id,
+        actorUserId: user.id,
+        idempotencyKey: `employee-certification-restart:${challenge.id}`,
+        payload: {
+          nonce: challenge.nonce,
+          employee_slug: employee.slug,
+          is_dm: true,
+          parent_id: null,
+          certification_prompt: `This is the post-restart persistence check. Process this fresh assignment, call mcp_deft_ping_alive, and reply with the exact nonce ${challenge.nonce}.`,
+          expected_reply_contains: challenge.nonce,
+        },
+      });
+    }
     const stages = buildCertificationStages({
       employee,
       missingTools,
@@ -2600,6 +2819,8 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelReplyNonceSeen,
       singleDelivery,
       runtimeSessionSeen,
+      restartDetected,
+      restartProofCompleted,
       completed,
     });
     const failureReason = certificationFailureReason({
@@ -2612,6 +2833,8 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelReplyNonceSeen,
       singleDelivery,
       runtimeSessionSeen,
+      restartDetected,
+      restartProofCompleted,
     });
 
     if (completed) {
@@ -2641,6 +2864,9 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channel_reply_nonce_seen: channelReplyNonceSeen,
       single_delivery: singleDelivery,
       runtime_session_seen: runtimeSessionSeen,
+      restart_detected: restartDetected,
+      restart_proof_event_seen: restartProofEventSeen,
+      restart_proof_completed: restartProofCompleted,
       seen_tools: Array.from(seenTools),
       required_tools: challenge.required_tools,
       instructions: certificationInstructions(employee, challenge.nonce),

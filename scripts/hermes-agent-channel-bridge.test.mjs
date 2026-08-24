@@ -59,6 +59,7 @@ const compatibleConnection = {
     'identity_bound_mcp',
     'wiki_memory_sync_v1',
     'runtime_reconciliation_v1',
+    'runtime_attestation_v1',
   ],
   employee: { slug: 'maya' },
 };
@@ -140,6 +141,41 @@ test('extractHermesText and parseHermesDecision accept Responses API output', ()
 
 test('conversationKey keeps a stable thread-scoped Hermes conversation', () => {
   assert.equal(conversationKey(event, 'maya'), 'deft:maya:thread-1');
+});
+
+test('runtime preflight reports Hermes reachability and only high-level toolset names', async () => {
+  const bridge = new HermesAgentChannelBridge(config(), {
+    fetchImpl: async (url) => {
+      if (url.endsWith('/health')) {
+        return jsonResponse({ status: 'ok', platform: 'hermes-agent', version: '0.16.0' });
+      }
+      if (url.endsWith('/v1/models')) {
+        return jsonResponse({ data: [{ id: 'Maya' }] });
+      }
+      if (url.endsWith('/v1/capabilities')) {
+        return jsonResponse({ features: { responses_api: true, skills_api: true } });
+      }
+      if (url.endsWith('/v1/toolsets')) {
+        return jsonResponse({
+          data: [
+            { name: 'web', enabled: true, configured: true, tools: ['browser', 'search'] },
+            { name: 'email', enabled: true, configured: false, tools: ['send_email'] },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const attestation = await bridge.preflightHermesRuntime();
+
+  assert.equal(attestation.ready, true);
+  assert.equal(attestation.hermes_version, '0.16.0');
+  assert.equal(attestation.configured_model, 'Maya');
+  assert.deepEqual(attestation.available_models, ['Maya']);
+  assert.deepEqual(attestation.enabled_toolsets, ['web']);
+  assert.equal(JSON.stringify(attestation).includes('browser'), false, 'Deft must not copy Hermes tool catalogs');
 });
 
 test('processEvent acks, marks working, invokes Hermes, replies once, and returns idle', async () => {

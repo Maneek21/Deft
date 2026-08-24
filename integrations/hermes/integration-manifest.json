@@ -1,6 +1,6 @@
 {
   "schema": "deft.hermes.integration.v1",
-  "integration_version": "0.2.4",
+  "integration_version": "0.3.0",
   "deft_release": "0.3.0-preview.7",
   "deft_release_compatibility": "=0.3.0-preview.7",
   "agent_channel_protocols": ["deft.agent_channel.v2"],
@@ -11,7 +11,8 @@
     "terminal_outcomes",
     "identity_bound_mcp",
     "wiki_memory_sync_v1",
-    "runtime_reconciliation_v1"
+    "runtime_reconciliation_v1",
+    "runtime_attestation_v1"
   ],
   "hermes_compatibility": ">=0.16.0",
   "contents": [

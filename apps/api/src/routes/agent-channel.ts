@@ -115,13 +115,26 @@ const reconcileSchema = z.object({
 });
 
 const statusSchema = z.object({
-  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'error']),
+  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'incompatible', 'error']),
   event_id: z.string().optional(),
   claim_token: z.string().min(1).optional(),
   lease_ms: z.number().int().positive().optional(),
   detail: z.string().max(2000).optional(),
+  worker_id: z.string().min(1).max(200).optional(),
+  attestation: z.object({
+    schema: z.literal('deft.hermes.runtime_attestation.v1'),
+    ready: z.boolean(),
+    checked_at: z.string().datetime(),
+    hermes_version: z.string().max(64).nullable().optional(),
+    configured_model: z.string().max(200).nullable().optional(),
+    available_models: z.array(z.string().max(200)).max(20).optional(),
+    responses_api: z.boolean().optional(),
+    skills_api: z.boolean().optional(),
+    enabled_toolsets: z.array(z.string().max(64)).max(50).optional(),
+    error_code: z.string().max(100).optional(),
+  }).strict().optional(),
   caller_employee_slug: z.string().optional(),
-});
+}).strict();
 
 function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 500, code: string, message: string) {
   return c.json({ error: message, code }, status);
@@ -330,10 +343,27 @@ agentChannelRoutes.get('/contract', (c) => c.json(channelContract()));
 agentChannelRoutes.get('/connect', async (c) => {
   const principal = await resolveChannelPrincipal(c, c.req.query('caller_employee_slug'));
   if (isResponse(principal)) return principal;
+  const workerId = c.req.query('worker_id')?.trim() ?? '';
+  if (!workerId || workerId.length > 200) {
+    return errorResponse(c, 400, 'VALIDATION_ERROR', 'worker_id is required and must be at most 200 characters');
+  }
   const compatibility = channelCompatibility(c);
-  if (isResponse(compatibility)) return compatibility;
+  if (isResponse(compatibility)) {
+    await touchAgentChannelConnection(principal, {
+      status: 'incompatible',
+      workerId,
+      lastError: 'Runtime protocol or capabilities are incompatible with this Deft release.',
+      metadata: {
+        adapter_version: c.req.query('adapter_version')?.trim() ?? null,
+        runtime_capabilities: (c.req.query('capabilities') ?? '').split(',').filter(Boolean),
+        compatibility_error: 'INCOMPATIBLE_CHANNEL',
+      },
+    });
+    return compatibility;
+  }
 
   const connection = await touchAgentChannelConnection(principal, {
+    workerId,
     metadata: {
       adapter_version: compatibility.adapterVersion,
       runtime_capabilities: compatibility.capabilities,
@@ -768,9 +798,11 @@ agentChannelRoutes.post('/status', async (c) => {
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
 
-  const connectionStatus = parsed.data.state === 'error' || parsed.data.state === 'degraded'
-    ? 'degraded'
-    : 'connected';
+  const connectionStatus = parsed.data.state === 'incompatible'
+    ? 'incompatible'
+    : parsed.data.state === 'error' || parsed.data.state === 'degraded'
+      ? 'degraded'
+      : 'connected';
 
   if (parsed.data.event_id) {
     const event = await getEventForPrincipal(parsed.data.event_id, principal);
@@ -808,8 +840,12 @@ agentChannelRoutes.post('/status', async (c) => {
 
   const connection = await touchAgentChannelConnection(principal, {
     status: connectionStatus,
+    workerId: parsed.data.worker_id,
     lastEventId: parsed.data.event_id ?? null,
-    lastError: parsed.data.state === 'error' ? parsed.data.detail ?? 'Runtime reported error' : null,
+    lastError: ['error', 'degraded', 'incompatible'].includes(parsed.data.state)
+      ? parsed.data.detail ?? 'Runtime reported a degraded state'
+      : null,
+    metadata: parsed.data.attestation ? { runtime_attestation: parsed.data.attestation } : undefined,
   });
 
   return c.json({
