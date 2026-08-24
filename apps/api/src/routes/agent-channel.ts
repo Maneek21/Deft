@@ -41,6 +41,7 @@ import {
 import { getIO } from '../socket.js';
 import { executeSendMessage } from '../lib/mcp-tools/writes.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
+import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
 export const agentChannelRoutes = new Hono();
 
@@ -73,10 +74,20 @@ function emitTaskProgress(event: typeof agentChannelEvents.$inferSelect, employe
 
 const ackSchema = z.object({
   event_id: z.string().min(1),
-  state: z.enum(['received', 'completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('received'),
+  state: z.enum([
+    'received',
+    'completed',
+    'needs_human',
+    'blocked',
+    'failed',
+    'cancelled',
+    'work_completed_handoff_uncertain',
+  ]).default('received'),
   claim_token: z.string().min(1),
   lease_ms: z.number().int().positive().optional(),
   runtime_session_key: z.string().min(1).optional(),
+  runtime_request_key: z.string().min(1).max(300).optional(),
+  runtime_response_id: z.string().min(1).max(300).optional(),
   detail: z.string().max(2000).optional(),
   error: z.string().max(4000).optional(),
   caller_employee_slug: z.string().optional(),
@@ -91,6 +102,15 @@ const replySchema = z.object({
   outcome: z.enum(['completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('completed'),
   summary: z.string().max(2000).optional(),
   runtime_session_key: z.string().min(1).optional(),
+  runtime_request_key: z.string().min(1).max(300).optional(),
+  runtime_response_id: z.string().min(1).max(300).optional(),
+  caller_employee_slug: z.string().optional(),
+});
+
+const reconcileSchema = z.object({
+  event_id: z.string().min(1),
+  claim_token: z.string().min(1),
+  runtime_request_key: z.string().min(1).max(300),
   caller_employee_slug: z.string().optional(),
 });
 
@@ -186,12 +206,96 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
   return event ?? null;
 }
 
+async function startRuntimeAttempt(params: {
+  event: typeof agentChannelEvents.$inferSelect;
+  principal: AgentChannelPrincipal;
+  runtimeRequestKey: string;
+  runtimeSessionKey?: string | null;
+}) {
+  return db.transaction(async (tx) => {
+    await tx.update(agentChannelDeliveryAttempts)
+      .set({
+        status: 'abandoned',
+        error: 'Owning Agent Channel lease is no longer active',
+        updated_at: new Date(),
+      })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.org_id, params.principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, params.principal.employee_id),
+        eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+        sql`NOT EXISTS (
+          SELECT 1 FROM agent_channel_events active_event
+          WHERE active_event.id = ${agentChannelDeliveryAttempts.event_id}
+            AND active_event.org_id = ${params.principal.org_id}
+            AND active_event.agent_employee_id = ${params.principal.employee_id}
+            AND active_event.lease_expires_at > now()
+        )`,
+      ));
+
+    await tx.insert(agentChannelDeliveryAttempts)
+      .values({
+        org_id: params.principal.org_id,
+        agent_employee_id: params.principal.employee_id,
+        event_id: params.event.id,
+        direction: 'outbound_runtime',
+        idempotency_key: params.runtimeRequestKey,
+        status: 'started',
+        request_json: {
+          event_id: params.event.id,
+          delivery_count: params.event.delivery_count,
+          runtime_session_key: params.runtimeSessionKey ?? null,
+        },
+      })
+      .onConflictDoNothing();
+
+    const [attempt] = await tx.select({ event_id: agentChannelDeliveryAttempts.event_id })
+      .from(agentChannelDeliveryAttempts)
+      .where(and(
+        eq(agentChannelDeliveryAttempts.org_id, params.principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, params.principal.employee_id),
+        eq(agentChannelDeliveryAttempts.idempotency_key, params.runtimeRequestKey),
+      ))
+      .limit(1);
+    return attempt?.event_id === params.event.id;
+  });
+}
+
+async function settleRuntimeAttempt(params: {
+  event: typeof agentChannelEvents.$inferSelect;
+  principal: AgentChannelPrincipal;
+  runtimeRequestKey?: string | null;
+  status: string;
+  runtimeResponseId?: string | null;
+  reconciliation?: unknown;
+  error?: string | null;
+}) {
+  if (!params.runtimeRequestKey) return;
+  await db.update(agentChannelDeliveryAttempts)
+    .set({
+      status: params.status,
+      response_json: {
+        runtime_response_id: params.runtimeResponseId ?? null,
+        reconciliation: params.reconciliation ?? null,
+      },
+      error: params.error ?? null,
+      updated_at: new Date(),
+    })
+    .where(and(
+      eq(agentChannelDeliveryAttempts.org_id, params.principal.org_id),
+      eq(agentChannelDeliveryAttempts.agent_employee_id, params.principal.employee_id),
+      eq(agentChannelDeliveryAttempts.event_id, params.event.id),
+      eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
+      eq(agentChannelDeliveryAttempts.idempotency_key, params.runtimeRequestKey),
+    ));
+}
+
 async function closeFallbackWorkForEvent(params: {
   event: typeof agentChannelEvents.$inferSelect;
   principal: AgentChannelPrincipal;
   runtimeSessionKey?: string | null;
   detail?: string | null;
-  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled';
+  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain';
 }) {
   const payload = (params.event.payload ?? {}) as Record<string, unknown>;
   const actionId = typeof payload.pending_action_id === 'string' ? payload.pending_action_id : null;
@@ -296,6 +400,33 @@ agentChannelRoutes.get('/events', async (c) => {
   });
 });
 
+agentChannelRoutes.post('/reconcile', async (c) => {
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsed = reconcileSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+  }
+
+  const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
+  if (isResponse(principal)) return principal;
+  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+
+  const reconciliation = await reconcileAgentChannelRuntimeAttempt({
+    event,
+    orgId: principal.org_id,
+    employeeId: principal.employee_id,
+    runtimeRequestKey: parsed.data.runtime_request_key,
+  });
+  if (!reconciliation) {
+    return errorResponse(c, 409, 'RUNTIME_ATTEMPT_NOT_FOUND', 'No matching runtime attempt exists for this event and request identity');
+  }
+  return c.json({ ok: true, ...reconciliation });
+});
+
 agentChannelRoutes.post('/ack', async (c) => {
   const rawBody = await c.req.json().catch(() => ({}));
   const parsed = ackSchema.safeParse(rawBody);
@@ -312,6 +443,37 @@ agentChannelRoutes.post('/ack', async (c) => {
   }
   if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+
+  if (parsed.data.state === 'received' && parsed.data.runtime_request_key) {
+    const started = await startRuntimeAttempt({
+      event,
+      principal,
+      runtimeRequestKey: parsed.data.runtime_request_key,
+      runtimeSessionKey: parsed.data.runtime_session_key,
+    });
+    if (!started) {
+      return errorResponse(c, 409, 'RUNTIME_REQUEST_KEY_CONFLICT', 'The runtime request identity belongs to another event');
+    }
+  }
+
+  let reconciliation: Awaited<ReturnType<typeof reconcileAgentChannelRuntimeAttempt>> = null;
+  if (parsed.data.state === 'work_completed_handoff_uncertain') {
+    if (!parsed.data.runtime_request_key) {
+      return errorResponse(c, 409, 'RUNTIME_REQUEST_KEY_REQUIRED', 'A runtime request identity is required for uncertain handoff reconciliation');
+    }
+    reconciliation = await reconcileAgentChannelRuntimeAttempt({
+      event,
+      orgId: principal.org_id,
+      employeeId: principal.employee_id,
+      runtimeRequestKey: parsed.data.runtime_request_key,
+    });
+    if (!reconciliation) {
+      return errorResponse(c, 409, 'RUNTIME_ATTEMPT_NOT_FOUND', 'No matching runtime attempt exists for this event and request identity');
+    }
+    if (!reconciliation.has_durable_effects) {
+      return errorResponse(c, 409, 'NO_DURABLE_EFFECTS', 'No durable Deft effects support an uncertain-completed outcome');
+    }
   }
 
   const reportedOutcome = parsed.data.state === 'received' ? null : parsed.data.state;
@@ -371,6 +533,15 @@ agentChannelRoutes.post('/ack', async (c) => {
   });
   await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
   if (reportedOutcome) {
+    await settleRuntimeAttempt({
+      event,
+      principal,
+      runtimeRequestKey: parsed.data.runtime_request_key,
+      status: reportedOutcome,
+      runtimeResponseId: parsed.data.runtime_response_id,
+      reconciliation,
+      error: parsed.data.error ?? null,
+    });
     await db.update(agentEmployees)
       .set({ last_work_outcome_at: now, updated_at: now })
       .where(and(
@@ -423,6 +594,8 @@ agentChannelRoutes.post('/reply', async (c) => {
     outcome: parsed.data.outcome,
     summary: parsed.data.summary ?? null,
     runtime_session_key: parsed.data.runtime_session_key ?? null,
+    runtime_request_key: parsed.data.runtime_request_key ?? null,
+    runtime_response_id: parsed.data.runtime_response_id ?? null,
   };
 
   const [existingAttempt] = await db
@@ -554,6 +727,15 @@ agentChannelRoutes.post('/reply', async (c) => {
       eq(agentEmployees.id, principal.employee_id),
       eq(agentEmployees.org_id, principal.org_id),
     ));
+
+  await settleRuntimeAttempt({
+    event,
+    principal,
+    runtimeRequestKey: parsed.data.runtime_request_key,
+    status: reportedOutcome,
+    runtimeResponseId: parsed.data.runtime_response_id,
+    error: result.isError ? text : null,
+  });
 
   emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (result.isError ? text : null));
 

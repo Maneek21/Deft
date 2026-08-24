@@ -9,7 +9,7 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_HEARTBEAT_MS = 60000;
 const DEFAULT_LEASE_MS = 120000;
-export const HERMES_DEFT_ADAPTER_VERSION = '0.2.2';
+export const HERMES_DEFT_ADAPTER_VERSION = '0.2.3';
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
 export const AGENT_CHANNEL_CAPABILITIES = [
   'single_flight_claims',
@@ -18,6 +18,7 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'terminal_outcomes',
   'identity_bound_mcp',
   'wiki_memory_sync_v1',
+  'runtime_reconciliation_v1',
 ];
 export const AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES = [
   'single_flight_claims',
@@ -25,6 +26,7 @@ export const AGENT_CHANNEL_REQUIRED_SERVER_CAPABILITIES = [
   'fencing_tokens',
   'terminal_outcomes',
   'identity_bound_mcp',
+  'runtime_reconciliation_v1',
 ];
 
 export class AgentChannelCompatibilityError extends Error {
@@ -198,6 +200,13 @@ export function conversationKey(event, employeeSlug) {
   return `deft:${employeeSlug}:${scope}`.slice(0, 240);
 }
 
+export function hermesRequestKey(event) {
+  const attempt = Number.isInteger(event.delivery_count) && event.delivery_count > 0
+    ? event.delivery_count
+    : 1;
+  return `deft-channel:${event.id}:attempt:${attempt}`.slice(0, 240);
+}
+
 export class HermesAgentChannelBridge {
   constructor(config, options = {}) {
     this.config = config;
@@ -336,8 +345,22 @@ export class HermesAgentChannelBridge {
         claim_token: options.claimToken,
         lease_ms: this.config.leaseMs,
         runtime_session_key: options.runtimeSessionKey,
+        runtime_request_key: options.runtimeRequestKey,
+        runtime_response_id: options.runtimeResponseId,
         detail: options.detail,
         error: options.error,
+        caller_employee_slug: this.config.employeeSlug,
+      }),
+    });
+  }
+
+  async reconcile(event, runtimeRequestKey) {
+    return this.channel('/reconcile', {
+      method: 'POST',
+      body: JSON.stringify({
+        event_id: event.id,
+        claim_token: event.claim_token,
+        runtime_request_key: runtimeRequestKey,
         caller_employee_slug: this.config.employeeSlug,
       }),
     });
@@ -359,6 +382,8 @@ export class HermesAgentChannelBridge {
         outcome: options.outcome ?? 'completed',
         summary: options.summary,
         runtime_session_key: options.runtimeSessionKey,
+        runtime_request_key: options.runtimeRequestKey,
+        runtime_response_id: options.runtimeResponseId,
         caller_employee_slug: this.config.employeeSlug,
       }),
     });
@@ -366,12 +391,14 @@ export class HermesAgentChannelBridge {
 
   async askHermes(event) {
     const sessionKey = conversationKey(event, this.config.employeeSlug);
-    const response = await this.request(`${this.config.hermesApiUrl}/v1/responses`, {
+    const requestKey = hermesRequestKey(event);
+    const request = {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.hermesApiKey}`,
         'Content-Type': 'application/json',
         'X-Hermes-Session-Key': sessionKey,
+        'Idempotency-Key': requestKey,
       },
       body: JSON.stringify({
         model: this.config.hermesModel,
@@ -380,9 +407,36 @@ export class HermesAgentChannelBridge {
         instructions: 'Act as an accountable Deft Agent Employee. Use Deft MCP tools for workspace facts and governed actions.',
         store: true,
       }),
-    }, { retry: false });
-    const text = extractHermesText(response);
-    return { decision: parseHermesDecision(text), sessionKey, responseId: response.id ?? null };
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await this.request(
+          `${this.config.hermesApiUrl}/v1/responses`,
+          request,
+          { retry: false },
+        );
+        const text = extractHermesText(response);
+        if (!text) {
+          const error = new Error('Hermes response completed without a readable response body');
+          error.code = 'HERMES_AMBIGUOUS_RESPONSE';
+          throw error;
+        }
+        return {
+          decision: parseHermesDecision(text),
+          sessionKey,
+          requestKey,
+          responseId: response.id ?? null,
+        };
+      } catch (error) {
+        const ambiguous = error?.status == null;
+        if (!ambiguous || attempt === 1) throw error;
+        this.log.warn?.(`[deft-channel] ambiguous Hermes handoff for ${event.id}; recovering once with the same request identity`);
+        await this.sleep(this.config.retryBaseMs);
+      }
+    }
+
+    throw new Error('Hermes recovery loop exhausted');
   }
 
   startLeaseHeartbeat(event) {
@@ -416,8 +470,13 @@ export class HermesAgentChannelBridge {
       throw new AgentChannelCompatibilityError(`channel event ${event.id} has no claim token`);
     }
     const sessionKey = conversationKey(event, this.config.employeeSlug);
+    const requestKey = hermesRequestKey(event);
     this.currentClaimToken = event.claim_token;
-    await this.ack(event.id, 'received', { runtimeSessionKey: sessionKey, claimToken: event.claim_token });
+    await this.ack(event.id, 'received', {
+      runtimeSessionKey: sessionKey,
+      runtimeRequestKey: requestKey,
+      claimToken: event.claim_token,
+    });
     await this.status('working', event.id, `Handling ${event.kind}`);
     const leaseHeartbeat = this.startLeaseHeartbeat(event);
     try {
@@ -428,11 +487,15 @@ export class HermesAgentChannelBridge {
           outcome: result.decision.outcome,
           summary: result.decision.summary,
           runtimeSessionKey: result.sessionKey,
+          runtimeRequestKey: result.requestKey,
+          runtimeResponseId: result.responseId,
         });
       } else {
         await this.ack(event.id, result.decision.outcome, {
           claimToken: event.claim_token,
           runtimeSessionKey: result.sessionKey,
+          runtimeRequestKey: result.requestKey,
+          runtimeResponseId: result.responseId,
           detail: result.decision.summary,
         });
       }
@@ -444,9 +507,32 @@ export class HermesAgentChannelBridge {
     } catch (error) {
       leaseHeartbeat.stop();
       const message = error instanceof Error ? error.message : String(error);
+      if (error?.status == null) {
+        const reconciliation = await this.reconcile(event, requestKey).catch(() => null);
+        if (reconciliation?.has_durable_effects === true) {
+          const summary = 'Durable Deft work was verified, but the final Hermes response could not be recovered.';
+          await this.ack(event.id, 'work_completed_handoff_uncertain', {
+            claimToken: event.claim_token,
+            runtimeSessionKey: sessionKey,
+            runtimeRequestKey: requestKey,
+            detail: summary,
+          });
+          this.currentClaimToken = null;
+          await this.status('degraded', null, summary).catch(() => {});
+          this.log.warn?.(`[deft-channel] reconciled uncertain handoff ${event.kind} ${event.id}`);
+          return {
+            decision: { reply: null, summary, outcome: 'work_completed_handoff_uncertain' },
+            sessionKey,
+            requestKey,
+            responseId: null,
+            reconciliation,
+          };
+        }
+      }
       await this.ack(event.id, 'failed', {
         claimToken: event.claim_token,
         runtimeSessionKey: sessionKey,
+        runtimeRequestKey: requestKey,
         error: message,
       }).catch(() => {});
       this.currentClaimToken = null;

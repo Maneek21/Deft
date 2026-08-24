@@ -545,6 +545,8 @@ export const agentActions = pgTable('agent_actions', {
   mcp_connection_id: text('mcp_connection_id'),
   plan_id: text('plan_id'),
   plan_step_id: text('plan_step_id'),
+  channel_event_id: text('channel_event_id'),
+  runtime_request_key: text('runtime_request_key'),
   action: text('action').notNull(), // 'create_task', 'update_task_status', 'post_message', etc.
   params: jsonb('params').notNull(),
   result: jsonb('result'),
@@ -561,6 +563,7 @@ export const agentActions = pgTable('agent_actions', {
 }, (t) => [
   index('agent_action_org_idx').on(t.org_id),
   index('agent_action_user_idx').on(t.user_id),
+  index('agent_action_runtime_request_idx').on(t.org_id, t.agent_employee_id, t.runtime_request_key),
 ]);
 
 // ═══ ATTENTION + DELIVERY ═══
@@ -2341,7 +2344,14 @@ export const agentChannelEvents = pgTable('agent_channel_events', {
   `),
   check('agent_channel_event_work_outcome_check', sql`
     ${t.work_outcome} IS NULL
-    OR ${t.work_outcome} IN ('completed', 'needs_human', 'blocked', 'failed', 'cancelled')
+    OR ${t.work_outcome} IN (
+      'completed',
+      'needs_human',
+      'blocked',
+      'failed',
+      'cancelled',
+      'work_completed_handoff_uncertain'
+    )
   `),
 ]);
 
@@ -2388,6 +2398,9 @@ export const agentChannelDeliveryAttempts = pgTable('agent_channel_delivery_atte
   ...timestamps(),
 }, (t) => [
   uniqueIndex('agent_channel_attempt_idempotency_unique').on(t.org_id, t.agent_employee_id, t.idempotency_key),
+  uniqueIndex('agent_channel_attempt_active_runtime_unique')
+    .on(t.org_id, t.agent_employee_id)
+    .where(sql`${t.direction} = 'outbound_runtime' AND ${t.status} = 'started'`),
   index('agent_channel_attempt_event_idx').on(t.event_id, t.created_at),
   index('agent_channel_attempt_employee_idx').on(t.agent_employee_id, t.created_at),
 ]);

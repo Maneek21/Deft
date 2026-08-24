@@ -82,6 +82,11 @@ export const upgradeManifest = {
       file: '0.3.0-preview.6-agent-channel-v2.sql',
       description: 'Require the lease-safe Agent Channel v2 compatibility contract',
     },
+    {
+      version: '0.3.0-preview.7',
+      file: '0.3.0-preview.7-agent-channel-runtime-reconciliation.sql',
+      description: 'Reconcile durable runtime effects before uncertain Agent Channel terminal outcomes',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

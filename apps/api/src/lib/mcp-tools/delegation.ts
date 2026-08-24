@@ -54,6 +54,8 @@ export async function delegationSelfReport(
         org_id: ctx.org_id,
         user_id: shadowUserId,
         agent_employee_id: ctx.employee_id,
+        channel_event_id: ctx.channel_event_id,
+        runtime_request_key: ctx.runtime_request_key,
         source: 'mcp',
         action: 'delegation_self_report',
         params: {

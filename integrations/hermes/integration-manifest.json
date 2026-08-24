@@ -1,6 +1,6 @@
 {
   "schema": "deft.hermes.integration.v1",
-  "integration_version": "0.2.2",
+  "integration_version": "0.2.3",
   "deft_release": "0.3.0-preview.7",
   "deft_release_compatibility": "=0.3.0-preview.7",
   "agent_channel_protocols": ["deft.agent_channel.v2"],
@@ -10,9 +10,10 @@
     "fencing_tokens",
     "terminal_outcomes",
     "identity_bound_mcp",
-    "wiki_memory_sync_v1"
+    "wiki_memory_sync_v1",
+    "runtime_reconciliation_v1"
   ],
-  "hermes_compatibility": ">=0.1.0",
+  "hermes_compatibility": ">=0.16.0",
   "contents": [
     "scripts/hermes-agent-channel-bridge.mjs",
     "scripts/hermes-channel-service.ps1",
