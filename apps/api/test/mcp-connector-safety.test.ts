@@ -144,6 +144,20 @@ test('three consecutive connection failures trigger a persistent backoff', async
   assert.equal(connectionAttempts, 3);
 });
 
+test('a backoff timestamp ending in .401 is not mistaken for an HTTP auth failure', async (t) => {
+  const manager = new MCPClientManager();
+  t.after(() => manager.shutdown());
+  const backoffMessage = 'Connection conn-test is in backoff until 2026-08-24T12:00:00.401Z';
+
+  (manager as unknown as { connect: () => Promise<never> }).connect = async () => {
+    throw new Error(backoffMessage);
+  };
+
+  const result = await manager.executeTool(connectionConfig, 'read_record', {});
+  assert.equal(result.success, false);
+  assert.equal(result.error, backoffMessage);
+});
+
 test('tool discovery explicitly bypasses the SDK response cache', async (t) => {
   const manager = new MCPClientManager();
   t.after(() => manager.shutdown());

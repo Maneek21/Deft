@@ -31,9 +31,60 @@ env:
   IMAGE_NAME: maneek21/deft
 
 jobs:
+  certify:
+    name: Certify Hermes employee release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deft_hermes_release_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_hermes_release_test
+      DEFT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/deft_hermes_release_test
+      JWT_SECRET: release-hermes-gate-jwt-not-for-prod
+      JWT_REFRESH_SECRET: release-hermes-gate-refresh-not-for-prod
+      ANTHROPIC_API_KEY: sk-ant-release-hermes-gate-dummy-not-real
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          version: 11.10.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pnpm install --frozen-lockfile
+      - name: Run two clean-state Hermes employee passes
+        run: pnpm test:hermes-employee-release-gate
+      - name: Publish certification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-employee-release-certification
+          path: dist/hermes-employee-release-gate.json
+          if-no-files-found: error
+
   publish:
     name: Publish release image
     runs-on: ubuntu-latest
+    needs: certify
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,6 +107,21 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse "$tag^{commit}")" >> "$GITHUB_OUTPUT"
+
+      - name: Download Hermes employee certification
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-employee-release-certification
+          path: dist
+
+      - name: Verify certification matches release commit
+        shell: bash
+        run: |
+          certificate_commit="$(node -p "require('./dist/hermes-employee-release-gate.json').commit")"
+          [[ "$certificate_commit" == "${{ steps.release.outputs.sha }}" ]] || {
+            echo "Hermes employee certificate does not match the release commit" >&2
+            exit 1
+          }
 
       - uses: docker/setup-buildx-action@v4
 
@@ -186,7 +252,8 @@ jobs:
             "platforms": ["linux/amd64"],
             "upgrade_support": "versioned-from-v0.2.0-preview.1",
             "agent_channel_protocol": "deft.agent_channel.v2",
-            "hermes_integration": "deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz"
+            "hermes_integration": "deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz",
+            "hermes_employee_certification": "hermes-employee-release-gate.json"
           }
           JSON
 

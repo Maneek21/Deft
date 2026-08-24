@@ -47,3 +47,15 @@ test('release couples the image, package version, and Hermes integration bundle'
   assert.match(workflow, /deft-hermes-integration-\$\{\{ steps\.release\.outputs\.version \}\}\.tar\.gz/);
   assert.match(workflow, /"agent_channel_protocol": "deft\.agent_channel\.v2"/);
 });
+
+test('release publication is blocked on a two-pass clean-state Hermes employee certificate', () => {
+  assert.match(workflow, /certify:\s*[\s\S]*?pnpm test:hermes-employee-release-gate/);
+  assert.match(workflow, /publish:\s*[\s\S]*?needs: certify/);
+  assert.match(workflow, /name: hermes-employee-release-certification/);
+  assert.match(workflow, /certificate_commit[\s\S]*?steps\.release\.outputs\.sha/);
+  assert.match(workflow, /"hermes_employee_certification": "hermes-employee-release-gate\.json"/);
+
+  const certification = position('certify:');
+  const publication = position('publish:');
+  assert.ok(certification < publication);
+});

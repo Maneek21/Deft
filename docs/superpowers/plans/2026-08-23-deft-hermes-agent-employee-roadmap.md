@@ -60,7 +60,10 @@ The first five minimum-work packages are merged:
   bridge-restart proof without placing Hermes on the Deft VPS; and
 - PR #244 completes governed employee-private memory writeback, promotion,
   correction/deletion fencing, secret and instruction rejection, and fresh
-  session reuse certification.
+  session reuse certification; and
+- PR #245 completes durable task milestones, quiet long-run heartbeats,
+  artifact-oriented outcome cards, immutable employee attribution, and the
+  matched Hermes progress/reporting contract.
 
 The executable-contract package established this employee boundary:
 
@@ -76,9 +79,12 @@ The executable-contract package established this employee boundary:
 - employee certification probes task-transition discovery and generic module
   discovery without requiring Contacts—or any module—to be installed.
 
-This still does not make the ideal-employee claim. The employee progress and
-business-outcome package is in validation; the clean-state release gauntlet and
-two consecutive matched demo runs remain in the delivery order below.
+This still does not make the ideal-employee claim. The deterministic release
+gate now rebuilds and seeds a disposable Deft database, exercises the complete
+employee recovery/security matrix and matched Hermes bundle twice, and emits a
+commit-bound certificate required by release publication. Two consecutive
+matched live demo runs from newly onboarded external Hermes profiles remain in
+the delivery order below.
 
 ## Executive summary
 

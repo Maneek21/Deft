@@ -1347,3 +1347,35 @@ test('POST /reply keeps a top-level DM response inline', async () => {
     .limit(1);
   assert.equal(reply?.parent_id, null);
 });
+
+test('regenerating a channel credential revokes the old runtime immediately', async () => {
+  const oldBearer = bearer;
+  const rotated = await operatorApp.request(`/api/agent-employees/${employeeId}/regenerate-channel-token`, {
+    method: 'POST',
+  });
+  const rotatedBody = await rotated.json() as any;
+  assert.equal(rotated.status, 200, JSON.stringify(rotatedBody));
+  assert.equal(typeof rotatedBody.channel_key, 'string');
+  assert.notEqual(rotatedBody.channel_key, oldBearer);
+
+  const denied = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${oldBearer}` },
+  });
+  assert.equal(denied.status, 401, await denied.text());
+
+  bearer = rotatedBody.channel_key;
+  const accepted = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(accepted.status, 200, await accepted.text());
+
+  const activeTokens = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(agentChannelTokens)
+    .where(and(
+      eq(agentChannelTokens.agent_employee_id, employeeId),
+      eq(agentChannelTokens.is_active, true),
+      sql`${agentChannelTokens.revoked_at} IS NULL`,
+    ));
+  assert.equal(activeTokens[0]?.count, 1);
+});
