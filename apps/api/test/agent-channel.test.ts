@@ -19,6 +19,7 @@ import {
   agentEmployees,
   agentActions,
   agentCooperativeLog,
+  attentionItems,
   actionReceipts,
   messages,
   notifications,
@@ -1263,6 +1264,25 @@ test('record_progress persists one task milestone and replays idempotently', asy
   const progressItem = activityFeed.find((item) => item.action === 'agent_progress');
   assert.equal(progressItem?.acting_agent_employee_id, employeeId);
   assert.equal(progressItem?.agent_employee_name, 'Channel Agent');
+
+  const assistanceArgs = {
+    summary: 'Which approved sending domain should I use for this outreach?',
+    status: 'blocked' as const,
+    idempotency_key: 'need-approved-sending-domain',
+  };
+  const assistance = parseToolResult(await recordProgress(assistanceArgs, context));
+  const assistanceReplay = parseToolResult(await recordProgress(assistanceArgs, context));
+  assert.equal(assistance.assistance_requested, true);
+  assert.equal(assistanceReplay.replayed, true);
+  const assistanceItems = await db.select().from(attentionItems).where(and(
+    eq(attentionItems.org_id, orgId),
+    eq(attentionItems.user_id, humanUserId),
+    eq(attentionItems.source_type, 'agent_channel_event'),
+    eq(attentionItems.source_id, event.id),
+  ));
+  assert.equal(assistanceItems.length, 1, 'a replay must not duplicate the assistance request');
+  assert.equal(assistanceItems[0]?.lane, 'needs_you');
+  assert.equal(assistanceItems[0]?.body, assistanceArgs.summary);
 });
 
 test('operators can cancel and retry a live channel delivery', async () => {

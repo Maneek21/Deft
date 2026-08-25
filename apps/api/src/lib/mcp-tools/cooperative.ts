@@ -43,6 +43,10 @@ import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
 import { normalizeMcpApprovalAction } from '../mcp-approval-actions.js';
 import { getIO } from '../../socket.js';
+import {
+  upsertAttentionItem,
+  type AttentionDraft,
+} from '../attention.js';
 
 // ─── Cooperative knowledge ────────────────────────────────────────────────
 
@@ -78,6 +82,43 @@ function progressDigest(ctx: ToolContext, eventId: string, idempotencyKey: strin
   return `sha256:${createHash('sha256')
     .update(`${ctx.org_id}\u0000${ctx.employee_id}\u0000${eventId}\u0000${idempotencyKey}`)
     .digest('hex')}`;
+}
+
+export function progressAssistanceDraft(params: {
+  orgId: string;
+  userId: string | null;
+  employeeId: string;
+  employeeName: string;
+  eventId: string;
+  taskId: string;
+  summary: string;
+  status: string;
+  idempotencyDigest: string;
+}): AttentionDraft | null {
+  if (
+    !params.userId
+    || !['waiting_human', 'needs_human', 'blocked'].includes(params.status)
+  ) return null;
+  return {
+    orgId: params.orgId,
+    userId: params.userId,
+    kind: 'agent_assistance',
+    lane: 'needs_you',
+    priority: params.status === 'blocked' ? 'high' : 'normal',
+    dedupeKey: `agent-assistance:${params.eventId}`,
+    sourceType: 'agent_channel_event',
+    sourceId: params.eventId,
+    sourceEventId: `agent-progress-assistance:${params.idempotencyDigest}`,
+    title: `${params.employeeName} needs help with a task`,
+    body: params.summary,
+    link: `/tasks?task=${encodeURIComponent(params.taskId)}`,
+    metadata: {
+      task_id: params.taskId,
+      agent_employee_id: params.employeeId,
+      channel_event_id: params.eventId,
+      progress_status: params.status,
+    },
+  };
 }
 
 function safeArtifactReference(value: string): string | null {
@@ -149,7 +190,16 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
       source_kind: agentChannelEvents.source_kind,
       source_id: agentChannelEvents.source_id,
       status: agentChannelEvents.status,
-    }).from(agentChannelEvents).where(and(
+      actor_user_id: agentChannelEvents.actor_user_id,
+      employee_name: agentEmployees.name,
+      employee_created_by: agentEmployees.created_by,
+    }).from(agentChannelEvents).innerJoin(
+      agentEmployees,
+      and(
+        eq(agentEmployees.id, agentChannelEvents.agent_employee_id),
+        eq(agentEmployees.org_id, agentChannelEvents.org_id),
+      ),
+    ).where(and(
       eq(agentChannelEvents.id, eventId),
       eq(agentChannelEvents.org_id, ctx.org_id),
       eq(agentChannelEvents.agent_employee_id, ctx.employee_id),
@@ -160,6 +210,17 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
     if (['completed', 'failed', 'cancelled'].includes(event.status)) {
       return { error: 'record_progress cannot append to a terminal assignment' } as const;
     }
+    const assistanceDraft = progressAssistanceDraft({
+      orgId: ctx.org_id,
+      userId: event.actor_user_id ?? event.employee_created_by,
+      employeeId: ctx.employee_id,
+      employeeName: event.employee_name,
+      eventId,
+      taskId: event.source_id,
+      summary,
+      status,
+      idempotencyDigest: digest,
+    });
 
     const [existing] = await tx.select({
       id: agentCooperativeLog.id,
@@ -177,6 +238,7 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
         log_id: existing.id,
         task_id: event.source_id,
         recorded_at: existing.created_at,
+        assistance_draft: assistanceDraft,
       } as const;
     }
 
@@ -211,10 +273,21 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
       activity_id: activity!.id,
       task_id: event.source_id,
       recorded_at: log!.created_at,
+      assistance_draft: assistanceDraft,
     } as const;
   });
 
   if ('error' in recorded && typeof recorded.error === 'string') return errorResult(recorded.error);
+  if (recorded.assistance_draft) {
+    try {
+      await upsertAttentionItem(recorded.assistance_draft);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return errorResult(
+        `progress milestone was saved but the assistance request failed: ${message}. Retry with the same idempotency_key.`,
+      );
+    }
+  }
   if (!recorded.replayed) {
     getIO()?.to(`org:${ctx.org_id}`).emit('task:agent_progress', {
       task_id: recorded.task_id,
@@ -230,7 +303,14 @@ export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Prom
     });
   }
 
-  return textResult({ ok: true, kind: 'milestone', status, ...recorded });
+  const { assistance_draft: _assistanceDraft, ...result } = recorded;
+  return textResult({
+    ok: true,
+    kind: 'milestone',
+    status,
+    assistance_requested: Boolean(recorded.assistance_draft),
+    ...result,
+  });
 }
 
 async function appendLog(
