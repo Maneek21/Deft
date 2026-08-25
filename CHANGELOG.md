@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.11] — 2026-08-25
+
+### Fixed
+
+- A Hermes employee delivery now recovers after a mid-task bridge restart:
+  Deft abandons the stale runtime attempt when the same fenced event is
+  reclaimed, while preserving the one-employee single-flight guard across
+  different events.
+
 ## [0.3.0-preview.10] — 2026-08-24
 
 ### Fixed
@@ -336,7 +345,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.10...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.11...HEAD
+[0.3.0-preview.11]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.11
 [0.3.0-preview.10]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.10
 [0.3.0-preview.9]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.9
 [0.3.0-preview.8]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.8
