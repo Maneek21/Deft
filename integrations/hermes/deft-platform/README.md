@@ -50,9 +50,15 @@ plugins:
 
 platforms:
   deft:
-    channel_url: https://deft.example/api/agent-channel/v1
-    token: <employee Agent Channel token>
-    employee_slug: <employee slug>
+    enabled: true
+    home_channel:
+      platform: deft
+      chat_id: <organization-id>:<space-id>
+      name: Deft home
+    extra:
+      channel_url: https://deft.example/api/agent-channel/v1
+      token: <employee Agent Channel token>
+      employee_slug: <employee slug>
 
 mcp_servers:
   deft:
@@ -64,6 +70,11 @@ mcp_servers:
 
 The direct HTTP MCP configuration is intentional. Hermes supports it natively,
 so no Deft-owned stdio shim or sidecar process is required.
+
+The home channel suppresses Hermes's first-message setup notice and gives the
+runtime a default Deft conversation for operational notices. Pick an existing
+space the employee may access. Proactive delivery to that home conversation is
+not part of the current source-bound reply proof.
 
 3. Before starting the gateway, run the non-mutating probe:
 
@@ -92,6 +103,10 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
   Deft state through MCP.
 - Human comments, cancellation, and approval results return through the same
   channel and task/chat context.
+- Hermes treats inbound Deft actors as authorized upstream because the
+  employee-scoped Agent Channel token and Deft tenant policy determine which
+  server-generated events reach the runtime; no duplicate local user allowlist
+  is required.
 - The adapter journals accepted work before handing it to Hermes. A restart
   resumes the accepted event and stable outbound idempotency prevents duplicate
   visible replies.

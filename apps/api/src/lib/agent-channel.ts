@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -435,7 +435,7 @@ export async function listPendingChannelEvents(params: {
 
   const claimToken = crypto.randomUUID();
   const cursorFilter = afterCreatedAt
-    ? sql`AND created_at > ${afterCreatedAt}`
+    ? sql`AND ${gt(agentChannelEvents.created_at, afterCreatedAt)}`
     : sql``;
   const stateFilter = params.adapterMode === 'autonomous_platform'
     ? sql`AND status IN ('pending', 'delivered')`

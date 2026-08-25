@@ -680,6 +680,34 @@ test('autonomous platform acceptance ends transport delivery without completing 
   );
 });
 
+test('autonomous cursor delivers later events on non-UTC hosts', async () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = 'Asia/Calcutta';
+  try {
+    const cursorEvent = await publishMessageEvent(`autonomous-cursor-old-${crypto.randomUUID()}`);
+    const nextEvent = await publishMessageEvent(`autonomous-cursor-new-${crypto.randomUUID()}`);
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2026-08-25T00:00:00.000Z') })
+      .where(eq(agentChannelEvents.id, cursorEvent.id));
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2026-08-25T00:00:01.000Z') })
+      .where(eq(agentChannelEvents.id, nextEvent.id));
+
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&lease_ms=30000&cursor=${cursorEvent.id}&${autonomousCompatibilityQuery('autonomous-cursor-worker')}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.ok(
+      delivery.events.some((candidate: any) => candidate.id === nextEvent.id),
+      'a later pending event must remain visible after the accepted cursor',
+    );
+  } finally {
+    process.env.TZ = previousTimezone;
+  }
+});
+
 test('approval resolution publishes once and a targetless autonomous response is an internal acknowledgement', async () => {
   const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-approval-worker')}`, {
     headers: { authorization: `Bearer ${bearer}` },

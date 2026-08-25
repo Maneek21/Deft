@@ -141,7 +141,8 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
             adapter = MOD.DeftAdapter(config, request_fn=request, start_listener=False)
             self.assertNotIn("responses", adapter.channel_url)
-            self.assertTrue(asyncio.run(adapter.connect()))
+            self.assertTrue(adapter.authorization_is_upstream)
+            self.assertTrue(asyncio.run(adapter.connect(is_reconnect=True)))
             asyncio.run(adapter.disconnect())
             self.assertFalse(adapter._running)
         finally:
@@ -167,7 +168,6 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
         async def receive(value):
             delivered.append(value)
-            return True
 
         async def scenario():
             from gateway.platform_registry import PlatformEntry, platform_registry
@@ -185,11 +185,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                         "employee_slug": "native-spike",
                     }),
                     request_fn=request,
-                    delivery_handler=receive,
                     start_listener=False,
                 )
+                adapter.set_message_handler(receive)
                 self.assertTrue(await adapter.connect())
                 self.assertEqual(await adapter._poll_once(), 1)
+                if adapter._background_tasks:
+                    await asyncio.gather(*list(adapter._background_tasks))
                 self.assertEqual(await adapter._poll_once(), 0)
                 await adapter.disconnect()
                 return adapter
@@ -197,7 +199,7 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 platform_registry.unregister("deft")
 
         adapter = asyncio.run(scenario())
-        self.assertEqual([item["id"] for item in delivered], ["event-1"])
+        self.assertEqual([item.raw_message["id"] for item in delivered], ["event-1"])
         accepts = [call for call in calls if call[1] == "/accept"]
         self.assertEqual(len(accepts), 1)
         self.assertEqual(accepts[0][3]["claim_token"], "claim-1")

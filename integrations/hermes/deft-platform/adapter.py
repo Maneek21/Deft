@@ -27,7 +27,6 @@ CAPABILITY = "autonomous_platform_adapter_v1"
 PROTOCOL_VERSION = "deft.agent_channel.v2"
 
 RequestFn = Callable[[str, str, Optional[dict], Optional[dict]], Awaitable[dict]]
-DeliveryHandler = Callable[[dict], Awaitable[bool]]
 
 
 class DeftChannelRequestError(RuntimeError):
@@ -82,7 +81,6 @@ class DeftAdapter(BasePlatformAdapter):
         config: PlatformConfig,
         *,
         request_fn: Optional[RequestFn] = None,
-        delivery_handler: Optional[DeliveryHandler] = None,
         start_listener: bool = True,
     ):
         super().__init__(config=config, platform=Platform(PLATFORM_NAME))
@@ -100,7 +98,6 @@ class DeftAdapter(BasePlatformAdapter):
             or f"hermes-deft-{socket.gethostname()}-{os.getpid()}"
         )[:200]
         self._request_fn = request_fn or self._http_request
-        self._delivery_handler = delivery_handler
         self._start_listener = start_listener
         self._poll_task: Optional[asyncio.Task] = None
         default_state_path = pathlib.Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser() / "deft-platform-state.json"
@@ -117,7 +114,12 @@ class DeftAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "Deft"
 
-    async def connect(self) -> bool:
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Trust Deft's authenticated, tenant-scoped event authorization."""
+        return True
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if self._state_error:
             self._set_fatal_error("state_invalid", self._state_error, retryable=False)
             return False
@@ -277,10 +279,6 @@ class DeftAdapter(BasePlatformAdapter):
             pass
         self._mark_disconnected()
 
-    def set_delivery_handler(self, handler: Optional[DeliveryHandler]) -> None:
-        """Install the narrow event-acceptance seam used by the native mapper."""
-        self._delivery_handler = handler
-
     def _compatibility_query(self) -> dict:
         return {
             "protocol_version": PROTOCOL_VERSION,
@@ -362,16 +360,10 @@ class DeftAdapter(BasePlatformAdapter):
         for event in events:
             if not isinstance(event, dict) or not event.get("id") or not event.get("claim_token"):
                 raise RuntimeError("Deft channel returned an event without an identity or claim")
-            message_event = None
-            if self._delivery_handler is not None:
-                accepted_by_hermes = await self._delivery_handler(event)
-                if not accepted_by_hermes:
-                    break
-            else:
-                if self._message_handler is None:
-                    break
-                message_event = self._to_message_event(event)
-                self._remember_pending(event)
+            if self._message_handler is None:
+                break
+            message_event = self._to_message_event(event)
+            self._remember_pending(event)
             accepted = await self._request(
                 "POST",
                 "/accept",
@@ -385,18 +377,14 @@ class DeftAdapter(BasePlatformAdapter):
                 raise RuntimeError("Deft did not confirm transport acceptance")
             event_id = str(event["id"])
             self._last_accepted_event_id = event_id
-            if message_event is not None:
-                self._mark_pending_accepted(event_id)
-                self._inflight_event_ids.add(event_id)
-            else:
-                self._save_state()
+            self._mark_pending_accepted(event_id)
+            self._inflight_event_ids.add(event_id)
             accepted_count += 1
-            if message_event is not None:
-                try:
-                    await self.handle_message(message_event)
-                except Exception:
-                    self._inflight_event_ids.discard(event_id)
-                    raise
+            try:
+                await self.handle_message(message_event)
+            except Exception:
+                self._inflight_event_ids.discard(event_id)
+                raise
         return accepted_count
 
     def _to_message_event(self, event: dict) -> MessageEvent:
@@ -577,13 +565,6 @@ class DeftAdapter(BasePlatformAdapter):
             message_id=source_message_id,
             reply_to_message_id=str(payload.get("parent_id")) if payload.get("parent_id") else None,
         )
-
-    async def _deliver_to_hermes(self, event: dict) -> bool:
-        if self._message_handler is None:
-            return False
-        message_event = self._to_message_event(event)
-        await self.handle_message(message_event)
-        return True
 
     async def _poll_loop(self) -> None:
         consecutive_failures = 0
