@@ -46,6 +46,7 @@ import { loadAgentActivity } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
+import { generateReceipt } from '../lib/receipts.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -1761,6 +1762,7 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
     // org_members row.
     const needsAdmin =
       parsed.data.trust_level !== undefined ||
+      parsed.data.max_daily_actions !== undefined ||
       parsed.data.heartbeat_cadence_minutes !== undefined ||
       parsed.data.mark_healthy === true;
     if (needsAdmin) {
@@ -1853,6 +1855,94 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
   } catch (err) {
     console.error('Failed to patch agent employee:', err);
     return c.json({ error: 'Failed to update', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
+  try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
+    const user = c.get('user');
+    const employeeId = c.req.param('id');
+    const now = new Date();
+    const reset = await db.transaction(async (tx) => {
+      const [employee] = await tx.select({
+        id: agentEmployees.id,
+        daily_action_count: agentEmployees.daily_action_count,
+        max_daily_actions: agentEmployees.max_daily_actions,
+      }).from(agentEmployees).where(and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.org_id, user.org_id),
+        eq(agentEmployees.is_deleted, false),
+      )).limit(1);
+      if (!employee) return null;
+      if (employee.daily_action_count === 0) {
+        return { employee, actionId: null, previousCount: 0 };
+      }
+
+      await tx.update(agentEmployees).set({
+        daily_action_count: 0,
+        updated_at: now,
+      }).where(and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.org_id, user.org_id),
+      ));
+      const result = {
+        previous_count: employee.daily_action_count,
+        daily_action_count: 0,
+        max_daily_actions: employee.max_daily_actions,
+      };
+      const [action] = await tx.insert(agentActions).values({
+        org_id: user.org_id,
+        user_id: user.id,
+        agent_employee_id: employeeId,
+        source: 'user',
+        action: 'action_budget_reset',
+        params: { previous_count: employee.daily_action_count },
+        approval_tier: 'full',
+        approval_status: 'approved',
+        approved_at: now,
+        executed_at: now,
+        result,
+      }).returning({ id: agentActions.id });
+      return {
+        employee: { ...employee, daily_action_count: 0 },
+        actionId: action!.id,
+        previousCount: employee.daily_action_count,
+      };
+    });
+
+    if (!reset) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (reset.actionId) {
+      await generateReceipt({
+        actionId: reset.actionId,
+        orgId: user.org_id,
+        employeeId,
+        proposer: 'user',
+        proposerId: user.id,
+        approverId: user.id,
+        decision: 'approved',
+        actionName: 'action_budget_reset',
+        actionParams: { previous_count: reset.previousCount },
+        resultJson: {
+          daily_action_count: 0,
+          max_daily_actions: reset.employee.max_daily_actions,
+        },
+      });
+    }
+
+    return c.json({
+      ok: true,
+      daily_action_count: 0,
+      max_daily_actions: reset.employee.max_daily_actions,
+      action_id: reset.actionId,
+    });
+  } catch (err) {
+    console.error('Failed to reset agent action budget:', err);
+    return c.json({ error: 'Failed to reset action budget', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
