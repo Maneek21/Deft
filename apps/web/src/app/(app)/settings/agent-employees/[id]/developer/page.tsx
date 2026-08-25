@@ -66,6 +66,16 @@ type DeveloperPayload = {
     certification_prompt: string;
     troubleshooting: string[];
   };
+  onboarding_preflight: {
+    ready: boolean;
+    checked_at: string;
+    checks: Array<{
+      key: string;
+      status: 'pass' | 'fail' | 'warning';
+      detail: string;
+      repair: string | null;
+    }>;
+  } | null;
   diagnostics: {
     recent_mcp_calls: Array<{
       id: string;
@@ -285,7 +295,7 @@ export default function DeveloperPage() {
         if (failure?.code === 'ONBOARDING_PREFLIGHT_FAILED') {
           const failed = failure.preflight?.checks
             ?.filter((check: { status: string }) => check.status === 'fail')
-            .map((check: { detail: string }) => check.detail)
+            .map((check: { detail: string; repair?: string | null }) => `${check.detail}${check.repair ? ` ${check.repair}` : ''}`)
             .join(' ');
           throw new Error(failed || failure.error);
         }
@@ -573,6 +583,32 @@ export default function DeveloperPage() {
           </div>
         </div>
       </section>
+
+      {data.onboarding_preflight && (
+        <section className="mt-6">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Onboarding readiness
+            </div>
+            <div className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${data.onboarding_preflight.ready ? 'bg-emerald-500/15 text-emerald-600' : 'bg-amber-500/15 text-amber-700'}`}>
+              {data.onboarding_preflight.ready ? 'Ready to certify' : 'Needs repair'}
+            </div>
+          </div>
+          <div className="space-y-2 rounded border border-border bg-background p-3">
+            {data.onboarding_preflight.checks.map((check) => (
+              <div key={check.key} className="flex items-start gap-2 text-xs">
+                <span className={`mt-0.5 font-semibold ${check.status === 'pass' ? 'text-emerald-600' : check.status === 'fail' ? 'text-destructive' : 'text-amber-600'}`}>
+                  {check.status === 'pass' ? 'PASS' : check.status === 'fail' ? 'FIX' : 'REVIEW'}
+                </span>
+                <div>
+                  <div>{check.detail}</div>
+                  {check.repair && <div className="mt-0.5 text-muted-foreground">{check.repair}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="mt-6">
         <div className="mb-2 flex items-center justify-between gap-2">

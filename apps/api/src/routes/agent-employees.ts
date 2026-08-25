@@ -2298,6 +2298,9 @@ const onboardingPreflightSchema = z.object({
     access: z.enum(['read', 'write']),
   }).strict()).max(50).default([]),
   hermes_toolsets: z.array(z.string().trim().min(1).max(64)).max(50).default([]),
+  min_action_headroom: z.number().int().nonnegative().max(100_000).default(10),
+  require_skills_api: z.boolean().default(true),
+  required_model: z.string().trim().min(1).max(200).optional(),
 }).strict();
 type OnboardingPreflightRequirements = z.infer<typeof onboardingPreflightSchema>;
 
@@ -2316,15 +2319,13 @@ async function loadAgentOnboardingPreflight(
       isNull(agentChannelTokens.revoked_at),
     )).limit(1),
   ]);
-  const moduleIds = [...new Set(requirements.modules.map((requirement) => requirement.module_id))];
-  const installedModules = moduleIds.length === 0 ? [] : await db.select({
+  const installedModules = await db.select({
     module_id: moduleInstallations.module_id,
     access: moduleInstallations.agent_access,
     enabled: moduleInstallations.is_enabled,
   }).from(moduleInstallations).where(and(
     eq(moduleInstallations.org_id, orgId),
     eq(moduleInstallations.is_deleted, false),
-    inArray(moduleInstallations.module_id, moduleIds),
   ));
   const metadata = connection?.metadata && typeof connection.metadata === 'object'
     ? connection.metadata as Record<string, unknown>
@@ -2340,12 +2341,13 @@ async function loadAgentOnboardingPreflight(
       has_channel_token: Boolean(channelToken),
       trust_level: employee.trust_level,
       max_daily_actions: employee.max_daily_actions,
+      daily_action_count: employee.daily_action_count,
     },
     connection: connection ? { status: connection.status, attestation } : null,
     requirements,
-    modules: installedModules.filter((module) => module.access !== 'none') as Array<{
+    modules: installedModules as Array<{
       module_id: string;
-      access: 'read' | 'write';
+      access: 'none' | 'read' | 'write';
       enabled: boolean;
     }>,
   });
@@ -2494,6 +2496,14 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
           challenge: latestChallenge,
         })
       : null;
+    const onboardingPreflight = runtimeKindOf(employee) === 'hermes'
+      ? await loadAgentOnboardingPreflight(user.org_id, employee, {
+          modules: [],
+          hermes_toolsets: [],
+          min_action_headroom: 10,
+          require_skills_api: true,
+        })
+      : null;
 
     return c.json({
       employee: {
@@ -2540,6 +2550,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
           }
         : null,
       runtime_setup: buildRuntimeSetup(employee, latestChallenge?.nonce ?? null),
+      onboarding_preflight: onboardingPreflight,
       diagnostics: {
         recent_mcp_calls: recentMcpCalls,
         recent_cooperative_log: recentCooperativeLog,
