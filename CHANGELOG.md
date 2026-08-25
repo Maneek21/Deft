@@ -10,6 +10,15 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.12] — 2026-08-25
+
+### Fixed
+
+- The Windows Hermes Agent Channel service installer now keeps its long-running
+  supervisor persistent. It no longer adds a duration-bound repeating task
+  trigger that could terminate a healthy bridge and cause repeated event
+  reclaims.
+
 ## [0.3.0-preview.11] — 2026-08-25
 
 ### Fixed
@@ -345,7 +354,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.11...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.12...HEAD
+[0.3.0-preview.12]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12
 [0.3.0-preview.11]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.11
 [0.3.0-preview.10]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.10
 [0.3.0-preview.9]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.9
