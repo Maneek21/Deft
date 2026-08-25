@@ -13,6 +13,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
+  agentChannelConnections,
   agentChannelDeliveryAttempts,
   agentChannelEvents,
   agentEmployees,
@@ -24,6 +25,7 @@ import {
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
   AGENT_CHANNEL_CAPABILITIES,
+  AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
   AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES,
   AGENT_CHANNEL_DEFAULT_LEASE_MS,
   DEFT_BUILD_COMMIT,
@@ -37,6 +39,7 @@ import {
   touchAgentChannelConnection,
   updateAgentChannelCursor,
   type AgentChannelPrincipal,
+  type AgentChannelAdapterMode,
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
 import { executeSendMessage } from '../lib/mcp-tools/writes.js';
@@ -53,6 +56,16 @@ function channelContract() {
     schema_head: DEFT_SCHEMA_HEAD,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
     required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+    adapter_modes: {
+      supervised_runtime: {
+        required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+        delivery_acknowledgement: 'lease_bound',
+      },
+      autonomous_platform: {
+        required_runtime_capabilities: [...AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES],
+        delivery_acknowledgement: 'transport_acceptance',
+      },
+    },
   };
 }
 
@@ -92,6 +105,12 @@ const ackSchema = z.object({
   error: z.string().max(4000).optional(),
   caller_employee_slug: z.string().optional(),
 });
+
+const acceptSchema = z.object({
+  event_id: z.string().min(1),
+  claim_token: z.string().min(1),
+  caller_employee_slug: z.string().optional(),
+}).strict();
 
 const replySchema = z.object({
   event_id: z.string().min(1),
@@ -143,6 +162,7 @@ function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 5
 function channelCompatibility(c: Context): {
   adapterVersion: string;
   capabilities: string[];
+  adapterMode: AgentChannelAdapterMode;
 } | Response {
   const protocolVersion = c.req.query('protocol_version')?.trim() ?? '';
   const adapterVersion = c.req.query('adapter_version')?.trim() ?? '';
@@ -150,7 +170,13 @@ function channelCompatibility(c: Context): {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-  const missingCapabilities = AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES
+  const adapterMode: AgentChannelAdapterMode = capabilities.includes('autonomous_platform_adapter_v1')
+    ? 'autonomous_platform'
+    : 'supervised_runtime';
+  const requiredCapabilities = adapterMode === 'autonomous_platform'
+    ? AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES
+    : AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES;
+  const missingCapabilities = requiredCapabilities
     .filter((capability) => !capabilities.includes(capability));
 
   if (protocolVersion !== AGENT_CHANNEL_PROTOCOL_VERSION || !adapterVersion || missingCapabilities.length > 0) {
@@ -169,10 +195,11 @@ function channelCompatibility(c: Context): {
       schema_head: DEFT_SCHEMA_HEAD,
       capabilities: [...AGENT_CHANNEL_CAPABILITIES],
       required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+      adapter_modes: channelContract().adapter_modes,
     }, 426);
   }
 
-  return { adapterVersion, capabilities };
+  return { adapterVersion, capabilities, adapterMode };
 }
 
 async function resolveChannelPrincipal(c: Context, callerSlug?: string | null): Promise<AgentChannelPrincipal | Response> {
@@ -217,6 +244,24 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
     )
     .limit(1);
   return event ?? null;
+}
+
+async function hasAutonomousPlatformConnection(principal: AgentChannelPrincipal) {
+  const [connection] = await db
+    .select({ status: agentChannelConnections.status, metadata: agentChannelConnections.metadata })
+    .from(agentChannelConnections)
+    .where(and(
+      eq(agentChannelConnections.org_id, principal.org_id),
+      eq(agentChannelConnections.agent_employee_id, principal.employee_id),
+    ))
+    .limit(1);
+  const metadata = (connection?.metadata ?? {}) as Record<string, unknown>;
+  const capabilities = Array.isArray(metadata.runtime_capabilities)
+    ? metadata.runtime_capabilities.filter((value): value is string => typeof value === 'string')
+    : [];
+  return connection?.status === 'connected'
+    && metadata.adapter_mode === 'autonomous_platform'
+    && capabilities.includes('autonomous_platform_adapter_v1');
 }
 
 async function startRuntimeAttempt(params: {
@@ -373,6 +418,7 @@ agentChannelRoutes.get('/connect', async (c) => {
     metadata: {
       adapter_version: compatibility.adapterVersion,
       runtime_capabilities: compatibility.capabilities,
+      adapter_mode: compatibility.adapterMode,
       server_release: DEFT_RELEASE_VERSION,
       server_commit: DEFT_BUILD_COMMIT,
       schema_head: DEFT_SCHEMA_HEAD,
@@ -387,6 +433,7 @@ agentChannelRoutes.get('/connect', async (c) => {
     server_commit: DEFT_BUILD_COMMIT,
     schema_head: DEFT_SCHEMA_HEAD,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    adapter_mode: compatibility.adapterMode,
     employee: {
       id: principal.employee_id,
       slug: principal.employee_slug,
@@ -416,6 +463,7 @@ agentChannelRoutes.get('/events', async (c) => {
     afterEventId,
     workerId,
     leaseMs: Number.isFinite(leaseMs) ? leaseMs : AGENT_CHANNEL_DEFAULT_LEASE_MS,
+    adapterMode: compatibility.adapterMode,
   });
   const lastEventId = events.at(-1)?.id ?? null;
   const connection = await touchAgentChannelConnection(principal, { lastEventId });
@@ -431,8 +479,71 @@ agentChannelRoutes.get('/events', async (c) => {
     ok: true,
     protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    adapter_mode: compatibility.adapterMode,
     cursor: lastEventId,
     events,
+  });
+});
+
+/**
+ * Settle transport delivery for an autonomous platform adapter without
+ * claiming that the employee's business work is complete. Accepted events are
+ * not redelivered to autonomous adapters, and no reasoning lease remains.
+ */
+agentChannelRoutes.post('/accept', async (c) => {
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsed = acceptSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+  }
+
+  const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
+  if (isResponse(principal)) return principal;
+  if (!(await hasAutonomousPlatformConnection(principal))) {
+    return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before accepting autonomous deliveries');
+  }
+
+  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+
+  const now = new Date();
+  const lifecyclePatch = buildAgentChannelLifecyclePatch(event, 'acknowledged', now);
+  const [accepted] = await db
+    .update(agentChannelEvents)
+    .set({
+      ...lifecyclePatch,
+      claim_owner: null,
+      claim_token: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    })
+    .where(and(
+      eq(agentChannelEvents.id, event.id),
+      eq(agentChannelEvents.org_id, principal.org_id),
+      eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+      eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+      sql`${agentChannelEvents.lease_expires_at} > now()`,
+    ))
+    .returning();
+  if (!accepted) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim expired before transport acceptance committed');
+  }
+
+  await touchAgentChannelConnection(principal, {
+    status: 'connected',
+    lastEventId: event.id,
+  });
+  await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+
+  return c.json({
+    ok: true,
+    adapter_mode: 'autonomous_platform',
+    transport_state: 'accepted',
+    business_outcome: accepted.work_outcome ?? null,
+    event: accepted,
   });
 });
 

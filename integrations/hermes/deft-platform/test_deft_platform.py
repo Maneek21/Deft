@@ -74,13 +74,74 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
             "employee_slug": "native-spike",
         })
         try:
-            adapter = registration["adapter_factory"](config)
+            async def request(method, path, query, body):
+                self.assertEqual(path, "/connect")
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+
+            adapter = MOD.DeftAdapter(config, request_fn=request, start_listener=False)
             self.assertNotIn("responses", adapter.channel_url)
             self.assertTrue(asyncio.run(adapter.connect()))
             asyncio.run(adapter.disconnect())
             self.assertFalse(adapter._running)
         finally:
             platform_registry.unregister("deft")
+
+    def test_accepts_delivery_once_without_a_reasoning_lease(self):
+        calls = []
+        delivered = []
+        event = {"id": "event-1", "claim_token": "claim-1", "payload": {"content": "hello"}}
+        event_reads = 0
+
+        async def request(method, path, query, body):
+            nonlocal event_reads
+            calls.append((method, path, query, body))
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/events":
+                event_reads += 1
+                return {"ok": True, "events": [event] if event_reads == 1 else []}
+            if path == "/accept":
+                return {"ok": True, "transport_state": "accepted", "business_outcome": None}
+            raise AssertionError(path)
+
+        async def receive(value):
+            delivered.append(value)
+            return True
+
+        async def scenario():
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(
+                name="deft",
+                label="Deft",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+            ))
+            try:
+                adapter = MOD.DeftAdapter(
+                    FakeConfig({
+                        "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                        "token": "secret-test-token",
+                        "employee_slug": "native-spike",
+                    }),
+                    request_fn=request,
+                    delivery_handler=receive,
+                    start_listener=False,
+                )
+                self.assertTrue(await adapter.connect())
+                self.assertEqual(await adapter._poll_once(), 1)
+                self.assertEqual(await adapter._poll_once(), 0)
+                await adapter.disconnect()
+                return adapter
+            finally:
+                platform_registry.unregister("deft")
+
+        adapter = asyncio.run(scenario())
+        self.assertEqual([item["id"] for item in delivered], ["event-1"])
+        accepts = [call for call in calls if call[1] == "/accept"]
+        self.assertEqual(len(accepts), 1)
+        self.assertEqual(accepts[0][3]["claim_token"], "claim-1")
+        self.assertEqual(adapter._last_accepted_event_id, "event-1")
+        self.assertFalse(any("responses" in call[1] for call in calls))
 
 
 if __name__ == "__main__":

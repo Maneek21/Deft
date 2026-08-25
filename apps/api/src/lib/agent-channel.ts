@@ -23,6 +23,7 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'wiki_memory_sync_v1',
   'runtime_reconciliation_v1',
   'runtime_attestation_v1',
+  'autonomous_platform_adapter_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
@@ -31,6 +32,10 @@ export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'runtime_reconciliation_v1',
   'runtime_attestation_v1',
 ] as const;
+export const AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES = [
+  'autonomous_platform_adapter_v1',
+] as const;
+export type AgentChannelAdapterMode = 'supervised_runtime' | 'autonomous_platform';
 export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.12';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
 export const DEFT_SCHEMA_HEAD = '0.3.0-preview.12';
@@ -370,6 +375,7 @@ export async function listPendingChannelEvents(params: {
   afterEventId?: string | null;
   workerId: string;
   leaseMs?: number;
+  adapterMode?: AgentChannelAdapterMode;
 }) {
   const limit = Math.min(Math.max(params.limit ?? 25, 1), 100);
   const workerId = params.workerId.trim().slice(0, 200);
@@ -396,13 +402,16 @@ export async function listPendingChannelEvents(params: {
   const cursorFilter = afterCreatedAt
     ? sql`AND created_at > ${afterCreatedAt}`
     : sql``;
+  const stateFilter = params.adapterMode === 'autonomous_platform'
+    ? sql`AND status IN ('pending', 'delivered')`
+    : sql`AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')`;
   const result = await db.execute(sql`
     WITH claimable AS (
       SELECT id
       FROM agent_channel_events
       WHERE org_id = ${params.principal.org_id}
         AND agent_employee_id = ${params.principal.employee_id}
-        AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')
+        ${stateFilter}
         AND (claim_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= now())
         ${cursorFilter}
       ORDER BY created_at ASC, id ASC

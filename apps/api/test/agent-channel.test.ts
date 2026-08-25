@@ -536,6 +536,15 @@ function channelCompatibilityQuery() {
   }).toString();
 }
 
+function autonomousCompatibilityQuery(workerId = 'autonomous-channel-worker') {
+  return new URLSearchParams({
+    protocol_version: 'deft.agent_channel.v2',
+    adapter_version: '0.1.0-test',
+    capabilities: 'autonomous_platform_adapter_v1',
+    worker_id: workerId,
+  }).toString();
+}
+
 test('GET /connect requires a bearer token', async () => {
   const res = await app.request('/api/agent-channel/v1/connect');
   assert.equal(res.status, 401);
@@ -570,6 +579,58 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.ok(body.required_runtime_capabilities.includes('terminal_outcomes'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_reconciliation_v1'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_attestation_v1'));
+  assert.ok(body.capabilities.includes('autonomous_platform_adapter_v1'));
+  assert.deepEqual(
+    body.adapter_modes.autonomous_platform.required_runtime_capabilities,
+    ['autonomous_platform_adapter_v1'],
+  );
+  assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
+});
+
+test('autonomous platform acceptance ends transport delivery without completing business work', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  const connected = await connect.json() as any;
+  assert.equal(connect.status, 200, JSON.stringify(connected));
+  assert.equal(connected.adapter_mode, 'autonomous_platform');
+
+  const event = await publishMessageEvent(`autonomous-accept-${crypto.randomUUID()}`);
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-accept-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  assert.equal(poll.status, 200, JSON.stringify(delivery));
+  assert.equal(delivery.adapter_mode, 'autonomous_platform');
+  const claimed = delivery.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(claimed?.claim_token);
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+  });
+  const accepted = await accept.json() as any;
+  assert.equal(accept.status, 200, JSON.stringify(accepted));
+  assert.equal(accepted.transport_state, 'accepted');
+  assert.equal(accepted.business_outcome, null);
+  assert.equal(accepted.event.status, 'acknowledged');
+  assert.equal(accepted.event.claim_token, null);
+  assert.equal(accepted.event.lease_expires_at, null);
+  assert.equal(accepted.event.completed_at, null);
+
+  const reconnect = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-reconnect-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const afterReconnect = await reconnect.json() as any;
+  assert.equal(reconnect.status, 200, JSON.stringify(afterReconnect));
+  assert.equal(
+    afterReconnect.events.some((candidate: any) => candidate.id === event.id),
+    false,
+    'transport-accepted work must not be redelivered to the autonomous adapter',
+  );
 });
 
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
