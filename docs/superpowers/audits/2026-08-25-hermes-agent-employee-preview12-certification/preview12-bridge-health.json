@@ -1,0 +1,12 @@
+{
+  "state": "healthy",
+  "checked_at": "2026-08-25T04:13:20.321Z",
+  "adapter_version": "0.3.0",
+  "protocol_version": "deft.agent_channel.v2",
+  "worker_id": "hermes-bridge:f0f55940-83e5-4993-9c41-7563deb19494",
+  "server_release": "0.3.0-preview.12",
+  "server_commit": "23694ef832bc11b6e06a704bf9af234697955d80",
+  "schema_head": "0.3.0-preview.12",
+  "last_success_at": "2026-08-25T04:13:20.321Z",
+  "last_event_count": 0
+}

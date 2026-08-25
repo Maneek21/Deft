@@ -1,0 +1,6 @@
+Command: hermes mcp test deft
+Checked at: 2026-08-25T04:14:48Z
+Exit status: 0
+Transport: stdio -> node
+Connection: connected
+Tools discovered: 44

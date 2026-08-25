@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-08-25T04:14:48Z",
+  "task_name": "Deft Hermes Agent Channel - Pilot Rita Preview12",
+  "installed": true,
+  "task_state": "Running",
+  "healthy": true,
+  "process_count": 1,
+  "trigger_count": 1,
+  "trigger_type": "MSFT_TaskLogonTrigger",
+  "repetition_interval": null,
+  "xml_has_repetition": false,
+  "xml_has_stop_at_duration_end": false,
+  "old_preview11_task_removed": true
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "deft.release.v1",
+  "tag": "v0.3.0-preview.12",
+  "commit": "23694ef832bc11b6e06a704bf9af234697955d80",
+  "image": "ghcr.io/maneek21/deft:0.3.0-preview.12",
+  "digest": "sha256:34b306e53e5c959468a973a50aaeb3b59235c56e631d67003f7780d18002d24b",
+  "signature": "sigstore-keyless",
+  "signature_identity": "https://github.com/Maneek21/Deft/.github/workflows/release.yml@refs/tags/v0.3.0-preview.12",
+  "provenance": "github-build-attestation",
+  "license": "AGPL-3.0-only",
+  "source": "https://github.com/Maneek21/Deft/tree/23694ef832bc11b6e06a704bf9af234697955d80",
+  "platforms": ["linux/amd64"],
+  "upgrade_support": "versioned-from-v0.2.0-preview.1",
+  "agent_channel_protocol": "deft.agent_channel.v2",
+  "hermes_integration": "deft-hermes-integration-0.3.0-preview.12.tar.gz",
+  "hermes_employee_certification": "hermes-employee-release-gate.json"
+}
