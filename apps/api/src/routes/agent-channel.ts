@@ -135,7 +135,7 @@ const reconcileSchema = z.object({
 });
 
 const statusSchema = z.object({
-  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'incompatible', 'error']),
+  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'incompatible', 'error', 'offline']),
   event_id: z.string().optional(),
   claim_token: z.string().min(1).optional(),
   lease_ms: z.number().int().positive().optional(),
@@ -506,6 +506,17 @@ agentChannelRoutes.post('/accept', async (c) => {
 
   const event = await getEventForPrincipal(parsed.data.event_id, principal);
   if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+  if (event.status === 'acknowledged' && event.acked_at && !event.claim_token) {
+    await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+    return c.json({
+      ok: true,
+      idempotent: true,
+      adapter_mode: 'autonomous_platform',
+      transport_state: 'accepted',
+      business_outcome: event.work_outcome ?? null,
+      event,
+    });
+  }
   if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
@@ -953,7 +964,9 @@ agentChannelRoutes.post('/status', async (c) => {
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
 
-  const connectionStatus = parsed.data.state === 'incompatible'
+  const connectionStatus = parsed.data.state === 'offline'
+    ? 'disconnected'
+    : parsed.data.state === 'incompatible'
     ? 'incompatible'
     : parsed.data.state === 'error' || parsed.data.state === 'degraded'
       ? 'degraded'

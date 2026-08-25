@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 import asyncio
-import hashlib
 import json
+import pathlib
 import socket
 import urllib.error
 import urllib.parse
@@ -28,6 +28,14 @@ PROTOCOL_VERSION = "deft.agent_channel.v2"
 
 RequestFn = Callable[[str, str, Optional[dict], Optional[dict]], Awaitable[dict]]
 DeliveryHandler = Callable[[dict], Awaitable[bool]]
+
+
+class DeftChannelRequestError(RuntimeError):
+    def __init__(self, message: str, *, status: int, code: str, retryable: bool):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.retryable = retryable
 
 
 def _configured_value(config: PlatformConfig, key: str, env_name: str) -> str:
@@ -95,15 +103,24 @@ class DeftAdapter(BasePlatformAdapter):
         self._delivery_handler = delivery_handler
         self._start_listener = start_listener
         self._poll_task: Optional[asyncio.Task] = None
+        default_state_path = pathlib.Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser() / "deft-platform-state.json"
+        self._state_path = pathlib.Path(str(extra.get("state_path") or default_state_path)).expanduser()
+        self._state_error: Optional[str] = None
         self._last_accepted_event_id: Optional[str] = None
+        self._pending_events: Dict[str, dict] = {}
+        self._inflight_event_ids: set[str] = set()
         self._routes_by_message: Dict[str, dict] = {}
         self._routes_by_scope: Dict[tuple[str, str], dict] = {}
+        self._load_state()
 
     @property
     def name(self) -> str:
         return "Deft"
 
     async def connect(self) -> bool:
+        if self._state_error:
+            self._set_fatal_error("state_invalid", self._state_error, retryable=False)
+            return False
         if not validate_config(self.config):
             self._set_fatal_error(
                 "config_missing",
@@ -132,6 +149,111 @@ class DeftAdapter(BasePlatformAdapter):
             self._poll_task = asyncio.create_task(self._poll_loop())
         return True
 
+    def _load_state(self) -> None:
+        if not self._state_path.exists():
+            return
+        try:
+            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+            if raw.get("version") != 1:
+                raise ValueError("unsupported state version")
+            cursor = raw.get("last_accepted_event_id")
+            if cursor is not None and not isinstance(cursor, str):
+                raise ValueError("cursor must be a string or null")
+            pending = raw.get("pending_events") or []
+            if not isinstance(pending, list):
+                raise ValueError("pending_events must be a list")
+            parsed: Dict[str, dict] = {}
+            for item in pending:
+                if not isinstance(item, dict) or not isinstance(item.get("event"), dict):
+                    raise ValueError("pending event entry is invalid")
+                event_id = str(item["event"].get("id") or "")
+                if not event_id or event_id in parsed:
+                    raise ValueError("pending event identity is missing or duplicated")
+                parsed[event_id] = item
+            self._last_accepted_event_id = cursor
+            self._pending_events = parsed
+        except Exception as exc:
+            self._state_error = f"Deft platform state is invalid: {exc}"
+
+    def _save_state(self) -> None:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "last_accepted_event_id": self._last_accepted_event_id,
+            "pending_events": list(self._pending_events.values()),
+        }
+        temp_path = self._state_path.with_name(f"{self._state_path.name}.tmp.{os.getpid()}")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        try:
+            os.chmod(temp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(temp_path, self._state_path)
+
+    def _remember_pending(self, event: dict) -> None:
+        self._pending_events[str(event["id"])] = {
+            "event": json.loads(json.dumps(event)),
+            "transport_accepted": False,
+        }
+        self._save_state()
+
+    def _mark_pending_accepted(self, event_id: str) -> None:
+        pending = self._pending_events[event_id]
+        pending["transport_accepted"] = True
+        pending["event"].pop("claim_token", None)
+        pending["event"].pop("claim_owner", None)
+        pending["event"].pop("lease_expires_at", None)
+        self._last_accepted_event_id = event_id
+        self._save_state()
+
+    def _complete_pending(self, route: dict) -> None:
+        event_id = str(route["event_id"])
+        self._pending_events.pop(event_id, None)
+        self._inflight_event_ids.discard(event_id)
+        self._routes_by_message = {
+            key: value for key, value in self._routes_by_message.items()
+            if value.get("event_id") != event_id
+        }
+        self._routes_by_scope = {
+            key: value for key, value in self._routes_by_scope.items()
+            if value.get("event_id") != event_id
+        }
+        self._save_state()
+
+    async def _resume_pending(self) -> int:
+        if self._message_handler is None:
+            return 0
+        resumed = 0
+        for event_id, pending in list(self._pending_events.items()):
+            if event_id in self._inflight_event_ids:
+                continue
+            event = pending["event"]
+            if not pending.get("transport_accepted"):
+                claim_token = event.get("claim_token")
+                if not claim_token:
+                    raise RuntimeError(f"Pending Deft event {event_id} has no acceptance claim")
+                accepted = await self._request(
+                    "POST",
+                    "/accept",
+                    body={
+                        "event_id": event_id,
+                        "claim_token": claim_token,
+                        "caller_employee_slug": self.employee_slug,
+                    },
+                )
+                if accepted.get("transport_state") != "accepted":
+                    raise RuntimeError(f"Deft did not reconcile transport acceptance for {event_id}")
+                self._mark_pending_accepted(event_id)
+            message_event = self._to_message_event(event)
+            self._inflight_event_ids.add(event_id)
+            try:
+                await self.handle_message(message_event)
+            except Exception:
+                self._inflight_event_ids.discard(event_id)
+                raise
+            resumed += 1
+        return resumed
+
     async def disconnect(self) -> None:
         task = self._poll_task
         self._poll_task = None
@@ -141,6 +263,18 @@ class DeftAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
+        try:
+            await self._request(
+                "POST",
+                "/status",
+                body={
+                    "state": "offline",
+                    "worker_id": self.worker_id,
+                    "caller_employee_slug": self.employee_slug,
+                },
+            )
+        except Exception:
+            pass
         self._mark_disconnected()
 
     def set_delivery_handler(self, handler: Optional[DeliveryHandler]) -> None:
@@ -193,11 +327,25 @@ class DeftAdapter(BasePlatformAdapter):
                     return json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:2000]
-                raise RuntimeError(f"Deft channel HTTP {exc.code}: {detail}") from exc
+                try:
+                    parsed = json.loads(detail)
+                    error_code = str(parsed.get("code") or "HTTP_ERROR")
+                    message = str(parsed.get("error") or detail)
+                except Exception:
+                    error_code = "HTTP_ERROR"
+                    message = detail
+                retryable = exc.code in {408, 425, 429} or exc.code >= 500
+                raise DeftChannelRequestError(
+                    f"Deft channel HTTP {exc.code} {error_code}: {message}",
+                    status=exc.code,
+                    code=error_code,
+                    retryable=retryable,
+                ) from exc
 
         return await asyncio.to_thread(perform)
 
     async def _poll_once(self) -> int:
+        accepted_count = await self._resume_pending()
         response = await self._request(
             "GET",
             "/events",
@@ -211,7 +359,6 @@ class DeftAdapter(BasePlatformAdapter):
         events = response.get("events") if isinstance(response, dict) else None
         if not isinstance(events, list):
             raise RuntimeError("Deft channel returned an invalid events payload")
-        accepted_count = 0
         for event in events:
             if not isinstance(event, dict) or not event.get("id") or not event.get("claim_token"):
                 raise RuntimeError("Deft channel returned an event without an identity or claim")
@@ -224,6 +371,7 @@ class DeftAdapter(BasePlatformAdapter):
                 if self._message_handler is None:
                     break
                 message_event = self._to_message_event(event)
+                self._remember_pending(event)
             accepted = await self._request(
                 "POST",
                 "/accept",
@@ -235,10 +383,20 @@ class DeftAdapter(BasePlatformAdapter):
             )
             if accepted.get("transport_state") != "accepted":
                 raise RuntimeError("Deft did not confirm transport acceptance")
-            self._last_accepted_event_id = str(event["id"])
+            event_id = str(event["id"])
+            self._last_accepted_event_id = event_id
+            if message_event is not None:
+                self._mark_pending_accepted(event_id)
+                self._inflight_event_ids.add(event_id)
+            else:
+                self._save_state()
             accepted_count += 1
             if message_event is not None:
-                await self.handle_message(message_event)
+                try:
+                    await self.handle_message(message_event)
+                except Exception:
+                    self._inflight_event_ids.discard(event_id)
+                    raise
         return accepted_count
 
     def _to_message_event(self, event: dict) -> MessageEvent:
@@ -335,13 +493,26 @@ class DeftAdapter(BasePlatformAdapter):
         return True
 
     async def _poll_loop(self) -> None:
+        consecutive_failures = 0
         while self._running:
             try:
                 await self._poll_once()
+                consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                await asyncio.sleep(min(self.poll_ms / 1000, 5.0))
+            except DeftChannelRequestError as exc:
+                consecutive_failures += 1
+                if not exc.retryable or consecutive_failures >= 5:
+                    self._set_fatal_error(exc.code.lower(), str(exc), retryable=exc.retryable)
+                    break
+                await asyncio.sleep(min(2 ** (consecutive_failures - 1), 30))
+                continue
+            except Exception as exc:
+                consecutive_failures += 1
+                if consecutive_failures >= 5:
+                    self._set_fatal_error("channel_unavailable", str(exc), retryable=True)
+                    break
+                await asyncio.sleep(min(2 ** (consecutive_failures - 1), 30))
                 continue
             await asyncio.sleep(self.poll_ms / 1000)
 
@@ -362,8 +533,7 @@ class DeftAdapter(BasePlatformAdapter):
         if route is None:
             return SendResult(success=False, error="No accepted Deft source event is available for this reply")
 
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
-        idempotency_key = f"autonomous-reply:{route['event_id']}:{digest}"
+        idempotency_key = f"autonomous-reply:{route['event_id']}:response"
         try:
             response = await self._request(
                 "POST",
@@ -377,6 +547,8 @@ class DeftAdapter(BasePlatformAdapter):
                     "caller_employee_slug": self.employee_slug,
                 },
             )
+        except DeftChannelRequestError as exc:
+            return SendResult(success=False, error=str(exc), retryable=exc.retryable)
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
         if not response.get("ok"):
@@ -387,6 +559,7 @@ class DeftAdapter(BasePlatformAdapter):
             if route.get("source_kind") == "task"
             else result.get("id") or result.get("message_id")
         )
+        self._complete_pending(route)
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

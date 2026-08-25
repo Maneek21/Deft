@@ -1,10 +1,14 @@
 import asyncio
+import atexit
 import importlib.util
+import json
 import os
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
+import uuid
 from unittest.mock import patch
 
 
@@ -20,6 +24,8 @@ SPEC = importlib.util.spec_from_file_location(
 MOD = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MOD
 SPEC.loader.exec_module(MOD)
+TEST_STATE_DIR = tempfile.TemporaryDirectory()
+atexit.register(TEST_STATE_DIR.cleanup)
 
 
 class FakeContext:
@@ -32,7 +38,11 @@ class FakeContext:
 
 class FakeConfig:
     def __init__(self, extra=None):
-        self.extra = extra or {}
+        self.extra = dict(extra or {})
+        self.extra.setdefault(
+            "state_path",
+            str(pathlib.Path(TEST_STATE_DIR.name) / f"state-{uuid.uuid4()}.json"),
+        )
 
 
 class DeftPlatformSkeletonTests(unittest.TestCase):
@@ -54,6 +64,57 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
             enabled = MOD._env_enablement()
         self.assertEqual(enabled["channel_url"], "https://demo.deft.ing/api/agent-channel")
         self.assertEqual(enabled["employee_slug"], "native-spike")
+
+    def test_corrupt_transport_state_fails_before_connecting(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = pathlib.Path(temp_dir) / "state.json"
+            state_path.write_text("{not-json", encoding="utf-8")
+            adapter = MOD.DeftAdapter(
+                FakeConfig({
+                    "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                    "token": "secret-test-token",
+                    "employee_slug": "native-spike",
+                    "state_path": str(state_path),
+                }),
+                request_fn=lambda *args: calls.append(args),
+                start_listener=False,
+            )
+            self.assertFalse(asyncio.run(adapter.connect()))
+        self.assertEqual(calls, [])
+
+    def test_authentication_failure_is_not_retried_by_listener(self):
+        calls = []
+
+        async def request(method, path, query, body):
+            calls.append(path)
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/events":
+                raise MOD.DeftChannelRequestError(
+                    "token expired", status=401, code="UNAUTHORIZED", retryable=False,
+                )
+            if path == "/status":
+                return {"ok": True}
+            raise AssertionError(path)
+
+        async def scenario():
+            adapter = MOD.DeftAdapter(
+                FakeConfig({
+                    "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                    "token": "secret-test-token",
+                    "employee_slug": "native-spike",
+                }),
+                request_fn=request,
+                start_listener=True,
+            )
+            adapter.set_message_handler(lambda event: None)
+            self.assertTrue(await adapter.connect())
+            await adapter._poll_task
+            await adapter.disconnect()
+
+        asyncio.run(scenario())
+        self.assertEqual(calls.count("/events"), 1)
 
     def test_adapter_loads_and_unloads_without_model_api(self):
         context = FakeContext()
@@ -301,6 +362,107 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(reply[3]["event_id"], "task-event-1")
         self.assertEqual(reply[3]["thread_id"], "task-uuid-1")
         self.assertNotIn("claim_token", reply[3])
+
+    def test_restart_resumes_one_accepted_event_without_duplicate_reply(self):
+        calls = []
+        received = []
+        source_event = {
+            "id": "restart-event-1",
+            "kind": "task.assigned",
+            "source_kind": "task",
+            "source_id": "restart-task-1",
+            "org_id": "org-1",
+            "actor_user_id": "diego-1",
+            "claim_token": "restart-claim-1",
+            "payload": {
+                "task_id": "restart-task-1",
+                "task_key": "OPS-77",
+                "title": "Survive an adapter restart",
+                "status": "todo",
+                "assigned_by": "diego-1",
+            },
+        }
+        event_delivered = False
+
+        async def request(method, path, query, body):
+            nonlocal event_delivered
+            calls.append((method, path, query, body))
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/events":
+                if not event_delivered:
+                    event_delivered = True
+                    return {"ok": True, "events": [source_event]}
+                return {"ok": True, "events": []}
+            if path == "/accept":
+                return {"ok": True, "transport_state": "accepted"}
+            if path == "/reply":
+                return {
+                    "ok": True,
+                    "transport_reply": "sent",
+                    "transport_target": "task_comment",
+                    "result": {"comment_id": "restart-comment-1"},
+                }
+            raise AssertionError(path)
+
+        async def scenario(state_path):
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(
+                name="deft", label="Deft", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            ))
+            try:
+                config = {
+                    "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                    "token": "secret-test-token",
+                    "employee_slug": "native-spike",
+                    "state_path": str(state_path),
+                }
+                first = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)
+                never = asyncio.Event()
+
+                async def interrupted_handler(event):
+                    await never.wait()
+
+                first.set_message_handler(interrupted_handler)
+                self.assertTrue(await first.connect())
+                self.assertEqual(await first._poll_once(), 1)
+                for task in tuple(first._background_tasks):
+                    task.cancel()
+                if first._background_tasks:
+                    await asyncio.gather(*tuple(first._background_tasks), return_exceptions=True)
+                await first.disconnect()
+
+                second = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)
+
+                async def resumed_handler(event):
+                    received.append(event)
+                    return "Restarted cleanly and resumed the task once."
+
+                second.set_message_handler(resumed_handler)
+                self.assertTrue(await second.connect())
+                self.assertEqual(await second._poll_once(), 1)
+                while second._background_tasks:
+                    await asyncio.gather(*tuple(second._background_tasks))
+                await second.disconnect()
+
+                third = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)
+                third.set_message_handler(resumed_handler)
+                self.assertTrue(await third.connect())
+                self.assertEqual(await third._poll_once(), 0)
+                await third.disconnect()
+                return json.loads(pathlib.Path(state_path).read_text(encoding="utf-8"))
+            finally:
+                platform_registry.unregister("deft")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = asyncio.run(scenario(pathlib.Path(temp_dir) / "state.json"))
+        self.assertEqual(len(received), 1)
+        self.assertEqual(len([call for call in calls if call[1] == "/accept"]), 1)
+        replies = [call for call in calls if call[1] == "/reply"]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0][3]["idempotency_key"], "autonomous-reply:restart-event-1:response")
+        self.assertEqual(state["last_accepted_event_id"], "restart-event-1")
+        self.assertEqual(state["pending_events"], [])
 
 
 if __name__ == "__main__":

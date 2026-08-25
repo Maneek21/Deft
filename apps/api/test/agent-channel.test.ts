@@ -620,6 +620,16 @@ test('autonomous platform acceptance ends transport delivery without completing 
   assert.equal(accepted.event.lease_expires_at, null);
   assert.equal(accepted.event.completed_at, null);
 
+  const acceptReplay = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+  });
+  const acceptReplayed = await acceptReplay.json() as any;
+  assert.equal(acceptReplay.status, 200, JSON.stringify(acceptReplayed));
+  assert.equal(acceptReplayed.idempotent, true);
+  assert.equal(acceptReplayed.transport_state, 'accepted');
+
   const replyKey = `autonomous-reply-${crypto.randomUUID()}`;
   const reply = await app.request('/api/agent-channel/v1/reply', {
     method: 'POST',
@@ -789,7 +799,7 @@ test('GET /connect rejects a legacy runtime before recording it as connected', a
   assert.equal(connection?.status, 'incompatible');
 });
 
-test('POST /status persists a bounded runtime attestation and reconnect count', async () => {
+test('POST /status persists runtime attestation, reconnect count, and explicit offline state', async () => {
   const reconnect = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery().replace('channel-test-worker', 'replacement-worker')}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
@@ -823,6 +833,16 @@ test('POST /status persists a bounded runtime attestation and reconnect count', 
   assert.ok(metadata.restart_count >= 1);
   assert.equal(metadata.runtime_attestation.hermes_version, '0.16.0');
   assert.deepEqual(metadata.runtime_attestation.enabled_toolsets, ['web']);
+
+  const offline = await app.request('/api/agent-channel/v1/status', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ state: 'offline', worker_id: 'replacement-worker' }),
+  });
+  assert.equal(offline.status, 200, await offline.text());
+  const [disconnected] = await db.select().from(agentChannelConnections)
+    .where(eq(agentChannelConnections.agent_employee_id, employeeId)).limit(1);
+  assert.equal(disconnected?.status, 'disconnected');
 });
 
 test('GET /events returns pending events once and marks them delivered', async () => {
