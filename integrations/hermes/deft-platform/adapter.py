@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import hashlib
 import json
 import pathlib
 import socket
@@ -18,13 +19,20 @@ import urllib.request
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+)
 
 
 PLATFORM_NAME = "deft"
 ADAPTER_VERSION = "0.1.0"
 CAPABILITY = "autonomous_platform_adapter_v1"
 PROTOCOL_VERSION = "deft.agent_channel.v2"
+MAX_RECENT_ROUTES = 200
 
 RequestFn = Callable[[str, str, Optional[dict], Optional[dict]], Awaitable[dict]]
 
@@ -212,15 +220,21 @@ class DeftAdapter(BasePlatformAdapter):
         event_id = str(route["event_id"])
         self._pending_events.pop(event_id, None)
         self._inflight_event_ids.discard(event_id)
-        self._routes_by_message = {
-            key: value for key, value in self._routes_by_message.items()
-            if value.get("event_id") != event_id
-        }
-        self._routes_by_scope = {
-            key: value for key, value in self._routes_by_scope.items()
-            if value.get("event_id") != event_id
-        }
         self._save_state()
+
+    def _remember_route(
+        self,
+        message_id: str,
+        chat_id: str,
+        thread_id: str,
+        route: dict,
+    ) -> None:
+        self._routes_by_message[message_id] = route
+        self._routes_by_scope[(chat_id, thread_id)] = route
+        while len(self._routes_by_message) > MAX_RECENT_ROUTES:
+            self._routes_by_message.pop(next(iter(self._routes_by_message)))
+        while len(self._routes_by_scope) > MAX_RECENT_ROUTES:
+            self._routes_by_scope.pop(next(iter(self._routes_by_scope)))
 
     async def _resume_pending(self) -> int:
         if self._message_handler is None:
@@ -278,6 +292,18 @@ class DeftAdapter(BasePlatformAdapter):
         except Exception:
             pass
         self._mark_disconnected()
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        await super().on_processing_complete(event, outcome)
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        route = self._routes_by_message.get(str(event.message_id or ""))
+        if route is not None:
+            self._complete_pending(route)
 
     def _compatibility_query(self) -> dict:
         return {
@@ -477,8 +503,7 @@ class DeftAdapter(BasePlatformAdapter):
                 "thread_id": task_id,
                 "source_message_id": event_message_id,
             }
-            self._routes_by_message[event_message_id] = route
-            self._routes_by_scope[(chat_id, task_id)] = route
+            self._remember_route(event_message_id, chat_id, task_id, route)
             return MessageEvent(
                 text="\n".join(lines),
                 message_type=MessageType.TEXT,
@@ -521,8 +546,7 @@ class DeftAdapter(BasePlatformAdapter):
                 "thread_id": thread_id,
                 "source_message_id": event_message_id,
             }
-            self._routes_by_message[event_message_id] = route
-            self._routes_by_scope[(chat_id, thread_id)] = route
+            self._remember_route(event_message_id, chat_id, thread_id, route)
             return MessageEvent(
                 text="\n".join(lines),
                 message_type=MessageType.TEXT,
@@ -555,8 +579,7 @@ class DeftAdapter(BasePlatformAdapter):
             "thread_id": thread_id,
             "source_message_id": source_message_id,
         }
-        self._routes_by_message[source_message_id] = route
-        self._routes_by_scope[(chat_id, thread_id or "")] = route
+        self._remember_route(source_message_id, chat_id, thread_id or "", route)
         return MessageEvent(
             text=str(payload.get("content") or ""),
             message_type=MessageType.TEXT,
@@ -607,7 +630,16 @@ class DeftAdapter(BasePlatformAdapter):
         if route is None:
             return SendResult(success=False, error="No accepted Deft source event is available for this reply")
 
-        idempotency_key = f"autonomous-reply:{route['event_id']}:response"
+        # Hermes labels tool-boundary commentary as interim transport output.
+        # It is useful in a live chat stream, but mapping every preamble to a
+        # durable task comment floods the task and obscures the actual work
+        # report written through Deft MCP. Keep the delivery successful so the
+        # autonomous runtime can continue, and persist only its final reply.
+        if route.get("source_kind") == "task" and (metadata or {}).get("_interim_send") is True:
+            return SendResult(success=True, raw_response={"interim_suppressed": True})
+
+        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        idempotency_key = f"autonomous-reply:{route['event_id']}:{content_digest}"
         try:
             response = await self._request(
                 "POST",
@@ -633,7 +665,6 @@ class DeftAdapter(BasePlatformAdapter):
             if route.get("source_kind") == "task"
             else result.get("id") or result.get("message_id")
         )
-        self._complete_pending(route)
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

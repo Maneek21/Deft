@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import atexit
 import importlib.util
 import json
@@ -257,6 +258,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
                 async def handler(event):
                     received.append(event)
+                    progress = await adapter.send(
+                        event.source.chat_id,
+                        "Working on the summary.",
+                        reply_to=event.message_id,
+                        metadata={"thread_id": event.source.thread_id},
+                    )
+                    self.assertTrue(progress.success)
                     return "I can summarize it."
 
                 adapter.set_message_handler(handler)
@@ -264,6 +272,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 self.assertEqual(await adapter._poll_once(), 1)
                 while adapter._background_tasks:
                     await asyncio.gather(*tuple(adapter._background_tasks))
+                late = await adapter.send(
+                    "org-1:space-1",
+                    "Late delegated completion.",
+                    reply_to="message-1",
+                    metadata={"thread_id": "thread-1"},
+                )
+                self.assertTrue(late.success)
                 await adapter.disconnect()
             finally:
                 platform_registry.unregister("deft")
@@ -276,11 +291,16 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(message_event.source.thread_id, "thread-1")
         self.assertEqual(message_event.source.user_id, "diego-1")
         self.assertEqual(message_event.source.user_name, "Diego")
-        reply = next(call for call in calls if call[1] == "/reply")
-        self.assertEqual(reply[3]["event_id"], "channel-event-7")
-        self.assertEqual(reply[3]["thread_id"], "thread-1")
-        self.assertEqual(reply[3]["adapter_mode"], "autonomous_platform")
-        self.assertNotIn("claim_token", reply[3])
+        replies = [call for call in calls if call[1] == "/reply"]
+        self.assertEqual(len(replies), 3)
+        self.assertEqual({reply[3]["event_id"] for reply in replies}, {"channel-event-7"})
+        self.assertEqual({reply[3]["thread_id"] for reply in replies}, {"thread-1"})
+        self.assertEqual(
+            {reply[3]["adapter_mode"] for reply in replies},
+            {"autonomous_platform"},
+        )
+        self.assertEqual(len({reply[3]["idempotency_key"] for reply in replies}), 3)
+        self.assertTrue(all("claim_token" not in reply[3] for reply in replies))
 
     def test_task_assignment_uses_normal_handler_and_returns_a_task_comment(self):
         calls = []
@@ -340,6 +360,16 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
                 async def handler(event):
                     received.append(event)
+                    interim = await adapter.send(
+                        event.source.chat_id,
+                        "I am checking Deft Knowledge.",
+                        reply_to=event.message_id,
+                        metadata={
+                            "thread_id": event.source.thread_id,
+                            "_interim_send": True,
+                        },
+                    )
+                    self.assertTrue(interim.success)
                     return "I picked this up and will use the launch notes."
 
                 adapter.set_message_handler(handler)
@@ -360,7 +390,9 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(task.source.thread_id, "task-uuid-1")
         self.assertEqual(task.source.user_id, "diego-1")
         self.assertEqual(task.source.user_name, "Diego")
-        reply = next(call for call in calls if call[1] == "/reply")
+        replies = [call for call in calls if call[1] == "/reply"]
+        self.assertEqual(len(replies), 1)
+        reply = replies[0]
         self.assertEqual(reply[3]["event_id"], "task-event-1")
         self.assertEqual(reply[3]["thread_id"], "task-uuid-1")
         self.assertNotIn("claim_token", reply[3])
@@ -462,7 +494,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(len([call for call in calls if call[1] == "/accept"]), 1)
         replies = [call for call in calls if call[1] == "/reply"]
         self.assertEqual(len(replies), 1)
-        self.assertEqual(replies[0][3]["idempotency_key"], "autonomous-reply:restart-event-1:response")
+        expected_digest = hashlib.sha256(
+            b"Restarted cleanly and resumed the task once."
+        ).hexdigest()
+        self.assertEqual(
+            replies[0][3]["idempotency_key"],
+            f"autonomous-reply:restart-event-1:{expected_digest}",
+        )
         self.assertEqual(state["last_accepted_event_id"], "restart-event-1")
         self.assertEqual(state["pending_events"], [])
 
@@ -555,7 +593,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertTrue(result.success)
         reply = calls[0]
         self.assertEqual(reply[3]["event_id"], "approval-event-1")
-        self.assertEqual(reply[3]["idempotency_key"], "autonomous-reply:approval-event-1:response")
+        expected_digest = hashlib.sha256(
+            b"Approval received; continuing autonomously."
+        ).hexdigest()
+        self.assertEqual(
+            reply[3]["idempotency_key"],
+            f"autonomous-reply:approval-event-1:{expected_digest}",
+        )
 
 
 if __name__ == "__main__":

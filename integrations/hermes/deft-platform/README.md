@@ -101,6 +101,9 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
   that business work is complete.
 - Hermes reports real milestones or blockers with `record_progress` and changes
   Deft state through MCP.
+- Hermes tool-boundary commentary remains transient for task assignments;
+  Deft persists the final channel reply and the substantive MCP task report,
+  rather than turning every model preamble into a durable task comment.
 - Human comments, cancellation, and approval results return through the same
   channel and task/chat context.
 - Hermes treats inbound Deft actors as authorized upstream because the
