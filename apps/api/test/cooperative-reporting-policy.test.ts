@@ -30,4 +30,3 @@ test('cooperative report replay identity is employee, kind, and key scoped', () 
     cooperativeRecordDigest('org-1', 'employee-2', 'action_attempt', 'tool-call-1'),
   );
 });
-

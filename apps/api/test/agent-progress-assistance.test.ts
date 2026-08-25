@@ -38,4 +38,3 @@ test('assistance events are idempotent per progress milestone', () => {
   assert.equal(first?.sourceEventId, replay?.sourceEventId);
   assert.equal(first?.dedupeKey, replay?.dedupeKey);
 });
-

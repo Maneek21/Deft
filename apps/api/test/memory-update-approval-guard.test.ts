@@ -32,4 +32,3 @@ test('memory promotion approval guard rejects a replaced target', () => {
     /target changed since approval was requested/i,
   );
 });
-
