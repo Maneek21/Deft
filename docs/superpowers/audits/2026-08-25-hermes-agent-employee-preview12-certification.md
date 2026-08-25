@@ -25,7 +25,7 @@ The practical verdict is: **ready for a governed internal pilot; not ready to pr
 | Rita model | Pass | `gpt-5.6-sol`, medium reasoning |
 | Deft release | Pass | preview.12 after supported backup/upgrade/doctor/smoke deployment |
 | Hermes gateway | Pass | Hermes 0.20.5, Responses/skills APIs ready |
-| Agent Channel bridge | Pass | Preview.12 supervisor healthy; one logon trigger, no repetition duration, pending 0, failed 0 |
+| Agent Channel bridge | Pass | Preview.12 is the sole Rita supervisor; one logon trigger, no repetition duration, pending 0, failed 0 |
 | Deft MCP surface | Pass | Live `hermes mcp test deft`: connected, 44 tools discovered |
 | Contacts | Pass | v1.1.0 enabled with agent access `write` |
 | Action budget | Pass | Rita-only test counter reset; 1000/1000 available |
@@ -83,6 +83,7 @@ The clean event had `delivery_count=2`. Runtime attempt 1 was abandoned after it
 5. **Windows bridge termination:** preview.12 removes the repeating Scheduled Task trigger whose `StopAtDurationEnd` behavior killed a healthy supervisor. Logon start, the supervisor's in-process loop, and Scheduled Task failure restart remain.
 6. **Runner correctness:** every mutation is checkpointed; task deliveries are correlated by Agent Channel `source_id`; completed scenarios are skipped; deterministic auth/budget/MCP failures stop immediately; healthy running work has a six-minute ceiling rather than a blind 12-minute wait.
 7. **Credential hygiene:** the Rita MCP and Agent Channel credentials used during diagnosis were rotated after preview.12 deployment, written only into the protected local runtime configuration, and both the gateway and bridge were revalidated with the fresh credentials.
+8. **Stale duplicate runtime:** final observation found an old adapter 0.2.1 Rita task still retrying the revoked channel token with `UNAUTHORIZED`. That task and its processes were removed. Preview.12 then remained continuously healthy for 267 seconds—past the prior 150-second failure point—and the final preflight confirmed it was the only Rita bridge.
 
 ## Minimum Deft work before the ideal-employee promise
 

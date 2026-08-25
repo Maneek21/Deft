@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "created_at": "2026-08-24T18:07:31.422Z",
-  "updated_at": "2026-08-25T04:13:27.782Z",
+  "updated_at": "2026-08-25T04:37:11.178Z",
   "completed_at": "2026-08-25T03:21:19.558Z",
   "release": {
     "release": "0.3.0-preview.12",
@@ -71,7 +71,7 @@
     "invalidated": "Scenario outcomes were not reused because DAILY_ACTION_LIMIT appears in the run boundary."
   },
   "preflight": {
-    "checked_at": "2026-08-25T04:13:27.782Z",
+    "checked_at": "2026-08-25T04:37:11.177Z",
     "resumed": true,
     "checks": {
       "model": true,
@@ -91,14 +91,14 @@
     },
     "bridge": {
       "state": "healthy",
-      "checked_at": "2026-08-25T04:13:20.321Z",
+      "checked_at": "2026-08-25T04:37:09.988Z",
       "adapter_version": "0.3.0",
       "protocol_version": "deft.agent_channel.v2",
-      "worker_id": "hermes-bridge:f0f55940-83e5-4993-9c41-7563deb19494",
+      "worker_id": "hermes-bridge:06ade554-a45d-4e12-87b1-f578cb5d1528",
       "server_release": "0.3.0-preview.12",
       "server_commit": "23694ef832bc11b6e06a704bf9af234697955d80",
       "schema_head": "0.3.0-preview.12",
-      "last_success_at": "2026-08-25T04:13:20.321Z",
+      "last_success_at": "2026-08-25T04:37:09.988Z",
       "last_event_count": 0
     },
     "mcp_tools": 44,
