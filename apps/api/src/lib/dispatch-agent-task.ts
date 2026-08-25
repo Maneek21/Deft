@@ -103,6 +103,11 @@ export async function publishTaskChannelEventForAssignee(params: {
         .limit(1);
       prefix = project?.prefix ?? null;
     }
+    const [actor] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, params.actorUserId))
+      .limit(1);
 
     await publishAgentChannelEvent({
       orgId: params.orgId,
@@ -121,6 +126,8 @@ export async function publishTaskChannelEventForAssignee(params: {
         status: params.task.status,
         priority: params.task.priority,
         assignee_user_id: params.task.assignee_id,
+        actor_user_id: params.actorUserId,
+        actor_name: actor?.name ?? null,
         ...params.payload,
       },
     });

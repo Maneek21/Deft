@@ -126,6 +126,7 @@ export type AgentChannelEventKind =
   | 'task.assigned'
   | 'task.commented'
   | 'task.status_changed'
+  | 'approval.resolved'
   | 'certification.challenge'
   | 'heartbeat.tick'
   | 'webhook.triggered'

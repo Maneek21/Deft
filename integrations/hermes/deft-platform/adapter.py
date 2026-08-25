@@ -402,35 +402,84 @@ class DeftAdapter(BasePlatformAdapter):
     def _to_message_event(self, event: dict) -> MessageEvent:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         org_id = str(event.get("org_id") or "")
-        if event.get("kind") == "task.assigned":
+        event_kind = str(event.get("kind") or "")
+        if event_kind.startswith("task.") or (
+            event_kind == "approval.resolved" and event.get("source_kind") == "task"
+        ):
             task_id = str(payload.get("task_id") or event.get("source_id") or event["id"])
             task_key = str(payload.get("task_key") or task_id)
             title = str(payload.get("title") or "Untitled task")
             description = str(payload.get("description") or "").strip()
             status = str(payload.get("status") or "todo")
             priority = str(payload.get("priority") or "")
-            lines = [
-                "A Deft task was assigned to you.",
-                f"Task: {task_key}",
-                f"Task ID: {task_id}",
-                f"Title: {title}",
-                f"Status: {status}",
-            ]
-            if priority:
-                lines.append(f"Priority: {priority}")
-            if description:
-                lines.extend(["Description:", description])
+            if event_kind == "task.commented":
+                speaker = str(payload.get("commenter_name") or payload.get("actor_name") or "A teammate")
+                lines = [
+                    f"{speaker} commented on your Deft task.",
+                    f"Task: {task_key}",
+                    f"Task ID: {task_id}",
+                    "Comment:",
+                    str(payload.get("content") or ""),
+                ]
+            elif event_kind == "task.status_changed":
+                old_status = str(payload.get("old_status") or "unknown")
+                new_status = str(payload.get("new_status") or status)
+                lines = [
+                    "A teammate changed the status of your Deft task.",
+                    f"Task: {task_key}",
+                    f"Task ID: {task_id}",
+                    f"Status: {old_status} -> {new_status}",
+                ]
+                if new_status == "cancelled":
+                    lines.append("The task was cancelled. Stop work and do not make further changes for it.")
+            elif event_kind == "approval.resolved":
+                decision = str(payload.get("decision") or "resolved")
+                lines = [
+                    f"A Deft approval for this task was {decision}.",
+                    f"Task: {task_key}",
+                    f"Task ID: {task_id}",
+                    f"Action: {payload.get('action') or 'unknown'}",
+                    f"Execution: {payload.get('execution_status') or 'unknown'}",
+                ]
+                if payload.get("summary"):
+                    lines.append(f"Request: {payload['summary']}")
+                if payload.get("reason"):
+                    lines.append(f"Reason: {payload['reason']}")
+            else:
+                lines = [
+                    "A Deft task was assigned to you.",
+                    f"Task: {task_key}",
+                    f"Task ID: {task_id}",
+                    f"Title: {title}",
+                    f"Status: {status}",
+                ]
+                if priority:
+                    lines.append(f"Priority: {priority}")
+                if description:
+                    lines.extend(["Description:", description])
             chat_id = f"{org_id}:tasks"
+            event_message_id = str(event["id"])
             source = self.build_source(
                 chat_id=chat_id,
                 chat_name="Deft tasks",
                 chat_type="channel",
-                user_id=str(payload.get("assigned_by") or event.get("actor_user_id") or "") or None,
-                user_name=str(payload.get("assigned_by_name") or "") or None,
+                user_id=str(
+                    payload.get("commenter_id")
+                    or payload.get("actor_user_id")
+                    or payload.get("assigned_by")
+                    or event.get("actor_user_id")
+                    or ""
+                ) or None,
+                user_name=str(
+                    payload.get("commenter_name")
+                    or payload.get("actor_name")
+                    or payload.get("assigned_by_name")
+                    or ""
+                ) or None,
                 thread_id=task_id,
                 guild_id=org_id or None,
                 parent_chat_id="tasks",
-                message_id=task_id,
+                message_id=event_message_id,
             )
             route = {
                 "event_id": str(event["id"]),
@@ -438,16 +487,60 @@ class DeftAdapter(BasePlatformAdapter):
                 "task_id": task_id,
                 "space_id": "",
                 "thread_id": task_id,
-                "source_message_id": task_id,
+                "source_message_id": event_message_id,
             }
-            self._routes_by_message[task_id] = route
+            self._routes_by_message[event_message_id] = route
             self._routes_by_scope[(chat_id, task_id)] = route
             return MessageEvent(
                 text="\n".join(lines),
                 message_type=MessageType.TEXT,
                 source=source,
                 raw_message=event,
-                message_id=task_id,
+                message_id=event_message_id,
+            )
+
+        if event_kind == "approval.resolved":
+            action_id = str(payload.get("action_id") or event.get("source_id") or event["id"])
+            decision = str(payload.get("decision") or "resolved")
+            lines = [
+                f"A Deft approval was {decision}.",
+                f"Approval ID: {action_id}",
+                f"Action: {payload.get('action') or 'unknown'}",
+                f"Execution: {payload.get('execution_status') or 'unknown'}",
+            ]
+            if payload.get("summary"):
+                lines.append(f"Request: {payload['summary']}")
+            if payload.get("reason"):
+                lines.append(f"Reason: {payload['reason']}")
+            space_id = str(event.get("space_id") or "")
+            event_message_id = str(event["id"])
+            thread_id = str(event.get("thread_id") or "") or action_id
+            chat_id = f"{org_id}:{space_id or 'approvals'}"
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name="Deft approvals",
+                chat_type="channel",
+                user_id=str(event.get("actor_user_id") or "") or None,
+                thread_id=thread_id,
+                guild_id=org_id or None,
+                parent_chat_id=space_id or "approvals",
+                message_id=event_message_id,
+            )
+            route = {
+                "event_id": event_message_id,
+                "source_kind": "message" if space_id else "notification",
+                "space_id": space_id,
+                "thread_id": thread_id,
+                "source_message_id": event_message_id,
+            }
+            self._routes_by_message[event_message_id] = route
+            self._routes_by_scope[(chat_id, thread_id)] = route
+            return MessageEvent(
+                text="\n".join(lines),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=event,
+                message_id=event_message_id,
             )
 
         space_id = str(event.get("space_id") or payload.get("space_id") or "")

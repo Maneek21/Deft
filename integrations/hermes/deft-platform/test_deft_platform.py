@@ -464,6 +464,97 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(state["last_accepted_event_id"], "restart-event-1")
         self.assertEqual(state["pending_events"], [])
 
+    def test_maps_human_task_comment_and_cancellation_into_the_task_session(self):
+        adapter = MOD.DeftAdapter(FakeConfig({
+            "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+            "token": "secret-test-token",
+            "employee_slug": "native-spike",
+        }), start_listener=False)
+        comment = adapter._to_message_event({
+            "id": "task-comment-event-1",
+            "kind": "task.commented",
+            "source_kind": "task",
+            "source_id": "task-1",
+            "org_id": "org-1",
+            "actor_user_id": "human-1",
+            "payload": {
+                "task_id": "task-1",
+                "task_key": "OPS-1",
+                "commenter_id": "human-1",
+                "commenter_name": "Diego",
+                "content": "Use the revised numbers in Knowledge.",
+            },
+        })
+        cancelled = adapter._to_message_event({
+            "id": "task-cancel-event-1",
+            "kind": "task.status_changed",
+            "source_kind": "task",
+            "source_id": "task-1",
+            "org_id": "org-1",
+            "actor_user_id": "human-1",
+            "payload": {
+                "task_id": "task-1",
+                "task_key": "OPS-1",
+                "old_status": "in_progress",
+                "new_status": "cancelled",
+                "actor_name": "Diego",
+            },
+        })
+        self.assertIn("Diego commented", comment.text)
+        self.assertIn("revised numbers", comment.text)
+        self.assertEqual(comment.source.thread_id, "task-1")
+        self.assertEqual(comment.source.user_id, "human-1")
+        self.assertIn("in_progress -> cancelled", cancelled.text)
+        self.assertIn("Stop work", cancelled.text)
+        self.assertEqual(cancelled.source.thread_id, "task-1")
+
+    def test_maps_targetless_approval_resolution_as_an_acknowledgeable_notification(self):
+        calls = []
+
+        async def request(method, path, query, body):
+            calls.append((method, path, query, body))
+            if path == "/reply":
+                return {
+                    "ok": True,
+                    "transport_reply": "sent",
+                    "transport_target": "notification_ack",
+                    "result": {"acknowledged": True},
+                }
+            raise AssertionError(path)
+
+        adapter = MOD.DeftAdapter(FakeConfig({
+            "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+            "token": "secret-test-token",
+            "employee_slug": "native-spike",
+        }), request_fn=request, start_listener=False)
+        notice = adapter._to_message_event({
+            "id": "approval-event-1",
+            "kind": "approval.resolved",
+            "source_kind": "approval",
+            "source_id": "action-1",
+            "org_id": "org-1",
+            "actor_user_id": "human-1",
+            "payload": {
+                "action_id": "action-1",
+                "action": "module_record_create",
+                "decision": "approved",
+                "execution_status": "completed",
+                "summary": "Add the reviewed contact.",
+            },
+        })
+        self.assertIn("approval was approved", notice.text)
+        self.assertIn("Add the reviewed contact", notice.text)
+        result = asyncio.run(adapter.send(
+            notice.source.chat_id,
+            "Approval received; continuing autonomously.",
+            reply_to=notice.message_id,
+            metadata={"thread_id": notice.source.thread_id},
+        ))
+        self.assertTrue(result.success)
+        reply = calls[0]
+        self.assertEqual(reply[3]["event_id"], "approval-event-1")
+        self.assertEqual(reply[3]["idempotency_key"], "autonomous-reply:approval-event-1:response")
+
 
 if __name__ == "__main__":
     unittest.main()

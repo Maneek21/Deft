@@ -746,7 +746,11 @@ agentChannelRoutes.post('/reply', async (c) => {
   const autonomousTaskReply = autonomousReply
     && event.source_kind === 'task'
     && Boolean(event.source_id);
-  if (!event.space_id && !autonomousTaskReply) {
+  const autonomousNotificationReply = autonomousReply
+    && event.kind === 'approval.resolved'
+    && !event.space_id
+    && !autonomousTaskReply;
+  if (!event.space_id && !autonomousTaskReply && !autonomousNotificationReply) {
     return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft reply target');
   }
 
@@ -764,7 +768,11 @@ agentChannelRoutes.post('/reply', async (c) => {
     thread_id: parentId,
     outcome: autonomousReply ? null : parsed.data.outcome,
     adapter_mode: autonomousReply ? 'autonomous_platform' : 'supervised_runtime',
-    reply_target: autonomousTaskReply ? 'task_comment' : 'chat_message',
+    reply_target: autonomousTaskReply
+      ? 'task_comment'
+      : autonomousNotificationReply
+        ? 'notification_ack'
+        : 'chat_message',
     summary: parsed.data.summary ?? null,
     runtime_session_key: parsed.data.runtime_session_key ?? null,
     runtime_request_key: parsed.data.runtime_request_key ?? null,
@@ -835,19 +843,24 @@ agentChannelRoutes.post('/reply', async (c) => {
     employee_slug: principal.employee_slug,
     trust_level: principal.trust_level,
   };
-  const result = autonomousTaskReply
-    ? await executeTaskUpdate({
+  const result = autonomousNotificationReply
+    ? {
+        content: [{ type: 'text' as const, text: JSON.stringify({ acknowledged: true, event_id: event.id }) }],
+        isError: false,
+      }
+    : autonomousTaskReply
+      ? await executeTaskUpdate({
       caller_employee_slug: principal.employee_slug,
       task_id: event.source_id!,
       patch: { comment: parsed.data.content },
-    }, toolContext)
-    : await executeSendMessage({
-      orgId: principal.org_id,
-      spaceId: event.space_id!,
-      content: parsed.data.content,
-      parentId,
-      ctx: toolContext,
-    });
+      }, toolContext)
+      : await executeSendMessage({
+        orgId: principal.org_id,
+        spaceId: event.space_id!,
+        content: parsed.data.content,
+        parentId,
+        ctx: toolContext,
+      });
 
   const text = result.content?.[0]?.text ?? '{}';
   let responseJson: Record<string, unknown>;
@@ -878,7 +891,11 @@ agentChannelRoutes.post('/reply', async (c) => {
       idempotent: false,
       adapter_mode: 'autonomous_platform',
       transport_reply: result.isError ? 'failed' : 'sent',
-      transport_target: autonomousTaskReply ? 'task_comment' : 'chat_message',
+      transport_target: autonomousTaskReply
+        ? 'task_comment'
+        : autonomousNotificationReply
+          ? 'notification_ack'
+          : 'chat_message',
       business_outcome: event.work_outcome ?? null,
       result: responseJson,
     }, result.isError ? 500 : 200);

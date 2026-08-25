@@ -33,7 +33,9 @@ import { eq, and, or, sql } from 'drizzle-orm';
 import { db, withDbAdvisoryLock } from './db.js';
 import {
   agentActions,
+  agentChannelEvents,
   agentEmployees,
+  messages,
   orgMembers,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './mcp-tools/types.js';
@@ -90,6 +92,7 @@ import {
   sanitizeModuleActionParamsForHistory,
 } from './module-service.js';
 import { resolveAttentionBySource } from './attention.js';
+import { publishAgentChannelEvent } from './agent-channel.js';
 export { MCP_ACTION_KINDS } from './mcp-approval-actions.js';
 export { sanitizeModuleActionParamsForReceipt };
 
@@ -103,6 +106,107 @@ function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+async function publishApprovalResolution(actionId: string, actorUserId: string): Promise<void> {
+  try {
+    const [row] = await db
+      .select({
+        id: agentActions.id,
+        org_id: agentActions.org_id,
+        agent_employee_id: agentActions.agent_employee_id,
+        action: agentActions.action,
+        params: agentActions.params,
+        approval_status: agentActions.approval_status,
+        executed_at: agentActions.executed_at,
+        result: agentActions.result,
+        error: agentActions.error,
+        message_id: agentActions.message_id,
+        channel_event_id: agentActions.channel_event_id,
+      })
+      .from(agentActions)
+      .where(eq(agentActions.id, actionId))
+      .limit(1);
+    if (!row?.agent_employee_id || !['approved', 'rejected'].includes(row.approval_status)) return;
+
+    const [employee] = await db
+      .select({ runtime_kind: agentEmployees.runtime_kind })
+      .from(agentEmployees)
+      .where(and(
+        eq(agentEmployees.id, row.agent_employee_id),
+        eq(agentEmployees.org_id, row.org_id),
+      ))
+      .limit(1);
+    if (!employee || employee.runtime_kind === 'defty_system') return;
+
+    const params = recordValue(row.params);
+    const taskId = typeof params.task_id === 'string' && params.task_id.trim()
+      ? params.task_id.trim()
+      : null;
+    let sourceKind: string = taskId ? 'task' : 'approval';
+    let sourceId: string = taskId ?? row.id;
+    let spaceId: string | null = null;
+    let threadId: string | null = null;
+    if (row.channel_event_id) {
+      const [origin] = await db
+        .select({
+          source_kind: agentChannelEvents.source_kind,
+          source_id: agentChannelEvents.source_id,
+          space_id: agentChannelEvents.space_id,
+          thread_id: agentChannelEvents.thread_id,
+        })
+        .from(agentChannelEvents)
+        .where(and(
+          eq(agentChannelEvents.id, row.channel_event_id),
+          eq(agentChannelEvents.org_id, row.org_id),
+          eq(agentChannelEvents.agent_employee_id, row.agent_employee_id),
+        ))
+        .limit(1);
+      if (origin) {
+        sourceKind = origin.source_kind ?? sourceKind;
+        sourceId = origin.source_id ?? sourceId;
+        spaceId = origin.space_id;
+        threadId = origin.thread_id;
+      }
+    }
+    if (!spaceId && sourceKind !== 'task' && row.message_id) {
+      const [sourceMessage] = await db
+        .select({ id: messages.id, space_id: messages.space_id })
+        .from(messages)
+        .where(and(eq(messages.id, row.message_id), eq(messages.org_id, row.org_id)))
+        .limit(1);
+      spaceId = sourceMessage?.space_id ?? null;
+      threadId = sourceMessage?.id ?? null;
+    }
+
+    await publishAgentChannelEvent({
+      orgId: row.org_id,
+      employeeId: row.agent_employee_id,
+      kind: 'approval.resolved',
+      sourceKind,
+      sourceId,
+      spaceId,
+      threadId,
+      actorUserId,
+      idempotencyKey: `approval.resolved:${row.id}:${row.approval_status}`,
+      payload: {
+        action_id: row.id,
+        action: row.action,
+        decision: row.approval_status,
+        summary: typeof params.summary === 'string' ? params.summary : null,
+        task_id: taskId,
+        execution_status: row.approval_status === 'rejected'
+          ? 'not_executed'
+          : row.executed_at
+            ? row.error ? 'failed' : 'completed'
+            : 'pending',
+        result: row.result ?? null,
+        reason: row.error ?? null,
+      },
+    });
+  } catch (error) {
+    console.error(`[agent-approval-resolver] failed to publish resolution for ${actionId}:`, error);
+  }
 }
 
 function terminalModuleActionParams(
@@ -614,10 +718,14 @@ export async function approveAction(
   approverUserId: string,
   options: { internal?: boolean } = {},
 ): Promise<ApprovalResolverResult> {
-  return withDbAdvisoryLock(
+  const result = await withDbAdvisoryLock(
     `agent-approval:${actionId}`,
     () => approveActionLocked(actionId, approverUserId, options),
   );
+  if (result.status === 'approved' || result.status === 'rejected' || result.code === 'EXECUTE_FAILED') {
+    await publishApprovalResolution(actionId, approverUserId);
+  }
+  return result;
 }
 
 async function approveActionLocked(
@@ -1070,6 +1178,18 @@ async function approveActionLocked(
  * plus stash the reason in the `error` column so the UI can surface it.
  */
 export async function rejectAction(
+  actionId: string,
+  rejecterUserId: string,
+  reason?: string,
+): Promise<ApprovalResolverResult> {
+  const result = await rejectActionOnce(actionId, rejecterUserId, reason);
+  if (result.status === 'approved' || result.status === 'rejected') {
+    await publishApprovalResolution(actionId, rejecterUserId);
+  }
+  return result;
+}
+
+async function rejectActionOnce(
   actionId: string,
   rejecterUserId: string,
   reason?: string,

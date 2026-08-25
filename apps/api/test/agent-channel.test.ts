@@ -51,6 +51,7 @@ import {
 import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
 import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
+import { rejectAction } from '../src/lib/agent-approval-resolver.js';
 
 const app = new Hono();
 app.route('/api/agent-channel/v1', agentChannelRoutes);
@@ -677,6 +678,126 @@ test('autonomous platform acceptance ends transport delivery without completing 
     false,
     'transport-accepted work must not be redelivered to the autonomous adapter',
   );
+});
+
+test('approval resolution publishes once and a targetless autonomous response is an internal acknowledgement', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-approval-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 9904,
+    title: 'Approval lifecycle target',
+    status: 'todo',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const actionId = crypto.randomUUID();
+  await db.insert(agentActions).values({
+    id: actionId,
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mcp',
+    action: 'task_update',
+    params: { task_id: taskId, summary: 'Change the task after review.' },
+    approval_tier: 'full',
+    approval_status: 'pending',
+  });
+  const rejected = await rejectAction(actionId, humanUserId, 'Needs a revised scope');
+  assert.equal(rejected.status, 'rejected');
+  await rejectAction(actionId, humanUserId, 'Replay');
+
+  const resolutions = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.agent_employee_id, employeeId),
+    eq(agentChannelEvents.kind, 'approval.resolved'),
+    eq(agentChannelEvents.source_id, taskId),
+  ));
+  assert.equal(resolutions.length, 1);
+  assert.equal((resolutions[0]!.payload as any).decision, 'rejected');
+  assert.equal((resolutions[0]!.payload as any).reason, 'Needs a revised scope');
+
+  // Also prove the no-origin fallback cannot poison the adapter's restart journal.
+  const targetless = (await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'approval.resolved',
+    sourceKind: 'approval',
+    sourceId: crypto.randomUUID(),
+    actorUserId: humanUserId,
+    idempotencyKey: `targetless-approval-${crypto.randomUUID()}`,
+    payload: { decision: 'approved', action: 'module_record_create' },
+  })).event!;
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-approval-poll')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  const claimed = delivery.events.find((candidate: any) => candidate.id === targetless.id);
+  assert.ok(claimed?.claim_token, JSON.stringify(delivery));
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: targetless.id, claim_token: claimed.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: targetless.id,
+      content: 'Approval received.',
+      adapter_mode: 'autonomous_platform',
+      idempotency_key: `approval-ack-${targetless.id}`,
+    }),
+  });
+  const acknowledged = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(acknowledged));
+  assert.equal(acknowledged.transport_target, 'notification_ack');
+});
+
+test('human task assistance and cancellation publish actor-aware lifecycle events', async () => {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 9905,
+    title: 'Lifecycle signal target',
+    status: 'in_progress',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const comment = await operatorApp.request(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content: 'Use the approved revision and stop if this task is cancelled.' }),
+  });
+  assert.equal(comment.status, 201, await comment.text());
+  const cancel = await operatorApp.request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'cancelled' }),
+  });
+  assert.equal(cancel.status, 200, await cancel.text());
+
+  const events = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.agent_employee_id, employeeId),
+    eq(agentChannelEvents.source_id, taskId),
+    inArray(agentChannelEvents.kind, ['task.commented', 'task.status_changed']),
+  ));
+  assert.equal(events.length, 2);
+  const commented = events.find((event) => event.kind === 'task.commented')!;
+  const cancelled = events.find((event) => event.kind === 'task.status_changed')!;
+  assert.equal((commented.payload as any).commenter_name, 'Channel Human');
+  assert.equal((commented.payload as any).actor_name, 'Channel Human');
+  assert.equal((cancelled.payload as any).new_status, 'cancelled');
+  assert.equal((cancelled.payload as any).actor_name, 'Channel Human');
 });
 
 test('autonomous task pickup supports explicit progress and an idempotent task comment', async () => {
