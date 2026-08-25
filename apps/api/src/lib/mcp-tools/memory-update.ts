@@ -40,7 +40,29 @@ export type MemoryUpdateArgs = {
     confidence?: number;
     scope?: 'user' | 'org';
   };
+  /** Server-stamped when a promotion is queued; callers should not set this. */
+  _approval_guard?: MemoryUpdateApprovalGuard;
 };
+
+type MemoryUpdateApprovalGuard = {
+  page_id: string;
+  version: number;
+};
+
+export function memoryUpdateApprovalGuardError(
+  page: { id: string; version: number },
+  guard?: MemoryUpdateApprovalGuard,
+): string | null {
+  // Pending rows created before version fencing remain executable.
+  if (!guard) return null;
+  if (page.id !== guard.page_id) {
+    return 'memory_update: target changed since approval was requested; request a fresh promotion approval';
+  }
+  if (page.version !== guard.version) {
+    return 'memory_update: page changed since approval was requested; review the current version and request a fresh promotion approval';
+  }
+  return null;
+}
 
 /**
  * Inner executor — performs the actual wiki_pages update. It re-runs the
@@ -71,6 +93,7 @@ export async function executeMemoryUpdate(
         user_id: wikiPages.user_id,
         title: wikiPages.title,
         scope: wikiPages.scope,
+        version: wikiPages.version,
       })
       .from(wikiPages)
       .where(
@@ -85,6 +108,12 @@ export async function executeMemoryUpdate(
     if (!page) {
       return errorResult(`memory_update: page "${args.slug}" not found`);
     }
+
+    const guardError = memoryUpdateApprovalGuardError(
+      page,
+      args._approval_guard,
+    );
+    if (guardError) return errorResult(guardError);
 
     const shadowUserId = await getShadowUserIdForEmployee(ctx.employee_id);
     if (page.scope === 'user') {
@@ -223,6 +252,7 @@ export async function memoryUpdate(
         agent_employee_id: wikiPages.agent_employee_id,
         user_id: wikiPages.user_id,
         scope: wikiPages.scope,
+        version: wikiPages.version,
       })
       .from(wikiPages)
       .where(
@@ -273,7 +303,13 @@ export async function memoryUpdate(
           runtime_request_key: ctx.runtime_request_key,
           source: 'mcp',
           action: 'memory_update',
-          params: args as unknown as Record<string, unknown>,
+          params: {
+            ...args,
+            _approval_guard: {
+              page_id: page.id,
+              version: page.version,
+            },
+          } as unknown as Record<string, unknown>,
           approval_tier: getApprovalTier('memory_update'),
           approval_status: 'pending',
         })
