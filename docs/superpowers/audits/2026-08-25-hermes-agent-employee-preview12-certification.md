@@ -7,16 +7,16 @@
 
 ## Executive summary
 
-Rita now demonstrates a credible **controlled agent employee** experience in Deft. She can join a multi-person conversation, distinguish speakers and decision ownership, use explicit and implicit company Knowledge, accept assigned Tasks, research through Hermes's external web tools, create and verify module records, produce durable handoffs, ask for focused human help, and stop at governed external-action boundaries. The optimized gauntlet finished **9/9**, and the clean restart boundary completed with exactly two deliveries across one deliberate bridge restart.
+Rita demonstrates the functional shape of a credible **controlled agent employee** in Deft. She can join a multi-person conversation, distinguish speakers and decision ownership, use explicit and implicit company Knowledge, accept assigned Tasks, research through Hermes's external web tools, create and verify module records, produce durable handoffs, ask for focused human help, and stop at governed external-action boundaries. The optimized gauntlet finished **9/9**, and the clean restart boundary completed with exactly two deliveries across one deliberate bridge restart.
 
 This is not yet the unconditional “ideal employee” experience for a new organization. The remaining work is mainly onboarding, governance, observability, and memory synchronization—not rebuilding Hermes's browser, search, skills, MCP, or provider ecosystem inside Deft.
 
 Two release-blocking defects found by this run were fixed, merged, security-checked, released, and deployed:
 
 - [PR #251](https://github.com/Maneek21/Deft/pull/251), released in preview.11, lets a reclaimed event abandon its stale runtime attempt while preserving cross-event single-flight.
-- [PR #253](https://github.com/Maneek21/Deft/pull/253), released in preview.12, removes the duration-bound Windows Scheduled Task trigger that terminated a healthy long-running Hermes bridge.
+- [PR #253](https://github.com/Maneek21/Deft/pull/253), released in preview.12, removes the duration-bound Windows Scheduled Task trigger. This was necessary but did not fully resolve unattended Windows supervisor exits in the pilot environment.
 
-The practical verdict is: **ready for a governed internal pilot; not ready to promise zero-configuration ideal-employee behavior to every new self-hosted organization.**
+The practical verdict is: **the employee workflows pass, but the current Windows runtime is not ready for an unattended governed pilot until the remaining `0xC000013A` supervisor exit is resolved.** It is not ready for a zero-configuration ideal-employee promise.
 
 ## Final preflight
 
@@ -25,14 +25,14 @@ The practical verdict is: **ready for a governed internal pilot; not ready to pr
 | Rita model | Pass | `gpt-5.6-sol`, medium reasoning |
 | Deft release | Pass | preview.12 after supported backup/upgrade/doctor/smoke deployment |
 | Hermes gateway | Pass | Hermes 0.20.5, Responses/skills APIs ready |
-| Agent Channel bridge | Pass | Preview.12 is the sole Rita supervisor; one logon trigger, no repetition duration, pending 0, failed 0 |
+| Agent Channel bridge | **Blocker** | Point-in-time preflight passed, but the sole Preview.12 task later returned to `Ready` with `0xC000013A`; two focused diagnosis loops did not resolve the unattended exit |
 | Deft MCP surface | Pass | Live `hermes mcp test deft`: connected, 44 tools discovered |
 | Contacts | Pass | v1.1.0 enabled with agent access `write` |
 | Action budget | Pass | Rita-only test counter reset; 1000/1000 available |
 | External research | Pass | Hermes `web_search` and `web_extract` both completed |
 | Resume checkpoint | Pass | Existing fixtures and completed scenarios skipped |
 
-The final preflight ran after both Rita credentials were rotated. It reported `model=gpt-5.6-sol/medium`, `release=0.3.0-preview.12`, `tools=44`, `contacts=1.1.0`, `budget=1000`, `research=ok`, and `resumed=true`. Public health simultaneously reported release and schema `0.3.0-preview.12` at commit `23694ef832bc11b6e06a704bf9af234697955d80`.
+The checkpointed preflight ran after both Rita credentials were rotated. It reported `model=gpt-5.6-sol/medium`, `release=0.3.0-preview.12`, `tools=44`, `contacts=1.1.0`, `budget=1000`, `research=ok`, and `resumed=true`. Public health simultaneously reported release and schema `0.3.0-preview.12` at commit `23694ef832bc11b6e06a704bf9af234697955d80`. This was a point-in-time pass, not sustained supervisor proof; the later terminal check is authoritative for the bridge gate.
 
 ![Rita runtime readiness](2026-08-25-hermes-agent-employee-preview12-certification/01-rita-runtime-readiness.png)
 
@@ -80,10 +80,10 @@ The clean event had `delivery_count=2`. Runtime attempt 1 was abandoned after it
 2. **External research routing:** Hermes now exercises both search and extraction through its own working provider path. Deft did not acquire a Firecrawl dependency or recreate a browser/search stack.
 3. **Contacts authorization:** Contacts was installed but its agent access was `none`. Admin scope was explicitly changed to `write`; the runner now blocks before assignment if the module is missing or read-only.
 4. **Reclaimed runtime deadlock:** preview.11 abandons stale same-event runtime attempts under a newer fenced delivery while retaining employee-level cross-event single-flight.
-5. **Windows bridge termination:** preview.12 removes the repeating Scheduled Task trigger whose `StopAtDurationEnd` behavior killed a healthy supervisor. Logon start, the supervisor's in-process loop, and Scheduled Task failure restart remain.
+5. **Windows bridge termination (partial):** preview.12 removes the repeating Scheduled Task trigger whose `StopAtDurationEnd` behavior killed a healthy supervisor. The sole fixed-trigger task still exits later with `0xC000013A`, so this release does not close the unattended-runtime blocker.
 6. **Runner correctness:** every mutation is checkpointed; task deliveries are correlated by Agent Channel `source_id`; completed scenarios are skipped; deterministic auth/budget/MCP failures stop immediately; healthy running work has a six-minute ceiling rather than a blind 12-minute wait.
 7. **Credential hygiene:** the Rita MCP and Agent Channel credentials used during diagnosis were rotated after preview.12 deployment, written only into the protected local runtime configuration, and both the gateway and bridge were revalidated with the fresh credentials.
-8. **Stale duplicate runtime:** final observation found an old adapter 0.2.1 Rita task still retrying the revoked channel token with `UNAUTHORIZED`. That task and its processes were removed. Preview.12 then remained continuously healthy for 267 seconds—past the prior 150-second failure point—and the final preflight confirmed it was the only Rita bridge.
+8. **Stale duplicate runtime:** final observation found an old adapter 0.2.1 Rita task still retrying the revoked channel token with `UNAUTHORIZED`. That task and its processes were removed, eliminating deterministic retry noise. Preview.12 stayed healthy for an initial 267-second window but later stopped again as the sole Rita bridge, proving the duplicate task was a confounder rather than the complete cause.
 
 ## Minimum Deft work before the ideal-employee promise
 
@@ -95,7 +95,7 @@ These are the smallest Deft-owned capabilities that materially improve Hermes in
 4. **Action-budget operations.** Show remaining actions before assignment, estimate headroom for queued work, provide an admin reset/change control, and stop capped runtimes before they enter retry loops.
 5. **Explicit module capability grants.** During onboarding, admins choose generic read/write scopes for installed modules. Deft should explain that “Contacts installed” is not the same as “Rita may write Contacts.”
 6. **Governed external-action envelope.** Hermes owns the email/browser/provider capability. Deft supplies who requested the action, approval policy, exact proposed payload, idempotency key, provider acceptance receipt, and workspace activity record. A sent activity must never exist without a provider receipt.
-7. **Durable supervisor installation and repair.** preview.12 completes the immediate Windows fix. Equivalent install/status/repair contracts should remain release-gated on Linux and macOS launchers as those are added.
+7. **Durable supervisor installation and repair.** This is the immediate blocker: identify and eliminate the remaining Windows `STATUS_CONTROL_C_EXIT`, then require sustained unattended observation plus forced restart/repair evidence. Equivalent install/status/repair contracts should remain release-gated on Linux and macOS launchers as those are added.
 
 ## Should follow immediately after
 
@@ -129,6 +129,7 @@ These are the smallest Deft-owned capabilities that materially improve Hermes in
 - Initial runner attempts were invalid because of the 250-action cap, external provider failure, task-receipt miscorrelation, and the Windows trigger. Their terminal statuses were not counted as passes.
 - External email was intentionally not sent because no controlled email connector was confirmed. Rita's approval request is the correct result.
 - Screenshot capture used a dedicated signed-in browser automation session after interactive Computer Use had been stopped.
+- The final terminal check supersedes the earlier healthy bridge screenshot and JSON snapshot: the sole Preview.12 task later stopped with `0xC000013A`. After two focused diagnosis loops, the exact external source of that control exit remains unresolved. The gauntlet was not restarted again.
 
 ## Attached machine evidence
 

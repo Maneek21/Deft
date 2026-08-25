@@ -1,10 +1,10 @@
 {
-  "checked_at": "2026-08-25T04:37:09Z",
+  "checked_at": "2026-08-25T04:47:36Z",
   "task_name": "Deft Hermes Agent Channel - Pilot Rita Preview12",
   "installed": true,
-  "task_state": "Running",
-  "healthy": true,
-  "process_count": 1,
+  "task_state": "Ready",
+  "healthy": false,
+  "process_count": 0,
   "trigger_count": 1,
   "trigger_type": "MSFT_TaskLogonTrigger",
   "repetition_interval": null,
@@ -13,5 +13,11 @@
   "old_preview11_task_removed": true,
   "stale_adapter_0_2_1_task_removed": true,
   "sole_rita_task": true,
-  "continuous_observation_seconds": 267
+  "preliminary_continuous_observation_seconds": 267,
+  "subsequent_observation_failed": true,
+  "last_task_result": "0xC000013A",
+  "last_health_at": "2026-08-25T04:38:19.008Z",
+  "health_age_seconds": 557,
+  "diagnosis_loops_completed": 2,
+  "blocker": "The sole Preview.12 Scheduled Task still exits with STATUS_CONTROL_C_EXIT after a variable unattended interval. Removing the repeating trigger and stale duplicate task did not resolve the exit."
 }
