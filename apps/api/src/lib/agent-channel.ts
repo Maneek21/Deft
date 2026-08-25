@@ -31,9 +31,9 @@ export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'runtime_reconciliation_v1',
   'runtime_attestation_v1',
 ] as const;
-export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.10';
+export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.11';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
-export const DEFT_SCHEMA_HEAD = '0.3.0-preview.10';
+export const DEFT_SCHEMA_HEAD = '0.3.0-preview.11';
 export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
 export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
 export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
