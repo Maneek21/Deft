@@ -237,12 +237,18 @@ async function startRuntimeAttempt(params: {
         eq(agentChannelDeliveryAttempts.agent_employee_id, params.principal.employee_id),
         eq(agentChannelDeliveryAttempts.direction, 'outbound_runtime'),
         eq(agentChannelDeliveryAttempts.status, 'started'),
-        sql`NOT EXISTS (
-          SELECT 1 FROM agent_channel_events active_event
-          WHERE active_event.id = ${agentChannelDeliveryAttempts.event_id}
-            AND active_event.org_id = ${params.principal.org_id}
-            AND active_event.agent_employee_id = ${params.principal.employee_id}
-            AND active_event.lease_expires_at > now()
+        sql`(
+          (
+            ${agentChannelDeliveryAttempts.event_id} = ${params.event.id}
+            AND ${agentChannelDeliveryAttempts.idempotency_key} IS DISTINCT FROM ${params.runtimeRequestKey}
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM agent_channel_events active_event
+            WHERE active_event.id = ${agentChannelDeliveryAttempts.event_id}
+              AND active_event.org_id = ${params.principal.org_id}
+              AND active_event.agent_employee_id = ${params.principal.employee_id}
+              AND active_event.lease_expires_at > now()
+          )
         )`,
       ));
 
