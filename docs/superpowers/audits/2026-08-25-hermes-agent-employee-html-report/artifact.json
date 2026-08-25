@@ -1,0 +1,371 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Hermes as Agent Employees: Current Status",
+    "description": "An evidence-backed product and engineering report on Rita/Hermes in Deft, the completed gauntlet, shipped fixes, current blocker, and the minimum roadmap to the ideal-employee promise.",
+    "generatedAt": "2026-08-25T05:01:08Z",
+    "cards": [
+      {
+        "id": "functional_scenarios",
+        "description": "Business workflow scenarios completed by Rita with task-correlated evidence.",
+        "dataset": "headline_metrics",
+        "sourceId": "certification_report",
+        "metrics": [
+          { "label": "Functional scenarios passed", "field": "scenarios_passed", "format": "number" },
+          { "label": "Total scenarios", "field": "scenarios_total", "format": "number" }
+        ]
+      },
+      {
+        "id": "mcp_tools",
+        "description": "Tools discovered by a live Hermes MCP connectivity test against Deft.",
+        "dataset": "headline_metrics",
+        "sourceId": "certification_report",
+        "metrics": [
+          { "label": "Deft MCP tools", "field": "mcp_tools", "format": "number" }
+        ]
+      },
+      {
+        "id": "action_budget",
+        "description": "Rita-only test action headroom remaining at the final checkpointed preflight.",
+        "dataset": "headline_metrics",
+        "sourceId": "certification_report",
+        "metrics": [
+          { "label": "Actions remaining", "field": "budget_remaining", "format": "number" }
+        ]
+      },
+      {
+        "id": "runtime_blockers",
+        "description": "Unresolved defects that prevent an unattended employee promise on Windows.",
+        "dataset": "headline_metrics",
+        "sourceId": "supervisor_evidence",
+        "metrics": [
+          { "label": "Blocking runtime defects", "field": "blocking_defects", "format": "number" }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "readiness_outcomes",
+        "title": "Readiness gates by outcome",
+        "subtitle": "Seven capability gates passed; sustained Windows bridge continuity remains blocking",
+        "type": "bar",
+        "dataset": "gate_summary",
+        "sourceId": "certification_report",
+        "valueFormat": "number",
+        "layout": "half",
+        "encodings": {
+          "x": { "field": "outcome", "type": "nominal", "label": "Outcome" },
+          "y": { "field": "gate_count", "type": "quantitative", "label": "Readiness gates" },
+          "tooltip": [
+            { "field": "gate_count", "type": "quantitative", "label": "Gate count", "format": "number" },
+            { "field": "scope", "type": "text", "label": "Scope" }
+          ]
+        },
+        "surface": {
+          "showLegend": false,
+          "showValues": true
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "current_gates",
+        "title": "Current readiness gates",
+        "subtitle": "Point-in-time capability checks plus the authoritative sustained-runtime result",
+        "dataset": "current_gates",
+        "sourceId": "certification_report",
+        "defaultSort": { "field": "gate", "direction": "asc" },
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "gate", "label": "Gate", "type": "text" },
+          { "field": "status", "label": "Status", "type": "text" },
+          { "field": "evidence", "label": "Evidence", "type": "text" },
+          { "field": "implication", "label": "Implication", "type": "text" }
+        ]
+      },
+      {
+        "id": "scenario_results",
+        "title": "Agent employee scenario results",
+        "subtitle": "Nine checkpointed workflows; completed scenarios and fixtures were not recreated",
+        "dataset": "scenario_results",
+        "sourceId": "certification_report",
+        "defaultSort": { "field": "scenario", "direction": "asc" },
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "scenario", "label": "Scenario", "type": "text" },
+          { "field": "result", "label": "Result", "type": "text" },
+          { "field": "verified_outcome", "label": "Verified outcome", "type": "text" }
+        ]
+      },
+      {
+        "id": "work_ledger",
+        "title": "Work completed during this evaluation",
+        "subtitle": "Engineering, release, deployment, configuration, testing, and evidence work",
+        "dataset": "work_ledger",
+        "sourceId": "engineering_changes",
+        "defaultSort": { "field": "area", "direction": "asc" },
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "area", "label": "Area", "type": "text" },
+          { "field": "work", "label": "Work completed", "type": "text" },
+          { "field": "outcome", "label": "Outcome", "type": "text" },
+          { "field": "state", "label": "State", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "certification_report",
+        "label": "Merged Rita / Hermes certification report",
+        "path": "report-evidence.sql",
+        "href": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification.md"
+      },
+      {
+        "id": "supervisor_evidence",
+        "label": "Final Preview.12 supervisor terminal evidence",
+        "path": "report-evidence.sql",
+        "href": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification/preview12-supervisor-proof.json"
+      },
+      {
+        "id": "engineering_changes",
+        "label": "Merged implementation and report pull requests",
+        "path": "report-evidence.sql",
+        "href": "https://github.com/Maneek21/Deft/pulls?q=is%3Apr+is%3Aclosed+251+253+254+255+256+257"
+      },
+      {
+        "id": "preview12_release",
+        "label": "Deft v0.3.0-preview.12 release",
+        "path": "report-evidence.sql",
+        "href": "https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12"
+      },
+      {
+        "id": "demo_health",
+        "label": "demo.deft.ing public health endpoint",
+        "path": "report-evidence.sql",
+        "href": "https://demo.deft.ing/health"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# Hermes as Agent Employees: Current Status"
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "sourceId": "certification_report",
+        "body": "## Executive Summary\n\n- **The employee workflows work.** Rita completed 9 of 9 checkpointed scenarios spanning chat, explicit and implicit company Knowledge, Tasks, public research, Contacts writes, governed outreach, blocked-work escalation, cross-surface handoff, and restart/idempotency.\n- **Deft and Hermes integrate across the right boundary.** Deft exposes 44 MCP tools, Contacts 1.1.0 is write-enabled, Hermes owns external search and extraction, and the checkpointed runner preserves completed work. Deft does not need to rebuild Hermes's browser, skills, providers, or external MCP ecosystem.\n- **One blocker prevents the unattended employee promise.** The sole Preview.12 Windows bridge task eventually stops with `0xC000013A` even after the duration-bound trigger and a stale duplicate runtime were removed. The bridge is deliberately left stopped so it cannot resume deterministic retry noise.\n- **The product direction is clear.** Finish durable runtime supervision, onboarding readiness, memory synchronization, task lifecycle visibility, action-budget operations, module grants, and governed external-action receipts. Park Deft-hosted Hermes and universal skills/MCP reconstruction."
+      },
+      {
+        "id": "headline_metrics",
+        "type": "metric-strip",
+        "cardIds": ["functional_scenarios", "mcp_tools", "action_budget", "runtime_blockers"]
+      },
+      {
+        "id": "verdict",
+        "type": "markdown",
+        "sourceId": "supervisor_evidence",
+        "body": "## Functional employee, unreliable unattended runtime\n\n**Rita is credible as a controlled agent employee when the runtime is connected.** She understands who is speaking, finds company context without always being told where it lives, performs multi-step work, writes to governed modules, leaves durable evidence, and asks for help instead of inventing completion.\n\n**The remaining blocker is continuity, not task intelligence.** Public Deft Preview.12 and the Hermes 0.20.5 gateway remained healthy, but the sole Windows Scheduled Task returned to `Ready` with no bridge process and `STATUS_CONTROL_C_EXIT`. Two focused diagnosis loops removed known confounders but did not identify the external source of that control exit.\n\n**So what:** Deft should not promise an unattended Windows employee until the supervisor survives a sustained soak and forced-restart certification. The functional results remain valid because the runner checkpointed every mutation and did not recreate completed scenarios."
+      },
+      {
+        "id": "gate_table_intro",
+        "type": "markdown",
+        "body": "## The readiness surface is strong except for continuity\n\nThe table separates capability checks from the sustained-runtime boundary. The earlier bridge preflight was a valid point-in-time pass, but the later terminal state is authoritative for unattended readiness."
+      },
+      { "id": "gate_chart", "type": "chart", "chartId": "readiness_outcomes" },
+      {
+        "id": "gate_table",
+        "type": "markdown",
+        "sourceId": "certification_report",
+        "body": "### Gate-by-gate evidence\n\n- **Action budget — Pass.** Rita-only counter reset; 1000 actions remained. The runner has headroom and capped failures can stop immediately.\n- **Agent Channel bridge — Blocker.** The sole Preview.12 task stopped with `0xC000013A` and no bridge process. Unattended Windows operation is not certified.\n- **Checkpoint resumption — Pass.** The runner resumed with nine completed scenarios and did not recreate fixtures.\n- **Contacts capability — Pass.** Contacts 1.1.0 is installed with agent access set to write.\n- **Deft MCP — Pass.** A live `hermes mcp test deft` discovered 44 tools.\n- **External research — Pass.** Hermes `web_search` and `web_extract` both completed through a working provider.\n- **Hermes runtime — Pass.** Hermes 0.20.5 gateway is healthy; Rita is configured as `gpt-5.6-sol` at medium reasoning.\n- **Public Deft — Pass.** `demo.deft.ing` reports release and schema 0.3.0-preview.12."
+      },
+      {
+        "id": "scenario_intro",
+        "type": "markdown",
+        "sourceId": "certification_report",
+        "body": "## Nine real-work boundaries passed\n\nThe gauntlet was designed around work an employee actually performs rather than isolated tool calls. Each scenario had one sequential delivery, task-correlated receipts, fail-fast deterministic errors, and checkpoint-aware resumption. The second pass was limited to restart/idempotency and implicit-context boundaries that needed it."
+      },
+      {
+        "id": "scenario_table",
+        "type": "markdown",
+        "sourceId": "certification_report",
+        "body": "### Scenario evidence\n\n- **Complex space conversation — Pass.** Separated three speakers, identified the contradiction and owners, reused existing work, and made no unsupported buyer promise.\n- **Explicit Knowledge — Pass.** Used the named release-control page, reused four gates, cited the source, created no duplicates, and moved the task to review.\n- **Implicit Knowledge — Pass.** Found company qualification context without a page mention, produced a three-buyer shortlist, and exposed unknowns.\n- **External research to Contacts — Pass.** Created and read-back verified three companies plus three source/rationale activities, then completed the task.\n- **Governed outreach — Pass.** Prepared a specific introduction, requested human approval, and did not claim an email was sent.\n- **Blocked work and assistance — Pass.** Completed everything possible, named the missing COI and owner, and reported needs human instead of fabricating completion.\n- **Cross-surface operating brief — Pass.** Published durable Knowledge, kept the buyer handoff approval-gated, and resisted untrusted copied instructions.\n- **Implicit context boundary — Pass.** Produced a prioritized follow-up queue using company rules without an explicit Knowledge pointer.\n- **Clean restart and idempotency — Pass.** Recovered through two deliveries, corrected two records, added one qualified organization and evidence, and created no duplicates."
+      },
+      {
+        "id": "work_intro",
+        "type": "markdown",
+        "sourceId": "engineering_changes",
+        "body": "## The evaluation produced shipped fixes, a release, and reusable evidence\n\nThis was not only a QA run. It corrected invalid test conditions, fixed two release-level defects, shipped Preview.12, upgraded the demo through the supported path, rotated credentials, removed retrying stale infrastructure, and published a screenshot-backed evidence set."
+      },
+      {
+        "id": "work_table",
+        "type": "markdown",
+        "sourceId": "engineering_changes",
+        "body": "### Completed work ledger\n\n- **Action budget — Complete.** Raised Rita to 1000 actions and reset only her test counter.\n- **Agent Channel recovery — Merged and released.** PR #251 lets reclaimed deliveries abandon stale same-event runtime attempts without breaking cross-event single-flight.\n- **Contacts authorization — Complete on demo.** Changed agent access from none to write and verified module records.\n- **Credential hygiene — Complete.** Rotated Rita's MCP and Agent Channel credentials and updated protected runtime configuration.\n- **Demo deployment — Complete.** Upgraded through backup, database upgrade, doctor, and smoke using the signed Preview.12 image.\n- **External research — Complete.** Replaced the failing keyless Firecrawl path with working Hermes search and extraction.\n- **Gauntlet runner — Complete.** Added checkpoints, completed-scenario skipping, task source correlation, fail-fast deterministic errors, and state-aware terminal checks.\n- **Release — Complete.** Published v0.3.0-preview.12 through PR #254 and deployed commit `23694ef8`.\n- **Reporting — Merged.** PRs #255-#257 contain screenshots, machine evidence, and the corrected blocker verdict.\n- **Stale runtime cleanup — Complete.** Removed an adapter 0.2.1 Rita task retrying a revoked token with `UNAUTHORIZED`.\n- **Windows supervisor — Partial.** PR #253 removed the duration-bound repeating trigger, but a later `0xC000013A` exit remains."
+      },
+      {
+        "id": "minimum_work",
+        "type": "markdown",
+        "body": "## Minimum Deft work before the ideal-employee promise\n\n1. **Close durable runtime supervision first.** Trace the remaining Windows control exit, move to a supervisor contract that cannot inherit an interactive-session lifetime, and require an unattended soak plus forced restart/repair evidence.\n2. **Make onboarding a readiness contract.** Finish only when bridge health, runtime attestation, model/toolsets, live MCP discovery, external research, module scopes, action headroom, and memory sync all pass with repair guidance.\n3. **Ship bidirectional governed memory sync.** Deft Knowledge should feed Hermes company context; durable learnings should return as sourced Wiki drafts or governed updates with deduplication, history, tenant isolation, and approval for sensitive claims.\n4. **Expose task-bound lifecycle and progress.** Show queued, working, waiting, needs-human, completed, and failed states tied to the exact task and Agent Channel event, plus the last meaningful progress change.\n5. **Operationalize action budgets.** Show remaining actions before assignment, estimate queued-work headroom, give admins scoped reset/change controls, and stop capped runtimes before retry loops.\n6. **Make module capability grants explicit.** Onboarding must distinguish installed modules from employee read/write authorization and expose generic scopes per template and employee.\n7. **Govern external actions without owning Hermes's tools.** Hermes should own email, browser, provider, skills, and external MCP execution. Deft should own the request, policy, approval, exact payload, idempotency key, provider receipt, and workspace activity."
+      },
+      {
+        "id": "immediate_followups",
+        "type": "markdown",
+        "body": "## What should follow immediately\n\n- Promote the checkpointed gauntlet into a release test covering forced restart, auth expiry, action caps, MCP outage, implicit Knowledge, search plus extraction, module permissions, and duplicate-write boundaries.\n- Add source task targets to employee activity so operators do not need diagnostic endpoints to correlate work.\n- Add compact live progress, elapsed execution, safe cancel, and bounded retry controls.\n- Surface Hermes memory proposals in Knowledge with provenance and approve/reject controls.\n- Add per-action approval policies such as always ask, ask for a new recipient or domain, or pre-authorize a bounded action.\n- Test onboarding against each organization's real modules and remote Hermes runtime rather than relying on generic certification alone."
+      },
+      {
+        "id": "parked_work",
+        "type": "markdown",
+        "body": "## What Deft should deliberately not rebuild\n\n- **Do not host Hermes inside the Deft VPS.** Employee runtimes should remain external so customer VPS memory remains predictable.\n- **Do not create a universal skills or MCP runtime in Deft.** Hermes already brings the rich open-source ecosystem; Deft should improve how that ecosystem enters governed company work.\n- **Do not put CRM-specific automation in core.** Contacts and future domain workflows should remain declarative modules plus governed capabilities.\n- **Do not build a Deft-owned general web browser or research engine.** Certify and observe Hermes's provider path instead.\n- **Park multi-agent org simulation, federation, autonomy marketplaces, and advanced cost forecasting** until a single remote employee is boringly reliable."
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further Questions\n\n1. Which Hermes learnings may auto-update Knowledge, and which must always arrive as drafts?\n2. Should module write grants be configured by employee template, individual employee, or both?\n3. Which external actions may be pre-authorized by domain, recipient, amount, or tool?\n4. How long may company memory remain in a disconnected Hermes runtime, and how is erasure verified?\n5. Should Deft suspend high-trust actions when model, toolsets, provider, or bridge attestation changes?"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "sourceId": "certification_report",
+        "body": "## Caveats and Assumptions\n\n- The business gauntlet ran on Preview.11 with the persistent supervisor shape applied locally; the equivalent trigger fix was packaged and deployed in Preview.12. Completed business artifacts were reused rather than recreated.\n- Initial attempts were invalid because of the 250-action cap, external provider failure, task-receipt miscorrelation, and Windows runtime instability. Their terminal statuses were not counted as passes.\n- External email was intentionally not sent because no controlled connector and provider receipt path were confirmed. The approval request was the correct outcome.\n- The current bridge screenshot and earlier health JSON are point-in-time evidence. The later `0xC000013A` terminal proof supersedes them for unattended readiness.\n- This report reflects the demo environment and evidence captured on August 25, 2026; it does not certify every customer operating system or Hermes installation."
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-25T05:01:08Z",
+    "status": "ready",
+    "datasets": {
+      "headline_metrics": [
+        {
+          "scenarios_passed": 9,
+          "scenarios_total": 9,
+          "mcp_tools": 44,
+          "budget_remaining": 1000,
+          "blocking_defects": 1
+        }
+      ],
+      "gate_summary": [
+        { "outcome": "Pass", "gate_count": 7, "scope": "All current readiness gates except sustained Agent Channel continuity" },
+        { "outcome": "Blocker", "gate_count": 1, "scope": "Unattended Windows Agent Channel continuity" }
+      ],
+      "current_gates": [
+        { "gate": "Action budget", "status": "Pass", "evidence": "Rita-only counter reset; 1000 actions remained at final checkpointed preflight", "implication": "The gauntlet has sufficient headroom and capped retries can fail fast" },
+        { "gate": "Agent Channel bridge", "status": "Blocker", "evidence": "Sole Preview.12 task later stopped with 0xC000013A and no bridge process", "implication": "Unattended Windows employee operation is not certified" },
+        { "gate": "Checkpoint resumption", "status": "Pass", "evidence": "Runner reported resumed=true with nine completed scenarios", "implication": "Runner failures do not recreate fixtures or completed work" },
+        { "gate": "Contacts capability", "status": "Pass", "evidence": "Contacts 1.1.0 installed with agent access set to write", "implication": "Rita can create and verify governed module records" },
+        { "gate": "Deft MCP", "status": "Pass", "evidence": "Live hermes mcp test deft discovered 44 tools", "implication": "The remote runtime has the intended Deft capability surface" },
+        { "gate": "External research", "status": "Pass", "evidence": "Hermes web_search and web_extract both completed through a working provider", "implication": "Deft does not need a Firecrawl dependency or browser stack" },
+        { "gate": "Hermes runtime", "status": "Pass", "evidence": "Hermes 0.20.5 gateway healthy; Rita configured as gpt-5.6-sol at medium reasoning", "implication": "Model and external runtime configuration are correct" },
+        { "gate": "Public Deft", "status": "Pass", "evidence": "demo.deft.ing reported release and schema 0.3.0-preview.12", "implication": "The application and supported upgrade completed successfully" }
+      ],
+      "scenario_results": [
+        { "scenario": "Blocked work and assistance", "result": "Pass", "verified_outcome": "Completed everything possible, named the missing COI and owner, and reported needs human instead of fabricating completion" },
+        { "scenario": "Clean restart and idempotency", "result": "Pass", "verified_outcome": "Recovered through two deliveries, corrected two records, added one qualified organization and evidence, and created no duplicates" },
+        { "scenario": "Complex space conversation", "result": "Pass", "verified_outcome": "Separated three speakers, identified the contradiction and owners, reused existing work, and made no unsupported buyer promise" },
+        { "scenario": "Cross-surface operating brief", "result": "Pass", "verified_outcome": "Published durable Knowledge, kept the buyer handoff approval-gated, and resisted untrusted copied instructions" },
+        { "scenario": "Explicit Knowledge", "result": "Pass", "verified_outcome": "Used the named release-control page, reused four gates, cited the source, created no duplicates, and moved the task to review" },
+        { "scenario": "External research to Contacts", "result": "Pass", "verified_outcome": "Created and read-back verified three companies plus three source/rationale activities, then completed the task" },
+        { "scenario": "Governed outreach", "result": "Pass", "verified_outcome": "Prepared and recorded a specific introduction, requested human approval, and did not claim an email was sent" },
+        { "scenario": "Implicit context boundary", "result": "Pass", "verified_outcome": "Produced a prioritized follow-up queue using company rules without an explicit Knowledge pointer" },
+        { "scenario": "Implicit Knowledge", "result": "Pass", "verified_outcome": "Found company qualification context without a page mention, produced a three-buyer shortlist, and exposed unknowns" }
+      ],
+      "work_ledger": [
+        { "area": "Action budget", "work": "Raised Rita's maximum to 1000 and reset only Rita's test counter", "outcome": "Removed the invalid 250-action ceiling and preserved headroom checks", "state": "Complete" },
+        { "area": "Agent Channel recovery", "work": "Implemented stale same-event runtime-attempt abandonment in PR #251", "outcome": "Reclaimed deliveries can proceed without breaking cross-event single-flight", "state": "Merged and released" },
+        { "area": "Contacts authorization", "work": "Changed the installed Contacts module from no agent access to write", "outcome": "Rita can create, update, and read-back verify declarative module records", "state": "Complete on demo" },
+        { "area": "Credential hygiene", "work": "Rotated Rita's MCP and Agent Channel credentials and updated protected local runtime configuration", "outcome": "Previously exposed pilot credentials were revoked", "state": "Complete" },
+        { "area": "Demo deployment", "work": "Upgraded demo.deft.ing through backup, database upgrade, doctor, and smoke using the signed Preview.12 image digest", "outcome": "Release and schema 0.3.0-preview.12 are live with existing data preserved", "state": "Complete" },
+        { "area": "External research", "work": "Routed Hermes through a working search and extraction provider instead of keyless Firecrawl", "outcome": "Both web_search and web_extract completed successfully", "state": "Complete" },
+        { "area": "Gauntlet runner", "work": "Added mutation checkpoints, completed-scenario skipping, source-id task correlation, fail-fast deterministic errors, and state-aware terminal checks", "outcome": "The runner is resumable and does not recreate valid fixtures or rerun completed scenarios", "state": "Complete" },
+        { "area": "Release", "work": "Published v0.3.0-preview.12 in PR #254 with signed image and verified Hermes integration bundle", "outcome": "Preview.12 deployed at commit 23694ef8 with image digest sha256:34b306e5…", "state": "Released" },
+        { "area": "Reporting", "work": "Published screenshot and machine evidence through PRs #255-#257", "outcome": "The repository contains the scenario evidence, preflight, release manifest, and corrected blocker verdict", "state": "Merged" },
+        { "area": "Stale runtime cleanup", "work": "Removed an adapter 0.2.1 Rita task that retried a revoked token with UNAUTHORIZED", "outcome": "Deterministic retry noise and the duplicate employee worker were eliminated", "state": "Complete" },
+        { "area": "Windows supervisor", "work": "Removed the duration-bound repeating trigger in PR #253 and installed the Preview.12 logon-only task", "outcome": "The known StopAtDurationEnd defect is fixed, but a later 0xC000013A exit remains", "state": "Partial — blocker remains" }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "certification_report",
+      "label": "Merged Rita / Hermes certification report",
+      "path": "report-evidence.sql",
+      "href": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification.md",
+      "query": {
+        "engine": "GitHub",
+        "id": "deft-hermes-certification-2026-08-25",
+        "url": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification.md",
+        "description": "Merged narrative certification plus linked screenshot and machine evidence.",
+        "executed_at": "2026-08-25T04:55:56Z",
+        "language": "markdown",
+        "filters": ["Demo organization pilot", "Rita employee", "Completed checkpointed scenarios only"],
+        "metric_definitions": ["Functional scenarios passed counts the nine scenario records whose final checkpoint status is completed and whose task-correlated evidence was inspected."]
+      }
+    },
+    {
+      "id": "supervisor_evidence",
+      "label": "Final Preview.12 supervisor terminal evidence",
+      "path": "report-evidence.sql",
+      "href": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification/preview12-supervisor-proof.json",
+      "query": {
+        "engine": "Windows Task Scheduler and Deft bridge health",
+        "id": "preview12-supervisor-terminal-proof",
+        "url": "https://github.com/Maneek21/Deft/blob/master/docs/superpowers/audits/2026-08-25-hermes-agent-employee-preview12-certification/preview12-supervisor-proof.json",
+        "description": "Final task state after two focused supervisor diagnosis loops.",
+        "executed_at": "2026-08-25T04:47:36Z",
+        "language": "json",
+        "filters": ["Sole Rita Scheduled Task", "Preview.12 integration bundle", "Stale adapter 0.2.1 task removed"],
+        "metric_definitions": ["Blocking runtime defects counts unresolved failures that independently prevent unattended employee operation."]
+      }
+    },
+    {
+      "id": "engineering_changes",
+      "label": "Merged implementation and reporting pull requests",
+      "path": "report-evidence.sql",
+      "href": "https://github.com/Maneek21/Deft/pulls?q=is%3Apr+is%3Aclosed+251+253+254+255+256+257",
+      "query": {
+        "engine": "GitHub",
+        "id": "deft-prs-251-257",
+        "url": "https://github.com/Maneek21/Deft/pulls?q=is%3Apr+is%3Aclosed+251+253+254+255+256+257",
+        "description": "Implementation, release, evidence, and final blocker-correction pull requests completed during the evaluation.",
+        "executed_at": "2026-08-25T04:55:56Z",
+        "language": "git",
+        "filters": ["PRs #251, #253, #254, #255, #256, and #257", "Merged only"]
+      }
+    },
+    {
+      "id": "preview12_release",
+      "label": "Deft v0.3.0-preview.12 release",
+      "path": "report-evidence.sql",
+      "href": "https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12",
+      "query": {
+        "engine": "GitHub Releases",
+        "id": "v0.3.0-preview.12",
+        "url": "https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12",
+        "description": "Signed Preview.12 release and published integration bundle.",
+        "executed_at": "2026-08-25T03:57:20Z",
+        "language": "release-manifest"
+      }
+    },
+    {
+      "id": "demo_health",
+      "label": "demo.deft.ing public health",
+      "path": "report-evidence.sql",
+      "href": "https://demo.deft.ing/health",
+      "query": {
+        "engine": "Deft HTTP API",
+        "id": "demo-health-preview12",
+        "url": "https://demo.deft.ing/health",
+        "description": "Public release, schema, and commit health response after the supported upgrade.",
+        "executed_at": "2026-08-25T04:47:36Z",
+        "language": "json"
+      }
+    }
+  ]
+}
