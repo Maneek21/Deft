@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import hashlib
 import json
 import socket
 import urllib.error
@@ -17,7 +18,7 @@ import urllib.request
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 
 
 PLATFORM_NAME = "deft"
@@ -91,10 +92,12 @@ class DeftAdapter(BasePlatformAdapter):
             or f"hermes-deft-{socket.gethostname()}-{os.getpid()}"
         )[:200]
         self._request_fn = request_fn or self._http_request
-        self._delivery_handler = delivery_handler
+        self._delivery_handler = delivery_handler or self._deliver_to_hermes
         self._start_listener = start_listener
         self._poll_task: Optional[asyncio.Task] = None
         self._last_accepted_event_id: Optional[str] = None
+        self._routes_by_message: Dict[str, dict] = {}
+        self._routes_by_scope: Dict[tuple[str, str], dict] = {}
 
     @property
     def name(self) -> str:
@@ -232,6 +235,50 @@ class DeftAdapter(BasePlatformAdapter):
             accepted_count += 1
         return accepted_count
 
+    def _to_message_event(self, event: dict) -> MessageEvent:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        org_id = str(event.get("org_id") or "")
+        space_id = str(event.get("space_id") or payload.get("space_id") or "")
+        source_message_id = str(event.get("source_id") or payload.get("message_id") or event["id"])
+        reply_thread_id = event.get("thread_id") or payload.get("reply_thread_id")
+        thread_id = str(reply_thread_id) if reply_thread_id else None
+        chat_id = f"{org_id}:{space_id}"
+        is_dm = payload.get("is_dm") is True
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=str(payload.get("space_name") or space_id),
+            chat_type="dm" if is_dm else "channel",
+            user_id=str(payload.get("author_id") or event.get("actor_user_id") or "") or None,
+            user_name=str(payload.get("author_name") or "") or None,
+            thread_id=thread_id,
+            guild_id=org_id or None,
+            parent_chat_id=space_id or None,
+            message_id=source_message_id,
+        )
+        route = {
+            "event_id": str(event["id"]),
+            "space_id": space_id,
+            "thread_id": thread_id,
+            "source_message_id": source_message_id,
+        }
+        self._routes_by_message[source_message_id] = route
+        self._routes_by_scope[(chat_id, thread_id or "")] = route
+        return MessageEvent(
+            text=str(payload.get("content") or ""),
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event,
+            message_id=source_message_id,
+            reply_to_message_id=str(payload.get("parent_id")) if payload.get("parent_id") else None,
+        )
+
+    async def _deliver_to_hermes(self, event: dict) -> bool:
+        if self._message_handler is None:
+            return False
+        message_event = self._to_message_event(event)
+        await self.handle_message(message_event)
+        return True
+
     async def _poll_loop(self) -> None:
         while self._running:
             try:
@@ -250,7 +297,38 @@ class DeftAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return SendResult(success=False, error="Deft outbound delivery is not implemented before Loop 3")
+        thread_id = str((metadata or {}).get("thread_id") or "")
+        route = self._routes_by_message.get(str(reply_to or ""))
+        if route is None:
+            route = self._routes_by_scope.get((chat_id, thread_id))
+        if route is None and not thread_id:
+            candidates = [value for (scope, _), value in self._routes_by_scope.items() if scope == chat_id]
+            route = candidates[-1] if candidates else None
+        if route is None:
+            return SendResult(success=False, error="No accepted Deft source event is available for this reply")
+
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:24]
+        idempotency_key = f"autonomous-reply:{route['event_id']}:{digest}"
+        try:
+            response = await self._request(
+                "POST",
+                "/reply",
+                body={
+                    "event_id": route["event_id"],
+                    "content": content,
+                    "thread_id": route["thread_id"],
+                    "idempotency_key": idempotency_key,
+                    "adapter_mode": "autonomous_platform",
+                    "caller_employee_slug": self.employee_slug,
+                },
+            )
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+        if not response.get("ok"):
+            return SendResult(success=False, error="Deft rejected the autonomous reply")
+        result = response.get("result") if isinstance(response.get("result"), dict) else {}
+        message_id = result.get("id") or result.get("message_id")
+        return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "channel", "chat_id": chat_id}

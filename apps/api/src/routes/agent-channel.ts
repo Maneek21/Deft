@@ -117,7 +117,8 @@ const replySchema = z.object({
   content: z.string().min(1).max(16000),
   thread_id: z.string().nullable().optional(),
   idempotency_key: z.string().min(1).max(300).optional(),
-  claim_token: z.string().min(1),
+  claim_token: z.string().min(1).optional(),
+  adapter_mode: z.literal('autonomous_platform').optional(),
   outcome: z.enum(['completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('completed'),
   summary: z.string().max(2000).optional(),
   runtime_session_key: z.string().min(1).optional(),
@@ -725,6 +726,15 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (!event.space_id) {
     return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft space to reply into');
   }
+  const autonomousReply = parsed.data.adapter_mode === 'autonomous_platform';
+  if (autonomousReply) {
+    if (!(await hasAutonomousPlatformConnection(principal))) {
+      return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before posting autonomous replies');
+    }
+    if (!event.acked_at || event.status !== 'acknowledged') {
+      return errorResponse(c, 409, 'DELIVERY_NOT_ACCEPTED', 'Autonomous replies require an accepted transport delivery');
+    }
+  }
 
   const idempotencyKey = parsed.data.idempotency_key
     ?? `reply:${event.id}:${Buffer.from(parsed.data.content).toString('base64url').slice(0, 64)}`;
@@ -738,7 +748,8 @@ agentChannelRoutes.post('/reply', async (c) => {
     event_id: event.id,
     content: parsed.data.content,
     thread_id: parentId,
-    outcome: parsed.data.outcome,
+    outcome: autonomousReply ? null : parsed.data.outcome,
+    adapter_mode: autonomousReply ? 'autonomous_platform' : 'supervised_runtime',
     summary: parsed.data.summary ?? null,
     runtime_session_key: parsed.data.runtime_session_key ?? null,
     runtime_request_key: parsed.data.runtime_request_key ?? null,
@@ -762,10 +773,9 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (existingAttempt) {
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
   }
-  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+  if (!autonomousReply && (!parsed.data.claim_token || !hasActiveAgentChannelClaim(event, parsed.data.claim_token))) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
-
   const [claim] = await db
     .insert(agentChannelDeliveryAttempts)
     .values({
@@ -835,6 +845,22 @@ agentChannelRoutes.post('/reply', async (c) => {
     })
     .where(eq(agentChannelDeliveryAttempts.id, claim.id));
 
+  if (autonomousReply) {
+    await touchAgentChannelConnection(principal, {
+      status: result.isError ? 'degraded' : 'connected',
+      lastEventId: event.id,
+      lastError: result.isError ? text : null,
+    });
+    return c.json({
+      ok: !result.isError,
+      idempotent: false,
+      adapter_mode: 'autonomous_platform',
+      transport_reply: result.isError ? 'failed' : 'sent',
+      business_outcome: event.work_outcome ?? null,
+      result: responseJson,
+    }, result.isError ? 500 : 200);
+  }
+
   const reportedOutcome = result.isError ? 'failed' : parsed.data.outcome;
   const lifecyclePatch = buildAgentChannelLifecyclePatch(
     event,
@@ -860,7 +886,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       })
       .where(and(
         eq(agentChannelEvents.id, event.id),
-        eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+        eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
       ))
       .returning({ id: agentChannelEvents.id });
     if (!settled) {

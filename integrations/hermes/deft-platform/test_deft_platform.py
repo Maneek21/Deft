@@ -143,6 +143,82 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(adapter._last_accepted_event_id, "event-1")
         self.assertFalse(any("responses" in call[1] for call in calls))
 
+    def test_maps_speaker_scope_and_thread_then_replies_through_normal_send(self):
+        calls = []
+        received = []
+        source_event = {
+            "id": "channel-event-7",
+            "org_id": "org-1",
+            "space_id": "space-1",
+            "thread_id": "thread-1",
+            "source_id": "message-1",
+            "actor_user_id": "diego-1",
+            "claim_token": "claim-7",
+            "payload": {
+                "message_id": "message-1",
+                "reply_thread_id": "thread-1",
+                "author_id": "diego-1",
+                "author_name": "Diego",
+                "content": "Can you summarize this?",
+                "is_dm": False,
+            },
+        }
+
+        async def request(method, path, query, body):
+            calls.append((method, path, query, body))
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/events":
+                return {"ok": True, "events": [source_event]}
+            if path == "/accept":
+                return {"ok": True, "transport_state": "accepted"}
+            if path == "/reply":
+                return {"ok": True, "transport_reply": "sent", "result": {"id": "message-2"}}
+            raise AssertionError(path)
+
+        async def scenario():
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(
+                name="deft", label="Deft", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            ))
+            try:
+                adapter = MOD.DeftAdapter(
+                    FakeConfig({
+                        "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                        "token": "secret-test-token",
+                        "employee_slug": "native-spike",
+                    }),
+                    request_fn=request,
+                    start_listener=False,
+                )
+
+                async def handler(event):
+                    received.append(event)
+                    return "I can summarize it."
+
+                adapter.set_message_handler(handler)
+                self.assertTrue(await adapter.connect())
+                self.assertEqual(await adapter._poll_once(), 1)
+                while adapter._background_tasks:
+                    await asyncio.gather(*tuple(adapter._background_tasks))
+                await adapter.disconnect()
+            finally:
+                platform_registry.unregister("deft")
+
+        asyncio.run(scenario())
+        self.assertEqual(len(received), 1)
+        message_event = received[0]
+        self.assertEqual(message_event.text, "Can you summarize this?")
+        self.assertEqual(message_event.source.chat_id, "org-1:space-1")
+        self.assertEqual(message_event.source.thread_id, "thread-1")
+        self.assertEqual(message_event.source.user_id, "diego-1")
+        self.assertEqual(message_event.source.user_name, "Diego")
+        reply = next(call for call in calls if call[1] == "/reply")
+        self.assertEqual(reply[3]["event_id"], "channel-event-7")
+        self.assertEqual(reply[3]["thread_id"], "thread-1")
+        self.assertEqual(reply[3]["adapter_mode"], "autonomous_platform")
+        self.assertNotIn("claim_token", reply[3])
+
 
 if __name__ == "__main__":
     unittest.main()

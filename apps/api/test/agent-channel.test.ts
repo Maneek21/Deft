@@ -620,6 +620,42 @@ test('autonomous platform acceptance ends transport delivery without completing 
   assert.equal(accepted.event.lease_expires_at, null);
   assert.equal(accepted.event.completed_at, null);
 
+  const replyKey = `autonomous-reply-${crypto.randomUUID()}`;
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Autonomous reply after transport acceptance.',
+      idempotency_key: replyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replied = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(replied));
+  assert.equal(replied.transport_reply, 'sent');
+  assert.equal(replied.business_outcome, null);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Autonomous reply after transport acceptance.',
+      idempotency_key: replyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+
+  const [stillAccepted] = await db.select().from(agentChannelEvents)
+    .where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(stillAccepted?.status, 'acknowledged');
+  assert.equal(stillAccepted?.work_outcome, null);
+  assert.equal(stillAccepted?.completed_at, null);
+
   const reconnect = await app.request(
     `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-reconnect-worker')}`,
     { headers: { authorization: `Bearer ${bearer}` } },
