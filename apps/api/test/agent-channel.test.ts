@@ -669,6 +669,111 @@ test('autonomous platform acceptance ends transport delivery without completing 
   );
 });
 
+test('autonomous task pickup supports explicit progress and an idempotent task comment', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-task-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 905,
+    title: 'Prepare an autonomous task handoff',
+    status: 'todo',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const published = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `autonomous-task-${crypto.randomUUID()}`,
+    payload: { task_id: taskId, task_key: 'ACP-905', title: 'Prepare an autonomous task handoff' },
+  });
+  const event = published.event!;
+
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-task-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const polled = await poll.json() as any;
+  const delivered = polled.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(delivered?.claim_token, JSON.stringify(polled));
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: delivered.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+
+  const correlation = await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId);
+  assert.deepEqual(correlation, {
+    channel_event_id: event.id,
+    runtime_request_key: `autonomous:${event.id}`,
+  });
+  assert.equal(
+    await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, crypto.randomUUID()),
+    null,
+  );
+  const progress = parseToolResult(await recordProgress({
+    task_id: taskId,
+    summary: 'Picked up the task and verified the required Deft context.',
+    status: 'working',
+    idempotency_key: 'autonomous-picked-up',
+  }, {
+    org_id: orgId,
+    employee_id: employeeId,
+    employee_slug: employeeSlug,
+    trust_level: 'autonomous',
+    ...correlation!,
+  }));
+  assert.equal(progress.task_id, taskId);
+
+  const request = {
+    event_id: event.id,
+    content: 'I picked this up and verified the task context.',
+    idempotency_key: `autonomous-task-comment:${event.id}`,
+    adapter_mode: 'autonomous_platform',
+  };
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const replied = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(replied));
+  assert.equal(replied.transport_target, 'task_comment');
+  assert.ok(replied.result.comment_id);
+  assert.equal(replied.business_outcome, null);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+
+  const comments = await db.select().from(taskComments).where(and(
+    eq(taskComments.task_id, taskId),
+    eq(taskComments.user_id, agentUserId),
+  ));
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.content, request.content);
+  const [stillAccepted] = await db.select().from(agentChannelEvents)
+    .where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(stillAccepted?.status, 'acknowledged');
+  assert.equal(stillAccepted?.work_outcome, null);
+});
+
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
   const res = await app.request('/api/agent-channel/v1/connect?protocol_version=deft.agent_channel.v1&adapter_version=0.1.0&capabilities=terminal_outcomes&worker_id=legacy-worker', {
     headers: { authorization: `Bearer ${bearer}` },

@@ -58,6 +58,7 @@ type RecordArgs = {
 };
 
 type ProgressArgs = {
+  task_id?: string;
   summary?: string;
   status?: 'working' | 'retrying' | 'waiting_human' | 'needs_human' | 'blocked' | 'approval_pending';
   idempotency_key?: string;
@@ -167,8 +168,10 @@ function boundedArtifacts(value: ProgressArgs['artifact_refs']) {
 
 /**
  * Persist one meaningful, task-linked milestone for the currently executing
- * Agent Channel event. The active lease is the source of task correlation;
- * model-authored arguments never choose another task or employee.
+ * Agent Channel event. Supervised runtimes inherit the active lease. An
+ * autonomous platform runtime may identify one of its own accepted task
+ * assignments; the MCP bearer and Agent Channel row still bind organization,
+ * employee, and task ownership server-side.
  */
 export async function recordProgress(args: ProgressArgs, ctx: ToolContext): Promise<ToolResult> {
   const summary = typeof args.summary === 'string' ? args.summary.trim() : '';

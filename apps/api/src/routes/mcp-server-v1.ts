@@ -868,6 +868,9 @@ mcpServerV1Routes.post('/', async (c) => {
       const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
         resolved.org_id,
         employee.employee_id,
+        canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
+          ? args.task_id
+          : undefined,
       );
       const boundArgs = { ...args, caller_employee_slug: employee.slug };
       const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
@@ -1102,6 +1105,9 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
     resolved.org_id,
     employee.employee_id,
+    canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
+      ? args.task_id
+      : undefined,
   );
   const ctx: ToolContext = {
     org_id: resolved.org_id,

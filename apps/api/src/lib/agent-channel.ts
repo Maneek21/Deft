@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -9,6 +9,7 @@ import {
   agentChannelEvents,
   agentChannelTokens,
   agentEmployees,
+  tasks,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
 import { getIO } from '../socket.js';
@@ -46,6 +47,7 @@ export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
 export async function getActiveAgentChannelRuntimeCorrelation(
   orgId: string,
   employeeId: string,
+  autonomousTaskId?: string,
 ): Promise<{ channel_event_id: string; runtime_request_key: string } | null> {
   const rows = await db.select({
     channel_event_id: agentChannelEvents.id,
@@ -66,10 +68,42 @@ export async function getActiveAgentChannelRuntimeCorrelation(
     ))
     .orderBy(desc(agentChannelDeliveryAttempts.created_at))
     .limit(2);
-  if (rows.length !== 1 || !rows[0]?.runtime_request_key) return null;
+  if (rows.length === 1 && rows[0]?.runtime_request_key) {
+    return {
+      channel_event_id: rows[0].channel_event_id,
+      runtime_request_key: rows[0].runtime_request_key,
+    };
+  }
+  if (rows.length > 1 || !autonomousTaskId) return null;
+
+  const accepted = await db.select({ id: agentChannelEvents.id })
+    .from(agentChannelEvents)
+    .innerJoin(tasks, and(
+      eq(tasks.id, agentChannelEvents.source_id),
+      eq(tasks.org_id, agentChannelEvents.org_id),
+    ))
+    .innerJoin(agentEmployees, and(
+      eq(agentEmployees.id, agentChannelEvents.agent_employee_id),
+      eq(agentEmployees.user_id, tasks.assignee_id),
+    ))
+    .where(and(
+      eq(agentChannelEvents.org_id, orgId),
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'task.assigned'),
+      eq(agentChannelEvents.source_kind, 'task'),
+      eq(agentChannelEvents.source_id, autonomousTaskId),
+      eq(agentChannelEvents.status, 'acknowledged'),
+      isNotNull(agentChannelEvents.acked_at),
+      isNull(agentChannelEvents.completed_at),
+      isNull(agentChannelEvents.work_outcome),
+      notInArray(tasks.status, ['done', 'cancelled']),
+    ))
+    .orderBy(desc(agentChannelEvents.acked_at))
+    .limit(2);
+  if (accepted.length !== 1 || !accepted[0]) return null;
   return {
-    channel_event_id: rows[0].channel_event_id,
-    runtime_request_key: rows[0].runtime_request_key,
+    channel_event_id: accepted[0].id,
+    runtime_request_key: `autonomous:${accepted[0].id}`,
   };
 }
 

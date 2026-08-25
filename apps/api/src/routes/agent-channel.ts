@@ -42,7 +42,7 @@ import {
   type AgentChannelAdapterMode,
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
-import { executeSendMessage } from '../lib/mcp-tools/writes.js';
+import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
@@ -723,9 +723,6 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (!event) {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
-  if (!event.space_id) {
-    return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft space to reply into');
-  }
   const autonomousReply = parsed.data.adapter_mode === 'autonomous_platform';
   if (autonomousReply) {
     if (!(await hasAutonomousPlatformConnection(principal))) {
@@ -734,6 +731,12 @@ agentChannelRoutes.post('/reply', async (c) => {
     if (!event.acked_at || event.status !== 'acknowledged') {
       return errorResponse(c, 409, 'DELIVERY_NOT_ACCEPTED', 'Autonomous replies require an accepted transport delivery');
     }
+  }
+  const autonomousTaskReply = autonomousReply
+    && event.source_kind === 'task'
+    && Boolean(event.source_id);
+  if (!event.space_id && !autonomousTaskReply) {
+    return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft reply target');
   }
 
   const idempotencyKey = parsed.data.idempotency_key
@@ -750,6 +753,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     thread_id: parentId,
     outcome: autonomousReply ? null : parsed.data.outcome,
     adapter_mode: autonomousReply ? 'autonomous_platform' : 'supervised_runtime',
+    reply_target: autonomousTaskReply ? 'task_comment' : 'chat_message',
     summary: parsed.data.summary ?? null,
     runtime_session_key: parsed.data.runtime_session_key ?? null,
     runtime_request_key: parsed.data.runtime_request_key ?? null,
@@ -814,18 +818,25 @@ agentChannelRoutes.post('/reply', async (c) => {
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
   }
 
-  const result = await executeSendMessage({
-    orgId: principal.org_id,
-    spaceId: event.space_id,
-    content: parsed.data.content,
-    parentId,
-    ctx: {
-      org_id: principal.org_id,
-      employee_id: principal.employee_id,
-      employee_slug: principal.employee_slug,
-      trust_level: principal.trust_level,
-    },
-  });
+  const toolContext = {
+    org_id: principal.org_id,
+    employee_id: principal.employee_id,
+    employee_slug: principal.employee_slug,
+    trust_level: principal.trust_level,
+  };
+  const result = autonomousTaskReply
+    ? await executeTaskUpdate({
+      caller_employee_slug: principal.employee_slug,
+      task_id: event.source_id!,
+      patch: { comment: parsed.data.content },
+    }, toolContext)
+    : await executeSendMessage({
+      orgId: principal.org_id,
+      spaceId: event.space_id!,
+      content: parsed.data.content,
+      parentId,
+      ctx: toolContext,
+    });
 
   const text = result.content?.[0]?.text ?? '{}';
   let responseJson: Record<string, unknown>;
@@ -856,6 +867,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       idempotent: false,
       adapter_mode: 'autonomous_platform',
       transport_reply: result.isError ? 'failed' : 'sent',
+      transport_target: autonomousTaskReply ? 'task_comment' : 'chat_message',
       business_outcome: event.work_outcome ?? null,
       result: responseJson,
     }, result.isError ? 500 : 200);

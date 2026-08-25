@@ -877,6 +877,10 @@ export const toolSchemas: ToolSchema[] = [
       type: 'object',
       properties: {
         ...CALLER_SLUG_PROP,
+        task_id: {
+          type: 'string',
+          description: 'Required for autonomous channel assignments; use the exact task_id supplied by the Deft task event.',
+        },
         summary: { type: 'string', maxLength: 600, description: 'Human-readable milestone or precise blocker.' },
         status: {
           type: 'string',

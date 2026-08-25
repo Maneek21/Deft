@@ -219,6 +219,89 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         self.assertEqual(reply[3]["adapter_mode"], "autonomous_platform")
         self.assertNotIn("claim_token", reply[3])
 
+    def test_task_assignment_uses_normal_handler_and_returns_a_task_comment(self):
+        calls = []
+        received = []
+        task_event = {
+            "id": "task-event-1",
+            "kind": "task.assigned",
+            "source_kind": "task",
+            "source_id": "task-uuid-1",
+            "org_id": "org-1",
+            "actor_user_id": "diego-1",
+            "claim_token": "task-claim-1",
+            "payload": {
+                "task_id": "task-uuid-1",
+                "task_key": "OPS-42",
+                "title": "Prepare the launch brief",
+                "description": "Use the launch notes in Knowledge.",
+                "status": "todo",
+                "priority": "p1",
+                "assigned_by": "diego-1",
+                "assigned_by_name": "Diego",
+            },
+        }
+
+        async def request(method, path, query, body):
+            calls.append((method, path, query, body))
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/events":
+                return {"ok": True, "events": [task_event]}
+            if path == "/accept":
+                return {"ok": True, "transport_state": "accepted"}
+            if path == "/reply":
+                return {
+                    "ok": True,
+                    "transport_reply": "sent",
+                    "transport_target": "task_comment",
+                    "result": {"comment_id": "comment-1"},
+                }
+            raise AssertionError(path)
+
+        async def scenario():
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(
+                name="deft", label="Deft", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            ))
+            try:
+                adapter = MOD.DeftAdapter(
+                    FakeConfig({
+                        "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                        "token": "secret-test-token",
+                        "employee_slug": "native-spike",
+                    }),
+                    request_fn=request,
+                    start_listener=False,
+                )
+
+                async def handler(event):
+                    received.append(event)
+                    return "I picked this up and will use the launch notes."
+
+                adapter.set_message_handler(handler)
+                self.assertTrue(await adapter.connect())
+                self.assertEqual(await adapter._poll_once(), 1)
+                while adapter._background_tasks:
+                    await asyncio.gather(*tuple(adapter._background_tasks))
+                await adapter.disconnect()
+            finally:
+                platform_registry.unregister("deft")
+
+        asyncio.run(scenario())
+        self.assertEqual(len(received), 1)
+        task = received[0]
+        self.assertIn("Task: OPS-42", task.text)
+        self.assertIn("Task ID: task-uuid-1", task.text)
+        self.assertEqual(task.source.chat_id, "org-1:tasks")
+        self.assertEqual(task.source.thread_id, "task-uuid-1")
+        self.assertEqual(task.source.user_id, "diego-1")
+        self.assertEqual(task.source.user_name, "Diego")
+        reply = next(call for call in calls if call[1] == "/reply")
+        self.assertEqual(reply[3]["event_id"], "task-event-1")
+        self.assertEqual(reply[3]["thread_id"], "task-uuid-1")
+        self.assertNotIn("claim_token", reply[3])
+
 
 if __name__ == "__main__":
     unittest.main()

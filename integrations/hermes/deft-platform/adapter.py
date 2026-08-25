@@ -92,7 +92,7 @@ class DeftAdapter(BasePlatformAdapter):
             or f"hermes-deft-{socket.gethostname()}-{os.getpid()}"
         )[:200]
         self._request_fn = request_fn or self._http_request
-        self._delivery_handler = delivery_handler or self._deliver_to_hermes
+        self._delivery_handler = delivery_handler
         self._start_listener = start_listener
         self._poll_task: Optional[asyncio.Task] = None
         self._last_accepted_event_id: Optional[str] = None
@@ -215,11 +215,15 @@ class DeftAdapter(BasePlatformAdapter):
         for event in events:
             if not isinstance(event, dict) or not event.get("id") or not event.get("claim_token"):
                 raise RuntimeError("Deft channel returned an event without an identity or claim")
-            if self._delivery_handler is None:
-                break
-            accepted_by_hermes = await self._delivery_handler(event)
-            if not accepted_by_hermes:
-                break
+            message_event = None
+            if self._delivery_handler is not None:
+                accepted_by_hermes = await self._delivery_handler(event)
+                if not accepted_by_hermes:
+                    break
+            else:
+                if self._message_handler is None:
+                    break
+                message_event = self._to_message_event(event)
             accepted = await self._request(
                 "POST",
                 "/accept",
@@ -233,11 +237,61 @@ class DeftAdapter(BasePlatformAdapter):
                 raise RuntimeError("Deft did not confirm transport acceptance")
             self._last_accepted_event_id = str(event["id"])
             accepted_count += 1
+            if message_event is not None:
+                await self.handle_message(message_event)
         return accepted_count
 
     def _to_message_event(self, event: dict) -> MessageEvent:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         org_id = str(event.get("org_id") or "")
+        if event.get("kind") == "task.assigned":
+            task_id = str(payload.get("task_id") or event.get("source_id") or event["id"])
+            task_key = str(payload.get("task_key") or task_id)
+            title = str(payload.get("title") or "Untitled task")
+            description = str(payload.get("description") or "").strip()
+            status = str(payload.get("status") or "todo")
+            priority = str(payload.get("priority") or "")
+            lines = [
+                "A Deft task was assigned to you.",
+                f"Task: {task_key}",
+                f"Task ID: {task_id}",
+                f"Title: {title}",
+                f"Status: {status}",
+            ]
+            if priority:
+                lines.append(f"Priority: {priority}")
+            if description:
+                lines.extend(["Description:", description])
+            chat_id = f"{org_id}:tasks"
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name="Deft tasks",
+                chat_type="channel",
+                user_id=str(payload.get("assigned_by") or event.get("actor_user_id") or "") or None,
+                user_name=str(payload.get("assigned_by_name") or "") or None,
+                thread_id=task_id,
+                guild_id=org_id or None,
+                parent_chat_id="tasks",
+                message_id=task_id,
+            )
+            route = {
+                "event_id": str(event["id"]),
+                "source_kind": "task",
+                "task_id": task_id,
+                "space_id": "",
+                "thread_id": task_id,
+                "source_message_id": task_id,
+            }
+            self._routes_by_message[task_id] = route
+            self._routes_by_scope[(chat_id, task_id)] = route
+            return MessageEvent(
+                text="\n".join(lines),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=event,
+                message_id=task_id,
+            )
+
         space_id = str(event.get("space_id") or payload.get("space_id") or "")
         source_message_id = str(event.get("source_id") or payload.get("message_id") or event["id"])
         reply_thread_id = event.get("thread_id") or payload.get("reply_thread_id")
@@ -257,6 +311,7 @@ class DeftAdapter(BasePlatformAdapter):
         )
         route = {
             "event_id": str(event["id"]),
+            "source_kind": "message",
             "space_id": space_id,
             "thread_id": thread_id,
             "source_message_id": source_message_id,
@@ -327,7 +382,11 @@ class DeftAdapter(BasePlatformAdapter):
         if not response.get("ok"):
             return SendResult(success=False, error="Deft rejected the autonomous reply")
         result = response.get("result") if isinstance(response.get("result"), dict) else {}
-        message_id = result.get("id") or result.get("message_id")
+        message_id = (
+            result.get("comment_id")
+            if route.get("source_kind") == "task"
+            else result.get("id") or result.get("message_id")
+        )
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
