@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import urllib.request
@@ -23,6 +24,45 @@ def _sanitize(value: Any, limit: int = 900) -> str:
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
     return text[:limit]
+
+
+def _is_deft_tool(tool_name: str) -> bool:
+    return (
+        tool_name.startswith("mcp__deft")
+        or tool_name.startswith("mcp_deft_")
+        or tool_name.startswith("deft_")
+    )
+
+
+def _provider_receipt(result: Any) -> Dict[str, str]:
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    if not isinstance(result, dict):
+        return {}
+    receipt: Dict[str, str] = {}
+    aliases = {
+        "id", "message_id", "receipt_id", "request_id", "delivery_id",
+        "status", "accepted_at", "sent_at", "delivered_at",
+    }
+    for key, value in result.items():
+        normalized = str(key).lower()
+        if normalized in aliases and isinstance(value, (str, int, float, bool)):
+            receipt[normalized] = _sanitize(value, 300)
+        elif isinstance(value, dict) and normalized in {"data", "result", "receipt", "response"}:
+            receipt.update(_provider_receipt(value))
+    return receipt
+
+
+def _provider_accepted(success: bool, receipt: Dict[str, str]) -> bool:
+    if not success or not any(key in receipt for key in (
+        "id", "message_id", "receipt_id", "request_id", "delivery_id",
+    )):
+        return False
+    status = receipt.get("status", "").lower()
+    return not status or status in {"accepted", "sent", "delivered", "success", "succeeded", "ok"}
 
 
 class DeftEmployeeHooks:
@@ -60,6 +100,7 @@ class DeftEmployeeHooks:
             "deft_progress_contract": "For task assignments call record_progress when beginning with a concise plan, at meaningful milestones, and when a blocker or retry approach changes. Use a stable idempotency_key. Do not mirror every tool call or post routine progress to chat.",
             "deft_task_contract": "Read allowed_next_statuses from task_query/task_detail before changing status. On INVALID_TRANSITION, choose only from the returned allowed_next_statuses.",
             "deft_module_contract": "Call module_schema_get before module writes. Follow its exact input_schema and collection example; put scalar fields in data/patch and links in relations: {field_key: [record_ids]}.",
+            "deft_external_action_contract": "A runtime tool success is not proof that a provider accepted an external write. Require a provider receipt or message/request/delivery id before claiming sent or creating a sent activity in Deft; otherwise report an unverified or failed outcome.",
         }, ensure_ascii=False)}
 
     def pre_tool_call(self, tool_name: str = "", args: Any = None, **kwargs: Any):
@@ -74,12 +115,7 @@ class DeftEmployeeHooks:
         rendered = _sanitize(args, 2000)
         if tool_name in {"terminal", "process"} and DESTRUCTIVE_COMMAND.search(rendered):
             return {"action": "block", "message": "Destructive command blocked by Deft employee policy."}
-        is_deft_tool = (
-            tool_name.startswith("mcp__deft")
-            or tool_name.startswith("mcp_deft_")
-            or tool_name.startswith("deft_")
-        )
-        if WRITE_HINT.search(tool_name) and not is_deft_tool and not self.policy.get("allow_external_writes", False):
+        if WRITE_HINT.search(tool_name) and not _is_deft_tool(tool_name) and not self.policy.get("allow_external_writes", False):
             return {"action": "block", "message": "External write needs Deft human approval for this assignment."}
         self.tool_calls += 1
         return None
@@ -101,18 +137,37 @@ class DeftEmployeeHooks:
     ) -> None:
         normalized_status = status.lower() if status else ("error" if error_message else "ok")
         success = normalized_status in {"ok", "completed", "success"}
+        external_write = bool(WRITE_HINT.search(tool_name)) and not _is_deft_tool(tool_name)
+        if success and not external_write:
+            return
         detail = error_message if not success and error_message else result
+        receipt = _provider_receipt(result) if external_write else {}
+        provider_accepted = _provider_accepted(success, receipt)
+        payload = _sanitize(args if isinstance(args, dict) else {}, 2000)
+        payload_digest = "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
+        if external_write and success and not provider_accepted:
+            detail = "tool returned success without a provider acceptance receipt"
         summary = f"{tool_name} {normalized_status} in {duration_ms}ms: {_sanitize(detail)}"
+        identity = tool_call_id or hashlib.sha256(
+            f"{session_id}\0{turn_id}\0{tool_name}\0{payload_digest}".encode()
+        ).hexdigest()
         try:
             self.call_deft("record_action_attempt", {
                 "summary": summary,
                 "session_turn_id": turn_id or task_id or session_id or None,
+                "idempotency_key": f"external-tool:{identity}",
                 "metadata": {
                     "tool": tool_name,
                     "tool_call_id": tool_call_id or None,
                     "success": success,
                     "status": normalized_status,
                     "error_type": error_type or None,
+                    "external_write": external_write,
+                    "proposed_payload": payload if external_write else None,
+                    "proposed_payload_digest": payload_digest if external_write else None,
+                    "provider_accepted": provider_accepted,
+                    "provider_receipt": receipt or None,
+                    "evidence_authority": "runtime_reported",
                 },
             })
         except Exception:

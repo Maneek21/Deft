@@ -53,6 +53,7 @@ import {
 import { auditOAuth, metadataUrls } from '../lib/oauth-mcp.js';
 import {
   consumeAgentDailyActionBudget,
+  shouldConsumeAgentDailyActionBudget,
   isAgentToolDisabled,
 } from '../lib/agent-tool-policy.js';
 import { MODULE_MCP_WRITE_TOOLS } from '../lib/mcp-tools/modules.js';
@@ -549,7 +550,11 @@ async function dispatchTool(
     // Module proposals do not consume an execution slot. The module handler
     // charges direct writes; queued writes are charged once by the canonical
     // approval executor after a human approves them.
-    if (WRITE_TOOLS[canonicalToolName] && !MODULE_MCP_WRITE_TOOLS[canonicalToolName]) {
+    if (
+      WRITE_TOOLS[canonicalToolName]
+      && !MODULE_MCP_WRITE_TOOLS[canonicalToolName]
+      && shouldConsumeAgentDailyActionBudget(canonicalToolName)
+    ) {
       const budget = await consumeAgentDailyActionBudget(ctx.org_id, ctx.employee_id);
       if (!budget.allowed) {
         const result = {

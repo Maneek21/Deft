@@ -19,6 +19,20 @@ const HEALTH_GATED_TOOLS = new Set([
   'module_record_task_unlink',
 ]);
 
+const DAILY_ACTION_BUDGET_EXEMPT_TOOLS = new Set([
+  'record_conversation_turn',
+  'record_decision',
+  'record_outcome',
+  'record_progress',
+  'record_reasoning_step',
+  'record_action_attempt',
+  'request_human_approval',
+]);
+
+export function shouldConsumeAgentDailyActionBudget(toolName: string): boolean {
+  return !DAILY_ACTION_BUDGET_EXEMPT_TOOLS.has(canonicalMcpToolName(toolName));
+}
+
 const NATIVE_TOOL_ALIASES: Record<string, string> = {
   close_task: 'update_task_status',
   reopen_task: 'update_task_status',

@@ -54,6 +54,7 @@ type RecordArgs = {
   summary?: string;
   metadata?: Record<string, unknown> | null;
   session_turn_id?: string | null;
+  idempotency_key?: string | null;
 };
 
 type ProgressArgs = {
@@ -81,6 +82,17 @@ const SAFE_ARTIFACT_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,499}$/;
 function progressDigest(ctx: ToolContext, eventId: string, idempotencyKey: string): string {
   return `sha256:${createHash('sha256')
     .update(`${ctx.org_id}\u0000${ctx.employee_id}\u0000${eventId}\u0000${idempotencyKey}`)
+    .digest('hex')}`;
+}
+
+export function cooperativeRecordDigest(
+  orgId: string,
+  employeeId: string,
+  kind: string,
+  idempotencyKey: string,
+): string {
+  return `sha256:${createHash('sha256')
+    .update(`${orgId}\u0000${employeeId}\u0000${kind}\u0000${idempotencyKey}`)
     .digest('hex')}`;
 }
 
@@ -327,22 +339,68 @@ async function appendLog(
   if (!summary) {
     return errorResult('summary is required');
   }
-  const [row] = await db
-    .insert(agentCooperativeLog)
-    .values({
+  const idempotencyKey = typeof args.idempotency_key === 'string'
+    ? args.idempotency_key.trim()
+    : '';
+  if (idempotencyKey.length > 300) {
+    return errorResult('idempotency_key must be at most 300 characters');
+  }
+  if (!idempotencyKey) {
+    const [row] = await db
+      .insert(agentCooperativeLog)
+      .values({
+        org_id: ctx.org_id,
+        employee_id: ctx.employee_id,
+        kind,
+        summary,
+        metadata: args.metadata ?? null,
+        session_turn_id: args.session_turn_id ?? null,
+      })
+      .returning({ id: agentCooperativeLog.id, created_at: agentCooperativeLog.created_at });
+    return textResult({
+      ok: true,
+      id: row!.id,
+      kind,
+      replayed: false,
+      recorded_at: row!.created_at,
+    });
+  }
+
+  const digest = cooperativeRecordDigest(
+    ctx.org_id,
+    ctx.employee_id,
+    kind,
+    idempotencyKey,
+  );
+  const recorded = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`agent-cooperative:${digest}`}, 0))`);
+    const [existing] = await tx.select({
+      id: agentCooperativeLog.id,
+      created_at: agentCooperativeLog.created_at,
+    }).from(agentCooperativeLog).where(and(
+      eq(agentCooperativeLog.org_id, ctx.org_id),
+      eq(agentCooperativeLog.employee_id, ctx.employee_id),
+      eq(agentCooperativeLog.kind, kind),
+      sql`${agentCooperativeLog.metadata}->>'idempotency_digest' = ${digest}`,
+    )).limit(1);
+    if (existing) return { ...existing, replayed: true };
+
+    const [row] = await tx.insert(agentCooperativeLog).values({
       org_id: ctx.org_id,
       employee_id: ctx.employee_id,
       kind,
       summary,
-      metadata: args.metadata ?? null,
+      metadata: { ...(args.metadata ?? {}), idempotency_digest: digest },
       session_turn_id: args.session_turn_id ?? null,
-    })
-    .returning({ id: agentCooperativeLog.id, created_at: agentCooperativeLog.created_at });
+    }).returning({ id: agentCooperativeLog.id, created_at: agentCooperativeLog.created_at });
+    return { ...row!, replayed: false };
+  });
   return textResult({
     ok: true,
-    id: row!.id,
+    id: recorded.id,
     kind,
-    recorded_at: row!.created_at,
+    replayed: recorded.replayed,
+    recorded_at: recorded.created_at,
   });
 }
 

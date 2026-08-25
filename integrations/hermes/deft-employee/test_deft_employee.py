@@ -71,6 +71,36 @@ class DeftEmployeeHookTests(unittest.TestCase):
         self.assertFalse(calls[1][1]["metadata"]["success"])
         self.assertEqual(calls[1][1]["metadata"]["status"], "timeout")
 
+    def test_external_write_reports_provider_acceptance_and_replay_identity(self):
+        hooks = MOD.DeftEmployeeHooks()
+        calls = []
+        hooks.call_deft = lambda name, args: calls.append((name, args))
+        hooks.post_tool_call(
+            tool_name="gmail_send_email",
+            args={"to": "buyer@example.com", "subject": "Trial follow-up"},
+            result={"status": "accepted", "message_id": "provider-message-42"},
+            status="success",
+            tool_call_id="tool-send-1",
+            turn_id="turn-1",
+        )
+        self.assertEqual(calls[0][0], "record_action_attempt")
+        report = calls[0][1]
+        self.assertEqual(report["idempotency_key"], "external-tool:tool-send-1")
+        self.assertTrue(report["metadata"]["external_write"])
+        self.assertTrue(report["metadata"]["provider_accepted"])
+        self.assertEqual(
+            report["metadata"]["provider_receipt"]["message_id"],
+            "provider-message-42",
+        )
+
+    def test_successful_internal_and_research_reads_do_not_create_raw_tool_noise(self):
+        hooks = MOD.DeftEmployeeHooks()
+        calls = []
+        hooks.call_deft = lambda name, args: calls.append((name, args))
+        hooks.post_tool_call(tool_name="browser_search", result={"items": 10}, status="success")
+        hooks.post_tool_call(tool_name="mcp_deft_task_query", result={"tasks": []}, status="success")
+        self.assertEqual(calls, [])
+
     def test_llm_context_teaches_executable_deft_contracts(self):
         hooks = MOD.DeftEmployeeHooks()
         context = json.loads(hooks.pre_llm_call()["context"])
