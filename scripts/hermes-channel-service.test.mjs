@@ -27,3 +27,12 @@ test('Windows service health compares bridge timestamps as UTC instants', async 
   assert.match(installer, /\[DateTimeOffset\]::UtcNow/);
   assert.doesNotMatch(installer, /\(Get-Date\) - \[datetime\]\$health\.checked_at/);
 });
+
+test('Windows service installer does not add a duration-bound repeating trigger', async () => {
+  const installer = await readFile(installerUrl, 'utf8');
+
+  assert.match(installer, /New-ScheduledTaskTrigger -AtLogOn/);
+  assert.match(installer, /-Trigger \$logonTrigger/);
+  assert.doesNotMatch(installer, /-RepetitionInterval/);
+  assert.doesNotMatch(installer, /\$watchdogTrigger/);
+});
