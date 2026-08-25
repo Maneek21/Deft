@@ -704,6 +704,66 @@ test('expired owners are fenced after another worker reclaims the event', async 
   assert.equal(recorded?.lease_expires_at, null);
 });
 
+test('a reclaimed event abandons its stale runtime attempt before starting the next delivery attempt', async () => {
+  const event = await publishMessageEvent(`agent-channel-runtime-reclaim-${crypto.randomUUID()}`);
+  const firstClaim = await claimChannelEvent(event.id, 'runtime-reclaim-first');
+  const firstKey = `deft-channel:${event.id}:attempt:${firstClaim.delivery_count}`;
+  const first = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'received',
+      claim_token: firstClaim.claim_token,
+      runtime_session_key: `deft:runtime-reclaim:${event.id}`,
+      runtime_request_key: firstKey,
+    }),
+  });
+  assert.equal(first.status, 200, await first.text());
+
+  await db.update(agentChannelEvents)
+    .set({ lease_expires_at: new Date(Date.now() - 1_000) })
+    .where(eq(agentChannelEvents.id, event.id));
+  const secondClaim = await claimChannelEvent(event.id, 'runtime-reclaim-second');
+  assert.equal(secondClaim.delivery_count, firstClaim.delivery_count + 1);
+  const secondKey = `deft-channel:${event.id}:attempt:${secondClaim.delivery_count}`;
+  const second = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'received',
+      claim_token: secondClaim.claim_token,
+      runtime_session_key: `deft:runtime-reclaim:${event.id}`,
+      runtime_request_key: secondKey,
+    }),
+  });
+  assert.equal(second.status, 200, await second.text());
+
+  const attempts = await db.select({
+    key: agentChannelDeliveryAttempts.idempotency_key,
+    status: agentChannelDeliveryAttempts.status,
+  })
+    .from(agentChannelDeliveryAttempts)
+    .where(eq(agentChannelDeliveryAttempts.event_id, event.id));
+  assert.equal(attempts.find((attempt) => attempt.key === firstKey)?.status, 'abandoned');
+  assert.equal(attempts.find((attempt) => attempt.key === secondKey)?.status, 'started');
+
+  const settled = await app.request('/api/agent-channel/v1/ack', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      state: 'failed',
+      claim_token: secondClaim.claim_token,
+      runtime_session_key: `deft:runtime-reclaim:${event.id}`,
+      runtime_request_key: secondKey,
+      error: 'Test cleanup',
+    }),
+  });
+  assert.equal(settled.status, 200, await settled.text());
+});
+
 test('POST /ack records received/completed state and cursor', async () => {
   const [fallbackAction] = await db.insert(agentActions).values({
     org_id: orgId,
