@@ -540,8 +540,8 @@ function channelCompatibilityQuery() {
 function autonomousCompatibilityQuery(workerId = 'autonomous-channel-worker') {
   return new URLSearchParams({
     protocol_version: 'deft.agent_channel.v2',
-    adapter_version: '0.1.0-test',
-    capabilities: 'autonomous_platform_adapter_v1',
+    adapter_version: '0.2.0-test',
+    capabilities: 'autonomous_platform_adapter_v1,accepted_event_rehydration_v1',
     worker_id: workerId,
   }).toString();
 }
@@ -581,9 +581,10 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.ok(body.required_runtime_capabilities.includes('runtime_reconciliation_v1'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_attestation_v1'));
   assert.ok(body.capabilities.includes('autonomous_platform_adapter_v1'));
+  assert.ok(body.capabilities.includes('accepted_event_rehydration_v1'));
   assert.deepEqual(
     body.adapter_modes.autonomous_platform.required_runtime_capabilities,
-    ['autonomous_platform_adapter_v1'],
+    ['autonomous_platform_adapter_v1', 'accepted_event_rehydration_v1'],
   );
   assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
 });
@@ -620,6 +621,15 @@ test('autonomous platform acceptance ends transport delivery without completing 
   const claimed = delivery.events.find((candidate: any) => candidate.id === event.id);
   assert.ok(claimed?.claim_token);
 
+  const recoveryBeforeAcceptance = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id }),
+  });
+  const recoveryBeforeAcceptanceBody = await recoveryBeforeAcceptance.json() as any;
+  assert.equal(recoveryBeforeAcceptance.status, 409, JSON.stringify(recoveryBeforeAcceptanceBody));
+  assert.equal(recoveryBeforeAcceptanceBody.code, 'STALE_CLAIM');
+
   const accept = await app.request('/api/agent-channel/v1/accept', {
     method: 'POST',
     headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
@@ -637,12 +647,14 @@ test('autonomous platform acceptance ends transport delivery without completing 
   const acceptReplay = await app.request('/api/agent-channel/v1/accept', {
     method: 'POST',
     headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+    body: JSON.stringify({ event_id: event.id }),
   });
   const acceptReplayed = await acceptReplay.json() as any;
   assert.equal(acceptReplay.status, 200, JSON.stringify(acceptReplayed));
   assert.equal(acceptReplayed.idempotent, true);
   assert.equal(acceptReplayed.transport_state, 'accepted');
+  assert.equal(acceptReplayed.event.id, event.id);
+  assert.equal(acceptReplayed.event.payload.content, 'hello channel agent');
 
   const replyKey = `autonomous-reply-${crypto.randomUUID()}`;
   const reply = await app.request('/api/agent-channel/v1/reply', {
@@ -715,6 +727,53 @@ test('autonomous platform acceptance ends transport delivery without completing 
   );
 });
 
+test('claimless native recovery fences stale delivery before a fresh lease accepts it', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-recovery-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const event = await publishMessageEvent(`autonomous-recovery-${crypto.randomUUID()}`);
+  const firstPoll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-recovery-first')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const firstBody = await firstPoll.json() as any;
+  assert.equal(firstPoll.status, 200, JSON.stringify(firstBody));
+  const firstClaim = firstBody.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(firstClaim?.claim_token, JSON.stringify(firstBody));
+
+  await db.update(agentChannelEvents)
+    .set({ lease_expires_at: new Date(Date.now() - 1_000) })
+    .where(eq(agentChannelEvents.id, event.id));
+
+  const staleRecovery = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id }),
+  });
+  const staleBody = await staleRecovery.json() as any;
+  assert.equal(staleRecovery.status, 409, JSON.stringify(staleBody));
+  assert.equal(staleBody.code, 'STALE_CLAIM');
+
+  const secondPoll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-recovery-second')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const secondBody = await secondPoll.json() as any;
+  assert.equal(secondPoll.status, 200, JSON.stringify(secondBody));
+  const secondClaim = secondBody.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(secondClaim?.claim_token, JSON.stringify(secondBody));
+  assert.notEqual(secondClaim.claim_token, firstClaim.claim_token);
+
+  const accepted = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: secondClaim.claim_token }),
+  });
+  assert.equal(accepted.status, 200, await accepted.text());
+});
+
 test('autonomous cursor delivers later events on non-UTC hosts', async () => {
   const previousTimezone = process.env.TZ;
   process.env.TZ = 'Asia/Calcutta';
@@ -784,6 +843,7 @@ test('approval resolution publishes once and a targetless autonomous response is
   assert.equal(resolutions.length, 1);
   assert.equal((resolutions[0]!.payload as any).decision, 'rejected');
   assert.equal((resolutions[0]!.payload as any).reason, 'Needs a revised scope');
+  assert.equal(Object.hasOwn(resolutions[0]!.payload as object, 'result'), false);
 
   // Also prove the no-origin fallback cannot poison the adapter's restart journal.
   const targetless = (await publishAgentChannelEvent({

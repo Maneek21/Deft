@@ -29,10 +29,15 @@ from gateway.platforms.base import (
 
 
 PLATFORM_NAME = "deft"
-ADAPTER_VERSION = "0.1.0"
-CAPABILITY = "autonomous_platform_adapter_v1"
+ADAPTER_VERSION = "0.2.0"
+CAPABILITIES = (
+    "autonomous_platform_adapter_v1",
+    "accepted_event_rehydration_v1",
+)
+CAPABILITY = ",".join(CAPABILITIES)
 PROTOCOL_VERSION = "deft.agent_channel.v2"
 MAX_RECENT_ROUTES = 200
+STATE_VERSION = 2
 
 RequestFn = Callable[[str, str, Optional[dict], Optional[dict]], Awaitable[dict]]
 
@@ -113,6 +118,9 @@ class DeftAdapter(BasePlatformAdapter):
         self._state_error: Optional[str] = None
         self._last_accepted_event_id: Optional[str] = None
         self._pending_events: Dict[str, dict] = {}
+        # Full source events are process-local only. The restart journal stores
+        # transport metadata and rehydrates accepted events from Deft.
+        self._event_cache: Dict[str, dict] = {}
         self._inflight_event_ids: set[str] = set()
         self._routes_by_message: Dict[str, dict] = {}
         self._routes_by_scope: Dict[tuple[str, str], dict] = {}
@@ -160,7 +168,8 @@ class DeftAdapter(BasePlatformAdapter):
             return
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-            if raw.get("version") != 1:
+            version = raw.get("version")
+            if version not in {1, STATE_VERSION}:
                 raise ValueError("unsupported state version")
             cursor = raw.get("last_accepted_event_id")
             if cursor is not None and not isinstance(cursor, str):
@@ -170,23 +179,44 @@ class DeftAdapter(BasePlatformAdapter):
                 raise ValueError("pending_events must be a list")
             parsed: Dict[str, dict] = {}
             for item in pending:
-                if not isinstance(item, dict) or not isinstance(item.get("event"), dict):
+                if not isinstance(item, dict):
                     raise ValueError("pending event entry is invalid")
-                event_id = str(item["event"].get("id") or "")
+                if version == 1:
+                    event = item.get("event")
+                    if not isinstance(event, dict):
+                        raise ValueError("legacy pending event entry is invalid")
+                    event_id = str(event.get("id") or "")
+                else:
+                    event_id = str(item.get("event_id") or "")
                 if not event_id or event_id in parsed:
                     raise ValueError("pending event identity is missing or duplicated")
-                parsed[event_id] = item
+                transport_accepted = item.get("transport_accepted", False)
+                if not isinstance(transport_accepted, bool):
+                    raise ValueError("pending event acceptance state must be boolean")
+                parsed[event_id] = {
+                    "event_id": event_id,
+                    "transport_accepted": transport_accepted,
+                }
             self._last_accepted_event_id = cursor
             self._pending_events = parsed
+            if version == 1:
+                # Immediately remove legacy source payloads and claim tokens.
+                self._save_state()
         except Exception as exc:
             self._state_error = f"Deft platform state is invalid: {exc}"
 
     def _save_state(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "version": 1,
+            "version": STATE_VERSION,
             "last_accepted_event_id": self._last_accepted_event_id,
-            "pending_events": list(self._pending_events.values()),
+            "pending_events": [
+                {
+                    "event_id": str(item["event_id"]),
+                    "transport_accepted": item.get("transport_accepted") is True,
+                }
+                for item in self._pending_events.values()
+            ],
         }
         temp_path = self._state_path.with_name(f"{self._state_path.name}.tmp.{os.getpid()}")
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -197,8 +227,10 @@ class DeftAdapter(BasePlatformAdapter):
         os.replace(temp_path, self._state_path)
 
     def _remember_pending(self, event: dict) -> None:
-        self._pending_events[str(event["id"])] = {
-            "event": json.loads(json.dumps(event)),
+        event_id = str(event["id"])
+        self._event_cache[event_id] = event
+        self._pending_events[event_id] = {
+            "event_id": event_id,
             "transport_accepted": False,
         }
         self._save_state()
@@ -206,14 +238,12 @@ class DeftAdapter(BasePlatformAdapter):
     def _mark_pending_accepted(self, event_id: str) -> None:
         pending = self._pending_events[event_id]
         pending["transport_accepted"] = True
-        pending["event"].pop("claim_token", None)
-        pending["event"].pop("claim_owner", None)
-        pending["event"].pop("lease_expires_at", None)
         self._last_accepted_event_id = event_id
         self._save_state()
 
     def _complete_pending(self, event_id: str) -> None:
         self._pending_events.pop(event_id, None)
+        self._event_cache.pop(event_id, None)
         self._inflight_event_ids.discard(event_id)
         self._save_state()
 
@@ -247,25 +277,61 @@ class DeftAdapter(BasePlatformAdapter):
         if self._message_handler is None or event_id in self._inflight_event_ids:
             return False
         pending = self._pending_events[event_id]
-        event = pending["event"]
-        message_event = self._to_message_event(event)
+        event = self._event_cache.get(event_id)
+        if event is None:
+            # A restart journal intentionally has no source payload or claim.
+            # /accept without a claim is recovery-only: Deft returns the event
+            # when transport acceptance already committed, otherwise it fences
+            # the stale local entry so the normal lease can be reacquired.
+            try:
+                recovered = await self._request_fn(
+                    "POST",
+                    "/accept",
+                    None,
+                    {
+                        "event_id": event_id,
+                        "caller_employee_slug": self.employee_slug,
+                    },
+                )
+            except DeftChannelRequestError as exc:
+                if exc.status == 409 and exc.code == "STALE_CLAIM":
+                    self._complete_pending(event_id)
+                    return False
+                raise
+            event = recovered.get("event")
+            if (
+                recovered.get("transport_state") != "accepted"
+                or not isinstance(event, dict)
+                or str(event.get("id") or "") != event_id
+                or event.get("claim_token") is not None
+            ):
+                raise RuntimeError(f"Deft did not rehydrate accepted event {event_id}")
+            self._event_cache[event_id] = event
+            self._mark_pending_accepted(event_id)
         if not pending.get("transport_accepted"):
             claim_token = event.get("claim_token")
             if not claim_token:
                 raise RuntimeError(f"Pending Deft event {event_id} has no acceptance claim")
-            accepted = await self._request_fn(
-                "POST",
-                "/accept",
-                None,
-                {
-                    "event_id": event_id,
-                    "claim_token": claim_token,
-                    "caller_employee_slug": self.employee_slug,
-                },
-            )
+            try:
+                accepted = await self._request_fn(
+                    "POST",
+                    "/accept",
+                    None,
+                    {
+                        "event_id": event_id,
+                        "claim_token": claim_token,
+                        "caller_employee_slug": self.employee_slug,
+                    },
+                )
+            except DeftChannelRequestError as exc:
+                if exc.status == 409 and exc.code == "STALE_CLAIM":
+                    self._complete_pending(event_id)
+                    return False
+                raise
             if accepted.get("transport_state") != "accepted":
                 raise RuntimeError(f"Deft did not reconcile transport acceptance for {event_id}")
             self._mark_pending_accepted(event_id)
+        message_event = self._to_message_event(event)
         self._inflight_event_ids.add(event_id)
         try:
             await self.handle_message(message_event)

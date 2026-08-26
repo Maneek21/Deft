@@ -108,7 +108,9 @@ const ackSchema = z.object({
 
 const acceptSchema = z.object({
   event_id: z.string().min(1),
-  claim_token: z.string().min(1),
+  // Omission is recovery-only. An already accepted event can be rehydrated
+  // after an adapter restart; a live delivery still requires its lease claim.
+  claim_token: z.string().min(1).optional(),
   caller_employee_slug: z.string().optional(),
 }).strict();
 
@@ -539,7 +541,7 @@ agentChannelRoutes.post('/accept', async (c) => {
       eq(agentChannelEvents.id, event.id),
       eq(agentChannelEvents.org_id, principal.org_id),
       eq(agentChannelEvents.agent_employee_id, principal.employee_id),
-      eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+      eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
       sql`${agentChannelEvents.lease_expires_at} > now()`,
     ))
     .returning();

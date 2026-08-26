@@ -200,7 +200,6 @@ async function publishApprovalResolution(actionId: string, actorUserId: string):
           : row.executed_at
             ? row.error ? 'failed' : 'completed'
             : 'pending',
-        result: row.result ?? null,
         reason: row.error ?? null,
       },
     });

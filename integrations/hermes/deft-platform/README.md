@@ -18,7 +18,7 @@ The plugin has five responsibilities:
 
 1. Negotiate the versioned Agent Channel contract and poll as the bound Deft
    employee.
-2. Journal a delivery before acknowledging transport acceptance.
+2. Journal only an event identity before acknowledging transport acceptance.
 3. Map Deft chat, task, assistance, cancellation, and approval events into
    Hermes's normal `MessageEvent` interface.
 4. Return one source-bound, idempotent platform reply while substantive Deft
@@ -27,9 +27,11 @@ The plugin has five responsibilities:
    platform lifecycle or final task reply proves delivery is complete.
 
 The journal is the only durable adapter-owned state. It contains the accepted
-cursor and source events that have not yet produced their required outward
-delivery. The adapter does not persist model state, plans, tool calls, prompts,
-business outcomes, or credentials in that journal.
+cursor plus opaque event IDs and transport-acceptance flags for deliveries that
+have not yet produced their required outward delivery. After restart, the
+employee-authenticated adapter rehydrates an accepted source event from Deft;
+it never persists source payloads, model state, plans, tool calls, prompts,
+business outcomes, claim tokens, or credentials in the journal.
 
 Everything else remains outside the connection contract: model/provider
 selection, reasoning, skills, browser and research tools, external MCPs,
@@ -160,9 +162,11 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
   employee-scoped Agent Channel token and Deft tenant policy determine which
   server-generated events reach the runtime; no duplicate local user allowlist
   is required.
-- The adapter journals accepted work before handing it to Hermes. A restart
-  resumes the accepted event and stable outbound idempotency prevents duplicate
-  visible replies.
+- The adapter journals only transport metadata before handing accepted work to
+  Hermes. A restart rehydrates that employee-scoped event from Deft, and stable
+  outbound idempotency prevents duplicate visible replies. If acceptance never
+  committed, the stale local identity is discarded and Deft reacquires the
+  delivery through its normal lease path.
 - A task route is retired after its first final platform reply, so later runtime
   continuations cannot add duplicate task comments. Chat routes remain available
   only in the current bounded process cache for conversational follow-ups; after

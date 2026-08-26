@@ -14,8 +14,8 @@ import uuid
 
 
 PROTOCOL_VERSION = "deft.agent_channel.v2"
-ADAPTER_VERSION = "0.1.0"
-CAPABILITY = "autonomous_platform_adapter_v1"
+ADAPTER_VERSION = "0.2.0"
+CAPABILITY = "autonomous_platform_adapter_v1,accepted_event_rehydration_v1"
 REQUIRED_TOOLS = {
     "fetch_unread",
     "memory_recall",

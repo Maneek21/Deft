@@ -26,7 +26,7 @@ one adapter may actively consume Agent Channel work for an employee.
 ```text
 Deft event
   -> Agent Channel bearer and fenced claim
-  -> native plugin delivery journal
+  -> native plugin metadata-only delivery journal
   -> Hermes model, skills, tools, and private runtime state
   -> employee MCP bearer
   -> Deft authorization, policy, approvals, durable writes, and receipts
@@ -42,8 +42,10 @@ Agent Channel acceptance means that Hermes durably accepted transport. It does
 not mean the requested business work completed. Completion remains tied to
 source-bound replies, governed MCP effects, and truthful task outcomes.
 
-The native journal may retain only the accepted cursor and source events whose
-required outward delivery is incomplete. It must not contain credentials,
+The native journal may retain only the accepted cursor, opaque event IDs, and
+transport-acceptance flags for work whose required outward delivery is
+incomplete. Source events are rehydrated from employee-scoped Deft after a
+restart. The journal must not contain credentials, claims, source payloads,
 prompts, chain of thought, tool transcripts, business records, or provider
 payloads.
 

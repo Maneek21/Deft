@@ -449,6 +449,13 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 "assigned_by": "diego-1",
             },
         }
+        accepted_event = json.loads(json.dumps(source_event))
+        accepted_event.update({
+            "status": "acknowledged",
+            "claim_token": None,
+            "claim_owner": None,
+            "lease_expires_at": None,
+        })
         event_delivered = False
 
         async def request(method, path, query, body):
@@ -462,7 +469,11 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                     return {"ok": True, "events": [source_event]}
                 return {"ok": True, "events": []}
             if path == "/accept":
-                return {"ok": True, "transport_state": "accepted"}
+                return {
+                    "ok": True,
+                    "transport_state": "accepted",
+                    "event": accepted_event,
+                }
             if path == "/reply":
                 return {
                     "ok": True,
@@ -497,6 +508,7 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 while first._background_tasks:
                     await asyncio.gather(*tuple(first._background_tasks))
                 await first.disconnect()
+                journal_after_first = pathlib.Path(state_path).read_text(encoding="utf-8")
 
                 second = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)
 
@@ -516,14 +528,20 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 self.assertTrue(await third.connect())
                 self.assertEqual(await third._poll_once(), 0)
                 await third.disconnect()
-                return json.loads(pathlib.Path(state_path).read_text(encoding="utf-8"))
+                return (
+                    json.loads(pathlib.Path(state_path).read_text(encoding="utf-8")),
+                    journal_after_first,
+                )
             finally:
                 platform_registry.unregister("deft")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            state = asyncio.run(scenario(pathlib.Path(temp_dir) / "state.json"))
+            state, accepted_journal = asyncio.run(scenario(pathlib.Path(temp_dir) / "state.json"))
         self.assertEqual(len(received), 1)
-        self.assertEqual(len([call for call in calls if call[1] == "/accept"]), 1)
+        accepts = [call for call in calls if call[1] == "/accept"]
+        self.assertEqual(len(accepts), 2)
+        self.assertEqual(accepts[0][3]["claim_token"], "restart-claim-1")
+        self.assertNotIn("claim_token", accepts[1][3])
         replies = [call for call in calls if call[1] == "/reply"]
         self.assertEqual(len(replies), 1)
         expected_digest = hashlib.sha256(
@@ -533,8 +551,117 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
             replies[0][3]["idempotency_key"],
             f"autonomous-reply:restart-event-1:{expected_digest}",
         )
+        self.assertEqual(json.loads(accepted_journal), {
+            "version": 2,
+            "last_accepted_event_id": "restart-event-1",
+            "pending_events": [{
+                "event_id": "restart-event-1",
+                "transport_accepted": True,
+            }],
+        })
+        for forbidden in (
+            "restart-claim-1",
+            "restart-task-1",
+            "Survive an adapter restart",
+            "secret-test-token",
+            '"payload"',
+        ):
+            self.assertNotIn(forbidden, accepted_journal)
         self.assertEqual(state["last_accepted_event_id"], "restart-event-1")
         self.assertEqual(state["pending_events"], [])
+
+    def test_stale_preaccept_journal_is_reacquired_without_claim_or_payload_persistence(self):
+        calls = []
+        received = []
+        reclaimed_event = {
+            "id": "stale-event-1",
+            "kind": "message.created",
+            "source_kind": "message",
+            "source_id": "message-1",
+            "org_id": "org-1",
+            "space_id": "space-1",
+            "claim_token": "fresh-claim-1",
+            "payload": {
+                "content": "Reacquire this private message from Deft.",
+                "author_name": "Diego",
+            },
+        }
+        event_polled = False
+
+        async def request(method, path, query, body):
+            nonlocal event_polled
+            calls.append((method, path, query, body))
+            if path == "/connect":
+                return {"ok": True, "adapter_mode": "autonomous_platform"}
+            if path == "/accept" and "claim_token" not in body:
+                raise MOD.DeftChannelRequestError(
+                    "claim expired", status=409, code="STALE_CLAIM", retryable=False,
+                )
+            if path == "/events":
+                if not event_polled:
+                    event_polled = True
+                    return {"ok": True, "events": [reclaimed_event]}
+                return {"ok": True, "events": []}
+            if path == "/accept":
+                self.assertEqual(body["claim_token"], "fresh-claim-1")
+                return {"ok": True, "transport_state": "accepted"}
+            if path == "/status":
+                return {"ok": True}
+            raise AssertionError(path)
+
+        async def scenario(state_path):
+            from gateway.platform_registry import PlatformEntry, platform_registry
+            platform_registry.register(PlatformEntry(
+                name="deft", label="Deft", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            ))
+            try:
+                state_path.write_text(json.dumps({
+                    "version": 1,
+                    "last_accepted_event_id": None,
+                    "pending_events": [{
+                        "event": {
+                            "id": "stale-event-1",
+                            "claim_token": "expired-claim-1",
+                            "payload": {"content": "Legacy journal secret"},
+                        },
+                        "transport_accepted": False,
+                    }],
+                }), encoding="utf-8")
+                adapter = MOD.DeftAdapter(FakeConfig({
+                    "channel_url": "https://demo.deft.ing/api/agent-channel/v1",
+                    "token": "secret-test-token",
+                    "employee_slug": "native-spike",
+                    "state_path": str(state_path),
+                }), request_fn=request, start_listener=False)
+
+                async def handler(event):
+                    received.append(event)
+                    return None
+
+                adapter.set_message_handler(handler)
+                self.assertTrue(await adapter.connect())
+                self.assertEqual(await adapter._poll_once(), 1)
+                while adapter._background_tasks:
+                    await asyncio.gather(*tuple(adapter._background_tasks))
+                await adapter.disconnect()
+                return state_path.read_text(encoding="utf-8")
+            finally:
+                platform_registry.unregister("deft")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal = asyncio.run(scenario(pathlib.Path(temp_dir) / "state.json"))
+        self.assertEqual([event.text for event in received], [
+            "Reacquire this private message from Deft.",
+        ])
+        accepts = [call for call in calls if call[1] == "/accept"]
+        self.assertEqual(len(accepts), 2)
+        self.assertNotIn("claim_token", accepts[0][3])
+        self.assertEqual(accepts[1][3]["claim_token"], "fresh-claim-1")
+        self.assertNotIn("expired-claim-1", journal)
+        self.assertNotIn("Legacy journal secret", journal)
+        self.assertNotIn("fresh-claim-1", journal)
+        self.assertNotIn("Reacquire this private message", journal)
+        self.assertNotIn('"payload"', journal)
 
     def test_maps_human_task_comment_and_cancellation_into_the_task_session(self):
         adapter = MOD.DeftAdapter(FakeConfig({
