@@ -10,6 +10,38 @@ env vars. Patch versions (`0.X.Y`) are non-breaking fixes only.
 
 ## [Unreleased]
 
+## [0.3.0-preview.13] — 2026-08-27
+
+### Added
+
+- Hermes now ships with the native-first `deft-platform` adapter (`0.2.0`) and
+  direct HTTP Deft MCP as the default integration path. The Node Agent Channel
+  bridge remains packaged only as an explicit rollback adapter.
+- Native onboarding and mode-aware certification now prove accepted-once
+  delivery, governed MCP access, private memory, restart identity, and exactly
+  one authenticated final reply against Hermes Agent `0.20.5` at the pinned
+  `v2026.8.19` commit.
+
+### Fixed
+
+- Accepted chat, task, approval, and certification events survive process
+  restarts, empty model output, failed sends, lost success responses, and
+  expired handlers without silent loss or duplicate durable replies.
+- Profile-bound transport journals now fail closed on endpoint, employee, or
+  profile reuse while permitting credential rotation; stale reply anchors and
+  non-final certification output can no longer consume another event's final
+  slot.
+- Certification proof is causally bounded by immutable durable messages and
+  real process identity rotation, so retries or later unrelated traffic cannot
+  retroactively satisfy an earlier challenge.
+
+### Security
+
+- Autonomous task and notification finals use server-owned event keys, exact
+  organization/employee-bound effect reconciliation, and generation-token
+  fencing so a stale or malicious client cannot create a second task comment or
+  overwrite a reclaimed attempt.
+
 ## [0.3.0-preview.12] — 2026-08-25
 
 ### Fixed
@@ -354,7 +386,8 @@ The `0.1.0-alpha` tag was originally published under BSL 1.1. The current
 codebase has since been relicensed under [GNU AGPL v3.0 only](LICENSE); consult
 the license file present in the exact revision you use.
 
-[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.12...HEAD
+[Unreleased]: https://github.com/Maneek21/Deft/compare/v0.3.0-preview.13...HEAD
+[0.3.0-preview.13]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.13
 [0.3.0-preview.12]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.12
 [0.3.0-preview.11]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.11
 [0.3.0-preview.10]: https://github.com/Maneek21/Deft/releases/tag/v0.3.0-preview.10

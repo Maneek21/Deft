@@ -89,12 +89,16 @@ Use **annotated** tags (`-a`), never lightweight tags.
 Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml).
 That workflow:
 
+- provisions the exact manifest-pinned Hermes runtime and requires two
+  consecutive clean-state employee gate passes from the release tag
 - builds and pushes the `linux/amd64` GHCR image
 - publishes GitHub build provenance and keylessly signs the exact image digest
 - verifies the Cosign workflow identity and provenance before continuing
-- attaches the SPDX SBOM and corresponding source
+- attaches the SPDX SBOM, corresponding source, certified Hermes integration
+  archive, and `hermes-employee-release-gate.json`
 - writes `release-manifest.json` (`license: AGPL-3.0-only`) with the digest,
-  signing identity, and provenance type
+  signing identity, provenance type, Hermes compatibility/tested runtime, and
+  certificate/archive/bundle digests
 - creates the GitHub Release (`--generate-notes`, prerelease when the
   version contains `-`)
 
@@ -112,9 +116,13 @@ unusable, fix forward and cut the next preview tag.
 
 Confirm the GitHub Release includes `LICENSE`, `NOTICE`,
 `THIRD-PARTY-LICENSES.md`, `default.env.example`, the source archive, SBOM,
-checksums, and compose files. Confirm the image label
+checksums, compose files, `hermes-employee-release-gate.json`, and the
+versioned Hermes integration archive. Confirm the image label
 `org.opencontainers.image.licenses=AGPL-3.0-only` (the production
 `Dockerfile` sets this; `release.yml` passes `VCS_REF` and `SOURCE_URL`).
+Verify the Hermes certificate reports the exact tag commit and two clean-state
+passes, then compare its certificate and bundle digests with
+`release-manifest.json` and `SHA256SUMS`.
 Run the digest-first Cosign and `gh attestation verify` commands in
 [`docs/self-hosting.md`](docs/self-hosting.md) against the published manifest.
 If signing, signature verification, provenance publication, or provenance
