@@ -508,10 +508,11 @@ test('6. memory_update scope=org returns pseudo-result for conservative', async 
   assert.ok(!body.isError, `memory_update should not error: ${JSON.stringify(body)}`);
   const parsed = parseContent(body);
   assert.equal(parsed.status, 'queued_for_approval', 'scope promotion must queue');
+  assert.ok(parsed.approval_id, 'promotion approval id should be returned');
   await withClient(async (c) => {
     const queued = await c.query(
       `SELECT params FROM agent_actions WHERE id = $1`,
-      [parsed.action_id],
+      [parsed.approval_id],
     );
     assert.equal(queued.rows.length, 1, 'promotion approval should be durable');
     assert.equal(queued.rows[0].params._approval_guard.page_id.length > 0, true);

@@ -100,6 +100,8 @@ before(async () => {
           ready: true,
           responses_api: true,
           skills_api: true,
+          configured_model: 'test-hermes-model',
+          available_models: ['test-hermes-model'],
           enabled_toolsets: [],
         },
       })],
