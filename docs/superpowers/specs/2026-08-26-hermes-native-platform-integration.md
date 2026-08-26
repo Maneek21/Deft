@@ -49,6 +49,37 @@ restart. The journal must not contain credentials, claims, source payloads,
 prompts, chain of thought, tool transcripts, business records, or provider
 payloads.
 
+Accepted work remains journaled through empty output, runtime failure, and
+ambiguous reply delivery. The adapter clears it only after Deft confirms the
+single source-bound final reply. That reply uses one event-scoped final-slot
+idempotency key, independent of generated text, so a lost HTTP response and a
+different regenerated answer cannot create a second durable message. Native
+chat and task replies map that key to a deterministic organization-, employee-,
+and event-bound durable ID. Deft reconciles only an exact original effect; when
+no effect exists it compare-and-swaps a failed or expired attempt back into
+flight, while any mismatched effect fails closed. Certification messages also
+use a deterministic server-owned message ID; if the message
+commits before later reply bookkeeping fails, Deft reconciles that durable write
+instead of inserting it again. Certification nonce proof is read from that
+committed message, never from regenerated retry request text. Named Hermes
+profiles use isolated transport journals. Multiplexed secondary adapters use
+profile-qualified session keys, while a standalone primary adapter preserves
+Hermes' canonical `agent:main` session namespace.
+
+Certification is mode-aware. A supervised runtime must retain its terminal,
+session-bound outcome. The native adapter instead proves accepted-once
+nonterminal transport plus exactly one authenticated, nonce-bearing reply.
+Adapter-reported session keys are diagnostics, not execution attestation.
+Required MCP evidence must occur after native acceptance and before that reply;
+restart proof additionally requires a server-observed worker-instance rotation
+after the initial reply. Its `ping_alive` call and a nonce-bearing decision must
+both fall between restart-proof acceptance and its qualifying reply. The demo
+pilot performs an actual gateway stop/start; changing an identifier by hand is
+not accepted as operational proof. A stored `completed` flag is not sufficient
+without the underlying durable evidence, and repeated checks preserve the
+original verification timestamp. Later unrelated traffic cannot certify an
+earlier turn retroactively.
+
 ## Why this option
 
 ### Continue only with the external bridge
@@ -94,7 +125,8 @@ challenge.
 - A second active adapter must not create a second concurrent runtime attempt;
   Agent Channel single-flight and fencing remain authoritative.
 - A native restart resumes journaled accepted work and reuses source-bound
-  idempotency. It must not guess a conversation for unsourced late output.
+  final-slot idempotency. It must not guess a conversation for unsourced late
+  output or reuse another named profile's cursor or pending-event journal.
 - Incompatible protocol or capability negotiation fails before event polling.
 - Offline Hermes leaves queued Deft work intact and reports truthful runtime
   state.

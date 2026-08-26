@@ -6,6 +6,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import bcrypt from 'bcryptjs';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -72,6 +73,7 @@ let spaceId: string;
 let sourceMessageId: string;
 let bearer: string;
 let projectId: string;
+let recoveryTaskNumber = 1_000_000;
 
 const humanMcpContext = (): HumanToolContext => ({
   org_id: orgId,
@@ -546,6 +548,115 @@ function autonomousCompatibilityQuery(workerId = 'autonomous-channel-worker') {
   }).toString();
 }
 
+function autonomousReplyEffectId(eventId: string, idempotencyKey: string) {
+  const digest = createHash('sha256')
+    .update([orgId, employeeId, eventId, idempotencyKey].join('\0'))
+    .digest('hex');
+  return `agent-channel-autonomous-reply:${digest}`;
+}
+
+async function acceptAutonomousEvent(eventId: string) {
+  const workerId = `autonomous-recovery-${crypto.randomUUID()}`;
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery(workerId)}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=120000&${autonomousCompatibilityQuery(workerId)}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  assert.equal(poll.status, 200, JSON.stringify(delivery));
+  const event = delivery.events.find((candidate: any) => candidate.id === eventId);
+  assert.ok(event?.claim_token, `expected autonomous claim for ${eventId}`);
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: eventId, claim_token: event.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+}
+
+async function insertFailedAutonomousReplyAttempt(params: {
+  eventId: string;
+  idempotencyKey: string;
+  content: string;
+  replyTarget: 'chat_message' | 'task_comment';
+  threadId?: string | null;
+}) {
+  const effectId = autonomousReplyEffectId(params.eventId, params.idempotencyKey);
+  await db.insert(agentChannelDeliveryAttempts).values({
+    id: crypto.randomUUID(),
+    org_id: orgId,
+    agent_employee_id: employeeId,
+    event_id: params.eventId,
+    direction: 'inbound_reply',
+    idempotency_key: params.idempotencyKey,
+    status: 'failed',
+    request_json: {
+      event_id: params.eventId,
+      content: params.content,
+      thread_id: params.threadId ?? null,
+      outcome: null,
+      adapter_mode: 'autonomous_platform',
+      reply_target: params.replyTarget,
+      summary: null,
+      runtime_session_key: null,
+      runtime_request_key: null,
+      runtime_response_id: null,
+      durable_effect_id: effectId,
+    },
+    response_json: { error: 'simulated transport write failure' },
+    error: 'simulated transport write failure',
+  });
+  return effectId;
+}
+
+async function publishRecoveryTaskEvent(label: string) {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: recoveryTaskNumber++,
+    title: label,
+    status: 'todo',
+    priority: 'p1',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const { event } = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `task-reply-recovery:${taskId}`,
+    payload: {
+      task_id: taskId,
+      task_key: `ACP-${recoveryTaskNumber}`,
+      title: label,
+      status: 'todo',
+      assigned_by: humanUserId,
+    },
+  });
+  assert.ok(event);
+  return { taskId, event: event! };
+}
+
+async function retireAutonomousRecoveryEvent(eventId: string) {
+  await db.update(agentChannelEvents).set({
+    status: 'completed',
+    completed_at: new Date(),
+    claim_owner: null,
+    claim_token: null,
+    lease_expires_at: null,
+  }).where(eq(agentChannelEvents.id, eventId));
+}
+
 test('GET /connect requires a bearer token', async () => {
   const res = await app.request('/api/agent-channel/v1/connect');
   assert.equal(res.status, 401);
@@ -727,6 +838,382 @@ test('autonomous platform acceptance ends transport delivery without completing 
   );
 });
 
+test('autonomous failed chat reply retries once when no durable effect exists', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-no-effect-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original chat reply that never committed.';
+  const recoveredContent = 'Recovered chat reply after the failed attempt.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, false);
+  assert.equal(retried.result.message_id, effectId);
+
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated content must not create another message.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  assert.equal(replayed.result.content, originalContent);
+  assert.equal((await db.select().from(messages).where(eq(messages.id, effectId))).length, 1);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed chat reply reconciles its original durable effect without duplication', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-durable-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original chat reply committed before bookkeeping failed.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.insert(messages).values({
+    id: effectId,
+    org_id: orgId,
+    space_id: spaceId,
+    user_id: agentUserId,
+    content: originalContent,
+    parent_id: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Different regenerated chat reply.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, true);
+  assert.equal(retried.reconciled, true);
+  assert.equal(retried.result.message_id, effectId);
+  assert.equal(retried.result.content, originalContent);
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed chat reply rejects a mismatched durable effect without another write', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-mismatch-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: 'The original reply recorded by the failed attempt.',
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.insert(messages).values({
+    id: effectId,
+    org_id: orgId,
+    space_id: spaceId,
+    user_id: agentUserId,
+    content: 'A conflicting durable message must never be accepted as the reply.',
+    parent_id: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated chat content.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const body = await retry.json() as any;
+  assert.equal(retry.status, 409, JSON.stringify(body));
+  assert.equal(body.code, 'AUTONOMOUS_REPLY_RECONCILIATION_CONFLICT');
+  assert.equal((await db.select().from(messages).where(eq(messages.id, effectId))).length, 1);
+  const [attempt] = await db.select().from(agentChannelDeliveryAttempts)
+    .where(eq(agentChannelDeliveryAttempts.idempotency_key, idempotencyKey)).limit(1);
+  assert.equal(attempt?.status, 'failed');
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous expired chat reply attempt is CAS-reclaimed when no durable effect exists', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-expired-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original uncommitted chat reply.';
+  const recoveredContent = 'Recovered after the server-side attempt lease expired.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.update(agentChannelDeliveryAttempts).set({
+    status: 'started',
+    response_json: null,
+    error: null,
+    updated_at: new Date(Date.now() - 120_000),
+  }).where(eq(agentChannelDeliveryAttempts.idempotency_key, idempotencyKey));
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const body = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(body));
+  assert.equal(body.result.message_id, effectId);
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  assert.equal(body.result.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous task reclaim fences the stale writer and preserves one durable final reply', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Fence a stale autonomous task reply writer');
+  await acceptAutonomousEvent(event.id);
+  const serverFinalKey = `autonomous-reply:${event.id}:final`;
+  const effectId = autonomousReplyEffectId(event.id, serverFinalKey);
+  const originalContent = 'The original task reply must remain the one durable final effect.';
+  let staleWriter!: Promise<Response>;
+  let reclaimedWriter!: Promise<Response>;
+
+  await db.transaction(async (tx) => {
+    // SHARE allows the recovery reader to inspect the durable slot while both
+    // handlers remain blocked at the actual comment insert.
+    await tx.execute(sql`LOCK TABLE task_comments IN SHARE MODE`);
+    staleWriter = app.request('/api/agent-channel/v1/reply', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        content: originalContent,
+        idempotency_key: `first-client-key-${crypto.randomUUID()}`,
+        adapter_mode: 'autonomous_platform',
+      }),
+    });
+
+    let initialAttempt: typeof agentChannelDeliveryAttempts.$inferSelect | undefined;
+    for (let index = 0; index < 100; index += 1) {
+      [initialAttempt] = await db.select().from(agentChannelDeliveryAttempts).where(and(
+        eq(agentChannelDeliveryAttempts.org_id, orgId),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        eq(agentChannelDeliveryAttempts.idempotency_key, serverFinalKey),
+      )).limit(1);
+      if (initialAttempt) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(initialAttempt, 'the stale handler must own an attempt before reclaim');
+    const expiredAt = new Date(Date.now() - 180_000);
+    await db.update(agentChannelDeliveryAttempts)
+      .set({ updated_at: expiredAt })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.id, initialAttempt.id),
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+      ));
+
+    reclaimedWriter = app.request('/api/agent-channel/v1/reply', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        content: 'Regenerated content must not replace the original attempt payload.',
+        idempotency_key: `second-client-key-${crypto.randomUUID()}`,
+        adapter_mode: 'autonomous_platform',
+      }),
+    });
+
+    let reclaimed = false;
+    for (let index = 0; index < 100; index += 1) {
+      const [attempt] = await db.select({
+        status: agentChannelDeliveryAttempts.status,
+        updated_at: agentChannelDeliveryAttempts.updated_at,
+        request_json: agentChannelDeliveryAttempts.request_json,
+      }).from(agentChannelDeliveryAttempts).where(eq(
+        agentChannelDeliveryAttempts.id,
+        initialAttempt.id,
+      )).limit(1);
+      if (attempt?.status === 'started' && attempt.updated_at.getTime() > expiredAt.getTime()) {
+        assert.equal((attempt.request_json as any).content, originalContent);
+        reclaimed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(reclaimed, true, 'the second handler must CAS-reclaim the expired generation');
+  });
+
+  const responses = await Promise.all([staleWriter, reclaimedWriter]);
+  const bodies = await Promise.all(responses.map((response) => response.json() as Promise<any>));
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  const staleIndex = responses.findIndex((response) => response.status === 409);
+  assert.equal(bodies[staleIndex]?.code, 'REPLY_ATTEMPT_RECLAIMED');
+
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.task_id, taskId);
+  assert.equal(durableRows[0]!.content, originalContent);
+  const [attempt] = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, event.id),
+    eq(agentChannelDeliveryAttempts.idempotency_key, serverFinalKey),
+  )).limit(1);
+  assert.equal(attempt?.status, 'completed');
+  assert.equal((attempt?.request_json as any).content, originalContent);
+  assert.equal((attempt?.response_json as any).comment_id, effectId);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed task reply retries once when no durable effect exists', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Retry a failed task reply');
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original task reply that never committed.';
+  const recoveredContent = 'Recovered task reply after the failed attempt.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'task_comment',
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, false);
+  assert.equal(retried.result.comment_id, effectId);
+
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.task_id, taskId);
+  assert.equal(durableRows[0]!.content, originalContent);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated task content must not create another comment.',
+      idempotency_key: `different-client-key-${crypto.randomUUID()}`,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  assert.equal(replayed.result.comment_id, effectId);
+  assert.equal((await db.select().from(taskComments).where(eq(taskComments.id, effectId))).length, 1);
+  const finalAttempts = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, event.id),
+    eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+  ));
+  assert.equal(finalAttempts.length, 1);
+  assert.equal(finalAttempts[0]!.idempotency_key, `autonomous-reply:${event.id}:final`);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed task reply reconciles its original durable effect without duplication', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Reconcile a committed task reply');
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original task reply committed before bookkeeping failed.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'task_comment',
+  });
+  await db.insert(taskComments).values({
+    id: effectId,
+    org_id: orgId,
+    task_id: taskId,
+    user_id: agentUserId,
+    content: originalContent,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Different regenerated task reply.',
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, true);
+  assert.equal(retried.reconciled, true);
+  assert.equal(retried.result.comment_id, effectId);
+  assert.equal(retried.result.content, originalContent);
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
 test('claimless native recovery fences stale delivery before a fresh lease accepts it', async () => {
   const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-recovery-worker')}`, {
     headers: { authorization: `Bearer ${bearer}` },
@@ -882,6 +1369,27 @@ test('approval resolution publishes once and a targetless autonomous response is
   const acknowledged = await reply.json() as any;
   assert.equal(reply.status, 200, JSON.stringify(acknowledged));
   assert.equal(acknowledged.transport_target, 'notification_ack');
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: targetless.id,
+      content: 'Regenerated acknowledgement.',
+      adapter_mode: 'autonomous_platform',
+      idempotency_key: `different-approval-ack-${crypto.randomUUID()}`,
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  const acknowledgementAttempts = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, targetless.id),
+    eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+  ));
+  assert.equal(acknowledgementAttempts.length, 1);
+  assert.equal(acknowledgementAttempts[0]!.idempotency_key, `autonomous-reply:${targetless.id}:final`);
 });
 
 test('human task assistance and cancellation publish actor-aware lifecycle events', async () => {

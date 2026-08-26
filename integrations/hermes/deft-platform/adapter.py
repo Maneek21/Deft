@@ -13,9 +13,11 @@ import hashlib
 import json
 import pathlib
 import socket
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
@@ -26,6 +28,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
+from gateway.session import build_session_key
 
 
 PLATFORM_NAME = "deft"
@@ -37,9 +40,32 @@ CAPABILITIES = (
 CAPABILITY = ",".join(CAPABILITIES)
 PROTOCOL_VERSION = "deft.agent_channel.v2"
 MAX_RECENT_ROUTES = 200
-STATE_VERSION = 2
+STATE_VERSION = 3
+_PROCESS_BOOT_ID_ATTR = "_deft_platform_process_boot_id"
+_PROCESS_WORKER_IDS_ATTR = "_deft_platform_process_worker_ids"
+if not hasattr(sys, _PROCESS_BOOT_ID_ATTR):
+    setattr(sys, _PROCESS_BOOT_ID_ATTR, uuid.uuid4().hex[:12])
+if not hasattr(sys, _PROCESS_WORKER_IDS_ATTR):
+    setattr(sys, _PROCESS_WORKER_IDS_ATTR, {})
+PROCESS_BOOT_ID = str(getattr(sys, _PROCESS_BOOT_ID_ATTR))
 
 RequestFn = Callable[[str, str, Optional[dict], Optional[dict]], Awaitable[dict]]
+
+
+def _journal_binding(channel_url: str, employee_slug: str, owner_profile: str) -> str:
+    identity = (
+        f"deft-platform-v1\0{channel_url.rstrip('/')}\0"
+        f"{employee_slug.strip()}\0{owner_profile.strip() or 'default'}"
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _process_worker_id(worker_label: str, channel_url: str, employee_slug: str) -> str:
+    registry = getattr(sys, _PROCESS_WORKER_IDS_ATTR)
+    identity = _journal_binding(channel_url, employee_slug, "process-worker")
+    if identity not in registry:
+        registry[identity] = f"{worker_label[:187]}-{PROCESS_BOOT_ID}"
+    return str(registry[identity])
 
 
 class DeftChannelRequestError(RuntimeError):
@@ -100,21 +126,40 @@ class DeftAdapter(BasePlatformAdapter):
         self.channel_url = _configured_value(config, "channel_url", "DEFT_CHANNEL_URL").rstrip("/")
         self.token = _configured_value(config, "token", "DEFT_CHANNEL_TOKEN")
         self.employee_slug = _configured_value(config, "employee_slug", "DEFT_EMPLOYEE_SLUG")
+        self._state_binding: Optional[str] = None
         extra = getattr(config, "extra", {}) or {}
         try:
             self.poll_ms = max(100, int(extra.get("poll_ms") or os.getenv("DEFT_CHANNEL_POLL_MS", "1000")))
         except (TypeError, ValueError):
             self.poll_ms = 1000
-        self.worker_id = str(
+        worker_label = str(
             extra.get("worker_id")
             or os.getenv("DEFT_CHANNEL_WORKER_ID", "")
             or f"hermes-deft-{socket.gethostname()}-{os.getpid()}"
-        )[:200]
+        )
+        # Hermes can replace adapter objects while reconnecting inside one
+        # gateway process. Keep those replacements on one worker identity so
+        # only a real process boot can satisfy Deft's restart proof.
+        self.worker_id = _process_worker_id(worker_label, self.channel_url, self.employee_slug)
         self._request_fn = request_fn or self._http_request
         self._start_listener = start_listener
         self._poll_task: Optional[asyncio.Task] = None
-        default_state_path = pathlib.Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser() / "deft-platform-state.json"
-        self._state_path = pathlib.Path(str(extra.get("state_path") or default_state_path)).expanduser()
+        self._state_root = pathlib.Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+        explicit_state_path = extra.get("state_path")
+        self._explicit_state_path = (
+            pathlib.Path(str(explicit_state_path)).expanduser()
+            if explicit_state_path
+            else None
+        )
+        # Keep the historical path visible until connect. Named profile
+        # ownership is installed by Hermes after construction, so resolving
+        # and loading the effective journal any earlier would make every
+        # profile share the default transport cursor and pending-event set.
+        self._state_path = (
+            self._explicit_state_path
+            or self._state_root / "deft-platform-state.json"
+        )
+        self._state_loaded = False
         self._state_error: Optional[str] = None
         self._last_accepted_event_id: Optional[str] = None
         self._pending_events: Dict[str, dict] = {}
@@ -124,7 +169,6 @@ class DeftAdapter(BasePlatformAdapter):
         self._inflight_event_ids: set[str] = set()
         self._routes_by_message: Dict[str, dict] = {}
         self._routes_by_scope: Dict[tuple[str, str], dict] = {}
-        self._load_state()
 
     @property
     def name(self) -> str:
@@ -136,6 +180,7 @@ class DeftAdapter(BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._ensure_state_loaded()
         if self._state_error:
             self._set_fatal_error("state_invalid", self._state_error, retryable=False)
             return False
@@ -163,14 +208,90 @@ class DeftAdapter(BasePlatformAdapter):
             self._poll_task = asyncio.create_task(self._poll_loop())
         return True
 
+    def _resolve_state_path(self) -> pathlib.Path:
+        if self._explicit_state_path is not None:
+            return self._explicit_state_path
+        profile = self._journal_owner_profile()
+        if profile == "default":
+            return self._state_root / "deft-platform-state.json"
+        profile_digest = hashlib.sha256(profile.encode("utf-8")).hexdigest()[:16]
+        return self._state_root / f"deft-platform-state-{profile_digest}.json"
+
+    def _journal_owner_profile(self) -> str:
+        explicit_owner = str(getattr(self, "_owner_profile", "") or "").strip()
+        if explicit_owner:
+            return explicit_owner
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return str(get_active_profile_name() or "default").strip() or "default"
+        except Exception:
+            return "default"
+
+    def _ensure_state_loaded(self) -> None:
+        if self._state_loaded:
+            return
+        self._state_path = self._resolve_state_path()
+        self._state_binding = _journal_binding(
+            self.channel_url,
+            self.employee_slug,
+            self._journal_owner_profile(),
+        )
+        self._state_loaded = True
+        self._load_state()
+        if not self._state_error and not self._state_path.exists():
+            self._create_state_file()
+
+    def _state_payload(self) -> dict:
+        return {
+            "version": STATE_VERSION,
+            "binding_sha256": self._state_binding,
+            "last_accepted_event_id": self._last_accepted_event_id,
+            "pending_events": [
+                {
+                    "event_id": str(item["event_id"]),
+                    "transport_accepted": item.get("transport_accepted") is True,
+                }
+                for item in self._pending_events.values()
+            ],
+        }
+
+    def _create_state_file(self) -> None:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(
+                self._state_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            self._load_state()
+            return
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(self._state_payload(), handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            try:
+                self._state_path.unlink()
+            except OSError:
+                pass
+            raise
+
     def _load_state(self) -> None:
         if not self._state_path.exists():
             return
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
             version = raw.get("version")
-            if version not in {1, STATE_VERSION}:
+            if version not in {1, 2, STATE_VERSION}:
                 raise ValueError("unsupported state version")
+            stored_binding = raw.get("binding_sha256")
+            if version == STATE_VERSION:
+                if not isinstance(stored_binding, str) or not stored_binding:
+                    raise ValueError("state binding is missing")
+                if stored_binding != self._state_binding:
+                    raise ValueError("state belongs to a different Deft endpoint, employee, or owner profile")
             cursor = raw.get("last_accepted_event_id")
             if cursor is not None and not isinstance(cursor, str):
                 raise ValueError("cursor must be a string or null")
@@ -199,27 +320,34 @@ class DeftAdapter(BasePlatformAdapter):
                 }
             self._last_accepted_event_id = cursor
             self._pending_events = parsed
-            if version == 1:
-                # Immediately remove legacy source payloads and claim tokens.
+            if version in {1, 2}:
+                if parsed:
+                    raise ValueError(
+                        "unbound legacy state contains pending work; restore its original configuration before upgrading"
+                    )
+                # With no pending work the unbound cursor has no recovery
+                # authority. Discard it and bind the empty journal safely.
+                self._last_accepted_event_id = None
                 self._save_state()
         except Exception as exc:
             self._state_error = f"Deft platform state is invalid: {exc}"
 
     def _save_state(self) -> None:
+        self._ensure_state_loaded()
+        if self._state_error:
+            raise RuntimeError(self._state_error)
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": STATE_VERSION,
-            "last_accepted_event_id": self._last_accepted_event_id,
-            "pending_events": [
-                {
-                    "event_id": str(item["event_id"]),
-                    "transport_accepted": item.get("transport_accepted") is True,
-                }
-                for item in self._pending_events.values()
-            ],
-        }
-        temp_path = self._state_path.with_name(f"{self._state_path.name}.tmp.{os.getpid()}")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        if self._state_path.exists():
+            existing = json.loads(self._state_path.read_text(encoding="utf-8"))
+            if existing.get("version") == STATE_VERSION and existing.get("binding_sha256") != self._state_binding:
+                raise RuntimeError("Deft platform state binding changed before it could be saved")
+        temp_path = self._state_path.with_name(
+            f"{self._state_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        temp_path.write_text(
+            json.dumps(self._state_payload(), ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
         try:
             os.chmod(temp_path, 0o600)
         except OSError:
@@ -379,10 +507,16 @@ class DeftAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             return
         route = self._routes_by_message.get(str(event.message_id or ""))
-        # Task and chat turns can hand work to Hermes's deferred execution and
-        # finish before that work produces its outward completion. Keep both
-        # source-bound deliveries journaled until a notify-marked final reply.
-        if route is not None and route.get("source_kind") not in {"task", "message"}:
+        # Task, chat, and certification turns can finish without a durable
+        # outward completion. Certification is especially strict: neither an
+        # empty handler result nor a failed send is evidence of completion.
+        # Keep these source-bound deliveries journaled until send() confirms
+        # the final /reply.
+        if route is not None and route.get("source_kind") not in {
+            "task",
+            "message",
+            "certification",
+        }:
             self._complete_pending(str(route["event_id"]))
 
     def _compatibility_query(self) -> dict:
@@ -496,8 +630,15 @@ class DeftAdapter(BasePlatformAdapter):
             )
             route = {
                 "event_id": str(event["id"]),
+                "event_kind": event_kind,
                 "source_kind": source_kind,
                 "thread_id": thread_id or "",
+                "runtime_session_key": build_session_key(
+                    source,
+                    group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                    thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+                    profile=self._session_key_profile(source),
+                ),
             }
             self._remember_route(message_id, chat_id, thread_id or "", route)
             return MessageEvent(
@@ -507,6 +648,24 @@ class DeftAdapter(BasePlatformAdapter):
                 raw_message=event,
                 message_id=message_id,
                 reply_to_message_id=reply_to_message_id,
+            )
+
+        if event_kind in {"certification.challenge", "certification.restart_proof"}:
+            space_id = str(event.get("space_id") or event.get("source_id") or event["id"])
+            certification_prompt = str(payload.get("certification_prompt") or "").strip()
+            if not certification_prompt:
+                raise RuntimeError(
+                    f"Deft certification event {event['id']} has no certification_prompt"
+                )
+            return build_event(
+                text=certification_prompt,
+                chat_id=f"{org_id}:{space_id}",
+                chat_name="Deft certification",
+                chat_type="dm",
+                message_id=str(event["id"]),
+                source_kind="certification",
+                user_id=str(event.get("actor_user_id") or "") or None,
+                parent_chat_id=space_id,
             )
 
         if event_kind.startswith("task.") or (
@@ -667,8 +826,12 @@ class DeftAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        thread_id = str((metadata or {}).get("thread_id") or "")
-        route = self._routes_by_message.get(str(reply_to or ""))
+        metadata = metadata or {}
+        thread_id = str(metadata.get("thread_id") or "")
+        explicit_reply_anchor = str(reply_to or "")
+        route = self._routes_by_message.get(explicit_reply_anchor)
+        if explicit_reply_anchor and route is None:
+            return SendResult(success=False, error="No accepted Deft source event is available for this reply")
         if route is None:
             route = self._routes_by_scope.get((chat_id, thread_id))
         if route is None and not thread_id:
@@ -683,7 +846,7 @@ class DeftAdapter(BasePlatformAdapter):
         # or clear its restart journal before the model finishes.
         if (
             not reply_to
-            and (metadata or {}).get("notify") is not True
+            and metadata.get("notify") is not True
         ):
             return SendResult(success=True, raw_response={"unanchored_status_suppressed": True})
 
@@ -692,24 +855,41 @@ class DeftAdapter(BasePlatformAdapter):
         # durable task comment floods the task and obscures the actual work
         # report written through Deft MCP. Keep the delivery successful so the
         # autonomous runtime can continue, and persist only its final reply.
-        if route.get("source_kind") == "task" and (metadata or {}).get("_interim_send") is True:
+        if route.get("source_kind") in {"task", "certification"} and (
+            metadata
+        ).get("_interim_send") is True:
             return SendResult(success=True, raw_response={"interim_suppressed": True})
 
-        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        idempotency_key = f"autonomous-reply:{route['event_id']}:{content_digest}"
+        if route.get("source_kind") == "certification":
+            if explicit_reply_anchor != str(route.get("event_id") or ""):
+                return SendResult(success=False, error="Certification replies require their exact Deft source event")
+            if metadata.get("notify") is not True:
+                return SendResult(success=True, raw_response={"certification_nonfinal_suppressed": True})
+
+        is_final_slot = (
+            route.get("source_kind") in {"task", "certification", "notification"}
+            or metadata.get("notify") is True
+        )
+        if is_final_slot:
+            idempotency_key = f"autonomous-reply:{route['event_id']}:final"
+        else:
+            content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            idempotency_key = f"autonomous-reply:{route['event_id']}:{content_digest}"
         try:
+            reply_body = {
+                "event_id": route["event_id"],
+                "content": content,
+                "thread_id": route["thread_id"] or None,
+                "idempotency_key": idempotency_key,
+                "adapter_mode": "autonomous_platform",
+                "runtime_session_key": route["runtime_session_key"],
+                "caller_employee_slug": self.employee_slug,
+            }
             response = await self._request_fn(
                 "POST",
                 "/reply",
                 None,
-                {
-                    "event_id": route["event_id"],
-                    "content": content,
-                    "thread_id": route["thread_id"],
-                    "idempotency_key": idempotency_key,
-                    "adapter_mode": "autonomous_platform",
-                    "caller_employee_slug": self.employee_slug,
-                },
+                reply_body,
             )
         except DeftChannelRequestError as exc:
             return SendResult(success=False, error=str(exc), retryable=exc.retryable)
@@ -727,7 +907,11 @@ class DeftAdapter(BasePlatformAdapter):
             event_id = str(route["event_id"])
             self._complete_pending(event_id)
             self._forget_routes(event_id)
-        elif route.get("source_kind") == "message" and (metadata or {}).get("notify") is True:
+        elif route.get("source_kind") == "certification":
+            event_id = str(route["event_id"])
+            self._complete_pending(event_id)
+            self._forget_routes(event_id)
+        elif route.get("source_kind") == "message" and metadata.get("notify") is True:
             self._complete_pending(str(route["event_id"]))
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 

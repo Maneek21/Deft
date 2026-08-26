@@ -487,7 +487,7 @@ function parseDueDate(value: string | null | undefined): Date | null | undefined
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean; actionId?: string | null },
+  opts?: { skipReceipt?: boolean; actionId?: string | null; commentId?: string },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -645,6 +645,7 @@ export async function executeTaskUpdate(
       const [commentRow] = await db
         .insert(taskComments)
         .values({
+          ...(opts?.commentId ? { id: opts.commentId } : {}),
           org_id: ctx.org_id,
           task_id: args.task_id,
           user_id: shadowUserId,
@@ -1004,6 +1005,7 @@ export async function executeSendMessage(opts: {
   content: string;
   parentId: string | null;
   ctx: ToolContext;
+  messageId?: string;
 }, execOpts?: { skipReceipt?: boolean }): Promise<ToolResult> {
   const { orgId, spaceId, content, parentId, ctx } = opts;
   try {
@@ -1019,6 +1021,7 @@ export async function executeSendMessage(opts: {
     const [row] = await db
       .insert(messages)
       .values({
+        ...(opts.messageId ? { id: opts.messageId } : {}),
         org_id: orgId,
         space_id: spaceId,
         user_id: shadowUserId,

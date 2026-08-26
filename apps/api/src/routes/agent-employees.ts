@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, or, isNull, asc, gte, inArray, notInArray } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -617,13 +617,91 @@ type CertificationChallengeEvidence = {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
+  runtimeExecutionProof: CertificationExecutionProof;
   baseCompleted: boolean;
   restartDetected: boolean;
   restartProofEventSeen: boolean;
+  restartProofPingSeen: boolean;
+  restartProofNonceSeen: boolean;
+  restartProofReplyNonceSeen: boolean;
+  restartProofSingleReply: boolean;
+  restartExecutionProof: CertificationExecutionProof;
   restartProofCompleted: boolean;
   completed: boolean;
 };
+
+type CertificationExecutionProof = 'supervised_terminal' | 'autonomous_source_reply' | null;
+
+type CertificationReplyAttempt = {
+  request_json: unknown;
+  response_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+};
+
+function certificationReplyContainsNonce(attempt: CertificationReplyAttempt, nonce: string): boolean {
+  const response = attempt.response_json && typeof attempt.response_json === 'object'
+    ? attempt.response_json as Record<string, unknown>
+    : {};
+  return typeof response.content === 'string'
+    && response.content.toLocaleLowerCase().includes(nonce.toLocaleLowerCase());
+}
+
+function certificationReplyCommittedAt(attempt: CertificationReplyAttempt): Date | null {
+  const response = attempt.response_json && typeof attempt.response_json === 'object'
+    ? attempt.response_json as Record<string, unknown>
+    : {};
+  if (typeof response.created_at !== 'string') return null;
+  const committedAt = new Date(response.created_at);
+  return Number.isNaN(committedAt.getTime()) ? null : committedAt;
+}
+
+function certificationExecutionProof(
+  event: {
+    status: string;
+    delivery_count: number;
+    delivered_at: Date | null;
+    acked_at: Date | null;
+    completed_at: Date | null;
+    claim_token: string | null;
+    claim_owner: string | null;
+    lease_expires_at: Date | null;
+    runtime_session_key: string | null;
+    work_outcome: string | null;
+  } | null | undefined,
+  replyAttempts: CertificationReplyAttempt[],
+): CertificationExecutionProof {
+  if (!event || event.delivery_count !== 1 || replyAttempts.length !== 1) return null;
+  const replyCommittedAt = certificationReplyCommittedAt(replyAttempts[0]!);
+  if (!replyCommittedAt) return null;
+  const request = replyAttempts[0]?.request_json && typeof replyAttempts[0].request_json === 'object'
+    ? replyAttempts[0].request_json as Record<string, unknown>
+    : {};
+  if (
+    request.adapter_mode === 'supervised_runtime'
+    && Boolean(event.delivered_at)
+    && replyCommittedAt.getTime() >= event.delivered_at!.getTime()
+    && event.status === 'completed'
+    && event.work_outcome === 'completed'
+    && Boolean(event.completed_at)
+    && Boolean(event.runtime_session_key?.trim())
+  ) return 'supervised_terminal';
+  if (
+    request.adapter_mode === 'autonomous_platform'
+    && event.status === 'acknowledged'
+    && Boolean(event.acked_at)
+    && replyCommittedAt.getTime() >= event.acked_at!.getTime()
+    && !event.completed_at
+    && !event.work_outcome
+    && !event.claim_token
+    && !event.claim_owner
+    && !event.lease_expires_at
+  ) return 'autonomous_source_reply';
+  return null;
+}
 
 function runtimeKindOf(employee: { runtime_kind?: string | null }): string {
   return employee.runtime_kind || 'custom_mcp';
@@ -647,11 +725,68 @@ async function loadCertificationChallengeEvidence(params: {
 }): Promise<CertificationChallengeEvidence> {
   const { orgId, employeeId, challenge } = params;
   const requiresRestartProof = params.runtimeKind === 'hermes';
+  const [channelEvent] = await db
+    .select({
+      id: agentChannelEvents.id,
+      status: agentChannelEvents.status,
+      delivery_count: agentChannelEvents.delivery_count,
+      created_at: agentChannelEvents.created_at,
+      delivered_at: agentChannelEvents.delivered_at,
+      acked_at: agentChannelEvents.acked_at,
+      completed_at: agentChannelEvents.completed_at,
+      claim_token: agentChannelEvents.claim_token,
+      claim_owner: agentChannelEvents.claim_owner,
+      lease_expires_at: agentChannelEvents.lease_expires_at,
+      runtime_session_key: agentChannelEvents.runtime_session_key,
+      work_outcome: agentChannelEvents.work_outcome,
+      payload: agentChannelEvents.payload,
+    })
+    .from(agentChannelEvents)
+    .where(and(
+      eq(agentChannelEvents.org_id, orgId),
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'certification.challenge'),
+      eq(agentChannelEvents.source_kind, 'certification'),
+      eq(agentChannelEvents.source_id, challenge.id),
+      gte(agentChannelEvents.created_at, challenge.started_at),
+    ))
+    .orderBy(desc(agentChannelEvents.created_at))
+    .limit(1);
+  const replyRows = channelEvent
+    ? await db
+        .select({
+          id: agentChannelDeliveryAttempts.id,
+          request_json: agentChannelDeliveryAttempts.request_json,
+          response_json: agentChannelDeliveryAttempts.response_json,
+          created_at: agentChannelDeliveryAttempts.created_at,
+          updated_at: agentChannelDeliveryAttempts.updated_at,
+        })
+        .from(agentChannelDeliveryAttempts)
+        .where(and(
+          eq(agentChannelDeliveryAttempts.org_id, orgId),
+          eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+          eq(agentChannelDeliveryAttempts.event_id, channelEvent.id),
+          eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+          eq(agentChannelDeliveryAttempts.status, 'completed'),
+        ))
+        .orderBy(asc(agentChannelDeliveryAttempts.created_at))
+        .limit(2)
+    : [];
+  const singleReply = replyRows.length === 1;
+  const channelReplyCommittedAt = singleReply
+    ? certificationReplyCommittedAt(replyRows[0]!)
+    : null;
+  const channelReplyNonceSeen = singleReply
+    && Boolean(channelReplyCommittedAt)
+    && certificationReplyContainsNonce(replyRows[0]!, challenge.nonce);
+  const evidenceStartedAt = channelEvent?.status === 'acknowledged' && channelEvent.acked_at
+    ? channelEvent.acked_at
+    : channelEvent?.delivered_at ?? challenge.started_at;
+  const evidenceCompletedAt = channelReplyNonceSeen ? channelReplyCommittedAt : null;
 
-  // Certification evidence is scoped to the challenge and intentionally
-  // independent of the bounded recent-activity lists rendered in diagnostics.
-  // Grouping keeps the query bounded to unique tool names even after a runtime
-  // has made thousands of later calls.
+  // Evidence must occur after the assignment reaches the runtime and, once a
+  // qualifying reply exists, before that reply. This prevents old or later
+  // unrelated MCP traffic from retroactively satisfying a certification turn.
   const auditRows = await db
     .select({
       tool_name: agentMcpCallAudit.tool_name,
@@ -662,34 +797,31 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentMcpCallAudit.org_id, orgId),
       eq(agentMcpCallAudit.employee_id, employeeId),
       eq(agentMcpCallAudit.success, true),
-      gte(agentMcpCallAudit.created_at, challenge.started_at),
+      gte(agentMcpCallAudit.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentMcpCallAudit.created_at, evidenceCompletedAt) : undefined,
     ))
     .groupBy(agentMcpCallAudit.tool_name);
   const seenTools = new Set(auditRows.map((row) => row.tool_name));
   const memoryWriteCallCount = Number(
     auditRows.find((row) => row.tool_name === 'memory_write')?.call_count ?? 0,
   );
-
   const nonceRows = await db
     .select({ id: agentCooperativeLog.id })
     .from(agentCooperativeLog)
     .where(and(
       eq(agentCooperativeLog.org_id, orgId),
       eq(agentCooperativeLog.employee_id, employeeId),
-      gte(agentCooperativeLog.created_at, challenge.started_at),
+      gte(agentCooperativeLog.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentCooperativeLog.created_at, evidenceCompletedAt) : undefined,
       or(
         sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
         sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
       ),
     ))
     .limit(1);
-
-  const persistedComplete = challenge.status === 'completed';
-  const missingTools = persistedComplete
-    ? []
-    : challenge.required_tools.filter((tool) => !seenTools.has(tool));
-  const nonceSeen = persistedComplete || nonceRows.length > 0;
-  const privateMemoryRows = persistedComplete ? [{ page_id: 'persisted-complete' }] : await db
+  const missingTools = challenge.required_tools.filter((tool) => !seenTools.has(tool));
+  const nonceSeen = nonceRows.length > 0;
+  const privateMemoryRows = await db
     .select({ page_id: wikiPages.id })
     .from(wikiMemorySyncs)
     .innerJoin(wikiPages, and(
@@ -709,7 +841,7 @@ async function loadCertificationChallengeEvidence(params: {
       ),
     ))
     .limit(1);
-  const replayAuditRows = persistedComplete || privateMemoryRows.length === 0 ? [] : await db
+  const replayAuditRows = privateMemoryRows.length === 0 ? [] : await db
     .select({ id: agentMcpCallAudit.id })
     .from(agentMcpCallAudit)
     .where(and(
@@ -717,69 +849,35 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentMcpCallAudit.employee_id, employeeId),
       eq(agentMcpCallAudit.tool_name, 'memory_write'),
       eq(agentMcpCallAudit.success, true),
-      gte(agentMcpCallAudit.created_at, challenge.started_at),
+      gte(agentMcpCallAudit.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentMcpCallAudit.created_at, evidenceCompletedAt) : undefined,
       sql`COALESCE(${agentMcpCallAudit.metadata}->>'memory_replayed', 'false') = 'true'`,
       sql`${agentMcpCallAudit.metadata}->>'memory_page_id' = ${privateMemoryRows[0]?.page_id ?? ''}`,
     ))
     .limit(1);
-  const privateMemoryVerified = persistedComplete || (
-    memoryWriteCallCount >= 2
+  const privateMemoryVerified = memoryWriteCallCount >= 2
     && seenTools.has('memory_recall')
     && privateMemoryRows.length > 0
-    && replayAuditRows.length > 0
-  );
+    && replayAuditRows.length > 0;
 
-  const [channelEvent] = await db
-    .select({
-      id: agentChannelEvents.id,
-      status: agentChannelEvents.status,
-      delivery_count: agentChannelEvents.delivery_count,
-      runtime_session_key: agentChannelEvents.runtime_session_key,
-      work_outcome: agentChannelEvents.work_outcome,
-      payload: agentChannelEvents.payload,
-    })
-    .from(agentChannelEvents)
-    .where(and(
-      eq(agentChannelEvents.org_id, orgId),
-      eq(agentChannelEvents.agent_employee_id, employeeId),
-      eq(agentChannelEvents.kind, 'certification.challenge'),
-      eq(agentChannelEvents.source_kind, 'certification'),
-      eq(agentChannelEvents.source_id, challenge.id),
-      gte(agentChannelEvents.created_at, challenge.started_at),
-    ))
-    .orderBy(desc(agentChannelEvents.created_at))
-    .limit(1);
-  const replyRows = channelEvent
-    ? await db
-        .select({ id: agentChannelDeliveryAttempts.id })
-        .from(agentChannelDeliveryAttempts)
-        .where(and(
-          eq(agentChannelDeliveryAttempts.org_id, orgId),
-          eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
-          eq(agentChannelDeliveryAttempts.event_id, channelEvent.id),
-          eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
-          eq(agentChannelDeliveryAttempts.status, 'completed'),
-          sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
-        ))
-        .limit(1)
-    : [];
-  const channelEventSeen = persistedComplete || Boolean(channelEvent);
-  const channelCompleted = persistedComplete || (
+  const channelEventSeen = Boolean(channelEvent);
+  const channelCompleted = (
     channelEvent?.status === 'completed'
     && channelEvent.work_outcome === 'completed'
   );
-  const channelReplyNonceSeen = persistedComplete || replyRows.length > 0;
-  const singleDelivery = persistedComplete || channelEvent?.delivery_count === 1;
-  const runtimeSessionSeen = persistedComplete || Boolean(channelEvent?.runtime_session_key);
-  const baseCompleted = persistedComplete || (
+  const singleDelivery = channelEvent?.delivery_count === 1;
+  const runtimeSessionSeen = Boolean(channelEvent?.runtime_session_key?.trim());
+  const runtimeExecutionProof = certificationExecutionProof(channelEvent, replyRows);
+  const runtimeExecutionSeen = runtimeExecutionProof !== null;
+  const baseCompleted = (
     missingTools.length === 0
     && nonceSeen
     && privateMemoryVerified
     && channelEventSeen
-    && channelCompleted
     && channelReplyNonceSeen
     && singleDelivery
-    && runtimeSessionSeen
+    && singleReply
+    && runtimeExecutionSeen
   );
   const eventPayload = channelEvent?.payload && typeof channelEvent.payload === 'object'
     ? channelEvent.payload as Record<string, unknown>
@@ -791,12 +889,29 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentChannelConnections.org_id, orgId),
       eq(agentChannelConnections.agent_employee_id, employeeId),
     )).limit(1);
-  const currentRestartCount = Number((connection?.metadata as Record<string, unknown> | null)?.restart_count ?? 0);
-  const restartDetected = persistedComplete || !requiresRestartProof || currentRestartCount > baselineRestartCount;
+  const connectionMetadata = (connection?.metadata ?? {}) as Record<string, unknown>;
+  const currentRestartCount = Number(connectionMetadata.restart_count ?? 0);
+  const lastRestartAt = typeof connectionMetadata.last_restart_at === 'string'
+    ? new Date(connectionMetadata.last_restart_at)
+    : null;
+  const restartDetected = !requiresRestartProof || Boolean(
+    evidenceCompletedAt
+      && currentRestartCount > baselineRestartCount
+      && lastRestartAt
+      && !Number.isNaN(lastRestartAt.getTime())
+      && lastRestartAt.getTime() >= evidenceCompletedAt.getTime()
+  );
   const [restartProofEvent] = await db.select({
     id: agentChannelEvents.id,
     status: agentChannelEvents.status,
     delivery_count: agentChannelEvents.delivery_count,
+    created_at: agentChannelEvents.created_at,
+    delivered_at: agentChannelEvents.delivered_at,
+    acked_at: agentChannelEvents.acked_at,
+    completed_at: agentChannelEvents.completed_at,
+    claim_token: agentChannelEvents.claim_token,
+    claim_owner: agentChannelEvents.claim_owner,
+    lease_expires_at: agentChannelEvents.lease_expires_at,
     runtime_session_key: agentChannelEvents.runtime_session_key,
     work_outcome: agentChannelEvents.work_outcome,
   }).from(agentChannelEvents).where(and(
@@ -807,24 +922,81 @@ async function loadCertificationChallengeEvidence(params: {
     eq(agentChannelEvents.source_id, challenge.id),
     gte(agentChannelEvents.created_at, challenge.started_at),
   )).orderBy(desc(agentChannelEvents.created_at)).limit(1);
-  const restartProofReplies = restartProofEvent ? await db.select({ id: agentChannelDeliveryAttempts.id })
+  const restartProofReplies = restartProofEvent ? await db.select({
+    id: agentChannelDeliveryAttempts.id,
+    request_json: agentChannelDeliveryAttempts.request_json,
+    response_json: agentChannelDeliveryAttempts.response_json,
+    created_at: agentChannelDeliveryAttempts.created_at,
+    updated_at: agentChannelDeliveryAttempts.updated_at,
+  })
     .from(agentChannelDeliveryAttempts).where(and(
       eq(agentChannelDeliveryAttempts.org_id, orgId),
       eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
       eq(agentChannelDeliveryAttempts.event_id, restartProofEvent.id),
       eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
       eq(agentChannelDeliveryAttempts.status, 'completed'),
-      sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
-    )).limit(1) : [];
-  const restartProofEventSeen = persistedComplete || !requiresRestartProof || Boolean(restartProofEvent);
-  const restartProofCompleted = persistedComplete || !requiresRestartProof || Boolean(
-    restartProofEvent?.status === 'completed'
-      && restartProofEvent.work_outcome === 'completed'
-      && restartProofEvent.delivery_count === 1
-      && restartProofEvent.runtime_session_key
-      && restartProofReplies.length > 0
+    ))
+    .orderBy(asc(agentChannelDeliveryAttempts.created_at))
+    .limit(2) : [];
+  const restartProofSingleReply = !requiresRestartProof || restartProofReplies.length === 1;
+  const restartProofReplyCommittedAt = requiresRestartProof && restartProofSingleReply
+    ? certificationReplyCommittedAt(restartProofReplies[0]!)
+    : null;
+  const restartProofReplyNonceSeen = !requiresRestartProof || (
+    restartProofSingleReply
+    && Boolean(restartProofReplyCommittedAt)
+    && certificationReplyContainsNonce(restartProofReplies[0]!, challenge.nonce)
   );
-  const completed = persistedComplete || (baseCompleted && restartDetected && restartProofCompleted);
+  const restartProofReplyAt = requiresRestartProof && restartProofReplyNonceSeen
+    ? restartProofReplyCommittedAt
+    : null;
+  const restartProofPingRows = !requiresRestartProof
+    ? []
+    : restartProofEvent?.acked_at && restartProofReplyAt
+      ? await db.select({ id: agentMcpCallAudit.id })
+        .from(agentMcpCallAudit)
+        .where(and(
+          eq(agentMcpCallAudit.org_id, orgId),
+          eq(agentMcpCallAudit.employee_id, employeeId),
+          eq(agentMcpCallAudit.tool_name, 'ping_alive'),
+          eq(agentMcpCallAudit.success, true),
+          gte(agentMcpCallAudit.created_at, restartProofEvent.acked_at),
+          lt(agentMcpCallAudit.created_at, restartProofReplyAt),
+        ))
+        .limit(1)
+      : [];
+  const restartProofNonceRows = !requiresRestartProof
+    ? []
+    : restartProofEvent?.acked_at && restartProofReplyAt
+      ? await db.select({ id: agentCooperativeLog.id })
+        .from(agentCooperativeLog)
+        .where(and(
+          eq(agentCooperativeLog.org_id, orgId),
+          eq(agentCooperativeLog.employee_id, employeeId),
+          eq(agentCooperativeLog.kind, 'decision'),
+          gte(agentCooperativeLog.created_at, restartProofEvent.acked_at),
+          lt(agentCooperativeLog.created_at, restartProofReplyAt),
+          or(
+            sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
+            sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
+          ),
+        ))
+        .limit(1)
+      : [];
+  const restartProofEventSeen = !requiresRestartProof || Boolean(restartProofEvent);
+  const restartProofPingSeen = !requiresRestartProof || restartProofPingRows.length > 0;
+  const restartProofNonceSeen = !requiresRestartProof || restartProofNonceRows.length > 0;
+  const restartExecutionProof = !requiresRestartProof
+    ? null
+    : certificationExecutionProof(restartProofEvent, restartProofReplies);
+  const restartProofCompleted = !requiresRestartProof || (
+    restartExecutionProof !== null
+    && restartProofPingSeen
+    && restartProofNonceSeen
+    && restartProofReplyNonceSeen
+    && restartProofSingleReply
+  );
+  const completed = baseCompleted && restartDetected && restartProofCompleted;
 
   return {
     seenTools,
@@ -836,10 +1008,18 @@ async function loadCertificationChallengeEvidence(params: {
     channelCompleted,
     channelReplyNonceSeen,
     singleDelivery,
+    singleReply,
     runtimeSessionSeen,
+    runtimeExecutionSeen,
+    runtimeExecutionProof,
     baseCompleted,
     restartDetected,
     restartProofEventSeen,
+    restartProofPingSeen,
+    restartProofNonceSeen,
+    restartProofReplyNonceSeen,
+    restartProofSingleReply,
+    restartExecutionProof,
     restartProofCompleted,
     completed,
   };
@@ -1160,7 +1340,10 @@ function buildCertificationStages(params: {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
+  runtimeExecutionProof: CertificationExecutionProof;
   restartDetected: boolean;
   restartProofCompleted: boolean;
   completed: boolean;
@@ -1196,11 +1379,13 @@ function buildCertificationStages(params: {
     },
     {
       key: 'runtime_inference',
-      label: 'Runtime inference completed',
-      status: params.channelCompleted && params.runtimeSessionSeen ? 'pass' : 'pending',
-      detail: params.channelCompleted && params.runtimeSessionSeen
-        ? 'Hermes completed the assignment and reported a terminal outcome.'
-        : 'Waiting for Hermes to run the assignment and report a terminal outcome.',
+      label: 'Runtime reply verified',
+      status: params.runtimeExecutionSeen ? 'pass' : 'pending',
+      detail: params.runtimeExecutionProof === 'autonomous_source_reply'
+        ? 'Hermes returned one authenticated native reply while transport acceptance remained nonterminal.'
+        : params.runtimeExecutionSeen
+          ? 'Hermes completed the assignment and reported a terminal supervised outcome.'
+          : 'Waiting for Hermes to return a verifiable source-bound runtime reply.',
     },
     {
       key: 'required_tools_called',
@@ -1229,10 +1414,12 @@ function buildCertificationStages(params: {
     {
       key: 'channel_reply_verified',
       label: 'Reply verified',
-      status: params.channelReplyNonceSeen ? 'pass' : 'pending',
-      detail: params.channelReplyNonceSeen
+      status: params.channelReplyNonceSeen && params.singleReply ? 'pass' : 'pending',
+      detail: params.channelReplyNonceSeen && params.singleReply
         ? 'The Agent Channel reply contains the one-time certification nonce.'
-        : 'Waiting for a nonce-bearing reply through Agent Channel.',
+        : !params.singleReply
+          ? 'Waiting for exactly one successful Agent Channel reply.'
+          : 'Waiting for a nonce-bearing reply through Agent Channel.',
     },
     {
       key: 'runtime_restart_detected',
@@ -1277,7 +1464,9 @@ function certificationFailureReason(params: {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
   restartDetected: boolean;
   restartProofCompleted: boolean;
 }): string | null {
@@ -1286,10 +1475,10 @@ function certificationFailureReason(params: {
     && params.nonceSeen
     && params.privateMemoryVerified
     && params.channelEventSeen
-    && params.channelCompleted
     && params.channelReplyNonceSeen
     && params.singleDelivery
-    && params.runtimeSessionSeen
+    && params.singleReply
+    && params.runtimeExecutionSeen
     && params.restartDetected
     && params.restartProofCompleted
   ) return null;
@@ -1302,7 +1491,8 @@ function certificationFailureReason(params: {
   }
   if (!params.channelEventSeen) return 'The Hermes runtime has not claimed the Agent Channel certification assignment.';
   if (!params.singleDelivery) return 'The certification assignment was delivered more than once. Reset certification after fixing runtime stability.';
-  if (!params.channelCompleted || !params.runtimeSessionSeen) return 'Hermes has not completed a real runtime turn for the certification assignment.';
+  if (!params.singleReply) return 'The certification assignment does not have exactly one successful Agent Channel reply.';
+  if (!params.runtimeExecutionSeen) return 'Hermes has not completed a verifiable runtime turn for the certification assignment.';
   if (params.missingTools.length > 0) {
     return runtimeKind === 'hermes'
       ? `Hermes can reach Deft MCP, but its model loop has not called: ${params.missingTools.map((tool) => runtimeToolName('hermes', tool)).join(', ')}. Check model auth and use the mcp_deft_* tool names.`
@@ -1345,6 +1535,7 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
         outcome_at = now(),
         claim_owner = NULL,
         claim_token = NULL,
+        claimed_at = NULL,
         lease_expires_at = NULL,
         updated_at = now()
     WHERE org_id = ${orgId}
@@ -2667,12 +2858,14 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       certification: latestChallenge
         ? {
             id: latestChallenge.id,
-            status: latestChallenge.status,
+            status: challengeEvidence?.completed
+              ? 'completed'
+              : latestChallenge.status === 'completed' ? 'pending' : latestChallenge.status,
             nonce: latestChallenge.nonce,
             required_tools: latestChallenge.required_tools,
             failure_reason: latestChallenge.failure_reason,
             started_at: latestChallenge.started_at,
-            completed_at: latestChallenge.completed_at,
+            completed_at: challengeEvidence?.completed ? latestChallenge.completed_at : null,
             instructions: certificationInstructions(employee, latestChallenge.nonce),
             stages: buildCertificationStages({
               employee,
@@ -2684,7 +2877,10 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              singleReply: challengeEvidence?.singleReply ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              runtimeExecutionSeen: challengeEvidence?.runtimeExecutionSeen ?? false,
+              runtimeExecutionProof: challengeEvidence?.runtimeExecutionProof ?? null,
               restartDetected: challengeEvidence?.restartDetected ?? false,
               restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
@@ -2936,6 +3132,10 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
       challenge: challenge
         ? {
             ...challenge,
+            status: challengeEvidence?.completed
+              ? 'completed'
+              : challenge.status === 'completed' ? 'pending' : challenge.status,
+            completed_at: challengeEvidence?.completed ? challenge.completed_at : null,
             instructions: certificationInstructions(employee, challenge.nonce),
             stages: buildCertificationStages({
               employee,
@@ -2947,7 +3147,10 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              singleReply: challengeEvidence?.singleReply ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              runtimeExecutionSeen: challengeEvidence?.runtimeExecutionSeen ?? false,
+              runtimeExecutionProof: challengeEvidence?.runtimeExecutionProof ?? null,
               restartDetected: challengeEvidence?.restartDetected ?? false,
               restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
@@ -3003,10 +3206,18 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
+      runtimeExecutionProof,
       baseCompleted,
       restartDetected,
       restartProofEventSeen,
+      restartProofPingSeen,
+      restartProofNonceSeen,
+      restartProofReplyNonceSeen,
+      restartProofSingleReply,
+      restartExecutionProof,
       restartProofCompleted,
       completed,
     } = challengeEvidence;
@@ -3025,7 +3236,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
           employee_slug: employee.slug,
           is_dm: true,
           parent_id: null,
-          certification_prompt: `This is the post-restart persistence check. Process this fresh assignment, call mcp_deft_ping_alive, and reply with the exact nonce ${challenge.nonce}.`,
+          certification_prompt: `This is the post-restart persistence check. Process this fresh assignment, call mcp_deft_ping_alive, record a decision containing the exact nonce ${challenge.nonce}, and reply with that exact nonce.`,
           expected_reply_contains: challenge.nonce,
         },
       });
@@ -3040,7 +3251,10 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
+      runtimeExecutionProof,
       restartDetected,
       restartProofCompleted,
       completed,
@@ -3055,26 +3269,50 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
       restartDetected,
       restartProofCompleted,
     });
 
-    if (completed) {
+    if (completed && challenge.status !== 'completed') {
+      const now = new Date();
+      const [completedChallenge] = await db
+        .update(agentCertificationChallenges)
+        .set({ status: 'completed', completed_at: now, failure_reason: null, updated_at: now })
+        .where(and(
+          eq(agentCertificationChallenges.id, challenge.id),
+          eq(agentCertificationChallenges.org_id, user.org_id),
+          eq(agentCertificationChallenges.status, 'pending'),
+        ))
+        .returning({ id: agentCertificationChallenges.id });
+      if (completedChallenge) {
+        await db
+          .update(agentEmployees)
+          .set({ certification_status: 'verified', last_verified_at: now })
+          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+      }
+    } else if (!completed) {
       const now = new Date();
       await db
         .update(agentCertificationChallenges)
-        .set({ status: 'completed', completed_at: now, failure_reason: null })
-        .where(eq(agentCertificationChallenges.id, challenge.id));
-      await db
-        .update(agentEmployees)
-        .set({ certification_status: 'verified', last_verified_at: now })
-        .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
-    } else {
-      await db
-        .update(agentCertificationChallenges)
-        .set({ failure_reason: failureReason, updated_at: new Date() })
-        .where(eq(agentCertificationChallenges.id, challenge.id));
+        .set({
+          status: challenge.status === 'completed' ? 'pending' : challenge.status,
+          completed_at: challenge.status === 'completed' ? null : challenge.completed_at,
+          failure_reason: failureReason,
+          updated_at: now,
+        })
+        .where(and(
+          eq(agentCertificationChallenges.id, challenge.id),
+          eq(agentCertificationChallenges.org_id, user.org_id),
+        ));
+      if (challenge.status === 'completed') {
+        await db
+          .update(agentEmployees)
+          .set({ certification_status: 'challenge_issued', last_verified_at: null, updated_at: now })
+          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+      }
     }
 
     return c.json({
@@ -3086,10 +3324,18 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channel_completed: channelCompleted,
       channel_reply_nonce_seen: channelReplyNonceSeen,
       single_delivery: singleDelivery,
+      single_reply: singleReply,
       runtime_session_seen: runtimeSessionSeen,
+      runtime_execution_seen: runtimeExecutionSeen,
+      runtime_execution_proof: runtimeExecutionProof,
       private_memory_verified: privateMemoryVerified,
       restart_detected: restartDetected,
       restart_proof_event_seen: restartProofEventSeen,
+      restart_proof_ping_seen: restartProofPingSeen,
+      restart_proof_nonce_seen: restartProofNonceSeen,
+      restart_proof_reply_nonce_seen: restartProofReplyNonceSeen,
+      restart_proof_single_reply: restartProofSingleReply,
+      restart_execution_proof: restartExecutionProof,
       restart_proof_completed: restartProofCompleted,
       seen_tools: Array.from(seenTools),
       required_tools: challenge.required_tools,

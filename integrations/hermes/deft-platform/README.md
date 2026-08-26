@@ -26,12 +26,17 @@ The plugin has five responsibilities:
 5. Resume accepted work after restart and clear the journal only when the
    platform lifecycle or final task reply proves delivery is complete.
 
-The journal is the only durable adapter-owned state. It contains the accepted
-cursor plus opaque event IDs and transport-acceptance flags for deliveries that
-have not yet produced their required outward delivery. After restart, the
-employee-authenticated adapter rehydrates an accepted source event from Deft;
-it never persists source payloads, model state, plans, tool calls, prompts,
-business outcomes, claim tokens, or credentials in the journal.
+The journal is the only durable adapter-owned state. It contains an opaque
+binding digest, the accepted cursor, event IDs, and transport-acceptance flags
+for deliveries that have not yet produced their required outward delivery. The
+digest binds state to the normalized channel endpoint, employee slug, and
+Hermes owner profile without including either token, so credential rotation is
+safe while endpoint, employee, or profile reuse fails before any recovery
+request. Version 1 or 2 development journals migrate only when empty; pending
+unbound work must first be recovered with its original configuration. After a
+restart, the employee-authenticated adapter rehydrates an accepted source event
+from Deft; it never persists source payloads, model state, plans, tool calls,
+prompts, business outcomes, claim tokens, or credentials in the journal.
 
 Everything else remains outside the connection contract: model/provider
 selection, reasoning, skills, browser and research tools, external MCPs,
@@ -156,6 +161,9 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
 - Hermes tool-boundary commentary remains transient for task assignments;
   Deft persists the final channel reply and the substantive MCP task report,
   rather than turning every model preamble into a durable task comment.
+- Certification consumes its one final reply slot only when Hermes supplies the
+  exact current event anchor and its final `notify` marker. Unknown or stale
+  explicit anchors never fall through to a newer route in the same scope.
 - Human comments, cancellation, and approval results return through the same
   channel and task/chat context.
 - Hermes treats inbound Deft actors as authorized upstream because the
@@ -167,6 +175,8 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
   outbound idempotency prevents duplicate visible replies. If acceptance never
   committed, the stale local identity is discarded and Deft reacquires the
   delivery through its normal lease path.
+- Adapter replacements inside one live Hermes gateway reuse a process-lifetime
+  worker identity. Only a new gateway process rotates it for restart proof.
 - A task route is retired after its first final platform reply, so later runtime
   continuations cannot add duplicate task comments. Chat routes remain available
   only in the current bounded process cache for conversational follow-ups; after
