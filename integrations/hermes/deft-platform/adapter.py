@@ -599,6 +599,17 @@ class DeftAdapter(BasePlatformAdapter):
         if route is None:
             return SendResult(success=False, error="No accepted Deft source event is available for this reply")
 
+        # Task delivery is source-bound. Final gateway output is notify-worthy,
+        # while runtime notices/status callbacks are unanchored and not marked
+        # for notification. Never let those advisories become the durable task
+        # reply or clear its restart journal before the model finishes.
+        if (
+            route.get("source_kind") == "task"
+            and not reply_to
+            and (metadata or {}).get("notify") is not True
+        ):
+            return SendResult(success=True, raw_response={"unanchored_status_suppressed": True})
+
         # Hermes labels tool-boundary commentary as interim transport output.
         # It is useful in a live chat stream, but mapping every preamble to a
         # durable task comment floods the task and obscures the actual work

@@ -360,6 +360,12 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
                 async def handler(event):
                     received.append(event)
+                    notice = await adapter.send(
+                        event.source.chat_id,
+                        "A runtime status notice must not complete the task delivery.",
+                        metadata={"thread_id": event.source.thread_id},
+                    )
+                    self.assertTrue(notice.success)
                     interim = await adapter.send(
                         event.source.chat_id,
                         "I am checking Deft Knowledge.",
@@ -370,13 +376,23 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                         },
                     )
                     self.assertTrue(interim.success)
-                    return "I picked this up and will use the launch notes."
+                    final = await adapter.send(
+                        event.source.chat_id,
+                        "I picked this up and will use the launch notes.",
+                        metadata={
+                            "thread_id": event.source.thread_id,
+                            "notify": True,
+                        },
+                    )
+                    self.assertTrue(final.success)
+                    return None
 
                 adapter.set_message_handler(handler)
                 self.assertTrue(await adapter.connect())
                 self.assertEqual(await adapter._poll_once(), 1)
                 while adapter._background_tasks:
                     await asyncio.gather(*tuple(adapter._background_tasks))
+                self.assertEqual(adapter._pending_events, {})
                 await adapter.disconnect()
             finally:
                 platform_registry.unregister("deft")
@@ -393,6 +409,7 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
         replies = [call for call in calls if call[1] == "/reply"]
         self.assertEqual(len(replies), 1)
         reply = replies[0]
+        self.assertEqual(reply[3]["content"], "I picked this up and will use the launch notes.")
         self.assertEqual(reply[3]["event_id"], "task-event-1")
         self.assertEqual(reply[3]["thread_id"], "task-uuid-1")
         self.assertNotIn("claim_token", reply[3])
