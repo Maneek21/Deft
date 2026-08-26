@@ -60,6 +60,7 @@
     "test:product-browser:seed": "tsx scripts/seed-product-browser-smoke.ts",
     "agent:hermes-channel": "node scripts/hermes-agent-channel-bridge.mjs",
     "agent:hermes-bundle": "node scripts/build-hermes-integration-bundle.mjs",
+    "test:hermes-integration-bundle": "node --test scripts/hermes-integration-bundle.test.mjs",
     "test:hermes-channel": "node --test scripts/hermes-agent-channel-bridge.test.mjs",
     "test:hermes-channel-service": "node --test scripts/hermes-channel-service.test.mjs",
     "test:hermes-employee-release-gate": "pnpm --filter @deft/api exec tsx src/scripts/hermes-employee-release-gate.ts",

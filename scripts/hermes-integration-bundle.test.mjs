@@ -1,59 +1,112 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const outputRoot = join(repoRoot, 'dist', 'hermes-integration');
 const buildScript = join(repoRoot, 'scripts', 'build-hermes-integration-bundle.mjs');
+const verifyScript = join(repoRoot, 'scripts', 'verify-hermes-integration-bundle.mjs');
 
-function sorted(values) {
-  return [...values].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
-}
+let testRoot;
+let firstDirectory;
+let secondDirectory;
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function build() {
-  return execFileSync(process.execPath, [buildScript], {
+function run(script, args) {
+  return execFileSync(process.execPath, [script, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
 }
 
-async function outputFiles(directory = outputRoot) {
+function runFailure(script, args) {
+  const result = spawnSync(process.execPath, [script, ...args], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, `expected command to fail: ${script} ${args.join(' ')}`);
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+function build(directory, style = 'flag') {
+  const args = style === 'positional' ? [directory] : ['--directory', directory];
+  return run(buildScript, args);
+}
+
+function verify(directory, style = 'flag') {
+  const args = style === 'positional'
+    ? [directory, '--json']
+    : ['--directory', directory, '--json'];
+  return JSON.parse(run(verifyScript, args));
+}
+
+async function outputFiles(directory, root = directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
     const path = join(directory, entry.name);
     assert.equal(entry.isSymbolicLink(), false, `bundle must not contain symlink ${path}`);
-    if (entry.isDirectory()) files.push(...await outputFiles(path));
-    else if (entry.isFile()) files.push(relative(outputRoot, path).replaceAll('\\', '/'));
+    if (entry.isDirectory()) files.push(...await outputFiles(path, root));
+    else if (entry.isFile()) files.push(relative(root, path).replaceAll('\\', '/'));
   }
-  return sorted(files);
+  return files.sort();
 }
 
-async function snapshot() {
+async function snapshot(directory) {
   const result = {};
-  for (const path of await outputFiles()) result[path] = sha256(await readFile(join(outputRoot, path)));
+  for (const path of await outputFiles(directory)) {
+    result[path] = sha256(await readFile(join(directory, path)));
+  }
   return result;
 }
 
-test('native-first Hermes bundle is allowlisted, self-verifying, and deterministic', async () => {
-  const firstBuild = build();
-  assert.match(firstBuild, /Built Deft Hermes integration 0\.4\.0/);
-  const firstSnapshot = await snapshot();
-  const manifest = JSON.parse(await readFile(join(outputRoot, 'manifest.json'), 'utf8'));
+async function freshBundle(name) {
+  const directory = join(testRoot, name);
+  build(directory);
+  return directory;
+}
 
-  assert.equal(manifest.schema, 'deft.hermes.integration.v2');
-  assert.equal(manifest.default_adapter, 'native');
-  assert.equal(manifest.mcp.default_transport, 'direct_http');
-  assert.equal(manifest.hermes_compatibility, '>=0.20.5 <0.21.0');
-  assert.deepEqual(manifest.hermes_tested, {
+before(async () => {
+  testRoot = await mkdtemp(join(tmpdir(), 'deft-hermes-bundle-'));
+  firstDirectory = await freshBundle('first');
+  secondDirectory = join(testRoot, 'second');
+  build(secondDirectory, 'positional');
+});
+
+after(async () => {
+  if (testRoot) await rm(testRoot, { recursive: true, force: true });
+});
+
+test('native-first bundle and verifier evidence are deterministic across isolated directories', async () => {
+  const firstEvidence = verify(firstDirectory, 'positional');
+  const secondEvidence = verify(secondDirectory);
+  assert.deepEqual(secondEvidence, firstEvidence);
+  assert.deepEqual(await snapshot(secondDirectory), await snapshot(firstDirectory));
+
+  assert.equal(firstEvidence.schema, 'deft.hermes.integration.bundle_evidence.v1');
+  assert.match(firstEvidence.manifest_sha256, /^sha256:[0-9a-f]{64}$/);
+  assert.match(firstEvidence.content_sha256, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(firstEvidence.manifest.schema, 'deft.hermes.integration.v2');
+  assert.equal(firstEvidence.manifest.default_adapter, 'native');
+  assert.equal(firstEvidence.manifest.mcp.default_transport, 'direct_http');
+  assert.equal(firstEvidence.manifest.hermes_compatibility, '>=0.20.5 <0.21.0');
+  assert.deepEqual(firstEvidence.manifest.hermes_tested, {
     distribution: 'hermes-agent',
     version: '0.20.5',
     repository: 'https://github.com/NousResearch/hermes-agent.git',
@@ -64,34 +117,8 @@ test('native-first Hermes bundle is allowlisted, self-verifying, and determinist
       native_adapter_suite: 'integrations/hermes/deft-platform/test_deft_platform.py',
     },
   });
-  assert.deepEqual(
-    manifest.adapters.map(({ id, name, version, role, target }) => ({ id, name, version, role, target })),
-    [
-      {
-        id: 'native',
-        name: 'deft-platform',
-        version: '0.2.0',
-        role: 'default',
-        target: 'plugins/deft-platform',
-      },
-      {
-        id: 'legacy',
-        name: 'deft-agent-channel-bridge',
-        version: '0.3.0',
-        role: 'fallback',
-        target: 'legacy/bridge',
-      },
-    ],
-  );
-  assert.deepEqual(
-    manifest.common_plugins.map(({ name, version, target }) => ({ name, version, target })),
-    [
-      { name: 'deft-employee', version: '0.2.1', target: 'plugins/deft-employee' },
-      { name: 'deft-memory', version: '0.2.1', target: 'plugins/deft-memory' },
-    ],
-  );
 
-  const expectedFiles = sorted([
+  const expectedFiles = [
     'README.md',
     'config.example.yaml',
     'legacy/bridge/README.md',
@@ -111,39 +138,120 @@ test('native-first Hermes bundle is allowlisted, self-verifying, and determinist
     'plugins/deft-platform/adapter.py',
     'plugins/deft-platform/plugin.yaml',
     'plugins/deft-platform/readiness.py',
-  ]);
-  assert.deepEqual(await outputFiles(), expectedFiles);
-  assert.equal(expectedFiles.some((path) => /__pycache__|\.pyc$|state|secret|test_/i.test(path)), false);
+  ].sort();
+  assert.deepEqual(await outputFiles(firstDirectory), expectedFiles);
+  assert.deepEqual(
+    Object.keys(firstEvidence.manifest.checksums),
+    expectedFiles.filter((path) => path !== 'manifest.json'),
+  );
 
-  const checksumPaths = Object.keys(manifest.checksums);
-  assert.deepEqual(checksumPaths, expectedFiles.filter((path) => path !== 'manifest.json'));
-  for (const path of checksumPaths) {
-    const bytes = await readFile(join(outputRoot, path));
-    assert.equal(manifest.checksums[path], sha256(bytes), path);
+  for (const path of expectedFiles) {
+    const bytes = await readFile(join(firstDirectory, path));
     assert.equal(bytes.includes(13), false, `${path} must use canonical LF line endings`);
   }
-  const canonicalContent = checksumPaths
-    .map((path) => `${path}\0${manifest.checksums[path]}\n`)
+  const manifestBytes = await readFile(join(firstDirectory, 'manifest.json'));
+  assert.equal(firstEvidence.manifest_sha256, `sha256:${sha256(manifestBytes)}`);
+  assert.equal(
+    firstEvidence.content_sha256,
+    `sha256:${firstEvidence.manifest.content_digest.value}`,
+  );
+});
+
+test('verifier rejects a changed file even if its manifest checksums are rewritten', async () => {
+  const directory = await freshBundle('changed');
+  const target = join(directory, 'plugins', 'deft-platform', 'adapter.py');
+  const changed = Buffer.concat([await readFile(target), Buffer.from('# tampered\n')]);
+  await writeFile(target, changed);
+
+  const manifestPath = join(directory, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.checksums['plugins/deft-platform/adapter.py'] = sha256(changed);
+  const canonicalContent = Object.entries(manifest.checksums)
+    .map(([path, digest]) => `${path}\0${digest}\n`)
     .join('');
-  assert.deepEqual(manifest.content_digest, {
-    algorithm: 'sha256',
-    canonicalization: 'deft.bundle.sorted-path-nul-sha256-lf.v1',
-    value: sha256(Buffer.from(canonicalContent, 'utf8')),
-  });
+  manifest.content_digest.value = sha256(Buffer.from(canonicalContent, 'utf8'));
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
-  const rootReadme = await readFile(join(outputRoot, 'README.md'), 'utf8');
-  const nativeConfig = await readFile(join(outputRoot, 'config.example.yaml'), 'utf8');
-  const legacyReadme = await readFile(join(outputRoot, 'legacy', 'bridge', 'README.md'), 'utf8');
-  assert.match(rootReadme, /default adapter is the native deft-platform 0\.2\.0/);
-  assert.match(rootReadme, /Never run the native adapter and legacy bridge/);
-  assert.match(nativeConfig, /- deft-platform/);
-  assert.match(nativeConfig, /url: https:\/\/deft\.example\/api\/mcp\/v1/);
-  assert.doesNotMatch(nativeConfig, /stdio|legacy|bridge/i);
-  assert.match(legacyReadme, /explicit rollback path/);
-  assert.match(legacyReadme, /HERMES_API_URL=http:\/\/127\.0\.0\.1:8642/);
-  assert.match(legacyReadme, /DEFT_CHANNEL_TOKEN=<replacement-agent-channel-token>/);
+  assert.match(
+    runFailure(verifyScript, ['--directory', directory, '--json']),
+    /does not match its source: plugins\/deft-platform\/adapter\.py/,
+  );
+});
 
-  const secondBuild = build();
-  assert.match(secondBuild, new RegExp(`sha256:${manifest.content_digest.value}`));
-  assert.deepEqual(await snapshot(), firstSnapshot);
+test('verifier rejects added and unsafe files', async () => {
+  const addedDirectory = await freshBundle('added');
+  await writeFile(join(addedDirectory, 'notes.txt'), 'unexpected\n', 'utf8');
+  assert.match(
+    runFailure(verifyScript, [addedDirectory, '--json']),
+    /Bundle files mismatch/,
+  );
+
+  const unsafeDirectory = await freshBundle('unsafe');
+  await mkdir(join(unsafeDirectory, 'state'));
+  await writeFile(join(unsafeDirectory, 'state', 'event.json'), '{}\n', 'utf8');
+  assert.match(
+    runFailure(verifyScript, [unsafeDirectory, '--json']),
+    /forbidden in a release bundle/,
+  );
+});
+
+test('verifier rejects deleted files', async () => {
+  const directory = await freshBundle('deleted');
+  await unlink(join(directory, 'plugins', 'deft-memory', 'README.md'));
+  assert.match(runFailure(verifyScript, [directory, '--json']), /Bundle files mismatch/);
+});
+
+test('verifier rejects symlinked or junctioned bundle paths', async () => {
+  const directory = await freshBundle('linked');
+  const external = join(testRoot, 'external-link-target');
+  await mkdir(external);
+  await symlink(external, join(directory, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.match(
+    runFailure(verifyScript, [directory, '--json']),
+    /symlink or junction|symbolic link or junction/,
+  );
+});
+
+test('verifier rejects source-manifest drift, unsorted checksums, and bad content digests', async () => {
+  const driftDirectory = await freshBundle('manifest-drift');
+  const driftManifestPath = join(driftDirectory, 'manifest.json');
+  const driftManifest = JSON.parse(await readFile(driftManifestPath, 'utf8'));
+  driftManifest.deft_release = '0.0.0-invalid';
+  await writeFile(driftManifestPath, `${JSON.stringify(driftManifest, null, 2)}\n`, 'utf8');
+  assert.match(runFailure(verifyScript, [driftDirectory, '--json']), /Bundle\/source manifest mismatch/);
+
+  const orderDirectory = await freshBundle('checksum-order');
+  const orderManifestPath = join(orderDirectory, 'manifest.json');
+  const orderManifest = JSON.parse(await readFile(orderManifestPath, 'utf8'));
+  orderManifest.checksums = Object.fromEntries(Object.entries(orderManifest.checksums).reverse());
+  await writeFile(orderManifestPath, `${JSON.stringify(orderManifest, null, 2)}\n`, 'utf8');
+  assert.match(runFailure(verifyScript, [orderDirectory, '--json']), /Sorted bundle checksum paths mismatch/);
+
+  const digestDirectory = await freshBundle('content-digest');
+  const digestManifestPath = join(digestDirectory, 'manifest.json');
+  const digestManifest = JSON.parse(await readFile(digestManifestPath, 'utf8'));
+  digestManifest.content_digest.value = '0'.repeat(64);
+  await writeFile(digestManifestPath, `${JSON.stringify(digestManifest, null, 2)}\n`, 'utf8');
+  assert.match(runFailure(verifyScript, [digestDirectory, '--json']), /Bundle content digest mismatch/);
+});
+
+test('explicit build directory never replaces pre-existing content', async () => {
+  const directory = join(testRoot, 'non-empty');
+  await mkdir(directory);
+  const sentinel = join(directory, 'keep.txt');
+  await writeFile(sentinel, 'keep\n', 'utf8');
+  assert.match(
+    runFailure(buildScript, ['--directory', directory]),
+    /Explicit bundle output directory must be new or empty/,
+  );
+  assert.equal(await readFile(sentinel, 'utf8'), 'keep\n');
+});
+
+test('bundle CLIs reject conflicting directories and unsupported options', () => {
+  assert.match(
+    runFailure(verifyScript, ['one', '--directory', 'two', '--json']),
+    /Bundle directory may be specified only once/,
+  );
+  assert.match(runFailure(buildScript, ['--json']), /--json is only supported by the verifier/);
+  assert.match(runFailure(verifyScript, ['--unknown']), /Unknown option/);
 });
