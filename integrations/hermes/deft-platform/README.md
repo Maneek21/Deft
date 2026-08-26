@@ -144,8 +144,13 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
 
 - Accepting a channel event means transport delivery only; it does not claim
   that business work is complete.
-- Hermes reports real milestones or blockers with `record_progress` and changes
-  Deft state through MCP.
+- Chat and task initiation are intentionally distinct. A chat message may drive
+  Knowledge reads, external research, governed MCP writes, and a source-bound
+  reply without silently creating a Deft task. `record_progress` remains
+  available only for an accepted task assignment, where its milestone has an
+  explicit task owner and lifecycle.
+- Hermes reports real task milestones or blockers with `record_progress` and
+  changes other Deft state through the appropriate governed MCP tools.
 - Hermes tool-boundary commentary remains transient for task assignments;
   Deft persists the final channel reply and the substantive MCP task report,
   rather than turning every model preamble into a durable task comment.
@@ -158,6 +163,11 @@ runtime's own channels, tools, skills, memory, browser, and research providers.
 - The adapter journals accepted work before handing it to Hermes. A restart
   resumes the accepted event and stable outbound idempotency prevents duplicate
   visible replies.
+- A task route is retired after its first final platform reply, so later runtime
+  continuations cannot add duplicate task comments. Chat routes remain available
+  only in the current bounded process cache for conversational follow-ups; after
+  restart, output without a newly accepted source event is rejected rather than
+  guessed onto a conversation.
 - Deft permissions, approvals, tenant isolation, receipts, and module policy
   remain authoritative for Deft writes.
 

@@ -231,6 +231,18 @@ class DeftAdapter(BasePlatformAdapter):
         while len(self._routes_by_scope) > MAX_RECENT_ROUTES:
             self._routes_by_scope.pop(next(iter(self._routes_by_scope)))
 
+    def _forget_routes(self, event_id: str) -> None:
+        self._routes_by_message = {
+            key: route
+            for key, route in self._routes_by_message.items()
+            if str(route.get("event_id") or "") != event_id
+        }
+        self._routes_by_scope = {
+            key: route
+            for key, route in self._routes_by_scope.items()
+            if str(route.get("event_id") or "") != event_id
+        }
+
     async def _dispatch_pending(self, event_id: str) -> bool:
         if self._message_handler is None or event_id in self._inflight_event_ids:
             return False
@@ -301,10 +313,10 @@ class DeftAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             return
         route = self._routes_by_message.get(str(event.message_id or ""))
-        # A task channel turn can hand work to Hermes's deferred execution and
-        # finish before that work produces its outward completion. Keep task
-        # deliveries journaled until the final non-interim platform reply.
-        if route is not None and route.get("source_kind") != "task":
+        # Task and chat turns can hand work to Hermes's deferred execution and
+        # finish before that work produces its outward completion. Keep both
+        # source-bound deliveries journaled until a notify-marked final reply.
+        if route is not None and route.get("source_kind") not in {"task", "message"}:
             self._complete_pending(str(route["event_id"]))
 
     def _compatibility_query(self) -> dict:
@@ -599,13 +611,12 @@ class DeftAdapter(BasePlatformAdapter):
         if route is None:
             return SendResult(success=False, error="No accepted Deft source event is available for this reply")
 
-        # Task delivery is source-bound. Final gateway output is notify-worthy,
-        # while runtime notices/status callbacks are unanchored and not marked
-        # for notification. Never let those advisories become the durable task
-        # reply or clear its restart journal before the model finishes.
+        # Source-bound final gateway output is notify-worthy, while runtime
+        # notices/status callbacks are unanchored and not marked for
+        # notification. Never let those advisories become a durable Deft reply
+        # or clear its restart journal before the model finishes.
         if (
-            route.get("source_kind") == "task"
-            and not reply_to
+            not reply_to
             and (metadata or {}).get("notify") is not True
         ):
             return SendResult(success=True, raw_response={"unanchored_status_suppressed": True})
@@ -647,6 +658,10 @@ class DeftAdapter(BasePlatformAdapter):
             else result.get("id") or result.get("message_id")
         )
         if route.get("source_kind") == "task":
+            event_id = str(route["event_id"])
+            self._complete_pending(event_id)
+            self._forget_routes(event_id)
+        elif route.get("source_kind") == "message" and (metadata or {}).get("notify") is True:
             self._complete_pending(str(route["event_id"]))
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 

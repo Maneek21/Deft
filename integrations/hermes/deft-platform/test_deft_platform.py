@@ -258,6 +258,12 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
 
                 async def handler(event):
                     received.append(event)
+                    notice = await adapter.send(
+                        event.source.chat_id,
+                        "A runtime advisory must not become the chat reply.",
+                        metadata={"thread_id": event.source.thread_id},
+                    )
+                    self.assertTrue(notice.success)
                     progress = await adapter.send(
                         event.source.chat_id,
                         "Working on the summary.",
@@ -393,6 +399,16 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                 while adapter._background_tasks:
                     await asyncio.gather(*tuple(adapter._background_tasks))
                 self.assertEqual(adapter._pending_events, {})
+                late = await adapter.send(
+                    "org-1:tasks",
+                    "A late continuation must not create a second task reply.",
+                    metadata={
+                        "thread_id": "task-uuid-1",
+                        "notify": True,
+                    },
+                )
+                self.assertFalse(late.success)
+                self.assertIn("No accepted Deft source event", late.error or "")
                 await adapter.disconnect()
             finally:
                 platform_registry.unregister("deft")

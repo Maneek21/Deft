@@ -596,7 +596,20 @@ test('autonomous platform acceptance ends transport delivery without completing 
   assert.equal(connect.status, 200, JSON.stringify(connected));
   assert.equal(connected.adapter_mode, 'autonomous_platform');
 
-  const event = await publishMessageEvent(`autonomous-accept-${crypto.randomUUID()}`);
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mention',
+    action: 'chat_mention',
+    params: { message_id: sourceMessageId },
+    approval_tier: 'auto',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const event = await publishMessageEvent(
+    `autonomous-accept-${crypto.randomUUID()}`,
+    fallbackAction!.id,
+  );
   const poll = await app.request(
     `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-accept-worker')}`,
     { headers: { authorization: `Bearer ${bearer}` } },
@@ -647,6 +660,22 @@ test('autonomous platform acceptance ends transport delivery without completing 
   assert.equal(replied.transport_reply, 'sent');
   assert.equal(replied.business_outcome, null);
 
+  const [closedFallback] = await db.select().from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
+  assert.equal(closedFallback?.approval_status, 'approved');
+  assert.equal((closedFallback?.result as any)?.channel_state, 'acknowledged');
+  assert.equal((closedFallback?.result as any)?.work_outcome, null);
+  assert.equal((closedFallback?.result as any)?.transport_reply, 'sent');
+
+  // Model a reply persisted by an older API that did not close the fallback.
+  // Replaying the same idempotency key must reconcile that phantom Inbox work.
+  await db.update(agentActions).set({
+    approval_status: 'pending',
+    approved_at: null,
+    executed_at: null,
+    result: null,
+  }).where(eq(agentActions.id, fallbackAction!.id));
+
   const replay = await app.request('/api/agent-channel/v1/reply', {
     method: 'POST',
     headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
@@ -660,6 +689,12 @@ test('autonomous platform acceptance ends transport delivery without completing 
   const replayed = await replay.json() as any;
   assert.equal(replay.status, 200, JSON.stringify(replayed));
   assert.equal(replayed.idempotent, true);
+
+  const [reconciledFallback] = await db.select().from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
+  assert.equal(reconciledFallback?.approval_status, 'approved');
+  assert.equal((reconciledFallback?.result as any)?.channel_state, 'acknowledged');
+  assert.equal((reconciledFallback?.result as any)?.work_outcome, null);
 
   const [stillAccepted] = await db.select().from(agentChannelEvents)
     .where(eq(agentChannelEvents.id, event.id)).limit(1);

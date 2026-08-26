@@ -360,7 +360,9 @@ async function closeFallbackWorkForEvent(params: {
   principal: AgentChannelPrincipal;
   runtimeSessionKey?: string | null;
   detail?: string | null;
-  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain';
+  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain' | null;
+  channelState?: 'acknowledged' | 'completed';
+  transportReply?: 'sent' | null;
 }) {
   const payload = (params.event.payload ?? {}) as Record<string, unknown>;
   const actionId = typeof payload.pending_action_id === 'string' ? payload.pending_action_id : null;
@@ -374,8 +376,9 @@ async function closeFallbackWorkForEvent(params: {
       executed_at: now,
       result: {
         channel_event_id: params.event.id,
-        channel_state: 'completed',
-        work_outcome: params.outcome ?? 'completed',
+        channel_state: params.channelState ?? 'completed',
+        work_outcome: params.outcome === undefined ? 'completed' : params.outcome,
+        ...(params.transportReply ? { transport_reply: params.transportReply } : {}),
         runtime_session_key: params.runtimeSessionKey ?? null,
         detail: params.detail ?? null,
       },
@@ -791,6 +794,17 @@ agentChannelRoutes.post('/reply', async (c) => {
     )
     .limit(1);
   if (existingAttempt?.response_json) {
+    if (autonomousReply && existingAttempt.status === 'completed') {
+      await closeFallbackWorkForEvent({
+        event,
+        principal,
+        runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+        detail: parsed.data.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+        outcome: null,
+        channelState: 'acknowledged',
+        transportReply: 'sent',
+      });
+    }
     return c.json({ ok: true, idempotent: true, result: existingAttempt.response_json });
   }
   if (existingAttempt) {
@@ -832,6 +846,17 @@ agentChannelRoutes.post('/reply', async (c) => {
       )
       .limit(1);
     if (latestAttempt?.response_json) {
+      if (autonomousReply && latestAttempt.status === 'completed') {
+        await closeFallbackWorkForEvent({
+          event,
+          principal,
+          runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+          detail: parsed.data.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+          outcome: null,
+          channelState: 'acknowledged',
+          transportReply: 'sent',
+        });
+      }
       return c.json({ ok: true, idempotent: true, result: latestAttempt.response_json });
     }
     return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
@@ -886,6 +911,17 @@ agentChannelRoutes.post('/reply', async (c) => {
       lastEventId: event.id,
       lastError: result.isError ? text : null,
     });
+    if (!result.isError) {
+      await closeFallbackWorkForEvent({
+        event,
+        principal,
+        runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+        detail: parsed.data.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+        outcome: null,
+        channelState: 'acknowledged',
+        transportReply: 'sent',
+      });
+    }
     return c.json({
       ok: !result.isError,
       idempotent: false,
