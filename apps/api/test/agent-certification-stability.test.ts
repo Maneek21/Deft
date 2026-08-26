@@ -95,15 +95,11 @@ before(async () => {
       [ORG_ID, AUTH_EMPLOYEE_ID, JSON.stringify({
         worker_id: 'certification-worker-1',
         restart_count: 0,
-        runtime_attestation: {
-          schema: 'deft.hermes.runtime_attestation.v1',
-          ready: true,
-          responses_api: true,
-          skills_api: true,
-          configured_model: 'test-hermes-model',
-          available_models: ['test-hermes-model'],
-          enabled_toolsets: [],
-        },
+        adapter_mode: 'autonomous_platform',
+        runtime_capabilities: [
+          'autonomous_platform_adapter_v1',
+          'accepted_event_rehydration_v1',
+        ],
       })],
     );
     await client.query(
@@ -267,6 +263,17 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   );
   assert.equal(developerResponse.status, 200);
   const developerBody = (await developerResponse.json()) as any;
+  assert.equal(developerBody.onboarding_preflight.ready, true);
+  assert.deepEqual(
+    developerBody.onboarding_preflight.checks
+      .filter((check: any) => ['hermes_runtime', 'hermes_skills', 'hermes_model'].includes(check.key))
+      .map((check: any) => [check.key, check.status]),
+    [
+      ['hermes_runtime', 'warning'],
+      ['hermes_skills', 'warning'],
+      ['hermes_model', 'warning'],
+    ],
+  );
   const interactiveCommand = developerBody.runtime_setup.commands.find(
     (command: any) => command.label === 'Open an interactive certification chat',
   );
@@ -294,6 +301,8 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   assert.ok(startBody.challenge.required_tools.includes('module_list'));
   assert.match(startBody.instructions, /allowed_next_statuses/);
   assert.match(startBody.instructions, /module_schema_get/);
+  assert.match(startBody.instructions, /restart the Hermes gateway/i);
+  assert.doesNotMatch(startBody.instructions, /restart the (?:Hermes )?channel bridge/i);
   assert.match(startBody.runtime_setup.certification_prompt, /final reply.*nonce/i);
 
   await withClient(async (client) => {

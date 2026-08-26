@@ -34,6 +34,7 @@ import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
   AGENT_CHANNEL_CAPABILITIES,
+  AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
   DEFT_RELEASE_VERSION,
   issueAgentChannelToken,
   publishAgentChannelEvent,
@@ -561,6 +562,8 @@ function hermesIntegrationBundleUrl(): string {
     || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
 }
 
+export const HERMES_INTEGRATION_VERSION = '0.4.0';
+
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',
   'task_query',
@@ -842,8 +845,10 @@ async function loadCertificationChallengeEvidence(params: {
   };
 }
 
-function hermesBridgeScript(): string {
+function hermesLegacyMcpBridgeScript(): string {
   return `#!/usr/bin/env node
+// LEGACY ROLLBACK ONLY. Disable deft-platform before using this stdio shim;
+// never run the native and legacy Deft adapters for one employee at the same time.
 import { stdin, stdout } from 'node:process';
 
 const endpoint = process.env.DEFT_MCP_URL;
@@ -973,7 +978,7 @@ function buildCertificationPrompt(
   ].join('\n');
 }
 
-function buildRuntimeSetup(
+export function buildRuntimeSetup(
   employee: { name: string; slug: string; runtime_kind?: string | null },
   nonce: string | null,
 ): RuntimeSetup {
@@ -988,7 +993,7 @@ function buildRuntimeSetup(
       tool_server_name: 'deft',
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
       channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
-      integration_version: '0.3.0',
+      integration_version: HERMES_INTEGRATION_VERSION,
       integration_bundle_url: hermesIntegrationBundleUrl(),
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
@@ -996,21 +1001,27 @@ function buildRuntimeSetup(
       tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
       setup_steps: [
         `Download and extract the immutable Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
-        'Use the bundled Deft MCP stdio bridge and Hermes plugins; do not copy these files from another Deft checkout.',
-        'Add the mcp_servers.deft block to the active Hermes config.yaml.',
-        'Enable the authenticated Hermes Responses API and start the Hermes gateway.',
-        'Set the Agent Channel quick-config variables shown below, including the Hermes API URL, key, and model.',
-        'Start the Deft Hermes Agent Channel bridge and keep it running beside Hermes.',
-        'Restart or reload Hermes so the MCP server is discovered.',
-        'Run hermes mcp test deft and verify Deft reports the Deft MCP tool list.',
+        'Install the bundled deft-platform, deft-employee, and deft-memory plugin directories into the active Hermes profile; do not copy them from another Deft checkout.',
+        'Enable the three bundled plugins in the active Hermes config.yaml. deft-platform must be the only Agent Channel delivery adapter for this employee.',
+        'Replace the home_channel chat_id placeholders with an existing organization and space that this employee may access.',
+        'Configure mcp_servers.deft as the direct HTTP Deft MCP endpoint with this employee\'s separate MCP bearer token; no stdio shim is required.',
+        'Set the five employee-bound DEFT_CHANNEL_URL, DEFT_CHANNEL_TOKEN, DEFT_EMPLOYEE_SLUG, DEFT_MCP_URL, and DEFT_MCP_TOKEN variables, then run the bundled deft-platform readiness.py probe before starting Hermes.',
+        'Enable the authenticated Hermes Responses API and start the Hermes gateway. The native plugin consumes Agent Channel work inside Hermes.',
+        'Run hermes mcp test deft and verify the direct HTTP endpoint reports the Deft MCP tool list.',
         'Run a Hermes chat prompt that uses the model-visible mcp_deft_<tool> names.',
         'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
+        'Rollback only: stop Hermes, disable deft-platform, rotate both employee credentials, and then use the matched legacy Node bridge. Never run native and legacy adapters together.',
       ],
       commands: [
         {
           label: 'Download matched Deft integration',
           command: `curl -fL -o deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz ${hermesIntegrationBundleUrl()}`,
           description: `Downloads the checksummed Hermes integration built for Deft ${DEFT_RELEASE_VERSION}.`,
+        },
+        {
+          label: 'Probe native Deft readiness',
+          command: 'python ./plugins/deft-platform/readiness.py',
+          description: 'From the extracted bundle or Hermes profile root, verifies the employee-bound Agent Channel and direct HTTP MCP credentials before delivery starts.',
         },
         {
           label: 'List configured MCP servers',
@@ -1020,7 +1031,7 @@ function buildRuntimeSetup(
         {
           label: 'Test Deft MCP discovery',
           command: 'hermes mcp test deft',
-          description: 'Confirms Hermes can initialize the bridge and discover Deft tools.',
+          description: 'Confirms Hermes can reach the direct HTTP Deft MCP endpoint and discover Deft tools.',
         },
         {
           label: 'Verify enabled tools',
@@ -1030,12 +1041,7 @@ function buildRuntimeSetup(
         {
           label: 'Start the Hermes API',
           command: 'hermes gateway run --force',
-          description: 'Runs the authenticated Hermes Responses API used for persistent Agent Channel turns.',
-        },
-        {
-          label: 'Start live Deft delivery',
-          command: 'node ./deft-hermes-integration/scripts/hermes-agent-channel-bridge.mjs',
-          description: 'Consumes the durable Agent Channel inbox, asks Hermes, and posts exactly one reply through Deft.',
+          description: 'Runs the authenticated Hermes Responses API and the enabled native deft-platform delivery adapter.',
         },
         {
           label: 'Open an interactive certification chat',
@@ -1044,18 +1050,39 @@ function buildRuntimeSetup(
         },
       ],
       config_snippet: [
+        'plugins:',
+        '  enabled:',
+        '    - deft-platform',
+        '    - deft-employee',
+        '    - deft-memory',
+        '',
+        'platforms:',
+        '  deft:',
+        '    enabled: true',
+        '    home_channel:',
+        '      platform: deft',
+        '      chat_id: <organization-id>:<space-id>',
+        '      name: Deft home',
+        '    extra:',
+        `      channel_url: ${channelEndpoint}`,
+        '      token: <employee-agent-channel-token>',
+        `      employee_slug: ${employee.slug}`,
+        '',
         'mcp_servers:',
         '  deft:',
-        '    command: node',
-        '    args:',
-        '      - /absolute/path/to/deft-mcp-stdio.mjs',
-        '    env:',
-        `      DEFT_MCP_URL: ${endpoint}`,
-        '      DEFT_MCP_TOKEN: <bearer-token>',
-        '    connect_timeout: 60',
-        '    timeout: 120',
+        `    url: ${endpoint}`,
+        '    headers:',
+        '      Authorization: Bearer <employee-mcp-token>',
+        '    enabled: true',
+        '',
+        'memory:',
+        '  provider: deft-memory',
+        '',
+        'display:',
+        '  busy_input_mode: queue',
+        '  busy_ack_enabled: false',
       ].join('\n'),
-      bridge_script: hermesBridgeScript(),
+      bridge_script: hermesLegacyMcpBridgeScript(),
       certification_prompt: certificationPrompt,
       troubleshooting: [
         'If hermes mcp test deft passes but certification is pending, the model loop has not called Deft tools yet.',
@@ -1064,9 +1091,10 @@ function buildRuntimeSetup(
         'Use mcp_deft_memory_recall for wiki context; mcp_deft_wiki_search exists only for compatibility with older/native wording.',
         'If Hermes exits before tool calls with a provider/auth error, fix Hermes model credentials first.',
         'Avoid passing a toolset override that disables MCP tools for the run.',
-        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; the Hermes API and the matched bundled Agent Channel bridge must both be running.',
-        `If the bridge reports INCOMPATIBLE_CHANNEL, install the integration bundle for Deft ${DEFT_RELEASE_VERSION}; do not enable a legacy fallback.`,
-        'If a channel reply appears twice, stop any older bridge process and verify Hermes is not calling chat-writing MCP tools directly.',
+        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; deft-platform must be enabled in the active profile and the Hermes gateway must be running.',
+        `If deft-platform reports INCOMPATIBLE_CHANNEL, install the integration bundle for Deft ${DEFT_RELEASE_VERSION}; do not mix adapter versions.`,
+        'If a channel reply appears twice, stop any legacy Agent Channel bridge or duplicate Hermes profile immediately. Only one adapter may consume work for an employee.',
+        'The embedded Node stdio shim and bundled Node Agent Channel bridge are rollback-only. Stop Hermes and disable deft-platform before using them, and rotate both employee credentials during rollback.',
       ],
     };
   }
@@ -1115,7 +1143,9 @@ function certificationInstructions(
     'For task_query, search for any active task or request a small list, and confirm returned tasks expose allowed_next_statuses. Do not mutate task state during certification.',
     'For module_list, request enabled modules. If one exists, call module_schema_get and inspect its create/update input schemas and collection examples. An empty list is valid; do not mutate module records during certification.',
     `For ping_alive, identify yourself naturally as ${employee.name}; do not prefix every future chat message with your name.`,
-    'After the first assignment passes, restart the channel bridge once. Deft will send a fresh assignment to prove reconnect persistence.',
+    runtimeKindOf(employee) === 'hermes'
+      ? 'After the first assignment passes, restart the Hermes gateway once. Deft will send a fresh assignment to prove native deft-platform reconnect persistence.'
+      : 'After the first assignment passes, restart the channel runtime once. Deft will send a fresh assignment to prove reconnect persistence.',
     ...setup.troubleshooting.map((line) => `Troubleshooting: ${line}`),
   ].join('\n');
 }
@@ -1153,7 +1183,7 @@ function buildCertificationStages(params: {
       detail: mcpReachable
         ? 'Deft has seen this employee reach the MCP server.'
         : runtimeKind === 'hermes'
-          ? 'Run hermes mcp test deft after adding the Deft bridge.'
+          ? 'Run hermes mcp test deft after configuring the direct HTTP Deft MCP server.'
           : 'Connect the runtime to the Deft MCP endpoint.',
     },
     {
@@ -1209,8 +1239,12 @@ function buildCertificationStages(params: {
       label: 'Runtime restart detected',
       status: params.restartDetected ? 'pass' : 'pending',
       detail: params.restartDetected
-        ? 'The remote bridge reconnected with a new worker identity.'
-        : 'Restart the Hermes channel bridge once to prove durable recovery.',
+        ? runtimeKind === 'hermes'
+          ? 'The native deft-platform adapter reconnected with a new worker identity.'
+          : 'The remote channel runtime reconnected with a new worker identity.'
+        : runtimeKind === 'hermes'
+          ? 'Restart the Hermes gateway once to prove native adapter recovery.'
+          : 'Restart the channel runtime once to prove durable recovery.',
     },
     {
       key: 'post_restart_assignment',
@@ -1263,7 +1297,7 @@ function certificationFailureReason(params: {
   const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
   if (!mcpReachable) {
     return runtimeKind === 'hermes'
-      ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the bridge config.'
+      ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the direct HTTP MCP config.'
       : 'The runtime has not reached Deft MCP yet.';
   }
   if (!params.channelEventSeen) return 'The Hermes runtime has not claimed the Agent Channel certification assignment.';
@@ -1278,8 +1312,16 @@ function certificationFailureReason(params: {
     return 'Certification did not verify a replay-safe employee-private memory page and recall round-trip.';
   }
   if (!params.channelReplyNonceSeen) return 'Hermes completed tool calls but did not reply through Agent Channel with the certification nonce.';
-  if (!params.restartDetected) return 'Restart the Hermes channel bridge once so Deft can prove reconnect persistence.';
-  if (!params.restartProofCompleted) return 'The bridge reconnected, but Hermes has not completed the post-restart proof assignment yet.';
+  if (!params.restartDetected) {
+    return runtimeKind === 'hermes'
+      ? 'Restart the Hermes gateway once so Deft can prove native deft-platform reconnect persistence.'
+      : 'Restart the channel runtime once so Deft can prove reconnect persistence.';
+  }
+  if (!params.restartProofCompleted) {
+    return runtimeKind === 'hermes'
+      ? 'The native deft-platform adapter reconnected, but Hermes has not completed the post-restart proof assignment yet.'
+      : 'The channel runtime reconnected, but it has not completed the post-restart proof assignment yet.';
+  }
   return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
 }
 
@@ -2423,6 +2465,10 @@ async function loadAgentOnboardingPreflight(
   const attestation = metadata.runtime_attestation && typeof metadata.runtime_attestation === 'object'
     ? metadata.runtime_attestation as any
     : null;
+  const adapterMode = typeof metadata.adapter_mode === 'string' ? metadata.adapter_mode : null;
+  const runtimeCapabilities = Array.isArray(metadata.runtime_capabilities)
+    ? metadata.runtime_capabilities.filter((value): value is string => typeof value === 'string')
+    : [];
   return evaluateAgentOnboardingPreflight({
     employee: {
       active: employee.is_active && !employee.is_deleted,
@@ -2433,7 +2479,13 @@ async function loadAgentOnboardingPreflight(
       max_daily_actions: employee.max_daily_actions,
       daily_action_count: employee.daily_action_count,
     },
-    connection: connection ? { status: connection.status, attestation } : null,
+    connection: connection ? {
+      status: connection.status,
+      adapter_mode: adapterMode,
+      runtime_capabilities: runtimeCapabilities,
+      attestation,
+    } : null,
+    nativeRequiredCapabilities: AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
     requirements,
     modules: installedModules as Array<{
       module_id: string;

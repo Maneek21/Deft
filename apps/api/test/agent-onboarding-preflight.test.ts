@@ -14,6 +14,8 @@ const base = {
   },
   connection: {
     status: 'connected',
+    adapter_mode: 'supervised_runtime',
+    runtime_capabilities: [],
     attestation: {
       ready: true,
       responses_api: true,
@@ -23,6 +25,10 @@ const base = {
       enabled_toolsets: ['web'],
     },
   },
+  nativeRequiredCapabilities: [
+    'autonomous_platform_adapter_v1',
+    'accepted_event_rehydration_v1',
+  ],
   requirements: {
     modules: [{ module_id: 'contacts', access: 'write' as const }],
     hermes_toolsets: ['web'],
@@ -40,6 +46,77 @@ test('preflight passes Deft surfaces and remote Hermes toolsets without importin
   assert.ok(result.checks.some((check) => check.key === 'hermes_toolset:web' && check.status === 'pass'));
   assert.ok(result.checks.some((check) => check.key === 'action_headroom' && check.status === 'pass'));
   assert.ok(result.checks.some((check) => check.key === 'hermes_model' && check.status === 'pass'));
+});
+
+test('native autonomous preflight passes without legacy runtime attestation', () => {
+  const result = evaluateAgentOnboardingPreflight({
+    ...base,
+    connection: {
+      status: 'connected',
+      adapter_mode: 'autonomous_platform',
+      runtime_capabilities: [...base.nativeRequiredCapabilities],
+      attestation: null,
+    },
+    requirements: { ...base.requirements, hermes_toolsets: [] },
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(result.checks.find((check) => check.key === 'channel_compatibility')?.status, 'pass');
+  assert.deepEqual(
+    result.checks
+      .filter((check) => ['hermes_runtime', 'hermes_skills', 'hermes_model'].includes(check.key))
+      .map((check) => [check.key, check.status]),
+    [
+      ['hermes_runtime', 'warning'],
+      ['hermes_skills', 'warning'],
+      ['hermes_model', 'warning'],
+    ],
+  );
+  assert.match(
+    result.checks.find((check) => check.key === 'hermes_runtime')?.detail ?? '',
+    /certification challenge must prove the model loop/i,
+  );
+});
+
+test('native autonomous preflight rejects a missing required channel capability', () => {
+  const result = evaluateAgentOnboardingPreflight({
+    ...base,
+    connection: {
+      status: 'connected',
+      adapter_mode: 'autonomous_platform',
+      runtime_capabilities: ['autonomous_platform_adapter_v1'],
+      attestation: null,
+    },
+  });
+
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.checks.find((check) => check.key === 'channel_compatibility'), {
+    key: 'channel_compatibility',
+    status: 'fail',
+    detail: 'The native adapter is missing required Agent Channel capabilities: accepted_event_rehydration_v1.',
+    repair: 'Install the Hermes integration bundle matched to this Deft release.',
+  });
+});
+
+test('native autonomous preflight does not waive an explicitly required model', () => {
+  const result = evaluateAgentOnboardingPreflight({
+    ...base,
+    connection: {
+      status: 'connected',
+      adapter_mode: 'autonomous_platform',
+      runtime_capabilities: [...base.nativeRequiredCapabilities],
+      attestation: null,
+    },
+    requirements: { ...base.requirements, required_model: 'pinned-model' },
+  });
+
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.checks.find((check) => check.key === 'hermes_model'), {
+    key: 'hermes_model',
+    status: 'fail',
+    detail: 'Native delivery did not verify required model pinned-model.',
+    repair: 'Attest pinned-model as the configured available model before certification.',
+  });
 });
 
 test('preflight names every missing dependency before certification', () => {

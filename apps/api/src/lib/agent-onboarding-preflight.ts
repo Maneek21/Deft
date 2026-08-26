@@ -26,6 +26,8 @@ export function evaluateAgentOnboardingPreflight(input: {
   };
   connection: {
     status: string | null;
+    adapter_mode?: string | null;
+    runtime_capabilities?: string[];
     attestation?: {
       ready?: boolean;
       responses_api?: boolean;
@@ -35,6 +37,7 @@ export function evaluateAgentOnboardingPreflight(input: {
       enabled_toolsets?: string[];
     } | null;
   } | null;
+  nativeRequiredCapabilities: readonly string[];
   requirements: {
     modules: ModuleRequirement[];
     hermes_toolsets: string[];
@@ -49,6 +52,9 @@ export function evaluateAgentOnboardingPreflight(input: {
   const required = (key: string, pass: boolean, success: string, failure: string, repair: string) => {
     checks.push({ key, status: pass ? 'pass' : 'fail', detail: pass ? success : failure, repair: pass ? null : repair });
   };
+  const observed = (key: string, verified: boolean, success: string, warning: string, repair: string) => {
+    checks.push({ key, status: verified ? 'pass' : 'warning', detail: verified ? success : warning, repair: verified ? null : repair });
+  };
 
   required('employee_active', input.employee.active && !input.employee.unhealthy,
     'Employee is active and its circuit breaker is clear.',
@@ -58,40 +64,80 @@ export function evaluateAgentOnboardingPreflight(input: {
     'MCP and Agent Channel credentials are issued.',
     'Issue both MCP and Agent Channel credentials.',
     'Generate both credentials from the employee Developer settings.');
-  required('channel_compatibility', input.connection?.status === 'connected',
-    'The remote bridge is connected with the current Agent Channel contract.',
-    input.connection?.status === 'incompatible'
-      ? 'The remote bridge is incompatible with this Deft release.'
-      : 'The remote bridge is not connected and ready.',
-    input.connection?.status === 'incompatible'
+  const adapterMode = input.connection?.adapter_mode;
+  const isNative = adapterMode === 'autonomous_platform';
+  const isLegacy = adapterMode === undefined || adapterMode === null || adapterMode === 'supervised_runtime';
+  const runtimeCapabilities = new Set(input.connection?.runtime_capabilities ?? []);
+  const missingNativeCapabilities = isNative
+    ? input.nativeRequiredCapabilities.filter((capability) => !runtimeCapabilities.has(capability))
+    : [];
+  const channelCompatible = input.connection?.status === 'connected'
+    && (isNative ? missingNativeCapabilities.length === 0 : isLegacy);
+  const channelFailure = input.connection?.status === 'incompatible'
+    ? 'The delivery adapter is incompatible with this Deft release.'
+    : !isNative && !isLegacy
+      ? `The delivery adapter reported unsupported mode ${adapterMode}.`
+      : missingNativeCapabilities.length > 0
+        ? `The native adapter is missing required Agent Channel capabilities: ${missingNativeCapabilities.join(', ')}.`
+        : 'The delivery adapter is not connected and ready.';
+  required('channel_compatibility', channelCompatible,
+    isNative
+      ? 'The native autonomous platform adapter is connected with the required Agent Channel capabilities.'
+      : 'The supervised fallback adapter is connected with the current Agent Channel contract.',
+    channelFailure,
+    input.connection?.status === 'incompatible' || missingNativeCapabilities.length > 0
       ? 'Install the Hermes integration bundle matched to this Deft release.'
-      : 'Start or repair the Agent Channel bridge, then refresh readiness.');
+      : 'Start or repair the Agent Channel adapter, then refresh readiness.');
 
   const attestation = input.connection?.attestation;
-  required('hermes_runtime', attestation?.ready === true && attestation.responses_api === true,
-    'Hermes runtime and Responses API are reachable.',
-    'Hermes runtime preflight has not passed.',
-    'Start the authenticated Hermes gateway and confirm its Responses API is enabled.');
-  if (input.requirements.require_skills_api !== false) {
-    required('hermes_skills', attestation?.skills_api === true,
-      'Hermes skills capability is available.',
-      'Hermes has not attested its skills capability.',
-      'Enable the Hermes skills API in the remote runtime; do not install skills in Deft.');
-  }
   const configuredModel = attestation?.configured_model?.trim() ?? '';
   const availableModels = new Set(attestation?.available_models ?? []);
   const requiredModel = input.requirements.required_model?.trim();
   const modelAvailable = Boolean(configuredModel)
     && availableModels.has(configuredModel)
     && (!requiredModel || configuredModel === requiredModel);
-  required('hermes_model', modelAvailable,
-    `Hermes model ${configuredModel} is configured and available.`,
-    requiredModel
-      ? `Hermes must attest configured model ${requiredModel} as available.`
-      : 'Hermes has not attested its configured model as available.',
-    requiredModel
-      ? `Configure ${requiredModel} in Hermes and restart the gateway.`
-      : 'Configure an available model in Hermes and restart the gateway.');
+  if (isNative) {
+    observed('hermes_runtime', attestation?.ready === true && attestation.responses_api === true,
+      'Hermes runtime and Responses API are attested as reachable.',
+      'Native delivery is compatible, but legacy runtime attestation did not verify the Responses API. The real certification challenge must prove the model loop.',
+      'Confirm the authenticated Hermes gateway is running, then complete the certification challenge.');
+    if (input.requirements.require_skills_api !== false) {
+      observed('hermes_skills', attestation?.skills_api === true,
+        'Hermes skills capability is attested as available.',
+        'Native delivery does not currently verify the optional Hermes skills API. Certification may proceed without claiming this capability is verified.',
+        'Verify required skills in Hermes before assigning work that depends on them.');
+    }
+    if (requiredModel) {
+      required('hermes_model', modelAvailable,
+        `Hermes model ${configuredModel} is attested as configured and available.`,
+        `Native delivery did not verify required model ${requiredModel}.`,
+        `Attest ${requiredModel} as the configured available model before certification.`);
+    } else {
+      observed('hermes_model', modelAvailable,
+        `Hermes model ${configuredModel} is attested as configured and available.`,
+        'Native delivery did not verify a configured model. The real certification challenge must prove the model loop.',
+        'Configure an available model in Hermes, then complete the certification challenge.');
+    }
+  } else {
+    required('hermes_runtime', attestation?.ready === true && attestation.responses_api === true,
+      'Hermes runtime and Responses API are reachable.',
+      'Hermes runtime preflight has not passed.',
+      'Start the authenticated Hermes gateway and confirm its Responses API is enabled.');
+    if (input.requirements.require_skills_api !== false) {
+      required('hermes_skills', attestation?.skills_api === true,
+        'Hermes skills capability is available.',
+        'Hermes has not attested its skills capability.',
+        'Enable the Hermes skills API in the remote runtime; do not install skills in Deft.');
+    }
+    required('hermes_model', modelAvailable,
+      `Hermes model ${configuredModel} is configured and available.`,
+      requiredModel
+        ? `Hermes must attest configured model ${requiredModel} as available.`
+        : 'Hermes has not attested its configured model as available.',
+      requiredModel
+        ? `Configure ${requiredModel} in Hermes and restart the gateway.`
+        : 'Configure an available model in Hermes and restart the gateway.');
+  }
 
   const remainingActions = Math.max(0, input.employee.max_daily_actions - input.employee.daily_action_count);
   const minimumHeadroom = input.requirements.min_action_headroom ?? 10;

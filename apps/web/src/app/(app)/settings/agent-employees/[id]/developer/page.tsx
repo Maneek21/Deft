@@ -415,13 +415,6 @@ export default function DeveloperPage() {
     `DEFT_MCP_URL=${data.mcp_endpoint_url}`,
     `DEFT_MCP_TOKEN=${tokenForConfig}`,
     `DEFT_EMPLOYEE_SLUG=${data.employee.slug}`,
-    ...(data.runtime_setup.runtime_kind === 'hermes'
-      ? [
-          'HERMES_API_URL=http://127.0.0.1:8642',
-          'HERMES_API_KEY=<hermes-api-key>',
-          `HERMES_API_MODEL=${data.employee.name ?? 'hermes-agent'}`,
-        ]
-      : []),
   ].join('\n');
 
   return (
@@ -483,7 +476,7 @@ export default function DeveloperPage() {
           value={runtimeAttestationLabel}
         />
         <Field
-          label="Bridge restart proof"
+          label="Adapter restart proof"
           value={`${data.channel.connection?.metadata?.restart_count ?? 0} reconnect${(data.channel.connection?.metadata?.restart_count ?? 0) === 1 ? '' : 's'} recorded`}
         />
         <Field
@@ -720,9 +713,12 @@ export default function DeveloperPage() {
           </div>
         )}
         {data.runtime_setup.bridge_script && (
-          <div className="mt-3">
-            <div className="mb-1 text-xs text-muted-foreground">Hermes stdio bridge script</div>
-            <CodeBlock value={data.runtime_setup.bridge_script} onCopy={() => copy('Hermes bridge', data.runtime_setup.bridge_script)} />
+          <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-3">
+            <div className="mb-1 text-xs font-medium">Legacy Hermes MCP stdio shim</div>
+            <p className="mb-2 text-[11px] text-muted-foreground">
+              Use this only with the matched legacy Agent Channel rollback. Stop and disable the native deft-platform adapter first; never run both delivery adapters for one employee.
+            </p>
+            <CodeBlock value={data.runtime_setup.bridge_script} onCopy={() => copy('legacy Hermes MCP shim', data.runtime_setup.bridge_script)} />
           </div>
         )}
         {data.runtime_setup.troubleshooting.length > 0 && (
@@ -759,7 +755,8 @@ export default function DeveloperPage() {
         <p className="mt-1 text-[11px] text-muted-foreground">
           MCP is the tool surface. Agent Channel is the live inbox for DMs,
           mentions, task assignments, task comments, and task status changes.
-          For Hermes, keep its authenticated API and the Deft channel bridge running.
+          For Hermes, the bundled native deft-platform adapter owns Agent Channel
+          delivery and direct HTTP MCP; no sidecar bridge or Hermes API credential is required.
         </p>
       </section>
 

@@ -25,7 +25,7 @@ export function describeAgentRuntimeRecovery(input: {
   if (input.connectionStatus === 'incompatible') return {
     state: 'incompatible',
     title: 'Runtime integration is incompatible',
-    detail: 'Install the Hermes integration bundle pinned to this Deft release, then restart the channel bridge.',
+    detail: 'Install the Hermes integration bundle pinned to this Deft release, then restart its Agent Channel adapter.',
     action: 'send_channel_test',
   };
   if (input.failedDeliveries > 0) return {
@@ -37,13 +37,13 @@ export function describeAgentRuntimeRecovery(input: {
   if (input.connectionStatus === 'degraded') return {
     state: 'degraded',
     title: 'Runtime needs attention',
-    detail: 'The bridge is checking in, but its Hermes runtime preflight or recent work failed. Inspect the runtime health details before assigning more work.',
+    detail: 'The delivery adapter is checking in, but its Hermes runtime preflight or recent work failed. Inspect the runtime health details before assigning more work.',
     action: 'send_channel_test',
   };
   if (input.connectionStatus !== 'connected' || stale) return {
     state: 'offline',
     title: 'Runtime is not checking in',
-    detail: 'Start the runtime and channel bridge, then send a test event. Deft will update this page when contact resumes.',
+    detail: 'Start the runtime and its Agent Channel adapter, then send a test event. Deft will update this page when contact resumes.',
     action: 'send_channel_test',
   };
   if (input.certificationStatus !== 'verified') return {

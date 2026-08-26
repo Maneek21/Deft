@@ -1,10 +1,19 @@
-# Hermes Agent Channel service
+# Legacy Hermes Agent Channel bridge service
 
-The Windows service wrapper keeps a Hermes agent employee connected to Deft. Install it from the immutable Hermes integration bundle linked on the employee's Developer page; the bundle is pinned to the running Deft release and Agent Channel contract.
+This Windows service wrapper is the rollback adapter for a Hermes agent employee.
+Fresh profiles use the native `deft-platform` plugin and direct HTTP MCP from
+the immutable integration bundle linked on the employee's Developer page.
+
+Run this bridge only during an explicit rollback. Stop and disable
+`deft-platform`, revoke its credentials, issue fresh matched fallback
+credentials, and never run the bridge and native adapter for the same employee.
+The fallback bundle remains pinned to the running Deft release and Agent Channel
+contract.
 
 ## Install
 
-Create the service environment file using the quick config from the employee's Developer page, then run:
+After completing the rollback steps, create the service environment file using
+the template in the matched bundle's `legacy/bridge/README.md`, then run:
 
 ```powershell
 .\scripts\hermes-channel-service.ps1 -Action Install -ConfigPath C:\path\to\service.env
@@ -39,7 +48,7 @@ The bridge also writes `health.json` after successful protocol negotiation and e
 
 - HTTP 429 and 5xx responses retry with bounded exponential backoff inside the bridge.
 - Protocol or capability mismatches fail closed before the first event poll with `INCOMPATIBLE_CHANNEL`.
-- Exit code 78 stops the tight supervisor restart loop; install the bundle for the running Deft release instead of enabling a legacy fallback.
+- Exit code 78 stops the tight supervisor restart loop; install the fallback assets from the bundle matched to the running Deft release.
 - A bridge process exit is restarted by the PowerShell supervisor after five seconds.
 - A supervisor exit is restarted by Task Scheduler.
 - A stopped task is started by the five-minute watchdog trigger or immediately with `-Action Repair`.
