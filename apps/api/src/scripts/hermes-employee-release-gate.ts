@@ -12,8 +12,10 @@ const databaseUrl = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATABASE_U
 const pnpmCli = process.env.npm_execpath;
 
 const apiSuites = [
+  'test/agent-action-budget-reset.test.ts',
   'test/agent-channel.test.ts',
   'test/agent-certification-stability.test.ts',
+  'test/agent-onboarding-preflight.test.ts',
   'test/agent-approval-resolver.test.ts',
   'test/agent-untrusted-context.test.ts',
   'test/direct-route-privacy.test.ts',

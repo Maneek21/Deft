@@ -1875,7 +1875,7 @@ agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
         eq(agentEmployees.id, employeeId),
         eq(agentEmployees.org_id, user.org_id),
         eq(agentEmployees.is_deleted, false),
-      )).limit(1);
+      )).limit(1).for('update');
       if (!employee) return null;
       if (employee.daily_action_count === 0) {
         return { employee, actionId: null, previousCount: 0 };
