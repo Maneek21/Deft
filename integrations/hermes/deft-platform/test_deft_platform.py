@@ -452,18 +452,17 @@ class DeftPlatformSkeletonTests(unittest.TestCase):
                     "state_path": str(state_path),
                 }
                 first = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)
-                never = asyncio.Event()
 
                 async def interrupted_handler(event):
-                    await never.wait()
+                    # Hermes may accept a task, hand it to deferred work, and
+                    # end the originating channel turn before any final reply.
+                    return None
 
                 first.set_message_handler(interrupted_handler)
                 self.assertTrue(await first.connect())
                 self.assertEqual(await first._poll_once(), 1)
-                for task in tuple(first._background_tasks):
-                    task.cancel()
-                if first._background_tasks:
-                    await asyncio.gather(*tuple(first._background_tasks), return_exceptions=True)
+                while first._background_tasks:
+                    await asyncio.gather(*tuple(first._background_tasks))
                 await first.disconnect()
 
                 second = MOD.DeftAdapter(FakeConfig(config), request_fn=request, start_listener=False)

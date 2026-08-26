@@ -302,7 +302,10 @@ class DeftAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             return
         route = self._routes_by_message.get(str(event.message_id or ""))
-        if route is not None:
+        # A task channel turn can hand work to Hermes's deferred execution and
+        # finish before that work produces its outward completion. Keep task
+        # deliveries journaled until the final non-interim platform reply.
+        if route is not None and route.get("source_kind") != "task":
             self._complete_pending(route)
 
     def _compatibility_query(self) -> dict:
@@ -665,6 +668,8 @@ class DeftAdapter(BasePlatformAdapter):
             if route.get("source_kind") == "task"
             else result.get("id") or result.get("message_id")
         )
+        if route.get("source_kind") == "task":
+            self._complete_pending(route)
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

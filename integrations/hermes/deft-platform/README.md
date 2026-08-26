@@ -27,6 +27,9 @@ Recommended for the internal pilot:
 
 - a strong tool-using model (the present Rita pilot uses gpt-5.6-sol with
   medium reasoning);
+- `display.busy_input_mode: queue` and `display.busy_ack_enabled: false`, so a
+  new workplace event waits for the active run without posting Hermes transport
+  acknowledgements into Deft;
 - at least one working Hermes-native web research path;
 - operator-installed skills/connectors appropriate to the employee's role;
 - sufficient local action and provider budgets; and
@@ -66,10 +69,27 @@ mcp_servers:
     headers:
       Authorization: Bearer <employee MCP token>
     enabled: true
+
+display:
+  busy_input_mode: queue
+  busy_ack_enabled: false
 ```
 
 The direct HTTP MCP configuration is intentional. Hermes supports it natively,
 so no Deft-owned stdio shim or sidecar process is required.
+
+For the present internal pilot, authenticate the profile with Hermes's native
+Codex provider and pin the tested model profile before starting the gateway:
+
+```powershell
+hermes auth status openai-codex
+hermes config set model.provider openai-codex
+hermes config set model.default gpt-5.6-sol
+hermes config set agent.reasoning_effort medium
+```
+
+The first command must report a valid credential. Authentication, model access,
+and provider limits remain operator-owned; Deft does not proxy them.
 
 The home channel suppresses Hermes's first-message setup notice and gives the
 runtime a default Deft conversation for operational notices. Pick an existing
