@@ -139,11 +139,7 @@ class DeftAdapter(BasePlatformAdapter):
             )
             return False
         try:
-            response = await self._request(
-                "GET",
-                "/connect",
-                query=self._compatibility_query(),
-            )
+            response = await self._request_fn("GET", "/connect", self._compatibility_query(), None)
         except Exception as exc:
             self._set_fatal_error("connect_failed", str(exc), retryable=True)
             return False
@@ -216,8 +212,7 @@ class DeftAdapter(BasePlatformAdapter):
         self._last_accepted_event_id = event_id
         self._save_state()
 
-    def _complete_pending(self, route: dict) -> None:
-        event_id = str(route["event_id"])
+    def _complete_pending(self, event_id: str) -> None:
         self._pending_events.pop(event_id, None)
         self._inflight_event_ids.discard(event_id)
         self._save_state()
@@ -236,38 +231,41 @@ class DeftAdapter(BasePlatformAdapter):
         while len(self._routes_by_scope) > MAX_RECENT_ROUTES:
             self._routes_by_scope.pop(next(iter(self._routes_by_scope)))
 
+    async def _dispatch_pending(self, event_id: str) -> bool:
+        if self._message_handler is None or event_id in self._inflight_event_ids:
+            return False
+        pending = self._pending_events[event_id]
+        event = pending["event"]
+        message_event = self._to_message_event(event)
+        if not pending.get("transport_accepted"):
+            claim_token = event.get("claim_token")
+            if not claim_token:
+                raise RuntimeError(f"Pending Deft event {event_id} has no acceptance claim")
+            accepted = await self._request_fn(
+                "POST",
+                "/accept",
+                None,
+                {
+                    "event_id": event_id,
+                    "claim_token": claim_token,
+                    "caller_employee_slug": self.employee_slug,
+                },
+            )
+            if accepted.get("transport_state") != "accepted":
+                raise RuntimeError(f"Deft did not reconcile transport acceptance for {event_id}")
+            self._mark_pending_accepted(event_id)
+        self._inflight_event_ids.add(event_id)
+        try:
+            await self.handle_message(message_event)
+        except Exception:
+            self._inflight_event_ids.discard(event_id)
+            raise
+        return True
+
     async def _resume_pending(self) -> int:
-        if self._message_handler is None:
-            return 0
         resumed = 0
-        for event_id, pending in list(self._pending_events.items()):
-            if event_id in self._inflight_event_ids:
-                continue
-            event = pending["event"]
-            if not pending.get("transport_accepted"):
-                claim_token = event.get("claim_token")
-                if not claim_token:
-                    raise RuntimeError(f"Pending Deft event {event_id} has no acceptance claim")
-                accepted = await self._request(
-                    "POST",
-                    "/accept",
-                    body={
-                        "event_id": event_id,
-                        "claim_token": claim_token,
-                        "caller_employee_slug": self.employee_slug,
-                    },
-                )
-                if accepted.get("transport_state") != "accepted":
-                    raise RuntimeError(f"Deft did not reconcile transport acceptance for {event_id}")
-                self._mark_pending_accepted(event_id)
-            message_event = self._to_message_event(event)
-            self._inflight_event_ids.add(event_id)
-            try:
-                await self.handle_message(message_event)
-            except Exception:
-                self._inflight_event_ids.discard(event_id)
-                raise
-            resumed += 1
+        for event_id in list(self._pending_events):
+            resumed += int(await self._dispatch_pending(event_id))
         return resumed
 
     async def disconnect(self) -> None:
@@ -280,10 +278,11 @@ class DeftAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         try:
-            await self._request(
+            await self._request_fn(
                 "POST",
                 "/status",
-                body={
+                None,
+                {
                     "state": "offline",
                     "worker_id": self.worker_id,
                     "caller_employee_slug": self.employee_slug,
@@ -306,7 +305,7 @@ class DeftAdapter(BasePlatformAdapter):
         # finish before that work produces its outward completion. Keep task
         # deliveries journaled until the final non-interim platform reply.
         if route is not None and route.get("source_kind") != "task":
-            self._complete_pending(route)
+            self._complete_pending(str(route["event_id"]))
 
     def _compatibility_query(self) -> dict:
         return {
@@ -316,16 +315,6 @@ class DeftAdapter(BasePlatformAdapter):
             "worker_id": self.worker_id,
             "caller_employee_slug": self.employee_slug,
         }
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Optional[dict] = None,
-        body: Optional[dict] = None,
-    ) -> dict:
-        return await self._request_fn(method, path, query, body)
 
     async def _http_request(
         self,
@@ -373,15 +362,16 @@ class DeftAdapter(BasePlatformAdapter):
 
     async def _poll_once(self) -> int:
         accepted_count = await self._resume_pending()
-        response = await self._request(
+        response = await self._request_fn(
             "GET",
             "/events",
-            query={
+            {
                 **self._compatibility_query(),
                 "limit": 1,
                 "lease_ms": 30000,
                 **({"cursor": self._last_accepted_event_id} if self._last_accepted_event_id else {}),
             },
+            None,
         )
         events = response.get("events") if isinstance(response, dict) else None
         if not isinstance(events, list):
@@ -391,35 +381,56 @@ class DeftAdapter(BasePlatformAdapter):
                 raise RuntimeError("Deft channel returned an event without an identity or claim")
             if self._message_handler is None:
                 break
-            message_event = self._to_message_event(event)
             self._remember_pending(event)
-            accepted = await self._request(
-                "POST",
-                "/accept",
-                body={
-                    "event_id": event["id"],
-                    "claim_token": event["claim_token"],
-                    "caller_employee_slug": self.employee_slug,
-                },
-            )
-            if accepted.get("transport_state") != "accepted":
-                raise RuntimeError("Deft did not confirm transport acceptance")
             event_id = str(event["id"])
-            self._last_accepted_event_id = event_id
-            self._mark_pending_accepted(event_id)
-            self._inflight_event_ids.add(event_id)
-            accepted_count += 1
-            try:
-                await self.handle_message(message_event)
-            except Exception:
-                self._inflight_event_ids.discard(event_id)
-                raise
+            accepted_count += int(await self._dispatch_pending(event_id))
         return accepted_count
 
     def _to_message_event(self, event: dict) -> MessageEvent:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         org_id = str(event.get("org_id") or "")
         event_kind = str(event.get("kind") or "")
+
+        def build_event(
+            *,
+            text: str,
+            chat_id: str,
+            chat_name: str,
+            message_id: str,
+            source_kind: str,
+            thread_id: Optional[str] = None,
+            parent_chat_id: Optional[str] = None,
+            chat_type: str = "channel",
+            user_id: Optional[str] = None,
+            user_name: Optional[str] = None,
+            reply_to_message_id: Optional[str] = None,
+        ) -> MessageEvent:
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=user_id,
+                user_name=user_name,
+                thread_id=thread_id,
+                guild_id=org_id or None,
+                parent_chat_id=parent_chat_id,
+                message_id=message_id,
+            )
+            route = {
+                "event_id": str(event["id"]),
+                "source_kind": source_kind,
+                "thread_id": thread_id or "",
+            }
+            self._remember_route(message_id, chat_id, thread_id or "", route)
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=event,
+                message_id=message_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+
         if event_kind.startswith("task.") or (
             event_kind == "approval.resolved" and event.get("source_kind") == "task"
         ):
@@ -476,10 +487,12 @@ class DeftAdapter(BasePlatformAdapter):
                     lines.extend(["Description:", description])
             chat_id = f"{org_id}:tasks"
             event_message_id = str(event["id"])
-            source = self.build_source(
+            return build_event(
+                text="\n".join(lines),
                 chat_id=chat_id,
                 chat_name="Deft tasks",
-                chat_type="channel",
+                message_id=event_message_id,
+                source_kind="task",
                 user_id=str(
                     payload.get("commenter_id")
                     or payload.get("actor_user_id")
@@ -494,25 +507,7 @@ class DeftAdapter(BasePlatformAdapter):
                     or ""
                 ) or None,
                 thread_id=task_id,
-                guild_id=org_id or None,
                 parent_chat_id="tasks",
-                message_id=event_message_id,
-            )
-            route = {
-                "event_id": str(event["id"]),
-                "source_kind": "task",
-                "task_id": task_id,
-                "space_id": "",
-                "thread_id": task_id,
-                "source_message_id": event_message_id,
-            }
-            self._remember_route(event_message_id, chat_id, task_id, route)
-            return MessageEvent(
-                text="\n".join(lines),
-                message_type=MessageType.TEXT,
-                source=source,
-                raw_message=event,
-                message_id=event_message_id,
             )
 
         if event_kind == "approval.resolved":
@@ -532,30 +527,15 @@ class DeftAdapter(BasePlatformAdapter):
             event_message_id = str(event["id"])
             thread_id = str(event.get("thread_id") or "") or action_id
             chat_id = f"{org_id}:{space_id or 'approvals'}"
-            source = self.build_source(
+            return build_event(
+                text="\n".join(lines),
                 chat_id=chat_id,
                 chat_name="Deft approvals",
-                chat_type="channel",
+                message_id=event_message_id,
+                source_kind="message" if space_id else "notification",
                 user_id=str(event.get("actor_user_id") or "") or None,
                 thread_id=thread_id,
-                guild_id=org_id or None,
                 parent_chat_id=space_id or "approvals",
-                message_id=event_message_id,
-            )
-            route = {
-                "event_id": event_message_id,
-                "source_kind": "message" if space_id else "notification",
-                "space_id": space_id,
-                "thread_id": thread_id,
-                "source_message_id": event_message_id,
-            }
-            self._remember_route(event_message_id, chat_id, thread_id, route)
-            return MessageEvent(
-                text="\n".join(lines),
-                message_type=MessageType.TEXT,
-                source=source,
-                raw_message=event,
-                message_id=event_message_id,
             )
 
         space_id = str(event.get("space_id") or payload.get("space_id") or "")
@@ -564,31 +544,17 @@ class DeftAdapter(BasePlatformAdapter):
         thread_id = str(reply_thread_id) if reply_thread_id else None
         chat_id = f"{org_id}:{space_id}"
         is_dm = payload.get("is_dm") is True
-        source = self.build_source(
+        return build_event(
+            text=str(payload.get("content") or ""),
             chat_id=chat_id,
             chat_name=str(payload.get("space_name") or space_id),
             chat_type="dm" if is_dm else "channel",
+            message_id=source_message_id,
+            source_kind="message",
             user_id=str(payload.get("author_id") or event.get("actor_user_id") or "") or None,
             user_name=str(payload.get("author_name") or "") or None,
             thread_id=thread_id,
-            guild_id=org_id or None,
             parent_chat_id=space_id or None,
-            message_id=source_message_id,
-        )
-        route = {
-            "event_id": str(event["id"]),
-            "source_kind": "message",
-            "space_id": space_id,
-            "thread_id": thread_id,
-            "source_message_id": source_message_id,
-        }
-        self._remember_route(source_message_id, chat_id, thread_id or "", route)
-        return MessageEvent(
-            text=str(payload.get("content") or ""),
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=event,
-            message_id=source_message_id,
             reply_to_message_id=str(payload.get("parent_id")) if payload.get("parent_id") else None,
         )
 
@@ -644,10 +610,11 @@ class DeftAdapter(BasePlatformAdapter):
         content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         idempotency_key = f"autonomous-reply:{route['event_id']}:{content_digest}"
         try:
-            response = await self._request(
+            response = await self._request_fn(
                 "POST",
                 "/reply",
-                body={
+                None,
+                {
                     "event_id": route["event_id"],
                     "content": content,
                     "thread_id": route["thread_id"],
@@ -669,7 +636,7 @@ class DeftAdapter(BasePlatformAdapter):
             else result.get("id") or result.get("message_id")
         )
         if route.get("source_kind") == "task":
-            self._complete_pending(route)
+            self._complete_pending(str(route["event_id"]))
         return SendResult(success=True, message_id=str(message_id) if message_id else None, raw_response=response)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

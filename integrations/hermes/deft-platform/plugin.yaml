@@ -24,4 +24,3 @@ optional_env:
     description: "Channel poll interval in milliseconds (default: 1000)"
     prompt: "Poll interval"
     password: false
-

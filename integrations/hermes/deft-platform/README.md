@@ -12,6 +12,31 @@ Deft does not start Hermes runs, construct its prompts, inspect its chain of
 thought, manage its skills, or promise that an operator's model and external
 providers are capable.
 
+## Employee Connection Contract
+
+The plugin has five responsibilities:
+
+1. Negotiate the versioned Agent Channel contract and poll as the bound Deft
+   employee.
+2. Journal a delivery before acknowledging transport acceptance.
+3. Map Deft chat, task, assistance, cancellation, and approval events into
+   Hermes's normal `MessageEvent` interface.
+4. Return one source-bound, idempotent platform reply while substantive Deft
+   state changes continue through employee-scoped MCP.
+5. Resume accepted work after restart and clear the journal only when the
+   platform lifecycle or final task reply proves delivery is complete.
+
+The journal is the only durable adapter-owned state. It contains the accepted
+cursor and source events that have not yet produced their required outward
+delivery. The adapter does not persist model state, plans, tool calls, prompts,
+business outcomes, or credentials in that journal.
+
+Everything else remains outside the connection contract: model/provider
+selection, reasoning, skills, browser and research tools, external MCPs,
+private memory, execution budgets, and process supervision belong to Hermes
+and its operator. Tenant authorization, approvals, receipts, shared Knowledge,
+module policy, and durable workplace state remain authoritative in Deft.
+
 ## Compatibility profile
 
 Required:
