@@ -40,7 +40,7 @@ async function resolveTaskProjectId(
   taskIdentifier: string,
   ctx: ToolContext,
 ): Promise<string | null> {
-  const taskKey = taskIdentifier.match(/^([A-Z]+)-(\d+)$/);
+  const taskKey = taskIdentifier.match(/^([A-Z][A-Z0-9]*)-(\d+)$/);
   if (taskKey) {
     const [task] = await db
       .select({ project_id: tasks.project_id })

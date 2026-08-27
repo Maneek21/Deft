@@ -559,7 +559,7 @@ export async function executeToolCall(
 
     case 'get_task_detail': {
       let taskId = params.task_identifier as string;
-      const match = taskId.match(/^([A-Z]+)-(\d+)$/);
+      const match = taskId.match(/^([A-Z][A-Z0-9]*)-(\d+)$/);
 
       if (match) {
         const [proj] = await db

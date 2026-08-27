@@ -100,7 +100,7 @@ before(async () => {
       [orgId, humanUserId, shadowUserId],
     );
 
-    allowedPrefix = `A${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    allowedPrefix = `A1${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const deniedPrefix = `D${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     const projectRows = await client.query<{ id: string; prefix: string }>(
       `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
@@ -245,6 +245,10 @@ test('task detail, project progress, and team workload exclude projects outside 
   const allowedDetail = await taskDetail({ task_identifier: allowedTaskId }, context());
   assert.equal(allowedDetail.isError, false, JSON.stringify(allowedDetail));
   assert.equal(payload(allowedDetail).id, allowedTaskId);
+
+  const allowedKeyDetail = await taskDetail({ task_identifier: `${allowedPrefix}-1` }, context());
+  assert.equal(allowedKeyDetail.isError, false, JSON.stringify(allowedKeyDetail));
+  assert.equal(payload(allowedKeyDetail).id, allowedTaskId);
 
   const deniedDetail = await taskDetail({ task_identifier: deniedTaskId }, context());
   assert.equal(deniedDetail.isError, true);
