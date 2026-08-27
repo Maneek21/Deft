@@ -398,6 +398,35 @@ async function closeFallbackWorkForEvent(params: {
     ));
 }
 
+async function completeAutonomousReplyTransport(params: {
+  event: typeof agentChannelEvents.$inferSelect;
+  principal: AgentChannelPrincipal;
+  runtimeSessionKey?: string | null;
+  detail?: string | null;
+  outcome?: null;
+  channelState?: 'acknowledged';
+  transportReply?: 'sent';
+}) {
+  const lifecyclePatch = buildAgentChannelLifecyclePatch(params.event, 'completed');
+  if (Object.keys(lifecyclePatch).length > 0) {
+    await db
+      .update(agentChannelEvents)
+      .set({ ...lifecyclePatch, lease_expires_at: null })
+      .where(and(
+        eq(agentChannelEvents.id, params.event.id),
+        eq(agentChannelEvents.org_id, params.principal.org_id),
+        eq(agentChannelEvents.agent_employee_id, params.principal.employee_id),
+        sql`${agentChannelEvents.status} NOT IN ('completed', 'failed', 'cancelled')`,
+      ));
+  }
+  await updateAgentChannelCursor({ principal: params.principal, lastAckedEventId: params.event.id });
+  await closeFallbackWorkForEvent({
+    ...params,
+    channelState: 'completed',
+    transportReply: 'sent',
+  });
+}
+
 agentChannelRoutes.get('/contract', (c) => c.json(channelContract()));
 
 agentChannelRoutes.get('/connect', async (c) => {
@@ -750,7 +779,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     if (!(await hasAutonomousPlatformConnection(principal))) {
       return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before posting autonomous replies');
     }
-    if (!event.acked_at || event.status !== 'acknowledged') {
+    if (!event.acked_at || !['acknowledged', 'completed'].includes(event.status)) {
       return errorResponse(c, 409, 'DELIVERY_NOT_ACCEPTED', 'Autonomous replies require an accepted transport delivery');
     }
   }
@@ -1168,6 +1197,9 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (existingAttempt && existingAttempt.event_id !== event.id) {
     return errorResponse(c, 409, 'IDEMPOTENCY_KEY_CONFLICT', 'The reply idempotency key belongs to another channel event');
   }
+  if (autonomousReply && event.status === 'completed' && existingAttempt?.status !== 'completed') {
+    return errorResponse(c, 409, 'DELIVERY_ALREADY_SETTLED', 'The autonomous delivery is already completed');
+  }
   if (existingAttempt && attemptCanReconcile(existingAttempt)) {
     const reconciliation = await reconcileDurableCertificationReply(existingAttempt);
     if (reconciliation && 'error' in reconciliation && typeof reconciliation.error === 'string') {
@@ -1175,7 +1207,7 @@ agentChannelRoutes.post('/reply', async (c) => {
     }
     if (reconciliation) {
       if (reconciliation.adapterMode === 'autonomous_platform') {
-        await closeFallbackWorkForEvent({
+        await completeAutonomousReplyTransport({
           event,
           principal,
           runtimeSessionKey: reconciliation.runtimeSessionKey,
@@ -1203,7 +1235,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The autonomous reply attempt changed while its durable effect was being reconciled');
     }
     if (autonomousReconciliation) {
-      await closeFallbackWorkForEvent({
+      await completeAutonomousReplyTransport({
         event,
         principal,
         runtimeSessionKey: parsed.data.runtime_session_key ?? null,
@@ -1232,7 +1264,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       }
       if (reconciliation) {
         if (reconciliation.adapterMode === 'autonomous_platform') {
-          await closeFallbackWorkForEvent({
+          await completeAutonomousReplyTransport({
             event,
             principal,
             runtimeSessionKey: reconciliation.runtimeSessionKey,
@@ -1246,7 +1278,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       }
     }
     if (autonomousReply) {
-      await closeFallbackWorkForEvent({
+      await completeAutonomousReplyTransport({
         event,
         principal,
         runtimeSessionKey: parsed.data.runtime_session_key ?? null,
@@ -1344,7 +1376,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       }
       if (reconciliation) {
         if (reconciliation.adapterMode === 'autonomous_platform') {
-          await closeFallbackWorkForEvent({
+          await completeAutonomousReplyTransport({
             event,
             principal,
             runtimeSessionKey: reconciliation.runtimeSessionKey,
@@ -1372,7 +1404,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The autonomous reply attempt changed while its durable effect was being reconciled');
       }
       if (autonomousReconciliation) {
-        await closeFallbackWorkForEvent({
+        await completeAutonomousReplyTransport({
           event,
           principal,
           runtimeSessionKey: parsed.data.runtime_session_key ?? null,
@@ -1400,7 +1432,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         }
         if (reconciliation) {
           if (reconciliation.adapterMode === 'autonomous_platform') {
-            await closeFallbackWorkForEvent({
+            await completeAutonomousReplyTransport({
               event,
               principal,
               runtimeSessionKey: reconciliation.runtimeSessionKey,
@@ -1414,7 +1446,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         }
       }
       if (autonomousReply) {
-        await closeFallbackWorkForEvent({
+        await completeAutonomousReplyTransport({
           event,
           principal,
           runtimeSessionKey: parsed.data.runtime_session_key ?? null,
@@ -1567,7 +1599,7 @@ agentChannelRoutes.post('/reply', async (c) => {
       lastError: replyFailed ? text : null,
     });
     if (!replyFailed) {
-      await closeFallbackWorkForEvent({
+      await completeAutonomousReplyTransport({
         event,
         principal,
         runtimeSessionKey: executionRuntimeSessionKey,

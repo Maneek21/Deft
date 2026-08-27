@@ -1113,7 +1113,7 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
 });
 
-test('autonomous platform acceptance ends transport delivery without completing business work', async () => {
+test('autonomous platform reply terminalizes transport without completing business work', async () => {
   const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
@@ -1199,7 +1199,7 @@ test('autonomous platform acceptance ends transport delivery without completing 
   const [closedFallback] = await db.select().from(agentActions)
     .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
   assert.equal(closedFallback?.approval_status, 'approved');
-  assert.equal((closedFallback?.result as any)?.channel_state, 'acknowledged');
+  assert.equal((closedFallback?.result as any)?.channel_state, 'completed');
   assert.equal((closedFallback?.result as any)?.work_outcome, null);
   assert.equal((closedFallback?.result as any)?.transport_reply, 'sent');
 
@@ -1229,14 +1229,28 @@ test('autonomous platform acceptance ends transport delivery without completing 
   const [reconciledFallback] = await db.select().from(agentActions)
     .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
   assert.equal(reconciledFallback?.approval_status, 'approved');
-  assert.equal((reconciledFallback?.result as any)?.channel_state, 'acknowledged');
+  assert.equal((reconciledFallback?.result as any)?.channel_state, 'completed');
   assert.equal((reconciledFallback?.result as any)?.work_outcome, null);
 
-  const [stillAccepted] = await db.select().from(agentChannelEvents)
+  const duplicate = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'A completed autonomous delivery cannot open another reply slot.',
+      idempotency_key: `different-autonomous-reply-${crypto.randomUUID()}`,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const duplicateBody = await duplicate.json() as any;
+  assert.equal(duplicate.status, 409, JSON.stringify(duplicateBody));
+  assert.equal(duplicateBody.code, 'DELIVERY_ALREADY_SETTLED');
+
+  const [settledDelivery] = await db.select().from(agentChannelEvents)
     .where(eq(agentChannelEvents.id, event.id)).limit(1);
-  assert.equal(stillAccepted?.status, 'acknowledged');
-  assert.equal(stillAccepted?.work_outcome, null);
-  assert.equal(stillAccepted?.completed_at, null);
+  assert.equal(settledDelivery?.status, 'completed');
+  assert.equal(settledDelivery?.work_outcome, null);
+  assert.ok(settledDelivery?.completed_at);
 
   const reconnect = await app.request(
     `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-reconnect-worker')}`,
@@ -1943,10 +1957,11 @@ test('autonomous task pickup supports explicit progress and an idempotent task c
   ));
   assert.equal(comments.length, 1);
   assert.equal(comments[0]?.content, request.content);
-  const [stillAccepted] = await db.select().from(agentChannelEvents)
+  const [settledDelivery] = await db.select().from(agentChannelEvents)
     .where(eq(agentChannelEvents.id, event.id)).limit(1);
-  assert.equal(stillAccepted?.status, 'acknowledged');
-  assert.equal(stillAccepted?.work_outcome, null);
+  assert.equal(settledDelivery?.status, 'completed');
+  assert.equal(settledDelivery?.work_outcome, null);
+  assert.ok(settledDelivery?.completed_at);
 });
 
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
