@@ -59,7 +59,10 @@ import { agentChannelRoutes } from './routes/agent-channel.js';
 import { oauthProtectedRoutes, oauthPublicRoutes, oauthWellKnownRoutes } from './routes/oauth-mcp.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpServerRoutes } from './routes/mcp-server.js';
-import { mcpServerV1Routes } from './routes/mcp-server-v1.js';
+import {
+  HERMES_MCP_ENDPOINT_PATH,
+  mcpServerV1Routes,
+} from './routes/mcp-server-v1.js';
 import { agentPlanRoutes } from './routes/agent-plans.js';
 import { metricsRoutes, requireMetricsBearer } from './routes/metrics.js';
 import { skillsRoutes } from './routes/skills.js';
@@ -136,6 +139,9 @@ app.route('/mcp', mcpServerRoutes);
 app.use('/api/mcp/v1', mcpLimiter);
 app.use('/api/mcp/v1/*', mcpLimiter);
 app.route('/api/mcp/v1', mcpServerV1Routes);
+app.use(HERMES_MCP_ENDPOINT_PATH, mcpLimiter);
+app.use(`${HERMES_MCP_ENDPOINT_PATH}/*`, mcpLimiter);
+app.route(HERMES_MCP_ENDPOINT_PATH, mcpServerV1Routes);
 app.use('/api/agent-channel/v1/*', agentChannelLimiter);
 app.route('/api/agent-channel/v1', agentChannelRoutes);
 

@@ -273,11 +273,11 @@ async function validateManifest(repoRoot, manifest, packageJson) {
   }
   if (
     native.name !== 'deft-platform'
-    || native.version !== '0.2.0'
+    || native.version !== '0.2.1'
     || native.mcp_transport !== 'direct_http'
     || native.target !== 'plugins/deft-platform'
   ) {
-    throw new Error('Native adapter must be deft-platform 0.2.0 with direct HTTP MCP');
+    throw new Error('Native adapter must be deft-platform 0.2.1 with direct HTTP MCP');
   }
   if (
     legacy.role !== 'fallback'
@@ -290,7 +290,7 @@ async function validateManifest(repoRoot, manifest, packageJson) {
   if (safeBundlePath(legacy.target, 'legacy.target') !== 'legacy/bridge') {
     throw new Error('Legacy bridge assets must be isolated under legacy/bridge');
   }
-  if (manifest.mcp?.default_transport !== 'direct_http' || manifest.mcp?.endpoint_path !== '/api/mcp/v1') {
+  if (manifest.mcp?.default_transport !== 'direct_http' || manifest.mcp?.endpoint_path !== '/api/mcp/hermes/v1') {
     throw new Error('The root Hermes configuration must default to direct HTTP MCP');
   }
   if (manifest.hermes_compatibility !== testedMinorRange(manifest.hermes_tested?.version)) {
@@ -443,7 +443,7 @@ function nativeReadme(manifest) {
     `manifest.json contains sorted SHA-256 checksums for every bundled content file. Its content_digest hashes each sorted \`path\\0sha256\\n\` record using ${CONTENT_DIGEST_CANONICALIZATION}. The manifest itself is excluded from that digest.\n`;
 }
 
-function nativeConfig() {
+function nativeConfig(manifest) {
   return `# Native-first Deft employee profile. Replace placeholders without committing credentials.\n` +
     `plugins:\n` +
     `  enabled:\n` +
@@ -463,7 +463,7 @@ function nativeConfig() {
     `      employee_slug: <employee-slug>\n\n` +
     `mcp_servers:\n` +
     `  deft:\n` +
-    `    url: https://deft.example/api/mcp/v1\n` +
+    `    url: https://deft.example${manifest.mcp.endpoint_path}\n` +
     `    headers:\n` +
     `      Authorization: Bearer <employee-mcp-token>\n` +
     `    enabled: true\n\n` +
@@ -484,7 +484,7 @@ function legacyReadme(manifest) {
     'DEFT_CHANNEL_URL=https://deft.example/api/agent-channel/v1\n' +
     'DEFT_CHANNEL_TOKEN=<replacement-agent-channel-token>\n' +
     'DEFT_EMPLOYEE_SLUG=<employee-slug>\n' +
-    'DEFT_MCP_URL=https://deft.example/api/mcp/v1\n' +
+    `DEFT_MCP_URL=https://deft.example${manifest.mcp.endpoint_path}\n` +
     'DEFT_MCP_TOKEN=<replacement-mcp-token>\n' +
     'HERMES_API_URL=http://127.0.0.1:8642\n' +
     'HERMES_API_KEY=<hermes-api-key>\n' +
@@ -496,7 +496,7 @@ function legacyReadme(manifest) {
 function generatedContent(manifest) {
   return new Map([
     ['README.md', nativeReadme(manifest)],
-    ['config.example.yaml', nativeConfig()],
+    ['config.example.yaml', nativeConfig(manifest)],
     ['legacy/bridge/README.md', legacyReadme(manifest)],
   ]);
 }

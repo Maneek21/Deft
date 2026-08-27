@@ -5,9 +5,22 @@ import unittest
 
 
 MODULE = pathlib.Path(__file__).with_name("__init__.py")
+PLUGIN_DIR = MODULE.parent
 SPEC = importlib.util.spec_from_file_location("deft_employee_plugin", MODULE)
 MOD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MOD)
+
+
+class FakeContext:
+    def __init__(self):
+        self.hooks = {}
+        self.skills = []
+
+    def register_hook(self, name, callback):
+        self.hooks[name] = callback
+
+    def register_skill(self, name, path, description=""):
+        self.skills.append((name, pathlib.Path(path), description))
 
 
 class DeftEmployeeHookTests(unittest.TestCase):
@@ -109,6 +122,47 @@ class DeftEmployeeHookTests(unittest.TestCase):
         self.assertIn("relations", context["deft_module_contract"])
         self.assertIn("record_progress", context["deft_progress_contract"])
         self.assertIn("Do not mirror every tool call", context["deft_progress_contract"])
+        self.assertIn("deft.tool_outcome.v1", context["deft_tool_outcome_contract"])
+        self.assertIn("never claim completion", context["deft_tool_outcome_contract"])
+
+
+class DeftEmployeePluginTests(unittest.TestCase):
+    def test_registers_runtime_skill_and_existing_hooks(self):
+        context = FakeContext()
+        MOD.register(context)
+
+        self.assertEqual(
+            set(context.hooks),
+            {"pre_llm_call", "pre_tool_call", "post_tool_call", "subagent_stop"},
+        )
+        self.assertEqual(len(context.skills), 1)
+        name, path, description = context.skills[0]
+        self.assertEqual(name, "runtime")
+        self.assertEqual(path, PLUGIN_DIR / "SKILL.md")
+        self.assertTrue(path.is_file())
+        self.assertIn("Deft", description)
+
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("deft_status", content)
+        self.assertIn("record_progress", content)
+        self.assertIn("provider receipt", content.lower())
+
+    def test_stock_hermes_resolves_the_qualified_runtime_skill(self):
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manager = PluginManager()
+        manifest = PluginManifest(
+            name="deft-employee",
+            version="0.3.0",
+            description="Deft employee policy",
+            source="user",
+        )
+        MOD.register(PluginContext(manifest, manager))
+
+        self.assertEqual(
+            manager.find_plugin_skill("deft-employee:runtime"),
+            PLUGIN_DIR / "SKILL.md",
+        )
 
 
 if __name__ == "__main__":

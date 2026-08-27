@@ -38,6 +38,7 @@ export const API_SUITES = [
   'test/mcp-human-context-packets.test.ts',
   'test/mcp-message-privacy.test.ts',
   'test/mcp-platform-context.test.ts',
+  'test/mcp-server-2026-compat.test.ts',
   'test/mcp-server.test.ts',
   'test/mcp-task-project-boundary.test.ts',
   'test/mcp-task-query-project-scope.test.ts',

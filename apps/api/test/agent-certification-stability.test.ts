@@ -1013,9 +1013,9 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
     );
     assert.equal(nativeEvents.rows.length, 2);
     for (const event of nativeEvents.rows) {
-      assert.equal(event.status, 'acknowledged');
+      assert.equal(event.status, 'completed');
       assert.equal(event.work_outcome, null);
-      assert.equal(event.completed_at, null);
+      assert.ok(event.completed_at);
       assert.equal(event.claim_token, null);
       assert.equal(event.claim_owner, null);
       assert.equal(event.lease_expires_at, null);
@@ -1056,7 +1056,7 @@ test('owner can use guarded routes without exposing a prompt-bearing shell comma
   const persistedCheckBody = await persistedCheckResponse.json() as any;
   assert.equal(persistedCheckResponse.status, 200, JSON.stringify(persistedCheckBody));
   assert.equal(persistedCheckBody.completed, true, 'the recorded certification result remains durable');
-  assert.equal(persistedCheckBody.channel_completed, false, 'native transport must remain nonterminal');
+  assert.equal(persistedCheckBody.channel_completed, false, 'transport settlement must not claim business completion');
   assert.equal(persistedCheckBody.runtime_session_seen, false, 'adapter diagnostics are not execution proof');
   assert.equal(persistedCheckBody.runtime_execution_proof, 'autonomous_source_reply');
   assert.equal(persistedCheckBody.restart_proof_ping_seen, true);

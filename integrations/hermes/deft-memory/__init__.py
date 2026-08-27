@@ -16,6 +16,25 @@ PRIMARY_EVIDENCE_PREFIX = "DEFT_PRIMARY_EVIDENCE_JSON="
 MAX_RETRIEVAL_QUERY_CHARS = 2000
 
 
+def _deft_failure_message(payload: Dict[str, Any]) -> Optional[str]:
+    content = payload.get("content")
+    fallback = (
+        content[0].get("text")
+        if isinstance(content, list) and content and isinstance(content[0], dict)
+        else None
+    )
+    if payload.get("isError") is True:
+        return str(fallback or "Deft MCP tool failed")
+    outcome = payload.get("structuredContent")
+    if (
+        isinstance(outcome, dict)
+        and outcome.get("schema") == "deft.tool_outcome.v1"
+        and outcome.get("deft_status") != "ok"
+    ):
+        return str(outcome.get("message") or fallback or "Deft MCP tool failed")
+    return None
+
+
 def _bounded_string(value: Any, limit: int = 512) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -179,8 +198,9 @@ class DeftMemoryProvider(MemoryProvider):
         )
         with urllib.request.urlopen(request, timeout=self._timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        if payload.get("isError"):
-            raise RuntimeError(payload.get("content", [{}])[0].get("text", "Deft MCP tool failed"))
+        failure = _deft_failure_message(payload)
+        if failure:
+            raise RuntimeError(failure)
         text = payload.get("content", [{}])[0].get("text", "")
         try:
             return json.loads(text)

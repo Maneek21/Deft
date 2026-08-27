@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -100,6 +101,7 @@ class DeftEmployeeHooks:
             "deft_progress_contract": "For task assignments call record_progress when beginning with a concise plan, at meaningful milestones, and when a blocker or retry approach changes. Use a stable idempotency_key. Do not mirror every tool call or post routine progress to chat.",
             "deft_task_contract": "Read allowed_next_statuses from task_query/task_detail before changing status. On INVALID_TRANSITION, choose only from the returned allowed_next_statuses.",
             "deft_module_contract": "Call module_schema_get before module writes. Follow its exact input_schema and collection example; put scalar fields in data/patch and links in relations: {field_key: [record_ids]}.",
+            "deft_tool_outcome_contract": "When structuredContent uses deft.tool_outcome.v1, only deft_status=ok is success. Treat every other status as failed, never claim completion, and do not retry unchanged arguments.",
             "deft_external_action_contract": "A runtime tool success is not proof that a provider accepted an external write. Require a provider receipt or message/request/delivery id before claiming sent or creating a sent activity in Deft; otherwise report an unverified or failed outcome.",
         }, ensure_ascii=False)}
 
@@ -203,6 +205,11 @@ class DeftEmployeeHooks:
 
 def register(ctx: Any) -> None:
     hooks = DeftEmployeeHooks()
+    ctx.register_skill(
+        "runtime",
+        Path(__file__).with_name("SKILL.md"),
+        "Deft employee assignment, tool-outcome, approval, and evidence rules.",
+    )
     ctx.register_hook("pre_llm_call", hooks.pre_llm_call)
     ctx.register_hook("pre_tool_call", hooks.pre_tool_call)
     ctx.register_hook("post_tool_call", hooks.post_tool_call)

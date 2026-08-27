@@ -97,7 +97,7 @@ platforms:
 
 mcp_servers:
   deft:
-    url: https://deft.example/api/mcp/v1
+    url: https://deft.example/api/mcp/hermes/v1
     headers:
       Authorization: Bearer <employee MCP token>
     enabled: true

@@ -1,13 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
-import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
+import {
+  HERMES_MCP_ENDPOINT_PATH,
+  mcpResultProfileForPath,
+  mcpServerV1Routes,
+  presentMcpToolResult,
+} from '../src/routes/mcp-server-v1.js';
 
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 
 function createApp() {
   const app = new Hono();
   app.route('/api/mcp/v1', mcpServerV1Routes);
+  app.route(HERMES_MCP_ENDPOINT_PATH, mcpServerV1Routes);
   app.get('/outside-mcp', (c) => c.json({ ok: true }));
   return app;
 }
@@ -106,6 +112,66 @@ test('MCP Origin validation rejects untrusted browser origins without affecting 
     headers: { Origin: 'https://attacker.example' },
   });
   assert.equal(outside.status, 200);
+});
+
+test('Hermes result presentation contains Deft failures without changing canonical MCP results', () => {
+  const rejected = {
+    content: [{ type: 'text' as const, text: 'task_update requires task_id' }],
+    isError: true,
+  };
+
+  assert.equal(mcpResultProfileForPath('/api/mcp/v1'), 'canonical');
+  assert.equal(mcpResultProfileForPath(HERMES_MCP_ENDPOINT_PATH), 'hermes');
+  assert.equal(
+    mcpResultProfileForPath(`${HERMES_MCP_ENDPOINT_PATH}/tools/call`),
+    'hermes',
+  );
+  assert.equal(
+    mcpResultProfileForPath('/api/mcp/hermes/v10'),
+    'canonical',
+  );
+
+  assert.equal(presentMcpToolResult(rejected, 'canonical'), rejected);
+  const presented = presentMcpToolResult(rejected, 'hermes') as any;
+  assert.equal(presented.isError, undefined);
+  assert.equal(Object.hasOwn(presented, 'error'), false);
+  assert.match(presented.content[0].text, /^DEFT_TOOL_FAILED:/);
+  assert.deepEqual(presented.structuredContent, {
+    schema: 'deft.tool_outcome.v1',
+    deft_status: 'failed',
+    code: 'DEFT_TOOL_FAILED',
+    message: 'task_update requires task_id',
+    retryable: false,
+    outcome_confirmed: false,
+  });
+
+  const succeeded = {
+    content: [{ type: 'text' as const, text: '{"ok":true}' }],
+    isError: false,
+  };
+  assert.equal(presentMcpToolResult(succeeded, 'hermes'), succeeded);
+});
+
+test('Hermes compatibility endpoint exposes the same MCP initialize contract', async () => {
+  const response = await createApp().request(HERMES_MCP_ENDPOINT_PATH, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'hermes-init',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        clientInfo: { name: 'stock-hermes', version: '0.20.5' },
+        capabilities: {},
+      },
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as any;
+  assert.equal(body.result.serverInfo.name, 'deft-mcp');
+  assert.equal(body.result.protocolVersion, '2025-11-25');
 });
 
 test('single-endpoint MCP rejects non-JSON request media types', async () => {

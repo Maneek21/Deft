@@ -64,6 +64,48 @@ import {
 import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js';
 
 export const mcpServerV1Routes = new Hono();
+export const HERMES_MCP_ENDPOINT_PATH = '/api/mcp/hermes/v1';
+
+export type McpResultProfile = 'canonical' | 'hermes';
+
+export function mcpResultProfileForPath(path: string): McpResultProfile {
+  return path === HERMES_MCP_ENDPOINT_PATH
+    || path.startsWith(`${HERMES_MCP_ENDPOINT_PATH}/`)
+    ? 'hermes'
+    : 'canonical';
+}
+
+export function presentMcpToolResult(
+  result: ToolResult,
+  profile: McpResultProfile,
+): ToolResult {
+  if (profile !== 'hermes' || result.isError !== true) return result;
+
+  const message = result.content
+    .map((item) => item.text)
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+    .slice(0, 4000) || 'Deft did not confirm a successful tool outcome.';
+
+  return {
+    content: [{
+      type: 'text',
+      text: [
+        `DEFT_TOOL_FAILED: ${message}`,
+        'This operation has no Deft-confirmed successful outcome. Do not claim success or retry the same tool with unchanged arguments.',
+      ].join('\n\n'),
+    }],
+    structuredContent: {
+      schema: 'deft.tool_outcome.v1',
+      deft_status: 'failed',
+      code: 'DEFT_TOOL_FAILED',
+      message,
+      retryable: false,
+      outcome_confirmed: false,
+    },
+  };
+}
 
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = [
@@ -899,7 +941,7 @@ mcpServerV1Routes.post('/', async (c) => {
           { name: toolName },
         );
       }
-      return result;
+      return presentMcpToolResult(result, mcpResultProfileForPath(c.req.path));
     });
   }
 
@@ -1117,10 +1159,11 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     ...(runtimeCorrelation ?? {}),
   };
 
-  return c.json(await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {
+  const result = await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {
     surface: 'legacy',
     caller_employee_slug: employee.slug,
-  }));
+  });
+  return c.json(presentMcpToolResult(result, mcpResultProfileForPath(c.req.path)));
 });
 
 // ─── exports used only for test composition ──────────────────────────────

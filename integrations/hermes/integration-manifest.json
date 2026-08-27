@@ -1,6 +1,6 @@
 {
   "schema": "deft.hermes.integration.v2",
-  "integration_version": "0.4.0",
+  "integration_version": "0.5.0",
   "deft_release": "0.3.0-preview.13",
   "deft_release_compatibility": "=0.3.0-preview.13",
   "agent_channel_protocols": [
@@ -33,13 +33,13 @@
   "default_adapter": "native",
   "mcp": {
     "default_transport": "direct_http",
-    "endpoint_path": "/api/mcp/v1"
+    "endpoint_path": "/api/mcp/hermes/v1"
   },
   "adapters": [
     {
       "id": "native",
       "name": "deft-platform",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "role": "default",
       "kind": "native_platform",
       "protocol": "deft.agent_channel.v2",
@@ -114,7 +114,7 @@
   "common_plugins": [
     {
       "name": "deft-employee",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "target": "plugins/deft-employee",
       "files": [
         {
@@ -128,12 +128,16 @@
         {
           "source": "integrations/hermes/deft-employee/README.md",
           "target": "README.md"
+        },
+        {
+          "source": "integrations/hermes/deft-employee/SKILL.md",
+          "target": "SKILL.md"
         }
       ]
     },
     {
       "name": "deft-memory",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "target": "plugins/deft-memory",
       "files": [
         {

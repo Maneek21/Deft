@@ -26,6 +26,13 @@ SPEC = importlib.util.spec_from_file_location(
 MOD = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MOD
 SPEC.loader.exec_module(MOD)
+READINESS_SPEC = importlib.util.spec_from_file_location(
+    f"{PACKAGE_NAME}.readiness",
+    PLUGIN_DIR / "readiness.py",
+)
+READINESS = importlib.util.module_from_spec(READINESS_SPEC)
+sys.modules[READINESS_SPEC.name] = READINESS
+READINESS_SPEC.loader.exec_module(READINESS)
 TEST_STATE_DIR = tempfile.TemporaryDirectory()
 atexit.register(TEST_STATE_DIR.cleanup)
 
@@ -48,6 +55,75 @@ class FakeConfig:
 
 
 class DeftPlatformSkeletonTests(unittest.TestCase):
+    def test_readiness_treats_contained_compatibility_outcome_as_failure(self):
+        with patch.object(READINESS, "_rpc", return_value={
+            "content": [{"type": "text", "text": "DEFT_TOOL_FAILED: denied"}],
+            "structuredContent": {
+                "schema": "deft.tool_outcome.v1",
+                "deft_status": "failed",
+            },
+        }):
+            with self.assertRaisesRegex(RuntimeError, "rejected the readiness probe"):
+                READINESS._tool_call("https://deft.example/api/mcp/hermes/v1", "token", "ping_alive", {})
+
+    def test_stock_hermes_keeps_contained_deft_failures_off_the_server_breaker(self):
+        from tools import mcp_tool
+
+        server_name = f"deft-compat-{uuid.uuid4().hex}"
+
+        class ContentBlock:
+            type = "text"
+            text = "DEFT_TOOL_FAILED: task_update requires task_id"
+
+        class Result:
+            content = [ContentBlock()]
+            isError = False
+            structuredContent = {
+                "schema": "deft.tool_outcome.v1",
+                "deft_status": "failed",
+                "code": "DEFT_TOOL_FAILED",
+                "retryable": False,
+                "outcome_confirmed": False,
+            }
+            meta = None
+
+        async def call_tool(_name, arguments=None):
+            return Result()
+
+        session = types.SimpleNamespace(call_tool=call_tool)
+        server = types.SimpleNamespace(session=session, _rpc_lock=None)
+
+        def run_on_loop(coro_or_factory, timeout=30):
+            coroutine = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            loop = asyncio.new_event_loop()
+            try:
+                async def execute():
+                    server._rpc_lock = asyncio.Lock()
+                    return await coroutine
+
+                return loop.run_until_complete(execute())
+            finally:
+                loop.close()
+
+        try:
+            with patch.dict(mcp_tool._servers, {server_name: server}), patch.object(
+                mcp_tool,
+                "_run_on_mcp_loop",
+                side_effect=run_on_loop,
+            ):
+                mcp_tool._server_error_counts.pop(server_name, None)
+                handler = mcp_tool._make_tool_handler(server_name, "task_update", 30.0)
+                for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 2):
+                    payload = json.loads(handler({}))
+                    self.assertNotIn("error", payload)
+                    self.assertEqual(payload["structuredContent"]["deft_status"], "failed")
+                self.assertEqual(mcp_tool._server_error_counts.get(server_name, 0), 0)
+        finally:
+            mcp_tool._servers.pop(server_name, None)
+            mcp_tool._server_error_counts.pop(server_name, None)
+            if hasattr(mcp_tool, "_server_breaker_opened_at"):
+                mcp_tool._server_breaker_opened_at.pop(server_name, None)
+
     def test_registers_as_third_party_platform(self):
         context = FakeContext()
         MOD.register(context)
@@ -679,6 +755,7 @@ print(module.PROCESS_BOOT_ID)
         self.assertEqual(message_event.source.thread_id, "thread-1")
         self.assertEqual(message_event.source.user_id, "diego-1")
         self.assertEqual(message_event.source.user_name, "Diego")
+        self.assertEqual(message_event.auto_skill, "deft-employee:runtime")
         replies = [call for call in calls if call[1] == "/reply"]
         self.assertEqual(len(replies), 3)
         self.assertEqual({reply[3]["event_id"] for reply in replies}, {"channel-event-7"})

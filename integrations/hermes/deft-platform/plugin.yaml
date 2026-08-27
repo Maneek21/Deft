@@ -1,7 +1,7 @@
 name: deft-platform
 label: Deft
 kind: platform
-version: 0.2.0
+version: 0.2.1
 description: >
   Native Deft messaging-platform adapter for an independently operated Hermes
   employee. Deft provides workplace events and MCP; Hermes owns its agent loop.

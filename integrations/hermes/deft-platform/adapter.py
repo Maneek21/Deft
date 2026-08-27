@@ -32,7 +32,8 @@ from gateway.session import build_session_key
 
 
 PLATFORM_NAME = "deft"
-ADAPTER_VERSION = "0.2.0"
+ADAPTER_VERSION = "0.2.1"
+EMPLOYEE_SKILL = "deft-employee:runtime"
 CAPABILITIES = (
     "autonomous_platform_adapter_v1",
     "accepted_event_rehydration_v1",
@@ -648,6 +649,7 @@ class DeftAdapter(BasePlatformAdapter):
                 raw_message=event,
                 message_id=message_id,
                 reply_to_message_id=reply_to_message_id,
+                auto_skill=EMPLOYEE_SKILL,
             )
 
         if event_kind in {"certification.challenge", "certification.restart_proof"}:

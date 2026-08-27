@@ -14,7 +14,7 @@ import uuid
 
 
 PROTOCOL_VERSION = "deft.agent_channel.v2"
-ADAPTER_VERSION = "0.2.0"
+ADAPTER_VERSION = "0.2.1"
 CAPABILITY = "autonomous_platform_adapter_v1,accepted_event_rehydration_v1"
 REQUIRED_TOOLS = {
     "fetch_unread",
@@ -71,7 +71,12 @@ def _tool_call(mcp_url: str, token: str, name: str, arguments: dict) -> dict:
         {"name": name, "arguments": arguments},
         f"readiness-{name}",
     )
-    if result.get("isError") is True:
+    outcome = result.get("structuredContent")
+    if result.get("isError") is True or (
+        isinstance(outcome, dict)
+        and outcome.get("schema") == "deft.tool_outcome.v1"
+        and outcome.get("deft_status") != "ok"
+    ):
         raise RuntimeError(f"MCP tool {name} rejected the readiness probe")
     return result
 

@@ -44,6 +44,7 @@ test('certificate v2 exposes stable native, fallback, common, and bundle suite r
   assert.ok(API_SUITES.includes('test/agent-context-project-scope.test.ts'));
   assert.ok(API_SUITES.includes('test/defty-identity-boundary.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-platform-context.test.ts'));
+  assert.ok(API_SUITES.includes('test/mcp-server-2026-compat.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-task-project-boundary.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-task-query-project-scope.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-team-context.test.ts'));

@@ -561,6 +561,15 @@ function mcpEndpointUrl(): string {
   return `${apiBase.replace(/\/$/, '')}/api/mcp/v1`;
 }
 
+function hermesMcpEndpointUrl(): string {
+  const apiBase =
+    process.env.PUBLIC_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.API_BASE_URL ??
+    'http://localhost:3001';
+  return `${apiBase.replace(/\/$/, '')}/api/mcp/hermes/v1`;
+}
+
 function agentChannelEndpointUrl(): string {
   const apiBase =
     process.env.PUBLIC_API_BASE_URL ??
@@ -575,7 +584,7 @@ function hermesIntegrationBundleUrl(): string {
     || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
 }
 
-export const HERMES_INTEGRATION_VERSION = '0.4.0';
+export const HERMES_INTEGRATION_VERSION = '0.5.0';
 
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',
@@ -704,10 +713,12 @@ function certificationExecutionProof(
   ) return 'supervised_terminal';
   if (
     request.adapter_mode === 'autonomous_platform'
-    && event.status === 'acknowledged'
+    && (
+      (event.status === 'acknowledged' && !event.completed_at)
+      || (event.status === 'completed' && Boolean(event.completed_at))
+    )
     && Boolean(event.acked_at)
     && replyCommittedAt.getTime() >= event.acked_at!.getTime()
-    && !event.completed_at
     && !event.work_outcome
     && !event.claim_token
     && !event.claim_owner
@@ -1176,7 +1187,7 @@ export function buildRuntimeSetup(
   nonce: string | null,
 ): RuntimeSetup {
   const runtimeKind = runtimeKindOf(employee);
-  const endpoint = mcpEndpointUrl();
+  const endpoint = runtimeKind === 'hermes' ? hermesMcpEndpointUrl() : mcpEndpointUrl();
   const channelEndpoint = agentChannelEndpointUrl();
   const certificationPrompt = buildCertificationPrompt(employee, nonce ?? '<challenge-nonce>');
 
@@ -1196,6 +1207,7 @@ export function buildRuntimeSetup(
         `Download and extract the immutable Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
         'Install the bundled deft-platform, deft-employee, and deft-memory plugin directories into the active Hermes profile; do not copy them from another Deft checkout.',
         'Enable the three bundled plugins in the active Hermes config.yaml. deft-platform must be the only Agent Channel delivery adapter for this employee.',
+        'The native adapter will auto-load the bundled deft-employee:runtime skill into each new Deft session; keep deft-employee enabled and restart old sessions after an integration upgrade.',
         'Replace the home_channel chat_id placeholders with an existing organization and space that this employee may access.',
         'Configure mcp_servers.deft as the direct HTTP Deft MCP endpoint with this employee\'s separate MCP bearer token; no stdio shim is required.',
         'Set the five employee-bound DEFT_CHANNEL_URL, DEFT_CHANNEL_TOKEN, DEFT_EMPLOYEE_SLUG, DEFT_MCP_URL, and DEFT_MCP_TOKEN variables, then run the bundled deft-platform readiness.py probe before starting Hermes.',

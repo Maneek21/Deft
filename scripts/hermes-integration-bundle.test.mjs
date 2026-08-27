@@ -105,6 +105,7 @@ test('native-first bundle and verifier evidence are deterministic across isolate
   assert.equal(firstEvidence.manifest.schema, 'deft.hermes.integration.v2');
   assert.equal(firstEvidence.manifest.default_adapter, 'native');
   assert.equal(firstEvidence.manifest.mcp.default_transport, 'direct_http');
+  assert.equal(firstEvidence.manifest.mcp.endpoint_path, '/api/mcp/hermes/v1');
   assert.equal(firstEvidence.manifest.hermes_compatibility, '>=0.20.5 <0.21.0');
   assert.deepEqual(firstEvidence.manifest.hermes_tested, {
     distribution: 'hermes-agent',
@@ -128,6 +129,7 @@ test('native-first bundle and verifier evidence are deterministic across isolate
     'legacy/bridge/run-hermes-channel-service.ps1',
     'manifest.json',
     'plugins/deft-employee/README.md',
+    'plugins/deft-employee/SKILL.md',
     'plugins/deft-employee/__init__.py',
     'plugins/deft-employee/plugin.yaml',
     'plugins/deft-memory/README.md',

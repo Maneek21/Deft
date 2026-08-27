@@ -6,7 +6,7 @@ canonical company wiki; Hermes keeps its normal local `MEMORY.md` and `USER.md`.
 Install the directory as `$HERMES_HOME/plugins/deft-memory`, set
 `memory.provider: deft-memory`, and configure:
 
-- `DEFT_MCP_URL=https://your-deft.example/api/mcp/v1`
+- `DEFT_MCP_URL=https://your-deft.example/api/mcp/hermes/v1`
 - `DEFT_MCP_TOKEN=<employee-specific token>`
 
 The provider automatically recalls scoped Deft wiki context before turns,

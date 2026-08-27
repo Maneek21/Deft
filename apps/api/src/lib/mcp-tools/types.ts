@@ -28,6 +28,7 @@ export type ToolTextContent = { type: 'text'; text: string };
 export type ToolResult = {
   content: ToolTextContent[];
   isError?: boolean;
+  structuredContent?: Record<string, unknown>;
 };
 
 /** Convenience wrapper: build a text-only tool result. */
