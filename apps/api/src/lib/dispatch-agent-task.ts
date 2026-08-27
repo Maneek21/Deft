@@ -17,13 +17,14 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { db } from './db.js';
-import { agentEmployees, projects, users } from '@deft/db/schema';
+import { agentEmployees, projects, tasks, users } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from './queues.js';
 import { publishAgentChannelEvent, type AgentChannelEventKind } from './agent-channel.js';
+import { employeeCanAccessProject } from './mcp-tools/employee-project-access.js';
 
 export type AgentTaskDispatchResult =
   | { queued: true; employeeId: string }
-  | { queued: false; reason: 'not_agent' | 'enqueue_failed' };
+  | { queued: false; reason: 'not_agent' | 'project_not_allowed' | 'enqueue_failed' };
 
 export async function dispatchAgentEmployeeTask(params: {
   taskId: string;
@@ -43,6 +44,26 @@ export async function dispatchAgentEmployeeTask(params: {
       .limit(1);
 
     if (assigneeUser?.is_agent && assigneeUser?.agent_employee_id) {
+      const [task] = await db
+        .select({ project_id: tasks.project_id })
+        .from(tasks)
+        .innerJoin(projects, and(
+          eq(projects.id, tasks.project_id),
+          eq(projects.org_id, tasks.org_id),
+        ))
+        .where(and(
+          eq(tasks.id, taskId),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          eq(projects.is_deleted, false),
+        ))
+        .limit(1);
+      if (!task || !(await employeeCanAccessProject({
+        org_id: orgId,
+        employee_id: assigneeUser.agent_employee_id,
+      }, task.project_id))) {
+        return { queued: false, reason: 'project_not_allowed' };
+      }
       await enqueue(QUEUE_NAMES.AGENT_JOBS, 'agent-employee-task', {
         taskId,
         orgId,
@@ -82,6 +103,23 @@ export async function publishTaskChannelEventForAssignee(params: {
   if (!params.task.assignee_id || params.task.assignee_id === params.actorUserId) return;
 
   try {
+    const [activeTask] = await db
+      .select({ project_prefix: projects.prefix })
+      .from(tasks)
+      .innerJoin(projects, and(
+        eq(projects.id, tasks.project_id),
+        eq(projects.org_id, tasks.org_id),
+      ))
+      .where(and(
+        eq(tasks.id, params.task.id),
+        eq(tasks.org_id, params.orgId),
+        eq(tasks.project_id, params.task.project_id),
+        eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
+      ))
+      .limit(1);
+    if (!activeTask) return;
+
     const [employee] = await db
       .select({ id: agentEmployees.id, user_id: agentEmployees.user_id })
       .from(agentEmployees)
@@ -94,15 +132,9 @@ export async function publishTaskChannelEventForAssignee(params: {
       .limit(1);
     if (!employee || employee.user_id === params.actorUserId) return;
 
-    let prefix = params.projectPrefix;
-    if (prefix === undefined) {
-      const [project] = await db
-        .select({ prefix: projects.prefix })
-        .from(projects)
-        .where(and(eq(projects.id, params.task.project_id), eq(projects.org_id, params.orgId)))
-        .limit(1);
-      prefix = project?.prefix ?? null;
-    }
+    const prefix = params.projectPrefix === undefined
+      ? activeTask.project_prefix
+      : params.projectPrefix;
     const [actor] = await db
       .select({ name: users.name })
       .from(users)

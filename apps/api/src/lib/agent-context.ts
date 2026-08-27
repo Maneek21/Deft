@@ -61,6 +61,10 @@ import {
 import { listModuleRecordTaskLinks } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { visibleModuleActionSql } from './module-action-visibility.js';
+import {
+  loadEmployeeProjectAccess,
+  type EmployeeProjectAccess,
+} from './mcp-tools/employee-project-access.js';
 
 type Citation = { type: string; id: string; title: string };
 
@@ -106,6 +110,38 @@ export async function executeToolCall(
 ): Promise<{ result: any; citations: Citation[] }> {
   const policyError = await agentToolPolicyError(orgId, agentEmployeeId, toolName);
   if (policyError) return { result: { error: policyError }, citations: [] };
+
+  // Native runners and the legacy /mcp endpoint both terminate here. Resolve
+  // project scope from the live employee row inside each tool call so neither
+  // surface can bypass a scope change by supplying (or caching) its own ids.
+  let employeeProjectAccessPromise: Promise<EmployeeProjectAccess> | null = null;
+  const employeeProjectAccess = async (): Promise<EmployeeProjectAccess | null> => {
+    if (!agentEmployeeId) return null;
+    employeeProjectAccessPromise ??= loadEmployeeProjectAccess({
+      org_id: orgId,
+      employee_id: agentEmployeeId,
+    });
+    return employeeProjectAccessPromise;
+  };
+
+  const taskReadConditions = async (): Promise<any[]> => {
+    const conditions: any[] = [
+      eq(projects.is_deleted, false),
+      visibleTaskCondition(_userId),
+    ];
+    const access = await employeeProjectAccess();
+    if (!access) return conditions;
+    if (!access.resolved) return [...conditions, sql`false`];
+    if (!access.unrestricted) conditions.push(inArray(tasks.project_id, access.projectIds));
+    return conditions;
+  };
+
+  const projectReadConditions = async (): Promise<any[]> => {
+    const access = await employeeProjectAccess();
+    if (!access || (access.resolved && access.unrestricted)) return [];
+    if (!access.resolved) return [sql`false`];
+    return [inArray(projects.id, access.projectIds)];
+  };
 
   // Check daily action limit for agent employees
   if (agentEmployeeId) {
@@ -248,10 +284,30 @@ export async function executeToolCall(
       });
       const record = await getModuleRecord(actor, parseModuleRecordResourceId(resourceId));
       const installation = await getModuleInstallation(actor, { moduleId: record.module_id });
-      const tasks = await listModuleRecordTaskLinks(actor, installation.slug, record.id);
+      const linkedTasks = await listModuleRecordTaskLinks(actor, installation.slug, record.id);
+      const access = await employeeProjectAccess();
+      let readableTasks = linkedTasks;
+      if (access) {
+        if (!access.resolved || linkedTasks.length === 0) {
+          readableTasks = [];
+        } else {
+          const readableRows = await db
+            .select({ id: tasks.id })
+            .from(tasks)
+            .innerJoin(projects, eq(tasks.project_id, projects.id))
+            .where(and(
+              inArray(tasks.id, linkedTasks.map((task) => task.task_id)),
+              eq(tasks.org_id, orgId),
+              eq(tasks.is_deleted, false),
+              ...(await taskReadConditions()),
+            ));
+          const readableIds = new Set(readableRows.map((task) => task.id));
+          readableTasks = linkedTasks.filter((task) => readableIds.has(task.task_id));
+        }
+      }
       return {
-        result: { resource_id: resourceId, tasks, count: tasks.length },
-        citations: tasks.map((task) => ({
+        result: { resource_id: resourceId, tasks: readableTasks, count: readableTasks.length },
+        citations: readableTasks.map((task) => ({
           type: 'task',
           id: task.task_id,
           title: task.identifier ? `${task.identifier}: ${task.title}` : task.title,
@@ -377,7 +433,7 @@ export async function executeToolCall(
       const conditions: any[] = [
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
-        visibleTaskCondition(_userId),
+        ...(await taskReadConditions()),
       ];
 
       if (params.query) {
@@ -458,6 +514,7 @@ export async function executeToolCall(
       const conditions: any[] = [
         eq(tasks.org_id, orgId),
         eq(tasks.is_deleted, false),
+        ...(await taskReadConditions()),
         or(
           eq(tasks.assignee_id, _userId),
           sql`EXISTS (SELECT 1 FROM ${taskAssignees} WHERE ${taskAssignees.task_id} = ${tasks.id} AND ${taskAssignees.user_id} = ${_userId})`,
@@ -538,7 +595,12 @@ export async function executeToolCall(
         .from(tasks)
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .leftJoin(users, eq(tasks.assignee_id, users.id))
-        .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId), visibleTaskCondition(_userId)))
+        .where(and(
+          eq(tasks.id, taskId),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          ...(await taskReadConditions()),
+        ))
         .limit(1);
 
       if (!task) return { result: { error: 'Task not found' }, citations: [] };
@@ -552,7 +614,10 @@ export async function executeToolCall(
         })
         .from(taskComments)
         .innerJoin(users, eq(taskComments.user_id, users.id))
-        .where(eq(taskComments.task_id, taskId))
+        .where(and(
+          eq(taskComments.task_id, taskId),
+          eq(taskComments.is_deleted, false),
+        ))
         .orderBy(desc(taskComments.created_at))
         .limit(5);
 
@@ -643,10 +708,12 @@ export async function executeToolCall(
         const [row] = await db
           .select({ count: sql<number>`count(*)` })
           .from(tasks)
+          .innerJoin(projects, eq(tasks.project_id, projects.id))
           .where(
             and(
               eq(tasks.org_id, orgId),
               eq(tasks.is_deleted, false),
+              ...(await taskReadConditions()),
               eq(tasks.status, 'done'),
               gte(tasks.updated_at, since),
             ),
@@ -658,10 +725,12 @@ export async function executeToolCall(
         const [row] = await db
           .select({ count: sql<number>`count(*)` })
           .from(tasks)
+          .innerJoin(projects, eq(tasks.project_id, projects.id))
           .where(
             and(
               eq(tasks.org_id, orgId),
               eq(tasks.is_deleted, false),
+              ...(await taskReadConditions()),
               gte(tasks.created_at, since),
             ),
           );
@@ -703,10 +772,12 @@ export async function executeToolCall(
             count: sql<number>`count(*)`,
           })
           .from(tasks)
+          .innerJoin(projects, eq(tasks.project_id, projects.id))
           .where(
             and(
               eq(tasks.org_id, orgId),
               eq(tasks.is_deleted, false),
+              ...(await taskReadConditions()),
               gte(tasks.created_at, since),
             ),
           )
@@ -721,7 +792,18 @@ export async function executeToolCall(
     }
 
     case 'get_team_workload': {
-      const conditions: any[] = [eq(tasks.org_id, orgId), eq(tasks.is_deleted, false)];
+      const conditions: any[] = [
+        eq(tasks.org_id, orgId),
+        eq(tasks.is_deleted, false),
+        ...(await taskReadConditions()),
+      ];
+
+      const scopedProjectIds = Array.isArray(params.project_ids)
+        ? [...new Set(params.project_ids.filter((value): value is string => typeof value === 'string' && value.length > 0))]
+        : [];
+      if (scopedProjectIds.length > 0) {
+        conditions.push(inArray(tasks.project_id, scopedProjectIds));
+      }
 
       if (params.project_name) {
         const [proj] = await db
@@ -745,6 +827,7 @@ export async function executeToolCall(
           count: sql<number>`count(*)`,
         })
         .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
         .innerJoin(users, eq(tasks.assignee_id, users.id))
         .where(and(...conditions))
         .groupBy(tasks.assignee_id, users.name, tasks.status);
@@ -782,10 +865,13 @@ export async function executeToolCall(
 
     case 'list_projects': {
       const includeArchived = params.include_archived === true;
-      const conditions = [eq(projects.org_id, orgId)];
+      const conditions: any[] = [
+        eq(projects.org_id, orgId),
+        eq(projects.is_deleted, false),
+        ...(await projectReadConditions()),
+      ];
       if (!includeArchived) {
         conditions.push(eq(projects.is_archived, false));
-        conditions.push(eq(projects.is_deleted, false));
       }
       const rows = await db
         .select({
@@ -801,15 +887,24 @@ export async function executeToolCall(
     }
 
     case 'get_project_progress': {
+      const projectConditions: any[] = [
+        eq(projects.org_id, orgId),
+        eq(projects.is_deleted, false),
+        ...(await projectReadConditions()),
+      ];
+      if (typeof params.project_id === 'string' && params.project_id) {
+        projectConditions.push(eq(projects.id, params.project_id));
+      } else if (typeof params.project_identifier === 'string' && params.project_identifier) {
+        projectConditions.push(eq(projects.prefix, params.project_identifier));
+      } else if (typeof params.project_name === 'string' && params.project_name) {
+        projectConditions.push(ilike(projects.name, `%${params.project_name}%`));
+      } else {
+        return { result: { error: 'Project not found' }, citations: [] };
+      }
       const [project] = await db
         .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
         .from(projects)
-        .where(
-          and(
-            eq(projects.org_id, orgId),
-            ilike(projects.name, `%${params.project_name}%`),
-          ),
-        )
+        .where(and(...projectConditions))
         .limit(1);
 
       if (!project) {
@@ -822,11 +917,13 @@ export async function executeToolCall(
           count: sql<number>`count(*)`,
         })
         .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(
           and(
             eq(tasks.org_id, orgId),
             eq(tasks.project_id, project.id),
             eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
           ),
         )
         .groupBy(tasks.status);
@@ -842,11 +939,13 @@ export async function executeToolCall(
       const [overdueRow] = await db
         .select({ count: sql<number>`count(*)` })
         .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(
           and(
             eq(tasks.org_id, orgId),
             eq(tasks.project_id, project.id),
             eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
             sql`${tasks.due_date} < now()`,
             sql`${tasks.status} NOT IN ('done', 'cancelled')`,
           ),
@@ -866,10 +965,13 @@ export async function executeToolCall(
         })
         .from(taskActivity)
         .innerJoin(tasks, eq(taskActivity.task_id, tasks.id))
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(
           and(
             eq(tasks.project_id, project.id),
             eq(tasks.org_id, orgId),
+            eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
           ),
         )
         .orderBy(desc(taskActivity.created_at))
@@ -1179,6 +1281,9 @@ export async function executeToolCall(
         .where(
           and(
             eq(taskActivity.user_id, targetUser.id),
+            eq(tasks.org_id, orgId),
+            eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
             gte(taskActivity.created_at, since),
           ),
         )
@@ -1214,11 +1319,13 @@ export async function executeToolCall(
           count: sql<number>`count(*)`,
         })
         .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
         .where(
           and(
             eq(tasks.org_id, orgId),
             eq(tasks.assignee_id, targetUser.id),
             eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
           ),
         )
         .groupBy(tasks.status);
@@ -1271,6 +1378,28 @@ export async function executeToolCall(
         }
       }
 
+      // Gate the anchor first. Without this check, a caller that knew an
+      // out-of-scope task id could still enumerate every relationship attached
+      // to it even when the related task happened to be visible.
+      const [readableAnchor] = await db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .innerJoin(projects, eq(tasks.project_id, projects.id))
+        .where(and(
+          eq(tasks.id, taskId),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          ...(await taskReadConditions()),
+        ))
+        .limit(1);
+
+      if (!readableAnchor) {
+        return {
+          result: { blocks: [], blocked_by: [], relates_to: [] },
+          citations: [],
+        };
+      }
+
       // Get relationships where this task is source (it blocks others)
       const blocksRels = await db
         .select({
@@ -1286,7 +1415,12 @@ export async function executeToolCall(
         .innerJoin(tasks, eq(taskRelationships.target_task_id, tasks.id))
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .leftJoin(users, eq(tasks.assignee_id, users.id))
-        .where(eq(taskRelationships.source_task_id, taskId));
+        .where(and(
+          eq(taskRelationships.source_task_id, taskId),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          ...(await taskReadConditions()),
+        ));
 
       // Get relationships where this task is target (it's blocked by others)
       const blockedByRels = await db
@@ -1303,7 +1437,12 @@ export async function executeToolCall(
         .innerJoin(tasks, eq(taskRelationships.source_task_id, tasks.id))
         .innerJoin(projects, eq(tasks.project_id, projects.id))
         .leftJoin(users, eq(tasks.assignee_id, users.id))
-        .where(eq(taskRelationships.target_task_id, taskId));
+        .where(and(
+          eq(taskRelationships.target_task_id, taskId),
+          eq(tasks.org_id, orgId),
+          eq(tasks.is_deleted, false),
+          ...(await taskReadConditions()),
+        ));
 
       const blocks = blocksRels
         .filter((r) => r.rel_type === 'blocks')
@@ -1645,10 +1784,12 @@ export async function executeToolCall(
         const [activeRow] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(tasks)
+          .innerJoin(projects, eq(tasks.project_id, projects.id))
           .where(and(
             eq(tasks.org_id, orgId),
             eq(tasks.assignee_id, member.userId),
             eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
             sql`${tasks.status} NOT IN ('done', 'cancelled')`,
           ));
         const activeTasks = Number(activeRow?.count ?? 0);
@@ -1657,10 +1798,12 @@ export async function executeToolCall(
         const [overdueRow] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(tasks)
+          .innerJoin(projects, eq(tasks.project_id, projects.id))
           .where(and(
             eq(tasks.org_id, orgId),
             eq(tasks.assignee_id, member.userId),
             eq(tasks.is_deleted, false),
+            ...(await taskReadConditions()),
             sql`${tasks.status} NOT IN ('done', 'cancelled')`,
             lt(tasks.due_date, now),
           ));
@@ -1730,21 +1873,66 @@ export async function executeToolCall(
     case 'get_team_performance': {
       const projectName = params.project_name as string | undefined;
       let projectId: string | undefined;
+      const access = await employeeProjectAccess();
 
-      if (projectName) {
+      if (access && (!access.resolved || !access.unrestricted)) {
+        if (!access.resolved) {
+          return { result: { error: 'Agent employee project scope could not be resolved' }, citations: [] };
+        }
+        if (!projectName) {
+          return {
+            result: { error: 'A project_name within the employee project scope is required' },
+            citations: [],
+          };
+        }
+        const [project] = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(
+            eq(projects.org_id, orgId),
+            eq(projects.is_deleted, false),
+            inArray(projects.id, access.projectIds),
+            ilike(projects.name, `%${projectName}%`),
+          ))
+          .limit(1);
+        if (!project) {
+          return { result: { error: 'Project not found within employee project scope' }, citations: [] };
+        }
+        projectId = project.id;
+      }
+
+      if (!projectId && projectName) {
         const [proj] = await db
           .select({ id: projects.id })
           .from(projects)
-          .where(and(eq(projects.org_id, orgId), ilike(projects.name, `%${projectName}%`)))
+          .where(and(
+            eq(projects.org_id, orgId),
+            eq(projects.is_deleted, false),
+            ilike(projects.name, `%${projectName}%`),
+          ))
           .limit(1);
-        if (proj) projectId = proj.id;
+        if (!proj) {
+          return { result: { error: 'Project not found' }, citations: [] };
+        }
+        projectId = proj.id;
       }
 
-      const velocity = await velocityCalculator(orgId, projectId);
+      const velocity = await velocityCalculator(
+        orgId,
+        projectId,
+        agentEmployeeId ? _userId : undefined,
+      );
       return { result: velocity, citations: [] };
     }
 
     case 'get_workload_balance': {
+      const access = await employeeProjectAccess();
+      if (access && (!access.resolved || !access.unrestricted)) {
+        return {
+          result: { error: 'Workload balance is unavailable for project-scoped employees' },
+          citations: [],
+        };
+      }
       const workload = await workloadAnalyzer(orgId);
       return { result: workload, citations: [] };
     }
@@ -1755,6 +1943,14 @@ export async function executeToolCall(
       if (!canPrep) {
         return {
           result: { error: 'Manager role required. Only org owners and admins can generate 1:1 preps.' },
+          citations: [],
+        };
+      }
+
+      const access = await employeeProjectAccess();
+      if (access && (!access.resolved || !access.unrestricted)) {
+        return {
+          result: { error: '1:1 prep is unavailable for project-scoped employees' },
           citations: [],
         };
       }

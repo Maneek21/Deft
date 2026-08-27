@@ -48,6 +48,11 @@ import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
 import { generateReceipt } from '../lib/receipts.js';
+import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
+import {
+  isReservedDeftyEmployeeSlug,
+  isReservedDeftyRuntimeKind,
+} from '../lib/defty-identity.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -485,10 +490,18 @@ const AGENT_EMPLOYEE_ROLES = [
   'custom',
 ] as const;
 
+const externalRuntimeKindSchema = z.string().trim().min(1).max(64).refine(
+  (runtimeKind) => !isReservedDeftyRuntimeKind(runtimeKind),
+  { message: 'defty_system is reserved for Deft internal use' },
+);
+
 const createSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().min(1).max(100).refine(
+    (name) => !isReservedDeftyEmployeeSlug(baseSlugForName(name)),
+    { message: 'defty-system is reserved for Deft internal use' },
+  ),
   role: z.enum(AGENT_EMPLOYEE_ROLES),
-  runtime_kind: z.string().min(1).max(64).optional(),
+  runtime_kind: externalRuntimeKindSchema.optional(),
   job_title: z.string().min(1).max(120).optional(),
   wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).default('manual'),
   system_prompt: z.string().min(1),
@@ -522,8 +535,8 @@ function baseSlugForName(name: string): string {
 
 async function uniqueEmployeeSlug(orgId: string, name: string): Promise<string> {
   const base = baseSlugForName(name);
-  let candidate = base;
-  let attempt = 1;
+  let candidate = isReservedDeftyEmployeeSlug(base) ? `${base}-2` : base;
+  let attempt = candidate === base ? 1 : 2;
 
   while (attempt < 100) {
     const [exists] = await db
@@ -1758,7 +1771,7 @@ agentEmployeeRoutes.post('/', async (c) => {
 
 const updateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  runtime_kind: z.string().min(1).max(64).optional(),
+  runtime_kind: externalRuntimeKindSchema.optional(),
   job_title: z.string().min(1).max(120).nullable().optional(),
   wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).optional(),
   system_prompt: z.string().min(1).optional(),
@@ -1845,6 +1858,9 @@ agentEmployeeRoutes.put('/:id', async (c) => {
       .set(updates)
       .where(eq(agentEmployees.id, id))
       .returning();
+    if (data.project_ids !== undefined) {
+      invalidatePlatformContextCacheFor(id);
+    }
 
     // Also update the user name if changed
     if (data.name) {
@@ -1853,7 +1869,6 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (data.job_title !== undefined) {
       await db.update(users).set({ title: data.job_title ?? roleToTitle(existing.role) }).where(eq(users.id, existing.user_id));
     }
-
     return c.json(updated);
   } catch (err) {
     console.error('Failed to update agent employee:', err);
@@ -3465,7 +3480,10 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const cloneSchema = z.object({
       name: z.string().min(1).max(200).optional(),
-      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).optional(),
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).refine(
+        (slug) => !isReservedDeftyEmployeeSlug(slug),
+        { message: 'defty-system is reserved for Deft internal use' },
+      ).optional(),
     });
     const parsed = cloneSchema.safeParse(body);
     if (!parsed.success) {
@@ -3477,7 +3495,13 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
       .from(agentEmployees)
       .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
       .limit(1);
-    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    if (
+      !source
+      || isReservedDeftyEmployeeSlug(source.slug)
+      || isReservedDeftyRuntimeKind(source.runtime_kind)
+    ) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
 
     // Build a fresh slug: caller override → sourceSlug-copy → -copy-2, etc.
     let candidate = parsed.data.slug ?? `${source.slug}-copy`;
@@ -3505,6 +3529,7 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
         slug: candidate,
         role: source.role,
         runtime_kind: source.runtime_kind,
+        is_byoa: true,
         job_title: source.job_title,
         wake_mode: source.wake_mode,
         avatar_url: source.avatar_url,

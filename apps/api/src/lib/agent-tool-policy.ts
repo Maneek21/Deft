@@ -1,6 +1,7 @@
 import { and, eq, or, sql } from 'drizzle-orm';
 import { agentEmployees } from '@deft/db/schema';
 import { db } from './db.js';
+import { canonicalDeftyEmployeeCondition } from './defty-identity.js';
 import { canonicalMcpToolName } from './mcp-tools.js';
 
 export interface ActiveAgentToolPolicy {
@@ -70,7 +71,7 @@ export async function getActiveAgentToolPolicy(
       eq(agentEmployees.is_active, true),
       or(
         eq(agentEmployees.is_deleted, false),
-        eq(agentEmployees.runtime_kind, 'defty_system'),
+        canonicalDeftyEmployeeCondition(),
       ),
     ))
     .limit(1);
@@ -103,7 +104,7 @@ export async function consumeAgentDailyActionBudget(
       eq(agentEmployees.is_active, true),
       or(
         eq(agentEmployees.is_deleted, false),
-        eq(agentEmployees.runtime_kind, 'defty_system'),
+        canonicalDeftyEmployeeCondition(),
       ),
       options.requireHealthy ? eq(agentEmployees.unhealthy, false) : undefined,
       sql`${agentEmployees.daily_action_count} < ${agentEmployees.max_daily_actions}`,

@@ -52,7 +52,12 @@ import {
 import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
 import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
+import { handleAgentEmployeeTask } from '../src/workers/handlers/agent-employee-task.js';
 import { rejectAction } from '../src/lib/agent-approval-resolver.js';
+import {
+  dispatchAgentEmployeeTask,
+  publishTaskChannelEventForAssignee,
+} from '../src/lib/dispatch-agent-task.js';
 
 const app = new Hono();
 app.route('/api/agent-channel/v1', agentChannelRoutes);
@@ -262,6 +267,414 @@ test('human MCP task creation wakes an assigned agent employee', async () => {
   const row = (queued as any).rows?.[0] ?? (queued as any)[0];
   assert.equal(row?.name, 'agent-employee-task');
   assert.equal(row?.data?.employeeId, employeeId);
+});
+
+test('task delivery enforces live employee project scope before queue, side effects, follow-ups, and recovery', async () => {
+  const outsideProjectId = crypto.randomUUID();
+  const allowedTaskId = crypto.randomUUID();
+  const outsideTaskId = crypto.randomUUID();
+  const deletedEmployeeTaskId = crypto.randomUUID();
+  const taskIds = [allowedTaskId, outsideTaskId, deletedEmployeeTaskId];
+  let cursorEventId: string | null = null;
+  await db.insert(projects).values({
+    id: outsideProjectId,
+    org_id: orgId,
+    name: 'Outside Agent Channel Project',
+    prefix: `OAC${String(Date.now()).slice(-5)}`,
+  });
+  await db.insert(tasks).values([
+    {
+      id: allowedTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Allowed scoped handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: outsideTaskId,
+      org_id: orgId,
+      project_id: outsideProjectId,
+      number: recoveryTaskNumber++,
+      title: 'Outside scoped handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: deletedEmployeeTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted employee handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+  ]);
+
+  try {
+    await db.update(agentEmployees).set({ project_ids: [projectId] }).where(eq(agentEmployees.id, employeeId));
+
+    const allowedDispatch = await dispatchAgentEmployeeTask({
+      taskId: allowedTaskId,
+      orgId,
+      assigneeUserId: agentUserId,
+      assignedBy: humanUserId,
+    });
+    assert.deepEqual(allowedDispatch, { queued: true, employeeId });
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: allowedTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const allowedEvents = await db.select().from(agentChannelEvents).where(and(
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.source_id, allowedTaskId),
+      eq(agentChannelEvents.kind, 'task.assigned'),
+    ));
+    const allowedActions = await db.select().from(agentActions).where(and(
+      eq(agentActions.agent_employee_id, employeeId),
+      sql`${agentActions.params}->>'task_id' = ${allowedTaskId}`,
+    ));
+    assert.equal(allowedEvents.length, 1);
+    assert.equal(allowedActions.length, 1);
+
+    const outsideDispatch = await dispatchAgentEmployeeTask({
+      taskId: outsideTaskId,
+      orgId,
+      assigneeUserId: agentUserId,
+      assignedBy: humanUserId,
+    });
+    assert.deepEqual(outsideDispatch, { queued: false, reason: 'project_not_allowed' });
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: outsideTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const outsideEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events
+      WHERE org_id = ${orgId} AND agent_employee_id = ${employeeId} AND source_id = ${outsideTaskId}
+      UNION ALL
+      SELECT id FROM agent_actions
+      WHERE org_id = ${orgId} AND agent_employee_id = ${employeeId} AND params->>'task_id' = ${outsideTaskId}
+      UNION ALL
+      SELECT id FROM task_activity
+      WHERE org_id = ${orgId} AND task_id = ${outsideTaskId} AND action = 'agent_handoff_queued'
+      UNION ALL
+      SELECT id FROM job_queue
+      WHERE name = 'agent-employee-task' AND data->>'taskId' = ${outsideTaskId}
+    `);
+    assert.equal(((outsideEffects as any).rows ?? outsideEffects as any[]).length, 0);
+
+    await db.update(agentEmployees).set({ project_ids: null }).where(eq(agentEmployees.id, employeeId));
+    const cursorEvent = await publishMessageEvent(`project-scope-cursor-${crypto.randomUUID()}`);
+    cursorEventId = cursorEvent.id;
+    const pendingOutside = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: outsideTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `project-scope-outside-${crypto.randomUUID()}`,
+      payload: { task_id: outsideTaskId },
+    });
+    assert.ok(pendingOutside.event);
+
+    // Narrowing scope after an event was persisted must suppress both later
+    // task activity and recovery of that earlier pending assignment.
+    await db.update(agentEmployees).set({ project_ids: [projectId] }).where(eq(agentEmployees.id, employeeId));
+    const comment = await operatorApp.request(`/api/tasks/${outsideTaskId}/comments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'This follow-up must not cross the narrowed project boundary.' }),
+    });
+    assert.equal(comment.status, 201, await comment.text());
+    const status = await operatorApp.request(`/api/tasks/${outsideTaskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+    assert.equal(status.status, 200, await status.text());
+    const allowedPending = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: allowedTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `project-scope-allowed-${crypto.randomUUID()}`,
+      payload: { task_id: allowedTaskId },
+    });
+    assert.ok(allowedPending.event);
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&after_event_id=${cursorEvent.id}&${channelCompatibilityQuery()}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.ok(delivery.events.some((event: any) => event.id === allowedPending.event!.id));
+    assert.equal(delivery.events.some((event: any) => event.id === pendingOutside.event!.id), false);
+    const [undeliveredOutside] = await db.select().from(agentChannelEvents)
+      .where(eq(agentChannelEvents.id, pendingOutside.event!.id)).limit(1);
+    assert.equal(undeliveredOutside?.status, 'pending');
+    assert.equal(undeliveredOutside?.delivery_count, 0);
+    const outsideFollowUps = await db.select().from(agentChannelEvents).where(and(
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.source_id, outsideTaskId),
+      inArray(agentChannelEvents.kind, ['task.commented', 'task.status_changed']),
+    ));
+    assert.equal(outsideFollowUps.length, 0);
+
+    await db.update(agentEmployees).set({ is_deleted: true }).where(eq(agentEmployees.id, employeeId));
+    const deletedPublish = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: deletedEmployeeTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `deleted-employee-${crypto.randomUUID()}`,
+      payload: { task_id: deletedEmployeeTaskId },
+    });
+    assert.equal(deletedPublish.event, null);
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: deletedEmployeeTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const deletedEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events WHERE source_id = ${deletedEmployeeTaskId}
+      UNION ALL
+      SELECT id FROM agent_actions WHERE params->>'task_id' = ${deletedEmployeeTaskId}
+    `);
+    assert.equal(((deletedEffects as any).rows ?? deletedEffects as any[]).length, 0);
+  } finally {
+    await db.update(agentEmployees)
+      .set({ project_ids: null, is_deleted: false, is_active: true })
+      .where(eq(agentEmployees.id, employeeId));
+    if (cursorEventId) await db.delete(agentChannelEvents).where(eq(agentChannelEvents.id, cursorEventId));
+    await db.delete(agentChannelEvents).where(inArray(agentChannelEvents.source_id, taskIds));
+    await db.delete(taskActivity).where(inArray(taskActivity.task_id, taskIds));
+    await db.delete(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      sql`${agentActions.params}->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})`,
+    ));
+    await db.delete(taskComments).where(inArray(taskComments.task_id, taskIds));
+    for (const taskId of taskIds) {
+      await db.execute(sql`DELETE FROM job_queue WHERE data->>'taskId' = ${taskId}`);
+    }
+    await db.delete(tasks).where(inArray(tasks.id, taskIds));
+    await db.delete(projects).where(eq(projects.id, outsideProjectId));
+  }
+});
+
+test('deleted tasks and tasks in soft-deleted projects cannot queue, deliver, recover, or publish follow-ups', async () => {
+  const deletedProjectId = crypto.randomUUID();
+  const deletedTaskId = crypto.randomUUID();
+  const deletedProjectTaskId = crypto.randomUUID();
+  const taskIds = [deletedTaskId, deletedProjectTaskId];
+  const recoveryEventIds: string[] = [];
+  let cursorEventId: string | null = null;
+
+  await db.insert(projects).values({
+    id: deletedProjectId,
+    org_id: orgId,
+    name: 'Deleted Agent Channel Project',
+    prefix: `DAC${String(Date.now()).slice(-5)}`,
+  });
+  await db.insert(tasks).values([
+    {
+      id: deletedTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted task lifecycle boundary',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: deletedProjectTaskId,
+      org_id: orgId,
+      project_id: deletedProjectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted project lifecycle boundary',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+  ]);
+
+  try {
+    await db.update(agentEmployees).set({ project_ids: null }).where(eq(agentEmployees.id, employeeId));
+    const cursorEvent = await publishMessageEvent(`lifecycle-cursor-${crypto.randomUUID()}`);
+    cursorEventId = cursorEvent.id;
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2000-01-01T00:00:00.000Z') })
+      .where(eq(agentChannelEvents.id, cursorEvent.id));
+
+    const recoveryEvents = [];
+    for (const taskId of taskIds) {
+      const published = await publishAgentChannelEvent({
+        orgId,
+        employeeId,
+        kind: 'task.assigned',
+        sourceKind: 'task',
+        sourceId: taskId,
+        actorUserId: humanUserId,
+        idempotencyKey: `lifecycle-recovery:${taskId}`,
+        payload: { task_id: taskId },
+      });
+      assert.ok(published.event);
+      recoveryEvents.push(published.event!);
+      recoveryEventIds.push(published.event!.id);
+    }
+    await db.update(agentChannelEvents).set({
+      status: 'acknowledged',
+      delivered_at: new Date(),
+      acked_at: new Date(),
+      delivery_count: 1,
+      claim_owner: null,
+      claim_token: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    }).where(inArray(agentChannelEvents.id, recoveryEvents.map((event) => event.id)));
+
+    await db.update(tasks).set({ is_deleted: true }).where(eq(tasks.id, deletedTaskId));
+    await db.update(projects).set({ is_deleted: true, deleted_at: new Date() })
+      .where(eq(projects.id, deletedProjectId));
+
+    for (const taskId of taskIds) {
+      const dispatch = await dispatchAgentEmployeeTask({
+        taskId,
+        orgId,
+        assigneeUserId: agentUserId,
+        assignedBy: humanUserId,
+      });
+      assert.deepEqual(dispatch, { queued: false, reason: 'project_not_allowed' });
+
+      await handleAgentEmployeeTask({
+        id: crypto.randomUUID(),
+        name: 'agent-employee-task',
+        data: { taskId, orgId, employeeId, assignedBy: humanUserId },
+      } as any);
+    }
+
+    await publishTaskChannelEventForAssignee({
+      orgId,
+      task: {
+        id: deletedTaskId,
+        project_id: projectId,
+        number: recoveryTaskNumber,
+        title: 'Deleted task lifecycle boundary',
+        description: null,
+        status: 'todo',
+        priority: 'p1',
+        assignee_id: agentUserId,
+      },
+      actorUserId: humanUserId,
+      kind: 'task.commented',
+      idempotencyKey: `deleted-task-follow-up-${crypto.randomUUID()}`,
+      payload: { comment_id: crypto.randomUUID() },
+    });
+    await publishTaskChannelEventForAssignee({
+      orgId,
+      task: {
+        id: deletedProjectTaskId,
+        project_id: deletedProjectId,
+        number: recoveryTaskNumber,
+        title: 'Deleted project lifecycle boundary',
+        description: null,
+        status: 'todo',
+        priority: 'p1',
+        assignee_id: agentUserId,
+      },
+      actorUserId: humanUserId,
+      kind: 'task.status_changed',
+      idempotencyKey: `deleted-project-follow-up-${crypto.randomUUID()}`,
+      payload: { old_status: 'todo', new_status: 'in_progress' },
+    });
+
+    for (const taskId of taskIds) {
+      assert.equal(await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId), null);
+    }
+
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&after_event_id=${cursorEvent.id}&${channelCompatibilityQuery()}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.equal(
+      delivery.events.some((event: any) => recoveryEvents.some((candidate) => candidate.id === event.id)),
+      false,
+    );
+
+    const lifecycleEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events
+      WHERE org_id = ${orgId}
+        AND source_id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+        AND id NOT IN (${sql.join(recoveryEvents.map((event) => sql`${event.id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM agent_actions
+      WHERE org_id = ${orgId}
+        AND params->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM task_activity
+      WHERE org_id = ${orgId}
+        AND task_id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM job_queue
+      WHERE name = 'agent-employee-task'
+        AND data->>'taskId' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+    `);
+    assert.equal(((lifecycleEffects as any).rows ?? lifecycleEffects as any[]).length, 0);
+
+    const retainedRecoveryEvents = await db.select({
+      id: agentChannelEvents.id,
+      status: agentChannelEvents.status,
+      delivery_count: agentChannelEvents.delivery_count,
+      claim_token: agentChannelEvents.claim_token,
+    }).from(agentChannelEvents).where(inArray(
+      agentChannelEvents.id,
+      recoveryEvents.map((event) => event.id),
+    ));
+    assert.equal(retainedRecoveryEvents.length, 2);
+    assert.ok(retainedRecoveryEvents.every((event) => (
+      event.status === 'acknowledged'
+      && event.delivery_count === 1
+      && event.claim_token === null
+    )));
+  } finally {
+    await db.update(agentEmployees)
+      .set({ project_ids: null, is_deleted: false, is_active: true })
+      .where(eq(agentEmployees.id, employeeId));
+    if (cursorEventId) await db.delete(agentChannelEvents).where(eq(agentChannelEvents.id, cursorEventId));
+    if (recoveryEventIds.length > 0) {
+      await db.delete(agentChannelDeliveryAttempts)
+        .where(inArray(agentChannelDeliveryAttempts.event_id, recoveryEventIds));
+    }
+    await db.delete(agentChannelEvents).where(inArray(agentChannelEvents.source_id, taskIds));
+    await db.delete(taskActivity).where(inArray(taskActivity.task_id, taskIds));
+    await db.delete(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      sql`${agentActions.params}->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})`,
+    ));
+    for (const taskId of taskIds) {
+      await db.execute(sql`DELETE FROM job_queue WHERE data->>'taskId' = ${taskId}`);
+    }
+    await db.delete(tasks).where(inArray(tasks.id, taskIds));
+    await db.delete(projects).where(eq(projects.id, deletedProjectId));
+  }
 });
 
 test('human MCP message post wakes a mentioned agent employee', async () => {

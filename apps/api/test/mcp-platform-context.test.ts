@@ -13,8 +13,10 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import { Hono } from 'hono';
 import { platformContext, _clearPlatformContextCache } from '../src/lib/mcp-tools/context.js';
 import type { ToolContext } from '../src/lib/mcp-tools/types.js';
+import { agentEmployeeRoutes } from '../src/routes/agent-employees.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
@@ -22,6 +24,9 @@ const DATABASE_URL =
 const ORG_ID = '1d7d869a-5e68-48d5-832e-11d8f3bb1dd6';
 const TEST_USER_ID = `mcp-ctx-test-user-${Date.now()}`;
 const AGENT_EMPLOYEE_ID = `mcp-ctx-test-emp-${Date.now()}`;
+const ALLOWED_PROJECT_ID = `mcp-ctx-allowed-project-${Date.now()}`;
+const OTHER_PROJECT_ID = `mcp-ctx-other-project-${Date.now()}`;
+const PROJECT_PREFIX_SUFFIX = Date.now().toString(36).slice(-4).toUpperCase();
 
 // Unique query term so only our seeded pages match.
 const QUERY_TERM = `xmcpctx${Date.now()}`;
@@ -70,7 +75,7 @@ before(async () => {
     );
     await c.query(
       `INSERT INTO org_members (id, org_id, user_id, role, is_active)
-       VALUES (gen_random_uuid()::text, $1, $2, 'member', true)
+       VALUES (gen_random_uuid()::text, $1, $2, 'owner', true)
        ON CONFLICT (org_id, user_id) DO NOTHING`,
       [ORG_ID, TEST_USER_ID],
     );
@@ -79,13 +84,30 @@ before(async () => {
     await c.query(
       `INSERT INTO agent_employees
         (id, org_id, user_id, name, slug, role, system_prompt, trust_level,
-         is_byoa, is_active, created_by)
+         is_byoa, is_active, created_by, project_ids)
        VALUES ($1, $2, $3, 'MCP Context Test Emp', $4, 'custom', 'test', 'standard',
-         true, true, $3)
+         true, true, $3, ARRAY[$5]::text[])
        ON CONFLICT (id) DO NOTHING`,
-      [AGENT_EMPLOYEE_ID, ORG_ID, TEST_USER_ID, `mcp-ctx-slug-${Date.now()}`],
+      [AGENT_EMPLOYEE_ID, ORG_ID, TEST_USER_ID, `mcp-ctx-slug-${Date.now()}`, ALLOWED_PROJECT_ID],
     );
     seededIds.push({ table: 'agent_employees', id: AGENT_EMPLOYEE_ID });
+
+    await c.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES
+         ($1, $2, 'Allowed Context Project', $3, $4, 0),
+         ($5, $2, 'Other Context Project', $6, $4, 0)`,
+      [
+        ALLOWED_PROJECT_ID,
+        ORG_ID,
+        `A${PROJECT_PREFIX_SUFFIX}`,
+        TEST_USER_ID,
+        OTHER_PROJECT_ID,
+        `O${PROJECT_PREFIX_SUFFIX}`,
+      ],
+    );
+    seededIds.push({ table: 'projects', id: ALLOWED_PROJECT_ID });
+    seededIds.push({ table: 'projects', id: OTHER_PROJECT_ID });
 
     // Seed a space for the message.
     const spaceId = `mcp-ctx-space-${Date.now()}`;
@@ -442,5 +464,167 @@ describe('platformContext', () => {
     assert.ok(!second.isError, `Second call should not error: ${second.content[0]?.text}`);
     const secondParsed = JSON.parse(second.content[0].text) as Record<string, unknown>;
     assert.strictEqual(secondParsed._cache_hit, true, 'Second call must be a cache hit');
+  });
+
+  test('6. project allowlist updates replace cached active projects while null and [] stay unrestricted', async () => {
+    _clearPlatformContextCache();
+    const first = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!first.isError, first.content[0]?.text);
+    const firstPayload = JSON.parse(first.content[0]!.text) as any;
+    assert.deepEqual(firstPayload.active_projects.map((project: any) => project.id), [ALLOWED_PROJECT_ID]);
+
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('user', { id: TEST_USER_ID, email: 'owner@test.local', org_id: ORG_ID } as any);
+      await next();
+    });
+    app.route('/api/agent-employees', agentEmployeeRoutes);
+
+    const restrictToOther = await app.request(`/api/agent-employees/${AGENT_EMPLOYEE_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project_ids: [OTHER_PROJECT_ID] }),
+    });
+    assert.equal(restrictToOther.status, 200, await restrictToOther.text());
+
+    const afterUpdate = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!afterUpdate.isError, afterUpdate.content[0]?.text);
+    const afterUpdatePayload = JSON.parse(afterUpdate.content[0]!.text) as any;
+    assert.equal(afterUpdatePayload._cache_hit, false, 'scope update must invalidate cached context');
+    assert.deepEqual(afterUpdatePayload.active_projects.map((project: any) => project.id), [OTHER_PROJECT_ID]);
+
+    for (const unrestrictedValue of [null, []]) {
+      const response = await app.request(`/api/agent-employees/${AGENT_EMPLOYEE_ID}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_ids: unrestrictedValue }),
+      });
+      assert.equal(response.status, 200, await response.text());
+      const result = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+      assert.ok(!result.isError, result.content[0]?.text);
+      const payload = JSON.parse(result.content[0]!.text) as any;
+      assert.equal(payload._cache_hit, false);
+      const expectedProjectIds = await withClient(async (c) => {
+        const { rows } = await c.query(
+          `SELECT id FROM projects
+           WHERE org_id = $1 AND is_archived = false AND is_deleted = false
+           ORDER BY updated_at DESC
+           LIMIT 25`,
+          [ORG_ID],
+        );
+        return new Set(rows.map((row) => row.id));
+      });
+      assert.deepEqual(
+        new Set(payload.active_projects.map((project: any) => project.id)),
+        expectedProjectIds,
+      );
+    }
+  });
+
+  test('7. cache identity follows the live project allowlist even without route invalidation', async () => {
+    _clearPlatformContextCache();
+    await withClient(async (c) => {
+      await c.query(
+        'UPDATE agent_employees SET project_ids = ARRAY[$1]::text[] WHERE id = $2',
+        [ALLOWED_PROJECT_ID, AGENT_EMPLOYEE_ID],
+      );
+    });
+
+    const first = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!first.isError, first.content[0]?.text);
+    const firstPayload = JSON.parse(first.content[0]!.text) as any;
+    assert.deepEqual(firstPayload.active_projects.map((project: any) => project.id), [ALLOWED_PROJECT_ID]);
+
+    // Model the invalidation race: an old-scope request may finish after the
+    // route clears the cache. A new-scope request must use a different key.
+    await withClient(async (c) => {
+      await c.query(
+        'UPDATE agent_employees SET project_ids = ARRAY[$1]::text[] WHERE id = $2',
+        [OTHER_PROJECT_ID, AGENT_EMPLOYEE_ID],
+      );
+    });
+
+    const afterNarrowing = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!afterNarrowing.isError, afterNarrowing.content[0]?.text);
+    const narrowedPayload = JSON.parse(afterNarrowing.content[0]!.text) as any;
+    assert.equal(narrowedPayload._cache_hit, false);
+    assert.deepEqual(
+      narrowedPayload.active_projects.map((project: any) => project.id),
+      [OTHER_PROJECT_ID],
+    );
+  });
+
+  test('8. external employee updates cannot claim the internal Defty runtime kind', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('user', { id: TEST_USER_ID, email: 'owner@test.local', org_id: ORG_ID } as any);
+      await next();
+    });
+    app.route('/api/agent-employees', agentEmployeeRoutes);
+
+    const response = await app.request(`/api/agent-employees/${AGENT_EMPLOYEE_ID}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runtime_kind: 'defty_system' }),
+    });
+    assert.equal(response.status, 400, await response.text());
+  });
+
+  test('9. project lifecycle changes cannot reuse a stale platform context cache entry', async () => {
+    _clearPlatformContextCache();
+    await withClient(async (c) => {
+      await c.query(
+        'UPDATE agent_employees SET project_ids = ARRAY[$1]::text[] WHERE id = $2',
+        [ALLOWED_PROJECT_ID, AGENT_EMPLOYEE_ID],
+      );
+      await c.query(
+        'UPDATE projects SET is_deleted = false, deleted_at = NULL WHERE id = $1',
+        [ALLOWED_PROJECT_ID],
+      );
+    });
+
+    const first = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!first.isError, first.content[0]?.text);
+    assert.deepEqual(
+      JSON.parse(first.content[0]!.text).active_projects.map((project: any) => project.id),
+      [ALLOWED_PROJECT_ID],
+    );
+
+    try {
+      await withClient((c) => c.query(
+        'UPDATE projects SET is_deleted = true, deleted_at = NOW() WHERE id = $1',
+        [ALLOWED_PROJECT_ID],
+      ));
+      const afterDelete = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+      assert.ok(!afterDelete.isError, afterDelete.content[0]?.text);
+      const payload = JSON.parse(afterDelete.content[0]!.text) as any;
+      assert.equal(payload._cache_hit, false);
+      assert.deepEqual(payload.active_projects, []);
+    } finally {
+      await withClient((c) => c.query(
+        'UPDATE projects SET is_deleted = false, deleted_at = NULL WHERE id = $1',
+        [ALLOWED_PROJECT_ID],
+      ));
+    }
+  });
+
+  test('10. a forged legacy runtime kind cannot erase an external employee project boundary', async () => {
+    _clearPlatformContextCache();
+    await withClient(async (c) => {
+      await c.query(
+        `UPDATE agent_employees
+         SET runtime_kind = 'defty_system', project_ids = ARRAY[$1]::text[]
+         WHERE id = $2`,
+        [ALLOWED_PROJECT_ID, AGENT_EMPLOYEE_ID],
+      );
+    });
+
+    const result = await platformContext({ caller_employee_slug: 'mcp-ctx-test' }, makeCtx());
+    assert.ok(!result.isError, result.content[0]?.text);
+    const payload = JSON.parse(result.content[0]!.text) as any;
+    assert.deepEqual(
+      payload.active_projects.map((project: any) => project.id),
+      [ALLOWED_PROJECT_ID],
+    );
   });
 });

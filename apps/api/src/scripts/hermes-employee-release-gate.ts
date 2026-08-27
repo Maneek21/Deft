@@ -22,8 +22,11 @@ const bundleVerifierPath = resolve(repoRoot, 'scripts', 'verify-hermes-integrati
 
 export const API_SUITES = [
   'test/agent-action-budget-reset.test.ts',
+  'test/agent-actions-task-project-boundary.test.ts',
   'test/agent-channel.test.ts',
   'test/agent-certification-stability.test.ts',
+  'test/agent-context-project-scope.test.ts',
+  'test/defty-identity-boundary.test.ts',
   'test/agent-onboarding-preflight.test.ts',
   'test/agent-runtime-recovery.test.ts',
   'test/hermes-native-onboarding.test.ts',
@@ -34,7 +37,11 @@ export const API_SUITES = [
   'test/mcp-connector-safety.test.ts',
   'test/mcp-human-context-packets.test.ts',
   'test/mcp-message-privacy.test.ts',
+  'test/mcp-platform-context.test.ts',
   'test/mcp-server.test.ts',
+  'test/mcp-task-project-boundary.test.ts',
+  'test/mcp-task-query-project-scope.test.ts',
+  'test/mcp-team-context.test.ts',
   'test/mcp-tool-trust-boundary.test.ts',
   'test/mcp-write-tools.test.ts',
   'test/modules-contacts-acceptance.test.ts',
