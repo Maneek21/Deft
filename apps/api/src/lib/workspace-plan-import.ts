@@ -129,8 +129,14 @@ function normalizeIdentity(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase();
 }
 
+function nonSecretSha256(value: string): string {
+  // This is canonical identifier/content hashing; authentication credentials never enter this helper.
+  // codeql[js/insufficient-password-hash]
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function stableUuid(seed: string): string {
-  const hex = createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
+  const hex = nonSecretSha256(seed).slice(0, 32).split('');
   hex[12] = '4';
   hex[16] = ['8', '9', 'a', 'b'][parseInt(hex[16]!, 16) % 4]!;
   const value = hex.join('');
@@ -146,7 +152,7 @@ function stableValue(value: unknown): unknown {
 }
 
 function sha256Json(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex')}`;
+  return `sha256:${nonSecretSha256(JSON.stringify(stableValue(value)))}`;
 }
 
 function cellText(value: unknown): string {

@@ -70,8 +70,14 @@ export type PreparedDocumentSend = {
   idempotency_key: string;
 };
 
+function nonSecretSha256(value: string): string {
+  // This is canonical identifier/content hashing; authentication credentials never enter this helper.
+  // codeql[js/insufficient-password-hash]
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function stableUuid(seed: string): string {
-  const chars = createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
+  const chars = nonSecretSha256(seed).slice(0, 32).split('');
   chars[12] = '4';
   chars[16] = ((Number.parseInt(chars[16]!, 16) & 0x3) | 0x8).toString(16);
   const hex = chars.join('');
@@ -303,9 +309,9 @@ export async function prepareDocumentSend(params: {
     source_message_id: source.id,
     target: targetShape,
   });
-  const previewDigest = `sha256:${createHash('sha256').update(digestInput).digest('hex')}`;
+  const previewDigest = `sha256:${nonSecretSha256(digestInput)}`;
   const idempotencyKey = draft.parsed.idempotency_key
-    ?? `document-send:${createHash('sha256').update(`${params.orgId}:${params.actorUserId}:${previewDigest}`).digest('hex').slice(0, 48)}`;
+    ?? `document-send:${nonSecretSha256(`${params.orgId}:${params.actorUserId}:${previewDigest}`).slice(0, 48)}`;
 
   return {
     filename: draft.filename,
@@ -333,7 +339,7 @@ export function sanitizeDocumentSendParams(input: unknown): Record<string, unkno
   const sizeBytes = typeof raw.size_bytes === 'number' ? raw.size_bytes : Buffer.byteLength(content, 'utf8');
   const contentSha256 = typeof raw.content_sha256 === 'string'
     ? raw.content_sha256
-    : `sha256:${createHash('sha256').update(content).digest('hex')}`;
+    : `sha256:${nonSecretSha256(content)}`;
   const filename = cleanFilename(String(raw.filename ?? ''));
   const mimeType = String(raw.mime_type ?? '');
   if (!MIME_EXTENSIONS[mimeType]) throw new Error('Document MIME type is invalid');

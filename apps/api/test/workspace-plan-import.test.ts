@@ -277,6 +277,7 @@ test('Defty preview writes nothing before approval and approved execution is ato
   assert.equal(draft?.actions[0]?.action, WORKSPACE_PLAN_IMPORT_ACTION);
   assert.equal(draft?.actions[0]?.approval_tier, 'full');
   const proposal = draft!.actions[0]!;
+  assert.match(String(proposal.params.preview_digest), /^sha256:[a-f0-9]{64}$/);
   const [actionId] = await withClient(async (client) => {
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO agent_actions (

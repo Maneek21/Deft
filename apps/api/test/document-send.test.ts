@@ -189,6 +189,7 @@ test('stock Hermes queues full review; approval atomically shares one protected 
   assert.match(body.message, /No file or message has been created yet/);
   assert.equal(body.preview.content, undefined);
   assert.match(body.preview.content_sha256, /^sha256:[a-f0-9]{64}$/);
+  assert.match(body.preview.preview_digest, /^sha256:[a-f0-9]{64}$/);
 
   const repeated = payload(await documentSend(args, context()));
   assert.equal(repeated.action_id, body.action_id);
