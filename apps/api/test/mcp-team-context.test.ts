@@ -5,6 +5,13 @@ import pg from 'pg';
 import { Hono } from 'hono';
 import { issueEmployeeToken, issuePersonalMcpToken } from '../src/lib/mcp-token.js';
 import { mcpServerV1Routes } from '../src/routes/mcp-server-v1.js';
+import { _clearPlatformContextCache } from '../src/lib/mcp-tools/context.js';
+import {
+  teamContext,
+  teamGet,
+  teamList,
+} from '../src/lib/mcp-tools/team-context.js';
+import type { ToolContext } from '../src/lib/mcp-tools/types.js';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/deft';
 
@@ -272,4 +279,173 @@ test('agent employee MCP team_context returns linked work using caller slug', as
   assert.equal(context.team.handle, 'mcp-launch-team');
   assert.ok(context.members.some((member: any) => member.user_id === agentUserId && member.kind === 'agent'));
   assert.equal(context.work.tasks.open_count, 2);
+});
+
+test('agent project allowlist filters platform and team project/task context while null and [] remain unrestricted', async () => {
+  const otherProjectId = randomUUID();
+  const otherTaskId = randomUUID();
+  await withClient(async (client) => {
+    await client.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter)
+       VALUES ($1, $2, 'Restricted Team Project', 'RTP', $3, 1)`,
+      [otherProjectId, orgId, userId],
+    );
+    await client.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by)
+       VALUES ($1, $2, $3, 1, 'Hidden cross-project task', 'todo', 'p0', $4)`,
+      [otherTaskId, orgId, otherProjectId, userId],
+    );
+    await client.query(
+      `INSERT INTO team_resources (id, org_id, team_id, resource_type, resource_id, label, created_by)
+       VALUES ($1, $2, $3, 'project', $4, 'Restricted linked project', $5)`,
+      [randomUUID(), orgId, teamId, otherProjectId, userId],
+    );
+    await client.query(
+      `UPDATE agent_employees SET project_ids = ARRAY[$2]::text[] WHERE id = $1`,
+      [agentEmployeeId, projectId],
+    );
+  });
+
+  _clearPlatformContextCache();
+  const platform = await callTool(agentToken, 'platform_context', { caller_employee_slug: agentSlug });
+  assert.deepEqual(platform.active_projects.map((project: any) => project.id), [projectId]);
+  const teamSummary = platform.teams.find((team: any) => team.id === teamId);
+  assert.equal(teamSummary.resources_by_type.project, 1);
+  assert.equal(teamSummary.resource_count, 6, 'restricted project link must not contribute to summary counts');
+
+  const profile = await callTool(agentToken, 'team_get', {
+    caller_employee_slug: agentSlug,
+    handle: 'mcp-launch-team',
+  });
+  const linkedProjects = profile.resources.filter((resource: any) => resource.type === 'project');
+  assert.deepEqual(linkedProjects.map((resource: any) => resource.resource_id), [projectId]);
+
+  const restrictedContext = await callTool(agentToken, 'team_context', {
+    caller_employee_slug: agentSlug,
+    handle: 'mcp-launch-team',
+    limit: 10,
+  });
+  assert.equal(restrictedContext.work.tasks.linked_project_count, 1);
+  assert.equal(restrictedContext.work.tasks.open_count, 2);
+  assert.equal(
+    restrictedContext.work.tasks.top_open.some((task: any) => task.id === otherTaskId),
+    false,
+  );
+
+  for (const unrestrictedValue of [null, []]) {
+    await withClient(async (client) => {
+      await client.query('UPDATE agent_employees SET project_ids = $2 WHERE id = $1', [
+        agentEmployeeId,
+        unrestrictedValue,
+      ]);
+    });
+    _clearPlatformContextCache();
+    const unrestricted = await callTool(agentToken, 'team_context', {
+      caller_employee_slug: agentSlug,
+      handle: 'mcp-launch-team',
+      limit: 10,
+    });
+    assert.equal(unrestricted.work.tasks.linked_project_count, 2);
+    assert.equal(unrestricted.work.tasks.open_count, 3);
+    assert.ok(unrestricted.work.tasks.top_open.some((task: any) => task.id === otherTaskId));
+    assert.ok(
+      unrestricted.resources.some(
+        (resource: any) => resource.type === 'project' && resource.resource_id === otherProjectId,
+      ),
+    );
+  }
+});
+
+test('agent team summaries and work context exclude soft-deleted linked projects', async () => {
+  const deletedProjectId = randomUUID();
+  const deletedTaskId = randomUUID();
+  await withClient(async (client) => {
+    await client.query(
+      `INSERT INTO projects (id, org_id, name, prefix, lead_id, task_counter, is_deleted)
+       VALUES ($1, $2, 'Soft-deleted Team Project', 'DTP', $3, 1, true)`,
+      [deletedProjectId, orgId, userId],
+    );
+    await client.query(
+      `INSERT INTO tasks (id, org_id, project_id, number, title, status, priority, created_by)
+       VALUES ($1, $2, $3, 1, 'Task under soft-deleted team project', 'todo', 'p0', $4)`,
+      [deletedTaskId, orgId, deletedProjectId, userId],
+    );
+    await client.query(
+      `INSERT INTO team_resources (id, org_id, team_id, resource_type, resource_id, label, created_by)
+       VALUES ($1, $2, $3, 'project', $4, 'Soft-deleted linked project', $5)`,
+      [randomUUID(), orgId, teamId, deletedProjectId, userId],
+    );
+    await client.query(
+      `UPDATE agent_employees SET project_ids = ARRAY[$2, $3]::text[] WHERE id = $1`,
+      [agentEmployeeId, projectId, deletedProjectId],
+    );
+  });
+
+  const list = await callTool(agentToken, 'team_list', {
+    caller_employee_slug: agentSlug,
+    query: 'launch',
+    limit: 10,
+  });
+  assert.equal(list.teams[0].resources_by_type.project, 1);
+  assert.equal(list.teams[0].resource_count, 6);
+
+  const profile = await callTool(agentToken, 'team_get', {
+    caller_employee_slug: agentSlug,
+    handle: 'mcp-launch-team',
+  });
+  assert.equal(
+    profile.resources.some(
+      (resource: any) => resource.type === 'project' && resource.resource_id === deletedProjectId,
+    ),
+    false,
+  );
+
+  const context = await callTool(agentToken, 'team_context', {
+    caller_employee_slug: agentSlug,
+    handle: 'mcp-launch-team',
+    limit: 10,
+  });
+  assert.equal(context.work.tasks.linked_project_count, 1);
+  assert.equal(context.work.tasks.open_count, 2);
+  assert.equal(context.work.tasks.top_open.some((task: any) => task.id === deletedTaskId), false);
+
+  await withClient((client) => client.query(
+    `UPDATE agent_employees SET project_ids = ARRAY[$2]::text[] WHERE id = $1`,
+    [agentEmployeeId, projectId],
+  ));
+});
+
+test('team tools fail closed for inactive and deleted employee principals', async () => {
+  const ctx: ToolContext = {
+    org_id: orgId,
+    employee_id: agentEmployeeId,
+    employee_slug: agentSlug,
+    trust_level: 'standard',
+  };
+  const calls = [
+    () => teamList({ limit: 10 }, ctx),
+    () => teamGet({ handle: 'mcp-launch-team' }, ctx),
+    () => teamContext({ handle: 'mcp-launch-team', limit: 10 }, ctx),
+  ];
+
+  for (const state of [
+    { is_active: false, is_deleted: false },
+    { is_active: true, is_deleted: true },
+  ]) {
+    await withClient((client) => client.query(
+      `UPDATE agent_employees SET is_active = $2, is_deleted = $3 WHERE id = $1`,
+      [agentEmployeeId, state.is_active, state.is_deleted],
+    ));
+    for (const call of calls) {
+      const result = await call();
+      assert.equal(result.isError, true);
+      assert.match(result.content[0]?.text ?? '', /caller employee not found/);
+      assert.doesNotMatch(result.content[0]?.text ?? '', /MCP Launch Team|harvest|Heirloom/);
+    }
+  }
+
+  await withClient((client) => client.query(
+    `UPDATE agent_employees SET is_active = true, is_deleted = false WHERE id = $1`,
+    [agentEmployeeId],
+  ));
 });

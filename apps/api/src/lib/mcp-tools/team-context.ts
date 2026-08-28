@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import {
   agentEmployees,
   icsSubscriptions,
@@ -19,6 +19,10 @@ import { db } from '../db.js';
 import { visibleTaskCondition } from '../task-visibility.js';
 import { visibleWikiPageCondition } from '../wiki-visibility.js';
 import { errorResult, textResult, type ToolContext, type ToolResult } from './types.js';
+import {
+  loadEmployeeProjectAccess,
+  type EmployeeProjectAccess,
+} from './employee-project-access.js';
 
 export type TeamAccessContext = {
   org_id: string;
@@ -27,6 +31,7 @@ export type TeamAccessContext = {
   can_read_tasks?: boolean;
   can_read_messages?: boolean;
   can_read_wiki?: boolean;
+  employee_project_access?: EmployeeProjectAccess;
 };
 
 type TeamToolArgs = {
@@ -86,22 +91,60 @@ function clampLimit(value: unknown, fallback = 20, max = 100): number {
   return Math.min(Math.max(1, Math.floor(raw)), max);
 }
 
-export async function teamAccessForEmployee(ctx: ToolContext): Promise<TeamAccessContext> {
-  const [employee] = await db
-    .select({ user_id: agentEmployees.user_id })
-    .from(agentEmployees)
-    .where(and(eq(agentEmployees.id, ctx.employee_id), eq(agentEmployees.org_id, ctx.org_id), eq(agentEmployees.is_deleted, false)))
-    .limit(1);
-  return { org_id: ctx.org_id, user_id: employee?.user_id ?? null, role: 'member' };
+export async function teamAccessForEmployee(
+  ctx: ToolContext,
+  employeeProjectAccess?: EmployeeProjectAccess,
+): Promise<TeamAccessContext> {
+  const access = employeeProjectAccess ?? await loadEmployeeProjectAccess(ctx);
+  return {
+    org_id: ctx.org_id,
+    user_id: access.userId,
+    role: 'member',
+    employee_project_access: access,
+  };
 }
 
-async function resourceCounts(teamIds: string[]): Promise<Map<string, Record<string, number>>> {
+function allowedProjectIds(access: TeamAccessContext, projectIds: string[]): string[] {
+  const employeeAccess = access.employee_project_access;
+  if (!employeeAccess) return projectIds;
+  if (!employeeAccess.resolved) return [];
+  if (employeeAccess.unrestricted) return projectIds;
+  const allowed = new Set(employeeAccess.projectIds);
+  return projectIds.filter((projectId) => allowed.has(projectId));
+}
+
+async function resourceCounts(
+  access: TeamAccessContext,
+  teamIds: string[],
+): Promise<Map<string, Record<string, number>>> {
   const countsByTeam = new Map<string, Record<string, number>>();
   if (teamIds.length === 0) return countsByTeam;
+  const employeeAccess = access.employee_project_access;
+  const projectScopeCondition = !employeeAccess || (employeeAccess.resolved && employeeAccess.unrestricted)
+    ? undefined
+    : employeeAccess.resolved && employeeAccess.projectIds.length > 0
+      ? or(
+          ne(teamResources.resource_type, 'project'),
+          inArray(teamResources.resource_id, employeeAccess.projectIds),
+        )
+      : ne(teamResources.resource_type, 'project');
+  const activeProjectCondition = or(
+    ne(teamResources.resource_type, 'project'),
+    sql`exists (
+      select 1 from ${projects}
+      where ${projects.id} = ${teamResources.resource_id}
+        and ${projects.org_id} = ${access.org_id}
+        and ${projects.is_deleted} = false
+    )`,
+  );
   const rows = await db
     .select({ team_id: teamResources.team_id, type: teamResources.resource_type, count: count(teamResources.id) })
     .from(teamResources)
-    .where(inArray(teamResources.team_id, teamIds))
+    .where(and(
+      inArray(teamResources.team_id, teamIds),
+      projectScopeCondition,
+      activeProjectCondition,
+    ))
     .groupBy(teamResources.team_id, teamResources.resource_type);
   for (const row of rows) {
     const existing = countsByTeam.get(row.team_id) ?? {};
@@ -171,11 +214,15 @@ export async function listTeamSummaries(
     .limit(limit * 2);
 
   const visible = rows.filter((row) => canSeeTeam(access, row)).slice(0, limit);
-  const counts = await resourceCounts(visible.map((row) => row.id));
-  return visible.map((row) => ({
-    ...row,
-    resources_by_type: counts.get(row.id) ?? {},
-  }));
+  const counts = await resourceCounts(access, visible.map((row) => row.id));
+  return visible.map((row) => {
+    const resourcesByType = counts.get(row.id) ?? {};
+    return {
+      ...row,
+      resource_count: Object.values(resourcesByType).reduce((sum, value) => sum + value, 0),
+      resources_by_type: resourcesByType,
+    };
+  });
 }
 
 async function resolveTeam(
@@ -270,11 +317,30 @@ async function teamMemberRows(access: TeamAccessContext, teamId: string) {
 }
 
 async function enrichResources(access: TeamAccessContext, teamId: string) {
-  const resources = await db
+  const linkedResources = await db
     .select()
     .from(teamResources)
     .where(and(eq(teamResources.org_id, access.org_id), eq(teamResources.team_id, teamId)))
     .orderBy(teamResources.resource_type, teamResources.created_at);
+
+  const linkedProjectIds = linkedResources
+    .filter((row) => row.resource_type === 'project')
+    .map((row) => row.resource_id);
+  const scopedProjectIds = allowedProjectIds(access, linkedProjectIds);
+  const activeProjectRows = scopedProjectIds.length > 0
+    ? await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(
+        eq(projects.org_id, access.org_id),
+        inArray(projects.id, scopedProjectIds),
+        eq(projects.is_deleted, false),
+      ))
+    : [];
+  const visibleProjectIds = new Set(activeProjectRows.map((project) => project.id));
+  const resources = linkedResources.filter(
+    (row) => row.resource_type !== 'project' || visibleProjectIds.has(row.resource_id),
+  );
 
   const idsByType = new Map<string, string[]>();
   for (const row of resources) {
@@ -444,7 +510,10 @@ async function allowedSpaceIds(access: TeamAccessContext, spaceIds: string[]): P
 }
 
 async function buildTeamWorkContext(access: TeamAccessContext, resources: Array<{ type: string; resource_id: string }>, limit: number) {
-  const projectIds = resources.filter((row) => row.type === 'project').map((row) => row.resource_id);
+  const projectIds = allowedProjectIds(
+    access,
+    resources.filter((row) => row.type === 'project').map((row) => row.resource_id),
+  );
   const rawSpaceIds = resources.filter((row) => row.type === 'space').map((row) => row.resource_id);
   const spaceIds = access.can_read_messages === false ? [] : await allowedSpaceIds(access, rawSpaceIds);
   const taskVisibility = access.user_id ? visibleTaskCondition(access.user_id) : sql<boolean>`true`;
@@ -453,6 +522,7 @@ async function buildTeamWorkContext(access: TeamAccessContext, resources: Array<
     ? and(
         eq(tasks.org_id, access.org_id),
         eq(tasks.is_deleted, false),
+        eq(projects.is_deleted, false),
         inArray(tasks.project_id, projectIds),
         sql`${tasks.status} not in ('done', 'cancelled')`,
         taskVisibility,
@@ -600,17 +670,26 @@ export async function getTeamContext(access: TeamAccessContext, args: TeamToolAr
 
 export async function teamList(args: TeamToolArgs, ctx: ToolContext): Promise<ToolResult> {
   const access = await teamAccessForEmployee(ctx);
+  if (!access.employee_project_access?.resolved) {
+    return errorResult('team_list: caller employee not found');
+  }
   const rows = await listTeamSummaries(access, args);
   return textResult({ teams: rows, count: rows.length });
 }
 
 export async function teamGet(args: TeamToolArgs, ctx: ToolContext): Promise<ToolResult> {
   const access = await teamAccessForEmployee(ctx);
+  if (!access.employee_project_access?.resolved) {
+    return errorResult('team_get: caller employee not found');
+  }
   return textResult(await getTeamProfile(access, args));
 }
 
 export async function teamContext(args: TeamToolArgs, ctx: ToolContext): Promise<ToolResult> {
   const access = await teamAccessForEmployee(ctx);
+  if (!access.employee_project_access?.resolved) {
+    return errorResult('team_context: caller employee not found');
+  }
   const result = await getTeamContext(access, args);
   if (result.status === 'not_found') return errorResult(`team_context: team not found for ${result.query ?? 'empty query'}`);
   return textResult(result);

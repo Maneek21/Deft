@@ -72,6 +72,7 @@ export default function HeartbeatsPage() {
   const [filterOutcome, setFilterOutcome] = useState<string>('all');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [markHealing, setMarkHealing] = useState(false);
+  const [resettingBudget, setResettingBudget] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -170,26 +171,53 @@ export default function HeartbeatsPage() {
             <div className="text-sm font-medium text-slate-900">
               Today&apos;s usage
             </div>
-            {employee.unhealthy && (
-              <button
-                disabled={markHealing}
-                onClick={async () => {
-                  if (!id) return;
-                  setMarkHealing(true);
-                  try {
-                    await api.patch(`/api/agent-employees/${id}`, {
-                      mark_healthy: true,
-                    });
-                    await load();
-                  } finally {
-                    setMarkHealing(false);
-                  }
-                }}
-                className="text-xs px-3 py-1 border border-red-300 text-red-700 bg-white rounded-md hover:bg-red-50 disabled:opacity-50"
-              >
-                {markHealing ? 'Clearing...' : 'Mark healthy'}
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {employee.daily_action_count > 0 && (
+                <button
+                  disabled={resettingBudget}
+                  onClick={async () => {
+                    if (!id) return;
+                    setResettingBudget(true);
+                    setError(null);
+                    try {
+                      const response = await api.post(`/api/agent-employees/${id}/action-budget/reset`, {});
+                      if (!response.ok) {
+                        const body = await response.json().catch(() => ({}));
+                        throw new Error(body.error ?? `Request failed with ${response.status}`);
+                      }
+                      await load();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setResettingBudget(false);
+                    }
+                  }}
+                  className="text-xs px-3 py-1 border border-slate-300 text-slate-700 bg-white rounded-md hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {resettingBudget ? 'Resetting...' : 'Reset action count'}
+                </button>
+              )}
+              {employee.unhealthy && (
+                <button
+                  disabled={markHealing}
+                  onClick={async () => {
+                    if (!id) return;
+                    setMarkHealing(true);
+                    try {
+                      await api.patch(`/api/agent-employees/${id}`, {
+                        mark_healthy: true,
+                      });
+                      await load();
+                    } finally {
+                      setMarkHealing(false);
+                    }
+                  }}
+                  className="text-xs px-3 py-1 border border-red-300 text-red-700 bg-white rounded-md hover:bg-red-50 disabled:opacity-50"
+                >
+                  {markHealing ? 'Clearing...' : 'Mark healthy'}
+                </button>
+              )}
+            </div>
           </div>
           {employee.unhealthy && (
             <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">

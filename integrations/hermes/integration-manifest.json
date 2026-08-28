@@ -1,9 +1,11 @@
 {
-  "schema": "deft.hermes.integration.v1",
-  "integration_version": "0.3.0",
-  "deft_release": "0.3.0-preview.12",
-  "deft_release_compatibility": "=0.3.0-preview.12",
-  "agent_channel_protocols": ["deft.agent_channel.v2"],
+  "schema": "deft.hermes.integration.v2",
+  "integration_version": "0.5.1",
+  "deft_release": "0.3.0-preview.13",
+  "deft_release_compatibility": "=0.3.0-preview.13",
+  "agent_channel_protocols": [
+    "deft.agent_channel.v2"
+  ],
   "required_channel_capabilities": [
     "single_flight_claims",
     "renewable_leases",
@@ -12,16 +14,150 @@
     "identity_bound_mcp",
     "wiki_memory_sync_v1",
     "runtime_reconciliation_v1",
-    "runtime_attestation_v1"
+    "runtime_attestation_v1",
+    "autonomous_platform_adapter_v1",
+    "accepted_event_rehydration_v1"
   ],
-  "hermes_compatibility": ">=0.16.0",
-  "contents": [
-    "scripts/hermes-agent-channel-bridge.mjs",
-    "scripts/hermes-channel-service.ps1",
-    "scripts/run-hermes-channel-service.ps1",
-    "scripts/deft-mcp-stdio.mjs",
-    "plugins/deft-employee",
-    "plugins/deft-memory",
-    "README.md"
+  "hermes_compatibility": ">=0.20.5 <0.21.0",
+  "hermes_tested": {
+    "distribution": "hermes-agent",
+    "version": "0.20.5",
+    "repository": "https://github.com/NousResearch/hermes-agent.git",
+    "ref": "refs/tags/v2026.8.19",
+    "commit": "fcbd1076a93841fa88855acce810e342a5b78101",
+    "provenance": {
+      "runtime_audit": "docs/superpowers/audits/2026-08-26-hermes-native-runtime-provenance.md",
+      "native_adapter_suite": "integrations/hermes/deft-platform/test_deft_platform.py"
+    }
+  },
+  "default_adapter": "native",
+  "mcp": {
+    "default_transport": "direct_http",
+    "endpoint_path": "/api/mcp/hermes/v1"
+  },
+  "adapters": [
+    {
+      "id": "native",
+      "name": "deft-platform",
+      "version": "0.2.1",
+      "role": "default",
+      "kind": "native_platform",
+      "protocol": "deft.agent_channel.v2",
+      "runtime_capabilities": [
+        "autonomous_platform_adapter_v1",
+        "accepted_event_rehydration_v1"
+      ],
+      "mcp_transport": "direct_http",
+      "target": "plugins/deft-platform",
+      "files": [
+        {
+          "source": "integrations/hermes/deft-platform/__init__.py",
+          "target": "__init__.py"
+        },
+        {
+          "source": "integrations/hermes/deft-platform/adapter.py",
+          "target": "adapter.py"
+        },
+        {
+          "source": "integrations/hermes/deft-platform/plugin.yaml",
+          "target": "plugin.yaml"
+        },
+        {
+          "source": "integrations/hermes/deft-platform/readiness.py",
+          "target": "readiness.py"
+        },
+        {
+          "source": "integrations/hermes/deft-platform/README.md",
+          "target": "README.md"
+        }
+      ]
+    },
+    {
+      "id": "legacy",
+      "name": "deft-agent-channel-bridge",
+      "version": "0.3.0",
+      "role": "fallback",
+      "kind": "legacy_bridge",
+      "protocol": "deft.agent_channel.v2",
+      "runtime_capabilities": [
+        "single_flight_claims",
+        "renewable_leases",
+        "fencing_tokens",
+        "terminal_outcomes",
+        "identity_bound_mcp",
+        "wiki_memory_sync_v1",
+        "runtime_reconciliation_v1",
+        "runtime_attestation_v1"
+      ],
+      "mcp_transport": "stdio_shim",
+      "target": "legacy/bridge",
+      "files": [
+        {
+          "source": "scripts/hermes-agent-channel-bridge.mjs",
+          "target": "hermes-agent-channel-bridge.mjs"
+        },
+        {
+          "source": "scripts/hermes-channel-service.ps1",
+          "target": "hermes-channel-service.ps1"
+        },
+        {
+          "source": "scripts/run-hermes-channel-service.ps1",
+          "target": "run-hermes-channel-service.ps1"
+        },
+        {
+          "source": "integrations/hermes/deft-mcp-stdio.mjs",
+          "target": "deft-mcp-stdio.mjs"
+        }
+      ]
+    }
+  ],
+  "common_plugins": [
+    {
+      "name": "deft-employee",
+      "version": "0.4.0",
+      "target": "plugins/deft-employee",
+      "files": [
+        {
+          "source": "integrations/hermes/deft-employee/__init__.py",
+          "target": "__init__.py"
+        },
+        {
+          "source": "integrations/hermes/deft-employee/plugin.yaml",
+          "target": "plugin.yaml"
+        },
+        {
+          "source": "integrations/hermes/deft-employee/README.md",
+          "target": "README.md"
+        },
+        {
+          "source": "integrations/hermes/deft-employee/SKILL.md",
+          "target": "SKILL.md"
+        }
+      ]
+    },
+    {
+      "name": "deft-memory",
+      "version": "0.2.2",
+      "target": "plugins/deft-memory",
+      "files": [
+        {
+          "source": "integrations/hermes/deft-memory/__init__.py",
+          "target": "__init__.py"
+        },
+        {
+          "source": "integrations/hermes/deft-memory/plugin.yaml",
+          "target": "plugin.yaml"
+        },
+        {
+          "source": "integrations/hermes/deft-memory/README.md",
+          "target": "README.md"
+        }
+      ]
+    }
+  ],
+  "generated_files": [
+    "README.md",
+    "config.example.yaml",
+    "legacy/bridge/README.md"
   ]
 }

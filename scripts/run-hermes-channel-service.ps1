@@ -3,7 +3,8 @@ param(
   [string]$ServiceRoot = (Join-Path $env:LOCALAPPDATA 'Deft\hermes-channel'),
   [int]$RestartDelaySeconds = 5,
   [int]$MaxLogSizeMB = 10,
-  [string]$MutexName
+  [string]$MutexName,
+  [string]$NodePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,11 @@ try {
   }
   [Environment]::SetEnvironmentVariable('DEFT_CHANNEL_HEALTH_FILE', $healthPath, 'Process')
 
-  $node = (Get-Command node.exe -ErrorAction Stop).Source
+  $node = if ($NodePath) {
+    (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
+  } else {
+    (Get-Command node.exe -ErrorAction Stop).Source
+  }
   while ($true) {
     Write-ServiceLog 'starting Hermes channel bridge'
 

@@ -11,6 +11,7 @@ import {
   type DequeuedJob,
   type QueueName,
 } from '../lib/queues.js';
+import { sweepExpiredStagedAttachments } from '../lib/attachment-retention.js';
 import type { JobHandler } from './types.js';
 
 // ─── Cron re-enqueue delays ───
@@ -577,6 +578,22 @@ async function runStaleMaintenance(): Promise<void> {
   await reconcileRecurringJobs();
 }
 
+async function runRetentionMaintenance(): Promise<void> {
+  const [pruned, attachments] = await Promise.all([
+    pruneFinishedJobs(JOB_RETENTION_MS),
+    sweepExpiredStagedAttachments(),
+  ]);
+  if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s)`);
+  if (attachments.deletedRows > 0) {
+    console.log(`[workers] Pruned ${attachments.deletedRows} expired staged attachment(s)`);
+  }
+  if (attachments.orphanedStorageKeys.length > 0) {
+    console.warn(
+      `[workers] ${attachments.orphanedStorageKeys.length} attachment storage object(s) need cleanup retry`,
+    );
+  }
+}
+
 function dispatchPolls(): void {
   if (!workersRunning) return;
   for (const queueName of Object.values(QUEUE_NAMES)) {
@@ -628,8 +645,7 @@ async function startWorkersInternal(opts?: {
   if (!opts?.skipStartupWork) {
     const recovered = await cleanupStaleJobs();
     if (recovered > 0) console.log(`[workers] Recovered ${recovered} stale job(s) on startup`);
-    const pruned = await pruneFinishedJobs(JOB_RETENTION_MS);
-    if (pruned > 0) console.log(`[workers] Pruned ${pruned} expired terminal job(s) on startup`);
+    await runRetentionMaintenance();
 
     const hydrationResults = await Promise.allSettled([
       import('./handlers/reminder-fire.js').then((mod) => mod.rehydratePendingReminders()),
@@ -657,10 +673,7 @@ async function startWorkersInternal(opts?: {
 
   retentionInterval = setInterval(() => {
     if (opts?.disableWorkDispatch) return;
-    void trackBackground(pruneFinishedJobs(JOB_RETENTION_MS)
-      .then((count) => {
-        if (count > 0) console.log(`[workers] Pruned ${count} expired terminal job(s)`);
-      })
+    void trackBackground(runRetentionMaintenance()
       .catch((err) => console.warn('[workers] retention sweep failed:', (err as Error).message)));
   }, RETENTION_SWEEP_INTERVAL_MS);
   retentionInterval.unref?.();

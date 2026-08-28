@@ -7,10 +7,9 @@
  * data->>'messageId' matches the just-inserted message. This is a clean
  * observable side-effect that doesn't require mocking.
  *
- * The enqueue is gated on env.ANTHROPIC_API_KEY. The dev .env sets it so
- * this runs in CI as well (assuming the same .env is available). If the key
- * is absent, the queue row is never written and the dispatch assertions will
- * fail — but the control-case assertions (no dispatch) still pass.
+ * Defty dispatch requires a configured reason provider. Setup stores a dummy
+ * org-scoped key so this enqueue-only test is deterministic without a local
+ * developer .env; no model request is made by these assertions.
  *
  * Run: pnpm --filter @deft/api exec tsx --test test/agent-mention-detection.test.ts
  */
@@ -22,6 +21,7 @@ import { db } from '../src/lib/db.js';
 import { users, orgs, orgMembers, spaces, spaceMembers, jobQueue, messages, notifications, agentEmployees, agentActions } from '@deft/db/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { ensureDeftyEmployee, ensureDeftyMembership, DEFTY_EMAIL } from '../src/lib/ensure-defty-membership.js';
+import { setOrgAPIKey } from '../src/lib/org-ai-config.js';
 
 let testOrgId: string;
 let humanUserId: string;
@@ -51,6 +51,7 @@ before(async () => {
 
   const [org] = await db.insert(orgs).values({ name: 'Agent Mention Detection Test', slug }).returning();
   testOrgId = org!.id;
+  await setOrgAPIKey(testOrgId, 'anthropic', 'sk-ant-agent-mention-test-not-real');
 
   const [human] = await db.insert(users).values({
     email: `amd-human-${ts}@test.local`,

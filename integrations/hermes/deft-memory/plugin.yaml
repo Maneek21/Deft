@@ -1,4 +1,4 @@
 name: deft-memory
 description: Token-bound Deft wiki recall, turn reporting, and idempotent Hermes memory mirroring.
-version: 0.2.1
+version: 0.2.2
 kind: exclusive

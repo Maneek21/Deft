@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, lt, lte, gt, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files } from '@deft/db/schema';
+import { messages, users, reactions, spaces, spaceMembers, orgs, threadReads, messageVersions, agentEmployees, userGroups, userGroupMembers, orgMembers, files, messageAttachments as messageAttachmentLinks } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { parseMentions } from '../lib/mentions.js';
 import { fetchLinkPreview, extractUrls, type LinkPreview } from '../lib/link-preview.js';
@@ -474,7 +474,7 @@ messageRoutes.post('/:spaceId', async (c) => {
       }
 
       const claimedFiles = await tx.update(files)
-        .set({ message_id: insertedMessage.id })
+        .set({ message_id: insertedMessage.id, staged_expires_at: null })
         .where(and(
           inArray(files.id, attachmentIds),
           eq(files.org_id, user.org_id),
@@ -492,6 +492,13 @@ messageRoutes.post('/:spaceId', async (c) => {
       if (claimedFiles.length !== attachmentIds.length) {
         throw new AttachmentClaimError('One or more attachments are unavailable');
       }
+
+      await tx.insert(messageAttachmentLinks).values(attachmentIds.map((fileId, position) => ({
+        org_id: user.org_id,
+        message_id: insertedMessage.id,
+        file_id: fileId,
+        position,
+      })));
 
       const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
       return {

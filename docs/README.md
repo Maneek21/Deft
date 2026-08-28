@@ -13,7 +13,8 @@
 
 ## Operator and integration guides
 
-- [Hermes agent channel service](hermes-agent-channel-service.md)
+- [Hermes native employee integration](../integrations/hermes/deft-platform/README.md)
+- [Legacy Hermes Agent Channel bridge rollback](hermes-agent-channel-service.md)
 - Public product capabilities: [FEATURES.md](../FEATURES.md)
 
 ## Engineering records

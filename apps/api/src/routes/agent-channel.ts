@@ -8,14 +8,18 @@
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
 import {
   agentActions,
+  agentChannelConnections,
   agentChannelDeliveryAttempts,
   agentChannelEvents,
   agentEmployees,
+  messages,
+  taskComments,
 } from '@deft/db/schema';
 import {
   extractBearer,
@@ -24,6 +28,7 @@ import {
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
   AGENT_CHANNEL_CAPABILITIES,
+  AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
   AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES,
   AGENT_CHANNEL_DEFAULT_LEASE_MS,
   DEFT_BUILD_COMMIT,
@@ -37,9 +42,10 @@ import {
   touchAgentChannelConnection,
   updateAgentChannelCursor,
   type AgentChannelPrincipal,
+  type AgentChannelAdapterMode,
 } from '../lib/agent-channel.js';
 import { getIO } from '../socket.js';
-import { executeSendMessage } from '../lib/mcp-tools/writes.js';
+import { executeSendMessage, executeTaskUpdate } from '../lib/mcp-tools/writes.js';
 import { buildAgentChannelLifecyclePatch } from '../lib/agent-channel-lifecycle.js';
 import { reconcileAgentChannelRuntimeAttempt } from '../lib/agent-channel-reconciliation.js';
 
@@ -53,6 +59,16 @@ function channelContract() {
     schema_head: DEFT_SCHEMA_HEAD,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
     required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+    adapter_modes: {
+      supervised_runtime: {
+        required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+        delivery_acknowledgement: 'lease_bound',
+      },
+      autonomous_platform: {
+        required_runtime_capabilities: [...AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES],
+        delivery_acknowledgement: 'transport_acceptance',
+      },
+    },
   };
 }
 
@@ -93,12 +109,21 @@ const ackSchema = z.object({
   caller_employee_slug: z.string().optional(),
 });
 
+const acceptSchema = z.object({
+  event_id: z.string().min(1),
+  // Omission is recovery-only. An already accepted event can be rehydrated
+  // after an adapter restart; a live delivery still requires its lease claim.
+  claim_token: z.string().min(1).optional(),
+  caller_employee_slug: z.string().optional(),
+}).strict();
+
 const replySchema = z.object({
   event_id: z.string().min(1),
   content: z.string().min(1).max(16000),
   thread_id: z.string().nullable().optional(),
   idempotency_key: z.string().min(1).max(300).optional(),
-  claim_token: z.string().min(1),
+  claim_token: z.string().min(1).optional(),
+  adapter_mode: z.literal('autonomous_platform').optional(),
   outcome: z.enum(['completed', 'needs_human', 'blocked', 'failed', 'cancelled']).default('completed'),
   summary: z.string().max(2000).optional(),
   runtime_session_key: z.string().min(1).optional(),
@@ -115,7 +140,7 @@ const reconcileSchema = z.object({
 });
 
 const statusSchema = z.object({
-  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'incompatible', 'error']),
+  state: z.enum(['idle', 'typing', 'working', 'approval_pending', 'degraded', 'incompatible', 'error', 'offline']),
   event_id: z.string().optional(),
   claim_token: z.string().min(1).optional(),
   lease_ms: z.number().int().positive().optional(),
@@ -143,6 +168,7 @@ function errorResponse(c: Context, status: 400 | 401 | 403 | 404 | 409 | 426 | 5
 function channelCompatibility(c: Context): {
   adapterVersion: string;
   capabilities: string[];
+  adapterMode: AgentChannelAdapterMode;
 } | Response {
   const protocolVersion = c.req.query('protocol_version')?.trim() ?? '';
   const adapterVersion = c.req.query('adapter_version')?.trim() ?? '';
@@ -150,7 +176,13 @@ function channelCompatibility(c: Context): {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
-  const missingCapabilities = AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES
+  const adapterMode: AgentChannelAdapterMode = capabilities.includes('autonomous_platform_adapter_v1')
+    ? 'autonomous_platform'
+    : 'supervised_runtime';
+  const requiredCapabilities = adapterMode === 'autonomous_platform'
+    ? AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES
+    : AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES;
+  const missingCapabilities = requiredCapabilities
     .filter((capability) => !capabilities.includes(capability));
 
   if (protocolVersion !== AGENT_CHANNEL_PROTOCOL_VERSION || !adapterVersion || missingCapabilities.length > 0) {
@@ -169,10 +201,11 @@ function channelCompatibility(c: Context): {
       schema_head: DEFT_SCHEMA_HEAD,
       capabilities: [...AGENT_CHANNEL_CAPABILITIES],
       required_runtime_capabilities: [...AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES],
+      adapter_modes: channelContract().adapter_modes,
     }, 426);
   }
 
-  return { adapterVersion, capabilities };
+  return { adapterVersion, capabilities, adapterMode };
 }
 
 async function resolveChannelPrincipal(c: Context, callerSlug?: string | null): Promise<AgentChannelPrincipal | Response> {
@@ -217,6 +250,24 @@ async function getEventForPrincipal(eventId: string, principal: AgentChannelPrin
     )
     .limit(1);
   return event ?? null;
+}
+
+async function hasAutonomousPlatformConnection(principal: AgentChannelPrincipal) {
+  const [connection] = await db
+    .select({ status: agentChannelConnections.status, metadata: agentChannelConnections.metadata })
+    .from(agentChannelConnections)
+    .where(and(
+      eq(agentChannelConnections.org_id, principal.org_id),
+      eq(agentChannelConnections.agent_employee_id, principal.employee_id),
+    ))
+    .limit(1);
+  const metadata = (connection?.metadata ?? {}) as Record<string, unknown>;
+  const capabilities = Array.isArray(metadata.runtime_capabilities)
+    ? metadata.runtime_capabilities.filter((value): value is string => typeof value === 'string')
+    : [];
+  return connection?.status === 'connected'
+    && metadata.adapter_mode === 'autonomous_platform'
+    && capabilities.includes('autonomous_platform_adapter_v1');
 }
 
 async function startRuntimeAttempt(params: {
@@ -314,7 +365,9 @@ async function closeFallbackWorkForEvent(params: {
   principal: AgentChannelPrincipal;
   runtimeSessionKey?: string | null;
   detail?: string | null;
-  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain';
+  outcome?: 'completed' | 'needs_human' | 'blocked' | 'failed' | 'cancelled' | 'work_completed_handoff_uncertain' | null;
+  channelState?: 'acknowledged' | 'completed';
+  transportReply?: 'sent' | null;
 }) {
   const payload = (params.event.payload ?? {}) as Record<string, unknown>;
   const actionId = typeof payload.pending_action_id === 'string' ? payload.pending_action_id : null;
@@ -328,8 +381,9 @@ async function closeFallbackWorkForEvent(params: {
       executed_at: now,
       result: {
         channel_event_id: params.event.id,
-        channel_state: 'completed',
-        work_outcome: params.outcome ?? 'completed',
+        channel_state: params.channelState ?? 'completed',
+        work_outcome: params.outcome === undefined ? 'completed' : params.outcome,
+        ...(params.transportReply ? { transport_reply: params.transportReply } : {}),
         runtime_session_key: params.runtimeSessionKey ?? null,
         detail: params.detail ?? null,
       },
@@ -342,6 +396,35 @@ async function closeFallbackWorkForEvent(params: {
       eq(agentActions.agent_employee_id, params.principal.employee_id),
       eq(agentActions.approval_status, 'pending'),
     ));
+}
+
+async function completeAutonomousReplyTransport(params: {
+  event: typeof agentChannelEvents.$inferSelect;
+  principal: AgentChannelPrincipal;
+  runtimeSessionKey?: string | null;
+  detail?: string | null;
+  outcome?: null;
+  channelState?: 'acknowledged';
+  transportReply?: 'sent';
+}) {
+  const lifecyclePatch = buildAgentChannelLifecyclePatch(params.event, 'completed');
+  if (Object.keys(lifecyclePatch).length > 0) {
+    await db
+      .update(agentChannelEvents)
+      .set({ ...lifecyclePatch, lease_expires_at: null })
+      .where(and(
+        eq(agentChannelEvents.id, params.event.id),
+        eq(agentChannelEvents.org_id, params.principal.org_id),
+        eq(agentChannelEvents.agent_employee_id, params.principal.employee_id),
+        sql`${agentChannelEvents.status} NOT IN ('completed', 'failed', 'cancelled')`,
+      ));
+  }
+  await updateAgentChannelCursor({ principal: params.principal, lastAckedEventId: params.event.id });
+  await closeFallbackWorkForEvent({
+    ...params,
+    channelState: 'completed',
+    transportReply: 'sent',
+  });
 }
 
 agentChannelRoutes.get('/contract', (c) => c.json(channelContract()));
@@ -373,6 +456,7 @@ agentChannelRoutes.get('/connect', async (c) => {
     metadata: {
       adapter_version: compatibility.adapterVersion,
       runtime_capabilities: compatibility.capabilities,
+      adapter_mode: compatibility.adapterMode,
       server_release: DEFT_RELEASE_VERSION,
       server_commit: DEFT_BUILD_COMMIT,
       schema_head: DEFT_SCHEMA_HEAD,
@@ -387,6 +471,7 @@ agentChannelRoutes.get('/connect', async (c) => {
     server_commit: DEFT_BUILD_COMMIT,
     schema_head: DEFT_SCHEMA_HEAD,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    adapter_mode: compatibility.adapterMode,
     employee: {
       id: principal.employee_id,
       slug: principal.employee_slug,
@@ -416,6 +501,7 @@ agentChannelRoutes.get('/events', async (c) => {
     afterEventId,
     workerId,
     leaseMs: Number.isFinite(leaseMs) ? leaseMs : AGENT_CHANNEL_DEFAULT_LEASE_MS,
+    adapterMode: compatibility.adapterMode,
   });
   const lastEventId = events.at(-1)?.id ?? null;
   const connection = await touchAgentChannelConnection(principal, { lastEventId });
@@ -431,8 +517,85 @@ agentChannelRoutes.get('/events', async (c) => {
     ok: true,
     protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
     capabilities: [...AGENT_CHANNEL_CAPABILITIES],
+    adapter_mode: compatibility.adapterMode,
     cursor: lastEventId,
     events,
+  });
+});
+
+/**
+ * Settle transport delivery for an autonomous platform adapter without
+ * claiming that the employee's business work is complete. Accepted events are
+ * not redelivered to autonomous adapters, and no reasoning lease remains.
+ */
+agentChannelRoutes.post('/accept', async (c) => {
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsed = acceptSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid input', code: 'VALIDATION_ERROR', details: parsed.error.flatten() }, 400);
+  }
+
+  const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
+  if (isResponse(principal)) return principal;
+  if (!(await hasAutonomousPlatformConnection(principal))) {
+    return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before accepting autonomous deliveries');
+  }
+
+  const event = await getEventForPrincipal(parsed.data.event_id, principal);
+  if (!event) return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
+  if (event.status === 'acknowledged' && event.acked_at && !event.claim_token) {
+    await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+    return c.json({
+      ok: true,
+      idempotent: true,
+      adapter_mode: 'autonomous_platform',
+      transport_state: 'accepted',
+      business_outcome: event.work_outcome ?? null,
+      event,
+    });
+  }
+  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
+  }
+
+  const now = new Date();
+  const lifecyclePatch = buildAgentChannelLifecyclePatch(event, 'acknowledged', now);
+  const [accepted] = await db
+    .update(agentChannelEvents)
+    .set({
+      ...lifecyclePatch,
+      delivered_at: event.delivered_at ?? sql`now()`,
+      acked_at: event.acked_at ?? sql`now()`,
+      updated_at: sql`now()`,
+      claim_owner: null,
+      claim_token: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    })
+    .where(and(
+      eq(agentChannelEvents.id, event.id),
+      eq(agentChannelEvents.org_id, principal.org_id),
+      eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+      eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
+      sql`${agentChannelEvents.lease_expires_at} > now()`,
+    ))
+    .returning();
+  if (!accepted) {
+    return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim expired before transport acceptance committed');
+  }
+
+  await touchAgentChannelConnection(principal, {
+    status: 'connected',
+    lastEventId: event.id,
+  });
+  await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+
+  return c.json({
+    ok: true,
+    adapter_mode: 'autonomous_platform',
+    transport_state: 'accepted',
+    business_outcome: accepted.work_outcome ?? null,
+    event: accepted,
   });
 });
 
@@ -611,12 +774,41 @@ agentChannelRoutes.post('/reply', async (c) => {
   if (!event) {
     return errorResponse(c, 404, 'NOT_FOUND', 'Channel event not found');
   }
-  if (!event.space_id) {
-    return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft space to reply into');
+  const autonomousReply = parsed.data.adapter_mode === 'autonomous_platform';
+  if (autonomousReply) {
+    if (!(await hasAutonomousPlatformConnection(principal))) {
+      return errorResponse(c, 409, 'AUTONOMOUS_CHANNEL_REQUIRED', 'Connect with autonomous_platform_adapter_v1 before posting autonomous replies');
+    }
+    if (!event.acked_at || !['acknowledged', 'completed'].includes(event.status)) {
+      return errorResponse(c, 409, 'DELIVERY_NOT_ACCEPTED', 'Autonomous replies require an accepted transport delivery');
+    }
+  }
+  const autonomousTaskReply = autonomousReply
+    && event.source_kind === 'task'
+    && Boolean(event.source_id);
+  const autonomousNotificationReply = autonomousReply
+    && event.kind === 'approval.resolved'
+    && !event.space_id
+    && !autonomousTaskReply;
+  if (!event.space_id && !autonomousTaskReply && !autonomousNotificationReply) {
+    return errorResponse(c, 409, 'NO_REPLY_TARGET', 'Channel event has no Deft reply target');
   }
 
-  const idempotencyKey = parsed.data.idempotency_key
-    ?? `reply:${event.id}:${Buffer.from(parsed.data.content).toString('base64url').slice(0, 64)}`;
+  // Certification, task work, and targetless notifications each have one
+  // immutable final reply slot per channel event. The server owns that key so
+  // a lost response, regenerated text, or buggy client key cannot duplicate
+  // the durable final effect.
+  const idempotencyKey = event.source_kind === 'certification'
+    ? `certification-reply:${event.id}:final`
+    : autonomousTaskReply || autonomousNotificationReply
+      ? `autonomous-reply:${event.id}:final`
+      : parsed.data.idempotency_key
+        ?? `reply:${event.id}:${Buffer.from(parsed.data.content).toString('base64url').slice(0, 64)}`;
+  const autonomousReplyEffectId = autonomousReply && event.source_kind !== 'certification'
+    ? `agent-channel-autonomous-reply:${createHash('sha256')
+      .update([principal.org_id, principal.employee_id, event.id, idempotencyKey].join('\0'))
+      .digest('hex')}`
+    : null;
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const isTopLevelDm = payload.is_dm === true && !payload.parent_id;
   const hasExplicitThreadId = Object.prototype.hasOwnProperty.call(parsed.data, 'thread_id');
@@ -627,11 +819,368 @@ agentChannelRoutes.post('/reply', async (c) => {
     event_id: event.id,
     content: parsed.data.content,
     thread_id: parentId,
-    outcome: parsed.data.outcome,
+    outcome: autonomousReply ? null : parsed.data.outcome,
+    adapter_mode: autonomousReply ? 'autonomous_platform' : 'supervised_runtime',
+    reply_target: autonomousTaskReply
+      ? 'task_comment'
+      : autonomousNotificationReply
+        ? 'notification_ack'
+        : 'chat_message',
     summary: parsed.data.summary ?? null,
     runtime_session_key: parsed.data.runtime_session_key ?? null,
     runtime_request_key: parsed.data.runtime_request_key ?? null,
     runtime_response_id: parsed.data.runtime_response_id ?? null,
+    durable_effect_id: autonomousReplyEffectId,
+    attempt_generation: randomUUID(),
+  };
+  const certificationMessageId = event.source_kind === 'certification'
+    ? `agent-channel-certification-reply:${event.id}`
+    : null;
+  const loadDurableCertificationReply = async () => {
+    if (!certificationMessageId || !event.space_id) return null;
+    const [message] = await db
+      .select({
+        message_id: messages.id,
+        space_id: messages.space_id,
+        user_id: messages.user_id,
+        content: messages.content,
+        parent_id: messages.parent_id,
+        created_at: messages.created_at,
+      })
+      .from(messages)
+      .where(and(
+        eq(messages.id, certificationMessageId),
+        eq(messages.org_id, principal.org_id),
+        eq(messages.space_id, event.space_id),
+      ))
+      .limit(1);
+    return message
+      ? { ...message, created_at: message.created_at.toISOString() }
+      : null;
+  };
+  const settleRecoveredSupervisedCertificationReply = async (
+    attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
+  ) => {
+    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {};
+    if (storedRequest.adapter_mode !== 'supervised_runtime') {
+      return { handled: false as const, outcome: null, runtimeSessionKey: null, summary: null };
+    }
+    const reportedOutcome = storedRequest.outcome;
+    if (
+      reportedOutcome !== 'completed'
+      && reportedOutcome !== 'needs_human'
+      && reportedOutcome !== 'blocked'
+      && reportedOutcome !== 'failed'
+      && reportedOutcome !== 'cancelled'
+    ) {
+      return { handled: true as const, error: 'The stored supervised certification outcome is invalid' };
+    }
+    const summary = typeof storedRequest.summary === 'string' ? storedRequest.summary : null;
+    const runtimeSessionKey = typeof storedRequest.runtime_session_key === 'string'
+      ? storedRequest.runtime_session_key
+      : null;
+    const signal = reportedOutcome === 'failed'
+      ? 'failed'
+      : reportedOutcome === 'cancelled'
+        ? 'cancelled'
+        : 'completed';
+    const lifecyclePatch = buildAgentChannelLifecyclePatch(event, signal, new Date(), null);
+    let settledEvent = event;
+    if (Object.keys(lifecyclePatch).length > 0) {
+      const [settled] = await db
+        .update(agentChannelEvents)
+        .set({
+          ...lifecyclePatch,
+          lease_expires_at: null,
+          work_outcome: reportedOutcome,
+          outcome_detail: summary,
+          outcome_at: new Date(),
+          runtime_session_key: runtimeSessionKey ?? event.runtime_session_key,
+        })
+        .where(and(
+          eq(agentChannelEvents.id, event.id),
+          eq(agentChannelEvents.org_id, principal.org_id),
+          eq(agentChannelEvents.agent_employee_id, principal.employee_id),
+          eq(agentChannelEvents.status, event.status),
+        ))
+        .returning();
+      if (!settled) {
+        return { handled: true as const, error: 'The certification event changed before its durable reply could be reconciled' };
+      }
+      settledEvent = settled;
+    } else if (event.status !== signal || event.work_outcome !== reportedOutcome) {
+      return { handled: true as const, error: 'The certification event already has a conflicting terminal outcome' };
+    }
+
+    const outcomeAt = settledEvent.outcome_at ?? new Date();
+    await db.update(agentEmployees)
+      .set({ last_work_outcome_at: outcomeAt, updated_at: outcomeAt })
+      .where(and(
+        eq(agentEmployees.id, principal.employee_id),
+        eq(agentEmployees.org_id, principal.org_id),
+      ));
+    await settleRuntimeAttempt({
+      event: settledEvent,
+      principal,
+      runtimeRequestKey: typeof storedRequest.runtime_request_key === 'string'
+        ? storedRequest.runtime_request_key
+        : null,
+      status: reportedOutcome,
+      runtimeResponseId: typeof storedRequest.runtime_response_id === 'string'
+        ? storedRequest.runtime_response_id
+        : null,
+      error: reportedOutcome === 'failed' ? summary : null,
+    });
+    emitTaskProgress(settledEvent, principal.employee_id, reportedOutcome, summary);
+    await touchAgentChannelConnection(principal, {
+      status: reportedOutcome === 'failed' ? 'degraded' : 'connected',
+      lastEventId: event.id,
+      lastError: reportedOutcome === 'failed' ? summary : null,
+    });
+    await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
+    if (reportedOutcome !== 'failed') {
+      await closeFallbackWorkForEvent({
+        event: settledEvent,
+        principal,
+        runtimeSessionKey,
+        detail: summary ?? 'Runtime reply recovered from its durable certification message.',
+        outcome: reportedOutcome,
+      });
+    }
+    return { handled: true as const, outcome: reportedOutcome, runtimeSessionKey, summary };
+  };
+  const reconcileDurableCertificationReply = async (
+    attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
+  ) => {
+    const durableReply = await loadDurableCertificationReply();
+    if (!durableReply) return null;
+    const supervisedSettlement = await settleRecoveredSupervisedCertificationReply(attempt);
+    if (supervisedSettlement.handled && 'error' in supervisedSettlement) {
+      return { error: supervisedSettlement.error };
+    }
+    await db
+      .update(agentChannelDeliveryAttempts)
+      .set({
+        status: 'completed',
+        response_json: durableReply,
+        error: null,
+        updated_at: new Date(),
+      })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.id, attempt.id),
+        eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+      ));
+    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {};
+    return {
+      reply: durableReply,
+      adapterMode: supervisedSettlement.handled ? 'supervised_runtime' as const : 'autonomous_platform' as const,
+      outcome: supervisedSettlement.handled ? supervisedSettlement.outcome : null,
+      runtimeSessionKey: typeof storedRequest.runtime_session_key === 'string'
+        ? storedRequest.runtime_session_key
+        : null,
+      summary: typeof storedRequest.summary === 'string' ? storedRequest.summary : null,
+    };
+  };
+  const attemptGenerationOf = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => {
+    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {};
+    return typeof storedRequest.attempt_generation === 'string'
+      ? storedRequest.attempt_generation
+      : '';
+  };
+  const attemptGenerationMatches = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
+    sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'attempt_generation', '') = ${attemptGenerationOf(attempt)}`
+  );
+  const loadDurableAutonomousReply = async (
+    attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
+  ): Promise<null | { error: string } | { reply: Record<string, unknown> }> => {
+    if (!autonomousReply || event.source_kind === 'certification') return null;
+    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {};
+    const expectedTarget = autonomousTaskReply
+      ? 'task_comment'
+      : autonomousNotificationReply
+        ? 'notification_ack'
+        : 'chat_message';
+    if (
+      storedRequest.event_id !== event.id
+      || storedRequest.adapter_mode !== 'autonomous_platform'
+      || storedRequest.reply_target !== expectedTarget
+    ) {
+      return { error: 'The stored autonomous reply identity does not match this channel event' };
+    }
+    if (!attempt.idempotency_key || !autonomousReplyEffectId) {
+      return { error: 'The stored autonomous reply has no deterministic effect identity' };
+    }
+    const storedEffectId = storedRequest.durable_effect_id;
+    if (storedEffectId !== autonomousReplyEffectId) {
+      return { error: 'The stored autonomous reply effect identity does not match its idempotency key' };
+    }
+    const storedContent = typeof storedRequest.content === 'string' ? storedRequest.content : null;
+    if (!storedContent) {
+      return { error: 'The stored autonomous reply has no original content to reconcile' };
+    }
+    if (autonomousNotificationReply) return null;
+
+    const [employeeIdentity] = await db
+      .select({ user_id: agentEmployees.user_id })
+      .from(agentEmployees)
+      .where(and(
+        eq(agentEmployees.id, principal.employee_id),
+        eq(agentEmployees.org_id, principal.org_id),
+      ))
+      .limit(1);
+    if (!employeeIdentity) {
+      return { error: 'The autonomous reply employee identity is unavailable' };
+    }
+
+    let reply: Record<string, unknown> | null = null;
+    if (autonomousTaskReply) {
+      const [comment] = await db
+        .select({
+          id: taskComments.id,
+          org_id: taskComments.org_id,
+          task_id: taskComments.task_id,
+          user_id: taskComments.user_id,
+          content: taskComments.content,
+          is_deleted: taskComments.is_deleted,
+          created_at: taskComments.created_at,
+        })
+        .from(taskComments)
+        .where(eq(taskComments.id, autonomousReplyEffectId))
+        .limit(1);
+      if (!comment) return null;
+      if (
+        comment.org_id !== principal.org_id
+        || comment.task_id !== event.source_id
+        || comment.user_id !== employeeIdentity.user_id
+        || comment.content !== storedContent
+        || comment.is_deleted
+      ) {
+        return { error: 'The durable task reply does not match the original autonomous request' };
+      }
+      reply = {
+        comment_id: comment.id,
+        task_id: comment.task_id,
+        content: comment.content,
+        created_at: comment.created_at.toISOString(),
+      };
+    } else {
+      const storedThreadId = storedRequest.thread_id;
+      if (storedThreadId !== null && typeof storedThreadId !== 'string') {
+        return { error: 'The stored autonomous chat reply has an invalid thread target' };
+      }
+      const [message] = await db
+        .select({
+          id: messages.id,
+          org_id: messages.org_id,
+          space_id: messages.space_id,
+          user_id: messages.user_id,
+          content: messages.content,
+          parent_id: messages.parent_id,
+          is_deleted: messages.is_deleted,
+          created_at: messages.created_at,
+        })
+        .from(messages)
+        .where(eq(messages.id, autonomousReplyEffectId))
+        .limit(1);
+      if (!message) return null;
+      if (
+        message.org_id !== principal.org_id
+        || message.space_id !== event.space_id
+        || message.user_id !== employeeIdentity.user_id
+        || message.content !== storedContent
+        || message.parent_id !== storedThreadId
+        || message.is_deleted
+      ) {
+        return { error: 'The durable chat reply does not match the original autonomous request' };
+      }
+      reply = {
+        message_id: message.id,
+        space_id: message.space_id,
+        user_id: message.user_id,
+        content: message.content,
+        parent_id: message.parent_id,
+        created_at: message.created_at.toISOString(),
+      };
+    }
+
+    return { reply };
+  };
+  const reconcileDurableAutonomousReply = async (
+    attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
+  ): Promise<null | { error: string } | { reply: Record<string, unknown> } | { lostRace: true }> => {
+    const durable = await loadDurableAutonomousReply(attempt);
+    if (!durable || 'error' in durable) return durable;
+    const [reconciled] = await db
+      .update(agentChannelDeliveryAttempts)
+      .set({
+        status: 'completed',
+        response_json: durable.reply,
+        error: null,
+        updated_at: new Date(),
+      })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.id, attempt.id),
+        eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        eq(agentChannelDeliveryAttempts.status, attempt.status),
+        attemptGenerationMatches(attempt),
+      ))
+      .returning({ id: agentChannelDeliveryAttempts.id });
+    return reconciled ? durable : { lostRace: true as const };
+  };
+  const attemptCanReconcile = (attempt: typeof agentChannelDeliveryAttempts.$inferSelect) => (
+    attempt.status === 'failed'
+    || (
+      attempt.status === 'started'
+      && attempt.updated_at.getTime() <= Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS
+    )
+  );
+  const reclaimAutonomousAttempt = async (
+    attempt: typeof agentChannelDeliveryAttempts.$inferSelect,
+  ) => {
+    if (!autonomousReply || !attemptCanReconcile(attempt)) return undefined;
+    const storedRequest = attempt.request_json && typeof attempt.request_json === 'object'
+      ? attempt.request_json as Record<string, unknown>
+      : {};
+    const reclaimableState = attempt.status === 'failed'
+      ? eq(agentChannelDeliveryAttempts.status, 'failed')
+      : and(
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+        sql`${agentChannelDeliveryAttempts.updated_at} <= ${new Date(Date.now() - AGENT_CHANNEL_DEFAULT_LEASE_MS)}`,
+      );
+    const [reclaimed] = await db
+      .update(agentChannelDeliveryAttempts)
+      .set({
+        status: 'started',
+        request_json: {
+          ...storedRequest,
+          attempt_generation: randomUUID(),
+        },
+        response_json: null,
+        error: null,
+        updated_at: new Date(),
+      })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.id, attempt.id),
+        eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        reclaimableState,
+        attemptGenerationMatches(attempt),
+      ))
+      .returning();
+    return reclaimed;
   };
 
   const [existingAttempt] = await db
@@ -645,35 +1194,165 @@ agentChannelRoutes.post('/reply', async (c) => {
       ),
     )
     .limit(1);
-  if (existingAttempt?.response_json) {
+  if (existingAttempt && existingAttempt.event_id !== event.id) {
+    return errorResponse(c, 409, 'IDEMPOTENCY_KEY_CONFLICT', 'The reply idempotency key belongs to another channel event');
+  }
+  if (autonomousReply && event.status === 'completed' && existingAttempt?.status !== 'completed') {
+    return errorResponse(c, 409, 'DELIVERY_ALREADY_SETTLED', 'The autonomous delivery is already completed');
+  }
+  if (existingAttempt && attemptCanReconcile(existingAttempt)) {
+    const reconciliation = await reconcileDurableCertificationReply(existingAttempt);
+    if (reconciliation && 'error' in reconciliation && typeof reconciliation.error === 'string') {
+      return errorResponse(c, 409, 'CERTIFICATION_REPLY_RECONCILIATION_CONFLICT', reconciliation.error);
+    }
+    if (reconciliation) {
+      if (reconciliation.adapterMode === 'autonomous_platform') {
+        await completeAutonomousReplyTransport({
+          event,
+          principal,
+          runtimeSessionKey: reconciliation.runtimeSessionKey,
+          detail: reconciliation.summary ?? 'Autonomous runtime reply recovered from its durable message.',
+          outcome: null,
+          channelState: 'acknowledged',
+          transportReply: 'sent',
+        });
+      }
+      return c.json({
+        ok: true,
+        idempotent: true,
+        reconciled: true,
+        adapter_mode: reconciliation.adapterMode,
+        transport_reply: 'sent',
+        business_outcome: reconciliation.outcome,
+        result: reconciliation.reply,
+      });
+    }
+    const autonomousReconciliation = await reconcileDurableAutonomousReply(existingAttempt);
+    if (autonomousReconciliation && 'error' in autonomousReconciliation) {
+      return errorResponse(c, 409, 'AUTONOMOUS_REPLY_RECONCILIATION_CONFLICT', autonomousReconciliation.error);
+    }
+    if (autonomousReconciliation && 'lostRace' in autonomousReconciliation) {
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The autonomous reply attempt changed while its durable effect was being reconciled');
+    }
+    if (autonomousReconciliation) {
+      await completeAutonomousReplyTransport({
+        event,
+        principal,
+        runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+        detail: parsed.data.summary ?? 'Autonomous runtime reply recovered from its durable effect.',
+        outcome: null,
+        channelState: 'acknowledged',
+        transportReply: 'sent',
+      });
+      return c.json({
+        ok: true,
+        idempotent: true,
+        reconciled: true,
+        adapter_mode: 'autonomous_platform',
+        transport_reply: 'sent',
+        business_outcome: null,
+        result: autonomousReconciliation.reply,
+      });
+    }
+  }
+  let claim: typeof agentChannelDeliveryAttempts.$inferSelect | undefined;
+  if (existingAttempt?.status === 'completed' && existingAttempt.response_json) {
+    if (event.source_kind === 'certification') {
+      const reconciliation = await reconcileDurableCertificationReply(existingAttempt);
+      if (reconciliation && 'error' in reconciliation && typeof reconciliation.error === 'string') {
+        return errorResponse(c, 409, 'CERTIFICATION_REPLY_RECONCILIATION_CONFLICT', reconciliation.error);
+      }
+      if (reconciliation) {
+        if (reconciliation.adapterMode === 'autonomous_platform') {
+          await completeAutonomousReplyTransport({
+            event,
+            principal,
+            runtimeSessionKey: reconciliation.runtimeSessionKey,
+            detail: reconciliation.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+            outcome: null,
+            channelState: 'acknowledged',
+            transportReply: 'sent',
+          });
+        }
+        return c.json({ ok: true, idempotent: true, reconciled: true, result: reconciliation.reply });
+      }
+    }
+    if (autonomousReply) {
+      await completeAutonomousReplyTransport({
+        event,
+        principal,
+        runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+        detail: parsed.data.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+        outcome: null,
+        channelState: 'acknowledged',
+        transportReply: 'sent',
+      });
+    }
     return c.json({ ok: true, idempotent: true, result: existingAttempt.response_json });
   }
-  if (existingAttempt) {
-    return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
-  }
-  if (!hasActiveAgentChannelClaim(event, parsed.data.claim_token)) {
+  if (!autonomousReply && (!parsed.data.claim_token || !hasActiveAgentChannelClaim(event, parsed.data.claim_token))) {
     return errorResponse(c, 409, 'STALE_CLAIM', 'The Agent Channel claim is missing, expired, or owned by another worker');
   }
-
-  const [claim] = await db
-    .insert(agentChannelDeliveryAttempts)
-    .values({
-      org_id: principal.org_id,
-      agent_employee_id: principal.employee_id,
-      event_id: event.id,
-      direction: 'inbound_reply',
-      idempotency_key: idempotencyKey,
-      status: 'started',
-      request_json: requestJson,
-    })
-    .onConflictDoNothing({
-      target: [
-        agentChannelDeliveryAttempts.org_id,
-        agentChannelDeliveryAttempts.agent_employee_id,
-        agentChannelDeliveryAttempts.idempotency_key,
-      ],
-    })
-    .returning({ id: agentChannelDeliveryAttempts.id });
+  if (existingAttempt?.status === 'failed') {
+    if (autonomousReply) {
+      claim = await reclaimAutonomousAttempt(existingAttempt);
+    } else if (event.source_kind !== 'certification') {
+      return c.json({
+        ok: false,
+        idempotent: true,
+        error: existingAttempt.error ?? 'The prior reply attempt failed',
+        result: existingAttempt.response_json,
+      }, 500);
+    } else {
+      const [retryClaim] = await db
+        .update(agentChannelDeliveryAttempts)
+        .set({
+          status: 'started',
+          request_json: requestJson,
+          response_json: null,
+          error: null,
+          updated_at: new Date(),
+        })
+        .where(and(
+          eq(agentChannelDeliveryAttempts.id, existingAttempt.id),
+          eq(agentChannelDeliveryAttempts.status, 'failed'),
+        ))
+        .returning();
+      claim = retryClaim;
+    }
+    if (!claim) {
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
+    }
+  } else if (existingAttempt && autonomousReply && attemptCanReconcile(existingAttempt)) {
+    claim = await reclaimAutonomousAttempt(existingAttempt);
+    if (!claim) {
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
+    }
+  } else if (existingAttempt) {
+    return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+  }
+  if (!claim) {
+    const [insertedClaim] = await db
+      .insert(agentChannelDeliveryAttempts)
+      .values({
+        org_id: principal.org_id,
+        agent_employee_id: principal.employee_id,
+        event_id: event.id,
+        direction: 'inbound_reply',
+        idempotency_key: idempotencyKey,
+        status: 'started',
+        request_json: requestJson,
+      })
+      .onConflictDoNothing({
+        target: [
+          agentChannelDeliveryAttempts.org_id,
+          agentChannelDeliveryAttempts.agent_employee_id,
+          agentChannelDeliveryAttempts.idempotency_key,
+        ],
+      })
+      .returning();
+    claim = insertedClaim;
+  }
 
   if (!claim) {
     const [latestAttempt] = await db
@@ -687,24 +1366,181 @@ agentChannelRoutes.post('/reply', async (c) => {
         ),
       )
       .limit(1);
-    if (latestAttempt?.response_json) {
+    if (latestAttempt && latestAttempt.event_id !== event.id) {
+      return errorResponse(c, 409, 'IDEMPOTENCY_KEY_CONFLICT', 'The reply idempotency key belongs to another channel event');
+    }
+    if (latestAttempt && attemptCanReconcile(latestAttempt)) {
+      const reconciliation = await reconcileDurableCertificationReply(latestAttempt);
+      if (reconciliation && 'error' in reconciliation && typeof reconciliation.error === 'string') {
+        return errorResponse(c, 409, 'CERTIFICATION_REPLY_RECONCILIATION_CONFLICT', reconciliation.error);
+      }
+      if (reconciliation) {
+        if (reconciliation.adapterMode === 'autonomous_platform') {
+          await completeAutonomousReplyTransport({
+            event,
+            principal,
+            runtimeSessionKey: reconciliation.runtimeSessionKey,
+            detail: reconciliation.summary ?? 'Autonomous runtime reply recovered from its durable message.',
+            outcome: null,
+            channelState: 'acknowledged',
+            transportReply: 'sent',
+          });
+        }
+        return c.json({
+          ok: true,
+          idempotent: true,
+          reconciled: true,
+          adapter_mode: reconciliation.adapterMode,
+          transport_reply: 'sent',
+          business_outcome: reconciliation.outcome,
+          result: reconciliation.reply,
+        });
+      }
+      const autonomousReconciliation = await reconcileDurableAutonomousReply(latestAttempt);
+      if (autonomousReconciliation && 'error' in autonomousReconciliation) {
+        return errorResponse(c, 409, 'AUTONOMOUS_REPLY_RECONCILIATION_CONFLICT', autonomousReconciliation.error);
+      }
+      if (autonomousReconciliation && 'lostRace' in autonomousReconciliation) {
+        return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The autonomous reply attempt changed while its durable effect was being reconciled');
+      }
+      if (autonomousReconciliation) {
+        await completeAutonomousReplyTransport({
+          event,
+          principal,
+          runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+          detail: parsed.data.summary ?? 'Autonomous runtime reply recovered from its durable effect.',
+          outcome: null,
+          channelState: 'acknowledged',
+          transportReply: 'sent',
+        });
+        return c.json({
+          ok: true,
+          idempotent: true,
+          reconciled: true,
+          adapter_mode: 'autonomous_platform',
+          transport_reply: 'sent',
+          business_outcome: null,
+          result: autonomousReconciliation.reply,
+        });
+      }
+    }
+    if (latestAttempt?.status === 'completed' && latestAttempt.response_json) {
+      if (event.source_kind === 'certification') {
+        const reconciliation = await reconcileDurableCertificationReply(latestAttempt);
+        if (reconciliation && 'error' in reconciliation && typeof reconciliation.error === 'string') {
+          return errorResponse(c, 409, 'CERTIFICATION_REPLY_RECONCILIATION_CONFLICT', reconciliation.error);
+        }
+        if (reconciliation) {
+          if (reconciliation.adapterMode === 'autonomous_platform') {
+            await completeAutonomousReplyTransport({
+              event,
+              principal,
+              runtimeSessionKey: reconciliation.runtimeSessionKey,
+              detail: reconciliation.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+              outcome: null,
+              channelState: 'acknowledged',
+              transportReply: 'sent',
+            });
+          }
+          return c.json({ ok: true, idempotent: true, reconciled: true, result: reconciliation.reply });
+        }
+      }
+      if (autonomousReply) {
+        await completeAutonomousReplyTransport({
+          event,
+          principal,
+          runtimeSessionKey: parsed.data.runtime_session_key ?? null,
+          detail: parsed.data.summary ?? 'Autonomous runtime replied through the Agent Channel.',
+          outcome: null,
+          channelState: 'acknowledged',
+          transportReply: 'sent',
+        });
+      }
       return c.json({ ok: true, idempotent: true, result: latestAttempt.response_json });
     }
-    return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+    if (latestAttempt?.status === 'failed') {
+      if (autonomousReply) {
+        claim = await reclaimAutonomousAttempt(latestAttempt);
+      } else if (event.source_kind !== 'certification') {
+        return c.json({
+          ok: false,
+          idempotent: true,
+          error: latestAttempt.error ?? 'The prior reply attempt failed',
+          result: latestAttempt.response_json,
+        }, 500);
+      } else {
+        const [retryClaim] = await db
+          .update(agentChannelDeliveryAttempts)
+          .set({
+            status: 'started',
+            request_json: requestJson,
+            response_json: null,
+            error: null,
+            updated_at: new Date(),
+          })
+          .where(and(
+            eq(agentChannelDeliveryAttempts.id, latestAttempt.id),
+            eq(agentChannelDeliveryAttempts.status, 'failed'),
+          ))
+          .returning();
+        claim = retryClaim;
+      }
+      if (!claim) {
+        return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The failed reply is already being retried');
+      }
+    } else if (latestAttempt && autonomousReply && attemptCanReconcile(latestAttempt)) {
+      claim = await reclaimAutonomousAttempt(latestAttempt);
+      if (!claim) {
+        return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'The expired reply attempt was already reclaimed');
+      }
+    } else {
+      return errorResponse(c, 409, 'IDEMPOTENCY_IN_PROGRESS', 'A reply with this idempotency key is already in progress');
+    }
   }
 
-  const result = await executeSendMessage({
-    orgId: principal.org_id,
-    spaceId: event.space_id,
-    content: parsed.data.content,
-    parentId,
-    ctx: {
-      org_id: principal.org_id,
-      employee_id: principal.employee_id,
-      employee_slug: principal.employee_slug,
-      trust_level: principal.trust_level,
-    },
-  });
+  const claimedRequest = claim.request_json && typeof claim.request_json === 'object'
+    ? claim.request_json as Record<string, unknown>
+    : requestJson;
+  const executionContent = autonomousReply && typeof claimedRequest.content === 'string'
+    ? claimedRequest.content
+    : parsed.data.content;
+  const executionThreadId = autonomousReply
+    && (claimedRequest.thread_id === null || typeof claimedRequest.thread_id === 'string')
+    ? claimedRequest.thread_id
+    : parentId;
+  const executionSummary = autonomousReply && typeof claimedRequest.summary === 'string'
+    ? claimedRequest.summary
+    : parsed.data.summary ?? null;
+  const executionRuntimeSessionKey = autonomousReply
+    && typeof claimedRequest.runtime_session_key === 'string'
+    ? claimedRequest.runtime_session_key
+    : parsed.data.runtime_session_key ?? null;
+
+  const toolContext = {
+    org_id: principal.org_id,
+    employee_id: principal.employee_id,
+    employee_slug: principal.employee_slug,
+    trust_level: principal.trust_level,
+  };
+  const result = autonomousNotificationReply
+    ? {
+        content: [{ type: 'text' as const, text: JSON.stringify({ acknowledged: true, event_id: event.id }) }],
+        isError: false,
+      }
+    : autonomousTaskReply
+      ? await executeTaskUpdate({
+      caller_employee_slug: principal.employee_slug,
+      task_id: event.source_id!,
+      patch: { comment: executionContent },
+      }, toolContext, { commentId: autonomousReplyEffectId ?? undefined })
+      : await executeSendMessage({
+        orgId: principal.org_id,
+        spaceId: event.space_id!,
+        content: executionContent,
+        parentId: executionThreadId,
+        ctx: toolContext,
+        messageId: certificationMessageId ?? autonomousReplyEffectId ?? undefined,
+      });
 
   const text = result.content?.[0]?.text ?? '{}';
   let responseJson: Record<string, unknown>;
@@ -713,18 +1549,83 @@ agentChannelRoutes.post('/reply', async (c) => {
   } catch {
     responseJson = { raw: text };
   }
+  const durableAutonomousReply = result.isError && autonomousReply && event.source_kind !== 'certification'
+    ? await loadDurableAutonomousReply(claim)
+    : null;
+  const durableAutonomousReplyError = durableAutonomousReply && 'error' in durableAutonomousReply
+    ? durableAutonomousReply.error
+    : null;
+  if (durableAutonomousReply && 'reply' in durableAutonomousReply) {
+    responseJson = durableAutonomousReply.reply;
+  }
+  const durableCertificationReply = result.isError
+    ? await loadDurableCertificationReply()
+    : null;
+  const replyFailed = Boolean(
+    result.isError
+    && !durableCertificationReply
+    && !(durableAutonomousReply && 'reply' in durableAutonomousReply),
+  );
+  if (durableCertificationReply) responseJson = durableCertificationReply;
 
-  await db
+  const [finalizedAttempt] = await db
     .update(agentChannelDeliveryAttempts)
     .set({
-      status: result.isError ? 'failed' : 'completed',
+      status: replyFailed ? 'failed' : 'completed',
       response_json: responseJson,
-      error: result.isError ? text : null,
+      error: replyFailed ? text : null,
       updated_at: new Date(),
     })
-    .where(eq(agentChannelDeliveryAttempts.id, claim.id));
+    .where(and(
+      eq(agentChannelDeliveryAttempts.id, claim.id),
+      eq(agentChannelDeliveryAttempts.org_id, principal.org_id),
+      eq(agentChannelDeliveryAttempts.agent_employee_id, principal.employee_id),
+      eq(agentChannelDeliveryAttempts.event_id, event.id),
+      eq(agentChannelDeliveryAttempts.status, 'started'),
+      attemptGenerationMatches(claim),
+    ))
+    .returning({ id: agentChannelDeliveryAttempts.id });
+  if (!finalizedAttempt) {
+    return errorResponse(c, 409, 'REPLY_ATTEMPT_RECLAIMED', 'The reply attempt was reclaimed before this handler could finalize it');
+  }
+  if (durableAutonomousReplyError) {
+    return errorResponse(c, 409, 'AUTONOMOUS_REPLY_RECONCILIATION_CONFLICT', durableAutonomousReplyError);
+  }
 
-  const reportedOutcome = result.isError ? 'failed' : parsed.data.outcome;
+  if (autonomousReply) {
+    await touchAgentChannelConnection(principal, {
+      status: replyFailed ? 'degraded' : 'connected',
+      lastEventId: event.id,
+      lastError: replyFailed ? text : null,
+    });
+    if (!replyFailed) {
+      await completeAutonomousReplyTransport({
+        event,
+        principal,
+        runtimeSessionKey: executionRuntimeSessionKey,
+        detail: executionSummary ?? 'Autonomous runtime replied through the Agent Channel.',
+        outcome: null,
+        channelState: 'acknowledged',
+        transportReply: 'sent',
+      });
+    }
+    return c.json({
+      ok: !replyFailed,
+      idempotent: false,
+      reconciled: Boolean(durableCertificationReply || (durableAutonomousReply && 'reply' in durableAutonomousReply)),
+      adapter_mode: 'autonomous_platform',
+      transport_reply: replyFailed ? 'failed' : 'sent',
+      transport_target: autonomousTaskReply
+        ? 'task_comment'
+        : autonomousNotificationReply
+          ? 'notification_ack'
+          : 'chat_message',
+      business_outcome: event.work_outcome ?? null,
+      result: responseJson,
+    }, replyFailed ? 500 : 200);
+  }
+
+  const reportedOutcome = replyFailed ? 'failed' : parsed.data.outcome;
   const lifecyclePatch = buildAgentChannelLifecyclePatch(
     event,
     reportedOutcome === 'failed'
@@ -733,7 +1634,7 @@ agentChannelRoutes.post('/reply', async (c) => {
         ? 'cancelled'
         : 'completed',
     new Date(),
-    result.isError ? text : null,
+    replyFailed ? text : null,
   );
   const outcomeAt = new Date();
   if (Object.keys(lifecyclePatch).length > 0) {
@@ -743,13 +1644,13 @@ agentChannelRoutes.post('/reply', async (c) => {
         ...lifecyclePatch,
         lease_expires_at: null,
         work_outcome: reportedOutcome,
-        outcome_detail: parsed.data.summary ?? (result.isError ? text : null),
+        outcome_detail: parsed.data.summary ?? (replyFailed ? text : null),
         outcome_at: outcomeAt,
         runtime_session_key: parsed.data.runtime_session_key ?? event.runtime_session_key,
       })
       .where(and(
         eq(agentChannelEvents.id, event.id),
-        eq(agentChannelEvents.claim_token, parsed.data.claim_token),
+        eq(agentChannelEvents.claim_token, parsed.data.claim_token!),
       ))
       .returning({ id: agentChannelEvents.id });
     if (!settled) {
@@ -770,18 +1671,18 @@ agentChannelRoutes.post('/reply', async (c) => {
     runtimeRequestKey: parsed.data.runtime_request_key,
     status: reportedOutcome,
     runtimeResponseId: parsed.data.runtime_response_id,
-    error: result.isError ? text : null,
+    error: replyFailed ? text : null,
   });
 
-  emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (result.isError ? text : null));
+  emitTaskProgress(event, principal.employee_id, reportedOutcome, parsed.data.summary ?? (replyFailed ? text : null));
 
   await touchAgentChannelConnection(principal, {
-    status: result.isError ? 'degraded' : 'connected',
+    status: replyFailed ? 'degraded' : 'connected',
     lastEventId: event.id,
-    lastError: result.isError ? text : null,
+    lastError: replyFailed ? text : null,
   });
   await updateAgentChannelCursor({ principal, lastAckedEventId: event.id });
-  if (!result.isError) {
+  if (!replyFailed) {
     await closeFallbackWorkForEvent({
       event,
       principal,
@@ -791,7 +1692,13 @@ agentChannelRoutes.post('/reply', async (c) => {
     });
   }
 
-  return c.json({ ok: !result.isError, idempotent: false, outcome: reportedOutcome, result: responseJson }, result.isError ? 500 : 200);
+  return c.json({
+    ok: !replyFailed,
+    idempotent: false,
+    reconciled: Boolean(durableCertificationReply),
+    outcome: reportedOutcome,
+    result: responseJson,
+  }, replyFailed ? 500 : 200);
 });
 
 agentChannelRoutes.post('/status', async (c) => {
@@ -804,7 +1711,9 @@ agentChannelRoutes.post('/status', async (c) => {
   const principal = await resolveChannelPrincipal(c, parsed.data.caller_employee_slug);
   if (isResponse(principal)) return principal;
 
-  const connectionStatus = parsed.data.state === 'incompatible'
+  const connectionStatus = parsed.data.state === 'offline'
+    ? 'disconnected'
+    : parsed.data.state === 'incompatible'
     ? 'incompatible'
     : parsed.data.state === 'error' || parsed.data.state === 'degraded'
       ? 'degraded'

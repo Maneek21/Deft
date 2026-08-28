@@ -24,6 +24,8 @@ jobs:
         run: pnpm module:verify
       - name: Verify release publishing contract
         run: pnpm test:release-workflow
+      - name: Verify deterministic Hermes integration bundle
+        run: pnpm test:hermes-integration-bundle
       - name: Lint web
         run: pnpm --filter @deft/web lint
       - name: Test web realtime lifecycle state
@@ -131,8 +133,38 @@ jobs:
           cache: pnpm
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - run: pnpm install --frozen-lockfile
+      - name: Provision pinned Hermes runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          hermes_repository="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.repository")"
+          hermes_ref="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.ref")"
+          hermes_commit="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.commit")"
+          hermes_root="$RUNNER_TEMP/hermes-agent"
+          hermes_venv="$RUNNER_TEMP/hermes-venv"
+          rm -rf "$hermes_root" "$hermes_venv"
+          git clone --filter=blob:none --no-checkout "$hermes_repository" "$hermes_root"
+          git -C "$hermes_root" fetch --depth 1 origin "$hermes_ref"
+          git -C "$hermes_root" checkout --detach FETCH_HEAD
+          [[ "$(git -C "$hermes_root" rev-parse HEAD)" == "$hermes_commit" ]] || {
+            echo "Hermes ref does not resolve to its manifest commit" >&2
+            exit 1
+          }
+          [[ -z "$(git -C "$hermes_root" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Pinned Hermes checkout is not clean" >&2
+            exit 1
+          }
+          python -m venv "$hermes_venv"
+          "$hermes_venv/bin/python" -m pip install -e "$hermes_root"
+          [[ -z "$(git -C "$hermes_root" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Installing Hermes modified the provenance checkout" >&2
+            exit 1
+          }
+          "$hermes_venv/bin/python" -c 'import sys; print(sys.version)'
+          echo "DEFT_HERMES_REPO=$hermes_root" >> "$GITHUB_ENV"
+          echo "DEFT_HERMES_PYTHON=$hermes_venv/bin/python" >> "$GITHUB_ENV"
       - name: Run two clean-state Hermes employee passes
         run: pnpm test:hermes-employee-release-gate
       - name: Retain certification evidence
@@ -140,7 +172,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hermes-employee-release-gate
-          path: dist/hermes-employee-release-gate.json
+          path: |
+            dist/hermes-employee-release-gate.json
+            dist/hermes-integration
           if-no-files-found: warn
 
   build:

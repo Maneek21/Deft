@@ -87,6 +87,16 @@ export const upgradeManifest = {
       file: '0.3.0-preview.7-agent-channel-runtime-reconciliation.sql',
       description: 'Reconcile durable runtime effects before uncertain Agent Channel terminal outcomes',
     },
+    {
+      version: '0.3.0-preview.14',
+      file: '0.3.0-preview.14-attachment-links.sql',
+      description: 'Add tenant-bound message and task attachment links with legacy backfill',
+    },
+    {
+      version: '0.3.0-preview.15',
+      file: '0.3.0-preview.15-attachment-processing.sql',
+      description: 'Add bounded attachment processing metadata and permission-inheriting derivatives',
+    },
   ] satisfies UpgradeMigration[],
 } as const;
 

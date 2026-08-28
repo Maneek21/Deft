@@ -6,6 +6,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import bcrypt from 'bcryptjs';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -19,6 +20,7 @@ import {
   agentEmployees,
   agentActions,
   agentCooperativeLog,
+  attentionItems,
   actionReceipts,
   messages,
   notifications,
@@ -50,6 +52,12 @@ import {
 import { memoryRecall, memoryWrite } from '../src/lib/mcp-tools/memory.js';
 import { recordProgress } from '../src/lib/mcp-tools/cooperative.js';
 import { handleAgentEmployeeMessage } from '../src/workers/handlers/agent-employee-message.js';
+import { handleAgentEmployeeTask } from '../src/workers/handlers/agent-employee-task.js';
+import { rejectAction } from '../src/lib/agent-approval-resolver.js';
+import {
+  dispatchAgentEmployeeTask,
+  publishTaskChannelEventForAssignee,
+} from '../src/lib/dispatch-agent-task.js';
 
 const app = new Hono();
 app.route('/api/agent-channel/v1', agentChannelRoutes);
@@ -70,6 +78,7 @@ let spaceId: string;
 let sourceMessageId: string;
 let bearer: string;
 let projectId: string;
+let recoveryTaskNumber = 1_000_000;
 
 const humanMcpContext = (): HumanToolContext => ({
   org_id: orgId,
@@ -258,6 +267,414 @@ test('human MCP task creation wakes an assigned agent employee', async () => {
   const row = (queued as any).rows?.[0] ?? (queued as any)[0];
   assert.equal(row?.name, 'agent-employee-task');
   assert.equal(row?.data?.employeeId, employeeId);
+});
+
+test('task delivery enforces live employee project scope before queue, side effects, follow-ups, and recovery', async () => {
+  const outsideProjectId = crypto.randomUUID();
+  const allowedTaskId = crypto.randomUUID();
+  const outsideTaskId = crypto.randomUUID();
+  const deletedEmployeeTaskId = crypto.randomUUID();
+  const taskIds = [allowedTaskId, outsideTaskId, deletedEmployeeTaskId];
+  let cursorEventId: string | null = null;
+  await db.insert(projects).values({
+    id: outsideProjectId,
+    org_id: orgId,
+    name: 'Outside Agent Channel Project',
+    prefix: `OAC${String(Date.now()).slice(-5)}`,
+  });
+  await db.insert(tasks).values([
+    {
+      id: allowedTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Allowed scoped handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: outsideTaskId,
+      org_id: orgId,
+      project_id: outsideProjectId,
+      number: recoveryTaskNumber++,
+      title: 'Outside scoped handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: deletedEmployeeTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted employee handoff',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+  ]);
+
+  try {
+    await db.update(agentEmployees).set({ project_ids: [projectId] }).where(eq(agentEmployees.id, employeeId));
+
+    const allowedDispatch = await dispatchAgentEmployeeTask({
+      taskId: allowedTaskId,
+      orgId,
+      assigneeUserId: agentUserId,
+      assignedBy: humanUserId,
+    });
+    assert.deepEqual(allowedDispatch, { queued: true, employeeId });
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: allowedTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const allowedEvents = await db.select().from(agentChannelEvents).where(and(
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.source_id, allowedTaskId),
+      eq(agentChannelEvents.kind, 'task.assigned'),
+    ));
+    const allowedActions = await db.select().from(agentActions).where(and(
+      eq(agentActions.agent_employee_id, employeeId),
+      sql`${agentActions.params}->>'task_id' = ${allowedTaskId}`,
+    ));
+    assert.equal(allowedEvents.length, 1);
+    assert.equal(allowedActions.length, 1);
+
+    const outsideDispatch = await dispatchAgentEmployeeTask({
+      taskId: outsideTaskId,
+      orgId,
+      assigneeUserId: agentUserId,
+      assignedBy: humanUserId,
+    });
+    assert.deepEqual(outsideDispatch, { queued: false, reason: 'project_not_allowed' });
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: outsideTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const outsideEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events
+      WHERE org_id = ${orgId} AND agent_employee_id = ${employeeId} AND source_id = ${outsideTaskId}
+      UNION ALL
+      SELECT id FROM agent_actions
+      WHERE org_id = ${orgId} AND agent_employee_id = ${employeeId} AND params->>'task_id' = ${outsideTaskId}
+      UNION ALL
+      SELECT id FROM task_activity
+      WHERE org_id = ${orgId} AND task_id = ${outsideTaskId} AND action = 'agent_handoff_queued'
+      UNION ALL
+      SELECT id FROM job_queue
+      WHERE name = 'agent-employee-task' AND data->>'taskId' = ${outsideTaskId}
+    `);
+    assert.equal(((outsideEffects as any).rows ?? outsideEffects as any[]).length, 0);
+
+    await db.update(agentEmployees).set({ project_ids: null }).where(eq(agentEmployees.id, employeeId));
+    const cursorEvent = await publishMessageEvent(`project-scope-cursor-${crypto.randomUUID()}`);
+    cursorEventId = cursorEvent.id;
+    const pendingOutside = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: outsideTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `project-scope-outside-${crypto.randomUUID()}`,
+      payload: { task_id: outsideTaskId },
+    });
+    assert.ok(pendingOutside.event);
+
+    // Narrowing scope after an event was persisted must suppress both later
+    // task activity and recovery of that earlier pending assignment.
+    await db.update(agentEmployees).set({ project_ids: [projectId] }).where(eq(agentEmployees.id, employeeId));
+    const comment = await operatorApp.request(`/api/tasks/${outsideTaskId}/comments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'This follow-up must not cross the narrowed project boundary.' }),
+    });
+    assert.equal(comment.status, 201, await comment.text());
+    const status = await operatorApp.request(`/api/tasks/${outsideTaskId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+    assert.equal(status.status, 200, await status.text());
+    const allowedPending = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: allowedTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `project-scope-allowed-${crypto.randomUUID()}`,
+      payload: { task_id: allowedTaskId },
+    });
+    assert.ok(allowedPending.event);
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&after_event_id=${cursorEvent.id}&${channelCompatibilityQuery()}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.ok(delivery.events.some((event: any) => event.id === allowedPending.event!.id));
+    assert.equal(delivery.events.some((event: any) => event.id === pendingOutside.event!.id), false);
+    const [undeliveredOutside] = await db.select().from(agentChannelEvents)
+      .where(eq(agentChannelEvents.id, pendingOutside.event!.id)).limit(1);
+    assert.equal(undeliveredOutside?.status, 'pending');
+    assert.equal(undeliveredOutside?.delivery_count, 0);
+    const outsideFollowUps = await db.select().from(agentChannelEvents).where(and(
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.source_id, outsideTaskId),
+      inArray(agentChannelEvents.kind, ['task.commented', 'task.status_changed']),
+    ));
+    assert.equal(outsideFollowUps.length, 0);
+
+    await db.update(agentEmployees).set({ is_deleted: true }).where(eq(agentEmployees.id, employeeId));
+    const deletedPublish = await publishAgentChannelEvent({
+      orgId,
+      employeeId,
+      kind: 'task.assigned',
+      sourceKind: 'task',
+      sourceId: deletedEmployeeTaskId,
+      actorUserId: humanUserId,
+      idempotencyKey: `deleted-employee-${crypto.randomUUID()}`,
+      payload: { task_id: deletedEmployeeTaskId },
+    });
+    assert.equal(deletedPublish.event, null);
+    await handleAgentEmployeeTask({
+      id: crypto.randomUUID(),
+      name: 'agent-employee-task',
+      data: { taskId: deletedEmployeeTaskId, orgId, employeeId, assignedBy: humanUserId },
+    } as any);
+    const deletedEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events WHERE source_id = ${deletedEmployeeTaskId}
+      UNION ALL
+      SELECT id FROM agent_actions WHERE params->>'task_id' = ${deletedEmployeeTaskId}
+    `);
+    assert.equal(((deletedEffects as any).rows ?? deletedEffects as any[]).length, 0);
+  } finally {
+    await db.update(agentEmployees)
+      .set({ project_ids: null, is_deleted: false, is_active: true })
+      .where(eq(agentEmployees.id, employeeId));
+    if (cursorEventId) await db.delete(agentChannelEvents).where(eq(agentChannelEvents.id, cursorEventId));
+    await db.delete(agentChannelEvents).where(inArray(agentChannelEvents.source_id, taskIds));
+    await db.delete(taskActivity).where(inArray(taskActivity.task_id, taskIds));
+    await db.delete(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      sql`${agentActions.params}->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})`,
+    ));
+    await db.delete(taskComments).where(inArray(taskComments.task_id, taskIds));
+    for (const taskId of taskIds) {
+      await db.execute(sql`DELETE FROM job_queue WHERE data->>'taskId' = ${taskId}`);
+    }
+    await db.delete(tasks).where(inArray(tasks.id, taskIds));
+    await db.delete(projects).where(eq(projects.id, outsideProjectId));
+  }
+});
+
+test('deleted tasks and tasks in soft-deleted projects cannot queue, deliver, recover, or publish follow-ups', async () => {
+  const deletedProjectId = crypto.randomUUID();
+  const deletedTaskId = crypto.randomUUID();
+  const deletedProjectTaskId = crypto.randomUUID();
+  const taskIds = [deletedTaskId, deletedProjectTaskId];
+  const recoveryEventIds: string[] = [];
+  let cursorEventId: string | null = null;
+
+  await db.insert(projects).values({
+    id: deletedProjectId,
+    org_id: orgId,
+    name: 'Deleted Agent Channel Project',
+    prefix: `DAC${String(Date.now()).slice(-5)}`,
+  });
+  await db.insert(tasks).values([
+    {
+      id: deletedTaskId,
+      org_id: orgId,
+      project_id: projectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted task lifecycle boundary',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+    {
+      id: deletedProjectTaskId,
+      org_id: orgId,
+      project_id: deletedProjectId,
+      number: recoveryTaskNumber++,
+      title: 'Deleted project lifecycle boundary',
+      status: 'todo',
+      priority: 'p1',
+      assignee_id: agentUserId,
+      created_by: humanUserId,
+    },
+  ]);
+
+  try {
+    await db.update(agentEmployees).set({ project_ids: null }).where(eq(agentEmployees.id, employeeId));
+    const cursorEvent = await publishMessageEvent(`lifecycle-cursor-${crypto.randomUUID()}`);
+    cursorEventId = cursorEvent.id;
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2000-01-01T00:00:00.000Z') })
+      .where(eq(agentChannelEvents.id, cursorEvent.id));
+
+    const recoveryEvents = [];
+    for (const taskId of taskIds) {
+      const published = await publishAgentChannelEvent({
+        orgId,
+        employeeId,
+        kind: 'task.assigned',
+        sourceKind: 'task',
+        sourceId: taskId,
+        actorUserId: humanUserId,
+        idempotencyKey: `lifecycle-recovery:${taskId}`,
+        payload: { task_id: taskId },
+      });
+      assert.ok(published.event);
+      recoveryEvents.push(published.event!);
+      recoveryEventIds.push(published.event!.id);
+    }
+    await db.update(agentChannelEvents).set({
+      status: 'acknowledged',
+      delivered_at: new Date(),
+      acked_at: new Date(),
+      delivery_count: 1,
+      claim_owner: null,
+      claim_token: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    }).where(inArray(agentChannelEvents.id, recoveryEvents.map((event) => event.id)));
+
+    await db.update(tasks).set({ is_deleted: true }).where(eq(tasks.id, deletedTaskId));
+    await db.update(projects).set({ is_deleted: true, deleted_at: new Date() })
+      .where(eq(projects.id, deletedProjectId));
+
+    for (const taskId of taskIds) {
+      const dispatch = await dispatchAgentEmployeeTask({
+        taskId,
+        orgId,
+        assigneeUserId: agentUserId,
+        assignedBy: humanUserId,
+      });
+      assert.deepEqual(dispatch, { queued: false, reason: 'project_not_allowed' });
+
+      await handleAgentEmployeeTask({
+        id: crypto.randomUUID(),
+        name: 'agent-employee-task',
+        data: { taskId, orgId, employeeId, assignedBy: humanUserId },
+      } as any);
+    }
+
+    await publishTaskChannelEventForAssignee({
+      orgId,
+      task: {
+        id: deletedTaskId,
+        project_id: projectId,
+        number: recoveryTaskNumber,
+        title: 'Deleted task lifecycle boundary',
+        description: null,
+        status: 'todo',
+        priority: 'p1',
+        assignee_id: agentUserId,
+      },
+      actorUserId: humanUserId,
+      kind: 'task.commented',
+      idempotencyKey: `deleted-task-follow-up-${crypto.randomUUID()}`,
+      payload: { comment_id: crypto.randomUUID() },
+    });
+    await publishTaskChannelEventForAssignee({
+      orgId,
+      task: {
+        id: deletedProjectTaskId,
+        project_id: deletedProjectId,
+        number: recoveryTaskNumber,
+        title: 'Deleted project lifecycle boundary',
+        description: null,
+        status: 'todo',
+        priority: 'p1',
+        assignee_id: agentUserId,
+      },
+      actorUserId: humanUserId,
+      kind: 'task.status_changed',
+      idempotencyKey: `deleted-project-follow-up-${crypto.randomUUID()}`,
+      payload: { old_status: 'todo', new_status: 'in_progress' },
+    });
+
+    for (const taskId of taskIds) {
+      assert.equal(await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId), null);
+    }
+
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&after_event_id=${cursorEvent.id}&${channelCompatibilityQuery()}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.equal(
+      delivery.events.some((event: any) => recoveryEvents.some((candidate) => candidate.id === event.id)),
+      false,
+    );
+
+    const lifecycleEffects = await db.execute(sql`
+      SELECT id FROM agent_channel_events
+      WHERE org_id = ${orgId}
+        AND source_id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+        AND id NOT IN (${sql.join(recoveryEvents.map((event) => sql`${event.id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM agent_actions
+      WHERE org_id = ${orgId}
+        AND params->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM task_activity
+      WHERE org_id = ${orgId}
+        AND task_id IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+      UNION ALL
+      SELECT id FROM job_queue
+      WHERE name = 'agent-employee-task'
+        AND data->>'taskId' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
+    `);
+    assert.equal(((lifecycleEffects as any).rows ?? lifecycleEffects as any[]).length, 0);
+
+    const retainedRecoveryEvents = await db.select({
+      id: agentChannelEvents.id,
+      status: agentChannelEvents.status,
+      delivery_count: agentChannelEvents.delivery_count,
+      claim_token: agentChannelEvents.claim_token,
+    }).from(agentChannelEvents).where(inArray(
+      agentChannelEvents.id,
+      recoveryEvents.map((event) => event.id),
+    ));
+    assert.equal(retainedRecoveryEvents.length, 2);
+    assert.ok(retainedRecoveryEvents.every((event) => (
+      event.status === 'acknowledged'
+      && event.delivery_count === 1
+      && event.claim_token === null
+    )));
+  } finally {
+    await db.update(agentEmployees)
+      .set({ project_ids: null, is_deleted: false, is_active: true })
+      .where(eq(agentEmployees.id, employeeId));
+    if (cursorEventId) await db.delete(agentChannelEvents).where(eq(agentChannelEvents.id, cursorEventId));
+    if (recoveryEventIds.length > 0) {
+      await db.delete(agentChannelDeliveryAttempts)
+        .where(inArray(agentChannelDeliveryAttempts.event_id, recoveryEventIds));
+    }
+    await db.delete(agentChannelEvents).where(inArray(agentChannelEvents.source_id, taskIds));
+    await db.delete(taskActivity).where(inArray(taskActivity.task_id, taskIds));
+    await db.delete(agentActions).where(and(
+      eq(agentActions.org_id, orgId),
+      sql`${agentActions.params}->>'task_id' IN (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})`,
+    ));
+    for (const taskId of taskIds) {
+      await db.execute(sql`DELETE FROM job_queue WHERE data->>'taskId' = ${taskId}`);
+    }
+    await db.delete(tasks).where(inArray(tasks.id, taskIds));
+    await db.delete(projects).where(eq(projects.id, deletedProjectId));
+  }
 });
 
 test('human MCP message post wakes a mentioned agent employee', async () => {
@@ -535,6 +952,124 @@ function channelCompatibilityQuery() {
   }).toString();
 }
 
+function autonomousCompatibilityQuery(workerId = 'autonomous-channel-worker') {
+  return new URLSearchParams({
+    protocol_version: 'deft.agent_channel.v2',
+    adapter_version: '0.2.0-test',
+    capabilities: 'autonomous_platform_adapter_v1,accepted_event_rehydration_v1',
+    worker_id: workerId,
+  }).toString();
+}
+
+function autonomousReplyEffectId(eventId: string, idempotencyKey: string) {
+  const digest = createHash('sha256')
+    .update([orgId, employeeId, eventId, idempotencyKey].join('\0'))
+    .digest('hex');
+  return `agent-channel-autonomous-reply:${digest}`;
+}
+
+async function acceptAutonomousEvent(eventId: string) {
+  const workerId = `autonomous-recovery-${crypto.randomUUID()}`;
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery(workerId)}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=120000&${autonomousCompatibilityQuery(workerId)}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  assert.equal(poll.status, 200, JSON.stringify(delivery));
+  const event = delivery.events.find((candidate: any) => candidate.id === eventId);
+  assert.ok(event?.claim_token, `expected autonomous claim for ${eventId}`);
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: eventId, claim_token: event.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+}
+
+async function insertFailedAutonomousReplyAttempt(params: {
+  eventId: string;
+  idempotencyKey: string;
+  content: string;
+  replyTarget: 'chat_message' | 'task_comment';
+  threadId?: string | null;
+}) {
+  const effectId = autonomousReplyEffectId(params.eventId, params.idempotencyKey);
+  await db.insert(agentChannelDeliveryAttempts).values({
+    id: crypto.randomUUID(),
+    org_id: orgId,
+    agent_employee_id: employeeId,
+    event_id: params.eventId,
+    direction: 'inbound_reply',
+    idempotency_key: params.idempotencyKey,
+    status: 'failed',
+    request_json: {
+      event_id: params.eventId,
+      content: params.content,
+      thread_id: params.threadId ?? null,
+      outcome: null,
+      adapter_mode: 'autonomous_platform',
+      reply_target: params.replyTarget,
+      summary: null,
+      runtime_session_key: null,
+      runtime_request_key: null,
+      runtime_response_id: null,
+      durable_effect_id: effectId,
+    },
+    response_json: { error: 'simulated transport write failure' },
+    error: 'simulated transport write failure',
+  });
+  return effectId;
+}
+
+async function publishRecoveryTaskEvent(label: string) {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: recoveryTaskNumber++,
+    title: label,
+    status: 'todo',
+    priority: 'p1',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const { event } = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `task-reply-recovery:${taskId}`,
+    payload: {
+      task_id: taskId,
+      task_key: `ACP-${recoveryTaskNumber}`,
+      title: label,
+      status: 'todo',
+      assigned_by: humanUserId,
+    },
+  });
+  assert.ok(event);
+  return { taskId, event: event! };
+}
+
+async function retireAutonomousRecoveryEvent(eventId: string) {
+  await db.update(agentChannelEvents).set({
+    status: 'completed',
+    completed_at: new Date(),
+    claim_owner: null,
+    claim_token: null,
+    lease_expires_at: null,
+  }).where(eq(agentChannelEvents.id, eventId));
+}
+
 test('GET /connect requires a bearer token', async () => {
   const res = await app.request('/api/agent-channel/v1/connect');
   assert.equal(res.status, 401);
@@ -569,6 +1104,864 @@ test('GET /contract advertises the lease-safe public compatibility contract', as
   assert.ok(body.required_runtime_capabilities.includes('terminal_outcomes'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_reconciliation_v1'));
   assert.ok(body.required_runtime_capabilities.includes('runtime_attestation_v1'));
+  assert.ok(body.capabilities.includes('autonomous_platform_adapter_v1'));
+  assert.ok(body.capabilities.includes('accepted_event_rehydration_v1'));
+  assert.deepEqual(
+    body.adapter_modes.autonomous_platform.required_runtime_capabilities,
+    ['autonomous_platform_adapter_v1', 'accepted_event_rehydration_v1'],
+  );
+  assert.equal(body.adapter_modes.autonomous_platform.delivery_acknowledgement, 'transport_acceptance');
+});
+
+test('autonomous platform reply terminalizes transport without completing business work', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery()}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  const connected = await connect.json() as any;
+  assert.equal(connect.status, 200, JSON.stringify(connected));
+  assert.equal(connected.adapter_mode, 'autonomous_platform');
+
+  const [fallbackAction] = await db.insert(agentActions).values({
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mention',
+    action: 'chat_mention',
+    params: { message_id: sourceMessageId },
+    approval_tier: 'auto',
+    approval_status: 'pending',
+  }).returning({ id: agentActions.id });
+  const event = await publishMessageEvent(
+    `autonomous-accept-${crypto.randomUUID()}`,
+    fallbackAction!.id,
+  );
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-accept-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  assert.equal(poll.status, 200, JSON.stringify(delivery));
+  assert.equal(delivery.adapter_mode, 'autonomous_platform');
+  const claimed = delivery.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(claimed?.claim_token);
+
+  const recoveryBeforeAcceptance = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id }),
+  });
+  const recoveryBeforeAcceptanceBody = await recoveryBeforeAcceptance.json() as any;
+  assert.equal(recoveryBeforeAcceptance.status, 409, JSON.stringify(recoveryBeforeAcceptanceBody));
+  assert.equal(recoveryBeforeAcceptanceBody.code, 'STALE_CLAIM');
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: claimed.claim_token }),
+  });
+  const accepted = await accept.json() as any;
+  assert.equal(accept.status, 200, JSON.stringify(accepted));
+  assert.equal(accepted.transport_state, 'accepted');
+  assert.equal(accepted.business_outcome, null);
+  assert.equal(accepted.event.status, 'acknowledged');
+  assert.equal(accepted.event.claim_token, null);
+  assert.equal(accepted.event.lease_expires_at, null);
+  assert.equal(accepted.event.completed_at, null);
+
+  const acceptReplay = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id }),
+  });
+  const acceptReplayed = await acceptReplay.json() as any;
+  assert.equal(acceptReplay.status, 200, JSON.stringify(acceptReplayed));
+  assert.equal(acceptReplayed.idempotent, true);
+  assert.equal(acceptReplayed.transport_state, 'accepted');
+  assert.equal(acceptReplayed.event.id, event.id);
+  assert.equal(acceptReplayed.event.payload.content, 'hello channel agent');
+
+  const replyKey = `autonomous-reply-${crypto.randomUUID()}`;
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Autonomous reply after transport acceptance.',
+      idempotency_key: replyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replied = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(replied));
+  assert.equal(replied.transport_reply, 'sent');
+  assert.equal(replied.business_outcome, null);
+
+  const [closedFallback] = await db.select().from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
+  assert.equal(closedFallback?.approval_status, 'approved');
+  assert.equal((closedFallback?.result as any)?.channel_state, 'completed');
+  assert.equal((closedFallback?.result as any)?.work_outcome, null);
+  assert.equal((closedFallback?.result as any)?.transport_reply, 'sent');
+
+  // Model a reply persisted by an older API that did not close the fallback.
+  // Replaying the same idempotency key must reconcile that phantom Inbox work.
+  await db.update(agentActions).set({
+    approval_status: 'pending',
+    approved_at: null,
+    executed_at: null,
+    result: null,
+  }).where(eq(agentActions.id, fallbackAction!.id));
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Autonomous reply after transport acceptance.',
+      idempotency_key: replyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+
+  const [reconciledFallback] = await db.select().from(agentActions)
+    .where(eq(agentActions.id, fallbackAction!.id)).limit(1);
+  assert.equal(reconciledFallback?.approval_status, 'approved');
+  assert.equal((reconciledFallback?.result as any)?.channel_state, 'completed');
+  assert.equal((reconciledFallback?.result as any)?.work_outcome, null);
+
+  const duplicate = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'A completed autonomous delivery cannot open another reply slot.',
+      idempotency_key: `different-autonomous-reply-${crypto.randomUUID()}`,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const duplicateBody = await duplicate.json() as any;
+  assert.equal(duplicate.status, 409, JSON.stringify(duplicateBody));
+  assert.equal(duplicateBody.code, 'DELIVERY_ALREADY_SETTLED');
+
+  const [settledDelivery] = await db.select().from(agentChannelEvents)
+    .where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(settledDelivery?.status, 'completed');
+  assert.equal(settledDelivery?.work_outcome, null);
+  assert.ok(settledDelivery?.completed_at);
+
+  const reconnect = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-reconnect-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const afterReconnect = await reconnect.json() as any;
+  assert.equal(reconnect.status, 200, JSON.stringify(afterReconnect));
+  assert.equal(
+    afterReconnect.events.some((candidate: any) => candidate.id === event.id),
+    false,
+    'transport-accepted work must not be redelivered to the autonomous adapter',
+  );
+});
+
+test('autonomous failed chat reply retries once when no durable effect exists', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-no-effect-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original chat reply that never committed.';
+  const recoveredContent = 'Recovered chat reply after the failed attempt.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, false);
+  assert.equal(retried.result.message_id, effectId);
+
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated content must not create another message.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  assert.equal(replayed.result.content, originalContent);
+  assert.equal((await db.select().from(messages).where(eq(messages.id, effectId))).length, 1);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed chat reply reconciles its original durable effect without duplication', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-durable-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original chat reply committed before bookkeeping failed.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.insert(messages).values({
+    id: effectId,
+    org_id: orgId,
+    space_id: spaceId,
+    user_id: agentUserId,
+    content: originalContent,
+    parent_id: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Different regenerated chat reply.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, true);
+  assert.equal(retried.reconciled, true);
+  assert.equal(retried.result.message_id, effectId);
+  assert.equal(retried.result.content, originalContent);
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed chat reply rejects a mismatched durable effect without another write', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-mismatch-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: 'The original reply recorded by the failed attempt.',
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.insert(messages).values({
+    id: effectId,
+    org_id: orgId,
+    space_id: spaceId,
+    user_id: agentUserId,
+    content: 'A conflicting durable message must never be accepted as the reply.',
+    parent_id: sourceMessageId,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated chat content.',
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const body = await retry.json() as any;
+  assert.equal(retry.status, 409, JSON.stringify(body));
+  assert.equal(body.code, 'AUTONOMOUS_REPLY_RECONCILIATION_CONFLICT');
+  assert.equal((await db.select().from(messages).where(eq(messages.id, effectId))).length, 1);
+  const [attempt] = await db.select().from(agentChannelDeliveryAttempts)
+    .where(eq(agentChannelDeliveryAttempts.idempotency_key, idempotencyKey)).limit(1);
+  assert.equal(attempt?.status, 'failed');
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous expired chat reply attempt is CAS-reclaimed when no durable effect exists', async () => {
+  const event = await publishMessageEvent(`autonomous-chat-expired-${crypto.randomUUID()}`);
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original uncommitted chat reply.';
+  const recoveredContent = 'Recovered after the server-side attempt lease expired.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'chat_message',
+    threadId: sourceMessageId,
+  });
+  await db.update(agentChannelDeliveryAttempts).set({
+    status: 'started',
+    response_json: null,
+    error: null,
+    updated_at: new Date(Date.now() - 120_000),
+  }).where(eq(agentChannelDeliveryAttempts.idempotency_key, idempotencyKey));
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      thread_id: sourceMessageId,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const body = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(body));
+  assert.equal(body.result.message_id, effectId);
+  const durableRows = await db.select().from(messages).where(eq(messages.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  assert.equal(body.result.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous task reclaim fences the stale writer and preserves one durable final reply', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Fence a stale autonomous task reply writer');
+  await acceptAutonomousEvent(event.id);
+  const serverFinalKey = `autonomous-reply:${event.id}:final`;
+  const effectId = autonomousReplyEffectId(event.id, serverFinalKey);
+  const originalContent = 'The original task reply must remain the one durable final effect.';
+  let staleWriter!: Promise<Response>;
+  let reclaimedWriter!: Promise<Response>;
+
+  await db.transaction(async (tx) => {
+    // SHARE allows the recovery reader to inspect the durable slot while both
+    // handlers remain blocked at the actual comment insert.
+    await tx.execute(sql`LOCK TABLE task_comments IN SHARE MODE`);
+    staleWriter = app.request('/api/agent-channel/v1/reply', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        content: originalContent,
+        idempotency_key: `first-client-key-${crypto.randomUUID()}`,
+        adapter_mode: 'autonomous_platform',
+      }),
+    });
+
+    let initialAttempt: typeof agentChannelDeliveryAttempts.$inferSelect | undefined;
+    for (let index = 0; index < 100; index += 1) {
+      [initialAttempt] = await db.select().from(agentChannelDeliveryAttempts).where(and(
+        eq(agentChannelDeliveryAttempts.org_id, orgId),
+        eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+        eq(agentChannelDeliveryAttempts.event_id, event.id),
+        eq(agentChannelDeliveryAttempts.idempotency_key, serverFinalKey),
+      )).limit(1);
+      if (initialAttempt) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(initialAttempt, 'the stale handler must own an attempt before reclaim');
+    const expiredAt = new Date(Date.now() - 180_000);
+    await db.update(agentChannelDeliveryAttempts)
+      .set({ updated_at: expiredAt })
+      .where(and(
+        eq(agentChannelDeliveryAttempts.id, initialAttempt.id),
+        eq(agentChannelDeliveryAttempts.status, 'started'),
+      ));
+
+    reclaimedWriter = app.request('/api/agent-channel/v1/reply', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        event_id: event.id,
+        content: 'Regenerated content must not replace the original attempt payload.',
+        idempotency_key: `second-client-key-${crypto.randomUUID()}`,
+        adapter_mode: 'autonomous_platform',
+      }),
+    });
+
+    let reclaimed = false;
+    for (let index = 0; index < 100; index += 1) {
+      const [attempt] = await db.select({
+        status: agentChannelDeliveryAttempts.status,
+        updated_at: agentChannelDeliveryAttempts.updated_at,
+        request_json: agentChannelDeliveryAttempts.request_json,
+      }).from(agentChannelDeliveryAttempts).where(eq(
+        agentChannelDeliveryAttempts.id,
+        initialAttempt.id,
+      )).limit(1);
+      if (attempt?.status === 'started' && attempt.updated_at.getTime() > expiredAt.getTime()) {
+        assert.equal((attempt.request_json as any).content, originalContent);
+        reclaimed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(reclaimed, true, 'the second handler must CAS-reclaim the expired generation');
+  });
+
+  const responses = await Promise.all([staleWriter, reclaimedWriter]);
+  const bodies = await Promise.all(responses.map((response) => response.json() as Promise<any>));
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  const staleIndex = responses.findIndex((response) => response.status === 409);
+  assert.equal(bodies[staleIndex]?.code, 'REPLY_ATTEMPT_RECLAIMED');
+
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.task_id, taskId);
+  assert.equal(durableRows[0]!.content, originalContent);
+  const [attempt] = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, event.id),
+    eq(agentChannelDeliveryAttempts.idempotency_key, serverFinalKey),
+  )).limit(1);
+  assert.equal(attempt?.status, 'completed');
+  assert.equal((attempt?.request_json as any).content, originalContent);
+  assert.equal((attempt?.response_json as any).comment_id, effectId);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed task reply retries once when no durable effect exists', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Retry a failed task reply');
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original task reply that never committed.';
+  const recoveredContent = 'Recovered task reply after the failed attempt.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'task_comment',
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: recoveredContent,
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, false);
+  assert.equal(retried.result.comment_id, effectId);
+
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.task_id, taskId);
+  assert.equal(durableRows[0]!.content, originalContent);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Regenerated task content must not create another comment.',
+      idempotency_key: `different-client-key-${crypto.randomUUID()}`,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  assert.equal(replayed.result.comment_id, effectId);
+  assert.equal((await db.select().from(taskComments).where(eq(taskComments.id, effectId))).length, 1);
+  const finalAttempts = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, event.id),
+    eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+  ));
+  assert.equal(finalAttempts.length, 1);
+  assert.equal(finalAttempts[0]!.idempotency_key, `autonomous-reply:${event.id}:final`);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('autonomous failed task reply reconciles its original durable effect without duplication', async () => {
+  const { taskId, event } = await publishRecoveryTaskEvent('Reconcile a committed task reply');
+  await acceptAutonomousEvent(event.id);
+  const idempotencyKey = `autonomous-reply:${event.id}:final`;
+  const originalContent = 'Original task reply committed before bookkeeping failed.';
+  const effectId = await insertFailedAutonomousReplyAttempt({
+    eventId: event.id,
+    idempotencyKey,
+    content: originalContent,
+    replyTarget: 'task_comment',
+  });
+  await db.insert(taskComments).values({
+    id: effectId,
+    org_id: orgId,
+    task_id: taskId,
+    user_id: agentUserId,
+    content: originalContent,
+  });
+
+  const retry = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: event.id,
+      content: 'Different regenerated task reply.',
+      idempotency_key: idempotencyKey,
+      adapter_mode: 'autonomous_platform',
+    }),
+  });
+  const retried = await retry.json() as any;
+  assert.equal(retry.status, 200, JSON.stringify(retried));
+  assert.equal(retried.idempotent, true);
+  assert.equal(retried.reconciled, true);
+  assert.equal(retried.result.comment_id, effectId);
+  assert.equal(retried.result.content, originalContent);
+  const durableRows = await db.select().from(taskComments).where(eq(taskComments.id, effectId));
+  assert.equal(durableRows.length, 1);
+  assert.equal(durableRows[0]!.content, originalContent);
+  await retireAutonomousRecoveryEvent(event.id);
+});
+
+test('claimless native recovery fences stale delivery before a fresh lease accepts it', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-recovery-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const event = await publishMessageEvent(`autonomous-recovery-${crypto.randomUUID()}`);
+  const firstPoll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-recovery-first')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const firstBody = await firstPoll.json() as any;
+  assert.equal(firstPoll.status, 200, JSON.stringify(firstBody));
+  const firstClaim = firstBody.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(firstClaim?.claim_token, JSON.stringify(firstBody));
+
+  await db.update(agentChannelEvents)
+    .set({ lease_expires_at: new Date(Date.now() - 1_000) })
+    .where(eq(agentChannelEvents.id, event.id));
+
+  const staleRecovery = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id }),
+  });
+  const staleBody = await staleRecovery.json() as any;
+  assert.equal(staleRecovery.status, 409, JSON.stringify(staleBody));
+  assert.equal(staleBody.code, 'STALE_CLAIM');
+
+  const secondPoll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-recovery-second')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const secondBody = await secondPoll.json() as any;
+  assert.equal(secondPoll.status, 200, JSON.stringify(secondBody));
+  const secondClaim = secondBody.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(secondClaim?.claim_token, JSON.stringify(secondBody));
+  assert.notEqual(secondClaim.claim_token, firstClaim.claim_token);
+
+  const accepted = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: secondClaim.claim_token }),
+  });
+  assert.equal(accepted.status, 200, await accepted.text());
+});
+
+test('autonomous cursor delivers later events on non-UTC hosts', async () => {
+  const previousTimezone = process.env.TZ;
+  process.env.TZ = 'Asia/Calcutta';
+  try {
+    const cursorEvent = await publishMessageEvent(`autonomous-cursor-old-${crypto.randomUUID()}`);
+    const nextEvent = await publishMessageEvent(`autonomous-cursor-new-${crypto.randomUUID()}`);
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2026-08-25T00:00:00.000Z') })
+      .where(eq(agentChannelEvents.id, cursorEvent.id));
+    await db.update(agentChannelEvents)
+      .set({ created_at: new Date('2026-08-25T00:00:01.000Z') })
+      .where(eq(agentChannelEvents.id, nextEvent.id));
+
+    const poll = await app.request(
+      `/api/agent-channel/v1/events?limit=100&lease_ms=30000&cursor=${cursorEvent.id}&${autonomousCompatibilityQuery('autonomous-cursor-worker')}`,
+      { headers: { authorization: `Bearer ${bearer}` } },
+    );
+    const delivery = await poll.json() as any;
+    assert.equal(poll.status, 200, JSON.stringify(delivery));
+    assert.ok(
+      delivery.events.some((candidate: any) => candidate.id === nextEvent.id),
+      'a later pending event must remain visible after the accepted cursor',
+    );
+  } finally {
+    process.env.TZ = previousTimezone;
+  }
+});
+
+test('approval resolution publishes once and a targetless autonomous response is an internal acknowledgement', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-approval-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 9904,
+    title: 'Approval lifecycle target',
+    status: 'todo',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const actionId = crypto.randomUUID();
+  await db.insert(agentActions).values({
+    id: actionId,
+    org_id: orgId,
+    user_id: humanUserId,
+    agent_employee_id: employeeId,
+    source: 'mcp',
+    action: 'task_update',
+    params: { task_id: taskId, summary: 'Change the task after review.' },
+    approval_tier: 'full',
+    approval_status: 'pending',
+  });
+  const rejected = await rejectAction(actionId, humanUserId, 'Needs a revised scope');
+  assert.equal(rejected.status, 'rejected');
+  await rejectAction(actionId, humanUserId, 'Replay');
+
+  const resolutions = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.agent_employee_id, employeeId),
+    eq(agentChannelEvents.kind, 'approval.resolved'),
+    eq(agentChannelEvents.source_id, taskId),
+  ));
+  assert.equal(resolutions.length, 1);
+  assert.equal((resolutions[0]!.payload as any).decision, 'rejected');
+  assert.equal((resolutions[0]!.payload as any).reason, 'Needs a revised scope');
+  assert.equal(Object.hasOwn(resolutions[0]!.payload as object, 'result'), false);
+
+  // Also prove the no-origin fallback cannot poison the adapter's restart journal.
+  const targetless = (await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'approval.resolved',
+    sourceKind: 'approval',
+    sourceId: crypto.randomUUID(),
+    actorUserId: humanUserId,
+    idempotencyKey: `targetless-approval-${crypto.randomUUID()}`,
+    payload: { decision: 'approved', action: 'module_record_create' },
+  })).event!;
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-approval-poll')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const delivery = await poll.json() as any;
+  const claimed = delivery.events.find((candidate: any) => candidate.id === targetless.id);
+  assert.ok(claimed?.claim_token, JSON.stringify(delivery));
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: targetless.id, claim_token: claimed.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: targetless.id,
+      content: 'Approval received.',
+      adapter_mode: 'autonomous_platform',
+      idempotency_key: `approval-ack-${targetless.id}`,
+    }),
+  });
+  const acknowledged = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(acknowledged));
+  assert.equal(acknowledged.transport_target, 'notification_ack');
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      event_id: targetless.id,
+      content: 'Regenerated acknowledgement.',
+      adapter_mode: 'autonomous_platform',
+      idempotency_key: `different-approval-ack-${crypto.randomUUID()}`,
+    }),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+  const acknowledgementAttempts = await db.select().from(agentChannelDeliveryAttempts).where(and(
+    eq(agentChannelDeliveryAttempts.org_id, orgId),
+    eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+    eq(agentChannelDeliveryAttempts.event_id, targetless.id),
+    eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+  ));
+  assert.equal(acknowledgementAttempts.length, 1);
+  assert.equal(acknowledgementAttempts[0]!.idempotency_key, `autonomous-reply:${targetless.id}:final`);
+});
+
+test('human task assistance and cancellation publish actor-aware lifecycle events', async () => {
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 9905,
+    title: 'Lifecycle signal target',
+    status: 'in_progress',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const comment = await operatorApp.request(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content: 'Use the approved revision and stop if this task is cancelled.' }),
+  });
+  assert.equal(comment.status, 201, await comment.text());
+  const cancel = await operatorApp.request(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ status: 'cancelled' }),
+  });
+  assert.equal(cancel.status, 200, await cancel.text());
+
+  const events = await db.select().from(agentChannelEvents).where(and(
+    eq(agentChannelEvents.agent_employee_id, employeeId),
+    eq(agentChannelEvents.source_id, taskId),
+    inArray(agentChannelEvents.kind, ['task.commented', 'task.status_changed']),
+  ));
+  assert.equal(events.length, 2);
+  const commented = events.find((event) => event.kind === 'task.commented')!;
+  const cancelled = events.find((event) => event.kind === 'task.status_changed')!;
+  assert.equal((commented.payload as any).commenter_name, 'Channel Human');
+  assert.equal((commented.payload as any).actor_name, 'Channel Human');
+  assert.equal((cancelled.payload as any).new_status, 'cancelled');
+  assert.equal((cancelled.payload as any).actor_name, 'Channel Human');
+});
+
+test('autonomous task pickup supports explicit progress and an idempotent task comment', async () => {
+  const connect = await app.request(`/api/agent-channel/v1/connect?${autonomousCompatibilityQuery('autonomous-task-worker')}`, {
+    headers: { authorization: `Bearer ${bearer}` },
+  });
+  assert.equal(connect.status, 200, await connect.text());
+
+  const taskId = crypto.randomUUID();
+  await db.insert(tasks).values({
+    id: taskId,
+    org_id: orgId,
+    project_id: projectId,
+    number: 905,
+    title: 'Prepare an autonomous task handoff',
+    status: 'todo',
+    assignee_id: agentUserId,
+    created_by: humanUserId,
+  });
+  const published = await publishAgentChannelEvent({
+    orgId,
+    employeeId,
+    kind: 'task.assigned',
+    sourceKind: 'task',
+    sourceId: taskId,
+    actorUserId: humanUserId,
+    idempotencyKey: `autonomous-task-${crypto.randomUUID()}`,
+    payload: { task_id: taskId, task_key: 'ACP-905', title: 'Prepare an autonomous task handoff' },
+  });
+  const event = published.event!;
+
+  const poll = await app.request(
+    `/api/agent-channel/v1/events?limit=100&lease_ms=30000&${autonomousCompatibilityQuery('autonomous-task-worker')}`,
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  const polled = await poll.json() as any;
+  const delivered = polled.events.find((candidate: any) => candidate.id === event.id);
+  assert.ok(delivered?.claim_token, JSON.stringify(polled));
+
+  const accept = await app.request('/api/agent-channel/v1/accept', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ event_id: event.id, claim_token: delivered.claim_token }),
+  });
+  assert.equal(accept.status, 200, await accept.text());
+
+  const correlation = await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, taskId);
+  assert.deepEqual(correlation, {
+    channel_event_id: event.id,
+    runtime_request_key: `autonomous:${event.id}`,
+  });
+  assert.equal(
+    await getActiveAgentChannelRuntimeCorrelation(orgId, employeeId, crypto.randomUUID()),
+    null,
+  );
+  const progress = parseToolResult(await recordProgress({
+    task_id: taskId,
+    summary: 'Picked up the task and verified the required Deft context.',
+    status: 'working',
+    idempotency_key: 'autonomous-picked-up',
+  }, {
+    org_id: orgId,
+    employee_id: employeeId,
+    employee_slug: employeeSlug,
+    trust_level: 'autonomous',
+    ...correlation!,
+  }));
+  assert.equal(progress.task_id, taskId);
+
+  const request = {
+    event_id: event.id,
+    content: 'I picked this up and verified the task context.',
+    idempotency_key: `autonomous-task-comment:${event.id}`,
+    adapter_mode: 'autonomous_platform',
+  };
+  const reply = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const replied = await reply.json() as any;
+  assert.equal(reply.status, 200, JSON.stringify(replied));
+  assert.equal(replied.transport_target, 'task_comment');
+  assert.ok(replied.result.comment_id);
+  assert.equal(replied.business_outcome, null);
+
+  const replay = await app.request('/api/agent-channel/v1/reply', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  const replayed = await replay.json() as any;
+  assert.equal(replay.status, 200, JSON.stringify(replayed));
+  assert.equal(replayed.idempotent, true);
+
+  const comments = await db.select().from(taskComments).where(and(
+    eq(taskComments.task_id, taskId),
+    eq(taskComments.user_id, agentUserId),
+  ));
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.content, request.content);
+  const [settledDelivery] = await db.select().from(agentChannelEvents)
+    .where(eq(agentChannelEvents.id, event.id)).limit(1);
+  assert.equal(settledDelivery?.status, 'completed');
+  assert.equal(settledDelivery?.work_outcome, null);
+  assert.ok(settledDelivery?.completed_at);
 });
 
 test('GET /connect rejects a legacy runtime before recording it as connected', async () => {
@@ -586,7 +1979,7 @@ test('GET /connect rejects a legacy runtime before recording it as connected', a
   assert.equal(connection?.status, 'incompatible');
 });
 
-test('POST /status persists a bounded runtime attestation and reconnect count', async () => {
+test('POST /status persists runtime attestation, reconnect count, and explicit offline state', async () => {
   const reconnect = await app.request(`/api/agent-channel/v1/connect?${channelCompatibilityQuery().replace('channel-test-worker', 'replacement-worker')}`, {
     headers: { authorization: `Bearer ${bearer}` },
   });
@@ -620,6 +2013,16 @@ test('POST /status persists a bounded runtime attestation and reconnect count', 
   assert.ok(metadata.restart_count >= 1);
   assert.equal(metadata.runtime_attestation.hermes_version, '0.16.0');
   assert.deepEqual(metadata.runtime_attestation.enabled_toolsets, ['web']);
+
+  const offline = await app.request('/api/agent-channel/v1/status', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ state: 'offline', worker_id: 'replacement-worker' }),
+  });
+  assert.equal(offline.status, 200, await offline.text());
+  const [disconnected] = await db.select().from(agentChannelConnections)
+    .where(eq(agentChannelConnections.agent_employee_id, employeeId)).limit(1);
+  assert.equal(disconnected?.status, 'disconnected');
 });
 
 test('GET /events returns pending events once and marks them delivered', async () => {
@@ -1263,6 +2666,25 @@ test('record_progress persists one task milestone and replays idempotently', asy
   const progressItem = activityFeed.find((item) => item.action === 'agent_progress');
   assert.equal(progressItem?.acting_agent_employee_id, employeeId);
   assert.equal(progressItem?.agent_employee_name, 'Channel Agent');
+
+  const assistanceArgs = {
+    summary: 'Which approved sending domain should I use for this outreach?',
+    status: 'blocked' as const,
+    idempotency_key: 'need-approved-sending-domain',
+  };
+  const assistance = parseToolResult(await recordProgress(assistanceArgs, context));
+  const assistanceReplay = parseToolResult(await recordProgress(assistanceArgs, context));
+  assert.equal(assistance.assistance_requested, true);
+  assert.equal(assistanceReplay.replayed, true);
+  const assistanceItems = await db.select().from(attentionItems).where(and(
+    eq(attentionItems.org_id, orgId),
+    eq(attentionItems.user_id, humanUserId),
+    eq(attentionItems.source_type, 'agent_channel_event'),
+    eq(attentionItems.source_id, event.id),
+  ));
+  assert.equal(assistanceItems.length, 1, 'a replay must not duplicate the assistance request');
+  assert.equal(assistanceItems[0]?.lane, 'needs_you');
+  assert.equal(assistanceItems[0]?.body, assistanceArgs.summary);
 });
 
 test('operators can cancel and retry a live channel delivery', async () => {

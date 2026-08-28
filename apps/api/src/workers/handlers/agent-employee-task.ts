@@ -8,12 +8,14 @@ import { db } from '../../lib/db.js';
 import {
   agentActions,
   agentEmployees,
+  projects,
   taskActivity,
   tasks,
 } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getIO } from '../../socket.js';
 import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
+import { employeeCanAccessProject } from '../../lib/mcp-tools/employee-project-access.js';
 
 interface AgentEmployeeTaskData {
   taskId: string;
@@ -30,7 +32,12 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
   // 1. Load employee and verify it's active
   const [employee] = await db.select()
     .from(agentEmployees)
-    .where(and(eq(agentEmployees.id, employeeId), eq(agentEmployees.org_id, orgId), eq(agentEmployees.is_active, true)))
+    .where(and(
+      eq(agentEmployees.id, employeeId),
+      eq(agentEmployees.org_id, orgId),
+      eq(agentEmployees.is_active, true),
+      eq(agentEmployees.is_deleted, false),
+    ))
     .limit(1);
 
   if (!employee) {
@@ -39,13 +46,36 @@ export async function handleAgentEmployeeTask(job: JobData): Promise<void> {
   }
 
   // 2. Load task
-  const [task] = await db.select()
+  const [task] = await db.select({
+    id: tasks.id,
+    project_id: tasks.project_id,
+    title: tasks.title,
+    description: tasks.description,
+    priority: tasks.priority,
+    status: tasks.status,
+  })
     .from(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.org_id, orgId)))
+    .innerJoin(projects, and(
+      eq(projects.id, tasks.project_id),
+      eq(projects.org_id, tasks.org_id),
+    ))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+    ))
     .limit(1);
 
   if (!task) {
     console.warn(`[agent-employee-task] Task ${taskId} not found, skipping`);
+    return;
+  }
+
+  // Re-check the live employee boundary at execution time. A queued handoff
+  // must not survive an operator narrowing project scope before the worker runs.
+  if (!(await employeeCanAccessProject({ org_id: orgId, employee_id: employeeId }, task.project_id))) {
+    console.warn(`[agent-employee-task] Task ${taskId} is outside employee ${employeeId}'s project scope, skipping`);
     return;
   }
 

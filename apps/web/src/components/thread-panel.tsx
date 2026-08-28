@@ -11,6 +11,7 @@ import { formatMessageTime } from '@/lib/time';
 import { EmojiPicker } from './emoji-picker';
 import { RichComposer } from './rich-composer';
 import { useFileUpload } from './file-upload';
+import { ProtectedDownload } from './protected-file';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
 import useSWR, { mutate as swrMutate } from 'swr';
 import { normalizeInlineApprovalCopy } from '@/lib/agent-approval-copy';
@@ -72,15 +73,16 @@ function formatAttachmentSize(bytes: number): string {
 
 function ThreadMessageFiles({ files }: { files?: FileAttachment[] }) {
   if (!files?.length) return null;
-  const uniqueFiles = Array.from(new Map(files.map((file) => [file.id, file])).values());
+  const uniqueFiles = Array.from(files.reduce((byId, file) => {
+    if (!byId.has(file.id)) byId.set(file.id, file);
+    return byId;
+  }, new Map<string, FileAttachment>()).values());
   return (
     <div className="flex flex-wrap gap-2 mt-2">
       {uniqueFiles.map((file) => (
-        <a
+        <ProtectedDownload
           key={file.id}
-          href={file.url}
-          target="_blank"
-          rel="noopener noreferrer"
+          file={file}
           className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg no-underline"
           style={{ background: 'var(--surface-container)', color: 'var(--on-surface)' }}
         >
@@ -91,7 +93,7 @@ function ThreadMessageFiles({ files }: { files?: FileAttachment[] }) {
               {formatAttachmentSize(file.size)}
             </p>
           </div>
-        </a>
+        </ProtectedDownload>
       ))}
     </div>
   );

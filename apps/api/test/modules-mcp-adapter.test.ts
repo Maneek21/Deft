@@ -39,7 +39,7 @@ const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL;
 function isSafeTestDatabase(value: string | undefined): value is string {
   if (!value) return false;
   try {
-    return /(?:test|ci|acceptance)/i.test(new URL(value).pathname);
+    return /(?:test|ci|acceptance|gauntlet)/i.test(new URL(value).pathname);
   } catch {
     return false;
   }
@@ -49,7 +49,7 @@ const canRun = isSafeTestDatabase(TEST_DATABASE_URL);
 const ciRequiresDatabase = /^(?:1|true)$/i.test(process.env.CI ?? '');
 if (!canRun && ciRequiresDatabase) {
   throw new Error(
-    'CI must provide DEFT_TEST_DATABASE_URL whose database name contains test, ci, or acceptance',
+    'CI must provide DEFT_TEST_DATABASE_URL whose database name contains test, ci, acceptance, or gauntlet',
   );
 }
 const test = canRun ? nodeTest : nodeTest.skip;

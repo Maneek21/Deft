@@ -70,15 +70,73 @@ jobs:
           cache: pnpm
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - run: pnpm install --frozen-lockfile
+      - name: Resolve certification release identity
+        id: release
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          [[ "$tag" == v* ]] || { echo "Release tag must start with v" >&2; exit 1; }
+          tag_commit="$(git rev-parse "$tag^{commit}")"
+          [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
+            echo "Certification checkout does not match release tag $tag" >&2
+            exit 1
+          }
+          version="${tag#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          [[ "$package_version" == "$version" ]] || {
+            echo "package.json version $package_version does not match release $version" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$tag_commit" >> "$GITHUB_OUTPUT"
+      - name: Provision pinned Hermes runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          hermes_repository="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.repository")"
+          hermes_ref="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.ref")"
+          hermes_commit="$(node -p "require('./integrations/hermes/integration-manifest.json').hermes_tested.commit")"
+          hermes_root="$RUNNER_TEMP/hermes-agent"
+          hermes_venv="$RUNNER_TEMP/hermes-venv"
+          rm -rf "$hermes_root" "$hermes_venv"
+          git clone --filter=blob:none --no-checkout "$hermes_repository" "$hermes_root"
+          git -C "$hermes_root" fetch --depth 1 origin "$hermes_ref"
+          git -C "$hermes_root" checkout --detach FETCH_HEAD
+          [[ "$(git -C "$hermes_root" rev-parse HEAD)" == "$hermes_commit" ]] || {
+            echo "Hermes ref does not resolve to its manifest commit" >&2
+            exit 1
+          }
+          [[ -z "$(git -C "$hermes_root" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Pinned Hermes checkout is not clean" >&2
+            exit 1
+          }
+          python -m venv "$hermes_venv"
+          "$hermes_venv/bin/python" -m pip install -e "$hermes_root"
+          [[ -z "$(git -C "$hermes_root" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Installing Hermes modified the provenance checkout" >&2
+            exit 1
+          }
+          "$hermes_venv/bin/python" -c 'import sys; print(sys.version)'
+          echo "DEFT_HERMES_REPO=$hermes_root" >> "$GITHUB_ENV"
+          echo "DEFT_HERMES_PYTHON=$hermes_venv/bin/python" >> "$GITHUB_ENV"
       - name: Run two clean-state Hermes employee passes
+        env:
+          DEFT_RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          DEFT_RELEASE_COMMIT: ${{ steps.release.outputs.sha }}
         run: pnpm test:hermes-employee-release-gate
       - name: Publish certification evidence
         uses: actions/upload-artifact@v4
         with:
           name: hermes-employee-release-certification
-          path: dist/hermes-employee-release-gate.json
+          path: |
+            dist/hermes-employee-release-gate.json
+            dist/hermes-integration
           if-no-files-found: error
 
   publish:
@@ -91,13 +149,24 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       - name: Resolve release tag
         id: release
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         shell: bash
         run: |
-          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
           [[ "$tag" == v* ]] || { echo "Release tag must start with v" >&2; exit 1; }
-          git rev-parse "$tag^{commit}" >/dev/null
+          tag_commit="$(git rev-parse "$tag^{commit}")"
+          [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
+            echo "Publish checkout does not match release tag $tag" >&2
+            exit 1
+          }
           version="${tag#v}"
           package_version="$(node -p "require('./package.json').version")"
           [[ "$package_version" == "$version" ]] || {
@@ -106,7 +175,7 @@ jobs:
           }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse "$tag^{commit}")" >> "$GITHUB_OUTPUT"
+          echo "sha=$tag_commit" >> "$GITHUB_OUTPUT"
 
       - name: Download Hermes employee certification
         uses: actions/download-artifact@v4
@@ -114,14 +183,18 @@ jobs:
           name: hermes-employee-release-certification
           path: dist
 
-      - name: Verify certification matches release commit
+      - name: Verify carried Hermes certificate and bundle
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.sha }}
+          HERMES_CERTIFICATE_PATH: dist/hermes-employee-release-gate.json
+          HERMES_BUNDLE_EVIDENCE_PATH: ${{ runner.temp }}/hermes-bundle-evidence.json
         shell: bash
         run: |
-          certificate_commit="$(node -p "require('./dist/hermes-employee-release-gate.json').commit")"
-          [[ "$certificate_commit" == "${{ steps.release.outputs.sha }}" ]] || {
-            echo "Hermes employee certificate does not match the release commit" >&2
-            exit 1
-          }
+          set -euo pipefail
+          node scripts/verify-hermes-integration-bundle.mjs --json dist/hermes-integration > "$HERMES_BUNDLE_EVIDENCE_PATH"
+          node scripts/generate-release-manifest.mjs --verify-only
 
       - uses: docker/setup-buildx-action@v4
 
@@ -232,7 +305,7 @@ jobs:
           gh attestation verify "oci://$IMAGE_REF" --repo "$GITHUB_REPOSITORY"
           echo "signature_identity=$identity" >> "$GITHUB_OUTPUT"
 
-      - name: Generate release manifest
+      - name: Collect portable release assets
         shell: bash
         run: |
           mkdir -p dist
@@ -241,25 +314,6 @@ jobs:
           # the template under a stable explicit name so downloaded checksums
           # match the asset name on every client.
           cp .env.example dist/default.env.example
-          cat > dist/release-manifest.json <<JSON
-          {
-            "schema": "deft.release.v1",
-            "tag": "${{ steps.release.outputs.tag }}",
-            "commit": "${{ steps.release.outputs.sha }}",
-            "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}",
-            "digest": "${{ steps.digest.outputs.digest }}",
-            "signature": "sigstore-keyless",
-            "signature_identity": "${{ steps.verification.outputs.signature_identity }}",
-            "provenance": "github-build-attestation",
-            "license": "AGPL-3.0-only",
-            "source": "https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}",
-            "platforms": ["linux/amd64"],
-            "upgrade_support": "versioned-from-v0.2.0-preview.1",
-            "agent_channel_protocol": "deft.agent_channel.v2",
-            "hermes_integration": "deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz",
-            "hermes_employee_certification": "hermes-employee-release-gate.json"
-          }
-          JSON
 
       - name: Attach exact corresponding source
         shell: bash
@@ -270,13 +324,6 @@ jobs:
             --output="dist/deft-${{ steps.release.outputs.version }}-source.tar.gz" \
             "${{ steps.release.outputs.sha }}"
 
-      - name: Build matched Hermes integration bundle
-        shell: bash
-        run: |
-          node scripts/build-hermes-integration-bundle.mjs
-          tar -czf "dist/deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz" -C dist/hermes-integration .
-          rm -rf dist/hermes-integration
-
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0.24.0
         with:
@@ -284,9 +331,51 @@ jobs:
           format: spdx-json
           output-file: dist/deft-${{ steps.release.outputs.version }}.spdx.json
 
+      - name: Archive and reverify the carried Hermes integration
+        env:
+          HERMES_BUNDLE_EVIDENCE_PATH: ${{ runner.temp }}/hermes-bundle-evidence.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          prearchive_evidence="$RUNNER_TEMP/hermes-bundle-prearchive-evidence.json"
+          archive_evidence="$RUNNER_TEMP/hermes-bundle-archive-evidence.json"
+          archive_verify_root="$(mktemp -d "$RUNNER_TEMP/hermes-archive-verify.XXXXXX")"
+          trap 'rm -rf "$archive_verify_root"' EXIT
+          node scripts/verify-hermes-integration-bundle.mjs --json dist/hermes-integration > "$prearchive_evidence"
+          cmp --silent "$HERMES_BUNDLE_EVIDENCE_PATH" "$prearchive_evidence" || {
+            echo "Hermes bundle changed after certification download" >&2
+            exit 1
+          }
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --format=gnu \
+            -cf - -C dist/hermes-integration . \
+            | gzip -n > "dist/deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz"
+          tar -xzf "dist/deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz" \
+            -C "$archive_verify_root"
+          node scripts/verify-hermes-integration-bundle.mjs --json "$archive_verify_root" > "$archive_evidence"
+          cmp --silent "$HERMES_BUNDLE_EVIDENCE_PATH" "$archive_evidence" || {
+            echo "Hermes integration archive does not match its certified bundle" >&2
+            exit 1
+          }
+          rm -rf dist/hermes-integration
+
+      - name: Generate release manifest
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.sha }}
+          RELEASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.version }}
+          RELEASE_IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+          RELEASE_SIGNATURE_IDENTITY: ${{ steps.verification.outputs.signature_identity }}
+          RELEASE_SOURCE_URL: https://github.com/${{ github.repository }}/tree/${{ steps.release.outputs.sha }}
+          HERMES_CERTIFICATE_PATH: dist/hermes-employee-release-gate.json
+          HERMES_BUNDLE_EVIDENCE_PATH: ${{ runner.temp }}/hermes-bundle-evidence.json
+          HERMES_ARCHIVE_PATH: dist/deft-hermes-integration-${{ steps.release.outputs.version }}.tar.gz
+          RELEASE_MANIFEST_PATH: dist/release-manifest.json
+        run: node scripts/generate-release-manifest.mjs
+
       - name: Generate checksums
         shell: bash
-        run: (cd dist && sha256sum -- * > SHA256SUMS)
+        run: (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
 
       - name: Create GitHub release
         env:

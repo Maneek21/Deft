@@ -10,10 +10,19 @@
 import { db } from './db.js';
 import { users, orgMembers, spaces, spaceMembers, agentEmployees } from '@deft/db/schema';
 import { eq, and } from 'drizzle-orm';
+import {
+  DEFTY_EMAIL,
+  DEFTY_NAME,
+  DEFTY_SYSTEM_EMPLOYEE_SLUG,
+  DEFTY_SYSTEM_RUNTIME_KIND,
+} from './defty-identity.js';
 
-export const DEFTY_EMAIL = 'deft-agent@system.local';
-export const DEFTY_NAME = 'Defty';
-export const DEFTY_SYSTEM_EMPLOYEE_SLUG = 'defty-system';
+export {
+  DEFTY_EMAIL,
+  DEFTY_NAME,
+  DEFTY_SYSTEM_EMPLOYEE_SLUG,
+  DEFTY_SYSTEM_RUNTIME_KIND,
+} from './defty-identity.js';
 
 export async function ensureDeftyMembership(orgId: string): Promise<string> {
   // 1. Find or create the Defty user. If it already exists (created by the
@@ -85,7 +94,8 @@ export async function ensureDeftyEmployee(
         trust_level: 'conservative',
         is_active: true,
         is_deleted: true,
-        runtime_kind: 'defty_system',
+        is_byoa: false,
+        runtime_kind: DEFTY_SYSTEM_RUNTIME_KIND,
         job_title: 'Platform superintendent',
         wake_mode: 'manual',
         certification_status: 'internal',
@@ -118,7 +128,7 @@ export async function ensureDeftyEmployee(
       is_active: true,
       is_deleted: true,
       is_byoa: false,
-      runtime_kind: 'defty_system',
+      runtime_kind: DEFTY_SYSTEM_RUNTIME_KIND,
       job_title: 'Platform superintendent',
       wake_mode: 'manual',
       certification_status: 'internal',

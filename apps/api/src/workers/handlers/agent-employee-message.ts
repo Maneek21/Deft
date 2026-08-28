@@ -19,6 +19,10 @@ import { getIO } from '../../socket.js';
 import { ensureDeftyMembership } from '../../lib/ensure-defty-membership.js';
 import { publishAgentChannelEvent } from '../../lib/agent-channel.js';
 import { employeeCanAccessSpace } from '../../lib/mcp-tools/employee-space-access.js';
+import {
+  loadMessageAttachmentRecords,
+  manifestsForRecords,
+} from '../../lib/attachment-manifests.js';
 
 interface AgentEmployeeMessageData {
   messageId: string;
@@ -139,6 +143,8 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
   // channel. A runtime may consume either path; terminal channel handling
   // closes the linked fallback row so Inbox does not retain phantom work.
   try {
+    const attachmentRecords = await loadMessageAttachmentRecords({ messageId, orgId });
+    const attachmentManifests = await manifestsForRecords(attachmentRecords);
     const [actionRow] = await db.insert(agentActions).values({
       org_id: orgId,
       user_id: author!.id,
@@ -151,6 +157,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
         author_name: author!.name,
         content: triggerMsg.content,
         is_dm: isDM,
+        attachments: attachmentManifests,
       },
       approval_tier: 'auto',
       approval_status: 'pending',
@@ -179,6 +186,7 @@ export async function handleAgentEmployeeMessage(job: JobData): Promise<void> {
         author_name: author!.name,
         content: triggerMsg.content,
         is_dm: isDM,
+        attachments: attachmentManifests,
         pending_action_id: actionRow?.id ?? null,
       },
     });

@@ -11,13 +11,13 @@
  * prompt (NC1 fix): the system prompt is owned by the agent runtime and
  * stays immutable, while per-turn context flows through this tool.
  *
- * Cache: 60-second LRU keyed by (employee_id + query hash) so a busy agent
+ * Cache: 60-second LRU keyed by (employee_id + project scope + query hash) so a busy agent
  * calling `platform_context` repeatedly inside a single session doesn't
- * thrash the DB. Cache is cleared on any `memory_write` in Phase 4. For
- * Phase 3 MVP the cache is write-through only.
+ * thrash the DB. Cache is cleared on context-changing writes, including
+ * memory updates and employee project-scope updates.
  */
 import { createHash } from 'node:crypto';
-import { sql, and, eq, or, desc } from 'drizzle-orm';
+import { sql, and, eq, or, desc, inArray } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   orgs,
@@ -25,6 +25,7 @@ import {
   users,
   wikiPages,
   messages,
+  projects,
 } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
@@ -32,6 +33,7 @@ import { retrieveContext, type ContextResult } from '../retrieve-context.js';
 import { listTeamSummaries, teamAccessForEmployee } from './team-context.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
 import { employeeModuleActor, listModuleSummaries } from '../module-service.js';
+import { loadEmployeeProjectAccess } from './employee-project-access.js';
 
 type TriggerDescriptor = {
   kind: string;
@@ -239,8 +241,38 @@ function hashArgs(obj: unknown): string {
   return createHash('sha1').update(s).digest('hex').slice(0, 16);
 }
 
-function cacheKey(employeeId: string, trigger: TriggerDescriptor | undefined): string {
-  return `${employeeId}:${hashArgs(trigger)}`;
+function cacheKey(
+  employeeId: string,
+  projectScope: { unrestricted: boolean; projectIds: string[] },
+  projectLifecycleFingerprint: string,
+  trigger: TriggerDescriptor | undefined,
+): string {
+  const scopeIdentity = projectScope.unrestricted
+    ? 'all'
+    : hashArgs([...projectScope.projectIds].sort());
+  return `${employeeId}:${scopeIdentity}:${projectLifecycleFingerprint}:${hashArgs(trigger)}`;
+}
+
+async function loadProjectLifecycleFingerprint(
+  orgId: string,
+  projectScope: { unrestricted: boolean; projectIds: string[] },
+): Promise<string> {
+  const rows = await db
+    .select({
+      id: projects.id,
+      is_archived: projects.is_archived,
+      is_deleted: projects.is_deleted,
+    })
+    .from(projects)
+    .where(and(
+      eq(projects.org_id, orgId),
+      projectScope.unrestricted
+        ? undefined
+        : inArray(projects.id, projectScope.projectIds),
+    ));
+  return hashArgs(rows
+    .map((project) => [project.id, project.is_archived, project.is_deleted])
+    .sort(([left], [right]) => String(left).localeCompare(String(right))));
 }
 
 function cacheGet(key: string): ToolResult | null {
@@ -322,7 +354,24 @@ export async function platformContext(
     return errorResult('Unable to validate the requested workspace context.');
   }
 
-  const key = cacheKey(ctx.employee_id, trigger);
+  const projectAccess = await loadEmployeeProjectAccess(ctx).catch(() => null);
+  if (!projectAccess?.resolved) {
+    return errorResult('Unable to resolve the employee project access boundary.');
+  }
+  const projectLifecycleFingerprint = await loadProjectLifecycleFingerprint(
+    ctx.org_id,
+    projectAccess,
+  ).catch(() => 'unavailable');
+
+  // Scope is part of the key, not just an invalidation side effect. This
+  // prevents an old-scope request that finishes after invalidation from
+  // repopulating the cache entry used by a newly narrowed employee.
+  const key = cacheKey(
+    ctx.employee_id,
+    projectAccess,
+    projectLifecycleFingerprint,
+    trigger,
+  );
   const cached = cacheGet(key);
   if (cached) {
     // Re-emit with the cache flag set so callers (and our tests) can tell.
@@ -368,19 +417,19 @@ export async function platformContext(
     // ─── active projects (optional, fail soft) ───────────────────
     let activeProjects: Array<{ id: string; name: string; prefix: string }> = [];
     try {
-      const rows = await db.execute(
-        sql`SELECT id, name, prefix FROM projects
-            WHERE org_id = ${ctx.org_id}
-              AND is_archived = false
-            ORDER BY updated_at DESC
-            LIMIT 25`,
-      );
-      const anyRows = (rows as { rows?: unknown[] }).rows ?? (rows as unknown as unknown[]);
-      activeProjects = (anyRows as Array<Record<string, unknown>>).map((r) => ({
-        id: String(r.id),
-        name: String(r.name),
-        prefix: String(r.prefix ?? ''),
-      }));
+      activeProjects = await db
+        .select({ id: projects.id, name: projects.name, prefix: projects.prefix })
+        .from(projects)
+        .where(and(
+          eq(projects.org_id, ctx.org_id),
+          eq(projects.is_archived, false),
+          eq(projects.is_deleted, false),
+          projectAccess.unrestricted
+            ? undefined
+            : inArray(projects.id, projectAccess.projectIds),
+        ))
+        .orderBy(desc(projects.updated_at))
+        .limit(25);
     } catch {
       activeProjects = [];
     }
@@ -511,7 +560,7 @@ export async function platformContext(
     // ─── assemble JSON payload ───────────────────────────────────
     let teamSummaries: Array<Record<string, unknown>> = [];
     try {
-      const access = await teamAccessForEmployee(ctx);
+      const access = await teamAccessForEmployee(ctx, projectAccess);
       teamSummaries = (await listTeamSummaries(access, { limit: 20 })).map((team) => ({
         id: team.id,
         name: team.name,

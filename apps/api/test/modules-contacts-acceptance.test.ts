@@ -20,7 +20,7 @@ const TEST_DATABASE_URL = process.env.DEFT_TEST_DATABASE_URL ?? process.env.DATA
 function isSafeTestDatabase(value: string | undefined): value is string {
   if (!value) return false;
   try {
-    return /(?:test|ci|acceptance)/i.test(new URL(value).pathname);
+    return /(?:test|ci|acceptance|gauntlet)/i.test(new URL(value).pathname);
   } catch {
     return false;
   }
@@ -49,7 +49,7 @@ test(
   async () => {
     assert.ok(
       canRun && TEST_DATABASE_URL,
-      'CI must provide DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, or acceptance',
+      'CI must provide DEFT_TEST_DATABASE_URL (or DATABASE_URL) whose database name contains test, ci, acceptance, or gauntlet',
     );
 
     const suffix = randomUUID().replaceAll('-', '').slice(0, 12);

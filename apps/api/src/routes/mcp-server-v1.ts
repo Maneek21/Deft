@@ -53,6 +53,7 @@ import {
 import { auditOAuth, metadataUrls } from '../lib/oauth-mcp.js';
 import {
   consumeAgentDailyActionBudget,
+  shouldConsumeAgentDailyActionBudget,
   isAgentToolDisabled,
 } from '../lib/agent-tool-policy.js';
 import { MODULE_MCP_WRITE_TOOLS } from '../lib/mcp-tools/modules.js';
@@ -63,6 +64,48 @@ import {
 import { getActiveAgentChannelRuntimeCorrelation } from '../lib/agent-channel.js';
 
 export const mcpServerV1Routes = new Hono();
+export const HERMES_MCP_ENDPOINT_PATH = '/api/mcp/hermes/v1';
+
+export type McpResultProfile = 'canonical' | 'hermes';
+
+export function mcpResultProfileForPath(path: string): McpResultProfile {
+  return path === HERMES_MCP_ENDPOINT_PATH
+    || path.startsWith(`${HERMES_MCP_ENDPOINT_PATH}/`)
+    ? 'hermes'
+    : 'canonical';
+}
+
+export function presentMcpToolResult(
+  result: ToolResult,
+  profile: McpResultProfile,
+): ToolResult {
+  if (profile !== 'hermes' || result.isError !== true) return result;
+
+  const message = result.content
+    .map((item) => item.text)
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+    .slice(0, 4000) || 'Deft did not confirm a successful tool outcome.';
+
+  return {
+    content: [{
+      type: 'text',
+      text: [
+        `DEFT_TOOL_FAILED: ${message}`,
+        'This operation has no Deft-confirmed successful outcome. Do not claim success or retry the same tool with unchanged arguments.',
+      ].join('\n\n'),
+    }],
+    structuredContent: {
+      schema: 'deft.tool_outcome.v1',
+      deft_status: 'failed',
+      code: 'DEFT_TOOL_FAILED',
+      message,
+      retryable: false,
+      outcome_confirmed: false,
+    },
+  };
+}
 
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 const LEGACY_PROTOCOL_VERSIONS = [
@@ -549,7 +592,11 @@ async function dispatchTool(
     // Module proposals do not consume an execution slot. The module handler
     // charges direct writes; queued writes are charged once by the canonical
     // approval executor after a human approves them.
-    if (WRITE_TOOLS[canonicalToolName] && !MODULE_MCP_WRITE_TOOLS[canonicalToolName]) {
+    if (
+      WRITE_TOOLS[canonicalToolName]
+      && !MODULE_MCP_WRITE_TOOLS[canonicalToolName]
+      && shouldConsumeAgentDailyActionBudget(canonicalToolName)
+    ) {
       const budget = await consumeAgentDailyActionBudget(ctx.org_id, ctx.employee_id);
       if (!budget.allowed) {
         const result = {
@@ -863,6 +910,9 @@ mcpServerV1Routes.post('/', async (c) => {
       const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
         resolved.org_id,
         employee.employee_id,
+        canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
+          ? args.task_id
+          : undefined,
       );
       const boundArgs = { ...args, caller_employee_slug: employee.slug };
       const isModuleWrite = Boolean(MODULE_MCP_WRITE_TOOLS[canonicalToolName]);
@@ -891,7 +941,7 @@ mcpServerV1Routes.post('/', async (c) => {
           { name: toolName },
         );
       }
-      return result;
+      return presentMcpToolResult(result, mcpResultProfileForPath(c.req.path));
     });
   }
 
@@ -1097,6 +1147,9 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
   const runtimeCorrelation = await getActiveAgentChannelRuntimeCorrelation(
     resolved.org_id,
     employee.employee_id,
+    canonicalToolName === 'record_progress' && typeof args.task_id === 'string'
+      ? args.task_id
+      : undefined,
   );
   const ctx: ToolContext = {
     org_id: resolved.org_id,
@@ -1106,10 +1159,11 @@ mcpServerV1Routes.post('/tools/call', async (c) => {
     ...(runtimeCorrelation ?? {}),
   };
 
-  return c.json(await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {
+  const result = await dispatchTool(toolName, { ...args, caller_employee_slug: employee.slug }, ctx, {
     surface: 'legacy',
     caller_employee_slug: employee.slug,
-  }));
+  });
+  return c.json(presentMcpToolResult(result, mcpResultProfileForPath(c.req.path)));
 });
 
 // ─── exports used only for test composition ──────────────────────────────

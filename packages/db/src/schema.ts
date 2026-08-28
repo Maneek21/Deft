@@ -61,6 +61,12 @@ export const messageObservationStatusEnum = pgEnum('message_observation_status',
   'retrying',
   'failed',
 ]);
+export const attachmentProcessingStatusEnum = pgEnum('attachment_processing_status', [
+  'pending',
+  'ready',
+  'blocked',
+  'failed',
+]);
 export const eventSourceEnum = pgEnum('event_source', ['native', 'google_calendar', 'github', 'slack', 'gmail', 'linear', 'ics']);
 export const wikiPageTypeEnum = pgEnum('wiki_page_type', ['concept', 'entity', 'decision', 'resource', 'procedure', 'preference', 'fact']);
 export const wikiPageScopeEnum = pgEnum('wiki_page_scope', ['org', 'space', 'user']);
@@ -271,6 +277,7 @@ export const messages = pgTable('messages', {
   index('message_org_idx').on(t.org_id),
   index('message_parent_idx').on(t.parent_id),
   index('message_created_idx').on(t.created_at),
+  unique('messages_org_id_id_unique').on(t.org_id, t.id),
 ]);
 
 // ═══ REACTIONS ═══
@@ -294,10 +301,51 @@ export const files = pgTable('files', {
   size_bytes: integer('size_bytes').notNull(),
   storage_key: text('storage_key').notNull(), // R2/local path
   thumbnail_key: text('thumbnail_key'),
+  detected_mime_type: text('detected_mime_type'),
+  attachment_kind: text('attachment_kind').default('binary').notNull(),
+  content_sha256: text('content_sha256'),
+  processing_status: attachmentProcessingStatusEnum('processing_status').default('pending').notNull(),
+  processing_error: text('processing_error'),
+  processed_at: timestamp('processed_at'),
+  staged_expires_at: timestamp('staged_expires_at'),
   message_id: text('message_id').references(() => messages.id),
   task_id: text('task_id'), // filled when attached to task
   ...timestamps(),
-});
+}, (t) => [
+  index('files_org_idx').on(t.org_id),
+  index('files_staged_expiry_idx').on(t.staged_expires_at),
+  unique('files_org_id_id_unique').on(t.org_id, t.id),
+  check(
+    'files_attachment_kind_check',
+    sql`${t.attachment_kind} IN ('text', 'image', 'spreadsheet', 'pdf', 'document', 'archive', 'binary')`,
+  ),
+  check(
+    'files_content_sha256_check',
+    sql`${t.content_sha256} IS NULL OR ${t.content_sha256} ~ '^sha256:[a-f0-9]{64}$'`,
+  ),
+]);
+
+// Bounded, permission-inheriting derivatives. The original bytes stay in the
+// FileStore; this table contains only safe-to-read text representations.
+export const attachmentDerivatives = pgTable('attachment_derivatives', {
+  org_id: text('org_id').notNull(),
+  file_id: text('file_id').notNull(),
+  kind: text('kind').notNull(),
+  mime_type: text('mime_type').notNull(),
+  content: text('content').notNull(),
+  size_bytes: integer('size_bytes').notNull(),
+  metadata: jsonb('metadata'),
+  ...timestamps(),
+}, (t) => [
+  primaryKey({ columns: [t.file_id, t.kind] }),
+  foreignKey({
+    columns: [t.org_id, t.file_id],
+    foreignColumns: [files.org_id, files.id],
+    name: 'attachment_derivatives_org_file_fk',
+  }).onDelete('cascade'),
+  index('attachment_derivatives_org_file_idx').on(t.org_id, t.file_id),
+  check('attachment_derivatives_size_check', sql`${t.size_bytes} >= 0`),
+]);
 
 // ═══ PROJECTS ═══
 export const projects = pgTable('projects', {
@@ -381,6 +429,57 @@ export const tasks = pgTable('tasks', {
   index('task_org_idx').on(t.org_id),
   index('task_parent_idx').on(t.parent_task_id),
   uniqueIndex('task_number_unique').on(t.project_id, t.number),
+  unique('tasks_org_id_id_unique').on(t.org_id, t.id),
+]);
+
+// ═══ TYPED ATTACHMENT LINKS ═══
+// Legacy files.message_id/task_id stay in place during the expand-and-contract
+// window. New writes are mirrored here so every target link carries an explicit
+// tenant boundary and deterministic ordering.
+export const messageAttachments = pgTable('message_attachments', {
+  org_id: text('org_id').notNull(),
+  message_id: text('message_id').notNull(),
+  file_id: text('file_id').notNull(),
+  position: integer('position').default(0).notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.message_id, t.file_id] }),
+  foreignKey({
+    columns: [t.org_id, t.message_id],
+    foreignColumns: [messages.org_id, messages.id],
+    name: 'message_attachments_org_message_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.org_id, t.file_id],
+    foreignColumns: [files.org_id, files.id],
+    name: 'message_attachments_org_file_fk',
+  }).onDelete('cascade'),
+  index('message_attachments_org_message_position_idx').on(t.org_id, t.message_id, t.position),
+  index('message_attachments_file_idx').on(t.file_id),
+  check('message_attachments_position_check', sql`${t.position} >= 0`),
+]);
+
+export const taskAttachments = pgTable('task_attachments', {
+  org_id: text('org_id').notNull(),
+  task_id: text('task_id').notNull(),
+  file_id: text('file_id').notNull(),
+  position: integer('position').default(0).notNull(),
+  created_at: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.task_id, t.file_id] }),
+  foreignKey({
+    columns: [t.org_id, t.task_id],
+    foreignColumns: [tasks.org_id, tasks.id],
+    name: 'task_attachments_org_task_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.org_id, t.file_id],
+    foreignColumns: [files.org_id, files.id],
+    name: 'task_attachments_org_file_fk',
+  }).onDelete('cascade'),
+  index('task_attachments_org_task_position_idx').on(t.org_id, t.task_id, t.position),
+  index('task_attachments_file_idx').on(t.file_id),
+  check('task_attachments_position_check', sql`${t.position} >= 0`),
 ]);
 
 // ═══ LABELS ═══

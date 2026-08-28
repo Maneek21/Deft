@@ -9,6 +9,7 @@ import {
   peopleExpertise,
 } from '@deft/db/schema';
 import { eq, and, sql, gte, lt, inArray } from 'drizzle-orm';
+import { visibleTaskCondition } from '../lib/task-visibility.js';
 
 // ─── Velocity Calculator ───
 
@@ -21,6 +22,7 @@ type WeekData = {
 export async function velocityCalculator(
   orgId: string,
   projectId?: string,
+  viewerUserId?: string,
 ): Promise<{
   weeks: WeekData[];
   trend: 'increasing' | 'stable' | 'declining';
@@ -52,11 +54,14 @@ export async function velocityCalculator(
       })
       .from(taskActivity)
       .innerJoin(tasks, eq(taskActivity.task_id, tasks.id))
+      .innerJoin(projects, eq(tasks.project_id, projects.id))
       .leftJoin(users, eq(taskActivity.user_id, users.id))
       .where(
         and(
           eq(tasks.org_id, orgId),
           eq(tasks.is_deleted, false),
+          eq(projects.is_deleted, false),
+          ...(viewerUserId ? [visibleTaskCondition(viewerUserId)] : []),
           ...(projectId ? [eq(tasks.project_id, projectId)] : []),
           ...conditions,
         ),

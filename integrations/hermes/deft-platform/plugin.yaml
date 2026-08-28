@@ -1,0 +1,26 @@
+name: deft-platform
+label: Deft
+kind: platform
+version: 0.2.1
+description: >
+  Native Deft messaging-platform adapter for an independently operated Hermes
+  employee. Deft provides workplace events and MCP; Hermes owns its agent loop.
+author: Deft
+requires_env:
+  - name: DEFT_CHANNEL_URL
+    description: "Deft Agent Channel base URL"
+    prompt: "Deft Agent Channel URL"
+    password: false
+  - name: DEFT_CHANNEL_TOKEN
+    description: "Employee-bound Deft Agent Channel bearer token"
+    prompt: "Deft Agent Channel token"
+    password: true
+  - name: DEFT_EMPLOYEE_SLUG
+    description: "Employee slug enrolled in Deft"
+    prompt: "Deft employee slug"
+    password: false
+optional_env:
+  - name: DEFT_CHANNEL_POLL_MS
+    description: "Channel poll interval in milliseconds (default: 1000)"
+    prompt: "Poll interval"
+    password: false

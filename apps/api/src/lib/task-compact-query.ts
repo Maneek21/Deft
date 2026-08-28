@@ -43,7 +43,10 @@ function orderExpression(field: string): SQL {
   }
 }
 
-export async function queryCompactTasks(input: CompactTaskQuery, actor: { orgId: string; userId: string }) {
+export async function queryCompactTasks(
+  input: CompactTaskQuery,
+  actor: { orgId: string; userId: string; projectIds?: string[] | null },
+) {
   const statuses = [...new Set(input.statuses ?? [])];
   const priorities = [...new Set(input.priorities ?? [])];
   if (statuses.some((status) => !STATUSES.has(status))) throw new Error('Invalid task status filter');
@@ -54,11 +57,14 @@ export async function queryCompactTasks(input: CompactTaskQuery, actor: { orgId:
   const conditions: SQL[] = [
     eq(tasks.org_id, actor.orgId),
     eq(tasks.is_deleted, false),
+    eq(projects.is_deleted, false),
     eq(tasks.is_template, false),
     isNull(tasks.parent_task_id),
   ];
   const visibility = visibleTaskCondition(actor.userId);
   if (visibility) conditions.push(visibility);
+  const scopedProjectIds = [...new Set(actor.projectIds ?? [])];
+  if (scopedProjectIds.length) conditions.push(inArray(tasks.project_id, scopedProjectIds));
   if (input.project_id) conditions.push(eq(tasks.project_id, input.project_id));
   if (input.mine) conditions.push(or(
     eq(tasks.assignee_id, actor.userId),

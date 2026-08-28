@@ -108,6 +108,7 @@ before(async () => {
   const routeModule = await import('../src/routes/mcp-server-v1.js');
   testApp = new Hono();
   testApp.route('/api/mcp/v1', routeModule.mcpServerV1Routes);
+  testApp.route(routeModule.HERMES_MCP_ENDPOINT_PATH, routeModule.mcpServerV1Routes);
   RAW_TOKEN = await tokenModule.issueEmployeeToken(ORG_ID, TEST_EMPLOYEE_ID);
 });
 
@@ -162,6 +163,26 @@ async function modernMcpPost(
           'io.modelcontextprotocol/clientCapabilities': {},
         },
       },
+    }),
+  });
+}
+
+async function legacyJsonRpcPostAt(
+  endpoint: string,
+  method: string,
+  params: Record<string, unknown>,
+  bearer?: string,
+) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  return app().request(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: `${method}-${Date.now()}`,
+      method,
+      params,
     }),
   });
 }
@@ -406,6 +427,37 @@ test('8. Calling an unknown tool returns MCP error result', async () => {
     body.isError === true || res.status === 400 || res.status === 404,
     `unknown tool should produce an error, got ${res.status} ${JSON.stringify(body)}`
   );
+});
+
+test('8b. stock-Hermes endpoint contains a known Deft rejection without hiding it', async () => {
+  const params = {
+    name: 'record_progress',
+    arguments: {},
+  };
+  const canonicalResponse = await legacyJsonRpcPostAt(
+    '/api/mcp/v1',
+    'tools/call',
+    params,
+    RAW_TOKEN!,
+  );
+  const hermesResponse = await legacyJsonRpcPostAt(
+    '/api/mcp/hermes/v1',
+    'tools/call',
+    params,
+    RAW_TOKEN!,
+  );
+
+  assert.equal(canonicalResponse.status, 200);
+  assert.equal(hermesResponse.status, 200);
+  const canonical = (await canonicalResponse.json()) as any;
+  const hermes = (await hermesResponse.json()) as any;
+  assert.equal(canonical.result.isError, true);
+  assert.equal(hermes.result.isError, undefined);
+  assert.equal(Object.hasOwn(hermes.result, 'error'), false);
+  assert.equal(hermes.result.structuredContent.deft_status, 'failed');
+  assert.equal(hermes.result.structuredContent.outcome_confirmed, false);
+  assert.match(hermes.result.content[0].text, /^DEFT_TOOL_FAILED:/);
+  assert.match(hermes.result.content[0].text, /summary is required/);
 });
 
 test('9. bearer token identity overrides stale delegated caller slug', async () => {

@@ -177,9 +177,14 @@ before(async () => {
     await mkdir(uploadDir, { recursive: true });
     await writeFile(join(uploadDir, privateStorageKey), 'private file body');
     await c.query(
-      `INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, message_id, created_at, updated_at)
-       VALUES ($1, $2, $3, 'private.txt', 'text/plain', 17, $4, $5, NOW(), NOW())`,
-      [privateFileId, ORG_ID, OTHER_USER_ID, privateStorageKey, privateMessageId],
+      `INSERT INTO files (id, org_id, uploaded_by, filename, mime_type, size_bytes, storage_key, created_at, updated_at)
+       VALUES ($1, $2, $3, 'private.txt', 'text/plain', 17, $4, NOW(), NOW())`,
+      [privateFileId, ORG_ID, OTHER_USER_ID, privateStorageKey],
+    );
+    await c.query(
+      `INSERT INTO message_attachments (org_id, message_id, file_id, position, created_at)
+       VALUES ($1, $2, $3, 0, NOW())`,
+      [ORG_ID, privateMessageId, privateFileId],
     );
     ids.push({ table: 'files', id: privateFileId });
 
@@ -385,6 +390,7 @@ test('file serving follows linked message visibility', async () => {
   assert.equal((await routeResponse('files', `/api/files/${privateFileId}`)).status, 404);
   const allowed = await routeResponse('files', `/api/files/${privateFileId}`, OTHER_USER_ID);
   assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get('cache-control'), 'private, no-store');
   assert.equal(await allowed.text(), 'private file body');
 });
 

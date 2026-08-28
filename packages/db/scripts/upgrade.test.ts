@@ -12,6 +12,7 @@ import {
 } from './upgrade.ts';
 import { upgradeManifest } from '../upgrades/manifest.ts';
 import {
+  attachmentDerivatives,
   agentChannelEvents,
   agentChannelConnections,
   moduleInstallations,
@@ -20,7 +21,12 @@ import {
   moduleRecords,
   moduleSavedViews,
   moduleVersions,
+  files,
+  messageAttachments,
+  messages,
   orgMembers,
+  taskAttachments,
+  tasks,
 } from '../src/schema.ts';
 
 test('parseUpgradeArgs recognizes status and dry run', () => {
@@ -511,6 +517,75 @@ test('runtime reconciliation outcome converges across fresh installs and support
   assert.match(upgradeSql, /agent_action_runtime_request_idx/i);
   assert.match(upgradeSql, /agent_channel_attempt_active_runtime_unique/i);
   assert.match(upgradeSql, /work_completed_handoff_uncertain/i);
+});
+
+test('tenant-bound attachment links converge across fresh installs and supported upgrades', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.14',
+  );
+  assert.ok(migration, 'attachment link migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0086_attachment_links.sql'), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0086_attachment_links\.sql'/);
+  assert.match(upgradeSql, /INSERT INTO "message_attachments"/i);
+  assert.match(upgradeSql, /INSERT INTO "task_attachments"/i);
+  assert.match(upgradeSql, /ON CONFLICT \("message_id", "file_id"\) DO NOTHING/i);
+
+  const messageConfig = getTableConfig(messageAttachments);
+  const taskConfig = getTableConfig(taskAttachments);
+  assert.deepEqual(
+    messageConfig.foreignKeys.map((key) => key.getName()).sort(),
+    ['message_attachments_org_file_fk', 'message_attachments_org_message_fk'],
+  );
+  assert.deepEqual(
+    taskConfig.foreignKeys.map((key) => key.getName()).sort(),
+    ['task_attachments_org_file_fk', 'task_attachments_org_task_fk'],
+  );
+  assert.match(upgradeSql, /ADD CONSTRAINT "messages_org_id_id_unique"/i);
+  assert.match(upgradeSql, /ADD CONSTRAINT "files_org_id_id_unique"/i);
+  assert.match(upgradeSql, /ADD CONSTRAINT "tasks_org_id_id_unique"/i);
+  assert.ok(getTableConfig(messages).uniqueConstraints.some((item) => item.name === 'messages_org_id_id_unique'));
+  assert.ok(getTableConfig(files).uniqueConstraints.some((item) => item.name === 'files_org_id_id_unique'));
+  assert.ok(getTableConfig(tasks).uniqueConstraints.some((item) => item.name === 'tasks_org_id_id_unique'));
+});
+
+test('bounded attachment processing converges across fresh installs and supported upgrades', () => {
+  const migration = upgradeManifest.migrations.find(
+    (item) => item.version === '0.3.0-preview.15',
+  );
+  assert.ok(migration, 'attachment processing migration must remain in the supported upgrade path');
+
+  const scriptsDir = dirname(fileURLToPath(import.meta.url));
+  const upgradeSql = readFileSync(resolve(scriptsDir, '..', 'upgrades', migration.file), 'utf8');
+  const freshSql = readFileSync(resolve(scriptsDir, '..', 'drizzle', '0087_attachment_processing.sql'), 'utf8');
+  const applyExtrasSource = readFileSync(resolve(scriptsDir, 'apply-extras.ts'), 'utf8');
+  assert.equal(upgradeSql, freshSql);
+  assert.match(applyExtrasSource, /'0087_attachment_processing\.sql'/);
+  assert.match(upgradeSql, /CREATE TYPE "attachment_processing_status"/i);
+  assert.match(upgradeSql, /CREATE TABLE IF NOT EXISTS "attachment_derivatives"/i);
+  assert.match(upgradeSql, /attachment_derivatives_org_file_fk/i);
+
+  const fileConfig = getTableConfig(files);
+  for (const columnName of [
+    'detected_mime_type',
+    'attachment_kind',
+    'content_sha256',
+    'processing_status',
+    'processing_error',
+    'processed_at',
+    'staged_expires_at',
+  ]) {
+    assert.ok(fileConfig.columns.some((column) => column.name === columnName), `missing files.${columnName}`);
+  }
+  const derivativeConfig = getTableConfig(attachmentDerivatives);
+  assert.deepEqual(
+    derivativeConfig.foreignKeys.map((key) => key.getName()),
+    ['attachment_derivatives_org_file_fk'],
+  );
 });
 
 test('Agent Channel v2 is the fresh-install default and supported upgrade boundary', () => {

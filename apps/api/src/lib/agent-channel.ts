@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from './db.js';
 import {
   agentChannelConnections,
@@ -9,9 +9,16 @@ import {
   agentChannelEvents,
   agentChannelTokens,
   agentEmployees,
+  projects,
+  tasks,
 } from '@deft/db/schema';
 import { McpAuthError } from './mcp-token.js';
 import { getIO } from '../socket.js';
+import {
+  employeeCanAccessProject,
+  employeeProjectAccessAllows,
+  loadEmployeeProjectAccess,
+} from './mcp-tools/employee-project-access.js';
 
 export const AGENT_CHANNEL_PROTOCOL_VERSION = 'deft.agent_channel.v2';
 export const AGENT_CHANNEL_CAPABILITIES = [
@@ -23,6 +30,8 @@ export const AGENT_CHANNEL_CAPABILITIES = [
   'wiki_memory_sync_v1',
   'runtime_reconciliation_v1',
   'runtime_attestation_v1',
+  'autonomous_platform_adapter_v1',
+  'accepted_event_rehydration_v1',
 ] as const;
 export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'renewable_leases',
@@ -31,20 +40,52 @@ export const AGENT_CHANNEL_REQUIRED_RUNTIME_CAPABILITIES = [
   'runtime_reconciliation_v1',
   'runtime_attestation_v1',
 ] as const;
-export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.12';
+export const AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES = [
+  'autonomous_platform_adapter_v1',
+  'accepted_event_rehydration_v1',
+] as const;
+export type AgentChannelAdapterMode = 'supervised_runtime' | 'autonomous_platform';
+export const DEFT_RELEASE_VERSION = process.env.DEFT_RELEASE_VERSION || '0.3.0-preview.13';
 export const DEFT_BUILD_COMMIT = process.env.DEFT_BUILD_COMMIT || process.env.VCS_REF || 'unknown';
-export const DEFT_SCHEMA_HEAD = '0.3.0-preview.12';
+export const DEFT_SCHEMA_HEAD = '0.3.0-preview.13';
 export const AGENT_CHANNEL_DEFAULT_LEASE_MS = 120_000;
 export const AGENT_CHANNEL_MIN_LEASE_MS = 30_000;
 export const AGENT_CHANNEL_MAX_LEASE_MS = 600_000;
 
+async function loadActiveAgentChannelTask(orgId: string, taskId: string) {
+  const [task] = await db
+    .select({ project_id: tasks.project_id })
+    .from(tasks)
+    .innerJoin(projects, and(
+      eq(projects.id, tasks.project_id),
+      eq(projects.org_id, tasks.org_id),
+    ))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+    ))
+    .limit(1);
+  return task ?? null;
+}
+
 export async function getActiveAgentChannelRuntimeCorrelation(
   orgId: string,
   employeeId: string,
+  autonomousTaskId?: string,
 ): Promise<{ channel_event_id: string; runtime_request_key: string } | null> {
+  const projectAccess = await loadEmployeeProjectAccess({
+    org_id: orgId,
+    employee_id: employeeId,
+  });
+  if (!projectAccess.resolved) return null;
+
   const rows = await db.select({
     channel_event_id: agentChannelEvents.id,
     runtime_request_key: agentChannelDeliveryAttempts.idempotency_key,
+    source_kind: agentChannelEvents.source_kind,
+    source_id: agentChannelEvents.source_id,
   })
     .from(agentChannelDeliveryAttempts)
     .innerJoin(agentChannelEvents, and(
@@ -61,10 +102,55 @@ export async function getActiveAgentChannelRuntimeCorrelation(
     ))
     .orderBy(desc(agentChannelDeliveryAttempts.created_at))
     .limit(2);
-  if (rows.length !== 1 || !rows[0]?.runtime_request_key) return null;
+  if (rows.length === 1 && rows[0]?.runtime_request_key) {
+    if (rows[0].source_kind === 'task') {
+      const task = rows[0].source_id
+        ? await loadActiveAgentChannelTask(orgId, rows[0].source_id)
+        : null;
+      if (!task || !employeeProjectAccessAllows(projectAccess, task.project_id)) return null;
+    }
+    return {
+      channel_event_id: rows[0].channel_event_id,
+      runtime_request_key: rows[0].runtime_request_key,
+    };
+  }
+  if (rows.length > 1 || !autonomousTaskId) return null;
+
+  const accepted = await db.select({ id: agentChannelEvents.id })
+    .from(agentChannelEvents)
+    .innerJoin(tasks, and(
+      eq(tasks.id, agentChannelEvents.source_id),
+      eq(tasks.org_id, agentChannelEvents.org_id),
+    ))
+    .innerJoin(projects, and(
+      eq(projects.id, tasks.project_id),
+      eq(projects.org_id, tasks.org_id),
+    ))
+    .innerJoin(agentEmployees, and(
+      eq(agentEmployees.id, agentChannelEvents.agent_employee_id),
+      eq(agentEmployees.user_id, tasks.assignee_id),
+    ))
+    .where(and(
+      eq(agentChannelEvents.org_id, orgId),
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'task.assigned'),
+      eq(agentChannelEvents.source_kind, 'task'),
+      eq(agentChannelEvents.source_id, autonomousTaskId),
+      eq(agentChannelEvents.status, 'acknowledged'),
+      isNotNull(agentChannelEvents.acked_at),
+      isNull(agentChannelEvents.completed_at),
+      isNull(agentChannelEvents.work_outcome),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+      notInArray(tasks.status, ['done', 'cancelled']),
+      ...(projectAccess.unrestricted ? [] : [inArray(tasks.project_id, projectAccess.projectIds)]),
+    ))
+    .orderBy(desc(agentChannelEvents.acked_at))
+    .limit(2);
+  if (accepted.length !== 1 || !accepted[0]) return null;
   return {
-    channel_event_id: rows[0].channel_event_id,
-    runtime_request_key: rows[0].runtime_request_key,
+    channel_event_id: accepted[0].id,
+    runtime_request_key: `autonomous:${accepted[0].id}`,
   };
 }
 
@@ -87,6 +173,7 @@ export type AgentChannelEventKind =
   | 'task.assigned'
   | 'task.commented'
   | 'task.status_changed'
+  | 'approval.resolved'
   | 'certification.challenge'
   | 'heartbeat.tick'
   | 'webhook.triggered'
@@ -205,6 +292,18 @@ export async function resolveAgentChannelBearer(bearer: string): Promise<AgentCh
 }
 
 export async function publishAgentChannelEvent(input: PublishAgentChannelEventInput) {
+  if (input.sourceKind === 'task') {
+    const task = input.sourceId
+      ? await loadActiveAgentChannelTask(input.orgId, input.sourceId)
+      : null;
+    if (!task || !(await employeeCanAccessProject({
+      org_id: input.orgId,
+      employee_id: input.employeeId,
+    }, task.project_id))) {
+      return { event: null, created: false };
+    }
+  }
+
   const id = crypto.randomUUID();
   const insertRows = await db
     .insert(agentChannelEvents)
@@ -370,6 +469,7 @@ export async function listPendingChannelEvents(params: {
   afterEventId?: string | null;
   workerId: string;
   leaseMs?: number;
+  adapterMode?: AgentChannelAdapterMode;
 }) {
   const limit = Math.min(Math.max(params.limit ?? 25, 1), 100);
   const workerId = params.workerId.trim().slice(0, 200);
@@ -394,15 +494,47 @@ export async function listPendingChannelEvents(params: {
 
   const claimToken = crypto.randomUUID();
   const cursorFilter = afterCreatedAt
-    ? sql`AND created_at > ${afterCreatedAt}`
+    ? sql`AND ${gt(agentChannelEvents.created_at, afterCreatedAt)}`
     : sql``;
+  const stateFilter = params.adapterMode === 'autonomous_platform'
+    ? sql`AND status IN ('pending', 'delivered')`
+    : sql`AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')`;
   const result = await db.execute(sql`
     WITH claimable AS (
       SELECT id
       FROM agent_channel_events
       WHERE org_id = ${params.principal.org_id}
         AND agent_employee_id = ${params.principal.employee_id}
-        AND status IN ('pending', 'delivered', 'acknowledged', 'running', 'approval_pending')
+        AND EXISTS (
+          SELECT 1
+          FROM agent_employees AS scoped_employee
+          WHERE scoped_employee.id = agent_channel_events.agent_employee_id
+            AND scoped_employee.org_id = agent_channel_events.org_id
+            AND scoped_employee.is_active = true
+            AND scoped_employee.is_deleted = false
+            AND (
+              agent_channel_events.source_kind IS DISTINCT FROM 'task'
+              OR EXISTS (
+                SELECT 1
+                FROM tasks AS scoped_task
+                WHERE scoped_task.id = agent_channel_events.source_id
+                  AND scoped_task.org_id = agent_channel_events.org_id
+                  AND scoped_task.is_deleted = false
+                  AND EXISTS (
+                    SELECT 1
+                    FROM projects AS scoped_project
+                    WHERE scoped_project.id = scoped_task.project_id
+                      AND scoped_project.org_id = scoped_task.org_id
+                      AND scoped_project.is_deleted = false
+                  )
+                  AND (
+                    cardinality(COALESCE(scoped_employee.project_ids, ARRAY[]::text[])) = 0
+                    OR scoped_task.project_id = ANY(scoped_employee.project_ids)
+                  )
+              )
+            )
+        )
+        ${stateFilter}
         AND (claim_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= now())
         ${cursorFilter}
       ORDER BY created_at ASC, id ASC

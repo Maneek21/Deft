@@ -79,6 +79,11 @@ import {
 } from './module-task-links.js';
 import { requireActiveOrgMembership } from './org-membership.js';
 import { generateReceipt } from './receipts.js';
+import { visibleTaskCondition } from './task-visibility.js';
+import {
+  employeeProjectAccessAllows,
+  loadEmployeeProjectAccess,
+} from './mcp-tools/employee-project-access.js';
 import {
   MODULE_RECORD_BULK_CREATE_ACTION,
   ModuleRecordBulkCreateError,
@@ -88,6 +93,14 @@ import {
   preflightModuleRecordBulkCreate,
   sanitizeModuleBulkCreateParamsForHistory,
 } from './module-record-bulk-create.js';
+import {
+  executeWorkspacePlanImport,
+  WORKSPACE_PLAN_IMPORT_ACTION,
+} from './workspace-plan-import.js';
+import {
+  DOCUMENT_SEND_ACTION,
+  executeDocumentSend,
+} from './document-send.js';
 
 type ModuleEmployeeActionPolicy = {
   id: string;
@@ -910,6 +923,135 @@ async function resolveTaskIdentifier(
   return t?.id ?? null;
 }
 
+const EMPLOYEE_TASK_WRITE_ACTIONS = new Set([
+  'create_task',
+  'update_task_status',
+  'close_task',
+  'reopen_task',
+  'bulk_update_tasks',
+  'assign_task',
+  'comment_on_task',
+  'set_due_date',
+  'set_priority',
+  'add_label',
+  'add_dependency',
+  'remove_dependency',
+  'module_record_task_link',
+  'module_record_task_unlink',
+  'link_decision_to_tasks',
+]);
+
+function taskIdentifiersForEmployeeWrite(
+  action: string,
+  params: Record<string, any>,
+): string[] {
+  if (action === 'bulk_update_tasks') {
+    return Array.isArray(params.task_identifiers)
+      ? params.task_identifiers.filter((value: unknown): value is string => typeof value === 'string')
+      : [];
+  }
+  if (action === 'add_dependency' || action === 'remove_dependency') {
+    return [params.source_task_identifier, params.target_task_identifier]
+      .filter((value): value is string => typeof value === 'string');
+  }
+  if (action === 'link_decision_to_tasks') {
+    return Array.isArray(params.task_ids)
+      ? params.task_ids.filter((value: unknown): value is string => typeof value === 'string')
+      : [];
+  }
+  if (action === 'update_task_status' && typeof params.resolved_task_id === 'string') {
+    return [params.resolved_task_id];
+  }
+  return typeof params.task_identifier === 'string' ? [params.task_identifier] : [];
+}
+
+/**
+ * Enforce the employee's current task boundary at the shared execution seam.
+ * This deliberately runs both before direct action persistence and again when
+ * an existing/approved action executes, so a queued action cannot outlive a
+ * project-scope narrowing. Restricted-task visibility is evaluated as the
+ * employee's shadow user, not as the human who may approve the action.
+ */
+async function employeeTaskWriteScopeError(
+  action: string,
+  params: Record<string, any>,
+  orgId: string,
+  agentEmployeeId: string | null,
+): Promise<string | null> {
+  if (!agentEmployeeId || !EMPLOYEE_TASK_WRITE_ACTIONS.has(action)) return null;
+
+  const access = await loadEmployeeProjectAccess({
+    org_id: orgId,
+    employee_id: agentEmployeeId,
+  });
+  if (!access.resolved) {
+    return 'Agent employee is inactive, deleted, or outside this organization';
+  }
+
+  if (action === 'create_task') {
+    const requestedProjectId = typeof params.resolved_project_id === 'string'
+      ? params.resolved_project_id.trim()
+      : '';
+    const projectName = typeof params.project_name === 'string' ? params.project_name : '';
+    const projectQuery = requestedProjectId
+      ? db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(
+          eq(projects.org_id, orgId),
+          eq(projects.id, requestedProjectId),
+          eq(projects.is_archived, false),
+          eq(projects.is_deleted, false),
+        ))
+        .limit(1)
+      : db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(
+          eq(projects.org_id, orgId),
+          ilike(projects.name, `%${projectName}%`),
+          eq(projects.is_archived, false),
+          eq(projects.is_deleted, false),
+        ))
+        .limit(1);
+    const [project] = await projectQuery;
+    if (!project || !employeeProjectAccessAllows(access, project.id)) return 'Project not found';
+    // Pin name-based resolution so the write uses the exact project checked.
+    params.resolved_project_id = project.id;
+    return null;
+  }
+
+  const identifiers = [...new Set(
+    taskIdentifiersForEmployeeWrite(action, params)
+      .map((identifier) => identifier.trim())
+      .filter(Boolean),
+  )];
+  if (identifiers.length === 0) return 'Task not found';
+
+  const resolvedTaskIds = await Promise.all(
+    identifiers.map((identifier) => resolveTaskIdentifier(identifier, orgId)),
+  );
+  if (resolvedTaskIds.some((taskId) => !taskId)) return 'Task not found';
+  const taskIds = [...new Set(resolvedTaskIds as string[])];
+  const scopedTasks = await db
+    .select({ id: tasks.id })
+    .from(tasks)
+    .innerJoin(projects, and(
+      eq(projects.id, tasks.project_id),
+      eq(projects.org_id, orgId),
+    ))
+    .where(and(
+      eq(tasks.org_id, orgId),
+      eq(tasks.is_deleted, false),
+      eq(projects.is_deleted, false),
+      inArray(tasks.id, taskIds),
+      visibleTaskCondition(access.userId),
+      ...(access.unrestricted ? [] : [inArray(tasks.project_id, access.projectIds)]),
+    ));
+
+  return scopedTasks.length === taskIds.length ? null : 'Task not found';
+}
+
 async function terminalizeModuleTaskLinkActionFailure(
   actionId: string,
   action: ModuleTaskLinkWriteAction,
@@ -960,6 +1102,14 @@ export async function executeAction(
 ): Promise<{ success: boolean; result: any; error?: string }> {
   const agentEmployeeId = options?.agentEmployeeId ?? null;
   try {
+    const taskScopeError = await employeeTaskWriteScopeError(
+      action,
+      params,
+      orgId,
+      agentEmployeeId,
+    );
+    if (taskScopeError) return { success: false, result: null, error: taskScopeError };
+
     const policyError = await agentToolPolicyError(orgId, agentEmployeeId, action);
     if (policyError) {
       if (isModuleWriteAction(action)) {
@@ -992,7 +1142,9 @@ export async function executeAction(
         {
           requireHealthy: isModuleWriteAction(action)
             || isModuleRecordBulkCreateAction(action)
-            || isModuleTaskLinkWriteAction(action),
+            || isModuleTaskLinkWriteAction(action)
+            || action === WORKSPACE_PLAN_IMPORT_ACTION
+            || action === DOCUMENT_SEND_ACTION,
         },
       );
       if (!budget.allowed) {
@@ -1062,6 +1214,43 @@ export async function executeAction(
     }
 
     switch (action) {
+      case DOCUMENT_SEND_ACTION: {
+        let documentActorUserId = userId;
+        if (!agentEmployeeId) {
+          const [proposalAuthor] = await db.select({ user_id: messages.user_id })
+            .from(agentActions)
+            .innerJoin(messages, and(
+              eq(messages.id, agentActions.message_id),
+              eq(messages.org_id, agentActions.org_id),
+            ))
+            .where(and(
+              eq(agentActions.id, actionId),
+              eq(agentActions.org_id, orgId),
+            ))
+            .limit(1);
+          documentActorUserId = proposalAuthor?.user_id ?? userId;
+        }
+        const result = await executeDocumentSend({
+          actionId,
+          actionParams: params,
+          orgId,
+          actorUserId: documentActorUserId,
+          ...(agentEmployeeId ? { employeeId: agentEmployeeId } : {}),
+        });
+        return { success: true, result };
+      }
+
+      case WORKSPACE_PLAN_IMPORT_ACTION: {
+        const result = await executeWorkspacePlanImport({
+          actionId,
+          actionParams: params,
+          orgId,
+          userId,
+          ...(agentEmployeeId ? { agentEmployeeId } : {}),
+        });
+        return { success: true, result };
+      }
+
       case 'module_record_task_link': {
         const input = normalizeAgentModuleTaskLinkParams(action, params);
         const resourceId = ModuleRecordResourceIdSchema.parse(input.resource_id);
@@ -3044,6 +3233,14 @@ async function executeActionDirectLocked(
   params = normalizeAgentModuleActionParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleBulkCreateParams(action, params) as Record<string, any>;
   params = normalizeAgentModuleTaskLinkParams(action, params) as Record<string, any>;
+
+  const taskScopeError = await employeeTaskWriteScopeError(
+    action,
+    params,
+    orgId,
+    options?.agentEmployeeId ?? null,
+  );
+  if (taskScopeError) throw new Error(taskScopeError);
 
   let effectiveApprovalTier = approvalTier;
   let effectiveMcpConnectionId = options?.mcpConnectionId;

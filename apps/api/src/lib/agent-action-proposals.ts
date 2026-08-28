@@ -28,6 +28,15 @@ import {
   sanitizeModuleActionParamsForHistory,
 } from './module-service.js';
 import { sanitizeAgentMetadataForStorage } from './module-agent-history.js';
+import {
+  sanitizeWorkspacePlanImportParams,
+  WORKSPACE_PLAN_IMPORT_ACTION,
+} from './workspace-plan-import.js';
+import {
+  DOCUMENT_SEND_ACTION,
+  sanitizeDocumentSendParams,
+  validateDocumentSendDraft,
+} from './document-send.js';
 
 type ApprovalTier = 'auto' | 'quick' | 'full';
 
@@ -66,6 +75,12 @@ function safeActionParamsForMessage(action: string, actionParams: unknown): unkn
   }
   if (isModuleTaskLinkWriteAction(action)) {
     return sanitizeModuleTaskLinkActionParamsForHistory(actionParams);
+  }
+  if (action === WORKSPACE_PLAN_IMPORT_ACTION) {
+    return sanitizeWorkspacePlanImportParams(actionParams);
+  }
+  if (action === DOCUMENT_SEND_ACTION) {
+    return sanitizeDocumentSendParams(actionParams);
   }
   return actionParams;
 }
@@ -448,7 +463,7 @@ export function validateCompiledIntentAlignment(
   params: Pick<CompileDeftyActionDraftParams, 'projectNameHint'>,
 ): { blocked: boolean; clarification?: string } {
   const plain = promptContent.replace(/\s+/g, ' ').trim();
-  const explicitNoWrite = /\b(?:do\s+not|don't|dont|never)\s+(?:create|queue|post|send|write|save|record|update|edit|change|mark|move|close|assign)(?:\s+or\s+(?:create|queue|post|send|write|update))?\s+(?:any\s+)?(?:tasks?|actions?|changes?|messages?|posts?|pages?|notes?|reminders?)\b/i.test(plain);
+  const explicitNoWrite = /\b(?:do\s+not|don't|dont|never)\s+(?:create|queue|post|send|write|save|record|update|edit|change|mark|move|close|assign)(?:\s+or\s+(?:create|queue|post|send|write|update))?\s+(?:any\s+)?(?:tasks?|actions?|changes?|messages?|posts?|pages?|notes?|documents?|files?|reports?|spreadsheets?|reminders?)\b/i.test(plain);
   if (explicitNoWrite) {
     return {
       blocked: true,
@@ -688,6 +703,31 @@ export function validateRegisteredProposalAction(action: {
     return isRecord(action.params)
       ? { ok: true }
       : { ok: false, message: `The ${humanizeAction(name)} draft is missing its parameters.` };
+  }
+  if (name === WORKSPACE_PLAN_IMPORT_ACTION) {
+    if (!isRecord(action.params)) {
+      return { ok: false, message: 'The workspace plan import draft is missing its parameters.' };
+    }
+    try {
+      sanitizeWorkspacePlanImportParams(action.params);
+      return { ok: true };
+    } catch {
+      return { ok: false, message: 'The workspace plan import preview is invalid or exceeds its safety limits.' };
+    }
+  }
+  if (name === DOCUMENT_SEND_ACTION) {
+    if (!isRecord(action.params)) {
+      return { ok: false, message: 'The document send draft is missing its parameters.' };
+    }
+    try {
+      validateDocumentSendDraft(action.params);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'The document send draft is invalid.',
+      };
+    }
   }
   if (!ACTION_TOOLS.has(name)) {
     return { ok: false, message: `The requested action "${name || 'unknown'}" is not a registered approval action.` };

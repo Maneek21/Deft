@@ -11,6 +11,7 @@ import { db } from '../db.js';
 import { messages, users, spaces, spaceMembers, agentEmployees, agentActions } from '@deft/db/schema';
 import type { ToolContext, ToolResult } from './types.js';
 import { errorResult, textResult } from './types.js';
+import { manifestsByMessageId } from '../attachment-manifests.js';
 
 /**
  * Phase 12 review fix: before returning any thread content, verify the
@@ -112,6 +113,11 @@ export async function threadFetch(
       .orderBy(asc(messages.created_at))
       .limit(limit);
 
+    const attachmentsByMessage = await manifestsByMessageId({
+      messageIds: rows.filter((row) => !row.is_deleted).map((row) => row.id),
+      orgId: ctx.org_id,
+    });
+
     return textResult(
       rows.map((r) => ({
         id: r.id,
@@ -122,6 +128,7 @@ export async function threadFetch(
         created_at: r.created_at,
         edited_at: r.edited_at,
         space_id: r.space_id,
+        attachments: r.is_deleted ? [] : (attachmentsByMessage.get(r.id) ?? []),
       })),
     );
   } catch (err) {
@@ -227,16 +234,19 @@ export async function fetchUnread(
       }
     }
 
-    const unreadMessages = unreadRows
-      .filter((r) => {
+    const visibleUnreadRows = unreadRows.filter((r) => {
         // Exclude caller's own shadow-user posts.
         if (r.user_id === shadowUserId) return false;
         // Exclude messages not newer than last_read_at.
         const lastRead = lastReadMap[r.space_id];
         if (lastRead && r.created_at <= lastRead) return false;
         return true;
-      })
-      .map((r) => ({
+      });
+    const attachmentsByMessage = await manifestsByMessageId({
+      messageIds: visibleUnreadRows.map((row) => row.id),
+      orgId: ctx.org_id,
+    });
+    const unreadMessages = visibleUnreadRows.map((r) => ({
         id: r.id,
         space_id: r.space_id,
         user_id: r.user_id,
@@ -246,6 +256,7 @@ export async function fetchUnread(
         space_type: r.space_type,
         is_dm: r.space_type === 'dm' || r.space_type === 'group_dm' || r.space_type === 'agent_conversation',
         created_at: r.created_at,
+        attachments: attachmentsByMessage.get(r.id) ?? [],
       }));
 
     // Pending agent_actions for the calling employee.

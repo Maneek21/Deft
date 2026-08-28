@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, sql, or, isNull, asc, gte, inArray, notInArray } from 'drizzle-orm';
+import { eq, and, desc, sql, or, isNull, asc, gte, lt, inArray, notInArray } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from '../lib/db.js';
@@ -34,6 +34,7 @@ import type { SkillAgentConfig } from '../lib/skill-config.js';
 import {
   AGENT_CHANNEL_PROTOCOL_VERSION,
   AGENT_CHANNEL_CAPABILITIES,
+  AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
   DEFT_RELEASE_VERSION,
   issueAgentChannelToken,
   publishAgentChannelEvent,
@@ -46,6 +47,12 @@ import { loadAgentActivity } from '../lib/agent-activity.js';
 import { describeAgentRuntimeRecovery } from '../lib/agent-runtime-recovery.js';
 import { ensureAgentConversationSpace } from '../lib/ensure-agent-conversation-space.js';
 import { evaluateAgentOnboardingPreflight } from '../lib/agent-onboarding-preflight.js';
+import { generateReceipt } from '../lib/receipts.js';
+import { invalidatePlatformContextCacheFor } from '../lib/mcp-tools/context.js';
+import {
+  isReservedDeftyEmployeeSlug,
+  isReservedDeftyRuntimeKind,
+} from '../lib/defty-identity.js';
 
 export const agentEmployeeRoutes = new Hono();
 
@@ -483,10 +490,18 @@ const AGENT_EMPLOYEE_ROLES = [
   'custom',
 ] as const;
 
+const externalRuntimeKindSchema = z.string().trim().min(1).max(64).refine(
+  (runtimeKind) => !isReservedDeftyRuntimeKind(runtimeKind),
+  { message: 'defty_system is reserved for Deft internal use' },
+);
+
 const createSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().min(1).max(100).refine(
+    (name) => !isReservedDeftyEmployeeSlug(baseSlugForName(name)),
+    { message: 'defty-system is reserved for Deft internal use' },
+  ),
   role: z.enum(AGENT_EMPLOYEE_ROLES),
-  runtime_kind: z.string().min(1).max(64).optional(),
+  runtime_kind: externalRuntimeKindSchema.optional(),
   job_title: z.string().min(1).max(120).optional(),
   wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).default('manual'),
   system_prompt: z.string().min(1),
@@ -520,8 +535,8 @@ function baseSlugForName(name: string): string {
 
 async function uniqueEmployeeSlug(orgId: string, name: string): Promise<string> {
   const base = baseSlugForName(name);
-  let candidate = base;
-  let attempt = 1;
+  let candidate = isReservedDeftyEmployeeSlug(base) ? `${base}-2` : base;
+  let attempt = candidate === base ? 1 : 2;
 
   while (attempt < 100) {
     const [exists] = await db
@@ -546,6 +561,15 @@ function mcpEndpointUrl(): string {
   return `${apiBase.replace(/\/$/, '')}/api/mcp/v1`;
 }
 
+function hermesMcpEndpointUrl(): string {
+  const apiBase =
+    process.env.PUBLIC_API_BASE_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.API_BASE_URL ??
+    'http://localhost:3001';
+  return `${apiBase.replace(/\/$/, '')}/api/mcp/hermes/v1`;
+}
+
 function agentChannelEndpointUrl(): string {
   const apiBase =
     process.env.PUBLIC_API_BASE_URL ??
@@ -559,6 +583,8 @@ function hermesIntegrationBundleUrl(): string {
   return process.env.DEFT_HERMES_BUNDLE_URL?.trim()
     || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
 }
+
+export const HERMES_INTEGRATION_VERSION = '0.5.1';
 
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',
@@ -613,13 +639,93 @@ type CertificationChallengeEvidence = {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
+  runtimeExecutionProof: CertificationExecutionProof;
   baseCompleted: boolean;
   restartDetected: boolean;
   restartProofEventSeen: boolean;
+  restartProofPingSeen: boolean;
+  restartProofNonceSeen: boolean;
+  restartProofReplyNonceSeen: boolean;
+  restartProofSingleReply: boolean;
+  restartExecutionProof: CertificationExecutionProof;
   restartProofCompleted: boolean;
   completed: boolean;
 };
+
+type CertificationExecutionProof = 'supervised_terminal' | 'autonomous_source_reply' | null;
+
+type CertificationReplyAttempt = {
+  request_json: unknown;
+  response_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+};
+
+function certificationReplyContainsNonce(attempt: CertificationReplyAttempt, nonce: string): boolean {
+  const response = attempt.response_json && typeof attempt.response_json === 'object'
+    ? attempt.response_json as Record<string, unknown>
+    : {};
+  return typeof response.content === 'string'
+    && response.content.toLocaleLowerCase().includes(nonce.toLocaleLowerCase());
+}
+
+function certificationReplyCommittedAt(attempt: CertificationReplyAttempt): Date | null {
+  const response = attempt.response_json && typeof attempt.response_json === 'object'
+    ? attempt.response_json as Record<string, unknown>
+    : {};
+  if (typeof response.created_at !== 'string') return null;
+  const committedAt = new Date(response.created_at);
+  return Number.isNaN(committedAt.getTime()) ? null : committedAt;
+}
+
+function certificationExecutionProof(
+  event: {
+    status: string;
+    delivery_count: number;
+    delivered_at: Date | null;
+    acked_at: Date | null;
+    completed_at: Date | null;
+    claim_token: string | null;
+    claim_owner: string | null;
+    lease_expires_at: Date | null;
+    runtime_session_key: string | null;
+    work_outcome: string | null;
+  } | null | undefined,
+  replyAttempts: CertificationReplyAttempt[],
+): CertificationExecutionProof {
+  if (!event || event.delivery_count !== 1 || replyAttempts.length !== 1) return null;
+  const replyCommittedAt = certificationReplyCommittedAt(replyAttempts[0]!);
+  if (!replyCommittedAt) return null;
+  const request = replyAttempts[0]?.request_json && typeof replyAttempts[0].request_json === 'object'
+    ? replyAttempts[0].request_json as Record<string, unknown>
+    : {};
+  if (
+    request.adapter_mode === 'supervised_runtime'
+    && Boolean(event.delivered_at)
+    && replyCommittedAt.getTime() >= event.delivered_at!.getTime()
+    && event.status === 'completed'
+    && event.work_outcome === 'completed'
+    && Boolean(event.completed_at)
+    && Boolean(event.runtime_session_key?.trim())
+  ) return 'supervised_terminal';
+  if (
+    request.adapter_mode === 'autonomous_platform'
+    && (
+      (event.status === 'acknowledged' && !event.completed_at)
+      || (event.status === 'completed' && Boolean(event.completed_at))
+    )
+    && Boolean(event.acked_at)
+    && replyCommittedAt.getTime() >= event.acked_at!.getTime()
+    && !event.work_outcome
+    && !event.claim_token
+    && !event.claim_owner
+    && !event.lease_expires_at
+  ) return 'autonomous_source_reply';
+  return null;
+}
 
 function runtimeKindOf(employee: { runtime_kind?: string | null }): string {
   return employee.runtime_kind || 'custom_mcp';
@@ -643,11 +749,68 @@ async function loadCertificationChallengeEvidence(params: {
 }): Promise<CertificationChallengeEvidence> {
   const { orgId, employeeId, challenge } = params;
   const requiresRestartProof = params.runtimeKind === 'hermes';
+  const [channelEvent] = await db
+    .select({
+      id: agentChannelEvents.id,
+      status: agentChannelEvents.status,
+      delivery_count: agentChannelEvents.delivery_count,
+      created_at: agentChannelEvents.created_at,
+      delivered_at: agentChannelEvents.delivered_at,
+      acked_at: agentChannelEvents.acked_at,
+      completed_at: agentChannelEvents.completed_at,
+      claim_token: agentChannelEvents.claim_token,
+      claim_owner: agentChannelEvents.claim_owner,
+      lease_expires_at: agentChannelEvents.lease_expires_at,
+      runtime_session_key: agentChannelEvents.runtime_session_key,
+      work_outcome: agentChannelEvents.work_outcome,
+      payload: agentChannelEvents.payload,
+    })
+    .from(agentChannelEvents)
+    .where(and(
+      eq(agentChannelEvents.org_id, orgId),
+      eq(agentChannelEvents.agent_employee_id, employeeId),
+      eq(agentChannelEvents.kind, 'certification.challenge'),
+      eq(agentChannelEvents.source_kind, 'certification'),
+      eq(agentChannelEvents.source_id, challenge.id),
+      gte(agentChannelEvents.created_at, challenge.started_at),
+    ))
+    .orderBy(desc(agentChannelEvents.created_at))
+    .limit(1);
+  const replyRows = channelEvent
+    ? await db
+        .select({
+          id: agentChannelDeliveryAttempts.id,
+          request_json: agentChannelDeliveryAttempts.request_json,
+          response_json: agentChannelDeliveryAttempts.response_json,
+          created_at: agentChannelDeliveryAttempts.created_at,
+          updated_at: agentChannelDeliveryAttempts.updated_at,
+        })
+        .from(agentChannelDeliveryAttempts)
+        .where(and(
+          eq(agentChannelDeliveryAttempts.org_id, orgId),
+          eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
+          eq(agentChannelDeliveryAttempts.event_id, channelEvent.id),
+          eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
+          eq(agentChannelDeliveryAttempts.status, 'completed'),
+        ))
+        .orderBy(asc(agentChannelDeliveryAttempts.created_at))
+        .limit(2)
+    : [];
+  const singleReply = replyRows.length === 1;
+  const channelReplyCommittedAt = singleReply
+    ? certificationReplyCommittedAt(replyRows[0]!)
+    : null;
+  const channelReplyNonceSeen = singleReply
+    && Boolean(channelReplyCommittedAt)
+    && certificationReplyContainsNonce(replyRows[0]!, challenge.nonce);
+  const evidenceStartedAt = channelEvent?.status === 'acknowledged' && channelEvent.acked_at
+    ? channelEvent.acked_at
+    : channelEvent?.delivered_at ?? challenge.started_at;
+  const evidenceCompletedAt = channelReplyNonceSeen ? channelReplyCommittedAt : null;
 
-  // Certification evidence is scoped to the challenge and intentionally
-  // independent of the bounded recent-activity lists rendered in diagnostics.
-  // Grouping keeps the query bounded to unique tool names even after a runtime
-  // has made thousands of later calls.
+  // Evidence must occur after the assignment reaches the runtime and, once a
+  // qualifying reply exists, before that reply. This prevents old or later
+  // unrelated MCP traffic from retroactively satisfying a certification turn.
   const auditRows = await db
     .select({
       tool_name: agentMcpCallAudit.tool_name,
@@ -658,34 +821,31 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentMcpCallAudit.org_id, orgId),
       eq(agentMcpCallAudit.employee_id, employeeId),
       eq(agentMcpCallAudit.success, true),
-      gte(agentMcpCallAudit.created_at, challenge.started_at),
+      gte(agentMcpCallAudit.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentMcpCallAudit.created_at, evidenceCompletedAt) : undefined,
     ))
     .groupBy(agentMcpCallAudit.tool_name);
   const seenTools = new Set(auditRows.map((row) => row.tool_name));
   const memoryWriteCallCount = Number(
     auditRows.find((row) => row.tool_name === 'memory_write')?.call_count ?? 0,
   );
-
   const nonceRows = await db
     .select({ id: agentCooperativeLog.id })
     .from(agentCooperativeLog)
     .where(and(
       eq(agentCooperativeLog.org_id, orgId),
       eq(agentCooperativeLog.employee_id, employeeId),
-      gte(agentCooperativeLog.created_at, challenge.started_at),
+      gte(agentCooperativeLog.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentCooperativeLog.created_at, evidenceCompletedAt) : undefined,
       or(
         sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
         sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
       ),
     ))
     .limit(1);
-
-  const persistedComplete = challenge.status === 'completed';
-  const missingTools = persistedComplete
-    ? []
-    : challenge.required_tools.filter((tool) => !seenTools.has(tool));
-  const nonceSeen = persistedComplete || nonceRows.length > 0;
-  const privateMemoryRows = persistedComplete ? [{ page_id: 'persisted-complete' }] : await db
+  const missingTools = challenge.required_tools.filter((tool) => !seenTools.has(tool));
+  const nonceSeen = nonceRows.length > 0;
+  const privateMemoryRows = await db
     .select({ page_id: wikiPages.id })
     .from(wikiMemorySyncs)
     .innerJoin(wikiPages, and(
@@ -705,7 +865,7 @@ async function loadCertificationChallengeEvidence(params: {
       ),
     ))
     .limit(1);
-  const replayAuditRows = persistedComplete || privateMemoryRows.length === 0 ? [] : await db
+  const replayAuditRows = privateMemoryRows.length === 0 ? [] : await db
     .select({ id: agentMcpCallAudit.id })
     .from(agentMcpCallAudit)
     .where(and(
@@ -713,69 +873,35 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentMcpCallAudit.employee_id, employeeId),
       eq(agentMcpCallAudit.tool_name, 'memory_write'),
       eq(agentMcpCallAudit.success, true),
-      gte(agentMcpCallAudit.created_at, challenge.started_at),
+      gte(agentMcpCallAudit.created_at, evidenceStartedAt),
+      evidenceCompletedAt ? lt(agentMcpCallAudit.created_at, evidenceCompletedAt) : undefined,
       sql`COALESCE(${agentMcpCallAudit.metadata}->>'memory_replayed', 'false') = 'true'`,
       sql`${agentMcpCallAudit.metadata}->>'memory_page_id' = ${privateMemoryRows[0]?.page_id ?? ''}`,
     ))
     .limit(1);
-  const privateMemoryVerified = persistedComplete || (
-    memoryWriteCallCount >= 2
+  const privateMemoryVerified = memoryWriteCallCount >= 2
     && seenTools.has('memory_recall')
     && privateMemoryRows.length > 0
-    && replayAuditRows.length > 0
-  );
+    && replayAuditRows.length > 0;
 
-  const [channelEvent] = await db
-    .select({
-      id: agentChannelEvents.id,
-      status: agentChannelEvents.status,
-      delivery_count: agentChannelEvents.delivery_count,
-      runtime_session_key: agentChannelEvents.runtime_session_key,
-      work_outcome: agentChannelEvents.work_outcome,
-      payload: agentChannelEvents.payload,
-    })
-    .from(agentChannelEvents)
-    .where(and(
-      eq(agentChannelEvents.org_id, orgId),
-      eq(agentChannelEvents.agent_employee_id, employeeId),
-      eq(agentChannelEvents.kind, 'certification.challenge'),
-      eq(agentChannelEvents.source_kind, 'certification'),
-      eq(agentChannelEvents.source_id, challenge.id),
-      gte(agentChannelEvents.created_at, challenge.started_at),
-    ))
-    .orderBy(desc(agentChannelEvents.created_at))
-    .limit(1);
-  const replyRows = channelEvent
-    ? await db
-        .select({ id: agentChannelDeliveryAttempts.id })
-        .from(agentChannelDeliveryAttempts)
-        .where(and(
-          eq(agentChannelDeliveryAttempts.org_id, orgId),
-          eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
-          eq(agentChannelDeliveryAttempts.event_id, channelEvent.id),
-          eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
-          eq(agentChannelDeliveryAttempts.status, 'completed'),
-          sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
-        ))
-        .limit(1)
-    : [];
-  const channelEventSeen = persistedComplete || Boolean(channelEvent);
-  const channelCompleted = persistedComplete || (
+  const channelEventSeen = Boolean(channelEvent);
+  const channelCompleted = (
     channelEvent?.status === 'completed'
     && channelEvent.work_outcome === 'completed'
   );
-  const channelReplyNonceSeen = persistedComplete || replyRows.length > 0;
-  const singleDelivery = persistedComplete || channelEvent?.delivery_count === 1;
-  const runtimeSessionSeen = persistedComplete || Boolean(channelEvent?.runtime_session_key);
-  const baseCompleted = persistedComplete || (
+  const singleDelivery = channelEvent?.delivery_count === 1;
+  const runtimeSessionSeen = Boolean(channelEvent?.runtime_session_key?.trim());
+  const runtimeExecutionProof = certificationExecutionProof(channelEvent, replyRows);
+  const runtimeExecutionSeen = runtimeExecutionProof !== null;
+  const baseCompleted = (
     missingTools.length === 0
     && nonceSeen
     && privateMemoryVerified
     && channelEventSeen
-    && channelCompleted
     && channelReplyNonceSeen
     && singleDelivery
-    && runtimeSessionSeen
+    && singleReply
+    && runtimeExecutionSeen
   );
   const eventPayload = channelEvent?.payload && typeof channelEvent.payload === 'object'
     ? channelEvent.payload as Record<string, unknown>
@@ -787,12 +913,29 @@ async function loadCertificationChallengeEvidence(params: {
       eq(agentChannelConnections.org_id, orgId),
       eq(agentChannelConnections.agent_employee_id, employeeId),
     )).limit(1);
-  const currentRestartCount = Number((connection?.metadata as Record<string, unknown> | null)?.restart_count ?? 0);
-  const restartDetected = persistedComplete || !requiresRestartProof || currentRestartCount > baselineRestartCount;
+  const connectionMetadata = (connection?.metadata ?? {}) as Record<string, unknown>;
+  const currentRestartCount = Number(connectionMetadata.restart_count ?? 0);
+  const lastRestartAt = typeof connectionMetadata.last_restart_at === 'string'
+    ? new Date(connectionMetadata.last_restart_at)
+    : null;
+  const restartDetected = !requiresRestartProof || Boolean(
+    evidenceCompletedAt
+      && currentRestartCount > baselineRestartCount
+      && lastRestartAt
+      && !Number.isNaN(lastRestartAt.getTime())
+      && lastRestartAt.getTime() >= evidenceCompletedAt.getTime()
+  );
   const [restartProofEvent] = await db.select({
     id: agentChannelEvents.id,
     status: agentChannelEvents.status,
     delivery_count: agentChannelEvents.delivery_count,
+    created_at: agentChannelEvents.created_at,
+    delivered_at: agentChannelEvents.delivered_at,
+    acked_at: agentChannelEvents.acked_at,
+    completed_at: agentChannelEvents.completed_at,
+    claim_token: agentChannelEvents.claim_token,
+    claim_owner: agentChannelEvents.claim_owner,
+    lease_expires_at: agentChannelEvents.lease_expires_at,
     runtime_session_key: agentChannelEvents.runtime_session_key,
     work_outcome: agentChannelEvents.work_outcome,
   }).from(agentChannelEvents).where(and(
@@ -803,24 +946,81 @@ async function loadCertificationChallengeEvidence(params: {
     eq(agentChannelEvents.source_id, challenge.id),
     gte(agentChannelEvents.created_at, challenge.started_at),
   )).orderBy(desc(agentChannelEvents.created_at)).limit(1);
-  const restartProofReplies = restartProofEvent ? await db.select({ id: agentChannelDeliveryAttempts.id })
+  const restartProofReplies = restartProofEvent ? await db.select({
+    id: agentChannelDeliveryAttempts.id,
+    request_json: agentChannelDeliveryAttempts.request_json,
+    response_json: agentChannelDeliveryAttempts.response_json,
+    created_at: agentChannelDeliveryAttempts.created_at,
+    updated_at: agentChannelDeliveryAttempts.updated_at,
+  })
     .from(agentChannelDeliveryAttempts).where(and(
       eq(agentChannelDeliveryAttempts.org_id, orgId),
       eq(agentChannelDeliveryAttempts.agent_employee_id, employeeId),
       eq(agentChannelDeliveryAttempts.event_id, restartProofEvent.id),
       eq(agentChannelDeliveryAttempts.direction, 'inbound_reply'),
       eq(agentChannelDeliveryAttempts.status, 'completed'),
-      sql`COALESCE(${agentChannelDeliveryAttempts.request_json}->>'content', '') ILIKE ${`%${challenge.nonce}%`}`,
-    )).limit(1) : [];
-  const restartProofEventSeen = persistedComplete || !requiresRestartProof || Boolean(restartProofEvent);
-  const restartProofCompleted = persistedComplete || !requiresRestartProof || Boolean(
-    restartProofEvent?.status === 'completed'
-      && restartProofEvent.work_outcome === 'completed'
-      && restartProofEvent.delivery_count === 1
-      && restartProofEvent.runtime_session_key
-      && restartProofReplies.length > 0
+    ))
+    .orderBy(asc(agentChannelDeliveryAttempts.created_at))
+    .limit(2) : [];
+  const restartProofSingleReply = !requiresRestartProof || restartProofReplies.length === 1;
+  const restartProofReplyCommittedAt = requiresRestartProof && restartProofSingleReply
+    ? certificationReplyCommittedAt(restartProofReplies[0]!)
+    : null;
+  const restartProofReplyNonceSeen = !requiresRestartProof || (
+    restartProofSingleReply
+    && Boolean(restartProofReplyCommittedAt)
+    && certificationReplyContainsNonce(restartProofReplies[0]!, challenge.nonce)
   );
-  const completed = persistedComplete || (baseCompleted && restartDetected && restartProofCompleted);
+  const restartProofReplyAt = requiresRestartProof && restartProofReplyNonceSeen
+    ? restartProofReplyCommittedAt
+    : null;
+  const restartProofPingRows = !requiresRestartProof
+    ? []
+    : restartProofEvent?.acked_at && restartProofReplyAt
+      ? await db.select({ id: agentMcpCallAudit.id })
+        .from(agentMcpCallAudit)
+        .where(and(
+          eq(agentMcpCallAudit.org_id, orgId),
+          eq(agentMcpCallAudit.employee_id, employeeId),
+          eq(agentMcpCallAudit.tool_name, 'ping_alive'),
+          eq(agentMcpCallAudit.success, true),
+          gte(agentMcpCallAudit.created_at, restartProofEvent.acked_at),
+          lt(agentMcpCallAudit.created_at, restartProofReplyAt),
+        ))
+        .limit(1)
+      : [];
+  const restartProofNonceRows = !requiresRestartProof
+    ? []
+    : restartProofEvent?.acked_at && restartProofReplyAt
+      ? await db.select({ id: agentCooperativeLog.id })
+        .from(agentCooperativeLog)
+        .where(and(
+          eq(agentCooperativeLog.org_id, orgId),
+          eq(agentCooperativeLog.employee_id, employeeId),
+          eq(agentCooperativeLog.kind, 'decision'),
+          gte(agentCooperativeLog.created_at, restartProofEvent.acked_at),
+          lt(agentCooperativeLog.created_at, restartProofReplyAt),
+          or(
+            sql`${agentCooperativeLog.summary} ILIKE ${`%${challenge.nonce}%`}`,
+            sql`COALESCE(${agentCooperativeLog.metadata}::text, '') ILIKE ${`%${challenge.nonce}%`}`,
+          ),
+        ))
+        .limit(1)
+      : [];
+  const restartProofEventSeen = !requiresRestartProof || Boolean(restartProofEvent);
+  const restartProofPingSeen = !requiresRestartProof || restartProofPingRows.length > 0;
+  const restartProofNonceSeen = !requiresRestartProof || restartProofNonceRows.length > 0;
+  const restartExecutionProof = !requiresRestartProof
+    ? null
+    : certificationExecutionProof(restartProofEvent, restartProofReplies);
+  const restartProofCompleted = !requiresRestartProof || (
+    restartExecutionProof !== null
+    && restartProofPingSeen
+    && restartProofNonceSeen
+    && restartProofReplyNonceSeen
+    && restartProofSingleReply
+  );
+  const completed = baseCompleted && restartDetected && restartProofCompleted;
 
   return {
     seenTools,
@@ -832,17 +1032,27 @@ async function loadCertificationChallengeEvidence(params: {
     channelCompleted,
     channelReplyNonceSeen,
     singleDelivery,
+    singleReply,
     runtimeSessionSeen,
+    runtimeExecutionSeen,
+    runtimeExecutionProof,
     baseCompleted,
     restartDetected,
     restartProofEventSeen,
+    restartProofPingSeen,
+    restartProofNonceSeen,
+    restartProofReplyNonceSeen,
+    restartProofSingleReply,
+    restartExecutionProof,
     restartProofCompleted,
     completed,
   };
 }
 
-function hermesBridgeScript(): string {
+function hermesLegacyMcpBridgeScript(): string {
   return `#!/usr/bin/env node
+// LEGACY ROLLBACK ONLY. Disable deft-platform before using this stdio shim;
+// never run the native and legacy Deft adapters for one employee at the same time.
 import { stdin, stdout } from 'node:process';
 
 const endpoint = process.env.DEFT_MCP_URL;
@@ -972,12 +1182,12 @@ function buildCertificationPrompt(
   ].join('\n');
 }
 
-function buildRuntimeSetup(
+export function buildRuntimeSetup(
   employee: { name: string; slug: string; runtime_kind?: string | null },
   nonce: string | null,
 ): RuntimeSetup {
   const runtimeKind = runtimeKindOf(employee);
-  const endpoint = mcpEndpointUrl();
+  const endpoint = runtimeKind === 'hermes' ? hermesMcpEndpointUrl() : mcpEndpointUrl();
   const channelEndpoint = agentChannelEndpointUrl();
   const certificationPrompt = buildCertificationPrompt(employee, nonce ?? '<challenge-nonce>');
 
@@ -987,7 +1197,7 @@ function buildRuntimeSetup(
       tool_server_name: 'deft',
       channel_protocol_version: AGENT_CHANNEL_PROTOCOL_VERSION,
       channel_capabilities: [...AGENT_CHANNEL_CAPABILITIES],
-      integration_version: '0.3.0',
+      integration_version: HERMES_INTEGRATION_VERSION,
       integration_bundle_url: hermesIntegrationBundleUrl(),
       mcp_endpoint_url: endpoint,
       channel_endpoint_url: channelEndpoint,
@@ -995,21 +1205,28 @@ function buildRuntimeSetup(
       tool_call_names: CERTIFICATION_REQUIRED_TOOLS.map((tool) => runtimeToolName(runtimeKind, tool)),
       setup_steps: [
         `Download and extract the immutable Hermes integration bundle for Deft ${DEFT_RELEASE_VERSION}.`,
-        'Use the bundled Deft MCP stdio bridge and Hermes plugins; do not copy these files from another Deft checkout.',
-        'Add the mcp_servers.deft block to the active Hermes config.yaml.',
-        'Enable the authenticated Hermes Responses API and start the Hermes gateway.',
-        'Set the Agent Channel quick-config variables shown below, including the Hermes API URL, key, and model.',
-        'Start the Deft Hermes Agent Channel bridge and keep it running beside Hermes.',
-        'Restart or reload Hermes so the MCP server is discovered.',
-        'Run hermes mcp test deft and verify Deft reports the Deft MCP tool list.',
+        'Install the bundled deft-platform, deft-employee, and deft-memory plugin directories into the active Hermes profile; do not copy them from another Deft checkout.',
+        'Enable the three bundled plugins in the active Hermes config.yaml. deft-platform must be the only Agent Channel delivery adapter for this employee.',
+        'The native adapter will auto-load the bundled deft-employee:runtime skill into each new Deft session; keep deft-employee enabled and restart old sessions after an integration upgrade.',
+        'Replace the home_channel chat_id placeholders with an existing organization and space that this employee may access.',
+        'Configure mcp_servers.deft as the direct HTTP Deft MCP endpoint with this employee\'s separate MCP bearer token; no stdio shim is required.',
+        'Set the five employee-bound DEFT_CHANNEL_URL, DEFT_CHANNEL_TOKEN, DEFT_EMPLOYEE_SLUG, DEFT_MCP_URL, and DEFT_MCP_TOKEN variables, then run the bundled deft-platform readiness.py probe before starting Hermes.',
+        'Enable the authenticated Hermes Responses API and start the Hermes gateway. The native plugin consumes Agent Channel work inside Hermes.',
+        'Run hermes mcp test deft and verify the direct HTTP endpoint reports the Deft MCP tool list.',
         'Run a Hermes chat prompt that uses the model-visible mcp_deft_<tool> names.',
         'Use mcp_deft_memory_recall for Deft wiki context; mcp_deft_wiki_search is accepted as a compatibility alias.',
+        'Rollback only: stop Hermes, disable deft-platform, rotate both employee credentials, and then use the matched legacy Node bridge. Never run native and legacy adapters together.',
       ],
       commands: [
         {
           label: 'Download matched Deft integration',
           command: `curl -fL -o deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz ${hermesIntegrationBundleUrl()}`,
           description: `Downloads the checksummed Hermes integration built for Deft ${DEFT_RELEASE_VERSION}.`,
+        },
+        {
+          label: 'Probe native Deft readiness',
+          command: 'python ./plugins/deft-platform/readiness.py',
+          description: 'From the extracted bundle or Hermes profile root, verifies the employee-bound Agent Channel and direct HTTP MCP credentials before delivery starts.',
         },
         {
           label: 'List configured MCP servers',
@@ -1019,7 +1236,7 @@ function buildRuntimeSetup(
         {
           label: 'Test Deft MCP discovery',
           command: 'hermes mcp test deft',
-          description: 'Confirms Hermes can initialize the bridge and discover Deft tools.',
+          description: 'Confirms Hermes can reach the direct HTTP Deft MCP endpoint and discover Deft tools.',
         },
         {
           label: 'Verify enabled tools',
@@ -1029,12 +1246,7 @@ function buildRuntimeSetup(
         {
           label: 'Start the Hermes API',
           command: 'hermes gateway run --force',
-          description: 'Runs the authenticated Hermes Responses API used for persistent Agent Channel turns.',
-        },
-        {
-          label: 'Start live Deft delivery',
-          command: 'node ./deft-hermes-integration/scripts/hermes-agent-channel-bridge.mjs',
-          description: 'Consumes the durable Agent Channel inbox, asks Hermes, and posts exactly one reply through Deft.',
+          description: 'Runs the authenticated Hermes Responses API and the enabled native deft-platform delivery adapter.',
         },
         {
           label: 'Open an interactive certification chat',
@@ -1043,18 +1255,39 @@ function buildRuntimeSetup(
         },
       ],
       config_snippet: [
+        'plugins:',
+        '  enabled:',
+        '    - deft-platform',
+        '    - deft-employee',
+        '    - deft-memory',
+        '',
+        'platforms:',
+        '  deft:',
+        '    enabled: true',
+        '    home_channel:',
+        '      platform: deft',
+        '      chat_id: <organization-id>:<space-id>',
+        '      name: Deft home',
+        '    extra:',
+        `      channel_url: ${channelEndpoint}`,
+        '      token: <employee-agent-channel-token>',
+        `      employee_slug: ${employee.slug}`,
+        '',
         'mcp_servers:',
         '  deft:',
-        '    command: node',
-        '    args:',
-        '      - /absolute/path/to/deft-mcp-stdio.mjs',
-        '    env:',
-        `      DEFT_MCP_URL: ${endpoint}`,
-        '      DEFT_MCP_TOKEN: <bearer-token>',
-        '    connect_timeout: 60',
-        '    timeout: 120',
+        `    url: ${endpoint}`,
+        '    headers:',
+        '      Authorization: Bearer <employee-mcp-token>',
+        '    enabled: true',
+        '',
+        'memory:',
+        '  provider: deft-memory',
+        '',
+        'display:',
+        '  busy_input_mode: queue',
+        '  busy_ack_enabled: false',
       ].join('\n'),
-      bridge_script: hermesBridgeScript(),
+      bridge_script: hermesLegacyMcpBridgeScript(),
       certification_prompt: certificationPrompt,
       troubleshooting: [
         'If hermes mcp test deft passes but certification is pending, the model loop has not called Deft tools yet.',
@@ -1063,9 +1296,10 @@ function buildRuntimeSetup(
         'Use mcp_deft_memory_recall for wiki context; mcp_deft_wiki_search exists only for compatibility with older/native wording.',
         'If Hermes exits before tool calls with a provider/auth error, fix Hermes model credentials first.',
         'Avoid passing a toolset override that disables MCP tools for the run.',
-        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; the Hermes API and the matched bundled Agent Channel bridge must both be running.',
-        `If the bridge reports INCOMPATIBLE_CHANNEL, install the integration bundle for Deft ${DEFT_RELEASE_VERSION}; do not enable a legacy fallback.`,
-        'If a channel reply appears twice, stop any older bridge process and verify Hermes is not calling chat-writing MCP tools directly.',
+        'DEFT_CHANNEL_URL and DEFT_CHANNEL_TOKEN alone do not wake Hermes; deft-platform must be enabled in the active profile and the Hermes gateway must be running.',
+        `If deft-platform reports INCOMPATIBLE_CHANNEL, install the integration bundle for Deft ${DEFT_RELEASE_VERSION}; do not mix adapter versions.`,
+        'If a channel reply appears twice, stop any legacy Agent Channel bridge or duplicate Hermes profile immediately. Only one adapter may consume work for an employee.',
+        'The embedded Node stdio shim and bundled Node Agent Channel bridge are rollback-only. Stop Hermes and disable deft-platform before using them, and rotate both employee credentials during rollback.',
       ],
     };
   }
@@ -1114,7 +1348,9 @@ function certificationInstructions(
     'For task_query, search for any active task or request a small list, and confirm returned tasks expose allowed_next_statuses. Do not mutate task state during certification.',
     'For module_list, request enabled modules. If one exists, call module_schema_get and inspect its create/update input schemas and collection examples. An empty list is valid; do not mutate module records during certification.',
     `For ping_alive, identify yourself naturally as ${employee.name}; do not prefix every future chat message with your name.`,
-    'After the first assignment passes, restart the channel bridge once. Deft will send a fresh assignment to prove reconnect persistence.',
+    runtimeKindOf(employee) === 'hermes'
+      ? 'After the first assignment passes, restart the Hermes gateway once. Deft will send a fresh assignment to prove native deft-platform reconnect persistence.'
+      : 'After the first assignment passes, restart the channel runtime once. Deft will send a fresh assignment to prove reconnect persistence.',
     ...setup.troubleshooting.map((line) => `Troubleshooting: ${line}`),
   ].join('\n');
 }
@@ -1129,7 +1365,10 @@ function buildCertificationStages(params: {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
+  runtimeExecutionProof: CertificationExecutionProof;
   restartDetected: boolean;
   restartProofCompleted: boolean;
   completed: boolean;
@@ -1152,7 +1391,7 @@ function buildCertificationStages(params: {
       detail: mcpReachable
         ? 'Deft has seen this employee reach the MCP server.'
         : runtimeKind === 'hermes'
-          ? 'Run hermes mcp test deft after adding the Deft bridge.'
+          ? 'Run hermes mcp test deft after configuring the direct HTTP Deft MCP server.'
           : 'Connect the runtime to the Deft MCP endpoint.',
     },
     {
@@ -1165,11 +1404,13 @@ function buildCertificationStages(params: {
     },
     {
       key: 'runtime_inference',
-      label: 'Runtime inference completed',
-      status: params.channelCompleted && params.runtimeSessionSeen ? 'pass' : 'pending',
-      detail: params.channelCompleted && params.runtimeSessionSeen
-        ? 'Hermes completed the assignment and reported a terminal outcome.'
-        : 'Waiting for Hermes to run the assignment and report a terminal outcome.',
+      label: 'Runtime reply verified',
+      status: params.runtimeExecutionSeen ? 'pass' : 'pending',
+      detail: params.runtimeExecutionProof === 'autonomous_source_reply'
+        ? 'Hermes returned one authenticated native reply while transport acceptance remained nonterminal.'
+        : params.runtimeExecutionSeen
+          ? 'Hermes completed the assignment and reported a terminal supervised outcome.'
+          : 'Waiting for Hermes to return a verifiable source-bound runtime reply.',
     },
     {
       key: 'required_tools_called',
@@ -1198,18 +1439,24 @@ function buildCertificationStages(params: {
     {
       key: 'channel_reply_verified',
       label: 'Reply verified',
-      status: params.channelReplyNonceSeen ? 'pass' : 'pending',
-      detail: params.channelReplyNonceSeen
+      status: params.channelReplyNonceSeen && params.singleReply ? 'pass' : 'pending',
+      detail: params.channelReplyNonceSeen && params.singleReply
         ? 'The Agent Channel reply contains the one-time certification nonce.'
-        : 'Waiting for a nonce-bearing reply through Agent Channel.',
+        : !params.singleReply
+          ? 'Waiting for exactly one successful Agent Channel reply.'
+          : 'Waiting for a nonce-bearing reply through Agent Channel.',
     },
     {
       key: 'runtime_restart_detected',
       label: 'Runtime restart detected',
       status: params.restartDetected ? 'pass' : 'pending',
       detail: params.restartDetected
-        ? 'The remote bridge reconnected with a new worker identity.'
-        : 'Restart the Hermes channel bridge once to prove durable recovery.',
+        ? runtimeKind === 'hermes'
+          ? 'The native deft-platform adapter reconnected with a new worker identity.'
+          : 'The remote channel runtime reconnected with a new worker identity.'
+        : runtimeKind === 'hermes'
+          ? 'Restart the Hermes gateway once to prove native adapter recovery.'
+          : 'Restart the channel runtime once to prove durable recovery.',
     },
     {
       key: 'post_restart_assignment',
@@ -1242,7 +1489,9 @@ function certificationFailureReason(params: {
   channelCompleted: boolean;
   channelReplyNonceSeen: boolean;
   singleDelivery: boolean;
+  singleReply: boolean;
   runtimeSessionSeen: boolean;
+  runtimeExecutionSeen: boolean;
   restartDetected: boolean;
   restartProofCompleted: boolean;
 }): string | null {
@@ -1251,10 +1500,10 @@ function certificationFailureReason(params: {
     && params.nonceSeen
     && params.privateMemoryVerified
     && params.channelEventSeen
-    && params.channelCompleted
     && params.channelReplyNonceSeen
     && params.singleDelivery
-    && params.runtimeSessionSeen
+    && params.singleReply
+    && params.runtimeExecutionSeen
     && params.restartDetected
     && params.restartProofCompleted
   ) return null;
@@ -1262,12 +1511,13 @@ function certificationFailureReason(params: {
   const mcpReachable = params.auditCount > 0 || Boolean(params.employee.last_mcp_call_at);
   if (!mcpReachable) {
     return runtimeKind === 'hermes'
-      ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the bridge config.'
+      ? 'Hermes has not reached Deft MCP yet. Run `hermes mcp test deft` and check the direct HTTP MCP config.'
       : 'The runtime has not reached Deft MCP yet.';
   }
   if (!params.channelEventSeen) return 'The Hermes runtime has not claimed the Agent Channel certification assignment.';
   if (!params.singleDelivery) return 'The certification assignment was delivered more than once. Reset certification after fixing runtime stability.';
-  if (!params.channelCompleted || !params.runtimeSessionSeen) return 'Hermes has not completed a real runtime turn for the certification assignment.';
+  if (!params.singleReply) return 'The certification assignment does not have exactly one successful Agent Channel reply.';
+  if (!params.runtimeExecutionSeen) return 'Hermes has not completed a verifiable runtime turn for the certification assignment.';
   if (params.missingTools.length > 0) {
     return runtimeKind === 'hermes'
       ? `Hermes can reach Deft MCP, but its model loop has not called: ${params.missingTools.map((tool) => runtimeToolName('hermes', tool)).join(', ')}. Check model auth and use the mcp_deft_* tool names.`
@@ -1277,8 +1527,16 @@ function certificationFailureReason(params: {
     return 'Certification did not verify a replay-safe employee-private memory page and recall round-trip.';
   }
   if (!params.channelReplyNonceSeen) return 'Hermes completed tool calls but did not reply through Agent Channel with the certification nonce.';
-  if (!params.restartDetected) return 'Restart the Hermes channel bridge once so Deft can prove reconnect persistence.';
-  if (!params.restartProofCompleted) return 'The bridge reconnected, but Hermes has not completed the post-restart proof assignment yet.';
+  if (!params.restartDetected) {
+    return runtimeKind === 'hermes'
+      ? 'Restart the Hermes gateway once so Deft can prove native deft-platform reconnect persistence.'
+      : 'Restart the channel runtime once so Deft can prove reconnect persistence.';
+  }
+  if (!params.restartProofCompleted) {
+    return runtimeKind === 'hermes'
+      ? 'The native deft-platform adapter reconnected, but Hermes has not completed the post-restart proof assignment yet.'
+      : 'The channel runtime reconnected, but it has not completed the post-restart proof assignment yet.';
+  }
   return 'Required tools were called, but the challenge nonce was not recorded in the cooperative log.';
 }
 
@@ -1302,6 +1560,7 @@ async function cancelPendingCertification(orgId: string, employeeId: string, rea
         outcome_at = now(),
         claim_owner = NULL,
         claim_token = NULL,
+        claimed_at = NULL,
         lease_expires_at = NULL,
         updated_at = now()
     WHERE org_id = ${orgId}
@@ -1524,7 +1783,7 @@ agentEmployeeRoutes.post('/', async (c) => {
 
 const updateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  runtime_kind: z.string().min(1).max(64).optional(),
+  runtime_kind: externalRuntimeKindSchema.optional(),
   job_title: z.string().min(1).max(120).nullable().optional(),
   wake_mode: z.enum(['manual', 'polling', 'webhook', 'external_chat']).optional(),
   system_prompt: z.string().min(1).optional(),
@@ -1611,6 +1870,9 @@ agentEmployeeRoutes.put('/:id', async (c) => {
       .set(updates)
       .where(eq(agentEmployees.id, id))
       .returning();
+    if (data.project_ids !== undefined) {
+      invalidatePlatformContextCacheFor(id);
+    }
 
     // Also update the user name if changed
     if (data.name) {
@@ -1619,7 +1881,6 @@ agentEmployeeRoutes.put('/:id', async (c) => {
     if (data.job_title !== undefined) {
       await db.update(users).set({ title: data.job_title ?? roleToTitle(existing.role) }).where(eq(users.id, existing.user_id));
     }
-
     return c.json(updated);
   } catch (err) {
     console.error('Failed to update agent employee:', err);
@@ -1761,6 +2022,7 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
     // org_members row.
     const needsAdmin =
       parsed.data.trust_level !== undefined ||
+      parsed.data.max_daily_actions !== undefined ||
       parsed.data.heartbeat_cadence_minutes !== undefined ||
       parsed.data.mark_healthy === true;
     if (needsAdmin) {
@@ -1853,6 +2115,94 @@ agentEmployeeRoutes.patch('/:id', async (c) => {
   } catch (err) {
     console.error('Failed to patch agent employee:', err);
     return c.json({ error: 'Failed to update', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+agentEmployeeRoutes.post('/:id/action-budget/reset', async (c) => {
+  try {
+    const authorizationError = await requireOwnerOrAdmin(c);
+    if (authorizationError) return authorizationError;
+
+    const user = c.get('user');
+    const employeeId = c.req.param('id');
+    const now = new Date();
+    const reset = await db.transaction(async (tx) => {
+      const [employee] = await tx.select({
+        id: agentEmployees.id,
+        daily_action_count: agentEmployees.daily_action_count,
+        max_daily_actions: agentEmployees.max_daily_actions,
+      }).from(agentEmployees).where(and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.org_id, user.org_id),
+        eq(agentEmployees.is_deleted, false),
+      )).limit(1).for('update');
+      if (!employee) return null;
+      if (employee.daily_action_count === 0) {
+        return { employee, actionId: null, previousCount: 0 };
+      }
+
+      await tx.update(agentEmployees).set({
+        daily_action_count: 0,
+        updated_at: now,
+      }).where(and(
+        eq(agentEmployees.id, employeeId),
+        eq(agentEmployees.org_id, user.org_id),
+      ));
+      const result = {
+        previous_count: employee.daily_action_count,
+        daily_action_count: 0,
+        max_daily_actions: employee.max_daily_actions,
+      };
+      const [action] = await tx.insert(agentActions).values({
+        org_id: user.org_id,
+        user_id: user.id,
+        agent_employee_id: employeeId,
+        source: 'user',
+        action: 'action_budget_reset',
+        params: { previous_count: employee.daily_action_count },
+        approval_tier: 'full',
+        approval_status: 'approved',
+        approved_at: now,
+        executed_at: now,
+        result,
+      }).returning({ id: agentActions.id });
+      return {
+        employee: { ...employee, daily_action_count: 0 },
+        actionId: action!.id,
+        previousCount: employee.daily_action_count,
+      };
+    });
+
+    if (!reset) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (reset.actionId) {
+      await generateReceipt({
+        actionId: reset.actionId,
+        orgId: user.org_id,
+        employeeId,
+        proposer: 'user',
+        proposerId: user.id,
+        approverId: user.id,
+        decision: 'approved',
+        actionName: 'action_budget_reset',
+        actionParams: { previous_count: reset.previousCount },
+        resultJson: {
+          daily_action_count: 0,
+          max_daily_actions: reset.employee.max_daily_actions,
+        },
+      });
+    }
+
+    return c.json({
+      ok: true,
+      daily_action_count: 0,
+      max_daily_actions: reset.employee.max_daily_actions,
+      action_id: reset.actionId,
+    });
+  } catch (err) {
+    console.error('Failed to reset agent action budget:', err);
+    return c.json({ error: 'Failed to reset action budget', code: 'INTERNAL_ERROR' }, 500);
   }
 });
 
@@ -2298,6 +2648,9 @@ const onboardingPreflightSchema = z.object({
     access: z.enum(['read', 'write']),
   }).strict()).max(50).default([]),
   hermes_toolsets: z.array(z.string().trim().min(1).max(64)).max(50).default([]),
+  min_action_headroom: z.number().int().nonnegative().max(100_000).default(10),
+  require_skills_api: z.boolean().default(true),
+  required_model: z.string().trim().min(1).max(200).optional(),
 }).strict();
 type OnboardingPreflightRequirements = z.infer<typeof onboardingPreflightSchema>;
 
@@ -2316,15 +2669,13 @@ async function loadAgentOnboardingPreflight(
       isNull(agentChannelTokens.revoked_at),
     )).limit(1),
   ]);
-  const moduleIds = [...new Set(requirements.modules.map((requirement) => requirement.module_id))];
-  const installedModules = moduleIds.length === 0 ? [] : await db.select({
+  const installedModules = await db.select({
     module_id: moduleInstallations.module_id,
     access: moduleInstallations.agent_access,
     enabled: moduleInstallations.is_enabled,
   }).from(moduleInstallations).where(and(
     eq(moduleInstallations.org_id, orgId),
     eq(moduleInstallations.is_deleted, false),
-    inArray(moduleInstallations.module_id, moduleIds),
   ));
   const metadata = connection?.metadata && typeof connection.metadata === 'object'
     ? connection.metadata as Record<string, unknown>
@@ -2332,6 +2683,10 @@ async function loadAgentOnboardingPreflight(
   const attestation = metadata.runtime_attestation && typeof metadata.runtime_attestation === 'object'
     ? metadata.runtime_attestation as any
     : null;
+  const adapterMode = typeof metadata.adapter_mode === 'string' ? metadata.adapter_mode : null;
+  const runtimeCapabilities = Array.isArray(metadata.runtime_capabilities)
+    ? metadata.runtime_capabilities.filter((value): value is string => typeof value === 'string')
+    : [];
   return evaluateAgentOnboardingPreflight({
     employee: {
       active: employee.is_active && !employee.is_deleted,
@@ -2340,12 +2695,19 @@ async function loadAgentOnboardingPreflight(
       has_channel_token: Boolean(channelToken),
       trust_level: employee.trust_level,
       max_daily_actions: employee.max_daily_actions,
+      daily_action_count: employee.daily_action_count,
     },
-    connection: connection ? { status: connection.status, attestation } : null,
+    connection: connection ? {
+      status: connection.status,
+      adapter_mode: adapterMode,
+      runtime_capabilities: runtimeCapabilities,
+      attestation,
+    } : null,
+    nativeRequiredCapabilities: AGENT_CHANNEL_AUTONOMOUS_REQUIRED_RUNTIME_CAPABILITIES,
     requirements,
-    modules: installedModules.filter((module) => module.access !== 'none') as Array<{
+    modules: installedModules as Array<{
       module_id: string;
-      access: 'read' | 'write';
+      access: 'none' | 'read' | 'write';
       enabled: boolean;
     }>,
   });
@@ -2494,6 +2856,14 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
           challenge: latestChallenge,
         })
       : null;
+    const onboardingPreflight = runtimeKindOf(employee) === 'hermes'
+      ? await loadAgentOnboardingPreflight(user.org_id, employee, {
+          modules: [],
+          hermes_toolsets: [],
+          min_action_headroom: 10,
+          require_skills_api: true,
+        })
+      : null;
 
     return c.json({
       employee: {
@@ -2515,12 +2885,14 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
       certification: latestChallenge
         ? {
             id: latestChallenge.id,
-            status: latestChallenge.status,
+            status: challengeEvidence?.completed
+              ? 'completed'
+              : latestChallenge.status === 'completed' ? 'pending' : latestChallenge.status,
             nonce: latestChallenge.nonce,
             required_tools: latestChallenge.required_tools,
             failure_reason: latestChallenge.failure_reason,
             started_at: latestChallenge.started_at,
-            completed_at: latestChallenge.completed_at,
+            completed_at: challengeEvidence?.completed ? latestChallenge.completed_at : null,
             instructions: certificationInstructions(employee, latestChallenge.nonce),
             stages: buildCertificationStages({
               employee,
@@ -2532,7 +2904,10 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              singleReply: challengeEvidence?.singleReply ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              runtimeExecutionSeen: challengeEvidence?.runtimeExecutionSeen ?? false,
+              runtimeExecutionProof: challengeEvidence?.runtimeExecutionProof ?? null,
               restartDetected: challengeEvidence?.restartDetected ?? false,
               restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
@@ -2540,6 +2915,7 @@ agentEmployeeRoutes.get('/:id/developer', async (c) => {
           }
         : null,
       runtime_setup: buildRuntimeSetup(employee, latestChallenge?.nonce ?? null),
+      onboarding_preflight: onboardingPreflight,
       diagnostics: {
         recent_mcp_calls: recentMcpCalls,
         recent_cooperative_log: recentCooperativeLog,
@@ -2783,6 +3159,10 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
       challenge: challenge
         ? {
             ...challenge,
+            status: challengeEvidence?.completed
+              ? 'completed'
+              : challenge.status === 'completed' ? 'pending' : challenge.status,
+            completed_at: challengeEvidence?.completed ? challenge.completed_at : null,
             instructions: certificationInstructions(employee, challenge.nonce),
             stages: buildCertificationStages({
               employee,
@@ -2794,7 +3174,10 @@ agentEmployeeRoutes.get('/:id/certification', async (c) => {
               channelCompleted: challengeEvidence?.channelCompleted ?? false,
               channelReplyNonceSeen: challengeEvidence?.channelReplyNonceSeen ?? false,
               singleDelivery: challengeEvidence?.singleDelivery ?? false,
+              singleReply: challengeEvidence?.singleReply ?? false,
               runtimeSessionSeen: challengeEvidence?.runtimeSessionSeen ?? false,
+              runtimeExecutionSeen: challengeEvidence?.runtimeExecutionSeen ?? false,
+              runtimeExecutionProof: challengeEvidence?.runtimeExecutionProof ?? null,
               restartDetected: challengeEvidence?.restartDetected ?? false,
               restartProofCompleted: challengeEvidence?.restartProofCompleted ?? false,
               completed: challengeEvidence?.completed ?? false,
@@ -2850,10 +3233,18 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
+      runtimeExecutionProof,
       baseCompleted,
       restartDetected,
       restartProofEventSeen,
+      restartProofPingSeen,
+      restartProofNonceSeen,
+      restartProofReplyNonceSeen,
+      restartProofSingleReply,
+      restartExecutionProof,
       restartProofCompleted,
       completed,
     } = challengeEvidence;
@@ -2872,7 +3263,7 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
           employee_slug: employee.slug,
           is_dm: true,
           parent_id: null,
-          certification_prompt: `This is the post-restart persistence check. Process this fresh assignment, call mcp_deft_ping_alive, and reply with the exact nonce ${challenge.nonce}.`,
+          certification_prompt: `This is the post-restart persistence check. Process this fresh assignment, call mcp_deft_ping_alive, record a decision containing the exact nonce ${challenge.nonce}, and reply with that exact nonce.`,
           expected_reply_contains: challenge.nonce,
         },
       });
@@ -2887,7 +3278,10 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
+      runtimeExecutionProof,
       restartDetected,
       restartProofCompleted,
       completed,
@@ -2902,26 +3296,50 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channelCompleted,
       channelReplyNonceSeen,
       singleDelivery,
+      singleReply,
       runtimeSessionSeen,
+      runtimeExecutionSeen,
       restartDetected,
       restartProofCompleted,
     });
 
-    if (completed) {
+    if (completed && challenge.status !== 'completed') {
+      const now = new Date();
+      const [completedChallenge] = await db
+        .update(agentCertificationChallenges)
+        .set({ status: 'completed', completed_at: now, failure_reason: null, updated_at: now })
+        .where(and(
+          eq(agentCertificationChallenges.id, challenge.id),
+          eq(agentCertificationChallenges.org_id, user.org_id),
+          eq(agentCertificationChallenges.status, 'pending'),
+        ))
+        .returning({ id: agentCertificationChallenges.id });
+      if (completedChallenge) {
+        await db
+          .update(agentEmployees)
+          .set({ certification_status: 'verified', last_verified_at: now })
+          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+      }
+    } else if (!completed) {
       const now = new Date();
       await db
         .update(agentCertificationChallenges)
-        .set({ status: 'completed', completed_at: now, failure_reason: null })
-        .where(eq(agentCertificationChallenges.id, challenge.id));
-      await db
-        .update(agentEmployees)
-        .set({ certification_status: 'verified', last_verified_at: now })
-        .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
-    } else {
-      await db
-        .update(agentCertificationChallenges)
-        .set({ failure_reason: failureReason, updated_at: new Date() })
-        .where(eq(agentCertificationChallenges.id, challenge.id));
+        .set({
+          status: challenge.status === 'completed' ? 'pending' : challenge.status,
+          completed_at: challenge.status === 'completed' ? null : challenge.completed_at,
+          failure_reason: failureReason,
+          updated_at: now,
+        })
+        .where(and(
+          eq(agentCertificationChallenges.id, challenge.id),
+          eq(agentCertificationChallenges.org_id, user.org_id),
+        ));
+      if (challenge.status === 'completed') {
+        await db
+          .update(agentEmployees)
+          .set({ certification_status: 'challenge_issued', last_verified_at: null, updated_at: now })
+          .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)));
+      }
     }
 
     return c.json({
@@ -2933,10 +3351,18 @@ agentEmployeeRoutes.post('/:id/certification/check', async (c) => {
       channel_completed: channelCompleted,
       channel_reply_nonce_seen: channelReplyNonceSeen,
       single_delivery: singleDelivery,
+      single_reply: singleReply,
       runtime_session_seen: runtimeSessionSeen,
+      runtime_execution_seen: runtimeExecutionSeen,
+      runtime_execution_proof: runtimeExecutionProof,
       private_memory_verified: privateMemoryVerified,
       restart_detected: restartDetected,
       restart_proof_event_seen: restartProofEventSeen,
+      restart_proof_ping_seen: restartProofPingSeen,
+      restart_proof_nonce_seen: restartProofNonceSeen,
+      restart_proof_reply_nonce_seen: restartProofReplyNonceSeen,
+      restart_proof_single_reply: restartProofSingleReply,
+      restart_execution_proof: restartExecutionProof,
       restart_proof_completed: restartProofCompleted,
       seen_tools: Array.from(seenTools),
       required_tools: challenge.required_tools,
@@ -3066,7 +3492,10 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const cloneSchema = z.object({
       name: z.string().min(1).max(200).optional(),
-      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).optional(),
+      slug: z.string().min(2).max(64).regex(/^[a-z0-9-]+$/).refine(
+        (slug) => !isReservedDeftyEmployeeSlug(slug),
+        { message: 'defty-system is reserved for Deft internal use' },
+      ).optional(),
     });
     const parsed = cloneSchema.safeParse(body);
     if (!parsed.success) {
@@ -3078,7 +3507,13 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
       .from(agentEmployees)
       .where(and(eq(agentEmployees.id, id), eq(agentEmployees.org_id, user.org_id)))
       .limit(1);
-    if (!source) return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    if (
+      !source
+      || isReservedDeftyEmployeeSlug(source.slug)
+      || isReservedDeftyRuntimeKind(source.runtime_kind)
+    ) {
+      return c.json({ error: 'Agent employee not found', code: 'NOT_FOUND' }, 404);
+    }
 
     // Build a fresh slug: caller override → sourceSlug-copy → -copy-2, etc.
     let candidate = parsed.data.slug ?? `${source.slug}-copy`;
@@ -3106,6 +3541,7 @@ agentEmployeeRoutes.post('/:id/clone', async (c) => {
         slug: candidate,
         role: source.role,
         runtime_kind: source.runtime_kind,
+        is_byoa: true,
         job_title: source.job_title,
         wake_mode: source.wake_mode,
         avatar_url: source.avatar_url,

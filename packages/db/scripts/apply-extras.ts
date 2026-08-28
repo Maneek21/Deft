@@ -24,6 +24,8 @@ const files = [
   '0083_agent_channel_leases.sql',
   '0084_wiki_memory_sync.sql',
   '0085_agent_channel_runtime_reconciliation.sql',
+  '0086_attachment_links.sql',
+  '0087_attachment_processing.sql',
 ];
 
 async function main() {

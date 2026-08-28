@@ -18,7 +18,7 @@
  * Phase 7 will wrap the write handlers with receipt generation — the hook
  * point is the end of each execute* function.
  */
-import { sql, eq, and } from 'drizzle-orm';
+import { sql, eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db.js';
 import {
   tasks,
@@ -48,7 +48,12 @@ import { allowedNextStatuses, isValidTransition } from '../task-status-machine.j
 import { enqueue, QUEUE_NAMES } from '../queues.js';
 import { resolveAssigneeWithMatches } from '../resolve-assignee.js';
 import { createTaskBundle, type TaskBundleSubtaskInput } from '../task-bundle.js';
+import { visibleTaskCondition } from '../task-visibility.js';
 import { employeeCanAccessSpace } from './employee-space-access.js';
+import {
+  employeeProjectAccessAllows,
+  loadEmployeeProjectAccess,
+} from './employee-project-access.js';
 
 /**
  * Phase 7 — Insert an "auto-executed" agent_actions row up front so that
@@ -162,9 +167,59 @@ async function verifyProjectInOrg(
   const [row] = await db
     .select({ id: projects.id })
     .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.org_id, orgId)))
+    .where(and(
+      eq(projects.id, projectId),
+      eq(projects.org_id, orgId),
+      eq(projects.is_archived, false),
+      eq(projects.is_deleted, false),
+    ))
     .limit(1);
   return !!row;
+}
+
+type AccessibleTaskSnapshot = {
+  id: string;
+  title: string;
+  description: string | null;
+  status: (typeof tasks.$inferSelect)['status'];
+  priority: (typeof tasks.$inferSelect)['priority'];
+  assignee_id: string | null;
+  due_date: Date | null;
+  project_id: string;
+  updated_at: Date;
+};
+
+async function loadAccessibleTaskForEmployee(
+  taskId: string,
+  ctx: ToolContext,
+): Promise<{ task: AccessibleTaskSnapshot; userId: string } | null> {
+  const access = await loadEmployeeProjectAccess(ctx);
+  if (!access.resolved) return null;
+  const [task] = await db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      description: tasks.description,
+      status: tasks.status,
+      priority: tasks.priority,
+      assignee_id: tasks.assignee_id,
+      due_date: tasks.due_date,
+      project_id: tasks.project_id,
+      updated_at: tasks.updated_at,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.project_id, projects.id))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(tasks.org_id, ctx.org_id),
+      eq(tasks.is_deleted, false),
+      eq(projects.org_id, ctx.org_id),
+      eq(projects.is_deleted, false),
+      visibleTaskCondition(access.userId),
+      access.unrestricted ? undefined : inArray(tasks.project_id, access.projectIds),
+    ))
+    .limit(1);
+  return task ? { task, userId: access.userId } : null;
 }
 
 /** Verifies a parent message exists, is in the caller's org, and is in
@@ -253,31 +308,45 @@ export async function executeTaskCreate(
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
   try {
+    const projectAccess = await loadEmployeeProjectAccess(ctx);
+    if (!projectAccess.resolved) {
+      return errorResult('task_create: project not found');
+    }
+
     // Resolve project — use provided project_id (scoped to caller org) or
-    // fall back to the first project in the org.
+    // fall back to the first project in the employee's current boundary.
     let projectId = args.project_id ?? null;
     if (projectId) {
-      if (!(await verifyProjectInOrg(projectId, ctx.org_id))) {
-        return errorResult(
-          `task_create: project ${projectId} not found in caller's org`,
-        );
+      if (
+        !employeeProjectAccessAllows(projectAccess, projectId)
+        || !(await verifyProjectInOrg(projectId, ctx.org_id))
+      ) {
+        return errorResult('task_create: project not found');
       }
     } else {
-      const [p] = await db
+      const availableProjects = await db
         .select({ id: projects.id })
         .from(projects)
-        .where(and(eq(projects.org_id, ctx.org_id), eq(projects.is_archived, false)))
-        .limit(1);
+        .where(and(
+          eq(projects.org_id, ctx.org_id),
+          eq(projects.is_archived, false),
+          eq(projects.is_deleted, false),
+          projectAccess.unrestricted
+            ? undefined
+            : inArray(projects.id, projectAccess.projectIds),
+        ))
+        .limit(projectAccess.unrestricted ? 1 : projectAccess.projectIds.length);
+      const availableProjectIds = new Set(availableProjects.map((project) => project.id));
+      const p = projectAccess.unrestricted
+        ? availableProjects[0]
+        : projectAccess.projectIds
+          .map((allowedProjectId) => ({ id: allowedProjectId }))
+          .find((project) => availableProjectIds.has(project.id));
       if (!p) return errorResult('task_create: no project available in org');
       projectId = p.id;
     }
 
-    const shadowUserId = await getShadowUserId(ctx.employee_id);
-    if (!shadowUserId) {
-      return errorResult(
-        `task_create: no shadow user for employee ${ctx.employee_id}`,
-      );
-    }
+    const shadowUserId = projectAccess.userId;
 
     const priority =
       args.priority && VALID_PRIORITY.has(args.priority)
@@ -443,6 +512,17 @@ export async function taskCreate(
 ): Promise<ToolResult> {
   if (!args.title?.trim()) return errorResult('task_create requires title');
 
+  const projectAccess = await loadEmployeeProjectAccess(ctx);
+  if (
+    !projectAccess.resolved
+    || (args.project_id && (
+      !employeeProjectAccessAllows(projectAccess, args.project_id)
+      || !(await verifyProjectInOrg(args.project_id, ctx.org_id))
+    ))
+  ) {
+    return errorResult('task_create: project not found');
+  }
+
   if (!shouldAutoExecute('task_create', ctx.trust_level)) {
     return queueAction('task_create', args as Record<string, unknown>, ctx);
   }
@@ -487,7 +567,7 @@ function parseDueDate(value: string | null | undefined): Date | null | undefined
 export async function executeTaskUpdate(
   args: TaskUpdateArgs,
   ctx: ToolContext,
-  opts?: { skipReceipt?: boolean; actionId?: string | null },
+  opts?: { skipReceipt?: boolean; actionId?: string | null; commentId?: string },
 ): Promise<ToolResult> {
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
@@ -505,22 +585,11 @@ export async function executeTaskUpdate(
       new_value: string | null;
     }[] = [];
 
-    const shadowUserId = await getShadowUserId(ctx.employee_id);
-    if (!shadowUserId) {
-      return errorResult(
-        `task_update: no shadow user for employee ${ctx.employee_id}`,
-      );
-    }
-
-    const [existingTask] = await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, args.task_id), eq(tasks.org_id, ctx.org_id)))
-      .limit(1);
-
-    if (!existingTask) {
+    const accessible = await loadAccessibleTaskForEmployee(args.task_id, ctx);
+    if (!accessible) {
       return errorResult(`task_update: task ${args.task_id} not found`);
     }
+    const { task: existingTask, userId: shadowUserId } = accessible;
 
     if (typeof patch.title === 'string') update.title = patch.title;
     if (typeof patch.description === 'string') update.description = patch.description;
@@ -645,6 +714,7 @@ export async function executeTaskUpdate(
       const [commentRow] = await db
         .insert(taskComments)
         .values({
+          ...(opts?.commentId ? { id: opts.commentId } : {}),
           org_id: ctx.org_id,
           task_id: args.task_id,
           user_id: shadowUserId,
@@ -773,6 +843,10 @@ export async function taskUpdate(
   if (!args.task_id) return errorResult('task_update requires task_id');
   if (!args.patch || Object.keys(args.patch).length === 0) {
     return errorResult('task_update requires a non-empty patch');
+  }
+
+  if (!(await loadAccessibleTaskForEmployee(args.task_id, ctx))) {
+    return errorResult(`task_update: task ${args.task_id} not found`);
   }
 
   if (!shouldAutoExecute('task_update', ctx.trust_level)) {
@@ -1004,6 +1078,7 @@ export async function executeSendMessage(opts: {
   content: string;
   parentId: string | null;
   ctx: ToolContext;
+  messageId?: string;
 }, execOpts?: { skipReceipt?: boolean }): Promise<ToolResult> {
   const { orgId, spaceId, content, parentId, ctx } = opts;
   try {
@@ -1019,6 +1094,7 @@ export async function executeSendMessage(opts: {
     const [row] = await db
       .insert(messages)
       .values({
+        ...(opts.messageId ? { id: opts.messageId } : {}),
         org_id: orgId,
         space_id: spaceId,
         user_id: shadowUserId,

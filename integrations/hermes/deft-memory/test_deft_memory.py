@@ -52,6 +52,17 @@ class FakeProvider(MOD.DeftMemoryProvider):
 
 
 class DeftMemoryProviderTests(unittest.TestCase):
+    def test_compatibility_outcome_remains_a_memory_failure(self):
+        payload = {
+            "content": [{"type": "text", "text": "DEFT_TOOL_FAILED: denied"}],
+            "structuredContent": {
+                "schema": "deft.tool_outcome.v1",
+                "deft_status": "failed",
+                "message": "memory_recall denied",
+            },
+        }
+        self.assertEqual(MOD._deft_failure_message(payload), "memory_recall denied")
+
     def test_prefetch_combines_platform_and_wiki_context(self):
         provider = FakeProvider()
         provider.initialize("session-1", agent_context="primary")

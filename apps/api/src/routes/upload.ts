@@ -1,53 +1,20 @@
 import { Hono } from 'hono';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { files, messages, projects, spaceMembers, tasks } from '@deft/db/schema';
-import { writeFile, mkdir, readFile } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { attachmentDerivatives, files, messageAttachments, taskAttachments } from '@deft/db/schema';
+import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { visibleTaskCondition } from '../lib/task-visibility.js';
+import {
+  canAccessAttachmentMessage,
+  canAccessAttachmentTask,
+  getVisibleAttachment,
+} from '../lib/attachment-access.js';
+import { localFileStore } from '../lib/file-store.js';
+import { MAX_ATTACHMENT_BYTES, processAttachment } from '../lib/attachment-processor.js';
+import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
 
 export const uploadRoutes = new Hono();
 export const fileServingRoutes = new Hono();
-
-const UPLOAD_DIR = join(process.cwd(), 'uploads');
-
-async function canAccessMessage(messageId: string, orgId: string, userId: string) {
-  const [row] = await db.select({ id: messages.id })
-    .from(messages)
-    .innerJoin(spaceMembers, and(
-      eq(messages.space_id, spaceMembers.space_id),
-      eq(spaceMembers.user_id, userId),
-    ))
-    .where(and(
-      eq(messages.id, messageId),
-      eq(messages.org_id, orgId),
-      eq(messages.is_deleted, false),
-    ))
-    .limit(1);
-  return Boolean(row);
-}
-
-async function canAccessTask(taskId: string, orgId: string, userId: string) {
-  const [row] = await db.select({ id: tasks.id })
-    .from(tasks)
-    .innerJoin(projects, eq(tasks.project_id, projects.id))
-    .where(and(
-      eq(tasks.id, taskId),
-      eq(tasks.org_id, orgId),
-      eq(tasks.is_deleted, false),
-      visibleTaskCondition(userId),
-    ))
-    .limit(1);
-  return Boolean(row);
-}
-
-async function canAccessFile(file: typeof files.$inferSelect, orgId: string, userId: string) {
-  if (file.org_id !== orgId) return false;
-  if (file.task_id) return canAccessTask(file.task_id, orgId, userId);
-  if (file.message_id) return canAccessMessage(file.message_id, orgId, userId);
-  return file.uploaded_by === userId;
-}
 
 // POST /api/upload — multipart file upload (protected)
 uploadRoutes.post('/', async (c) => {
@@ -60,40 +27,88 @@ uploadRoutes.post('/', async (c) => {
       return c.json({ error: 'No file provided', code: 'VALIDATION_ERROR' }, 400);
     }
 
-    if (file.size > 50 * 1024 * 1024) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
       return c.json({ error: 'File too large (max 50MB)', code: 'FILE_TOO_LARGE' }, 400);
+    }
+
+    const taskId = c.req.query('task_id') || null;
+    const messageId = c.req.query('message_id') || null;
+    if (taskId && messageId) {
+      return c.json({ error: 'A file can target either a task or a message', code: 'VALIDATION_ERROR' }, 400);
+    }
+    if (taskId && !(await canAccessAttachmentTask(taskId, user.org_id, user.id))) {
+      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
+    }
+    if (messageId && !(await canAccessAttachmentMessage(messageId, user.org_id, user.id))) {
+      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
     }
 
     const originalName = basename(file.name).replace(/[^\w.\-]/g, '_');
     const uniqueName = `${randomUUID()}-${originalName}`;
     const buffer = Buffer.from(await file.arrayBuffer());
-
-    // Ensure uploads directory exists
-    await mkdir(UPLOAD_DIR, { recursive: true });
-
-    const filePath = join(UPLOAD_DIR, uniqueName);
-    await writeFile(filePath, buffer);
-
-    const taskId = c.req.query('task_id') || null;
-    const messageId = c.req.query('message_id') || null;
-
-    if (taskId && !(await canAccessTask(taskId, user.org_id, user.id))) {
-      return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
-    }
-    if (messageId && !(await canAccessMessage(messageId, user.org_id, user.id))) {
-      return c.json({ error: 'Message not found', code: 'NOT_FOUND' }, 404);
-    }
-
-    const [inserted] = await db.insert(files).values({
-      org_id: user.org_id,
-      uploaded_by: user.id,
+    const processing = processAttachment({
       filename: originalName,
-      mime_type: file.type || 'application/octet-stream',
-      size_bytes: file.size,
-      storage_key: uniqueName,
-      task_id: taskId,
-      message_id: messageId,
-    }).returning();
+      declaredMimeType: file.type,
+      bytes: buffer,
+    });
+    await localFileStore.put(uniqueName, buffer);
+
+    let inserted: typeof files.$inferSelect | undefined;
+    try {
+      inserted = await db.transaction(async (tx) => {
+        const [row] = await tx.insert(files).values({
+          org_id: user.org_id,
+          uploaded_by: user.id,
+          filename: originalName,
+          mime_type: file.type || 'application/octet-stream',
+          size_bytes: file.size,
+          storage_key: uniqueName,
+          detected_mime_type: processing.detectedMimeType,
+          attachment_kind: processing.kind,
+          content_sha256: processing.contentSha256,
+          processing_status: processing.status,
+          processing_error: processing.error,
+          processed_at: new Date(),
+          staged_expires_at: taskId || messageId ? null : stagedAttachmentExpiry(),
+          task_id: taskId,
+          message_id: messageId,
+        }).returning();
+        if (!row) throw new Error('File insert returned no row');
+
+        if (processing.derivative) {
+          await tx.insert(attachmentDerivatives).values({
+            org_id: user.org_id,
+            file_id: row.id,
+            kind: processing.derivative.kind,
+            mime_type: processing.derivative.mimeType,
+            content: processing.derivative.content,
+            size_bytes: processing.derivative.sizeBytes,
+            metadata: processing.derivative.metadata,
+          });
+        }
+
+        if (messageId) {
+          await tx.insert(messageAttachments).values({
+            org_id: user.org_id,
+            message_id: messageId,
+            file_id: row.id,
+            position: 0,
+          });
+        }
+        if (taskId) {
+          await tx.insert(taskAttachments).values({
+            org_id: user.org_id,
+            task_id: taskId,
+            file_id: row.id,
+            position: 0,
+          });
+        }
+        return row;
+      });
+    } catch (error) {
+      await localFileStore.delete(uniqueName);
+      throw error;
+    }
 
     return c.json({
       id: inserted!.id,
@@ -101,10 +116,48 @@ uploadRoutes.post('/', async (c) => {
       type: inserted!.mime_type,
       size: inserted!.size_bytes,
       url: `/api/files/${inserted!.id}`,
+      detected_type: inserted!.detected_mime_type,
+      kind: inserted!.attachment_kind,
+      processing_status: inserted!.processing_status,
+      processing_error: inserted!.processing_error,
     }, 201);
   } catch (err) {
     console.error('Failed to upload file:', err instanceof Error ? err.message : err, err instanceof Error ? err.stack : '');
-    return c.json({ error: 'Failed to upload file', code: 'INTERNAL_ERROR', detail: err instanceof Error ? err.message : String(err) }, 500);
+    return c.json({ error: 'Failed to upload file', code: 'INTERNAL_ERROR' }, 500);
+  }
+});
+
+// DELETE /api/files/:id — delete an upload that has not been attached yet.
+fileServingRoutes.delete('/:id', async (c) => {
+  const user = c.get('user');
+  const fileId = c.req.param('id');
+  const [deleted] = await db.delete(files)
+    .where(and(
+      eq(files.id, fileId),
+      eq(files.org_id, user.org_id),
+      eq(files.uploaded_by, user.id),
+      isNull(files.message_id),
+      isNull(files.task_id),
+      sql`NOT EXISTS (
+        SELECT 1 FROM message_attachments
+        WHERE message_attachments.org_id = ${user.org_id}
+          AND message_attachments.file_id = ${fileId}
+      )`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM task_attachments
+        WHERE task_attachments.org_id = ${user.org_id}
+          AND task_attachments.file_id = ${fileId}
+      )`,
+    ))
+    .returning({ storage_key: files.storage_key });
+  if (!deleted) return c.json({ error: 'File not found', code: 'NOT_FOUND' }, 404);
+
+  try {
+    await localFileStore.delete(deleted.storage_key);
+    return c.json({ success: true, storage_cleanup: 'complete' });
+  } catch (error) {
+    console.warn('Attachment row deleted but storage cleanup must be retried:', error);
+    return c.json({ success: true, storage_cleanup: 'pending' }, 202);
   }
 });
 
@@ -114,28 +167,22 @@ fileServingRoutes.get('/:id', async (c) => {
     const user = c.get('user');
     const fileId = c.req.param('id');
 
-    const [fileRecord] = await db.select()
-      .from(files)
-      .where(eq(files.id, fileId))
-      .limit(1);
-
+    const fileRecord = await getVisibleAttachment(fileId, user.org_id, user.id);
     if (!fileRecord) {
       return c.json({ error: 'File not found', code: 'NOT_FOUND' }, 404);
     }
-
-    if (!await canAccessFile(fileRecord, user.org_id, user.id)) {
-      return c.json({ error: 'File not found', code: 'NOT_FOUND' }, 404);
+    if (fileRecord.processing_status === 'blocked') {
+      return c.json({ error: 'File is blocked by attachment safety policy', code: 'FILE_BLOCKED' }, 423);
     }
 
-    const filePath = join(UPLOAD_DIR, fileRecord.storage_key);
-
     try {
-      const data = await readFile(filePath);
-      return new Response(data, {
+      const data = await localFileStore.get(fileRecord.storage_key);
+      return new Response(new Uint8Array(data), {
         headers: {
-          'Content-Type': fileRecord.mime_type,
+          'Content-Type': fileRecord.detected_mime_type || 'application/octet-stream',
           'Content-Disposition': `attachment; filename="${encodeURIComponent(fileRecord.filename)}"`,
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
         },
       });
     } catch {

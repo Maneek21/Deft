@@ -62,11 +62,16 @@ docker compose -f docker-compose.yml -f compose.prod.yml -f compose.release.yml 
 
 Release assets include `SHA256SUMS`, an SPDX SBOM, and a manifest containing
 the exact commit, image digest, keyless-signing identity, provenance type, and
-upgrade baseline. Release-tagged images are signed by the release workflow and
-carry GitHub build provenance. Verify the digest before deploying it:
+upgrade baseline. Hermes-capable releases also include
+`hermes-employee-release-gate.json` and
+`deft-hermes-integration-<version>.tar.gz`. The release manifest binds their
+SHA-256 digests, the bundle manifest and content digests, compatibility range,
+and exact tested Hermes runtime. Release-tagged images are signed by the release
+workflow and carry GitHub build provenance. Verify checksums and the image
+digest before deploying or installing the Hermes bundle:
 
 ```bash
-export TAG=v0.3.0-preview.12
+export TAG=v0.3.0-preview.13
 export VERSION="${TAG#v}"
 export IMAGE=ghcr.io/maneek21/deft
 export DIGEST="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -77,12 +82,15 @@ cosign verify "$IMAGE@$DIGEST" \
 gh attestation verify "oci://$IMAGE@$DIGEST" --repo Maneek21/Deft
 ```
 
-Compare `DIGEST` with `release-manifest.json`, then set `DEFT_IMAGE` to the
-immutable `ghcr.io/maneek21/deft@<digest>` reference. A release workflow fails
-before creating the GitHub release if signing, signature verification,
-provenance publication, or provenance verification fails. Use `init` only for
-a fresh database. Versioned release upgrades begin at `v0.2.0-preview.1` and
-use the dedicated `upgrade` service described below.
+Compare `DIGEST` with `release-manifest.json`, verify every downloaded asset
+against `SHA256SUMS`, and confirm the manifest's Hermes archive and certificate
+digests before extracting the integration. A release workflow fails before
+creating the GitHub release unless the manifest-pinned runtime passes two
+consecutive clean-state gates and the carried archive exactly matches the
+certified bundle. Then set `DEFT_IMAGE` to the immutable
+`ghcr.io/maneek21/deft@<digest>` reference. Use `init` only for a fresh database.
+Versioned release upgrades begin at `v0.2.0-preview.1` and use the dedicated
+`upgrade` service described below.
 
 ### Fast path: one-command bootstrap
 

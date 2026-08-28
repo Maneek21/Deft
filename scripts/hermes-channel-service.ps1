@@ -119,16 +119,17 @@ switch ($Action) {
     Protect-Config $configTarget
 
     $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $node = (Get-Command node.exe -ErrorAction Stop).Source
     $taskAction = New-ScheduledTaskAction -Execute $powershell -Argument (
-      '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ServiceRoot "{1}"' -f $runnerTarget, $ServiceRoot
+      '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ServiceRoot "{1}" -NodePath "{2}"' -f $runnerTarget, $ServiceRoot, $node
     )
-    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
     $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
       -ExecutionTimeLimit (New-TimeSpan -Days 3650) -MultipleInstances IgnoreNew -StartWhenAvailable `
       -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-      -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $logonTrigger `
+      -LogonType S4U -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $startupTrigger `
       -Settings $settings -Principal $principal -Description 'Runs the Deft Hermes Agent Channel bridge.' -Force | Out-Null
     Start-ScheduledTask -TaskName $TaskName
     Write-Output "Installed and started '$TaskName'."
