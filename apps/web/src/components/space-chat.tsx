@@ -53,6 +53,7 @@ import { ScheduledPanel } from './scheduled-panel';
 import { KnowledgePanel } from './knowledge-panel';
 import { MobileActionSheet } from './mobile-action-sheet';
 import { ClipCard } from './clip-card';
+import { ProtectedDownload, ProtectedImage } from './protected-file';
 import { AgentMessageBlocks, type AgentBlock, type AgentCitation } from './agent-message-blocks';
 import { AgentActionCard, type AgentAction } from './agent-action-card';
 import useSWR, { mutate as swrMutate } from 'swr';
@@ -302,10 +303,6 @@ function WorkIntentReceiptChips({
       </a>
     </div>
   );
-}
-
-function isImageUrl(url: string) {
-  return /\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i.test(url);
 }
 
 function isImageType(type: string) {
@@ -2662,29 +2659,26 @@ function MessageFiles({
   onImageClick: (src: string) => void;
 }) {
   if (!files || files.length === 0) return null;
-  const uniqueFiles = Array.from(new Map(files.map((file) => [file.id, file])).values());
+  const uniqueFiles = Array.from(files.reduce((byId, file) => {
+    if (!byId.has(file.id)) byId.set(file.id, file);
+    return byId;
+  }, new Map<string, FileAttachment>()).values());
 
   return (
     <div className="flex flex-wrap gap-2 mt-2">
       {uniqueFiles.map((file) =>
-        isImageType(file.type) || isImageUrl(file.url) ? (
-          <button
+        isImageType(file.type) ? (
+          <ProtectedImage
             key={file.id}
-            onClick={() => onImageClick(file.url)}
-            className="rounded-lg overflow-hidden"
-          >
-            <img
-              src={file.url}
-              alt={file.name}
-              className="max-w-full md:max-w-[400px] max-h-[300px] object-cover"
-            />
-          </button>
+            file={file}
+            onOpen={onImageClick}
+            buttonClassName="rounded-lg overflow-hidden"
+            className="max-w-full md:max-w-[400px] max-h-[300px] object-cover"
+          />
         ) : (
-          <a
+          <ProtectedDownload
             key={file.id}
-            href={file.url}
-            target="_blank"
-            rel="noopener noreferrer"
+            file={file}
             className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg no-underline"
             style={{
               background: 'var(--surface-container)',
@@ -2699,7 +2693,7 @@ function MessageFiles({
                 {formatFileSize(file.size)}
               </p>
             </div>
-          </a>
+          </ProtectedDownload>
         )
       )}
     </div>

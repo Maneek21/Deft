@@ -6,6 +6,7 @@ import { files, scheduledMessages } from '@deft/db/schema';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { requireSpaceMembership } from '../lib/space-membership.js';
 import { extractLegacyAttachmentIds, MAX_MESSAGE_ATTACHMENTS } from '../lib/message-attachments.js';
+import { stagedAttachmentExpiry } from '../lib/attachment-retention.js';
 
 export const scheduledRoutes = new Hono();
 
@@ -64,6 +65,22 @@ scheduledRoutes.post('/', async (c) => {
 
     if (!created) throw new Error('Failed to create scheduled message');
 
+    if (attachmentIds.length > 0) {
+      const retained = await tx.update(files)
+        .set({ staged_expires_at: stagedAttachmentExpiry(scheduledFor) })
+        .where(and(
+          inArray(files.id, attachmentIds),
+          eq(files.org_id, user.org_id),
+          eq(files.uploaded_by, user.id),
+          isNull(files.message_id),
+          isNull(files.task_id),
+        ))
+        .returning({ id: files.id });
+      if (retained.length !== attachmentIds.length) {
+        throw new Error('One or more scheduled-message attachments became unavailable');
+      }
+    }
+
     await enqueue(
       QUEUE_NAMES.SCHEDULED_JOBS,
       'scheduled-message-send',
@@ -97,13 +114,29 @@ scheduledRoutes.get('/', async (c) => {
 scheduledRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const id = c.req.param('id');
-  await db.update(scheduledMessages)
-    .set({ status: 'cancelled' })
-    .where(and(
-      eq(scheduledMessages.id, id),
-      eq(scheduledMessages.user_id, user.id),
-      eq(scheduledMessages.status, 'pending'),
-    ));
+  await db.transaction(async (tx) => {
+    const [cancelled] = await tx.update(scheduledMessages)
+      .set({ status: 'cancelled' })
+      .where(and(
+        eq(scheduledMessages.id, id),
+        eq(scheduledMessages.user_id, user.id),
+        eq(scheduledMessages.status, 'pending'),
+      ))
+      .returning({ content: scheduledMessages.content });
+    if (!cancelled) return;
+    const attachmentIds = Array.from(new Set(extractLegacyAttachmentIds(cancelled.content)));
+    if (attachmentIds.length > 0) {
+      await tx.update(files)
+        .set({ staged_expires_at: stagedAttachmentExpiry() })
+        .where(and(
+          inArray(files.id, attachmentIds),
+          eq(files.org_id, user.org_id),
+          eq(files.uploaded_by, user.id),
+          isNull(files.message_id),
+          isNull(files.task_id),
+        ));
+    }
+  });
   return c.json({ success: true });
 });
 

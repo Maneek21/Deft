@@ -20,6 +20,7 @@ import { TagPicker } from './tag-picker';
 import { LabelPicker } from './label-picker';
 import { TaskReactionBar } from './task-card-unified';
 import { TaskModuleRecordLinks } from './task-module-record-links';
+import { ProtectedDownload } from './protected-file';
 import {
   X,
   ChevronDown,
@@ -2090,11 +2091,11 @@ export function TaskDetail({ taskId, projectPrefix, onClose, onUpdated, onDuplic
                   <div key={file.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md"
                     style={{ background: 'var(--surface-container-highest)' }}>
                     <Paperclip size={12} style={{ color: 'var(--muted)' }} />
-                    <a href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/files/${file.id}`} target="_blank" rel="noopener noreferrer"
+                    <ProtectedDownload file={{ id: file.id, name: file.filename }}
                       className="text-[12px] flex-1 truncate hover:underline"
                       style={{ color: 'var(--foreground)', fontFamily: 'var(--font-body)' }}>
                       {file.filename}
-                    </a>
+                    </ProtectedDownload>
                     <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--muted)' }}>
                       {file.size_bytes < 1024 ? `${file.size_bytes} B` : file.size_bytes < 1048576 ? `${(file.size_bytes / 1024).toFixed(1)} KB` : `${(file.size_bytes / 1048576).toFixed(1)} MB`}
                     </span>

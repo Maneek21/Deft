@@ -48,6 +48,10 @@ test('certificate v2 exposes stable native, fallback, common, and bundle suite r
   assert.ok(API_SUITES.includes('test/mcp-task-project-boundary.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-task-query-project-scope.test.ts'));
   assert.ok(API_SUITES.includes('test/mcp-team-context.test.ts'));
+  assert.ok(API_SUITES.includes('test/mcp-attachments.test.ts'));
+  assert.ok(API_SUITES.includes('test/workspace-plan-import.test.ts'));
+  assert.ok(API_SUITES.includes('test/document-send.test.ts'));
+  assert.ok(API_SUITES.includes('test/attachment-agent-handoff.test.ts'));
 });
 
 test('bundle verifier evidence requires the settled schema and prefixed SHA-256 digests', () => {

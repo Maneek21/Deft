@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, and, desc, asc, sql, inArray, ilike, or, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../lib/db.js';
-import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
+import { projects, tasks, taskComments, taskActivity, taskLabels, labels, users, projectSpaces, messages, taskRelationships, files, taskAttachments, savedViews, taskWatchers, taskAssignees, taskReactions, wikiPages, wikiCitations, orgMembers, workflowRules, agentEmployees, agentActions, agentChannelDeliveryAttempts, agentChannelEvents, agentCooperativeLog, spaces, spaceMembers } from '@deft/db/schema';
 import { getIO, emitToUser } from '../socket.js';
 import { enqueue, QUEUE_NAMES } from '../lib/queues.js';
 import { canDeleteTask } from '../lib/task-permissions.js';
@@ -2780,7 +2780,26 @@ taskRoutes.get('/:id/attachments', async (c) => {
     const task = await getVisibleTaskForOrg(taskId, user.org_id, user.id);
     if (!task) return c.json({ error: 'Task not found', code: 'NOT_FOUND' }, 404);
 
-    const results = await db.select({
+    const linkedResults = await db.select({
+      id: files.id,
+      filename: files.filename,
+      mime_type: files.mime_type,
+      size_bytes: files.size_bytes,
+      storage_key: files.storage_key,
+      created_at: files.created_at,
+    }).from(taskAttachments)
+      .innerJoin(files, and(
+        eq(taskAttachments.file_id, files.id),
+        eq(taskAttachments.org_id, files.org_id),
+      ))
+      .where(and(
+        eq(taskAttachments.task_id, taskId),
+        eq(taskAttachments.org_id, user.org_id),
+      ))
+      .orderBy(asc(taskAttachments.position), asc(taskAttachments.created_at));
+
+    const linkedIds = new Set(linkedResults.map((file) => file.id));
+    const legacyResults = await db.select({
       id: files.id,
       filename: files.filename,
       mime_type: files.mime_type,
@@ -2790,6 +2809,11 @@ taskRoutes.get('/:id/attachments', async (c) => {
     }).from(files)
       .where(and(eq(files.task_id, taskId), eq(files.org_id, user.org_id)))
       .orderBy(desc(files.created_at));
+
+    const results = [
+      ...linkedResults,
+      ...legacyResults.filter((file) => !linkedIds.has(file.id)),
+    ];
 
     return c.json(results);
   } catch (err) {

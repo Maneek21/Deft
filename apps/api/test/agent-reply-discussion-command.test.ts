@@ -24,11 +24,14 @@ test('compiler recovery gate recognizes the registered write families without ch
     'Link this decision to MKT-18.',
     'Post an update to #marketing.',
     'Mark all three tasks done.',
+    'Create and share a Markdown report in this chat.',
+    'Write a CSV file with the reviewed launch plan.',
   ]) {
     assert.equal(hasExplicitRegisteredWriteIntent(prompt), true, prompt);
   }
   assert.equal(hasExplicitRegisteredWriteIntent('What does the wiki say about watering?'), false);
   assert.equal(hasExplicitRegisteredWriteIntent('Do not create a wiki page for this lunch chat.'), false);
+  assert.equal(hasExplicitRegisteredWriteIntent('Do not create a document from this draft.'), false);
 });
 
 test('resolved wiki suggestion triggers governed compilation for a natural update follow-up', () => {

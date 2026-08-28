@@ -93,6 +93,14 @@ import {
   preflightModuleRecordBulkCreate,
   sanitizeModuleBulkCreateParamsForHistory,
 } from './module-record-bulk-create.js';
+import {
+  executeWorkspacePlanImport,
+  WORKSPACE_PLAN_IMPORT_ACTION,
+} from './workspace-plan-import.js';
+import {
+  DOCUMENT_SEND_ACTION,
+  executeDocumentSend,
+} from './document-send.js';
 
 type ModuleEmployeeActionPolicy = {
   id: string;
@@ -1134,7 +1142,9 @@ export async function executeAction(
         {
           requireHealthy: isModuleWriteAction(action)
             || isModuleRecordBulkCreateAction(action)
-            || isModuleTaskLinkWriteAction(action),
+            || isModuleTaskLinkWriteAction(action)
+            || action === WORKSPACE_PLAN_IMPORT_ACTION
+            || action === DOCUMENT_SEND_ACTION,
         },
       );
       if (!budget.allowed) {
@@ -1204,6 +1214,43 @@ export async function executeAction(
     }
 
     switch (action) {
+      case DOCUMENT_SEND_ACTION: {
+        let documentActorUserId = userId;
+        if (!agentEmployeeId) {
+          const [proposalAuthor] = await db.select({ user_id: messages.user_id })
+            .from(agentActions)
+            .innerJoin(messages, and(
+              eq(messages.id, agentActions.message_id),
+              eq(messages.org_id, agentActions.org_id),
+            ))
+            .where(and(
+              eq(agentActions.id, actionId),
+              eq(agentActions.org_id, orgId),
+            ))
+            .limit(1);
+          documentActorUserId = proposalAuthor?.user_id ?? userId;
+        }
+        const result = await executeDocumentSend({
+          actionId,
+          actionParams: params,
+          orgId,
+          actorUserId: documentActorUserId,
+          ...(agentEmployeeId ? { employeeId: agentEmployeeId } : {}),
+        });
+        return { success: true, result };
+      }
+
+      case WORKSPACE_PLAN_IMPORT_ACTION: {
+        const result = await executeWorkspacePlanImport({
+          actionId,
+          actionParams: params,
+          orgId,
+          userId,
+          ...(agentEmployeeId ? { agentEmployeeId } : {}),
+        });
+        return { success: true, result };
+      }
+
       case 'module_record_task_link': {
         const input = normalizeAgentModuleTaskLinkParams(action, params);
         const resourceId = ModuleRecordResourceIdSchema.parse(input.resource_id);

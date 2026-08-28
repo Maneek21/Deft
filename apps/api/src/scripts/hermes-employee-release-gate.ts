@@ -26,15 +26,24 @@ export const API_SUITES = [
   'test/agent-channel.test.ts',
   'test/agent-certification-stability.test.ts',
   'test/agent-context-project-scope.test.ts',
+  'test/agent-message-attachments.test.ts',
   'test/defty-identity-boundary.test.ts',
   'test/agent-onboarding-preflight.test.ts',
   'test/agent-runtime-recovery.test.ts',
+  'test/hermes-employee-release-gate-contract.test.ts',
   'test/hermes-native-onboarding.test.ts',
   'test/agent-approval-resolver.test.ts',
   'test/agent-untrusted-context.test.ts',
+  'test/attachment-agent-handoff.test.ts',
+  'test/attachment-processor.test.ts',
+  'test/attachment-vision.test.ts',
   'test/direct-route-privacy.test.ts',
+  'test/document-send.test.ts',
+  'test/file-store.test.ts',
   'test/identity-hardening.test.ts',
+  'test/mcp-attachments.test.ts',
   'test/mcp-connector-safety.test.ts',
+  'test/mcp-fetch-unread.test.ts',
   'test/mcp-human-context-packets.test.ts',
   'test/mcp-message-privacy.test.ts',
   'test/mcp-platform-context.test.ts',
@@ -45,10 +54,13 @@ export const API_SUITES = [
   'test/mcp-team-context.test.ts',
   'test/mcp-tool-trust-boundary.test.ts',
   'test/mcp-write-tools.test.ts',
+  'test/message-attachment-markers.test.ts',
+  'test/message-attachments.test.ts',
   'test/modules-contacts-acceptance.test.ts',
   'test/modules-mcp-adapter.test.ts',
   'test/phase8-heartbeat-budget.test.ts',
   'test/receipts.test.ts',
+  'test/workspace-plan-import.test.ts',
 ] as const;
 
 export const SUITE_CONTRACT = [
@@ -548,6 +560,9 @@ async function runPass(
   suites.push(suite('deft.database.demo_seed'));
   runPnpm(config, `pass ${pass}: Deft employee boundary matrix`, [
     '--filter', '@deft/api', 'test', '--', ...API_SUITES,
+  ]);
+  runPnpm(config, `pass ${pass}: protected attachment web boundary`, [
+    'exec', 'tsx', '--test', 'apps/web/src/lib/protected-file.test.ts',
   ]);
   suites.push(suite('deft.api.employee_boundary'));
   runPythonSuite(config, `pass ${pass}: native Deft platform adapter`, 'integrations/hermes/deft-platform/test_deft_platform.py');

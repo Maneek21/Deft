@@ -73,6 +73,14 @@ import {
   isModuleRecordBulkCreateAction,
   sanitizeModuleBulkCreateParamsForHistory,
 } from '../lib/module-record-bulk-create.js';
+import {
+  sanitizeWorkspacePlanImportParams,
+  WORKSPACE_PLAN_IMPORT_ACTION,
+} from '../lib/workspace-plan-import.js';
+import {
+  DOCUMENT_SEND_ACTION,
+  sanitizeDocumentSendParams,
+} from '../lib/document-send.js';
 
 export const agentRoutes = new Hono();
 
@@ -1544,6 +1552,8 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
       || isModuleTaskLinkWriteAction(action.action)
       || isModuleWriteActionName(action.action)
       || isModuleRecordBulkCreateAction(action.action)
+      || action.action === WORKSPACE_PLAN_IMPORT_ACTION
+      || action.action === DOCUMENT_SEND_ACTION
     ) {
       const [terminalReceiptAction] = await db
         .select({ params: agentActions.params })
@@ -1567,6 +1577,10 @@ agentRoutes.post('/actions/:id/approve', async (c) => {
             ? sanitizeModuleActionParamsForReceipt(action.action, terminalReceiptParams)
             : isModuleRecordBulkCreateAction(action.action)
               ? sanitizeModuleBulkCreateParamsForHistory(terminalReceiptParams)
+              : action.action === WORKSPACE_PLAN_IMPORT_ACTION
+                ? sanitizeWorkspacePlanImportParams(terminalReceiptParams)
+                : action.action === DOCUMENT_SEND_ACTION
+                  ? sanitizeDocumentSendParams(terminalReceiptParams)
             : terminalReceiptParams,
         resultJson: execResult.result,
       });
@@ -1801,6 +1815,10 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       ? sanitizeModuleActionParamsForReceipt(action.action, action.params)
       : isModuleRecordBulkCreateAction(action.action)
         ? sanitizeModuleBulkCreateParamsForHistory(action.params)
+        : action.action === WORKSPACE_PLAN_IMPORT_ACTION
+          ? sanitizeWorkspacePlanImportParams(action.params)
+          : action.action === DOCUMENT_SEND_ACTION
+            ? sanitizeDocumentSendParams(action.params)
       : action.params;
   const [updatedAction] = await db
     .update(agentActions)
@@ -1810,6 +1828,8 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
       ...(isModuleTaskLinkWriteAction(action.action)
         || isModuleWriteActionName(action.action)
         || isModuleRecordBulkCreateAction(action.action)
+        || action.action === WORKSPACE_PLAN_IMPORT_ACTION
+        || action.action === DOCUMENT_SEND_ACTION
         ? { params: rejectedParams, executed_at: new Date() }
         : {}),
     })
@@ -1841,6 +1861,8 @@ agentRoutes.post('/actions/:id/reject', async (c) => {
     || isModuleTaskLinkWriteAction(action.action)
     || isModuleWriteActionName(action.action)
     || isModuleRecordBulkCreateAction(action.action)
+    || action.action === WORKSPACE_PLAN_IMPORT_ACTION
+    || action.action === DOCUMENT_SEND_ACTION
   ) {
     await generateReceipt({
       actionId,

@@ -19,6 +19,7 @@ import {
 } from '../../lib/agent-action-proposals.js';
 import { getMessageAttachmentContext } from '../../lib/agent-message-attachments.js';
 import { compileMessageModuleCsvImport } from '../../lib/module-csv-import.js';
+import { compileMessageWorkspacePlanImport } from '../../lib/workspace-plan-import.js';
 
 function stripMentionSyntax(content: string): string {
   return toPlainText(content)
@@ -42,11 +43,11 @@ export function hasExplicitRegisteredWriteIntent(content: string): boolean {
   const plain = stripMentionSyntax(content);
   const asksForChange = /\b(?:create|add|make|open|track|write|save|record|capture|post|send|put|share|update|edit|change|set|mark|move|close|reopen|assign|comment|label|link|unlink|remove|promote|convert)\b/i.test(plain);
   const namesWorkspaceObject =
-    /\b(?:tasks?|todos?|tickets?|subtasks?|messages?|announcements?|channels?|spaces?|wiki|pages?|knowledge|facts?|decisions?|resources?|notes?|canvas|reminders?|status|assignees?|priorities|due dates?|labels?|dependencies|thread replies)\b/i.test(plain) ||
+    /\b(?:tasks?|todos?|tickets?|subtasks?|messages?|announcements?|channels?|spaces?|wiki|pages?|knowledge|facts?|decisions?|resources?|notes?|documents?|files?|reports?|spreadsheets?|csv|canvas|reminders?|status|assignees?|priorities|due dates?|labels?|dependencies|thread replies)\b/i.test(plain) ||
     /\b(?:post|send|put|share)\b.{0,80}(?:#|\bchannel\s+|\bspace\s+)[a-z0-9]/i.test(plain);
   if (!asksForChange || !namesWorkspaceObject) return false;
 
-  if (/\b(?:do\s+not|don't|dont|never)\s+(?:create|queue|post|send|write|save|record|update|edit|change|mark|move|close|assign)(?:\s+or\s+(?:create|queue|post|send|write|update))?\s+(?:any\s+)?(?:tasks?|actions?|changes?|messages?|posts?|pages?|notes?|reminders?)\b/i.test(plain)) {
+  if (/\b(?:do\s+not|don't|dont|never)\s+(?:create|queue|post|send|write|save|record|update|edit|change|mark|move|close|assign)(?:\s+or\s+(?:create|queue|post|send|write|update))?\s+(?:any\s+)?(?:tasks?|actions?|changes?|messages?|posts?|pages?|notes?|documents?|files?|reports?|spreadsheets?|reminders?)\b/i.test(plain)) {
     return false;
   }
 
@@ -1473,7 +1474,13 @@ export async function handleAgentReply(job: JobData): Promise<void> {
     let compiledActionDraft: Awaited<ReturnType<typeof compileDeftyActionDraft>> | null = null;
     if (attachmentContextSections.length > 0) {
       try {
-        compiledActionDraft = await compileMessageModuleCsvImport({
+        compiledActionDraft = await compileMessageWorkspacePlanImport({
+          orgId,
+          actorUserId: userId,
+          messageId,
+          promptContent,
+        });
+        compiledActionDraft ??= await compileMessageModuleCsvImport({
           orgId,
           userId,
           messageId,

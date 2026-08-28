@@ -879,6 +879,36 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
       required: ['resource_id', 'task_identifier', 'idempotency_key'],
     },
   },
+  {
+    name: 'document_send',
+    description:
+      'Create a Markdown, plain-text, or inert CSV document and share it in this Deft conversation. Always requires full human review; no file or message exists before approval.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        filename: {
+          type: 'string',
+          maxLength: 128,
+          description: 'Safe filename ending in .md, .markdown, .txt, or .csv and matching mime_type.',
+        },
+        mime_type: {
+          type: 'string',
+          enum: ['text/markdown', 'text/plain', 'text/csv'],
+        },
+        content: {
+          type: 'string',
+          maxLength: 65536,
+          description: 'Complete document content. CSV cells must be inert, never formulas.',
+        },
+        caption: {
+          type: 'string',
+          maxLength: 2000,
+          description: 'Optional short chat caption shown above the protected attachment.',
+        },
+      },
+      required: ['filename', 'mime_type', 'content'],
+    },
+  },
   ...MODULE_AGENT_TOOLS,
 ];
 
@@ -923,6 +953,9 @@ export const ACTION_TOOLS = new Set([
   'module_record_bulk_create',
   'module_record_update',
   'module_record_archive',
+  // Agent-created documents are staged only as review data. Approval creates
+  // the protected file, typed link, and chat message as one governed action.
+  'document_send',
 ]);
 
 // Calendar read tools are always available because native + ICS events are

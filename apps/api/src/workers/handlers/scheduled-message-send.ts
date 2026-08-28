@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { files, messages, scheduledMessages, users } from '@deft/db/schema';
+import { files, messageAttachments as messageAttachmentLinks, messages, scheduledMessages, users } from '@deft/db/schema';
 import { db } from '../../lib/db.js';
 import { enqueue, QUEUE_NAMES } from '../../lib/queues.js';
 import { getIO } from '../../socket.js';
@@ -86,7 +86,7 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
     }
     const claimedFiles = attachmentIds.length > 0
       ? await tx.update(files)
-        .set({ message_id: message.id })
+        .set({ message_id: message.id, staged_expires_at: null })
         .where(and(
           inArray(files.id, attachmentIds),
           eq(files.org_id, scheduled.org_id),
@@ -103,6 +103,14 @@ export async function sendScheduledMessage(scheduledId: string): Promise<boolean
       : [];
     if (claimedFiles.length !== attachmentIds.length) {
       throw new Error('One or more scheduled-message attachments are unavailable');
+    }
+    if (attachmentIds.length > 0) {
+      await tx.insert(messageAttachmentLinks).values(attachmentIds.map((fileId, position) => ({
+        org_id: scheduled.org_id,
+        message_id: message.id,
+        file_id: fileId,
+        position,
+      })));
     }
     const claimedById = new Map(claimedFiles.map((file) => [file.id, file]));
     const messageAttachments = attachmentIds.map((id) => toMessageAttachment(claimedById.get(id)!));

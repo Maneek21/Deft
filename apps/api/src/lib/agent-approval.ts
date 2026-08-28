@@ -54,6 +54,8 @@ export const TOOL_APPROVAL_TIERS: Record<string, ApprovalTier> = {
   bulk_update_tasks: 'full',
   assign_task: 'auto',
   create_task: 'quick',
+  workspace_plan_import: 'full',
+  document_send: 'full',
   add_knowledge: 'quick',
   wiki_write: 'quick',
   post_message: 'full',

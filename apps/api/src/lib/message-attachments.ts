@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { files } from '@deft/db/schema';
+import { files, messageAttachments } from '@deft/db/schema';
 import { db } from './db.js';
 
 export const MAX_MESSAGE_ATTACHMENTS = 10;
@@ -56,7 +56,35 @@ export async function getMessageAttachments(
   const result = new Map<string, MessageAttachment[]>();
   if (messageIds.length === 0) return result;
 
-  const rows = await db.select({
+  const linkedRows = await db.select({
+    message_id: messageAttachments.message_id,
+    id: files.id,
+    filename: files.filename,
+    mime_type: files.mime_type,
+    size_bytes: files.size_bytes,
+  })
+    .from(messageAttachments)
+    .innerJoin(files, and(
+      eq(messageAttachments.file_id, files.id),
+      eq(messageAttachments.org_id, files.org_id),
+    ))
+    .where(and(
+      eq(messageAttachments.org_id, orgId),
+      inArray(messageAttachments.message_id, messageIds),
+    ))
+    .orderBy(asc(messageAttachments.position), asc(messageAttachments.created_at));
+
+  const linkedIds = new Set<string>();
+  for (const row of linkedRows) {
+    const attachments = result.get(row.message_id) ?? [];
+    attachments.push(toMessageAttachment(row));
+    result.set(row.message_id, attachments);
+    linkedIds.add(row.id);
+  }
+
+  // Compatibility fallback for pre-migration rows. Dual-written files are
+  // skipped so callers see each attachment exactly once.
+  const legacyRows = await db.select({
     message_id: files.message_id,
     id: files.id,
     filename: files.filename,
@@ -70,8 +98,8 @@ export async function getMessageAttachments(
     ))
     .orderBy(asc(files.created_at));
 
-  for (const row of rows) {
-    if (!row.message_id) continue;
+  for (const row of legacyRows) {
+    if (!row.message_id || linkedIds.has(row.id)) continue;
     const attachments = result.get(row.message_id) ?? [];
     attachments.push(toMessageAttachment(row));
     result.set(row.message_id, attachments);
