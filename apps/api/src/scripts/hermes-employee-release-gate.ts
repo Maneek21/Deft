@@ -45,6 +45,7 @@ export const API_SUITES = [
   'test/mcp-connector-safety.test.ts',
   'test/mcp-fetch-unread.test.ts',
   'test/mcp-human-context-packets.test.ts',
+  'test/mcp-legacy-api-key-auth.test.ts',
   'test/mcp-message-privacy.test.ts',
   'test/mcp-platform-context.test.ts',
   'test/mcp-server-2026-compat.test.ts',

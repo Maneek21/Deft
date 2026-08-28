@@ -57,9 +57,18 @@ const ALL_TOOLS = [...READ_TOOLS, ...WRITE_TOOLS];
 
 // ═══ AUTHENTICATION ═══
 
-type ApiKeyRecord = typeof apiKeys.$inferSelect;
+type ApiKeyRecord = Pick<
+  typeof apiKeys.$inferSelect,
+  | 'id'
+  | 'org_id'
+  | 'agent_employee_id'
+  | 'permissions'
+  | 'rate_limit_per_minute'
+  | 'rate_limit_per_day'
+  | 'created_by'
+>;
 
-async function authenticateApiKey(authorization: string | undefined): Promise<ApiKeyRecord | null> {
+async function authenticateApiKey(authorization: string | undefined): Promise<string | null> {
   if (!authorization?.startsWith('Bearer ')) return null;
 
   const token = authorization.slice(7);
@@ -83,7 +92,34 @@ async function authenticateApiKey(authorization: string | undefined): Promise<Ap
     return null;
   }
 
-  return keyRecord;
+  return keyRecord.id;
+}
+
+async function loadActiveApiKeyRecord(apiKeyId: string): Promise<ApiKeyRecord | null> {
+  const [keyRecord] = await db
+    .select({
+      id: apiKeys.id,
+      org_id: apiKeys.org_id,
+      agent_employee_id: apiKeys.agent_employee_id,
+      permissions: apiKeys.permissions,
+      rate_limit_per_minute: apiKeys.rate_limit_per_minute,
+      rate_limit_per_day: apiKeys.rate_limit_per_day,
+      created_by: apiKeys.created_by,
+      expires_at: apiKeys.expires_at,
+    })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, apiKeyId), eq(apiKeys.is_active, true)))
+    .limit(1);
+  if (!keyRecord || (keyRecord.expires_at && keyRecord.expires_at < new Date())) return null;
+  return {
+    id: keyRecord.id,
+    org_id: keyRecord.org_id,
+    agent_employee_id: keyRecord.agent_employee_id,
+    permissions: keyRecord.permissions,
+    rate_limit_per_minute: keyRecord.rate_limit_per_minute,
+    rate_limit_per_day: keyRecord.rate_limit_per_day,
+    created_by: keyRecord.created_by,
+  };
 }
 
 type ApiKeyActor = {
@@ -180,7 +216,8 @@ function keyGrantsPermission(permissions: string[], toolPerm: string): boolean {
 
 // GET /tools — List available tools for this API key
 mcpServerRoutes.get('/tools', async (c) => {
-  const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
+  const authenticatedKeyId = await authenticateApiKey(c.req.header('Authorization'));
+  const keyRecord = authenticatedKeyId ? await loadActiveApiKeyRecord(authenticatedKeyId) : null;
   if (!keyRecord) {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
@@ -200,7 +237,8 @@ mcpServerRoutes.get('/tools', async (c) => {
 // POST /call — Execute a tool
 mcpServerRoutes.post('/call', async (c) => {
   // 1. Authenticate
-  const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
+  const authenticatedKeyId = await authenticateApiKey(c.req.header('Authorization'));
+  const keyRecord = authenticatedKeyId ? await loadActiveApiKeyRecord(authenticatedKeyId) : null;
   if (!keyRecord) {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }
@@ -306,7 +344,8 @@ mcpServerRoutes.post('/call', async (c) => {
 
 // GET /actions/:id/status — Poll action approval status
 mcpServerRoutes.get('/actions/:id/status', async (c) => {
-  const keyRecord = await authenticateApiKey(c.req.header('Authorization'));
+  const authenticatedKeyId = await authenticateApiKey(c.req.header('Authorization'));
+  const keyRecord = authenticatedKeyId ? await loadActiveApiKeyRecord(authenticatedKeyId) : null;
   if (!keyRecord) {
     return c.json({ error: { code: 'unauthorized', message: 'Invalid or expired API key' } }, 401);
   }

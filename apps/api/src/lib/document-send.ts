@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -70,13 +70,8 @@ export type PreparedDocumentSend = {
   idempotency_key: string;
 };
 
-function namespacedSha256(namespace: string, value: string): string {
-  // The HMAC key is a public, versioned namespace for domain separation, not an authentication secret.
-  return createHmac('sha256', namespace).update(value).digest('hex');
-}
-
 function stableUuid(seed: string): string {
-  const chars = namespacedSha256('deft.document-send.uuid.v1', seed).slice(0, 32).split('');
+  const chars = createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
   chars[12] = '4';
   chars[16] = ((Number.parseInt(chars[16]!, 16) & 0x3) | 0x8).toString(16);
   const hex = chars.join('');
@@ -308,9 +303,9 @@ export async function prepareDocumentSend(params: {
     source_message_id: source.id,
     target: targetShape,
   });
-  const previewDigest = `sha256:${namespacedSha256('deft.document-send.preview.v1', digestInput)}`;
+  const previewDigest = `sha256:${createHash('sha256').update(digestInput).digest('hex')}`;
   const idempotencyKey = draft.parsed.idempotency_key
-    ?? `document-send:${namespacedSha256('deft.document-send.idempotency.v1', `${params.orgId}:${params.actorUserId}:${previewDigest}`).slice(0, 48)}`;
+    ?? `document-send:${createHash('sha256').update(`${params.orgId}:${params.actorUserId}:${previewDigest}`).digest('hex').slice(0, 48)}`;
 
   return {
     filename: draft.filename,
