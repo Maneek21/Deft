@@ -1,6 +1,6 @@
 {
   "schema": "deft.hermes.integration.v2",
-  "integration_version": "0.5.0",
+  "integration_version": "0.5.1",
   "deft_release": "0.3.0-preview.13",
   "deft_release_compatibility": "=0.3.0-preview.13",
   "agent_channel_protocols": [
@@ -114,7 +114,7 @@
   "common_plugins": [
     {
       "name": "deft-employee",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "target": "plugins/deft-employee",
       "files": [
         {

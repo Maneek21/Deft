@@ -584,7 +584,7 @@ function hermesIntegrationBundleUrl(): string {
     || `https://github.com/Maneek21/Deft/releases/download/v${DEFT_RELEASE_VERSION}/deft-hermes-integration-${DEFT_RELEASE_VERSION}.tar.gz`;
 }
 
-export const HERMES_INTEGRATION_VERSION = '0.5.0';
+export const HERMES_INTEGRATION_VERSION = '0.5.1';
 
 const CERTIFICATION_REQUIRED_TOOLS = [
   'platform_context',

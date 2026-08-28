@@ -17,6 +17,8 @@ PROTOCOL_VERSION = "deft.agent_channel.v2"
 ADAPTER_VERSION = "0.2.1"
 CAPABILITY = "autonomous_platform_adapter_v1,accepted_event_rehydration_v1"
 REQUIRED_TOOLS = {
+    "attachment_list",
+    "attachment_read",
     "fetch_unread",
     "memory_recall",
     "record_progress",
@@ -26,6 +28,8 @@ REQUIRED_TOOLS = {
     "task_update",
     "thread_fetch",
     "wiki_search",
+    "workspace_plan_import",
+    "document_send",
 }
 
 
@@ -164,7 +168,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--employee-slug", default=os.getenv("DEFT_EMPLOYEE_SLUG"), required=not os.getenv("DEFT_EMPLOYEE_SLUG"))
     parser.add_argument("--mcp-url", default=os.getenv("DEFT_MCP_URL"), required=not os.getenv("DEFT_MCP_URL"))
     parser.add_argument("--mcp-token", default=os.getenv("DEFT_MCP_TOKEN"), required=not os.getenv("DEFT_MCP_TOKEN"))
-    parser.add_argument("--min-tools", type=int, default=44)
+    parser.add_argument("--min-tools", type=int, default=48)
     parser.add_argument("--task-id")
     parser.add_argument("--task-key")
     return parser.parse_args()

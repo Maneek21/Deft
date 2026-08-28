@@ -6,7 +6,9 @@ import json
 import hashlib
 import os
 import re
+import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -18,6 +20,103 @@ SECRET_PATTERNS = (
 )
 WRITE_HINT = re.compile(r"(?:send|email|post|publish|delete|remove|create|update|write|execute|deploy)", re.I)
 DESTRUCTIVE_COMMAND = re.compile(r"(?:rm\s+-rf|del\s+/[sq]|format\s+[a-z]:|git\s+reset\s+--hard)", re.I)
+
+
+DEFT_MCP_TOOL_SCHEMAS = {
+    "attachment_list": {
+        "name": "deft_attachment_list",
+        "description": (
+            "List bounded attachment manifests for one visible Deft message or task. "
+            "Provide exactly one target."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string"},
+                "task_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "attachment_read": {
+        "name": "deft_attachment_read",
+        "description": (
+            "Read one visible Deft attachment through current permission checks. "
+            "Text mode returns bounded extracted text; image_question returns bounded vision evidence."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "attachment_id": {"type": "string"},
+                "mode": {"type": "string", "enum": ["text", "image_question"]},
+                "question": {"type": "string", "maxLength": 1000},
+            },
+            "required": ["attachment_id"],
+            "additionalProperties": False,
+        },
+    },
+    "workspace_plan_import": {
+        "name": "deft_workspace_plan_import",
+        "description": (
+            "Prepare a CSV or XLSX attached to a visible Deft message as one full-review "
+            "project/task import. Nothing is created before approval."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string"},
+                "attachment_id": {"type": "string"},
+            },
+            "required": ["message_id"],
+            "additionalProperties": False,
+        },
+    },
+    "document_send": {
+        "name": "deft_document_send",
+        "description": (
+            "Create a protected Markdown, plain-text, or inert CSV document and share it "
+            "through Deft chat after full human review."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_message_id": {"type": "string"},
+                "filename": {"type": "string", "minLength": 1, "maxLength": 128},
+                "mime_type": {
+                    "type": "string",
+                    "enum": ["text/markdown", "text/plain", "text/csv"],
+                },
+                "content": {"type": "string", "minLength": 1, "maxLength": 65536},
+                "caption": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "target": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["space_id"],
+                            "properties": {"space_id": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "required": ["thread_id"],
+                            "properties": {"thread_id": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "required": ["user_id"],
+                            "properties": {"user_id": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                    ],
+                },
+                "idempotency_key": {"type": "string", "maxLength": 128},
+            },
+            "required": ["source_message_id", "filename", "mime_type", "content"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def _sanitize(value: Any, limit: int = 900) -> str:
@@ -64,6 +163,56 @@ def _provider_accepted(success: bool, receipt: Dict[str, str]) -> bool:
         return False
     status = receipt.get("status", "").lower()
     return not status or status in {"accepted", "sent", "delivered", "success", "succeeded", "ok"}
+
+
+class DeftMcpToolBridge:
+    """Expose a narrow Deft-owned tool seam without changing Hermes core."""
+
+    def __init__(self) -> None:
+        self.base_url = os.environ.get("DEFT_MCP_URL", "").rstrip("/")
+        self.token = os.environ.get("DEFT_MCP_TOKEN", "")
+        self.employee_slug = os.environ.get("DEFT_EMPLOYEE_SLUG", "")
+
+    def available(self) -> bool:
+        return bool(self.base_url and self.token and self.employee_slug)
+
+    def call(self, name: str, arguments: Dict[str, Any]) -> str:
+        if name not in DEFT_MCP_TOOL_SCHEMAS:
+            raise RuntimeError("Unsupported Deft plugin tool")
+        if not self.available():
+            raise RuntimeError("Deft MCP identity is not configured")
+        scoped_arguments = dict(arguments) if isinstance(arguments, dict) else {}
+        scoped_arguments["caller_employee_slug"] = self.employee_slug
+        body = {
+            "jsonrpc": "2.0",
+            "id": f"deft-plugin-{uuid.uuid4()}",
+            "method": "tools/call",
+            "params": {"name": name, "arguments": scoped_arguments},
+        }
+        request = urllib.request.Request(
+            self.base_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Deft MCP HTTP {exc.code}: {_sanitize(detail, 500)}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError("Deft MCP is unavailable") from exc
+        if payload.get("error"):
+            raise RuntimeError(f"Deft MCP {name} failed: {_sanitize(payload['error'], 500)}")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Deft MCP {name} returned no result object")
+        return json.dumps(result, ensure_ascii=False)
 
 
 class DeftEmployeeHooks:
@@ -205,6 +354,21 @@ class DeftEmployeeHooks:
 
 def register(ctx: Any) -> None:
     hooks = DeftEmployeeHooks()
+    bridge = DeftMcpToolBridge()
+    for remote_name, schema in DEFT_MCP_TOOL_SCHEMAS.items():
+        def handler(args: Dict[str, Any], _remote_name: str = remote_name, **_kwargs: Any) -> str:
+            return bridge.call(_remote_name, args)
+
+        ctx.register_tool(
+            name=schema["name"],
+            toolset="deft_workspace",
+            schema=schema,
+            handler=handler,
+            check_fn=bridge.available,
+            requires_env=["DEFT_MCP_URL", "DEFT_MCP_TOKEN", "DEFT_EMPLOYEE_SLUG"],
+            description=schema["description"],
+            emoji="🔒",
+        )
     ctx.register_skill(
         "runtime",
         Path(__file__).with_name("SKILL.md"),

@@ -55,6 +55,14 @@ class FakeConfig:
 
 
 class DeftPlatformSkeletonTests(unittest.TestCase):
+    def test_readiness_requires_governed_attachment_workflow_tools(self):
+        self.assertTrue({
+            "attachment_list",
+            "attachment_read",
+            "workspace_plan_import",
+            "document_send",
+        }.issubset(READINESS.REQUIRED_TOOLS))
+
     def test_readiness_treats_contained_compatibility_outcome_as_failure(self):
         with patch.object(READINESS, "_rpc", return_value={
             "content": [{"type": "text", "text": "DEFT_TOOL_FAILED: denied"}],

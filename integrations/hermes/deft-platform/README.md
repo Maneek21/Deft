@@ -52,8 +52,8 @@ Required:
 2. One Deft employee identity, Agent Channel token, and MCP token from the same
    organization and employee.
 3. Network reachability from the Hermes host to both Deft endpoints.
-4. The nine core workplace tools checked by `readiness.py`; the current Deft
-   contract exposes at least 44 MCP tools.
+4. The core workplace and governed attachment tools checked by `readiness.py`;
+   the current Deft contract exposes at least 48 MCP tools.
 
 Recommended for the internal pilot:
 

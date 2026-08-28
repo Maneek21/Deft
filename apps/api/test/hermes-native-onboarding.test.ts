@@ -14,7 +14,7 @@ test('fresh Hermes setup uses the native platform and direct HTTP MCP only', () 
     }, 'native-onboarding-nonce');
 
     assert.equal(setup.runtime_kind, 'hermes');
-    assert.equal(setup.integration_version, '0.5.0');
+    assert.equal(setup.integration_version, '0.5.1');
     assert.equal(setup.mcp_endpoint_url, 'https://deft.example/api/mcp/hermes/v1');
     assert.equal(setup.channel_endpoint_url, 'https://deft.example/api/agent-channel/v1');
     assert.match(setup.setup_steps.join('\n'), /install.*deft-platform.*deft-employee.*deft-memory/i);

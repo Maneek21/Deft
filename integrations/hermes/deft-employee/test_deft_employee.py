@@ -1,7 +1,9 @@
 import importlib.util
 import pathlib
 import json
+import os
 import unittest
+from unittest.mock import patch
 
 
 MODULE = pathlib.Path(__file__).with_name("__init__.py")
@@ -15,12 +17,16 @@ class FakeContext:
     def __init__(self):
         self.hooks = {}
         self.skills = []
+        self.tools = {}
 
     def register_hook(self, name, callback):
         self.hooks[name] = callback
 
     def register_skill(self, name, path, description=""):
         self.skills.append((name, pathlib.Path(path), description))
+
+    def register_tool(self, **kwargs):
+        self.tools[kwargs["name"]] = kwargs
 
 
 class DeftEmployeeHookTests(unittest.TestCase):
@@ -127,6 +133,67 @@ class DeftEmployeeHookTests(unittest.TestCase):
 
 
 class DeftEmployeePluginTests(unittest.TestCase):
+    def test_registers_governed_attachment_workflow_tools(self):
+        context = FakeContext()
+        MOD.register(context)
+
+        self.assertEqual(
+            set(context.tools),
+            {
+                "deft_attachment_list",
+                "deft_attachment_read",
+                "deft_workspace_plan_import",
+                "deft_document_send",
+            },
+        )
+        self.assertNotIn(
+            "caller_employee_slug",
+            context.tools["deft_workspace_plan_import"]["schema"]["parameters"]["properties"],
+        )
+
+    def test_tool_bridge_injects_authenticated_employee_identity(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": "deft-plugin",
+                    "result": {"structuredContent": {"deft_status": "ok"}},
+                }).encode()
+
+        captured = {}
+
+        def open_request(request, timeout):
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data.decode())
+            captured["timeout"] = timeout
+            return Response()
+
+        with patch.dict(os.environ, {
+            "DEFT_MCP_URL": "https://deft.example/api/mcp/hermes/v1",
+            "DEFT_MCP_TOKEN": "test-token",
+            "DEFT_EMPLOYEE_SLUG": "trusted-employee",
+        }, clear=False), patch.object(MOD.urllib.request, "urlopen", side_effect=open_request):
+            bridge = MOD.DeftMcpToolBridge()
+            result = json.loads(bridge.call(
+                "workspace_plan_import",
+                {"message_id": "message-1", "caller_employee_slug": "spoofed"},
+            ))
+
+        self.assertEqual(captured["url"], "https://deft.example/api/mcp/hermes/v1")
+        self.assertEqual(captured["body"]["method"], "tools/call")
+        self.assertEqual(captured["body"]["params"]["name"], "workspace_plan_import")
+        self.assertEqual(
+            captured["body"]["params"]["arguments"],
+            {"message_id": "message-1", "caller_employee_slug": "trusted-employee"},
+        )
+        self.assertEqual(result["structuredContent"]["deft_status"], "ok")
+
     def test_registers_runtime_skill_and_existing_hooks(self):
         context = FakeContext()
         MOD.register(context)
@@ -146,6 +213,8 @@ class DeftEmployeePluginTests(unittest.TestCase):
         self.assertIn("deft_status", content)
         self.assertIn("record_progress", content)
         self.assertIn("provider receipt", content.lower())
+        self.assertIn("tool_search", content)
+        self.assertIn("tool_call", content)
 
     def test_stock_hermes_resolves_the_qualified_runtime_skill(self):
         from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
@@ -153,12 +222,18 @@ class DeftEmployeePluginTests(unittest.TestCase):
         manager = PluginManager()
         manifest = PluginManifest(
             name="deft-employee",
-            version="0.3.0",
+            version="0.4.0",
             description="Deft employee policy",
             source="user",
         )
         MOD.register(PluginContext(manifest, manager))
 
+        self.assertTrue({
+            "deft_attachment_list",
+            "deft_attachment_read",
+            "deft_workspace_plan_import",
+            "deft_document_send",
+        }.issubset(manager._plugin_tool_names))
         self.assertEqual(
             manager.find_plugin_skill("deft-employee:runtime"),
             PLUGIN_DIR / "SKILL.md",
