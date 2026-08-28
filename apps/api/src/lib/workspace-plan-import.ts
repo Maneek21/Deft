@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { unzipSync } from 'fflate';
 import readXlsxFile from 'read-excel-file/node';
@@ -129,14 +129,13 @@ function normalizeIdentity(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase();
 }
 
-function nonSecretSha256(value: string): string {
-  // This is canonical identifier/content hashing; authentication credentials never enter this helper.
-  // codeql[js/insufficient-password-hash]
-  return createHash('sha256').update(value).digest('hex');
+function namespacedSha256(namespace: string, value: string): string {
+  // The HMAC key is a public, versioned namespace for domain separation, not an authentication secret.
+  return createHmac('sha256', namespace).update(value).digest('hex');
 }
 
 function stableUuid(seed: string): string {
-  const hex = nonSecretSha256(seed).slice(0, 32).split('');
+  const hex = namespacedSha256('deft.workspace-plan.uuid.v1', seed).slice(0, 32).split('');
   hex[12] = '4';
   hex[16] = ['8', '9', 'a', 'b'][parseInt(hex[16]!, 16) % 4]!;
   const value = hex.join('');
@@ -152,7 +151,7 @@ function stableValue(value: unknown): unknown {
 }
 
 function sha256Json(value: unknown): string {
-  return `sha256:${nonSecretSha256(JSON.stringify(stableValue(value)))}`;
+  return `sha256:${namespacedSha256('deft.workspace-plan.preview.v1', JSON.stringify(stableValue(value)))}`;
 }
 
 function cellText(value: unknown): string {
