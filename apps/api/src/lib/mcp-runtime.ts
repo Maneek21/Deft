@@ -70,6 +70,15 @@ export function isMcpToolEnabled(
   return enabledTools.some((configuredName) => canonicalMcpToolName(configuredName) === toolName);
 }
 
+export type McpExecutionUnavailableReason = 'provider_unavailable' | 'operation_unavailable';
+export type ExecutableMcpConnectionResult =
+  | { connection: typeof mcpConnections.$inferSelect; error?: never; reason?: never }
+  | {
+      connection: null;
+      error: string;
+      reason: McpExecutionUnavailableReason;
+    };
+
 /**
  * Resolve an MCP connection at execution time, not only at planning time.
  * This closes stale-plan and hallucinated-tool paths after a connection is
@@ -80,7 +89,7 @@ export async function getExecutableMcpConnection(
   connectionSlug: string,
   toolName: string,
   agentEmployeeId?: string | null,
-): Promise<{ connection: typeof mcpConnections.$inferSelect | null; error?: string }> {
+): Promise<ExecutableMcpConnectionResult> {
   const [connection] = await db
     .select()
     .from(mcpConnections)
@@ -91,7 +100,11 @@ export async function getExecutableMcpConnection(
     ))
     .limit(1);
   if (!connection) {
-    return { connection: null, error: `MCP connection '${connectionSlug}' is unavailable` };
+    return {
+      connection: null,
+      error: `MCP connection '${connectionSlug}' is unavailable`,
+      reason: 'provider_unavailable',
+    };
   }
 
   if (agentEmployeeId) {
@@ -109,15 +122,27 @@ export async function getExecutableMcpConnection(
       ))
       .limit(1);
     if (!employee || !(employee.mcp_connection_ids ?? []).includes(connection.id)) {
-      return { connection: null, error: `MCP connection '${connectionSlug}' is not assigned to this agent employee` };
+      return {
+        connection: null,
+        error: `MCP connection '${connectionSlug}' is not assigned to this agent employee`,
+        reason: 'provider_unavailable',
+      };
     }
     if ((employee.disabled_tools ?? []).some((disabledName) => canonicalMcpToolName(disabledName) === toolName)) {
-      return { connection: null, error: `MCP tool '${toolName}' is disabled for this agent employee` };
+      return {
+        connection: null,
+        error: `MCP tool '${toolName}' is disabled for this agent employee`,
+        reason: 'operation_unavailable',
+      };
     }
   }
 
   if (!isMcpToolEnabled(connection.enabled_tools, connection.slug, toolName)) {
-    return { connection: null, error: `MCP tool '${toolName}' is not enabled on connection '${connectionSlug}'` };
+    return {
+      connection: null,
+      error: `MCP tool '${toolName}' is not enabled on connection '${connectionSlug}'`,
+      reason: 'operation_unavailable',
+    };
   }
 
   const overrideRows = await db
@@ -131,7 +156,11 @@ export async function getExecutableMcpConnection(
     row.is_disabled && canonicalMcpToolName(row.tool_name) === toolName
   ));
   if (disabledOverride) {
-    return { connection: null, error: `MCP tool '${toolName}' is disabled on connection '${connectionSlug}'` };
+    return {
+      connection: null,
+      error: `MCP tool '${toolName}' is disabled on connection '${connectionSlug}'`,
+      reason: 'operation_unavailable',
+    };
   }
 
   return { connection };

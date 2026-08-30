@@ -46,3 +46,14 @@ test('every current runtime, admin, and script discovery consumer names the Capa
     assert.doesNotMatch(source, /MCPConnectionConfig/, consumer);
   }
 });
+
+test('immediate MCP execution crosses Capability Service while the action seam remains for Loop 4', async () => {
+  const immediate = await readFile(join(sourceRoot, 'lib/agent-context.ts'), 'utf8');
+  assert.match(immediate, /capabilityService\.invoke\s*\(/);
+  assert.doesNotMatch(immediate, /mcpClientManager/);
+  assert.doesNotMatch(immediate, /\b(?:getExecutableMcpConnection|toConnectionConfig|mcpResultPayload)\b/);
+  assert.doesNotMatch(immediate, /\.executeTool\s*\(/);
+
+  const action = await readFile(join(sourceRoot, 'lib/agent-actions.ts'), 'utf8');
+  assert.match(action, /mcpClientManager\.executeTool\s*\(/);
+});

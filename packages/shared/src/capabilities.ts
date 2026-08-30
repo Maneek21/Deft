@@ -10,6 +10,7 @@ export const CAPABILITY_LIMITS = {
   operations_per_snapshot: 1_024,
   operation_schema_bytes: 256 * 1024,
   snapshot_bytes: 1024 * 1024,
+  outcome_projection_bytes: 1024 * 1024,
 } as const;
 
 export type CapabilityJsonValue =
@@ -275,23 +276,36 @@ function canonicalizeCapabilityJsonInner(value: CapabilityJsonValue): Capability
   return output;
 }
 
-function capabilityJsonStringBytes(value: string): number {
-  let bytes = new TextEncoder().encode(value).byteLength + 2;
+function capabilityJsonStringBytes(value: string, maxBytes = Number.POSITIVE_INFINITY): number {
+  let bytes = 2;
+  if (bytes > maxBytes) return bytes;
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);
     if (code === 0x22 || code === 0x5c) {
-      bytes += 1;
+      bytes += 2;
     } else if (code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) {
-      bytes += 1;
+      bytes += 2;
     } else if (code <= 0x1f) {
-      bytes += 5;
+      bytes += 6;
+    } else if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
     } else if (code >= 0xd800 && code <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) index++;
-      else bytes += 3;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else {
+        // Well-formed JSON.stringify escapes lone surrogates as `\ud800`.
+        bytes += 6;
+      }
     } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
       bytes += 3;
     }
+    if (bytes > maxBytes) return bytes;
   }
   return bytes;
 }
@@ -330,7 +344,7 @@ export function assertCapabilityJsonWithinBudget(
       return;
     }
     if (typeof nested === 'string') {
-      addBytes(capabilityJsonStringBytes(nested));
+      addBytes(capabilityJsonStringBytes(nested, maxBytes - bytes));
       return;
     }
     if (typeof nested !== 'object') throw new TypeError('Capability JSON contains a non-JSON value');
@@ -338,6 +352,9 @@ export function assertCapabilityJsonWithinBudget(
     ancestors.add(nested);
 
     if (Array.isArray(nested)) {
+      if (nested.length > maxNodes - nodes) {
+        throw new TypeError(`Capability JSON exceeds ${maxNodes} nodes`);
+      }
       const elementKeys = capabilityJsonArrayElementKeys(nested);
       if (elementKeys === null) throw new TypeError('Capability JSON contains a non-JSON array');
       addBytes(2 + Math.max(0, nested.length - 1));
@@ -350,13 +367,21 @@ export function assertCapabilityJsonWithinBudget(
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError('Capability JSON contains a non-plain object');
     }
+    let enumerableOwnKeys = 0;
+    for (const key in nested) {
+      if (!Object.prototype.hasOwnProperty.call(nested, key)) continue;
+      enumerableOwnKeys++;
+      if (enumerableOwnKeys > maxNodes - nodes) {
+        throw new TypeError(`Capability JSON exceeds ${maxNodes} nodes`);
+      }
+    }
     const keys = Reflect.ownKeys(nested);
     if (keys.some((key) => typeof key !== 'string' || !Object.prototype.propertyIsEnumerable.call(nested, key))) {
       throw new TypeError('Capability JSON contains a symbol or non-enumerable property');
     }
     addBytes(2 + Math.max(0, keys.length - 1));
     for (const key of keys as string[]) {
-      addBytes(capabilityJsonStringBytes(key) + 1);
+      addBytes(capabilityJsonStringBytes(key, maxBytes - bytes - 1) + 1);
       visit((nested as Record<string, unknown>)[key], depth + 1);
     }
     ancestors.delete(nested);

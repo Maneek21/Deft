@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { CAPABILITY_LIMITS } from '@deft/shared';
 import type {
   MCPConnectionConfig,
   MCPProviderTool,
+  MCPResult,
   MCPTool,
   MCPToolDiscovery,
   MCPToolOverride,
@@ -16,6 +18,7 @@ import {
   McpCapabilityProvider,
   type McpConnectionRow,
   type McpConnectionSource,
+  type McpCapabilityRuntime,
   type McpDiscoveryClient,
 } from '../src/lib/capability-providers/mcp.js';
 
@@ -124,6 +127,22 @@ function discovery(
   providerTools: MCPProviderTool[] = [providerTool()],
 ): MCPToolDiscovery {
   return { tools, providerTools };
+}
+
+function providerForRuntime(runtime: McpCapabilityRuntime): McpCapabilityProvider {
+  const paired = discovery();
+  const client: McpDiscoveryClient = {
+    getCachedToolDiscovery: async () => paired,
+    discoverToolDiscovery: async () => paired,
+    testToolDiscovery: async () => paired,
+  };
+  return new McpCapabilityProvider(
+    client,
+    sourceFor(),
+    () => '2026-08-30T06:00:00.000Z',
+    () => undefined,
+    runtime,
+  );
 }
 
 test('MCP adapter resolves tenant-scoped config internally and preserves cache/refresh/test dispatch', async () => {
@@ -477,6 +496,9 @@ test('Capability Service uses the closed MCP provider dispatch', async () => {
       received = request;
       return expected;
     },
+    invoke: async () => {
+      throw new Error('unexpected invocation');
+    },
   });
   const request = {
     provider_kind: 'mcp' as const,
@@ -487,4 +509,247 @@ test('Capability Service uses the closed MCP provider dispatch', async () => {
 
   assert.equal(await service.discover(request), expected);
   assert.equal(received, request);
+});
+
+test('Capability Service invokes MCP once and preserves exact structured legacy and safe projections', async () => {
+  const rawResult = {
+    content: [{ type: 'text', text: 'sent' }],
+    structuredContent: { message_id: 'message-1' },
+    _meta: { trace_id: 'trace-invoke-success' },
+  };
+  const input = { recipient: 'ada@example.test' };
+  const resolutionCalls: unknown[][] = [];
+  const executionCalls: Array<{
+    config: MCPConnectionConfig;
+    operationName: string;
+    receivedInput: Record<string, unknown>;
+  }> = [];
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async (...args) => {
+      resolutionCalls.push(args);
+      return { connection };
+    },
+    executeTool: async (config, operationName, receivedInput) => {
+      executionCalls.push({ config, operationName, receivedInput });
+      return {
+        success: true,
+        content: rawResult.content,
+        structuredContent: rawResult.structuredContent,
+        meta: rawResult._meta,
+        rawResult,
+        durationMs: 23,
+      };
+    },
+  };
+  const service = new CapabilityService(providerForRuntime(runtime));
+
+  const result = await service.invoke({
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada', agent_employee_id: 'employee_mailer' },
+    provider: {
+      provider_kind: 'mcp',
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+    input,
+  });
+
+  assert.deepEqual(resolutionCalls, [[
+    connection.org_id,
+    connection.slug,
+    'send_email',
+    'employee_mailer',
+  ]]);
+  assert.equal(executionCalls.length, 1);
+  assert.deepEqual(executionCalls[0]?.config, expectedConfig);
+  assert.equal(executionCalls[0]?.operationName, 'send_email');
+  assert.equal(executionCalls[0]?.receivedInput, input);
+  assert.equal(result.provider_call_attempted, true);
+  assert.equal(result.provider_succeeded, true);
+  assert.equal(result.legacy_output, rawResult);
+  assert.deepEqual(result.provider, {
+    provider_kind: 'mcp',
+    requested_provider_key: connection.slug,
+    resolved_provider: {
+      org_id: connection.org_id,
+      provider_kind: 'mcp',
+      provider_instance_id: connection.id,
+    },
+  });
+  assert.equal(result.provider_display_name, connection.name);
+  assert.equal(result.duration_ms, 23);
+  assert.equal(result.safe_projection.status, 'available');
+  if (result.safe_projection.status === 'available') {
+    assert.equal(result.safe_projection.outcome.output, rawResult);
+    assert.equal(result.safe_projection.outcome.success, true);
+  }
+});
+
+test('Capability Service preserves attempted MCP errors and marks pre-call denials without citations', async () => {
+  const rawError = {
+    content: [{ type: 'text', text: 'invalid recipient' }],
+    structuredContent: { code: 'INVALID_RECIPIENT' },
+    isError: true,
+  };
+  let executeCalls = 0;
+  const failedResult: MCPResult = {
+    success: false,
+    content: rawError.content,
+    structuredContent: rawError.structuredContent,
+    rawResult: rawError,
+    error: 'invalid recipient',
+    durationMs: 31,
+  };
+  const attemptedService = new CapabilityService(providerForRuntime({
+    resolveExecutable: async () => ({ connection }),
+    executeTool: async () => {
+      executeCalls++;
+      return failedResult;
+    },
+  }));
+  const request = {
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada' },
+    provider: {
+      provider_kind: 'mcp' as const,
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+    input: {},
+  };
+
+  const attempted = await attemptedService.invoke(request);
+  assert.equal(executeCalls, 1);
+  assert.equal(attempted.provider_call_attempted, true);
+  assert.equal(attempted.provider_succeeded, false);
+  assert.deepEqual(attempted.legacy_output, { ...rawError, error: 'invalid recipient' });
+  assert.equal(attempted.error, 'invalid recipient');
+  assert.equal(attempted.error_code, 'CAPABILITY_PROVIDER_ERROR');
+  assert.ok(attempted.provider.resolved_provider);
+  assert.equal(attempted.safe_projection.status, 'available');
+
+  for (const denial of [{
+    error: `MCP connection '${connection.slug}' is unavailable`,
+    reason: 'provider_unavailable' as const,
+    expectedCode: 'CAPABILITY_PROVIDER_UNAVAILABLE',
+  }, {
+    error: "MCP tool 'send_email' is disabled for this agent employee",
+    reason: 'operation_unavailable' as const,
+    expectedCode: 'CAPABILITY_OPERATION_UNAVAILABLE',
+  }]) {
+    let deniedExecuteCalls = 0;
+    const deniedService = new CapabilityService(providerForRuntime({
+      resolveExecutable: async () => ({
+        connection: null,
+        error: denial.error,
+        reason: denial.reason,
+      }),
+      executeTool: async () => {
+        deniedExecuteCalls++;
+        return failedResult;
+      },
+    }));
+    const denied = await deniedService.invoke(request);
+    assert.equal(deniedExecuteCalls, 0);
+    assert.equal(denied.provider_call_attempted, false);
+    assert.equal(denied.provider_succeeded, false);
+    assert.deepEqual(denied.legacy_output, { error: denial.error });
+    assert.equal(denied.error_code, denial.expectedCode);
+    assert.equal(denied.provider.resolved_provider, undefined);
+    assert.equal(denied.provider_display_name, undefined);
+    assert.equal(denied.safe_projection.status, 'available');
+  }
+});
+
+test('unrepresentable post-call output never changes, retries, or throws the legacy result', async () => {
+  const rawResult = {
+    content: [{ type: 'text', text: 'provider completed the effect' }],
+    structuredContent: {
+      oversized_but_valid_json: 'x'.repeat(CAPABILITY_LIMITS.outcome_projection_bytes + 1),
+    },
+  };
+  let calls = 0;
+  const service = new CapabilityService(providerForRuntime({
+    resolveExecutable: async () => ({ connection }),
+    executeTool: async () => {
+      calls++;
+      return {
+        success: true,
+        content: rawResult.content,
+        structuredContent: rawResult.structuredContent,
+        rawResult,
+        durationMs: 7,
+      };
+    },
+  }));
+
+  const result = await service.invoke({
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada' },
+    provider: {
+      provider_kind: 'mcp',
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+    input: {},
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.legacy_output, rawResult);
+  assert.equal(result.provider_call_attempted, true);
+  assert.equal(result.provider_succeeded, true);
+  assert.deepEqual(result.safe_projection, {
+    status: 'unrepresentable',
+    outcome: null,
+    warning_code: 'CAPABILITY_OUTCOME_UNREPRESENTABLE',
+  });
+});
+
+test('strict invocation inputs fail before resolution and pre-call/runtime throws keep legacy behavior', async () => {
+  let resolveCalls = 0;
+  let executeCalls = 0;
+  const runtime: McpCapabilityRuntime = {
+    resolveExecutable: async () => {
+      resolveCalls++;
+      return { connection };
+    },
+    executeTool: async () => {
+      executeCalls++;
+      throw new Error('unexpected executor failure');
+    },
+  };
+  const service = new CapabilityService(providerForRuntime(runtime));
+  const base = {
+    org_id: connection.org_id,
+    actor: { user_id: 'user_ada' },
+    provider: {
+      provider_kind: 'mcp' as const,
+      connection_slug: connection.slug,
+      operation_name: 'send_email',
+    },
+  };
+
+  await assert.rejects(service.invoke({ ...base, input: { invalid: undefined } }));
+  await assert.rejects(service.invoke({ ...base, input: {}, grant: 'admin' }));
+  assert.equal(resolveCalls, 0);
+  assert.equal(executeCalls, 0);
+
+  await assert.rejects(service.invoke({ ...base, input: {} }), /unexpected executor failure/);
+  assert.equal(resolveCalls, 1);
+  assert.equal(executeCalls, 1);
+
+  const invalidTargetService = new CapabilityService(providerForRuntime({
+    resolveExecutable: async () => ({
+      connection: { ...connection, server_url: 'http://127.0.0.1/private' },
+    }),
+    executeTool: async () => {
+      executeCalls++;
+      throw new Error('target validation was bypassed');
+    },
+  }));
+  await assert.rejects(
+    invalidTargetService.invoke({ ...base, input: {} }),
+    /Invalid MCP connection target:/,
+  );
+  assert.equal(executeCalls, 1);
 });

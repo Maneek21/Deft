@@ -1,6 +1,6 @@
 # App Platform Phase 2: Capability Service loops
 
-**Status:** in progress; Loops 0–2 completed on 2026-08-30, Loop 3 next
+**Status:** in progress; Loops 0–3 completed on 2026-08-30, Loop 4 next
 
 **Implementation baseline:** `origin/master` at `bdb137ee33a047a39b73d5f08ea958efb1fcbf35`
 
@@ -150,6 +150,9 @@ Rejected alternatives:
   and budget checks in their existing order and with their existing messages.
 - Preserve structured MCP output, explicit outer error signal, duration,
   citation identity/title, timeout, auth-expiry handling, and backoff behavior.
+- Preserve the untouched legacy payload beside a strict safe projection. Mark
+  non-JSON SDK edge outputs unrepresentable without throwing, retrying, or
+  changing an already-attempted result.
 
 ### Exit evidence
 
@@ -157,6 +160,8 @@ Rejected alternatives:
   assignment, disabled tool, malformed prefixed name, and cross-org cases match
   the baseline result and citation behavior.
 - A counting fake provider proves one low-level execution per invocation.
+- Golden before/after immediate-path DB tests preserve structured success,
+  tool/transport errors, citations, denial ordering, and zero-call boundaries.
 
 ## Loop 4: Action execution cutover
 

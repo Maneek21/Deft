@@ -740,7 +740,7 @@ These are dependency and certification gates, not promises that each phase is on
   operation tuple uniqueness, deterministic digests, and safe projections.
   Keep them non-durable until Phase 3 Runs provide a concrete reference,
   retention policy, and schema-drift consumer.
-- [ ] Implement MCP as the first provider adapter.
+- [x] Implement MCP as the first provider adapter for discovery and invocation.
 - [ ] Route discovery and both direct outbound MCP execution paths through CapabilityService.
 - [ ] Preserve names, payload bytes, errors, approval tiers, assignments, budgets, and connector behavior.
 - [ ] Add a grep/architecture test proving only provider adapters call `mcpClientManager.executeTool`.

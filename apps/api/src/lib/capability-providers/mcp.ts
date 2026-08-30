@@ -3,18 +3,28 @@ import {
   CAPABILITY_LIMITS,
   assertCapabilityJsonWithinBudget,
   createCapabilityProviderDiscoverySnapshot,
+  type CapabilityInvocationErrorCode,
+  type CapabilityInvocationProviderRef,
+  type CapabilityInvocationRequest,
   type CapabilityProviderDiscoverySnapshot,
 } from '@deft/shared';
 import { mcpConnections } from '@deft/db/schema';
 import {
   mcpClientManager,
+  type MCPConnectionConfig,
+  type MCPResult,
   type MCPToolDiscovery,
   type MCPTool,
   type MCPToolOverride,
 } from '@deft/mcp';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db.js';
-import { toConnectionConfig } from '../mcp-runtime.js';
+import {
+  getExecutableMcpConnection,
+  mcpResultPayload,
+  toConnectionConfig,
+  type ExecutableMcpConnectionResult,
+} from '../mcp-runtime.js';
 import {
   mcpSnapshotProviderDescription,
   mcpSnapshotProviderTitle,
@@ -39,6 +49,25 @@ export interface McpCapabilityDiscoveryResult {
   snapshot: Readonly<CapabilityProviderDiscoverySnapshot> | null;
 }
 
+export type McpCapabilityInvocationRequest = CapabilityInvocationRequest & {
+  provider: Extract<CapabilityInvocationRequest['provider'], { provider_kind: 'mcp' }>;
+};
+
+/** Provider-neutral execution facts plus the untouched compatibility payload.
+ * Capability Service derives a strict safe projection without allowing that
+ * projection to change or retry the already-attempted legacy call. */
+export interface McpCapabilityInvocationAdapterResult {
+  provider: CapabilityInvocationProviderRef & { provider_kind: 'mcp' };
+  provider_display_name?: string;
+  operation_name: string;
+  provider_call_attempted: boolean;
+  provider_succeeded: boolean;
+  legacy_output: unknown;
+  error?: string;
+  error_code?: CapabilityInvocationErrorCode;
+  duration_ms: number;
+}
+
 export interface McpDiscoveryClient {
   getCachedToolDiscovery(
     config: ReturnType<typeof toConnectionConfig>,
@@ -55,6 +84,20 @@ export type McpConnectionRow = typeof mcpConnections.$inferSelect;
 
 export interface McpConnectionSource {
   findById(orgId: string, connectionId: string): Promise<McpConnectionRow | null>;
+}
+
+export interface McpCapabilityRuntime {
+  resolveExecutable(
+    orgId: string,
+    connectionSlug: string,
+    operationName: string,
+    agentEmployeeId?: string | null,
+  ): Promise<ExecutableMcpConnectionResult>;
+  executeTool(
+    config: MCPConnectionConfig,
+    operationName: string,
+    input: Record<string, unknown>,
+  ): Promise<MCPResult>;
 }
 
 export interface CapabilitySnapshotWarning {
@@ -81,6 +124,13 @@ const databaseMcpConnectionSource: McpConnectionSource = {
   },
 };
 
+const databaseMcpCapabilityRuntime: McpCapabilityRuntime = {
+  resolveExecutable: getExecutableMcpConnection,
+  executeTool: (config, operationName, input) => (
+    mcpClientManager.executeTool(config, operationName, input)
+  ),
+};
+
 function defaultSnapshotWarningSink(warning: CapabilitySnapshotWarning): void {
   console.warn(
     `[capability-service] ${warning.code} for ${warning.provider_kind} provider ${warning.provider_instance_id} in org ${warning.org_id}`,
@@ -98,6 +148,7 @@ export class McpCapabilityProvider {
     private readonly connections: McpConnectionSource = databaseMcpConnectionSource,
     private readonly clock: Clock = () => new Date().toISOString(),
     private readonly warn: SnapshotWarningSink = defaultSnapshotWarningSink,
+    private readonly runtime: McpCapabilityRuntime = databaseMcpCapabilityRuntime,
   ) {}
 
   async discover(request: McpCapabilityDiscoveryRequest): Promise<McpCapabilityDiscoveryResult> {
@@ -129,6 +180,73 @@ export class McpCapabilityProvider {
       provider_kind: 'mcp',
       tools: discovery.tools,
       snapshot,
+    };
+  }
+
+  async invoke(
+    request: McpCapabilityInvocationRequest,
+  ): Promise<McpCapabilityInvocationAdapterResult> {
+    const requestedProvider = {
+      provider_kind: 'mcp' as const,
+      requested_provider_key: request.provider.connection_slug,
+    };
+    const resolved = await this.runtime.resolveExecutable(
+      request.org_id,
+      request.provider.connection_slug,
+      request.provider.operation_name,
+      request.actor.agent_employee_id,
+    );
+    if (!resolved.connection) {
+      return {
+        provider: requestedProvider,
+        operation_name: request.provider.operation_name,
+        provider_call_attempted: false,
+        provider_succeeded: false,
+        legacy_output: { error: resolved.error },
+        error: resolved.error,
+        error_code: resolved.reason === 'operation_unavailable'
+          ? 'CAPABILITY_OPERATION_UNAVAILABLE'
+          : 'CAPABILITY_PROVIDER_UNAVAILABLE',
+        duration_ms: 0,
+      };
+    }
+
+    // Target validation and credential materialization remain before the one
+    // external call and preserve their historical throw behavior.
+    const config = toConnectionConfig(resolved.connection);
+    const mcpResult = await this.runtime.executeTool(
+      config,
+      request.provider.operation_name,
+      request.input,
+    );
+    const legacyOutput = mcpResultPayload(mcpResult);
+    const provider = {
+      ...requestedProvider,
+      resolved_provider: {
+        org_id: resolved.connection.org_id,
+        provider_kind: 'mcp' as const,
+        provider_instance_id: resolved.connection.id,
+      },
+    };
+    const common = {
+      provider,
+      provider_display_name: resolved.connection.name,
+      operation_name: request.provider.operation_name,
+      provider_call_attempted: true,
+      legacy_output: legacyOutput,
+      duration_ms: mcpResult.durationMs,
+    };
+    if (mcpResult.success) {
+      return {
+        ...common,
+        provider_succeeded: true,
+      };
+    }
+    return {
+      ...common,
+      provider_succeeded: false,
+      error: mcpResult.error || 'MCP tool error',
+      error_code: 'CAPABILITY_PROVIDER_ERROR',
     };
   }
 

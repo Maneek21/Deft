@@ -43,6 +43,18 @@ Legacy callers retain their current policy/budget/approval ordering and project
 the service outcome back into the exact current citation and `agent_actions`
 shapes. Phase 2 does not move those governance decisions into the service.
 
+During the parity cutover, `invoke` returns a transient compatibility envelope:
+the exact untouched legacy payload and execution/citation facts sit beside a
+strict safe-outcome projection. If an SDK edge payload cannot be represented as
+finite JSON, the projection is explicitly `unrepresentable` while the legacy
+payload, provider-attempt state, duration, and actual success remain intact.
+Projection work is byte/depth/node preflighted before strict validation so a
+large provider result cannot make the observational path unbounded.
+Safe-projection failure after a possible external effect never throws, retries,
+or reclassifies the provider call. Phase 3 Runs will decide how an
+unrepresentable safe projection becomes a durable `unknown_outcome`; Phase 2
+does not persist either projection.
+
 ### Snapshot as an immutable value
 
 Phase 2 defines `ProviderDiscoverySnapshot` as a strict immutable tenant-bound
@@ -136,6 +148,8 @@ a non-idempotent effect.
 - Golden discovery tests preserve legacy tools and admin cache behavior.
 - Immediate, auto-direct action, and human-reviewed tests preserve result,
   citation, action-row, budget, approval, and receipt behavior.
+- Non-JSON SDK edge payload tests prove that strict safe projection failure
+  cannot alter, retry, or hide an already-attempted legacy provider result.
 - Denial and revocation produce zero provider calls; every attempted provider
   execution produces at most one low-level call.
 - An architecture test permits low-level MCP execution only in the MCP provider

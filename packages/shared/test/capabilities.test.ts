@@ -8,6 +8,7 @@ import {
   CapabilityProviderDiscoverySnapshotInputSchema,
   CapabilityProviderDiscoverySnapshotSchema,
   CapabilityProviderIdentitySchema,
+  assertCapabilityJsonWithinBudget,
   canonicalCapabilityJson,
   createCapabilityProviderDiscoverySnapshot,
   type CapabilityProviderDiscoverySnapshotInput,
@@ -169,6 +170,22 @@ describe('canonical capability JSON', () => {
     assert.throws(() => canonicalCapabilityJson({ value: Number.NaN }));
     assert.throws(() => canonicalCapabilityJson({ value: undefined }));
     assert.equal(canonicalCapabilityJson({ é: 1, ['e\u0301']: 2 }), '{"é":2,"é":1}');
+  });
+
+  test('preflight byte accounting matches JSON UTF-8 escaping', () => {
+    const values = [
+      'plain',
+      'quote " slash \\',
+      'controls \b\t\n\f\r\u0001',
+      'é漢😀',
+      '\ud800',
+      { 'é😀': ['\u0001', 'value'] },
+    ];
+    for (const value of values) {
+      const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+      assert.doesNotThrow(() => assertCapabilityJsonWithinBudget(value, bytes));
+      assert.throws(() => assertCapabilityJsonWithinBudget(value, bytes - 1));
+    }
   });
 });
 
