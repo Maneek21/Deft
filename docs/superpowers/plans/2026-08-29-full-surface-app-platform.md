@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Phase 1 declarative alpha merged; Phase 2 Capability Service extraction complete; Phase 3 ready to plan |
+| **Status** | Phases 1–2 merged; Phase 3 additive Governed Run plan proposed and rebased onto `9ba7b7c8` |
 | **Date** | 2026-08-29; Phase 2 rebaseline 2026-08-30 |
 | **Baseline inspected** | Phase 2 starts from `origin/master` at `bdb137ee`, the squash merge of Phase 1 PR #269 |
 | **North star** | A Deft user can ask Codex to build a useful application, install it into their Deft workspace, and have it participate natively in the human UI, search and knowledge, tasks and chat, Defty, employee agents, human MCP, automation, approvals, runs, receipts, and audit. |
@@ -764,6 +764,12 @@ known missing local pgvector extension was not retried.
 ### Phase 3: Governed App Runs and Secret Service
 
 **Outcome:** every capability execution can use one actor-neutral, durable, approval-aware envelope.
+
+**Implementation sequence:** use the additive, fail-closed merge trains in
+[the Phase 3 loop plan](2026-08-30-app-platform-phase-3-governed-runs-loops.md)
+and the staged secret/rollback decision. Phase 3 is not one big-bang PR; migration
+identifiers must be re-confirmed at the implementation boundary even though the
+planning branch is now rebased onto the Phase 2 merge.
 
 - [ ] Add a versioned Secret Service with random nonces, AAD-bound ciphertext, current and decrypt-only keys, rotation, and explicit safe projections.
 - [ ] Add minimum-input rules, strict Run payload/blob limits, retention classes, terminal-state purge, and sanitized audit residue; permission widening cannot silently extend retention.
